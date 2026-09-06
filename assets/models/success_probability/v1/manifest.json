@@ -1,0 +1,97 @@
+{
+  "artifact_version": 1,
+  "dataset": {
+    "dataset_sha256": "be55ac81c70951670aa64096acd22d2d68fa0760ee8d8052276d9f2693d518a4",
+    "feature_schema_version": 1,
+    "kind": "synthetic_bootstrap",
+    "mode_counts": {
+      "auto": 1250,
+      "dense": 2250,
+      "easy": 1500
+    },
+    "n_attempts": 5000,
+    "note": "Synthetic bootstrap dataset; exercises the training/export pipeline. Prefer a real grasp-outcome corpus via build_dataset_from_records once one is collected.",
+    "positive_prevalence": 0.898,
+    "seed": 20260517
+  },
+  "environment": {
+    "numpy_version": "2.4.4",
+    "platform": "windows",
+    "python_version": "3.11.9",
+    "sklearn_version": "1.9.0"
+  },
+  "feature_names": [
+    "geometric_score",
+    "stability_score",
+    "reachability_score",
+    "feasibility_score",
+    "geo_antipodal",
+    "geo_normal_opposition",
+    "geo_axis_alignment",
+    "geo_width_fit",
+    "stab_confidence",
+    "stab_contact_stability",
+    "stab_collision_free",
+    "stab_table_clearance",
+    "reach_workspace",
+    "reach_approach_alignment",
+    "feas_ik_quality",
+    "feas_joint_margin",
+    "feas_approach_clearance",
+    "feas_corridor_risk",
+    "pose_grip_width_mm",
+    "pose_confidence",
+    "mode_easy",
+    "mode_dense",
+    "mode_auto"
+  ],
+  "feature_schema_version": 1,
+  "metrics_cv_5fold": {
+    "auroc": {
+      "mean": 0.755495873182235,
+      "per_fold": [
+        0.7446395039084677,
+        0.7461679549325299,
+        0.7493012795318573,
+        0.7547764094501943,
+        0.7825942180881261
+      ],
+      "std": 0.013986291344564781
+    },
+    "brier": {
+      "mean": 0.08415249528555917,
+      "per_fold": [
+        0.08371416970686145,
+        0.08579513662166419,
+        0.08275827243657281,
+        0.08506566188170717,
+        0.08342923578099026
+      ],
+      "std": 0.0011127654530876643
+    },
+    "ece": {
+      "mean": 0.0152732959246813,
+      "per_fold": [
+        0.011129383473198336,
+        0.01783322255468241,
+        0.009662507176733767,
+        0.019196979286202242,
+        0.01854438713258974
+      ],
+      "std": 0.004032406575298955
+    }
+  },
+  "mode_buckets": [
+    "easy",
+    "dense",
+    "auto"
+  ],
+  "model_family": "logistic_regression+isotonic_calibration",
+  "runtime_predictor": "backend.src.robot.grasping.scoring.success_probability:load_success_probability_model",
+  "training": {
+    "logistic_C": 1.0,
+    "logistic_max_iter": 200,
+    "n_cv_folds": 5,
+    "train_seed": 20260518
+  }
+}

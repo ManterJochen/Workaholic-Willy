@@ -1,0 +1,28 @@
+{
+  "artifact_basename": "v1",
+  "artifact_sha256": "a111f34bf2e4a875156d34f4e58f81b90717e01c722501526309b9fd2761808b",
+  "gate_thresholds": {
+    "brier_max": 0.09,
+    "log_loss_max": 0.31
+  },
+  "manifest_json_sha256": "0fd6c623ab8530920f5deb628930d8426ae184ed43b509e096f14e593cb3bb6f",
+  "metrics": {
+    "auroc": 0.7653300139296405,
+    "brier": 0.0849706918383108,
+    "ece": 0.010949237371926804,
+    "log_loss": 0.30210554309993165
+  },
+  "model_json_sha256": "ccad99b6715e3da6f33bb3ea2ca75e25139fc93958457bad7c771df1f4f841a3",
+  "promoted_at": "2026-05-19T00:00:00Z",
+  "promoted_by": "willy-ci",
+  "schema_version": 1,
+  "signature": "none",
+  "tooling_version": "promotion-v1",
+  "validation": {
+    "dataset_sha256": "72256b13c15b8bde3491d57b991b93f75ff5cd0ee0ada54e9c793608d2620502",
+    "kind": "synthetic_split",
+    "n_attempts": 2000,
+    "seed": 20260519
+  },
+  "verdict": "pass"
+}
