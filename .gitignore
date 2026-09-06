@@ -50,10 +50,19 @@ assets/models/grasp_ranker/**/*.json
 !assets/models/grasp_ranker/**/*.card.json
 
 # Third-party meshes for the scene generator (GSO / YCB, CC-BY).
-# Fetched via scripts/assets/meshes/fetch.py
+# Fetched with `python -m datagen.assets --fetch --from <dir> --source <source>`;
+# `python -m datagen.assets --check` says whether this machine has them.
 assets/meshes/
+
+# Convex decompositions of the mesh bank (CoACD). Derived from assets/meshes/, which is
+# itself fetched rather than vendored, and regenerated on demand at about 8 s per mesh.
+# A cache, not a source: deleting it costs render time and nothing else.
+assets/cache/
 
 # Trained grasp-generator artifacts.
 *.ckpt.pt
 grasp_generator_v1.pt
 logs/dl/models/
+# Temporary migration commit notes. Removed with its gitignore entry once
+# the migration is committed.
+.commits/

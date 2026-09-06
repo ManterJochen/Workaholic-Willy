@@ -1,0 +1,152 @@
+{
+ "assets": {
+  "composite_weight": 0.25,
+  "custom_weight": 0.0,
+  "gso_weight": 0.55,
+  "jaw_screen_path": "datagen/assets/screens/screen_v5.json",
+  "max_jaw_span_mm": 85.0,
+  "max_mesh_extent_mm": 300.0,
+  "mesh_asset_ids": [],
+  "mesh_asset_ids_path": "datagen/assets/screens/train_asset_ids_v5.json",
+  "mesh_collision": "convexDecomposition",
+  "objaverse_weight": 0.0,
+  "procedural_families": [
+   "primitive",
+   "industrial",
+   "packaging",
+   "vessel"
+  ],
+  "procedural_weight": 0.0,
+  "refuse_procedural_fallback": false,
+  "ycb_weight": 0.2
+ },
+ "camera_rig": {
+  "horizontal_fov_deg": 47.0,
+  "oblique_height_mm": 600.0,
+  "oblique_lateral_mm": 450.0,
+  "oblique_setback_mm": 0.0,
+  "overhead_height_mm": 1000.0,
+  "resolution": [
+   640,
+   480
+  ],
+  "views": [
+   "wrist",
+   "overhead",
+   "oblique_left",
+   "oblique_right"
+  ],
+  "wrist_elevation_deg": [
+   45.0,
+   80.0
+  ],
+  "wrist_radius_mm": [
+   260.0,
+   340.0
+  ]
+ },
+ "domain": "cell",
+ "families": {
+  "bin_objects": [
+   5,
+   12
+  ],
+  "bin_weight": 0.0,
+  "flat_orientation": "random",
+  "packed_objects": [
+   4,
+   9
+  ],
+  "packed_weight": 0.4,
+  "pile_footprint_fraction": 0.75,
+  "pile_objects": [
+   5,
+   13
+  ],
+  "pile_weight": 0.0,
+  "sparse_objects": [
+   2,
+   6
+  ],
+  "sparse_weight": 0.6
+ },
+ "output": {
+  "attribution_file": true,
+  "root": "logs/dl"
+ },
+ "randomization": {
+  "dome_intensity": [
+   100.0,
+   400.0
+  ],
+  "light_elevation_deg": [
+   30.0,
+   90.0
+  ],
+  "light_intensity": [
+   800.0,
+   3000.0
+  ],
+  "object_color_max": [
+   0.95,
+   0.95,
+   0.95
+  ],
+  "object_color_min": [
+   0.05,
+   0.05,
+   0.05
+  ],
+  "table_color_max": [
+   0.55,
+   0.55,
+   0.6
+  ],
+  "table_color_min": [
+   0.15,
+   0.15,
+   0.18
+  ]
+ },
+ "render": {
+  "angular_damping": 1.0,
+  "arm": {
+   "max_viewpoint_attempts": 12,
+   "mode": "posed",
+   "robot_model": "ur5e",
+   "self_collision_margin_mm": 8.0,
+   "viewpoint_source": "target_ik",
+   "visible_in_views": "all"
+  },
+  "depth_noise": {
+   "enabled": true,
+   "sensor": "realsense_d435"
+  },
+  "depth_only": true,
+  "engine": "mujoco",
+  "extra_settle_steps": 240,
+  "friction_dynamic": 0.6,
+  "friction_static": 0.7,
+  "linear_damping": 0.05,
+  "measure_visibility": true,
+  "mode": "raster",
+  "restitution": 0.0,
+  "samples_per_pixel": 64,
+  "settle_steps": 180,
+  "stability_check_steps": 30,
+  "stability_tolerance_mm": 0.5
+ },
+ "scenes": 10000,
+ "seed": 20260830,
+ "workspace": {
+  "center_mm": [
+   450.0,
+   0.0
+  ],
+  "half_extents_mm": [
+   150.0,
+   150.0
+  ],
+  "table_height_mm": 0.0
+ }
+}

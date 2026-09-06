@@ -1,0 +1,3151 @@
+{
+ "density": "grid",
+ "rest_poses": [
+  "upright",
+  "x-down",
+  "y-down"
+ ],
+ "rows": [
+  {
+   "asset_id": "objaverse_objaverse_009bee794dca40c082f792fcad32283f",
+   "file": "objaverse_009bee794dca40c082f792fcad32283f.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_01411baaa1784297b199b30f0c94c4bf",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    537.69,
+    749.3,
+    1131.84
+   ],
+   "file": "objaverse_01411baaa1784297b199b30f0c94c4bf.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 29
+  },
+  {
+   "asset_id": "objaverse_objaverse_0151a3b3112f4d7eac653a3f81e9f2ed",
+   "file": "objaverse_0151a3b3112f4d7eac653a3f81e9f2ed.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_02543290444e41a3babfbb894e7d0909",
+   "file": "objaverse_02543290444e41a3babfbb894e7d0909.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_030b47e3d66d4ddbaa84b17f0ec7c0b1",
+   "file": "objaverse_030b47e3d66d4ddbaa84b17f0ec7c0b1.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_04d9983ba04242fe99182d4506ea0714",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    7364.81,
+    26965.3,
+    27763.0
+   ],
+   "file": "objaverse_04d9983ba04242fe99182d4506ea0714.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_05452cfd83bb436493c82770773597d9",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    424.04,
+    910.07,
+    1024.99
+   ],
+   "file": "objaverse_05452cfd83bb436493c82770773597d9.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 7
+  },
+  {
+   "asset_id": "objaverse_objaverse_061159593374474a931b974526aa2a3b",
+   "file": "objaverse_061159593374474a931b974526aa2a3b.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_07be0f0bb2e74395aceeb6ca41443636",
+   "file": "objaverse_07be0f0bb2e74395aceeb6ca41443636.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_0b20384a14ac4c4c9dc083013b7c1598",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1204.57,
+    1536.27,
+    1543.56
+   ],
+   "file": "objaverse_0b20384a14ac4c4c9dc083013b7c1598.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 20
+  },
+  {
+   "asset_id": "objaverse_objaverse_0c9ec03600e24a7093103da88825dd21",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    18000.1,
+    37000.0,
+    315000.0
+   ],
+   "file": "objaverse_0c9ec03600e24a7093103da88825dd21.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 26
+  },
+  {
+   "asset_id": "objaverse_objaverse_0da7980da92e403d9db25120b579d66a",
+   "file": "objaverse_0da7980da92e403d9db25120b579d66a.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_0ebee5d77f3b414282fa3d8dc3caa658",
+   "file": "objaverse_0ebee5d77f3b414282fa3d8dc3caa658.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_0fdffeb5b2444cab8c23a25c63291e03",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    73250.99,
+    81577.17,
+    99992.5
+   ],
+   "file": "objaverse_0fdffeb5b2444cab8c23a25c63291e03.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 36
+  },
+  {
+   "asset_id": "objaverse_objaverse_10200561b4e34509a3ac69c952caf071",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    565.92,
+    1469.95,
+    1952.73
+   ],
+   "file": "objaverse_10200561b4e34509a3ac69c952caf071.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 41
+  },
+  {
+   "asset_id": "objaverse_objaverse_1072860880a342cc9017a65823ff5a87",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    56911.4,
+    66012.0,
+    94406.62
+   ],
+   "file": "objaverse_1072860880a342cc9017a65823ff5a87.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 24
+  },
+  {
+   "asset_id": "objaverse_objaverse_10ea6c9285df4bd4a08973fb86f7815e",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    21512.1,
+    110939.2,
+    117232.0
+   ],
+   "file": "objaverse_10ea6c9285df4bd4a08973fb86f7815e.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 23
+  },
+  {
+   "asset_id": "objaverse_objaverse_1105adfcd96e4400a6b6323b60bdd44c",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    20141.71,
+    24982.0,
+    25702.5
+   ],
+   "file": "objaverse_1105adfcd96e4400a6b6323b60bdd44c.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 8
+  },
+  {
+   "asset_id": "objaverse_objaverse_11102f046e7846b8b4053bce5779d95c",
+   "file": "objaverse_11102f046e7846b8b4053bce5779d95c.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_1175ee1174354d11904321947289d2a7",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    10490.2,
+    13931.38,
+    23249.2
+   ],
+   "file": "objaverse_1175ee1174354d11904321947289d2a7.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 28
+  },
+  {
+   "asset_id": "objaverse_objaverse_11bdd46c89cf49639227034f0da41a59",
+   "best_pose": "x-down",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    29.48,
+    37.37,
+    158.77
+   ],
+   "file": "objaverse_11bdd46c89cf49639227034f0da41a59.obj",
+   "jaw": 1423,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 0
+  },
+  {
+   "asset_id": "objaverse_objaverse_1280872b95da402b8facb13c38fec32f",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    89.49,
+    3253.0,
+    3325.06
+   ],
+   "file": "objaverse_1280872b95da402b8facb13c38fec32f.obj",
+   "jaw": 577,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_13b1bf0cc3d84730a52a5af63dba6ca3",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1149.53,
+    1189.48,
+    1999.59
+   ],
+   "file": "objaverse_13b1bf0cc3d84730a52a5af63dba6ca3.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 14
+  },
+  {
+   "asset_id": "objaverse_objaverse_13e1c3e2fa424e9aaaac7dc6441ffa26",
+   "file": "objaverse_13e1c3e2fa424e9aaaac7dc6441ffa26.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_14be2940b43541168e157a7ccfb60560",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    16210.79,
+    16269.56,
+    19252.2
+   ],
+   "file": "objaverse_14be2940b43541168e157a7ccfb60560.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 22
+  },
+  {
+   "asset_id": "objaverse_objaverse_1557fd3289104918ab475b8e1e6c7063",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    11536.55,
+    11536.56,
+    13574.03
+   ],
+   "file": "objaverse_1557fd3289104918ab475b8e1e6c7063.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 42
+  },
+  {
+   "asset_id": "objaverse_objaverse_15bcffca39d544d1a7cfdcab01ccc604",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    183.32,
+    397.26,
+    436.58
+   ],
+   "file": "objaverse_15bcffca39d544d1a7cfdcab01ccc604.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 15
+  },
+  {
+   "asset_id": "objaverse_objaverse_15e2ae6865414ea58da7724708f9d25f",
+   "file": "objaverse_15e2ae6865414ea58da7724708f9d25f.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_191e8d6b334e48e59362472ba52c9ab3",
+   "file": "objaverse_191e8d6b334e48e59362472ba52c9ab3.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_1986f4d1de824e0eb302cdbbbf56b7bd",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1129.77,
+    6102.13,
+    6688.34
+   ],
+   "file": "objaverse_1986f4d1de824e0eb302cdbbbf56b7bd.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 10
+  },
+  {
+   "asset_id": "objaverse_objaverse_19a01d44ba494164ab861372ec36a667",
+   "file": "objaverse_19a01d44ba494164ab861372ec36a667.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_1a3a21e8cc5948a1a6049ddfa0cedb34",
+   "file": "objaverse_1a3a21e8cc5948a1a6049ddfa0cedb34.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_1a6f91147e464a03a212c372cee14120",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    92809.9,
+    112472.7,
+    203703.48
+   ],
+   "file": "objaverse_1a6f91147e464a03a212c372cee14120.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 38
+  },
+  {
+   "asset_id": "objaverse_objaverse_1b5378b435b246c094197cdf1b2801ee",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    443.63,
+    1202.45,
+    1991.77
+   ],
+   "file": "objaverse_1b5378b435b246c094197cdf1b2801ee.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 30
+  },
+  {
+   "asset_id": "objaverse_objaverse_1c46bc2d86df47d592a75de293bc0077",
+   "file": "objaverse_1c46bc2d86df47d592a75de293bc0077.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_1f287cf20d824bceba323a2a16ee044d",
+   "file": "objaverse_1f287cf20d824bceba323a2a16ee044d.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_202140b20e354e95980e921f598ec9c8",
+   "file": "objaverse_202140b20e354e95980e921f598ec9c8.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_2067e9ddb55d41a5a09d450a6bc5aec3",
+   "file": "objaverse_2067e9ddb55d41a5a09d450a6bc5aec3.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_20a2d5191b3144d0bc683d4d4fa0c15b",
+   "file": "objaverse_20a2d5191b3144d0bc683d4d4fa0c15b.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_229ae8637f2746ed9050cf8c4e35a054",
+   "file": "objaverse_229ae8637f2746ed9050cf8c4e35a054.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_22aea67b6cec4d6cb8152a552f851bb2",
+   "file": "objaverse_22aea67b6cec4d6cb8152a552f851bb2.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_246e3426ddae439d9697d426472fa2eb",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    350.0,
+    900.0,
+    1500.0
+   ],
+   "file": "objaverse_246e3426ddae439d9697d426472fa2eb.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 23
+  },
+  {
+   "asset_id": "objaverse_objaverse_2509e00082b047c4809080ad835b3c60",
+   "best_pose": "y-down",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    129.79,
+    130.14,
+    231.36
+   ],
+   "file": "objaverse_2509e00082b047c4809080ad835b3c60.obj",
+   "jaw": 19,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 11
+  },
+  {
+   "asset_id": "objaverse_objaverse_2590e512e63647e38686fb7ba0b82afe",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    174.49,
+    1257.94,
+    1687.98
+   ],
+   "file": "objaverse_2590e512e63647e38686fb7ba0b82afe.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 17
+  },
+  {
+   "asset_id": "objaverse_objaverse_25964da2ef7f4617955e1657a305e753",
+   "file": "objaverse_25964da2ef7f4617955e1657a305e753.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_25fcdff112004331b33e168fdbacd718",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2432.77,
+    2951.84,
+    3711.55
+   ],
+   "file": "objaverse_25fcdff112004331b33e168fdbacd718.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 34
+  },
+  {
+   "asset_id": "objaverse_objaverse_2722dc58295540d8bcb73d519dd9e070",
+   "file": "objaverse_2722dc58295540d8bcb73d519dd9e070.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_28529792e5454b19a0965d9d321ab067",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    3996.04,
+    6387.17,
+    7989.77
+   ],
+   "file": "objaverse_28529792e5454b19a0965d9d321ab067.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 21
+  },
+  {
+   "asset_id": "objaverse_objaverse_2854a5128d2e44a993a93848c3d4ca70",
+   "file": "objaverse_2854a5128d2e44a993a93848c3d4ca70.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_2869f349a0eb4def9c4c18835a6fc6a7",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    357.96,
+    871.9,
+    1690.45
+   ],
+   "file": "objaverse_2869f349a0eb4def9c4c18835a6fc6a7.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 2
+  },
+  {
+   "asset_id": "objaverse_objaverse_29b223ef9b8f4be99bcada4490c7b425",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    46956.5,
+    54756.8,
+    119899.4
+   ],
+   "file": "objaverse_29b223ef9b8f4be99bcada4490c7b425.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_2a5b28163fef442f9dbefc99449055ca",
+   "file": "objaverse_2a5b28163fef442f9dbefc99449055ca.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_2b3b6a5abe784dfe816fec5bf62542c2",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1891.99,
+    2707.38,
+    4223.62
+   ],
+   "file": "objaverse_2b3b6a5abe784dfe816fec5bf62542c2.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 15
+  },
+  {
+   "asset_id": "objaverse_objaverse_2bc843bcbe3d4be5b60a982dbcf3bbf7",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    59845.23,
+    59845.29,
+    80000.0
+   ],
+   "file": "objaverse_2bc843bcbe3d4be5b60a982dbcf3bbf7.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 46
+  },
+  {
+   "asset_id": "objaverse_objaverse_2c8f15bcf70d45e48fdb7f11ba7438b2",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    3400.39,
+    16806.0,
+    19064.41
+   ],
+   "file": "objaverse_2c8f15bcf70d45e48fdb7f11ba7438b2.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 32
+  },
+  {
+   "asset_id": "objaverse_objaverse_2da280c9ac82458abe77ab1d1c710086",
+   "file": "objaverse_2da280c9ac82458abe77ab1d1c710086.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_2dc0552b029245d899a35ec3bf58256b",
+   "file": "objaverse_2dc0552b029245d899a35ec3bf58256b.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_2dd06635592e4a40bd09b9921cb73754",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    64000.0,
+    64000.0,
+    64000.0
+   ],
+   "file": "objaverse_2dd06635592e4a40bd09b9921cb73754.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 24
+  },
+  {
+   "asset_id": "objaverse_objaverse_2e8cac88a08f4e65807cdccec54ce959",
+   "file": "objaverse_2e8cac88a08f4e65807cdccec54ce959.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_31f4edaa55d04dc58599b8d16c1bc073",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    59867.5,
+    97600.4,
+    143529.2
+   ],
+   "file": "objaverse_31f4edaa55d04dc58599b8d16c1bc073.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 42
+  },
+  {
+   "asset_id": "objaverse_objaverse_32728fc5beb54b96a6223c2a4e9e6522",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    42277.6,
+    42277.6,
+    48584.0
+   ],
+   "file": "objaverse_32728fc5beb54b96a6223c2a4e9e6522.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 16
+  },
+  {
+   "asset_id": "objaverse_objaverse_3392515bb22d4c39805a1f23689d5e85",
+   "file": "objaverse_3392515bb22d4c39805a1f23689d5e85.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_34c8da7f258a4630b0ff1aa1d3c50812",
+   "file": "objaverse_34c8da7f258a4630b0ff1aa1d3c50812.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_350a7aa6faa34322ac166f0c54416854",
+   "file": "objaverse_350a7aa6faa34322ac166f0c54416854.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_352bbebaf2d942b380c09caebebef1ef",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    986.62,
+    1379.49,
+    4809.09
+   ],
+   "file": "objaverse_352bbebaf2d942b380c09caebebef1ef.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 20
+  },
+  {
+   "asset_id": "objaverse_objaverse_3788555afb0944dc8aceb4674764a3dc",
+   "best_pose": "y-down",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    60.63,
+    998.44,
+    5921.12
+   ],
+   "file": "objaverse_3788555afb0944dc8aceb4674764a3dc.obj",
+   "jaw": 850,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 35
+  },
+  {
+   "asset_id": "objaverse_objaverse_3d639a68f326440d811d77fc7fdf0d65",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    11114.26,
+    11984.83,
+    17210.59
+   ],
+   "file": "objaverse_3d639a68f326440d811d77fc7fdf0d65.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 44
+  },
+  {
+   "asset_id": "objaverse_objaverse_3d886cb3e784489b99e70d5cefbabb91",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    775445.0,
+    977746.0,
+    1000650.0
+   ],
+   "file": "objaverse_3d886cb3e784489b99e70d5cefbabb91.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_3e15ceda63df4774b063b01e35998b05",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1974.24,
+    2003.72,
+    2056.57
+   ],
+   "file": "objaverse_3e15ceda63df4774b063b01e35998b05.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 42
+  },
+  {
+   "asset_id": "objaverse_objaverse_3e63970d5b3b4efebc832f1b2ab6a16d",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1096.01,
+    1096.19,
+    2072.18
+   ],
+   "file": "objaverse_3e63970d5b3b4efebc832f1b2ab6a16d.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 24
+  },
+  {
+   "asset_id": "objaverse_objaverse_3e7dca93c61346f4be23618dd421c370",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    10906.1,
+    15203.08,
+    16668.6
+   ],
+   "file": "objaverse_3e7dca93c61346f4be23618dd421c370.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 33
+  },
+  {
+   "asset_id": "objaverse_objaverse_3ea576589cf0490bb76ee3282a3b0e31",
+   "file": "objaverse_3ea576589cf0490bb76ee3282a3b0e31.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_3f5ec31407f34b088880d29f8d664a39",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    259514.0,
+    282332.85,
+    900000.0
+   ],
+   "file": "objaverse_3f5ec31407f34b088880d29f8d664a39.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 36
+  },
+  {
+   "asset_id": "objaverse_objaverse_3f6680977eb6487ebe4f882aaf62fa6c",
+   "file": "objaverse_3f6680977eb6487ebe4f882aaf62fa6c.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_4068b76c755349edbfac42eaa4ea34e5",
+   "best_pose": "y-down",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2566.94,
+    2783.48,
+    5854.66
+   ],
+   "file": "objaverse_4068b76c755349edbfac42eaa4ea34e5.obj",
+   "jaw": 4,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 2
+  },
+  {
+   "asset_id": "objaverse_objaverse_42600070fd85476d8bfbef8bddd6a6b7",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    144625.65,
+    265177.34,
+    489119.0
+   ],
+   "file": "objaverse_42600070fd85476d8bfbef8bddd6a6b7.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 46
+  },
+  {
+   "asset_id": "objaverse_objaverse_427f9ab917bc4e9593ffeacc33a187a8",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    14481.97,
+    17716.0,
+    25106.0
+   ],
+   "file": "objaverse_427f9ab917bc4e9593ffeacc33a187a8.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 26
+  },
+  {
+   "asset_id": "objaverse_objaverse_4581bf090daa400a81156eef3936a981",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    17989.2,
+    24967.64,
+    26293.5
+   ],
+   "file": "objaverse_4581bf090daa400a81156eef3936a981.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 44
+  },
+  {
+   "asset_id": "objaverse_objaverse_45d2f17515a94253a291e6696745ac4b",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2171.0,
+    12722.43,
+    17767.84
+   ],
+   "file": "objaverse_45d2f17515a94253a291e6696745ac4b.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 28
+  },
+  {
+   "asset_id": "objaverse_objaverse_4662b5183a2a43919823ee3f3b71dea6",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    13093.89,
+    80806.6,
+    89757.3
+   ],
+   "file": "objaverse_4662b5183a2a43919823ee3f3b71dea6.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 10
+  },
+  {
+   "asset_id": "objaverse_objaverse_4864cbe44cb24cdbb39930458565251a",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1080.14,
+    1148.15,
+    1426.31
+   ],
+   "file": "objaverse_4864cbe44cb24cdbb39930458565251a.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 18
+  },
+  {
+   "asset_id": "objaverse_objaverse_4b23ca9ecf214d9c85bffb6e287a589b",
+   "file": "objaverse_4b23ca9ecf214d9c85bffb6e287a589b.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_4cfa2272076b4ab7aac04f784eb4f157",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    72217.4,
+    157450.82,
+    272568.0
+   ],
+   "file": "objaverse_4cfa2272076b4ab7aac04f784eb4f157.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 30
+  },
+  {
+   "asset_id": "objaverse_objaverse_4e356d867bd749a896b003b342d808d5",
+   "file": "objaverse_4e356d867bd749a896b003b342d808d5.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_4ef2ca4c998e49c19da3b49a22fa307e",
+   "file": "objaverse_4ef2ca4c998e49c19da3b49a22fa307e.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_512908438b2b4deebcf17dfede368e61",
+   "file": "objaverse_512908438b2b4deebcf17dfede368e61.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_559b7a2ae50f426a8993b609d22931ff",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    236.9,
+    2229.37,
+    2620.87
+   ],
+   "file": "objaverse_559b7a2ae50f426a8993b609d22931ff.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 43
+  },
+  {
+   "asset_id": "objaverse_objaverse_5699e6ec5c0f40b1ad0f78264595133d",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1123.49,
+    1191.38,
+    1480.88
+   ],
+   "file": "objaverse_5699e6ec5c0f40b1ad0f78264595133d.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 25
+  },
+  {
+   "asset_id": "objaverse_objaverse_56d913d3b0d84a0d8917cc2ad0e0d0ff",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    35396.19,
+    58848.9,
+    100363.0
+   ],
+   "file": "objaverse_56d913d3b0d84a0d8917cc2ad0e0d0ff.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 6
+  },
+  {
+   "asset_id": "objaverse_objaverse_56f4b8f67b8743aeadb2ae2450fdb5f0",
+   "file": "objaverse_56f4b8f67b8743aeadb2ae2450fdb5f0.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_56fddf35a2e2428197e3a8d4860ec7b5",
+   "best_pose": "x-down",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    67.0,
+    517.61,
+    523.81
+   ],
+   "file": "objaverse_56fddf35a2e2428197e3a8d4860ec7b5.obj",
+   "jaw": 486,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 29
+  },
+  {
+   "asset_id": "objaverse_objaverse_5948de6770a5491ea158cd9e921ebce9",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2037.1,
+    2076.06,
+    2220.28
+   ],
+   "file": "objaverse_5948de6770a5491ea158cd9e921ebce9.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 45
+  },
+  {
+   "asset_id": "objaverse_objaverse_59d3279712c1474287e551fdb0f103eb",
+   "file": "objaverse_59d3279712c1474287e551fdb0f103eb.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_5a185ded6b734d7097f45f381a37b266",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1701.92,
+    1751.21,
+    2655.12
+   ],
+   "file": "objaverse_5a185ded6b734d7097f45f381a37b266.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 28
+  },
+  {
+   "asset_id": "objaverse_objaverse_5a3b7ba7b639427ea970ccca90553aab",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    374.76,
+    622.57,
+    1788.6
+   ],
+   "file": "objaverse_5a3b7ba7b639427ea970ccca90553aab.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 47
+  },
+  {
+   "asset_id": "objaverse_objaverse_5a6c3bab565842f392726c8d5d6855d3",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    11300.0,
+    15800.0,
+    31800.0
+   ],
+   "file": "objaverse_5a6c3bab565842f392726c8d5d6855d3.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 30
+  },
+  {
+   "asset_id": "objaverse_objaverse_5aa6524dad834b7283ae9afa0fbbdc5d",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    3967.55,
+    4726.53,
+    9851.19
+   ],
+   "file": "objaverse_5aa6524dad834b7283ae9afa0fbbdc5d.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 44
+  },
+  {
+   "asset_id": "objaverse_objaverse_5b5102879c444eaba46c31d504a5d86a",
+   "file": "objaverse_5b5102879c444eaba46c31d504a5d86a.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_5b6243762d2b4c3bbe69d132780e38b4",
+   "file": "objaverse_5b6243762d2b4c3bbe69d132780e38b4.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_5bbff140704a4d0bbe06282e582ef04d",
+   "file": "objaverse_5bbff140704a4d0bbe06282e582ef04d.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_5c70c390a8624e35beb4b4361bec2ea7",
+   "file": "objaverse_5c70c390a8624e35beb4b4361bec2ea7.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_5cc268386ce345a8be9be077c0cb4c8c",
+   "file": "objaverse_5cc268386ce345a8be9be077c0cb4c8c.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_5cebdd51dce44e709e7d5ddb9a63dc8f",
+   "file": "objaverse_5cebdd51dce44e709e7d5ddb9a63dc8f.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_5cef5d36107c43df94df547c54628a53",
+   "file": "objaverse_5cef5d36107c43df94df547c54628a53.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_5d09e71a3c664f8bbdcb43427a591dee",
+   "file": "objaverse_5d09e71a3c664f8bbdcb43427a591dee.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_5ed9dbe3d248407fb09d7959b3f13eb4",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    259.13,
+    473.39,
+    481.03
+   ],
+   "file": "objaverse_5ed9dbe3d248407fb09d7959b3f13eb4.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 31
+  },
+  {
+   "asset_id": "objaverse_objaverse_5efbfe21204743559165377a163896c3",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2147.34,
+    2147.34,
+    9567.52
+   ],
+   "file": "objaverse_5efbfe21204743559165377a163896c3.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 28
+  },
+  {
+   "asset_id": "objaverse_objaverse_5fc3a77cb8de4f5bb01d5fa1b34c5b6c",
+   "file": "objaverse_5fc3a77cb8de4f5bb01d5fa1b34c5b6c.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_616cfda9b24b406199df1a4be3f2d828",
+   "file": "objaverse_616cfda9b24b406199df1a4be3f2d828.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_61e6b250a15e43029cd36c306d8df211",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    86775.46,
+    95723.63,
+    294409.88
+   ],
+   "file": "objaverse_61e6b250a15e43029cd36c306d8df211.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 24
+  },
+  {
+   "asset_id": "objaverse_objaverse_61f24076a19a4f188d2fac13106ea46c",
+   "file": "objaverse_61f24076a19a4f188d2fac13106ea46c.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_63ecc2ab01cc482d8c92fc51e1d3d871",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1435.45,
+    3386.93,
+    4451.89
+   ],
+   "file": "objaverse_63ecc2ab01cc482d8c92fc51e1d3d871.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 14
+  },
+  {
+   "asset_id": "objaverse_objaverse_658ede988e064bc0bf891a93368f95ed",
+   "file": "objaverse_658ede988e064bc0bf891a93368f95ed.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_66394b25957e4bb4898a60f7a7c2d122",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    90.54,
+    100.56,
+    102.87
+   ],
+   "file": "objaverse_66394b25957e4bb4898a60f7a7c2d122.obj",
+   "jaw": 17,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 0
+  },
+  {
+   "asset_id": "objaverse_objaverse_6659d460a0924f3aaef320961a419198",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    7100.86,
+    24250.0,
+    28000.0
+   ],
+   "file": "objaverse_6659d460a0924f3aaef320961a419198.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 38
+  },
+  {
+   "asset_id": "objaverse_objaverse_66b40aabfe7447128fbe4126530e7e96",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    363356.0,
+    414744.0,
+    565496.03
+   ],
+   "file": "objaverse_66b40aabfe7447128fbe4126530e7e96.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 38
+  },
+  {
+   "asset_id": "objaverse_objaverse_672be4fd36d14a59b7dce68c85fe7c94",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    54466.8,
+    62543.6,
+    76920.8
+   ],
+   "file": "objaverse_672be4fd36d14a59b7dce68c85fe7c94.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 30
+  },
+  {
+   "asset_id": "objaverse_objaverse_68446e607b634c66a1465173e82dc7a5",
+   "file": "objaverse_68446e607b634c66a1465173e82dc7a5.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_6d74da5c820a4b30b6f6cf05a8b0d1ad",
+   "file": "objaverse_6d74da5c820a4b30b6f6cf05a8b0d1ad.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_6e8ab73ff816453ab7b3f4cab9713f1c",
+   "file": "objaverse_6e8ab73ff816453ab7b3f4cab9713f1c.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_6f5eb3257f124213b4601ec2dcce557d",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    72166.9,
+    119853.2,
+    121960.9
+   ],
+   "file": "objaverse_6f5eb3257f124213b4601ec2dcce557d.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_70596c9524f9481bb48e6d39c7534f1f",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2703.73,
+    4454.14,
+    4625.31
+   ],
+   "file": "objaverse_70596c9524f9481bb48e6d39c7534f1f.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 41
+  },
+  {
+   "asset_id": "objaverse_objaverse_71502060df71429bba830d06cce6c3b5",
+   "file": "objaverse_71502060df71429bba830d06cce6c3b5.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_72ced129e40c4ca8ba7e38f4f47c6768",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    119928.0,
+    135004.5,
+    151373.1
+   ],
+   "file": "objaverse_72ced129e40c4ca8ba7e38f4f47c6768.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 38
+  },
+  {
+   "asset_id": "objaverse_objaverse_7499b1c442554928a7aa2a8900f435d9",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2247.11,
+    2337.82,
+    3270.17
+   ],
+   "file": "objaverse_7499b1c442554928a7aa2a8900f435d9.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 44
+  },
+  {
+   "asset_id": "objaverse_objaverse_757eefa482d54b4381edc68c3ce5dc0e",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    7678.73,
+    10113.41,
+    12496.78
+   ],
+   "file": "objaverse_757eefa482d54b4381edc68c3ce5dc0e.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 44
+  },
+  {
+   "asset_id": "objaverse_objaverse_7582834eaaea4746829f770f5bab3cd2",
+   "file": "objaverse_7582834eaaea4746829f770f5bab3cd2.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_79728f048e854e2db32eee6c267ea622",
+   "file": "objaverse_79728f048e854e2db32eee6c267ea622.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_79d592f8157e4b47a750b8bd9ad99f4a",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    24159.3,
+    32120.5,
+    45908.29
+   ],
+   "file": "objaverse_79d592f8157e4b47a750b8bd9ad99f4a.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 34
+  },
+  {
+   "asset_id": "objaverse_objaverse_7a974cb6f38c483e99087cb95e611d26",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    172.31,
+    1881.85,
+    3917.16
+   ],
+   "file": "objaverse_7a974cb6f38c483e99087cb95e611d26.obj",
+   "jaw": 61,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 46
+  },
+  {
+   "asset_id": "objaverse_objaverse_7b56f2bdfd2845588f6bde0c5362fd0d",
+   "file": "objaverse_7b56f2bdfd2845588f6bde0c5362fd0d.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_7b605befaa9a40539d5df7ea4930573d",
+   "file": "objaverse_7b605befaa9a40539d5df7ea4930573d.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_7b73d987664f4db6bb8239fcd73711a1",
+   "file": "objaverse_7b73d987664f4db6bb8239fcd73711a1.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_7b7b529b77ad43c98f7faffeacd63173",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    32996.0,
+    35920.0,
+    36810.0
+   ],
+   "file": "objaverse_7b7b529b77ad43c98f7faffeacd63173.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 32
+  },
+  {
+   "asset_id": "objaverse_objaverse_7bb26eb5815d48cfb5d896d1a9586f54",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    73.55,
+    540.91,
+    1554.05
+   ],
+   "file": "objaverse_7bb26eb5815d48cfb5d896d1a9586f54.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 14
+  },
+  {
+   "asset_id": "objaverse_objaverse_7c58db4fef7c47978d10685880171255",
+   "file": "objaverse_7c58db4fef7c47978d10685880171255.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_7c75022d219c433da27b0df4e7813209",
+   "file": "objaverse_7c75022d219c433da27b0df4e7813209.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_7cbb3a20e6d9453e8e749f10f824b964",
+   "file": "objaverse_7cbb3a20e6d9453e8e749f10f824b964.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_7d07bdc17ac247dc8421c2449dcf425b",
+   "file": "objaverse_7d07bdc17ac247dc8421c2449dcf425b.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_7ddc86cdf3eb404a80540d26f73d45d3",
+   "file": "objaverse_7ddc86cdf3eb404a80540d26f73d45d3.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_7e7f7c2442a748079a0d610d0bac5aa0",
+   "file": "objaverse_7e7f7c2442a748079a0d610d0bac5aa0.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_7f05713c5f6144d8b6ba9a3e2464197d",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    463.84,
+    464.79,
+    466.34
+   ],
+   "file": "objaverse_7f05713c5f6144d8b6ba9a3e2464197d.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 31
+  },
+  {
+   "asset_id": "objaverse_objaverse_807c542352b548d78a4ec35917ebf7a9",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    6249.74,
+    45754.5,
+    45955.1
+   ],
+   "file": "objaverse_807c542352b548d78a4ec35917ebf7a9.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 40
+  },
+  {
+   "asset_id": "objaverse_objaverse_8157275512974f8bbfe60e0b9fa63e1b",
+   "file": "objaverse_8157275512974f8bbfe60e0b9fa63e1b.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_837c9fa18e024e8a82293e2145e91fd8",
+   "best_pose": "x-down",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    258.31,
+    998.98,
+    2000.0
+   ],
+   "file": "objaverse_837c9fa18e024e8a82293e2145e91fd8.obj",
+   "jaw": 95,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 20
+  },
+  {
+   "asset_id": "objaverse_objaverse_840d2861eb4441239d14fc7013c57e79",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    644.28,
+    1981.33,
+    2000.0
+   ],
+   "file": "objaverse_840d2861eb4441239d14fc7013c57e79.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 19
+  },
+  {
+   "asset_id": "objaverse_objaverse_846a93b328474aae84d2bb97f119e57e",
+   "file": "objaverse_846a93b328474aae84d2bb97f119e57e.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_8524998ea7a5457d8c3a3f74a2a14435",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    41000.38,
+    595011.0,
+    595011.0
+   ],
+   "file": "objaverse_8524998ea7a5457d8c3a3f74a2a14435.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 44
+  },
+  {
+   "asset_id": "objaverse_objaverse_8575f5b2830b4d6fa58c4cec18c66199",
+   "file": "objaverse_8575f5b2830b4d6fa58c4cec18c66199.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_85c79af9516742849823143bb0e746e8",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1761.5,
+    3196.4,
+    4368.43
+   ],
+   "file": "objaverse_85c79af9516742849823143bb0e746e8.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 46
+  },
+  {
+   "asset_id": "objaverse_objaverse_85d26953070d4ef0a1c3660321877f09",
+   "file": "objaverse_85d26953070d4ef0a1c3660321877f09.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_866c16ff59b24d1ba6dc4551673500a2",
+   "file": "objaverse_866c16ff59b24d1ba6dc4551673500a2.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_8674c229bee248b3bd388f71e73ec2bf",
+   "file": "objaverse_8674c229bee248b3bd388f71e73ec2bf.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_873dc95526c840b285bfe422b6128030",
+   "file": "objaverse_873dc95526c840b285bfe422b6128030.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_87fcb8e0044d46158d299de69a52f124",
+   "file": "objaverse_87fcb8e0044d46158d299de69a52f124.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_888904e6fb8246718734332b846c2a6e",
+   "file": "objaverse_888904e6fb8246718734332b846c2a6e.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_893e1c0f246a4ae594bba165b6cc1fff",
+   "file": "objaverse_893e1c0f246a4ae594bba165b6cc1fff.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_898e9be8c8964f6298188a2901216e80",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    173059.0,
+    287166.0,
+    585679.0
+   ],
+   "file": "objaverse_898e9be8c8964f6298188a2901216e80.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 16
+  },
+  {
+   "asset_id": "objaverse_objaverse_89cb95fcac7b470686d6948f8c9e603d",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    500.0,
+    2499.47,
+    2499.79
+   ],
+   "file": "objaverse_89cb95fcac7b470686d6948f8c9e603d.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_8a52183eeca8495389c15365fd76951c",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    314511.0,
+    418728.0,
+    821847.82
+   ],
+   "file": "objaverse_8a52183eeca8495389c15365fd76951c.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 24
+  },
+  {
+   "asset_id": "objaverse_objaverse_8ba033559ad241e7887cbe43e47afe5e",
+   "file": "objaverse_8ba033559ad241e7887cbe43e47afe5e.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_8c35d1846018458fa5161bf2af63669f",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    45.29,
+    66.13,
+    84.14
+   ],
+   "file": "objaverse_8c35d1846018458fa5161bf2af63669f.obj",
+   "jaw": 823,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 1
+  },
+  {
+   "asset_id": "objaverse_objaverse_8c84589050f94176b03140693388cd8e",
+   "file": "objaverse_8c84589050f94176b03140693388cd8e.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_8c94f50c45f944a6b8ae22821628567c",
+   "file": "objaverse_8c94f50c45f944a6b8ae22821628567c.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_8d660863760144c593edb1d7fb178156",
+   "file": "objaverse_8d660863760144c593edb1d7fb178156.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_8e090bc2e5654c888014395eb4e0451c",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2101.94,
+    2497.93,
+    3272.88
+   ],
+   "file": "objaverse_8e090bc2e5654c888014395eb4e0451c.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 38
+  },
+  {
+   "asset_id": "objaverse_objaverse_8e98723e70dc4ea3a87ccaba96ad0cd6",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    46172.68,
+    113993.3,
+    113993.4
+   ],
+   "file": "objaverse_8e98723e70dc4ea3a87ccaba96ad0cd6.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 42
+  },
+  {
+   "asset_id": "objaverse_objaverse_907a2bb55bed40d5bf9f501a2e0198e9",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2112.67,
+    2136.85,
+    2560.01
+   ],
+   "file": "objaverse_907a2bb55bed40d5bf9f501a2e0198e9.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 20
+  },
+  {
+   "asset_id": "objaverse_objaverse_90e9f8ae197b4cf5843f6a4b4494e375",
+   "file": "objaverse_90e9f8ae197b4cf5843f6a4b4494e375.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_91bc888bf8d54da9bfceefccaac734b8",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    238.28,
+    275.29,
+    1225.71
+   ],
+   "file": "objaverse_91bc888bf8d54da9bfceefccaac734b8.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 21
+  },
+  {
+   "asset_id": "objaverse_objaverse_924aed0fa1cb4ae4a9071a3c49044f14",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2239.15,
+    3220.47,
+    3980.84
+   ],
+   "file": "objaverse_924aed0fa1cb4ae4a9071a3c49044f14.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 39
+  },
+  {
+   "asset_id": "objaverse_objaverse_933d3ae4e51c43a7802b0e65d13da8be",
+   "file": "objaverse_933d3ae4e51c43a7802b0e65d13da8be.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_93a25c3d11c4414ab1fc9818ef33c1a8",
+   "file": "objaverse_93a25c3d11c4414ab1fc9818ef33c1a8.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_93e2de234d234fec8f0aff023f98a3a6",
+   "file": "objaverse_93e2de234d234fec8f0aff023f98a3a6.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_94db219c315742909fee67deeeacae15",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    105526.5,
+    196661.2,
+    914578.0
+   ],
+   "file": "objaverse_94db219c315742909fee67deeeacae15.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 42
+  },
+  {
+   "asset_id": "objaverse_objaverse_95039726a14d4771bf392d57daffb21f",
+   "file": "objaverse_95039726a14d4771bf392d57daffb21f.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_960986937c9c4cd79d52b95c6b4f0c4f",
+   "file": "objaverse_960986937c9c4cd79d52b95c6b4f0c4f.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_961ff5e59afa4c34ae7cfa8687f67764",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1532.72,
+    7235.5,
+    7238.8
+   ],
+   "file": "objaverse_961ff5e59afa4c34ae7cfa8687f67764.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 40
+  },
+  {
+   "asset_id": "objaverse_objaverse_962f525e0ca441388d1b94d3b3880069",
+   "file": "objaverse_962f525e0ca441388d1b94d3b3880069.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_963dca3a0a7b4d6caacab65165829470",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    3082.63,
+    42507.8,
+    50422.4
+   ],
+   "file": "objaverse_963dca3a0a7b4d6caacab65165829470.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 20
+  },
+  {
+   "asset_id": "objaverse_objaverse_96e5f00d6d7646d493902a09d6a413f3",
+   "file": "objaverse_96e5f00d6d7646d493902a09d6a413f3.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_974203f6fe334bc59a845f6963e7089b",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    12.19,
+    13.29,
+    22.19
+   ],
+   "file": "objaverse_974203f6fe334bc59a845f6963e7089b.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 0
+  },
+  {
+   "asset_id": "objaverse_objaverse_996e3759a3b14f0da6cbc2b8449e342f",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    16598.39,
+    31594.18,
+    43011.8
+   ],
+   "file": "objaverse_996e3759a3b14f0da6cbc2b8449e342f.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_997bfca37ee3410798a81c509feffa23",
+   "best_pose": "x-down",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    50.0,
+    50.0,
+    50.0
+   ],
+   "file": "objaverse_997bfca37ee3410798a81c509feffa23.obj",
+   "jaw": 163,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 14
+  },
+  {
+   "asset_id": "objaverse_objaverse_9a066bed143e437b83b188a66fa71405",
+   "file": "objaverse_9a066bed143e437b83b188a66fa71405.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_9a9bef08e8b04698a3acba90b32eb7de",
+   "file": "objaverse_9a9bef08e8b04698a3acba90b32eb7de.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_9b367fed57aa46bc9d2414ad8d88f07d",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    33000.0,
+    36000.0,
+    40000.0
+   ],
+   "file": "objaverse_9b367fed57aa46bc9d2414ad8d88f07d.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 36
+  },
+  {
+   "asset_id": "objaverse_objaverse_9cee9cfb107643738977fb0073f98582",
+   "file": "objaverse_9cee9cfb107643738977fb0073f98582.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_9e0af98d91c84500a5b8fa8680dcb117",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1487.44,
+    2737.65,
+    6051.57
+   ],
+   "file": "objaverse_9e0af98d91c84500a5b8fa8680dcb117.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 23
+  },
+  {
+   "asset_id": "objaverse_objaverse_9ed2b9c9f146440b935a9934f967b517",
+   "file": "objaverse_9ed2b9c9f146440b935a9934f967b517.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_9fefc20019924865a378260c98e9e133",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    460.98,
+    4262.86,
+    4884.79
+   ],
+   "file": "objaverse_9fefc20019924865a378260c98e9e133.obj",
+   "jaw": 8,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 43
+  },
+  {
+   "asset_id": "objaverse_objaverse_a0abc7880573486c89340e5b52b398a0",
+   "file": "objaverse_a0abc7880573486c89340e5b52b398a0.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_a16fcd9605f944f4a063509671dda816",
+   "file": "objaverse_a16fcd9605f944f4a063509671dda816.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_a184f33ab2c24c318f71ac4f4bb0115d",
+   "file": "objaverse_a184f33ab2c24c318f71ac4f4bb0115d.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_a2182dc77e82413e8b570f664d51c585",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1104.01,
+    3196.0,
+    3663.14
+   ],
+   "file": "objaverse_a2182dc77e82413e8b570f664d51c585.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 32
+  },
+  {
+   "asset_id": "objaverse_objaverse_a373ce7549dc40bd98bacb915cf97bce",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1389.84,
+    3639.16,
+    10110.65
+   ],
+   "file": "objaverse_a373ce7549dc40bd98bacb915cf97bce.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 32
+  },
+  {
+   "asset_id": "objaverse_objaverse_a59bf72737544ddd8b53af272812e1a5",
+   "file": "objaverse_a59bf72737544ddd8b53af272812e1a5.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_a5a43063c4d540e28b17b45924a1e6c6",
+   "file": "objaverse_a5a43063c4d540e28b17b45924a1e6c6.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_a5fedad56725430b9bcff609407d3b46",
+   "file": "objaverse_a5fedad56725430b9bcff609407d3b46.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_a657247d3d3d479f8366f3397455aef6",
+   "file": "objaverse_a657247d3d3d479f8366f3397455aef6.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_a6f2f695f7e04e4eb7af87b3d94135df",
+   "file": "objaverse_a6f2f695f7e04e4eb7af87b3d94135df.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_a7aed28ee44041d3a22e3d0f274c6dbf",
+   "file": "objaverse_a7aed28ee44041d3a22e3d0f274c6dbf.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_a7f7890116dc48969ee0946942b00f8a",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    832.7,
+    2952.5,
+    3702.13
+   ],
+   "file": "objaverse_a7f7890116dc48969ee0946942b00f8a.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 32
+  },
+  {
+   "asset_id": "objaverse_objaverse_a81d2a0bba7940d0b2e8fd55020a9242",
+   "file": "objaverse_a81d2a0bba7940d0b2e8fd55020a9242.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_a990d2e3396e424996d26ae44ad1d736",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    11130.67,
+    20847.5,
+    26557.3
+   ],
+   "file": "objaverse_a990d2e3396e424996d26ae44ad1d736.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 28
+  },
+  {
+   "asset_id": "objaverse_objaverse_acedcaa52310448288b0669e01e23de5",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    652780.0,
+    1160292.0,
+    2615474.1
+   ],
+   "file": "objaverse_acedcaa52310448288b0669e01e23de5.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 30
+  },
+  {
+   "asset_id": "objaverse_objaverse_aeba89968e154666b8db12853a9b202d",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    5443.72,
+    5602.49,
+    16667.13
+   ],
+   "file": "objaverse_aeba89968e154666b8db12853a9b202d.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 34
+  },
+  {
+   "asset_id": "objaverse_objaverse_af981d4f47d5462fa0b1e16d72f886bb",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1311.26,
+    2154.76,
+    2181.09
+   ],
+   "file": "objaverse_af981d4f47d5462fa0b1e16d72f886bb.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 36
+  },
+  {
+   "asset_id": "objaverse_objaverse_b06f652a17c44a0998a93c5c7e2188f8",
+   "file": "objaverse_b06f652a17c44a0998a93c5c7e2188f8.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_b27b415ceeff445da0402c3d5952de06",
+   "file": "objaverse_b27b415ceeff445da0402c3d5952de06.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_b3aeb2286a1a4757adf06f4f590894a6",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    976.15,
+    2888.37,
+    3350.16
+   ],
+   "file": "objaverse_b3aeb2286a1a4757adf06f4f590894a6.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 38
+  },
+  {
+   "asset_id": "objaverse_objaverse_b4fe8462219b46088f49cfd847fe78a9",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    718.75,
+    1457.92,
+    1581.68
+   ],
+   "file": "objaverse_b4fe8462219b46088f49cfd847fe78a9.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 19
+  },
+  {
+   "asset_id": "objaverse_objaverse_b592763cf4694010a9a7dbbcd3d1475f",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    24744.4,
+    57506.89,
+    62992.4
+   ],
+   "file": "objaverse_b592763cf4694010a9a7dbbcd3d1475f.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 32
+  },
+  {
+   "asset_id": "objaverse_objaverse_b5f3dbc012ce4351b5462bf0437836f7",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1968.5,
+    11810.99,
+    11811.01
+   ],
+   "file": "objaverse_b5f3dbc012ce4351b5462bf0437836f7.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 20
+  },
+  {
+   "asset_id": "objaverse_objaverse_b62b2de9c95b454ca3c9cadc2fc7f334",
+   "file": "objaverse_b62b2de9c95b454ca3c9cadc2fc7f334.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_b7a7bd81beb04baeb11f020cf11542aa",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    3204.13,
+    4837.65,
+    6454.75
+   ],
+   "file": "objaverse_b7a7bd81beb04baeb11f020cf11542aa.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 36
+  },
+  {
+   "asset_id": "objaverse_objaverse_b8ab806958424b8eb6022e7c521bccea",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2752.8,
+    3196.58,
+    3722.82
+   ],
+   "file": "objaverse_b8ab806958424b8eb6022e7c521bccea.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 41
+  },
+  {
+   "asset_id": "objaverse_objaverse_bb7183de04ec4197a8eae9044bb5bcc4",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    37.53,
+    83.27,
+    156.22
+   ],
+   "file": "objaverse_bb7183de04ec4197a8eae9044bb5bcc4.obj",
+   "jaw": 1498,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 8
+  },
+  {
+   "asset_id": "objaverse_objaverse_bbfb5be41e264ca2898b190723d0f401",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    230.6,
+    93387.8,
+    93387.8
+   ],
+   "file": "objaverse_bbfb5be41e264ca2898b190723d0f401.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 16
+  },
+  {
+   "asset_id": "objaverse_objaverse_bc377244fc5a48499294d3890e6d0e8a",
+   "best_pose": "x-down",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    115.27,
+    448.7,
+    2000.0
+   ],
+   "file": "objaverse_bc377244fc5a48499294d3890e6d0e8a.obj",
+   "jaw": 671,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 28
+  },
+  {
+   "asset_id": "objaverse_objaverse_bd6adf5cd77a4cc2826e229cd89e9002",
+   "best_pose": "y-down",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    45.9,
+    67.12,
+    128.95
+   ],
+   "file": "objaverse_bd6adf5cd77a4cc2826e229cd89e9002.obj",
+   "jaw": 301,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 2
+  },
+  {
+   "asset_id": "objaverse_objaverse_bf4fa1e548bb4b178941eb0f588010de",
+   "file": "objaverse_bf4fa1e548bb4b178941eb0f588010de.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_c013a2d58da345c1bfc7bf7604deaf7b",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    6880.5,
+    7200.0,
+    7200.0
+   ],
+   "file": "objaverse_c013a2d58da345c1bfc7bf7604deaf7b.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 30
+  },
+  {
+   "asset_id": "objaverse_objaverse_c0b83b79fa5644db954f5a3c1a40836d",
+   "file": "objaverse_c0b83b79fa5644db954f5a3c1a40836d.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_c2678808940746bc936e771c5e5eba4f",
+   "file": "objaverse_c2678808940746bc936e771c5e5eba4f.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_c26e20eb514747e39413eae35e4b2c88",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    88720.8,
+    227166.0,
+    294683.0
+   ],
+   "file": "objaverse_c26e20eb514747e39413eae35e4b2c88.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 28
+  },
+  {
+   "asset_id": "objaverse_objaverse_c28a70782cda4597973e3a2a55757a42",
+   "file": "objaverse_c28a70782cda4597973e3a2a55757a42.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_c3b38d05cd5248288d09b0ff6fe993b6",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    4188.08,
+    14519.44,
+    14540.04
+   ],
+   "file": "objaverse_c3b38d05cd5248288d09b0ff6fe993b6.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 42
+  },
+  {
+   "asset_id": "objaverse_objaverse_c43422b0f3b44281935b8ecfc5311689",
+   "file": "objaverse_c43422b0f3b44281935b8ecfc5311689.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_c469ee15c2e144588cd788d8a2f1e47b",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    4465120.0,
+    22040698.21,
+    25304900.0
+   ],
+   "file": "objaverse_c469ee15c2e144588cd788d8a2f1e47b.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 2
+  },
+  {
+   "asset_id": "objaverse_objaverse_c5b0439808fa436a8457b1d6a1c88aa4",
+   "file": "objaverse_c5b0439808fa436a8457b1d6a1c88aa4.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_c82e2a19e37542619ce05741382af551",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    799.88,
+    1370.96,
+    2000.0
+   ],
+   "file": "objaverse_c82e2a19e37542619ce05741382af551.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_c84f409d36be4523a1fbf06a2f35c960",
+   "file": "objaverse_c84f409d36be4523a1fbf06a2f35c960.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_c8cca8bb201d40e3bb5a6f0010f46aa8",
+   "best_pose": "y-down",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    165.95,
+    208.1,
+    208.45
+   ],
+   "file": "objaverse_c8cca8bb201d40e3bb5a6f0010f46aa8.obj",
+   "jaw": 14,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 0
+  },
+  {
+   "asset_id": "objaverse_objaverse_cbe824c2c6ba4328a6063f6d7ff5da20",
+   "file": "objaverse_cbe824c2c6ba4328a6063f6d7ff5da20.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_cc5db189b8d948aaa41ec8b702e41737",
+   "file": "objaverse_cc5db189b8d948aaa41ec8b702e41737.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_ccee888d741a4ee5b964fdd86bbe92e2",
+   "file": "objaverse_ccee888d741a4ee5b964fdd86bbe92e2.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_cdecedc60b6d44d3b8f74eb11fa7e565",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    27017.8,
+    29856.6,
+    122822.2
+   ],
+   "file": "objaverse_cdecedc60b6d44d3b8f74eb11fa7e565.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 26
+  },
+  {
+   "asset_id": "objaverse_objaverse_d0502e4e2dc44c2ca46e677c5d023771",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1372.29,
+    5216.4,
+    9050.55
+   ],
+   "file": "objaverse_d0502e4e2dc44c2ca46e677c5d023771.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 23
+  },
+  {
+   "asset_id": "objaverse_objaverse_d09cc83a02ad48808db9ad4b9f684dd8",
+   "file": "objaverse_d09cc83a02ad48808db9ad4b9f684dd8.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_d0b42e915e4a49bbb254f2aa6bfa6c8b",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    5880.0,
+    300370.0,
+    300420.0
+   ],
+   "file": "objaverse_d0b42e915e4a49bbb254f2aa6bfa6c8b.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_d0df88dfb82c4b2bae7b52100b343b3b",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    24548.28,
+    68122.7,
+    70844.3
+   ],
+   "file": "objaverse_d0df88dfb82c4b2bae7b52100b343b3b.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 40
+  },
+  {
+   "asset_id": "objaverse_objaverse_d2ad6e263c154ac89c909b3a68a718a7",
+   "file": "objaverse_d2ad6e263c154ac89c909b3a68a718a7.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_d2db028914f945e79e66ec878705c55c",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    5416.58,
+    21167.51,
+    34643.4
+   ],
+   "file": "objaverse_d2db028914f945e79e66ec878705c55c.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_d3eaa3c222364b418e08a3e3d72d0485",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    50.55,
+    117.4,
+    118.01
+   ],
+   "file": "objaverse_d3eaa3c222364b418e08a3e3d72d0485.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 10
+  },
+  {
+   "asset_id": "objaverse_objaverse_d4da531d758c4ba2843e90a24b657535",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1960.14,
+    2871.7,
+    2907.82
+   ],
+   "file": "objaverse_d4da531d758c4ba2843e90a24b657535.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 36
+  },
+  {
+   "asset_id": "objaverse_objaverse_d5630fe19d094334b95b9f3f708474ce",
+   "file": "objaverse_d5630fe19d094334b95b9f3f708474ce.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_d5d55b2dc1f848608b5772ad3cedaec9",
+   "file": "objaverse_d5d55b2dc1f848608b5772ad3cedaec9.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_d8b9429b8d814f85bacc14bb39c991fa",
+   "file": "objaverse_d8b9429b8d814f85bacc14bb39c991fa.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_d913e62b9e6f41b6a4743c447f1570b6",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    590.06,
+    593.76,
+    828.42
+   ],
+   "file": "objaverse_d913e62b9e6f41b6a4743c447f1570b6.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 3
+  },
+  {
+   "asset_id": "objaverse_objaverse_d976fd906bdf4ed0805091b39142458f",
+   "file": "objaverse_d976fd906bdf4ed0805091b39142458f.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_da3af05ceda64df990ca6bcfd3f0a2f1",
+   "file": "objaverse_da3af05ceda64df990ca6bcfd3f0a2f1.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_dc175a1d3ba94a27a39e7bc7c8934021",
+   "file": "objaverse_dc175a1d3ba94a27a39e7bc7c8934021.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_dc4d206f49e84612acada6ecdc5b8e0f",
+   "file": "objaverse_dc4d206f49e84612acada6ecdc5b8e0f.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_dcf1d2aa1a2649dd995a78c294fbb112",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    173682.0,
+    256738.0,
+    996757.0
+   ],
+   "file": "objaverse_dcf1d2aa1a2649dd995a78c294fbb112.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 32
+  },
+  {
+   "asset_id": "objaverse_objaverse_de1f5cd92c224e14bd9e8d5e5a236335",
+   "file": "objaverse_de1f5cd92c224e14bd9e8d5e5a236335.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_de8870f6bd58490f8563f37bc34841fb",
+   "file": "objaverse_de8870f6bd58490f8563f37bc34841fb.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_dea42da484b94c68ac81d2198f5cdb84",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    123436.5,
+    190659.3,
+    221577.0
+   ],
+   "file": "objaverse_dea42da484b94c68ac81d2198f5cdb84.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 38
+  },
+  {
+   "asset_id": "objaverse_objaverse_defb8edbe24c4f94a7c45d6aae4c36dd",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    68954.0,
+    146549.8,
+    304908.1
+   ],
+   "file": "objaverse_defb8edbe24c4f94a7c45d6aae4c36dd.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 18
+  },
+  {
+   "asset_id": "objaverse_objaverse_df521ec775294f6cac7406d9bdcf1b70",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    51534.9,
+    54265.8,
+    55098.4
+   ],
+   "file": "objaverse_df521ec775294f6cac7406d9bdcf1b70.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 30
+  },
+  {
+   "asset_id": "objaverse_objaverse_df5a42ec17bc4c94948ca328eca04d36",
+   "file": "objaverse_df5a42ec17bc4c94948ca328eca04d36.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_e030179d25844f4c897c2a653edfe784",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    4000.0,
+    14500.0,
+    19900.0
+   ],
+   "file": "objaverse_e030179d25844f4c897c2a653edfe784.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 22
+  },
+  {
+   "asset_id": "objaverse_objaverse_e167452f59974a3db4b813d89f86733c",
+   "file": "objaverse_e167452f59974a3db4b813d89f86733c.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_e2489fe9bce54f41ba658cdc0cc153fe",
+   "file": "objaverse_e2489fe9bce54f41ba658cdc0cc153fe.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_e2865103bcc340f4b901337274d3c3f8",
+   "file": "objaverse_e2865103bcc340f4b901337274d3c3f8.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_e3cba9a638914e58a594cea9bbb379e0",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2196.82,
+    2196.82,
+    4074.8
+   ],
+   "file": "objaverse_e3cba9a638914e58a594cea9bbb379e0.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 6
+  },
+  {
+   "asset_id": "objaverse_objaverse_e406fd52136949a688d2ed5879361021",
+   "file": "objaverse_e406fd52136949a688d2ed5879361021.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_e52760bb92d540c191def3b211cf0d9e",
+   "file": "objaverse_e52760bb92d540c191def3b211cf0d9e.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_e52a1fe4a9ab46cd80e9538dfc0b85c9",
+   "file": "objaverse_e52a1fe4a9ab46cd80e9538dfc0b85c9.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_e5ee14adb36546fda3579cb596b44a5d",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    66468.1,
+    900811.0,
+    1751817.0
+   ],
+   "file": "objaverse_e5ee14adb36546fda3579cb596b44a5d.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 18
+  },
+  {
+   "asset_id": "objaverse_objaverse_e7625f125d0f46688dde66fcb0293d71",
+   "file": "objaverse_e7625f125d0f46688dde66fcb0293d71.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_e920d25974ae4e62953f2a92e0cc6e48",
+   "file": "objaverse_e920d25974ae4e62953f2a92e0cc6e48.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_ea8c08dacaa749ca95543329ebded3de",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    9631.2,
+    29191.59,
+    39911.2
+   ],
+   "file": "objaverse_ea8c08dacaa749ca95543329ebded3de.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 24
+  },
+  {
+   "asset_id": "objaverse_objaverse_eb5b0a427a424939bc3983a782cd431e",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    2139.93,
+    2167.91,
+    3058.27
+   ],
+   "file": "objaverse_eb5b0a427a424939bc3983a782cd431e.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 31
+  },
+  {
+   "asset_id": "objaverse_objaverse_eb6d197af4e549b08785e95e44ef1347",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    4977.7,
+    8666.45,
+    12458.47
+   ],
+   "file": "objaverse_eb6d197af4e549b08785e95e44ef1347.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 44
+  },
+  {
+   "asset_id": "objaverse_objaverse_ec2bdf63f6b94c2083352a7bf18071e7",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    6939.14,
+    7715.72,
+    12442.58
+   ],
+   "file": "objaverse_ec2bdf63f6b94c2083352a7bf18071e7.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 36
+  },
+  {
+   "asset_id": "objaverse_objaverse_f05d531bda2045f6a04a16b6d4de34b1",
+   "file": "objaverse_f05d531bda2045f6a04a16b6d4de34b1.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_f0c46cd1ff234951b37b9b8770e547bd",
+   "file": "objaverse_f0c46cd1ff234951b37b9b8770e547bd.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_f18d3d987c1c44de822767564aa42068",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1735.58,
+    11358.9,
+    17233.22
+   ],
+   "file": "objaverse_f18d3d987c1c44de822767564aa42068.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 20
+  },
+  {
+   "asset_id": "objaverse_objaverse_f1bad905525b4148ba45a9f2017bdf10",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    27527.0,
+    28398.8,
+    113288.8
+   ],
+   "file": "objaverse_f1bad905525b4148ba45a9f2017bdf10.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_f2b5f719ec06493d8e7b88c40927cb87",
+   "file": "objaverse_f2b5f719ec06493d8e7b88c40927cb87.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_f2ca6cb81ae94045aeaab5a6b2f9b127",
+   "file": "objaverse_f2ca6cb81ae94045aeaab5a6b2f9b127.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_f507c33668e34d16b9306e8a8350f229",
+   "file": "objaverse_f507c33668e34d16b9306e8a8350f229.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_f6bc6eb8724f43cb88c2e3ed1f2dd195",
+   "file": "objaverse_f6bc6eb8724f43cb88c2e3ed1f2dd195.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_f70a9ffcc0b840f68eb685ddbe449b4a",
+   "file": "objaverse_f70a9ffcc0b840f68eb685ddbe449b4a.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_f713688895dc49c7ac3d5544ec3f8387",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    116700.0,
+    994917.0,
+    1017098.0
+   ],
+   "file": "objaverse_f713688895dc49c7ac3d5544ec3f8387.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_f919eedd06224b6e98523c2098793908",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    4.17,
+    79.56,
+    135.04
+   ],
+   "file": "objaverse_f919eedd06224b6e98523c2098793908.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 32
+  },
+  {
+   "asset_id": "objaverse_objaverse_f961db16ffa84156a7803a62478a11ca",
+   "file": "objaverse_f961db16ffa84156a7803a62478a11ca.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_fb6d38ea02a1483fb385a151a3fb713d",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1213.23,
+    3569.32,
+    6330.97
+   ],
+   "file": "objaverse_fb6d38ea02a1483fb385a151a3fb713d.obj",
+   "jaw": 291,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 47
+  },
+  {
+   "asset_id": "objaverse_objaverse_fb77aed95af142d9a3c51e678de04057",
+   "file": "objaverse_fb77aed95af142d9a3c51e678de04057.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_fbb9c8be10024bc89a92c10da3485156",
+   "best_pose": "x-down",
+   "box_screen_jaw_ok": true,
+   "extent_mm": [
+    57.53,
+    60.25,
+    60.86
+   ],
+   "file": "objaverse_fbb9c8be10024bc89a92c10da3485156.obj",
+   "jaw": 179,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 0
+  },
+  {
+   "asset_id": "objaverse_objaverse_fc1339e225b7408caec82681be2746c5",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1112.59,
+    1247.24,
+    1504.17
+   ],
+   "file": "objaverse_fc1339e225b7408caec82681be2746c5.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 18
+  },
+  {
+   "asset_id": "objaverse_objaverse_fcdfc931f73b4865a4a4005c65fc2afe",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    139920.8,
+    140860.3,
+    174643.5
+   ],
+   "file": "objaverse_fcdfc931f73b4865a4a4005c65fc2afe.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 48
+  },
+  {
+   "asset_id": "objaverse_objaverse_fd3ca0932ea340c4b538290e456d6cee",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    1037.32,
+    9594.78,
+    13062.63
+   ],
+   "file": "objaverse_fd3ca0932ea340c4b538290e456d6cee.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 35
+  },
+  {
+   "asset_id": "objaverse_objaverse_fdaf87589f1948119838633b2960b72b",
+   "file": "objaverse_fdaf87589f1948119838633b2960b72b.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_fecce1cf90274e34b7db18783620a688",
+   "file": "objaverse_fecce1cf90274e34b7db18783620a688.obj",
+   "source": "objaverse",
+   "status": "unclosable"
+  },
+  {
+   "asset_id": "objaverse_objaverse_ff2ede3b4ffe42d4afe7c42470c20c05",
+   "best_pose": "upright",
+   "box_screen_jaw_ok": false,
+   "extent_mm": [
+    854241.0,
+    994424.0,
+    1142464.0
+   ],
+   "file": "objaverse_ff2ede3b4ffe42d4afe7c42470c20c05.obj",
+   "jaw": 0,
+   "source": "objaverse",
+   "status": "ok",
+   "suction": 34
+  }
+ ]
+}

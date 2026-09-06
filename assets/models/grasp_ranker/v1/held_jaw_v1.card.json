@@ -1,0 +1,43 @@
+{
+  "artifact_version": 1,
+  "base_rate": 0.4301566579634465,
+  "card": {
+    "auroc_out_of_fold": 0.894666126407614,
+    "baseline": "width_mm alone, same folds and same model family",
+    "baseline_auroc": 0.776868944711795,
+    "baseline_precision_at_k": {
+      "100": 0.73,
+      "1000": 0.795,
+      "250": 0.76,
+      "500": 0.774
+    },
+    "claims": "ranking only -- NOT a calibrated probability",
+    "groups": 863,
+    "positives": 5931,
+    "precision_at_k_out_of_fold": {
+      "100": 0.98,
+      "1000": 0.932,
+      "250": 0.956,
+      "500": 0.95
+    },
+    "rows": 13788,
+    "split": "GroupKFold by 'object_key' -- never by row",
+    "why_no_probability": "fitted at a 43.02 %-class base rate on THIS corpus; a cell's rate differs and is unknown, so a calibrated P(hold) would be wrong for any other prior. If the corpus was a stratified draw, its base rate describes the sampler and not any population, which is a second and independent reason"
+  },
+  "features": [
+    "width_mm",
+    "centre_along_axis_mm",
+    "centre_along_approach_mm",
+    "centre_along_binormal_mm",
+    "jaw_clearance_mm",
+    "grasp_height_mm",
+    "approach_tilt_deg",
+    "contact_normal_alignment"
+  ],
+  "frame": "grasp",
+  "kind": "grasp_gbt_ranker",
+  "model_sha256": "a1627f78860698414d1160069247219e25eef792c6eeaad155d58a80b33ee56c",
+  "regenerate": "python -m datagen train-ranker --corpus <corpus.npz>",
+  "spec": "held_jaw_v1",
+  "trees": 400
+}

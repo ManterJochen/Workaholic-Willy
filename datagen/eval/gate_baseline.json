@@ -1,0 +1,26 @@
+{
+  "rates": {
+    "sfe": {
+      "candidates": 2404,
+      "coverage": 0.5013,
+      "coverage_incl_unseen": 0.4378,
+      "objects_with_labels": 393,
+      "precision": 0.6589,
+      "top1": 0.43
+    },
+    "sfe_fused": {
+      "candidates": 3088,
+      "coverage": 0.5852,
+      "coverage_incl_unseen": 0.5111,
+      "objects_with_labels": 393,
+      "precision": 0.6694,
+      "top1": 0.5191
+    }
+  },
+  "rungs": [
+    "sfe",
+    "sfe_fused"
+  ],
+  "scene_step": 4,
+  "tolerance_pp": 0.6
+}

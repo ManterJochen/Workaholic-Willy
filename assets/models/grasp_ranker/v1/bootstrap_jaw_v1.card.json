@@ -1,0 +1,39 @@
+{
+  "artifact_version": 1,
+  "base_rate": 0.05618646169104885,
+  "card": {
+    "auroc_out_of_fold": 0.8635559490644642,
+    "baseline": "width_mm alone, same folds and same model family",
+    "baseline_auroc": 0.7463389573448463,
+    "baseline_precision_at_k": {
+      "100": 0.17,
+      "1000": 0.118,
+      "250": 0.136,
+      "500": 0.132
+    },
+    "claims": "ranking only -- NOT a calibrated probability",
+    "groups": 463,
+    "positives": 1133,
+    "precision_at_k_out_of_fold": {
+      "100": 0.68,
+      "1000": 0.439,
+      "250": 0.68,
+      "500": 0.592
+    },
+    "rows": 20165,
+    "split": "GroupKFold by 'object_id' -- never by row",
+    "why_no_probability": "fitted at a 5.62 %-class base rate from the bootstrap corpus; a cell's rate differs and is unknown, so a calibrated P(hold) would be wrong for any other prior"
+  },
+  "features": [
+    "width_mm",
+    "centre_along_axis_mm",
+    "centre_along_approach_mm",
+    "centre_along_binormal_mm"
+  ],
+  "frame": "grasp",
+  "kind": "grasp_gbt_ranker",
+  "model_sha256": "f80052c1899b3b9231afd37f9b343d095e27bb50bb7dc7bf4f047c80244efe7a",
+  "regenerate": "python -m datagen train-ranker --corpus <corpus.npz>",
+  "spec": "bootstrap_jaw_v1",
+  "trees": 400
+}
