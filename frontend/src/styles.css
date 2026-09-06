@@ -1,0 +1,682 @@
+@import "tailwindcss";
+
+/*
+ * The console's visual language.
+ *
+ * ── WHERE IT COMES FROM ───────────────────────────────────────────────────────────────────────
+ * The concept is Aurora-VL's: a deep navy ground, a WARM neutral against it, one cool accent, and
+ * semantic colour carried by a tinted surface rather than by text. That warm/cool pairing is the
+ * distinctive move and it is kept. What is new follows from THIS product being an operator console
+ * for a machine that moves: a tighter rhythm, two reds, and a sidebar that is a state surface.
+ *
+ * ── THREE RULES THAT ARE SAFETY, NOT TASTE ────────────────────────────────────────────────────
+ * 1. ONE STATUS, ONE COLOUR, everywhere. `block` is the same red on the preflight, the connect
+ *    preview and the run banner. An operator learns the mapping once.
+ * 2. NUMBERS ARE MONOSPACE AND TABULAR. A TCP pose that jitters in width while it updates is a pose
+ *    nobody can read at a glance, and this panel is read at a glance while a robot is moving.
+ * 3. ANYTHING THAT MOVES THE ROBOT LOOKS DIFFERENT from anything that does not.
+ *
+ * ── THE TWO REDS ──────────────────────────────────────────────────────────────────────────────
+ * Rules 1 and 3 used to collide: `block` was red and the two arming buttons were red. They are
+ * separated now by BOTH colour and form, because either alone is one coincidence away from failing:
+ *
+ *     --alarm    a bright red, only ever a TINTED SURFACE with a border   "something is blocked"
+ *     --arm      a deep red, only ever a FILLED button with white text    "this moves the arm"
+ *
+ * `button.danger` -- the only user of `--arm` -- appears on exactly two controls: Connect and Pick.
+ *
+ * ── LIGHT AND DARK ────────────────────────────────────────────────────────────────────────────
+ * Three states, not two: an explicit choice stamps `data-theme` on <html>, and the default stamps
+ * nothing, so the un-stamped document has to work from `prefers-color-scheme` alone. Every colour is
+ * a token defined in all three; no element is styled inside a media query.
+ */
+
+/* ══════════════════════════════════════════════ tokens: light (the complete set) ══════════════ */
+:root {
+  --ground:       #fbfaf7;   /* warm paper -- pure white beside a sand border reads unfinished */
+  --panel:        #ffffff;
+  --panel-alt:    #f5f3ed;
+  --inset:        #f0eee6;
+  --line:         #e4ded2;   /* sand: the warm counterpoint the whole identity rests on */
+  --line-strong:  #cdc5b5;
+
+  --fg:           #0d1f42;   /* deep navy, softened from Aurora's #001e50 for 13px body text */
+  --fg-muted:     #4a5875;
+  --fg-subtle:    #5e6c8a;
+
+  --accent:       #0a758a;   /* instrument cyan, darkened for contrast on paper */
+  --accent-fg:    #ffffff;
+
+  --ok:     #2f8f52;
+  --warn:   #a8760f;
+  --alarm:  #c4303a;         /* status red -- TINT ONLY */
+  --bench:  #7857c8;
+  --info:   #0d7fbe;
+  --arm:    #a8121c;         /* arming red -- FILLED ONLY, never a status */
+  --arm-hi: #8a0c15;
+
+  /* MEASURED, not eyeballed. This console is read across a hall, sometimes over a shoulder, and the
+     third text tier carries the honest half of several readouts -- the denominator under every figure
+     on the demo page, the vendor/profile labels in the sidebar. At the values this palette first
+     shipped with, `--fg-subtle` was 3.47:1 on --panel and 3.12:1 on --panel-alt, and `--accent` was
+     4.48:1 as link text on --ground: all below AA for normal text. The values above are the SMALLEST
+     lightness steps on the same hue that clear 4.5:1 on EVERY ground each token can land on -- which
+     for --accent is all four, because a link sits in a panel HEAD (--panel-alt) and can sit in a
+     caveat (--inset), not only on the page ground. Hue and saturation are untouched, so the palette's
+     character is unchanged and the muted -> subtle hierarchy still reads.
+     `tests/test_console_contrast.py` recomputes all of it from these very lines. */
+  --tint:   13%;             /* how much semantic colour a surface carries... */
+  --edge:   40%;             /* ...and its border */
+  --hover:  color-mix(in srgb, var(--fg) 5%, transparent);
+
+  --shadow-xs: 0 1px 2px rgb(13 31 66 / 0.05);
+  --shadow-sm: 0 2px 6px rgb(13 31 66 / 0.07), 0 1px 2px rgb(13 31 66 / 0.04);
+  --shadow-lg: 0 12px 30px rgb(13 31 66 / 0.10), 0 3px 8px rgb(13 31 66 / 0.05);
+  --brand-wash: linear-gradient(135deg, #0b7f96 0%, #109ab4 55%, #2bbdd2 100%);
+}
+
+/* ══════════════════════════════════════════════ tokens: dark ═════════════════════════════════ */
+/* The un-stamped (system) document, guarded so an explicit light choice still wins. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0a1120;
+    --panel:       #111a2e;
+    --panel-alt:   #16203a;
+    --inset:       #070d18;
+    --line:        #23304c;
+    --line-strong: #37476e;
+
+    --fg:          #e8ecf5;
+    --fg-muted:    #97a3bd;
+    --fg-subtle:   #7c88a2;
+
+    --accent:      #3ec8dd;
+    --accent-fg:   #04121a;
+
+    --ok:     #4cc36e;
+    --warn:   #e0a93b;
+    --alarm:  #e5484d;
+    --bench:  #a78bfa;
+    --info:   #4aa8e8;
+    --arm:    #c11722;
+    --arm-hi: #e02430;
+
+    --tint:   17%;
+    --edge:   45%;
+    --hover:  color-mix(in srgb, var(--fg) 7%, transparent);
+
+    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.40);
+    --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.35), 0 1px 2px rgb(0 0 0 / 0.25);
+    --shadow-lg: 0 14px 34px rgb(0 0 0 / 0.45), 0 3px 8px rgb(0 0 0 / 0.30);
+    --brand-wash: linear-gradient(135deg, #0b7f96 0%, #1fb0c9 55%, #5adcee 100%);
+  }
+}
+
+/* ...and again for the explicit toggle, so it wins in both directions. */
+:root[data-theme="dark"] {
+  --ground:      #0a1120;
+  --panel:       #111a2e;
+  --panel-alt:   #16203a;
+  --inset:       #070d18;
+  --line:        #23304c;
+  --line-strong: #37476e;
+
+  --fg:          #e8ecf5;
+  --fg-muted:    #97a3bd;
+  --fg-subtle:   #7c88a2;
+
+  --accent:      #3ec8dd;
+  --accent-fg:   #04121a;
+
+  --ok:     #4cc36e;
+  --warn:   #e0a93b;
+  --alarm:  #e5484d;
+  --bench:  #a78bfa;
+  --info:   #4aa8e8;
+  --arm:    #c11722;
+  --arm-hi: #e02430;
+
+  --tint:   17%;
+  --edge:   45%;
+  --hover:  color-mix(in srgb, var(--fg) 7%, transparent);
+
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.40);
+  --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.35), 0 1px 2px rgb(0 0 0 / 0.25);
+  --shadow-lg: 0 14px 34px rgb(0 0 0 / 0.45), 0 3px 8px rgb(0 0 0 / 0.30);
+  --brand-wash: linear-gradient(135deg, #0b7f96 0%, #1fb0c9 55%, #5adcee 100%);
+}
+
+/* ══════════════════════════════════════════════ the Tailwind theme ═══════════════════════════ */
+/*
+ * `@theme inline` maps the runtime variables above onto utility names, so `bg-panel` resolves per
+ * theme instead of being frozen at build time. The static half -- radii, fonts, easing -- is plain
+ * `@theme`, because it does not change between themes.
+ */
+@theme inline {
+  --color-ground:      var(--ground);
+  --color-panel:       var(--panel);
+  --color-panel-alt:   var(--panel-alt);
+  --color-inset:       var(--inset);
+  --color-line:        var(--line);
+  --color-line-strong: var(--line-strong);
+
+  --color-fg:          var(--fg);
+  --color-fg-muted:    var(--fg-muted);
+  --color-fg-subtle:   var(--fg-subtle);
+
+  --color-accent:      var(--accent);
+  --color-accent-fg:   var(--accent-fg);
+
+  --color-ok:    var(--ok);
+  --color-warn:  var(--warn);
+  --color-alarm: var(--alarm);
+  --color-bench: var(--bench);
+  --color-info:  var(--info);
+  --color-arm:   var(--arm);
+}
+
+@theme {
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", "SF Mono", Consolas, monospace;
+
+  --radius-field: 8px;
+  --radius-panel: 14px;
+
+  --ease-calm: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* ══════════════════════════════════════════════ base ═════════════════════════════════════════ */
+@layer base {
+  html { color-scheme: light dark; }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"]  { color-scheme: dark; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: 13.5px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1 { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; margin: 0; }
+  h2 { font-size: 21px; font-weight: 650; letter-spacing: -0.015em; margin: 0 0 4px; }
+  h3 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+
+  /* Rule 2, applied once rather than remembered per screen. */
+  code, kbd, samp, pre { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 5px; }
+
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-strong); border-radius: 9999px;
+    border: 3px solid transparent; background-clip: content-box;
+  }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  /* Form controls: Tailwind's reset strips them, so every one is restated deliberately. */
+  input[type='text'], input[type='number'], input[type='search'], select, textarea {
+    font: inherit; font-size: 13px;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-field);
+    background: var(--panel);
+    color: var(--fg);
+    transition: border-color 180ms var(--ease-calm), box-shadow 180ms var(--ease-calm);
+  }
+  input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  input[type='checkbox'] { accent-color: var(--accent); width: 14px; height: 14px; }
+}
+
+/* ══════════════════════════════════════════════ shell ════════════════════════════════════════ */
+@layer components {
+  .shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+
+  .sidebar {
+    display: flex; flex-direction: column;
+    position: sticky; top: 0; height: 100vh;
+    padding: 1.1rem 0 1rem;
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+  }
+
+  .brand { display: flex; align-items: center; gap: 0.6rem; padding: 0 1rem 0.9rem; }
+  /* The single place the brand gradient is allowed. Everything else in the console is quiet. */
+  .brand .mark {
+    width: 30px; height: 30px; flex: none;
+    border-radius: 9px;
+    background: var(--brand-wash);
+    box-shadow: var(--shadow-sm);
+    display: grid; place-items: center;
+    color: #fff; font-weight: 700; font-size: 14px; letter-spacing: -0.03em;
+  }
+  .brand .sub { font-size: 10.5px; color: var(--fg-subtle); font-family: var(--font-mono); }
+
+  .nav { display: flex; flex-direction: column; gap: 2px; padding: 0.5rem 0.6rem; }
+  .nav a {
+    display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+    position: relative;
+    padding: 0.44rem 0.6rem;
+    border-radius: var(--radius-field);
+    color: var(--fg-muted);
+    font-size: 13px; font-weight: 500;
+    transition: background 180ms var(--ease-calm), color 180ms var(--ease-calm);
+  }
+  .nav a:hover { background: var(--hover); color: var(--fg); text-decoration: none; }
+  .nav a.active {
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--fg); font-weight: 600;
+  }
+  /* A left rail rather than a heavier fill: it reads the same in both themes. */
+  .nav a.active::before {
+    content: ""; position: absolute; left: -0.6rem; top: 20%; bottom: 20%;
+    width: 3px; border-radius: 0 3px 3px 0; background: var(--accent);
+  }
+
+  .sidebar-foot {
+    margin-top: auto; padding: 0.9rem 1rem 0;
+    border-top: 1px solid var(--line);
+  }
+  .sidebar-foot .k { color: var(--fg-subtle); font-size: 10.5px; letter-spacing: 0.05em;
+                     text-transform: uppercase; margin-top: 0.55rem; }
+  .sidebar-foot .k:first-child { margin-top: 0; }
+  .sidebar-foot .v { font-family: var(--font-mono); font-size: 12px; color: var(--fg);
+                     overflow-wrap: anywhere; }
+
+  .foot-links {
+    display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+    margin-top: 0.9rem; font-size: 11.5px;
+  }
+  .theme-toggle { padding: 0.2rem 0.55rem; font-size: 10.5px; letter-spacing: 0.05em;
+                  text-transform: uppercase; color: var(--fg-subtle); }
+
+  .main { padding: 1.6rem 1.9rem 4rem; max-width: 1180px; }
+  .lede { color: var(--fg-muted); margin: 0 0 1.4rem; max-width: 74ch; }
+
+  /* ── the status system ──────────────────────────────────────────────────────────────────────
+   * One class per status, and the colour is used the SAME WAY every time: a tinted surface, a
+   * bordered edge, and the text in `--fg`. Colour never carries the text, so a status stays legible
+   * in both themes and to a reader who cannot separate red from green -- the dot and the word do
+   * the work, the tint only groups them.
+   */
+  .pill {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    padding: 0.1rem 0.55rem 0.1rem 0.45rem;
+    border-radius: 9999px;
+    border: 1px solid var(--line);
+    background: var(--panel-alt);
+    color: var(--fg-muted);
+    font-family: var(--font-mono);
+    font-size: 10.5px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .pill::before { content: ""; width: 6px; height: 6px; border-radius: 9999px;
+                  background: var(--fg-subtle); flex: none; }
+
+  .pill.ok    { color: var(--fg); background: color-mix(in srgb, var(--ok)    var(--tint), transparent);
+                border-color: color-mix(in srgb, var(--ok)    var(--edge), var(--line)); }
+  .pill.warn  { color: var(--fg); background: color-mix(in srgb, var(--warn)  var(--tint), transparent);
+                border-color: color-mix(in srgb, var(--warn)  var(--edge), var(--line)); }
+  .pill.block { color: var(--fg); background: color-mix(in srgb, var(--alarm) var(--tint), transparent);
+                border-color: color-mix(in srgb, var(--alarm) var(--edge), var(--line)); }
+  .pill.bench { color: var(--fg); background: color-mix(in srgb, var(--bench) var(--tint), transparent);
+                border-color: color-mix(in srgb, var(--bench) var(--edge), var(--line)); }
+  .pill.info  { color: var(--fg); background: color-mix(in srgb, var(--info)  var(--tint), transparent);
+                border-color: color-mix(in srgb, var(--info)  var(--edge), var(--line)); }
+  .pill.idle  { color: var(--fg-subtle); }
+
+  .pill.ok::before    { background: var(--ok); }
+  .pill.warn::before  { background: var(--warn); }
+  .pill.block::before { background: var(--alarm); }
+  .pill.bench::before { background: var(--bench); }
+  .pill.info::before  { background: var(--info); }
+
+  /* ── surfaces ───────────────────────────────────────────────────────────────────────────────
+   * The panel is padded and its full-width parts (head, rows, tables, caveat) bleed back out with a
+   * negative margin. That keeps every screen working without each one knowing whether its own
+   * content is inset or not.
+   */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-panel);
+    box-shadow: var(--shadow-sm);
+    padding: 1rem 1.15rem;
+    margin-bottom: 1.1rem;
+    overflow: hidden;
+  }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+    margin: -1rem -1.15rem 1rem;
+    padding: 0.65rem 1.15rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel-alt);
+  }
+  .panel-head h3 {
+    margin: 0; font-size: 11.5px; font-weight: 600;
+    letter-spacing: 0.07em; text-transform: uppercase; color: var(--fg-muted);
+  }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; align-items: start; }
+  @media (max-width: 980px) {
+    .grid-2 { grid-template-columns: 1fr; }
+    .shell  { grid-template-columns: 1fr; }
+    .sidebar { position: static; height: auto; }
+  }
+
+  .verdict-line { display: flex; align-items: center; gap: 0.55rem; margin-bottom: 0.15rem; }
+  .verdict-line strong { font-size: 14px; font-weight: 600; }
+
+  /* ── count tiles ──────────────────────────────────────────────────────────
+   * The same tint-and-border language as a pill, at the one size where a number can be read from a
+   * step back. A zero is drawn FAINT rather than hidden: "0 blocking" is the answer an operator came
+   * for, and a tile that disappears when it is empty makes them count the remaining tiles to be sure.
+   */
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.7rem; margin-bottom: 1.1rem; }
+  @media (max-width: 700px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile {
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-panel);
+    background: var(--panel);
+    box-shadow: var(--shadow-xs);
+  }
+  .tile .n { font-family: var(--font-mono); font-size: 22px; font-weight: 600; line-height: 1.15;
+             font-variant-numeric: tabular-nums; }
+  .tile .t { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase;
+             color: var(--fg-muted); }
+  .tile.zero .n { color: var(--fg-subtle); }
+  .tile.zero { background: var(--panel); border-color: var(--line); }
+  .tile.block:not(.zero) { background: color-mix(in srgb, var(--alarm) var(--tint), var(--panel));
+                           border-color: color-mix(in srgb, var(--alarm) var(--edge), var(--line)); }
+  .tile.warn:not(.zero)  { background: color-mix(in srgb, var(--warn)  var(--tint), var(--panel));
+                           border-color: color-mix(in srgb, var(--warn)  var(--edge), var(--line)); }
+  .tile.bench:not(.zero) { background: color-mix(in srgb, var(--bench) var(--tint), var(--panel));
+                           border-color: color-mix(in srgb, var(--bench) var(--edge), var(--line)); }
+  .tile.ok:not(.zero)    { background: color-mix(in srgb, var(--ok)    var(--tint), var(--panel));
+                           border-color: color-mix(in srgb, var(--ok)    var(--edge), var(--line)); }
+
+  /* ── checklist rows ─────────────────────────────────────────────────────────────────────── */
+  .row {
+    display: grid; grid-template-columns: 92px 1fr; gap: 0.9rem;
+    align-items: start;
+    margin: 0 -1.15rem;
+    padding: 0.7rem 1.15rem;
+    border-top: 1px solid var(--line);
+    transition: background 180ms var(--ease-calm);
+  }
+  .row:hover { background: var(--hover); }
+  .row:first-of-type { border-top: none; padding-top: 0.2rem; }
+  .row .name { font-weight: 600; font-size: 13px; }
+  .row .detail { color: var(--fg-muted); font-size: 12.5px; }
+  /* The fix line is the whole point of a checklist, so it is the one thing that gets a surface. */
+  .row .fix {
+    margin-top: 0.4rem; padding: 0.45rem 0.7rem;
+    background: var(--inset);
+    border-left: 2px solid var(--accent);
+    border-radius: 0 var(--radius-field) var(--radius-field) 0;
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--fg);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+
+  /* ── key/value readouts ─────────────────────────────────────────────────────────────────── */
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1.1rem;
+        font-size: 12.5px; margin: 0; }
+  .kv dt { color: var(--fg-subtle); }
+  .kv dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+           overflow-wrap: anywhere; }
+
+  /* ── controls ───────────────────────────────────────────────────────────────────────────────
+   * Rule 3 made visual: `button.danger` is the ONLY filled red in the console, on the only two
+   * controls that command motion. Everything else is deliberately quiet, so those two are loud by
+   * contrast rather than by being shouted.
+   */
+  button {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    font: inherit; font-size: 12.5px; font-weight: 500;
+    padding: 0.42rem 0.85rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-field);
+    background: var(--panel);
+    color: var(--fg);
+    cursor: pointer;
+    box-shadow: var(--shadow-xs);
+    transition: background 180ms var(--ease-calm), border-color 180ms var(--ease-calm),
+                transform 120ms var(--ease-calm);
+  }
+  button:hover:not(:disabled) { background: var(--panel-alt); border-color: var(--fg-subtle); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: 0.42; cursor: not-allowed; box-shadow: none; }
+
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
+                   font-weight: 600; }
+  button.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 86%, var(--fg));
+    border-color: color-mix(in srgb, var(--accent) 86%, var(--fg));
+  }
+
+  button.danger { background: var(--arm); border-color: var(--arm); color: #fff; font-weight: 600;
+                  box-shadow: 0 1px 3px color-mix(in srgb, var(--arm) 45%, transparent); }
+  button.danger:hover:not(:disabled) { background: var(--arm-hi); border-color: var(--arm-hi); }
+
+  button.ghost { background: transparent; border-color: var(--line); box-shadow: none; }
+  button.ghost:hover:not(:disabled) { background: var(--hover); border-color: var(--line-strong); }
+
+  .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+  label.check { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer;
+                user-select: none; font-size: 12px; color: var(--fg-muted); }
+
+  /* ── banners: the pill's tint language, at panel scale ──────────────────────────────────── */
+  .banner {
+    display: flex; align-items: flex-start; gap: 0.9rem;
+    padding: 0.8rem 1rem;
+    margin-bottom: 1.1rem;
+    border: 1px solid var(--line);
+    border-left-width: 3px;
+    border-radius: var(--radius-panel);
+    background: var(--panel);
+    box-shadow: var(--shadow-xs);
+  }
+  .banner .body { flex: 1; min-width: 0; }
+  .banner .code { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-subtle);
+                  letter-spacing: 0.03em; }
+  .banner.ok    { background: color-mix(in srgb, var(--ok)    var(--tint), var(--panel));
+                  border-color: color-mix(in srgb, var(--ok)    var(--edge), var(--line));
+                  border-left-color: var(--ok); }
+  .banner.warn  { background: color-mix(in srgb, var(--warn)  var(--tint), var(--panel));
+                  border-color: color-mix(in srgb, var(--warn)  var(--edge), var(--line));
+                  border-left-color: var(--warn); }
+  .banner.error { background: color-mix(in srgb, var(--alarm) var(--tint), var(--panel));
+                  border-color: color-mix(in srgb, var(--alarm) var(--edge), var(--line));
+                  border-left-color: var(--alarm); }
+  .banner.info  { background: color-mix(in srgb, var(--info)  var(--tint), var(--panel));
+                  border-color: color-mix(in srgb, var(--info)  var(--edge), var(--line));
+                  border-left-color: var(--info); }
+
+  /* ── the caveat: where the honesty rules live visually ──────────────────────────────────── */
+  .caveat {
+    margin: 1rem -1.15rem -1rem;
+    padding: 0.7rem 1.15rem;
+    border-top: 1px dashed var(--line);
+    background: var(--inset);
+    color: var(--fg-muted);
+    font-size: 11.5px;
+  }
+  .caveat .mono { color: var(--fg); }
+
+  /* ── the Pick screen's split ───────────────────────────────────────────────────────
+   * Picture left, narration right. The picture column is capped rather than fluid: past about 400 px a
+   * 4:3 viewfinder starts pushing the event list off the fold, and the list is the thing being read.
+   */
+  .pick-split { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; gap: 1.1rem;
+                align-items: start; }
+  @media (max-width: 1000px) { .pick-split { grid-template-columns: 1fr; } }
+  .instruction-row { margin-bottom: 0.7rem; }
+  .instruction-row input[type='text'] { flex: 1; min-width: 240px; }
+  .run-line { margin-bottom: 0.7rem; }
+  .outcomes { margin-top: 0.9rem; }
+
+  /* ── the viewfinder ─────────────────────────────────────────────────────────
+   * The picture sits on the INSET ground, not on the panel: a camera frame is data the cell produced,
+   * and giving it the same surface as the console's own chrome is how a render starts reading as UI.
+   * The badge is absolutely positioned over it and never scrolls away, because it is the half of this
+   * component that says whether the picture is live.
+   */
+  .viewfinder { display: grid; gap: 0.6rem; }
+  .vf-stage {
+    position: relative;
+    aspect-ratio: 4 / 3;
+    background: var(--inset);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-field);
+    overflow: hidden;
+    display: grid; place-items: center;
+  }
+  .vf-stage img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  /* A held frame is dimmed rather than removed: blanking the moment a pick starts reads as a fault. */
+  .vf-stage.stale img { filter: grayscale(0.55) brightness(0.72); }
+
+  .vf-blank { display: grid; justify-items: center; gap: 0.5rem;
+              color: var(--fg-subtle); font-size: 12px; }
+  .vf-blank-mark {
+    width: 26px; height: 20px; border: 2px solid var(--line-strong); border-radius: 4px;
+    position: relative;
+  }
+  .vf-blank-mark::after {
+    content: ""; position: absolute; inset: 4px 6px; border-radius: 9999px;
+    border: 2px solid var(--line-strong);
+  }
+
+  .vf-badges { position: absolute; top: 0.5rem; left: 0.5rem; display: flex; gap: 0.35rem; }
+  /* Over an arbitrary photograph the theme surface is not enough contrast on its own. */
+  .vf-badges .pill { backdrop-filter: blur(6px);
+                     box-shadow: 0 1px 3px rgb(0 0 0 / 0.25); }
+  .vf-dims { position: absolute; right: 0.5rem; bottom: 0.45rem;
+             font-size: 10.5px; color: #fff; opacity: 0.75;
+             text-shadow: 0 1px 3px rgb(0 0 0 / 0.8); }
+
+  .vf-says { margin: 0; color: var(--fg-muted); font-size: 12px; }
+  .vf-controls { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 0.8rem; }
+  /* A refused overlay toggle. Its own colour AND its own state, because sharing the poll's error
+     meant the reason was wiped by the next successful tick 160 ms later. */
+  .vf-refused { color: var(--alarm); flex-basis: 100%; }
+
+  /* ── the run stream ─────────────────────────────────────────────────────────────────────── */
+  .stream {
+    background: var(--inset);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-field);
+    max-height: 460px; overflow-y: auto;
+  }
+  .ev { display: grid; grid-template-columns: 44px 1fr; gap: 0.6rem;
+        padding: 0.4rem 0.75rem; border-top: 1px solid var(--line); }
+  .ev:first-child { border-top: none; }
+  .ev .seq { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-subtle);
+             text-align: right; padding-top: 2px; }
+  .ev .txt { overflow-wrap: anywhere; font-size: 12.5px; }
+  .ev.warn .txt    { color: var(--warn); }
+  .ev.error .txt   { color: var(--alarm); }
+  .ev.success .txt { color: var(--ok); font-weight: 600; }
+  .ev.gap { background: color-mix(in srgb, var(--warn) var(--tint), transparent); }
+  .ev .payload { margin-top: 0.25rem; font-family: var(--font-mono); font-size: 10.5px;
+                 color: var(--fg-subtle); white-space: pre-wrap; overflow-wrap: anywhere; }
+  details.payload-toggle summary { cursor: pointer; color: var(--fg-subtle); font-size: 10.5px; }
+
+  /* ── tables ─────────────────────────────────────────────────────────────────────────────── */
+  .panel table { margin: 0 -1.15rem -1rem; width: calc(100% + 2.3rem); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th {
+    position: sticky; top: 0;
+    text-align: left; font-weight: 600; font-size: 10.5px;
+    letter-spacing: 0.07em; text-transform: uppercase; color: var(--fg-muted);
+    padding: 0.5rem 0.75rem;
+    background: var(--panel-alt);
+    border-bottom: 1px solid var(--line);
+  }
+  td { padding: 0.45rem 0.75rem; border-bottom: 1px solid var(--line);
+       font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  tbody tr { transition: background 140ms var(--ease-calm); }
+  tbody tr:hover { background: var(--hover); }
+  tbody tr:last-child td { border-bottom: none; }
+
+  /* Inputs that stretch and inputs that must not. `.count` is a small integer box; letting it grow
+     leaves a 400 px field holding the number 3. */
+  input.grow { flex: 1; min-width: 240px; }
+  input.count { width: 74px; }
+  input.draft-input { margin-top: 0.5rem; width: 260px; }
+
+  /* ── vertical rhythm ────────────────────────────────────────────────────────────
+   * Two names instead of a dozen inline `marginTop` values. Spacing that lives in JSX cannot be
+   * adjusted for a whole screen at once, and it drifts by a few pixels per author. */
+  .stack { margin-top: 1rem; }
+  .stack-item { margin-top: 0.75rem; }
+  .provenance-line { margin-bottom: 0.65rem; }
+  .reasons { margin: 0.4rem 0 0 1.1rem; padding: 0; }
+  .reasons li { margin-top: 0.15rem; }
+
+  /* ── prose blocks OUTSIDE a checklist row ──────────────────────────────────────────
+   * `.detail` and `.fix` started life as parts of a `.row`, and the Config screen uses both on their
+   * own -- where they were silently unstyled. Defined standalone here, with the row versions above
+   * still winning inside a row.
+   */
+  .detail { color: var(--fg-muted); font-size: 12.5px; }
+  .fix {
+    padding: 0.45rem 0.7rem;
+    background: var(--inset);
+    border-left: 2px solid var(--accent);
+    border-radius: 0 var(--radius-field) var(--radius-field) 0;
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--fg);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+
+  /* A JSON dump. Styled bare as well as inside `.ev`, because the Cell screen prints one straight
+     into a banner when a gripper could not be built -- the loudest payload in the console. */
+  .payload {
+    margin: 0.5rem 0 0;
+    padding: 0.5rem 0.7rem;
+    background: var(--inset);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-field);
+    font-size: 11px; color: var(--fg-muted);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    max-height: 240px; overflow: auto;
+  }
+  .ev .payload { margin: 0.25rem 0 0; padding: 0; border: 0; background: none; max-height: none; }
+
+  /* `Vec3` pads its numbers with spaces to line up three columns, and HTML collapses those. This is
+     the rule that makes the padding do what the component already intended. */
+  .kv dd .mono, .vec { white-space: pre; }
+
+  /* Set by the History screen on the two cells that hold PROSE rather than a measurement. */
+  .prose { font-family: var(--font-sans); }
+
+  /* ── small parts ────────────────────────────────────────────────────────────────────────── */
+  .spinner { color: var(--fg-subtle); font-size: 12.5px; padding: 0.6rem 0; }
+  .empty { color: var(--fg-subtle); padding: 1.4rem; text-align: center; font-size: 12.5px; }
+  .bar { height: 6px; background: var(--inset); border-radius: 9999px; overflow: hidden; }
+  .bar > span { display: block; height: 100%; background: var(--ok); border-radius: 9999px;
+                transition: width 280ms var(--ease-calm); }
+}
+
+/* ══════════════════════════════════════════════ utility aliases ══════════════════════════════ */
+@layer utilities {
+  .mono  { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .dim   { color: var(--fg-muted); }
+  .faint { color: var(--fg-subtle); }
+  .small { font-size: 11.5px; }
+  /* Inline caution, for a line that is a RESULT rather than a banner -- "that was too short to
+     transcribe". `.warn` alone does not do this: it is only ever defined compounded (`.pill.warn`,
+     `.banner.warn`, `.tile.warn`), so `class="small warn"` renders as an ordinary grey caption and
+     an error reads as a hint. Found by grepping the stylesheet for the class before shipping it. */
+  .caution { color: var(--warn); }
+  .brand-wash { background: var(--brand-wash); }
+}

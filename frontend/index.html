@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Workaholic-Willy — operator console</title>
+    <script>
+      // Applied BEFORE first paint, on purpose. `lib/theme.ts` reads the same key, but React effects
+      // run after the browser has painted -- so without this a saved dark choice shows one white
+      // frame on load, which on a console mounted next to a cell is a flash in someone's eye.
+      // Deliberately not a module and not deferred: both would be too late to be worth writing.
+      try {
+        var t = localStorage.getItem('willy.theme')
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t)
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
