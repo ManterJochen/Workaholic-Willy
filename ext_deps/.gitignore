@@ -1,0 +1,14 @@
+# Everything installed here is machine-local and never committed: Coal, cuRobo and its source
+# clone, each of them multi-gigabyte, licence-bound and specific to one machine. Only this file,
+# the README and the lockfiles are tracked, so the folder and the install convention live in the
+# repository while the payload stays out of git.
+#
+# locks/ is the exception on purpose: those files are input to the install, not output of it. They
+# pin every conda package down to its URL and hash, which is what makes a rebuild reproducible and
+# what keeps a rebuild off package builds that a Windows application-control policy refuses to
+# load. README.md states that rule.
+*
+!.gitignore
+!README.md
+!locks/
+!locks/*.lock

@@ -390,7 +390,7 @@ def _probe_curobo(blocks: tuple[str, ...], robot_config: str) -> tuple[Probe, ..
     if not Path(python).exists():
         return (Probe(
             "cuRobo planner sidecar", ProbeStatus.MISSING, f"no interpreter at {python}",
-            f"install it (../../../../../ext_deps/README.md#curobo--the-collision-aware-motion-planner) or set {ENV_CUROBO_PYTHON}; "
+            f"install it (../../../../ext_deps/README.md#curobo-the-collision-aware-motion-planner) or set {ENV_CUROBO_PYTHON}; "
             "until then the driver plans with blind IK",
         ),)
     env = dict(os.environ, WILLY_DOCTOR_ROBOT=robot_config, PYTHONIOENCODING="utf-8")
