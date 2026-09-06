@@ -1,0 +1,77 @@
+# ============================================================================
+# models/stt.yaml — every key, with what it does
+# ============================================================================
+
+# Speech-to-text (Whisper) configuration.
+stt:
+
+  # Model ID for the Whisper checkpoint, used when `local` is false.
+  # [REQUIRED - no default]
+  model_id: openai/whisper-small
+
+  # Local directory holding the Whisper checkpoint, used when `local: true`
+  # [REQUIRED - no default]
+  model_path: backend/src/models/speech/model
+
+  # The sample rate in Hz that Whisper is fed at.
+  # [REQUIRED - no default]
+  samplerate: 16000
+
+  # Frames per callback of the sounddevice microphone stream how big a bite the audio driver hands back at
+  # a time (8000 frames = 0.5 s at 16 kHz).
+  # [REQUIRED - no default]
+  blocksize: 8000
+
+  # Number of microphone channels to open on the capture stream. 1 (mono) is what Whisper wants; the code
+  # flattens whatever arrives, so >1 would interleave channels rather than mix them.
+  # [REQUIRED - no default]
+  channels: 1
+
+  # The raw PCM sample format requested from the sound card ('int16'), passed to sounddevice's
+  # RawInputStream.
+  # [REQUIRED - no default]
+  dtype: int16
+
+  # Seconds of microphone audio accumulated before one transcription fires (3 s -> 48000 samples at 16 kHz).
+  # [REQUIRED - no default]
+  chunk_duration: 3
+
+  # Source language name given to Whisper's forced decoder prompt ('german').
+  # [REQUIRED - no default]
+  language: german
+
+  # Whisper's decoding task: 'transcribe' keeps the spoken language, 'translate' emits English regardless of
+  # input.
+  # [REQUIRED - no default]
+  task: translate
+
+  # Load Whisper offline from `model_path` (true) or from the Hub `model_id` (false).
+  # [REQUIRED - no default]
+  local: true
+
+  # Optional inference-time optimizations for torch-based models.
+  optim:
+
+    # The validated baseline runs with torch_dtype + attn UNSET: the detector loads native fp32 weights
+    # and its autocast(dtype=None) => fp16-autocast compute — full recall on the small (~46 px) overhead
+    # cube.
+    # [default: null]
+    torch_dtype: auto
+
+    # Forwarded to RT-DETR's `from_pretrained` ('eager' is shipped).
+    # [default: null]
+    attn_implementation: eager
+
+    # Channels-last memory format for the RT-DETR weights and its per-call `pixel_values`.
+    # [default: false]
+    channels_last: true
+
+    # `torch.compile` the RT-DETR model warm-up cost on the first call, faster afterwards, best-effort
+    # with a warn-and-fall-back-to-eager on failure.
+    # [default: false]
+    compile: false
+
+    # `mode=` handed to RT-DETR's `torch.compile` ('reduce-overhead' shipped). Warm-up-vs-steady-state
+    # tradeoff; detections are unchanged.
+    # [default: reduce-overhead]
+    compile_mode: reduce-overhead

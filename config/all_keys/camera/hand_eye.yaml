@@ -1,0 +1,52 @@
+# ============================================================================
+# camera/hand_eye.yaml — every key, with what it does
+# ============================================================================
+
+# Independent settings for both supported hand-eye workflows.
+hand_eye:
+
+  # Config for fixed-camera calibration returning CAMERA -> BASE.
+  eye_to_hand:
+
+    # Whether the eye-to-hand calibration is enabled. Set to false to skip this calibration routine.
+    # [default: true]
+    enabled: true
+
+    # How many ACCEPTED pose/marker sample pairs the fixed-camera hand-eye solve refuses to run below
+    # (default 6; schema floor is 4 because AX=XB is unsolvable with fewer; sim overlay uses 8).
+    # [default: 6]
+    min_samples: 6
+
+    # How much each accepted pose must differ from existing ones in translation, in millimetres.
+    # [default: 40.0]
+    min_distance_mm: 40.0
+
+    # How much each accepted pose must differ from existing ones in rotation, in degrees.
+    # [default: 10.0]
+    min_angle: 10.0
+
+    # Physical edge length in mm of the ArUco square that rides on the tool for fixed-camera calibration
+    # (default 50.0; sim overlay 48.0).
+    # [default: 50.0]
+    marker_length_mm: 50.0
+
+    # Which OpenCV ArUco dictionary the eye-to-hand marker was generated from (default DICT_5X5_100; sim
+    # overlay DICT_4X4_50).
+    # [default: DICT_5X5_100] [gated by camera.hand_eye.eye_to_hand.enabled]
+    aruco_dict_name: DICT_5X5_100
+
+    # ── Quality knobs ──────────────────────────────────────────────────
+    # "sgbm" = StereoSGBM (default, best quality but slowest)
+    # "sgbm_3way" = MODE_SGBM_3WAY: ~2× faster with similar quality at 720p.
+    # [default: eye_to_hand]
+    mode: eye_to_hand
+
+  # Config for tool-mounted-camera calibration returning CAMERA -> TOOL.
+  eye_in_hand:
+    enabled: false
+    min_samples: 6
+    min_distance_mm: 40.0
+    min_angle: 10.0
+    marker_length_mm: 50.0
+    aruco_dict_name: DICT_5X5_100
+    mode: eye_in_hand

@@ -1,0 +1,14 @@
+# ============================================================================
+# grasping_presets/dense_clutter.yaml -- a mode preset, copied verbatim
+# ============================================================================
+
+# Phase preset: dense_clutter with active recovery + uncertainty gating.
+grasping:
+  default_mode: dense_clutter
+  recovery:
+    enabled: true
+    allowed_actions:
+      - next_viewpoint
+  uncertainty:
+    enabled: true
+    fail_closed_threshold: 0.4

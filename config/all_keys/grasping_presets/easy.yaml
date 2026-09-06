@@ -1,0 +1,11 @@
+# ============================================================================
+# grasping_presets/easy.yaml -- a mode preset, copied verbatim
+# ============================================================================
+
+# Phase preset: easy/safe pick. Disables uncertainty and recovery.
+grasping:
+  default_mode: easy
+  recovery:
+    enabled: false
+  uncertainty:
+    enabled: false

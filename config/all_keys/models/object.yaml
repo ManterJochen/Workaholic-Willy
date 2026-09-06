@@ -1,0 +1,170 @@
+# ============================================================================
+# models/object.yaml — every key, with what it does
+# ============================================================================
+
+# Object-detection model configuration.
+objectdetector:
+
+  # Where GroundingDINO's weights are loaded from when `local: true` a directory of HF model files on this
+  # box, no download.
+  # [REQUIRED - no default]
+  model_path: backend/src/models/detection/model
+
+  # If `local: true`, this is ignored and the model is loaded from `model_path`. If `local: false`, this
+  # specifies the HF Hub id to download the model from.
+  # [default: null]
+  model_id: ""
+
+  # Confidence floor in 0..1 applied inside `post_process_grounded_object_detection`; boxes scoring below it
+  # never leave the detector.
+  # [REQUIRED - no default]
+  threshold: 0.4
+
+  # Load GroundingDINO offline from `model_path` (true) or from the Hub id in `model_id` (false).
+  # [REQUIRED - no default]
+  local: true
+
+  # Optional inference-time optimizations for torch-based models.
+  optim:
+
+    # The validated M2 baseline runs with torch_dtype + attn UNSET: the detector loads native fp32 weights
+    # and its autocast(dtype=None) => fp16-autocast compute, full recall on the small (~46 px) overhead
+    # cube.
+    # [default: null]
+    torch_dtype: auto
+
+    # Passed straight to `from_pretrained(attn_implementation=...)` for GroundingDINO, 'eager' (the shipped
+    # production value), 'sdpa', or 'flash_attention_2' if that package is installed.
+    # [default: null]
+    attn_implementation: eager
+
+    # Converts the detector's weights and its per-call `pixel_values` tensor to torch channels-last memory
+    # format.
+    # [default: false]
+    channels_last: true
+
+    # Wraps GroundingDINO in `torch.compile` after loading. Costs a warm-up compile on the first call
+    # (seconds) in exchange for faster steady-state inference, and only pays off with stable input shapes.
+    # [default: false]
+    compile: false
+
+    # The `mode=` string handed to `torch.compile` 'reduce-overhead' (the default, best for many small
+    # calls), 'default', or 'max-autotune' (longest warm-up, fastest steady state).
+    # [default: reduce-overhead]
+    compile_mode: reduce-overhead
+
+# Detection backend selection: "groundingdino" (open-vocab, prompt) | "rtdetr" (closed-set, no prompt).
+# [default: groundingdino] [one of: groundingdino | rtdetr]
+detector: groundingdino
+
+# Object-detection model configuration.
+rtdetr:
+
+  # Local directory for the RT-DETR closed-set detector's weights when `local: true`; ignored when false
+  # (then `model_id`, e.g. PekingU/rtdetr_r50vd, is fetched).
+  # [REQUIRED - no default]
+  model_path: ""
+
+  # Model identifier for fetching the RT-DETR weights from the Hub if `local` is false.
+  # [default: null]
+  model_id: PekingU/rtdetr_r50vd
+
+  # Confidence floor in 0..1 for RT-DETR's
+  # [REQUIRED - no default]
+  threshold: 0.4
+
+  # Load RT-DETR offline from `model_path` (true) or from the Hub `model_id` (false, the shipped value).
+  # [REQUIRED - no default]
+  local: false
+
+  # Optional inference-time optimizations for torch-based models.
+  optim:
+
+    # The validated baseline runs with torch_dtype + attn UNSET: the detector loads native fp32 weights
+    # and its autocast(dtype=None) => fp16-autocast compute — full recall on the small (~46 px) overhead
+    # cube.
+    # [default: null]
+    torch_dtype: auto
+
+    # Forwarded to RT-DETR's `from_pretrained` ('eager' is shipped).
+    # [default: null]
+    attn_implementation: eager
+
+    # Channels-last memory format for the RT-DETR weights and its per-call `pixel_values`.
+    # [default: false]
+    channels_last: true
+
+    # `torch.compile` the RT-DETR model warm-up cost on the first call, faster afterwards, best-effort
+    # with a warn-and-fall-back-to-eager on failure.
+    # [default: false]
+    compile: false
+
+    # `mode=` handed to RT-DETR's `torch.compile` ('reduce-overhead' shipped). Warm-up-vs-steady-state
+    # tradeoff; detections are unchanged.
+    # [default: reduce-overhead]
+    compile_mode: reduce-overhead
+
+# A perception stack chosen in one line, instead of assembled from parts.
+pipeline:
+
+  # Pick which perception stack to use: 'zero_shot' for open-vocabulary, 'closed_set' for RT-DETR's fixed class list.
+  # [default: zero_shot] [one of: zero_shot | closed_set]
+  kind: zero_shot
+
+  # Open-vocabulary perception: any prompt, no fixed class list.
+  zero_shot:
+
+    # ``grounded_sam`` = GroundingDINO + a segmenter. ``vlm`` = the VLM grounds, SAM2 cuts.
+    # [default: grounded_sam] [one of: grounded_sam | vlm]
+    backend: grounded_sam
+
+    # Only consulted for ``grounded_sam``; the VLM route always cuts with SAM2, because there is no second
+    # mask source to choose between yet.
+    # [default: sam2] [one of: sam2 | oneformer]
+    segmenter: sam2
+
+    # The vision-language model that grounds a complex prompt.
+    vlm:
+
+      # Model ID for the VLM.
+      # [default: Qwen/Qwen3-VL-4B-Instruct-FP8]
+      model_id: Qwen/Qwen3-VL-4B-Instruct
+
+      # A local directory for the Qwen3-VL checkpoint.
+      # [default: null]
+      model_path: null
+
+      # Passes `local_files_only=True` to the VLM's processor and model loads, so nothing is downloaded on
+      # first use.
+      # [default: false]
+      local: false
+
+      # Load at cell build (predictable latency, VRAM held from the start) rather than on the first complex
+      # prompt (nothing paid until something needs it, one-off load pause mid-session).
+      # [default: false]
+      preload: false
+
+      # What to do when the VLM cannot be loaded on this cell, weights missing, dependency absent, or not
+      # enough VRAM.  ``refuse``  the pick is rejected with a typed reason.
+      # [default: refuse] [one of: refuse | degrade]
+      on_unavailable: refuse
+
+  # Fixed-vocabulary perception: RT-DETR's trained classes, no free text.
+  closed_set:
+
+    # sam2 = promptable: one box in, one mask out. Validated on every sim pick to date. oneformer = segments
+    # the whole image with its own trained vocabulary; the box then selects among the segments.
+    # [default: sam2] [one of: sam2 | oneformer]
+    segmenter: sam2
+
+  # Deciding which route a prompt takes.
+  router:
+
+    # true routes each prompt: plain English noun phrases to the phrase grounder, everything else (German,
+    # negation, comparatives, spatial relations, ...) to the VLM.
+    # [default: true]
+    enabled: false
+
+    # A non-English prompt routes to the VLM regardless of complexity.
+    # [default: true]
+    route_non_english_to_vlm: true

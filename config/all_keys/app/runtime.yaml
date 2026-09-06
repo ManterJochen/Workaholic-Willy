@@ -1,0 +1,13 @@
+# ============================================================================
+# app/runtime.yaml — every key, with what it does
+# ============================================================================
+
+runtime:
+
+  # JPEG quality for the frames the console streams (1-100).
+  image_encoding:
+
+    # JPEG quality (1-100) for the still the console serves from GET /camera — the idle live view of what
+    # the cell is looking at.
+    # [default: 60]
+    frame_quality: 60

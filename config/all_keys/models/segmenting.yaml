@@ -1,0 +1,97 @@
+# ============================================================================
+# models/segmenting.yaml — every key, with what it does
+# ============================================================================
+
+# Image segmentation (e.g. SAM2) configuration.
+segmenter:
+
+  # Where SAM2's weights come from when `local: true` a local directory of HF files, no download.
+  # [REQUIRED - no default]
+  model_path: backend/src/models/segmentation/model
+
+  # Model ID for the SAM2 weights, used when `local` is false.
+  # [default: null] [DIFFERS from the default]
+  model_id: facebook/sam2-hiera-large
+
+  # Load SAM2 offline from `model_path` (true) or pull `model_id` from the Hub (false).
+  # [REQUIRED - no default]
+  local: true
+
+  # Optional inference-time optimizations for torch-based models.
+  optim:
+
+    # The validated baseline runs with torch_dtype + attn UNSET: the detector loads native fp32 weights
+    # and its autocast(dtype=None) => fp16-autocast compute — full recall on the small (~46 px) overhead
+    # cube.
+    # [default: null]
+    torch_dtype: auto
+
+    # Forwarded to RT-DETR's `from_pretrained` ('eager' is shipped).
+    # [default: null]
+    attn_implementation: eager
+
+    # Channels-last memory format for the RT-DETR weights and its per-call `pixel_values`.
+    # [default: false]
+    channels_last: true
+
+    # `torch.compile` the RT-DETR model warm-up cost on the first call, faster afterwards, best-effort
+    # with a warn-and-fall-back-to-eager on failure.
+    # [default: false]
+    compile: false
+
+    # `mode=` handed to RT-DETR's `torch.compile` ('reduce-overhead' shipped). Warm-up-vs-steady-state
+    # tradeoff; detections are unchanged.
+    # [default: reduce-overhead]
+    compile_mode: reduce-overhead
+
+# Segmentation backend selection: "sam2" (realtime, box-prompted) | "oneformer" (research, higher-accuracy,
+# GPU-heavy).
+# [default: sam2] [one of: sam2 | oneformer]
+segmenter_backend: sam2
+
+# OneFormer universal-segmentation configuration (research/high-accuracy backend).
+oneformer:
+
+  # Local directory for the OneFormer universal-segmentation weights.
+  # [REQUIRED - no default]
+  model_path: ""
+
+  # Model ID for the OneFormer universal-segmentation weights.
+  # [default: null] [DIFFERS from the default]
+  model_id: shi-labs/oneformer_coco_swin_large
+
+  # Load OneFormer offline from `model_path` (true) or from the Hub `model_id` (false, shipped).
+  # [REQUIRED - no default]
+  local: false
+
+  # Narrowed to ``instance`` because that is the only mode the wrapper implements: it always calls
+  # ``post_process_instance_segmentation``, so a config asking for ``semantic`` or ``panoptic`` used to
+  # validate cleanly and then silently run instance segmentation anyway.
+  # [default: instance] [one of: instance]
+  task: instance
+
+  optim:
+
+    # The validated baseline runs with torch_dtype + attn UNSET: the detector loads native fp32 weights
+    # and its autocast(dtype=None) => fp16-autocast compute — full recall on the small (~46 px) overhead
+    # cube.
+    # [default: null]
+    torch_dtype: auto
+
+    # Forwarded to RT-DETR's `from_pretrained` ('eager' is shipped).
+    # [default: null]
+    attn_implementation: eager
+
+    # Channels-last memory format for the RT-DETR weights and its per-call `pixel_values`.
+    # [default: false]
+    channels_last: true
+
+    # `torch.compile` the RT-DETR model warm-up cost on the first call, faster afterwards, best-effort
+    # with a warn-and-fall-back-to-eager on failure.
+    # [default: false]
+    compile: false
+
+    # `mode=` handed to RT-DETR's `torch.compile` ('reduce-overhead' shipped). Warm-up-vs-steady-state
+    # tradeoff; detections are unchanged.
+    # [default: reduce-overhead]
+    compile_mode: reduce-overhead

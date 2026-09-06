@@ -1,0 +1,63 @@
+# ============================================================================
+# models/hand.yaml — every key, with what it does
+# ============================================================================
+
+# MediaPipe hand-landmark detection: where the palm centre is, in pixels.
+handdetect:
+
+  # Filesystem path to the MediaPipe hand-landmark `.task` bundle -> MediaPipe's
+  # `BaseOptions.model_asset_path`.
+  # [default: assets/models/mediapipe/hand_landmarker.task]
+  model_path: assets/models/mediapipe/hand_landmarker.task
+
+  # Upper bound on simultaneously tracked hands -> `num_hands`.
+  # [default: 2]
+  max_hands: 2
+
+  # Minimum hand-detection confidence -> `min_hand_detection_confidence`.
+  # [default: 0.5]
+  threshold: 0.5
+
+  # Minimum frame-to-frame tracking confidence -> `min_tracking_confidence`.
+  # [default: 0.5]
+  tracking_threshold: 0.5
+
+  # Minimum hand-presence confidence -> `min_hand_presence_confidence`.
+  # [default: 0.5]
+  presence_threshold: 0.5
+
+  # Radius, in pixels, of the disc around the palm centre whose MEDIAN depth becomes the hand's distance.
+  # [default: 15]
+  palm_patch_radius_px: 15
+
+  # How many valid (non-zero) depth pixels that disc must contain before its median is believed; below it
+  # the hand is reported as un-locatable rather than located.
+  # [default: 20]
+  min_depth_samples: 20
+
+# MediaPipe canned gesture recognition, narrowed to thumbs-up / thumbs-down.
+gesturedetect:
+
+  # Filesystem path to the MediaPipe canned gesture-recognizer `.task` bundle -> `BaseOptions.model_asset_path`.
+  # [default: assets/models/mediapipe/gesture_recognizer.task]
+  model_path: assets/models/mediapipe/gesture_recognizer.task
+
+  # Upper bound on simultaneously recognised hands -> `num_hands`.
+  # [default: 2]
+  max_hands: 2
+
+  # Minimum hand-detection confidence -> `min_hand_detection_confidence`.
+  # [default: 0.5]
+  threshold: 0.5
+
+  # Minimum frame-to-frame tracking confidence -> `min_tracking_confidence`.
+  # [default: 0.5]
+  tracking_threshold: 0.5
+
+  # Minimum hand-presence confidence -> `min_hand_presence_confidence`.
+  # [default: 0.5]
+  presence_threshold: 0.5
+
+  # The score a thumbs-up or thumbs-down must reach to be REPORTED as one.
+  # [default: 0.5]
+  min_gesture_confidence: 0.5

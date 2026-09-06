@@ -1,0 +1,89 @@
+# ============================================================================
+# camera/stereomatcher.yaml — every key, with what it does
+# ============================================================================
+
+# SGBM disparity parameters plus optional post-processing knobs.
+stereomatcher:
+
+  # Where the SGBM block search starts, in pixels of disparity; 0 (shipped) means start at infinity.
+  # [REQUIRED - no default]
+  min_disparity: 0
+
+  # Width of the disparity search window in pixels in practice, how CLOSE an object can get and still be
+  # measured (shipped 320, which covers typical desk/bin distances). Must be a positive multiple of 16 or
+  # config load fails.
+  # [REQUIRED - no default]
+  num_disparities: 320
+
+  # Side length in pixels of the square window SGBM matches between left and right (shipped 7; must be odd).
+  # [REQUIRED - no default]
+  block_size: 7
+
+  # P1/P2 control the smoothness penalty. null -> auto-computed as 8·channels·blockSize² and
+  # 32·channels·blockSize² (OpenCV default).
+  # [default: null]
+  p1: null
+
+  # SGBM's penalty for a LARGE disparity jump between neighbouring pixels. null (the shipped value) means
+  # auto: 32*3*block_size^2. Raising it forces the disparity map to be piecewise flat, fewer streaks and
+  # less noise, but slanted or curved surfaces get flattened into steps.
+  # [default: null]
+  p2: null
+
+  # Percent by which the best match must beat the runner-up before it is trusted. Higher = fewer wrong
+  # depths on textureless surfaces, at the price of HOLES where nothing wins clearly.
+  # [REQUIRED - no default]
+  uniqueness_ratio: 10
+
+  # Largest blob of similar disparity still treated as NOISE and cleared.
+  # [REQUIRED - no default]
+  speckle_window_size: 50
+
+  # How much disparity may vary inside one blob before it counts as a separate surface rather than one
+  # speckle.
+  # [REQUIRED - no default]
+  speckle_range: 1
+
+  # Tolerance (px) of the LEFT-RIGHT consistency check: a pixel is kept only if matching left-to-right and
+  # right-to-left agree within this.
+  # [REQUIRED - no default]
+  disp12_max_diff: 1
+
+  # ── Quality knobs ──────────────────────────────────────────────────
+  # "sgbm" = StereoSGBM (default, best quality but slowest)
+  # "sgbm_3way" = MODE_SGBM_3WAY: ~2× faster with similar quality at 720p.
+  # [default: sgbm] [one of: sgbm | sgbm_3way]
+  mode: sgbm_3way
+
+  # Subpixel disparity refinement. Costs essentially nothing and removes ±0.5 px quantisation that
+  # translates to ~1–3 mm depth error at typical desk distances.
+  # [default: true]
+  subpixel: true
+
+  # Exponential moving average for disparity in realtime mode. 0 = disabled (default), 1 = no smoothing
+  # (always latest), 0<α<1 weights the previous frame by (1-α).
+  # [default: 0.0]
+  temporal_alpha: 0.0
+
+  # Optional WLS (Weighted Least Squares) post-filter for SGBM disparity.
+  wls:
+
+    # Whether the WLS post-filter is enabled.
+    # [default: false] [DIFFERS from the default]
+    enabled: true
+
+    # Regularisation strength of the WLS post-filter that fills and smooths disparity in low-texture regions
+    # (written as `lambda:` in YAML the trailing underscore is only there because lambda is a Python
+    # keyword). Default 8000.0. Higher propagates smoothing further from image edges, closing more holes on
+    # walls, table tops and smooth objects, but it INVENTS depth by interpolation, so an aggressive value
+    # can hand the grasp stack a plausible surface where the sensor measured nothing.
+    # [default: 8000.0]
+    lambda_: 8000.0
+
+    # Edge sensitivity lower preserves edges more strictly.
+    # [default: 1.5]
+    sigma_color: 1.5
+
+    # Run a right-side matcher for left/right consistency confidence.
+    # [default: true]
+    lr_check: true
