@@ -1,0 +1,25 @@
+{
+  "capability_group": "soak_gate",
+  "manifest_version": 1,
+  "required_sections": [
+    "Trigger",
+    "Diagnose",
+    "Mitigate",
+    "Verify",
+    "Rollback"
+  ],
+  "runbooks": [
+    {
+      "id": "real_cell_first_pick",
+      "path": "docs/runbooks/real_cell_first_pick.md",
+      "summary": "The ordered bring-up from a validated config to a first verified pick on a physical cell.",
+      "owner_role": "commissioning"
+    },
+    {
+      "id": "ur3e_cell_bringup",
+      "path": "docs/runbooks/ur3e_cell_bringup.md",
+      "summary": "Bring a cell up on a UR model the stack has not run before, including URSim in Docker.",
+      "owner_role": "commissioning"
+    }
+  ]
+}

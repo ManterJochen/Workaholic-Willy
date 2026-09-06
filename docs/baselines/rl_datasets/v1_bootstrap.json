@@ -1,0 +1,148 @@
+{
+  "class_counts": {
+    "calibration_drift_suspected": 11,
+    "collision_rejection": 13,
+    "deformable_misclassification": 8,
+    "empty_air_grasp": 10,
+    "occlusion_misread": 8,
+    "slip_after_grasp": 11,
+    "success": 941,
+    "unclassified": 66
+  },
+  "class_counts_by_split": {
+    "test": {
+      "calibration_drift_suspected": 3,
+      "collision_rejection": 4,
+      "deformable_misclassification": 3,
+      "empty_air_grasp": 2,
+      "occlusion_misread": 3,
+      "slip_after_grasp": 3,
+      "success": 189,
+      "unclassified": 14
+    },
+    "train": {
+      "calibration_drift_suspected": 6,
+      "collision_rejection": 7,
+      "deformable_misclassification": 4,
+      "empty_air_grasp": 6,
+      "occlusion_misread": 4,
+      "slip_after_grasp": 6,
+      "success": 564,
+      "unclassified": 39
+    },
+    "val": {
+      "calibration_drift_suspected": 2,
+      "collision_rejection": 2,
+      "deformable_misclassification": 1,
+      "empty_air_grasp": 2,
+      "occlusion_misread": 1,
+      "slip_after_grasp": 2,
+      "success": 188,
+      "unclassified": 13
+    }
+  },
+  "dataset_id": "v1_bootstrap",
+  "dataset_origin": "canonical_bootstrap_replay_packs",
+  "fitness_note": "Bootstrap dataset for OFF-POLICY training from the synthetic canonical replay packs. NOT real-hardware validation.",
+  "leakage": {
+    "counts_by_severity": {
+      "note": 3,
+      "reject": 0,
+      "warn": 0
+    },
+    "findings": [
+      {
+        "audit": "scene_camera_overlap",
+        "detail": {},
+        "message": "scene_id / camera_pose_hash absent from records; audit skipped",
+        "severity": "note"
+      },
+      {
+        "audit": "object_set_overlap",
+        "detail": {},
+        "message": "object_set absent from records; audit skipped",
+        "severity": "note"
+      },
+      {
+        "audit": "time_bleed",
+        "detail": {},
+        "message": "extra.timestamp values appear synthetic (record-index counters); audit skipped",
+        "severity": "note"
+      }
+    ],
+    "interpretation": {
+      "audit_scopes": {
+        "attempt_id_overlap": "HARD-REJECT if the same attempt_id appears in >1 split",
+        "object_set_overlap": "WARN >5% / REJECT >10% of test object_sets seen in train (SKIP if absent)",
+        "scene_camera_overlap": "HARD-REJECT if a (scene_id, camera_pose_hash) pair spans train+test (SKIP if absent)",
+        "time_bleed": "REJECT if train/test time ranges overlap beyond the median attempt duration (SKIP if synthetic/index timestamps)"
+      },
+      "what_passed_means": "passed=true means no HARD-REJECT finding. Under strict=False, WARN + NOTE findings are free passes; a NOTE marks an audit that was SKIPPED because a required field was absent. This proves split separation on the AUDITED dimensions only.",
+      "what_this_does_not_prove": [
+        "real-world generalization",
+        "sim-vs-real fidelity",
+        "leakage on UNMEASURED fields (operator, time-of-day, lighting, ...)"
+      ]
+    },
+    "passed": true,
+    "strict": false
+  },
+  "notes": [],
+  "parquet_emitted": false,
+  "parquet_skip_reason": "pyarrow unavailable: ModuleNotFoundError: No module named 'pyarrow'",
+  "ratios": [
+    0.6,
+    0.2,
+    0.2
+  ],
+  "record_count": 1068,
+  "reward_interpretation": "this manifest indexes RAW GraspAttemptRecord entries -- it carries NO reward. Downstream policy artifacts define their own reward models + carry their own reward_model stamps. See dataset_origin + the embedded leakage.interpretation for provenance + what the split separation proves.",
+  "reward_model": "not_applicable_raw_records_only",
+  "rl_tooling_version": "1.0",
+  "schema_version": 2,
+  "seed": 1,
+  "sources": [
+    {
+      "path": "tests/data/replay/replay_easy_canonical_v1.jsonl",
+      "record_count": 400,
+      "role": "canonical",
+      "sha256": "21b801f40ac1d218e3747f77eb0f1d35eaeeda24d1cf0fa04aae57d53a31f463"
+    },
+    {
+      "path": "tests/data/replay/replay_dense_canonical_v1.jsonl",
+      "record_count": 600,
+      "role": "canonical",
+      "sha256": "0d423d57567eba7daa63b5424d9cd55213e170af1429b0d90dc6b4a583796c1e"
+    },
+    {
+      "path": "tests/data/replay/replay_failure_taxonomy_v1.jsonl",
+      "record_count": 68,
+      "role": "canonical",
+      "sha256": "70659eb9b0528ea27afd9b14c338e7191276c3d085e3a397ffadf649630a2a7a"
+    }
+  ],
+  "split_counts": {
+    "test": 221,
+    "train": 636,
+    "val": 211
+  },
+  "split_files": {
+    "test": {
+      "jsonl": "logs/rl/datasets/v1_bootstrap/splits/test.jsonl",
+      "parquet": null
+    },
+    "train": {
+      "jsonl": "logs/rl/datasets/v1_bootstrap/splits/train.jsonl",
+      "parquet": null
+    },
+    "val": {
+      "jsonl": "logs/rl/datasets/v1_bootstrap/splits/val.jsonl",
+      "parquet": null
+    }
+  },
+  "split_hashes": {
+    "test": "50c498213e88e014d9953ddad4f139a2b31746b4186b320762d611706e01b245",
+    "train": "96f2e311738c4beadf8641d925423cc92e7e5b6e3e59f219bac8e2667169147c",
+    "val": "052fd302df24c79916d6fd3df7bf4a0465747a00c3745bee5733fc9de8e1fa07"
+  }
+}

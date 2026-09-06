@@ -1,6 +1,6 @@
 # 🖥 `frontend/` — the operator console UI
 
-> **The browser face of the optional [`api/`](../api/api_README.md) layer.**
+> **The browser face of the optional [`api/`](../api/README.md) layer.**
 > React + TypeScript + Vite, built into `api/static/` and served by the same FastAPI process that
 > drives the cell.
 
@@ -216,7 +216,7 @@ src/
 > [!NOTE]
 > **`lib/outcome.ts` exists because it did not.** Three screens each compared a `final_outcome` string
 > by hand, and the History screen compared against `'success'` while the backend writes `'succeeded'`
-> (`AutonomousGraspOutcome.SUCCEEDED`, and `replay/kpi.py` computes `pick_success_rate` off exactly that
+> (`AutonomousGraspOutcome.SUCCEEDED`, and `src/robot/grasping/replay/kpi.py` computes `pick_success_rate` off exactly that
 > literal). Every successful logged attempt therefore rendered as a **warning** pill — the console
 > reporting a worse result than the cell achieved, on the one screen an operator goes to for the record.
 > The mapping is in one file now.
@@ -228,6 +228,6 @@ source that drifts from it silently, and it is one command to regenerate.
 
 ## 📚 See also
 
-- [`api/api_README.md`](../api/api_README.md) — every endpoint this UI calls, and the rules behind them
-- [`.ai-memory/frontend-plan.md`](../.ai-memory/frontend-plan.md) — the 16 decisions and the build order
+- [`api/README.md`](../api/README.md) — every endpoint this UI calls, and the rules behind them
+- the operator console's own README — the 16 decisions and the build order
 - [`scripts/ursim/`](../scripts/ursim) — bringing up the controller software this was measured against

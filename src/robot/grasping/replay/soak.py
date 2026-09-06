@@ -582,6 +582,10 @@ def build_soak_report(
 
     baseline_path = repo_root / baseline_relative_path
     baseline_pick: float | None = None
+    # Bound before the branch, because two comparisons below read it and the file is optional:
+    # a clone that has not run `--baseline-report` yet has no baseline, and this report is
+    # supposed to degrade to "no baseline to compare against" rather than raise.
+    baseline_payload: object = None
     if baseline_path.exists():
         try:
             baseline_payload = json.loads(baseline_path.read_text())

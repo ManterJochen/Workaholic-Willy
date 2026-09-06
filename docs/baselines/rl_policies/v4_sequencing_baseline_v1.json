@@ -1,0 +1,95 @@
+{
+  "actions": [
+    "grasp",
+    "reobserve",
+    "recover",
+    "abort"
+  ],
+  "dataset_hash": "8b9abd09742b6fd715c9679902feb9091fa2d736435e9bf795b419f198f7f863",
+  "dataset_id": "v1_bootstrap",
+  "dataset_provenance": {
+    "dataset_hash": "8b9abd09742b6fd715c9679902feb9091fa2d736435e9bf795b419f198f7f863",
+    "dataset_id": "v1_bootstrap",
+    "fit_for": "sequencing-action lookup in SHADOW (off-policy empirical frequency)",
+    "input_source": "canonical_bootstrap_replay_packs",
+    "leakage_proven": null,
+    "not_fit_for": [
+      "real-hardware lift (no captured real-robot replay was used)",
+      "active runtime control without a passing offline promotion gate"
+    ],
+    "source_pack_paths": null
+  },
+  "failure_classes": [
+    "none",
+    "unknown",
+    "slip_after_grasp",
+    "empty_air_grasp",
+    "collision_rejection",
+    "occlusion_misread",
+    "deformable_misclassification",
+    "calibration_drift_suspected"
+  ],
+  "fallback_honesty": {
+    "fallback_table_source": "hand-authored DEFAULT_FALLBACK_TABLE",
+    "meaning": "cells below min_support_threshold use the hand-authored fallback, NOT learned data; the larger this share, the less the artifact learned.",
+    "num_cells_below_threshold": 2,
+    "num_cells_committed": 5
+  },
+  "fallback_table": {
+    "calibration_drift_suspected": "abort",
+    "collision_rejection": "recover",
+    "deformable_misclassification": "reobserve",
+    "empty_air_grasp": "reobserve",
+    "none": "grasp",
+    "occlusion_misread": "reobserve",
+    "slip_after_grasp": "recover",
+    "unknown": "reobserve"
+  },
+  "lookup_table": {
+    "failure|0|0|calibration_drift_suspected": {
+      "action": "reobserve",
+      "support": 6
+    },
+    "failure|0|0|collision_rejection": {
+      "action": "reobserve",
+      "support": 7
+    },
+    "failure|0|0|empty_air_grasp": {
+      "action": "reobserve",
+      "support": 6
+    },
+    "failure|0|0|slip_after_grasp": {
+      "action": "reobserve",
+      "support": 5
+    },
+    "failure|0|0|unknown": {
+      "action": "grasp",
+      "support": 38
+    }
+  },
+  "min_support_threshold": 5,
+  "policy_kind": "sequencing",
+  "policy_name": "v4_sequencing_baseline_v1",
+  "policy_version": 1,
+  "reward_interpretation": "deterministic empirical action-FREQUENCY lookup over LOGGED sequencing outcomes; a cell's action is the most-frequent observed action, NOT a live success probability. Cells below min_support fall back to the hand-authored DEFAULT table (see fallback_honesty). Synthetic canonical data; off-policy -- NOT real lift.",
+  "reward_model": "offline_empirical_frequency",
+  "schema_version": 2,
+  "seed": 1,
+  "state_schema": {
+    "attempt_index_max": 9,
+    "commit_reobserve_count_max": 3,
+    "outcome_labels": [
+      "success",
+      "failure"
+    ]
+  },
+  "training": {
+    "algorithm": "empirical_frequency_min_support",
+    "num_cells_below_threshold": 2,
+    "num_cells_committed": 5,
+    "num_cells_observed": 7,
+    "num_groups": 4,
+    "num_pairs": 70,
+    "num_records": 636
+  }
+}

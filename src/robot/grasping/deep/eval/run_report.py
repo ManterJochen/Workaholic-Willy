@@ -351,8 +351,8 @@ def format_report(report: RunReport) -> str:
         "",
         f"  generalisation gap  {report.generalisation_gap:+.4f}  (train lift minus test lift)",
         f"  final offset error  {report.final.held_offset_error_mm:.2f} mm",
-        f"  best single epoch   {report.best.test_lift:+.4f} at epoch {report.best.epoch} "
-        f"-- a maximum over {len(report.epochs)} noisy draws, NOT a level the model held",
+        f"  best single epoch   {report.best.test_lift:+.4f} at epoch {report.best.epoch}; "
+        f"a maximum over {len(report.epochs)} noisy draws, NOT a level the model held",
     ]
     # The window line prints only when there are two windows. Below that, `window_comparison` is the
     # mean compared against itself, and printing it gives a line that looks like a converged run and

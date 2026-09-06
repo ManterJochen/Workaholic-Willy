@@ -18,7 +18,7 @@ The matching Python driver lives at `src/robot/drivers/kuka/`.
   `EKI_Send` calls in `Willy.src` already append `Chr(10)`.
 
 The complete tag list and their attributes is documented at the top of
-[`src/robot/drivers/kuka/protocol.py`](../../../../../src/robot/drivers/kuka/protocol.py)
+[`src/robot/drivers/kuka/protocol.py`](../../../../src/robot/drivers/kuka/protocol.py)
 and in the header of [`Willy.src`](Willy.src).
 
 ## Connection direction

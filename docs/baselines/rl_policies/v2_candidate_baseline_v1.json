@@ -1,0 +1,64 @@
+{
+  "bias": -0.7546282926430482,
+  "dataset_hash": "8b9abd09742b6fd715c9679902feb9091fa2d736435e9bf795b419f198f7f863",
+  "dataset_id": "v1_bootstrap",
+  "dataset_provenance": {
+    "dataset_hash": "8b9abd09742b6fd715c9679902feb9091fa2d736435e9bf795b419f198f7f863",
+    "dataset_id": "v1_bootstrap",
+    "fit_for": "candidate reordering/pruning in SHADOW (off-policy)",
+    "input_source": "canonical_bootstrap_replay_packs",
+    "leakage_proven": null,
+    "not_fit_for": [
+      "real-hardware lift (no captured real-robot replay was used)",
+      "active runtime control without a passing offline promotion gate"
+    ],
+    "source_pack_paths": null
+  },
+  "feature_keys": [
+    "uncertainty_score",
+    "uncertainty_disagreement",
+    "fused_view_count",
+    "fusion_evidence_quality",
+    "predicted_success_probability",
+    "decision_latency_ms",
+    "ranking_latency_ms",
+    "fusion_latency_ms",
+    "drift_severity",
+    "ood_flagged",
+    "degraded_mode_active",
+    "multi_view_occlusion_reduced"
+  ],
+  "policy_kind": "candidate_selection",
+  "policy_name": "v2_candidate_baseline_v1",
+  "policy_version": 1,
+  "prune_threshold": 0.0,
+  "reward_interpretation": "off-policy L2 logistic over LOGGED grasp-success labels; it reorders/prunes candidates. The committed baseline trains on the synthetic canonical v1_bootstrap dataset (see dataset_provenance + the dataset manifest's leakage audit). Off-policy / shadow-only -- NOT validated for real live-loop lift.",
+  "reward_model": "logged_success_labels",
+  "schema_version": 2,
+  "seed": 1,
+  "training": {
+    "algorithm": "newton_irls_l2",
+    "converged": true,
+    "convergence_tol": 1e-07,
+    "final_log_loss": 0.2519560751537558,
+    "iterations": 9,
+    "max_iters": 25,
+    "num_positive": 564,
+    "num_samples": 636,
+    "ridge_lambda": 0.001
+  },
+  "weights": [
+    -15.585298779189808,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.13759200452432663,
+    0.040609104107815576,
+    -0.0036780185625225766,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ]
+}

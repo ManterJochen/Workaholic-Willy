@@ -1,0 +1,699 @@
+{
+  "adaptation": {
+    "active_overlay_present": false,
+    "audit_log_present": false,
+    "capability_group": "guarded_adaptation",
+    "last_apply_at_ns": null,
+    "last_apply_plan_id": null,
+    "last_rollback_at_ns": null,
+    "last_rollback_plan_id": null,
+    "total_applies": 0,
+    "total_plans": 0,
+    "total_rollbacks": 0
+  },
+  "baseline_report_version": 1,
+  "extra_field_group_map": {
+    "adaptation_applied_changes": "guarded_adaptation",
+    "adaptation_mode": "guarded_adaptation",
+    "attempt_wall_time_s": "latency",
+    "decision_latency_ms": "latency",
+    "degraded_mode_active": "drift_ood",
+    "drift_severity": "drift_ood",
+    "failure_recommendation_id": "failure_taxonomy",
+    "failure_taxonomy_class": "failure_taxonomy",
+    "fused_view_count": "multi_view_fusion",
+    "fusion_evidence_quality": "multi_view_fusion",
+    "fusion_latency_ms": "latency",
+    "model_lifecycle_phase": "success_probability",
+    "multi_view_occlusion_reduced": "multi_view_fusion",
+    "ood_flagged": "drift_ood",
+    "predicted_success_probability": "success_probability",
+    "ranking_latency_ms": "latency",
+    "rl_action_applied": "rl_core",
+    "rl_action_blocked_by_mask": "rl_core",
+    "rl_action_proposed": "rl_core",
+    "rl_artifact_version": "rl_core",
+    "rl_baseline_action": "rl_core",
+    "rl_candidate_agreement_kendall_tau": "rl_candidate",
+    "rl_candidate_agreement_top1": "rl_candidate",
+    "rl_candidate_breakdown": "rl_candidate",
+    "rl_candidate_mask_total": "rl_candidate",
+    "rl_candidate_pruned_count": "rl_candidate",
+    "rl_confidence": "rl_core",
+    "rl_fallback_reason_code": "rl_core",
+    "rl_fallback_triggered": "rl_core",
+    "rl_mode": "rl_core",
+    "rl_override": "rl_core",
+    "rl_policy_id": "rl_core",
+    "rl_ranking_artifact_version": "rl_ranking",
+    "rl_ranking_kendall_tau": "rl_ranking",
+    "rl_ranking_policy_id": "rl_ranking",
+    "rl_ranking_regret_top1": "rl_ranking",
+    "rl_reason_features": "rl_core",
+    "rl_router_path": "rl_core",
+    "rl_sequencing_action_agree": "rl_sequencing",
+    "rl_sequencing_action_baseline": "rl_sequencing",
+    "rl_sequencing_action_proposed": "rl_sequencing",
+    "rl_sequencing_artifact_version": "rl_sequencing",
+    "rl_sequencing_policy_id": "rl_sequencing",
+    "success_probability_calibration_bin": "success_probability",
+    "success_probability_model_version": "success_probability",
+    "uncertainty_channels": "uncertainty",
+    "uncertainty_disagreement": "uncertainty",
+    "uncertainty_score": "uncertainty"
+  },
+  "extra_telemetry_version": 1,
+  "manifest": {
+    "extra_telemetry_version": 1,
+    "label_policy_global": "label := (final_outcome == 'succeeded'); Extra overrides may add audit-time corrections via extra.verification_failed_after_success, mirroring the locked KPI semantics.",
+    "manifest_version": 1,
+    "packs": [
+      {
+        "capability_group": "baseline",
+        "generator": {
+          "callable": "generate_soak_records",
+          "module": "src.robot.grasping.replay.soak",
+          "scenarios": [
+            {
+              "attempts": 400,
+              "cycle_time_jitter_s": 0.2,
+              "cycle_time_mean_s": 1.5,
+              "failure_class_weights": {
+                "no_target": 1.0,
+                "no_valid_grasp": 2.0,
+                "succeeded": 197.0
+              },
+              "mode": "easy",
+              "name": "easy_canonical",
+              "recovery_success_rate": 0.0,
+              "seed": 1001
+            }
+          ]
+        },
+        "label_policy": "success := final_outcome == 'succeeded'; no auxiliary verification overrides at the baseline.",
+        "name": "replay_easy_canonical_v1",
+        "path": "tests/data/replay/replay_easy_canonical_v1.jsonl",
+        "record_count": 400,
+        "sha256": "a861f57b11abfd481988cab5ea0ca185be82676d514e0241056630e998c2a3e7"
+      },
+      {
+        "capability_group": "baseline",
+        "generator": {
+          "callable": "generate_soak_records",
+          "module": "src.robot.grasping.replay.soak",
+          "scenarios": [
+            {
+              "attempts": 400,
+              "cycle_time_jitter_s": 0.7,
+              "cycle_time_mean_s": 3.5,
+              "failure_class_weights": {
+                "decision_fail_closed": 4.0,
+                "execution_failed": 18.0,
+                "no_valid_grasp": 14.0,
+                "recovery_exhausted": 4.0,
+                "succeeded": 360.0
+              },
+              "mode": "dense_clutter",
+              "name": "dense_canonical_clutter",
+              "recovery_success_rate": 0.6,
+              "seed": 2001
+            },
+            {
+              "attempts": 200,
+              "cycle_time_jitter_s": 0.8,
+              "cycle_time_mean_s": 3.8,
+              "failure_class_weights": {
+                "decision_fail_closed": 3.0,
+                "execution_failed": 10.0,
+                "no_valid_grasp": 8.0,
+                "recovery_exhausted": 4.0,
+                "succeeded": 175.0
+              },
+              "mode": "dense_autonomous",
+              "name": "dense_canonical_autonomous",
+              "recovery_success_rate": 0.55,
+              "seed": 2002
+            }
+          ]
+        },
+        "label_policy": "success := final_outcome == 'succeeded'; dense-recovery denominator follows KPI contract.",
+        "name": "replay_dense_canonical_v1",
+        "path": "tests/data/replay/replay_dense_canonical_v1.jsonl",
+        "record_count": 600,
+        "sha256": "be1084f17c03b7941bf9f9cb36e94d297e56754b7208c176fcb1113b7982ddc1"
+      },
+      {
+        "capability_group": "baseline",
+        "generator": {
+          "callable": "generate_soak_records",
+          "module": "src.robot.grasping.replay.soak",
+          "scenarios": [
+            {
+              "attempts": 120,
+              "cycle_time_jitter_s": 0.5,
+              "cycle_time_mean_s": 2.6,
+              "failure_class_weights": {
+                "decision_fail_closed": 10.0,
+                "execution_failed": 15.0,
+                "succeeded": 90.0,
+                "verification_failed": 5.0
+              },
+              "mode": "auto",
+              "name": "drift_baseline",
+              "recovery_success_rate": 0.4,
+              "seed": 3001
+            }
+          ]
+        },
+        "label_policy": "drift_label := extra.drift_label (bool); first half stable (drift_label=False, low residuals), second half degraded (drift_label=True, ramping calibration / predicted-observed / hand-eye / verification residuals + lower depth confidence). Watchdog KPI gate: precision >= 0.90, recall >= 0.85.",
+        "name": "replay_drift_synthetic_v1",
+        "path": "tests/data/replay/replay_drift_synthetic_v1.jsonl",
+        "record_count": 120,
+        "sha256": "8b95bf17581fd211677ce2c18ee56a84911015f058774486aa0f02f2fd0f24d1"
+      },
+      {
+        "capability_group": "baseline",
+        "generator": {
+          "callable": "generate_soak_records",
+          "module": "src.robot.grasping.replay.soak",
+          "scenarios": [
+            {
+              "attempts": 120,
+              "cycle_time_jitter_s": 0.5,
+              "cycle_time_mean_s": 2.7,
+              "failure_class_weights": {
+                "decision_fail_closed": 20.0,
+                "execution_failed": 10.0,
+                "no_valid_grasp": 30.0,
+                "succeeded": 60.0
+              },
+              "mode": "auto",
+              "name": "ood_baseline",
+              "recovery_success_rate": 0.35,
+              "seed": 4001
+            }
+          ]
+        },
+        "label_policy": "ood_label := extra.ood_label (bool); first half in-distribution (ood_label=False, ood_score ~= 0.85), second half perturbed (ood_label=True, ood_score ~= 0.10). Watchdog KPI gate precision >= 0.90, recall >= 0.80.",
+        "name": "replay_ood_synthetic_v1",
+        "path": "tests/data/replay/replay_ood_synthetic_v1.jsonl",
+        "record_count": 120,
+        "sha256": "4a7beeaf9d8b367e87aa369d54411337e04bb86a1005a2ffa2b33a7e2806c93e"
+      }
+    ]
+  },
+  "packs": [
+    {
+      "extra_field_coverage": {
+        "adaptation_applied_changes": 0.0,
+        "adaptation_mode": 0.0,
+        "attempt_wall_time_s": 1.0,
+        "decision_latency_ms": 1.0,
+        "degraded_mode_active": 0.0,
+        "drift_severity": 0.0,
+        "failure_recommendation_id": 0.0,
+        "failure_taxonomy_class": 0.0,
+        "fused_view_count": 0.0,
+        "fusion_evidence_quality": 0.0,
+        "fusion_latency_ms": 0.0,
+        "model_lifecycle_phase": 0.0,
+        "multi_view_occlusion_reduced": 0.0,
+        "ood_flagged": 0.0,
+        "predicted_success_probability": 0.0,
+        "ranking_latency_ms": 1.0,
+        "rl_action_applied": 0.0,
+        "rl_action_blocked_by_mask": 0.0,
+        "rl_action_proposed": 0.0,
+        "rl_artifact_version": 0.0,
+        "rl_baseline_action": 0.0,
+        "rl_candidate_agreement_kendall_tau": 0.0,
+        "rl_candidate_agreement_top1": 0.0,
+        "rl_candidate_breakdown": 0.0,
+        "rl_candidate_mask_total": 0.0,
+        "rl_candidate_pruned_count": 0.0,
+        "rl_confidence": 0.0,
+        "rl_fallback_reason_code": 0.0,
+        "rl_fallback_triggered": 0.0,
+        "rl_mode": 0.0,
+        "rl_override": 0.0,
+        "rl_policy_id": 0.0,
+        "rl_ranking_artifact_version": 0.0,
+        "rl_ranking_kendall_tau": 0.0,
+        "rl_ranking_policy_id": 0.0,
+        "rl_ranking_regret_top1": 0.0,
+        "rl_reason_features": 0.0,
+        "rl_router_path": 0.0,
+        "rl_sequencing_action_agree": 0.0,
+        "rl_sequencing_action_baseline": 0.0,
+        "rl_sequencing_action_proposed": 0.0,
+        "rl_sequencing_artifact_version": 0.0,
+        "rl_sequencing_policy_id": 0.0,
+        "success_probability_calibration_bin": 0.0,
+        "success_probability_model_version": 0.0,
+        "uncertainty_channels": 0.0,
+        "uncertainty_disagreement": 0.0,
+        "uncertainty_score": 0.0
+      },
+      "extra_type_offender_count": 0,
+      "kpi": {
+        "dead_loop_rate": 0.0,
+        "dense_recovery_success_rate": 0.0,
+        "false_positive_grasp_rate": 0.0,
+        "first_attempt_success_rate": 0.99,
+        "median_cycle_time_s": 1.5046372265350105,
+        "pick_success_rate": 0.99,
+        "safety_rejection_rate": 0.0,
+        "total_attempts": 400
+      },
+      "name": "replay_easy_canonical_v1",
+      "path": "tests/data/replay/replay_easy_canonical_v1.jsonl",
+      "record_count": 400,
+      "slo": {
+        "pack_name": "replay_easy_canonical_v1",
+        "passes_gate": true,
+        "stages": [
+          {
+            "kpi": {
+              "count": 400,
+              "p50_ms": 20.002923825274102,
+              "p95_ms": 29.14304031879804,
+              "p99_ms": 34.09358043683385
+            },
+            "p95_gate_ms": 60.0,
+            "passes_gate": true,
+            "required": true,
+            "stage": "decision_latency_ms"
+          },
+          {
+            "kpi": {
+              "count": 400,
+              "p50_ms": 29.288145006434945,
+              "p95_ms": 45.11569801609272,
+              "p99_ms": 55.14832573782333
+            },
+            "p95_gate_ms": 80.0,
+            "passes_gate": true,
+            "required": true,
+            "stage": "ranking_latency_ms"
+          },
+          {
+            "kpi": {
+              "count": 0,
+              "p50_ms": null,
+              "p95_ms": null,
+              "p99_ms": null
+            },
+            "p95_gate_ms": 220.0,
+            "passes_gate": true,
+            "required": false,
+            "stage": "fusion_latency_ms"
+          }
+        ]
+      },
+      "telemetry_offender_count": 0
+    },
+    {
+      "extra_field_coverage": {
+        "adaptation_applied_changes": 0.0,
+        "adaptation_mode": 0.0,
+        "attempt_wall_time_s": 1.0,
+        "decision_latency_ms": 1.0,
+        "degraded_mode_active": 0.0,
+        "drift_severity": 0.0,
+        "failure_recommendation_id": 0.0,
+        "failure_taxonomy_class": 0.0,
+        "fused_view_count": 0.0,
+        "fusion_evidence_quality": 0.0,
+        "fusion_latency_ms": 1.0,
+        "model_lifecycle_phase": 0.0,
+        "multi_view_occlusion_reduced": 0.0,
+        "ood_flagged": 0.0,
+        "predicted_success_probability": 0.0,
+        "ranking_latency_ms": 1.0,
+        "rl_action_applied": 0.0,
+        "rl_action_blocked_by_mask": 0.0,
+        "rl_action_proposed": 0.0,
+        "rl_artifact_version": 0.0,
+        "rl_baseline_action": 0.0,
+        "rl_candidate_agreement_kendall_tau": 0.0,
+        "rl_candidate_agreement_top1": 0.0,
+        "rl_candidate_breakdown": 0.0,
+        "rl_candidate_mask_total": 0.0,
+        "rl_candidate_pruned_count": 0.0,
+        "rl_confidence": 0.0,
+        "rl_fallback_reason_code": 0.0,
+        "rl_fallback_triggered": 0.0,
+        "rl_mode": 0.0,
+        "rl_override": 0.0,
+        "rl_policy_id": 0.0,
+        "rl_ranking_artifact_version": 0.0,
+        "rl_ranking_kendall_tau": 0.0,
+        "rl_ranking_policy_id": 0.0,
+        "rl_ranking_regret_top1": 0.0,
+        "rl_reason_features": 0.0,
+        "rl_router_path": 0.0,
+        "rl_sequencing_action_agree": 0.0,
+        "rl_sequencing_action_baseline": 0.0,
+        "rl_sequencing_action_proposed": 0.0,
+        "rl_sequencing_artifact_version": 0.0,
+        "rl_sequencing_policy_id": 0.0,
+        "success_probability_calibration_bin": 0.0,
+        "success_probability_model_version": 0.0,
+        "uncertainty_channels": 0.0,
+        "uncertainty_disagreement": 0.0,
+        "uncertainty_score": 0.01
+      },
+      "extra_type_offender_count": 0,
+      "kpi": {
+        "dead_loop_rate": 0.015,
+        "dense_recovery_success_rate": 0.9679715302491103,
+        "false_positive_grasp_rate": 0.0,
+        "first_attempt_success_rate": 0.44666666666666666,
+        "median_cycle_time_s": 3.592344149628498,
+        "pick_success_rate": 0.9,
+        "safety_rejection_rate": 0.0,
+        "total_attempts": 600
+      },
+      "name": "replay_dense_canonical_v1",
+      "path": "tests/data/replay/replay_dense_canonical_v1.jsonl",
+      "record_count": 600,
+      "slo": {
+        "pack_name": "replay_dense_canonical_v1",
+        "passes_gate": true,
+        "stages": [
+          {
+            "kpi": {
+              "count": 600,
+              "p50_ms": 20.026051164709408,
+              "p95_ms": 29.426680320462786,
+              "p99_ms": 31.855226932137263
+            },
+            "p95_gate_ms": 60.0,
+            "passes_gate": true,
+            "required": true,
+            "stage": "decision_latency_ms"
+          },
+          {
+            "kpi": {
+              "count": 600,
+              "p50_ms": 29.724373617081426,
+              "p95_ms": 47.02341382973614,
+              "p99_ms": 54.67575570761247
+            },
+            "p95_gate_ms": 80.0,
+            "passes_gate": true,
+            "required": true,
+            "stage": "ranking_latency_ms"
+          },
+          {
+            "kpi": {
+              "count": 600,
+              "p50_ms": 80.46264216161707,
+              "p95_ms": 117.364058697265,
+              "p99_ms": 133.7669739023527
+            },
+            "p95_gate_ms": 220.0,
+            "passes_gate": true,
+            "required": false,
+            "stage": "fusion_latency_ms"
+          }
+        ]
+      },
+      "telemetry_offender_count": 0
+    },
+    {
+      "extra_field_coverage": {
+        "adaptation_applied_changes": 0.0,
+        "adaptation_mode": 0.0,
+        "attempt_wall_time_s": 1.0,
+        "decision_latency_ms": 1.0,
+        "degraded_mode_active": 1.0,
+        "drift_severity": 1.0,
+        "failure_recommendation_id": 0.0,
+        "failure_taxonomy_class": 0.0,
+        "fused_view_count": 0.0,
+        "fusion_evidence_quality": 0.0,
+        "fusion_latency_ms": 1.0,
+        "model_lifecycle_phase": 0.0,
+        "multi_view_occlusion_reduced": 0.0,
+        "ood_flagged": 1.0,
+        "predicted_success_probability": 0.0,
+        "ranking_latency_ms": 1.0,
+        "rl_action_applied": 0.0,
+        "rl_action_blocked_by_mask": 0.0,
+        "rl_action_proposed": 0.0,
+        "rl_artifact_version": 0.0,
+        "rl_baseline_action": 0.0,
+        "rl_candidate_agreement_kendall_tau": 0.0,
+        "rl_candidate_agreement_top1": 0.0,
+        "rl_candidate_breakdown": 0.0,
+        "rl_candidate_mask_total": 0.0,
+        "rl_candidate_pruned_count": 0.0,
+        "rl_confidence": 0.0,
+        "rl_fallback_reason_code": 0.0,
+        "rl_fallback_triggered": 0.0,
+        "rl_mode": 0.0,
+        "rl_override": 0.0,
+        "rl_policy_id": 0.0,
+        "rl_ranking_artifact_version": 0.0,
+        "rl_ranking_kendall_tau": 0.0,
+        "rl_ranking_policy_id": 0.0,
+        "rl_ranking_regret_top1": 0.0,
+        "rl_reason_features": 0.0,
+        "rl_router_path": 0.0,
+        "rl_sequencing_action_agree": 0.0,
+        "rl_sequencing_action_baseline": 0.0,
+        "rl_sequencing_action_proposed": 0.0,
+        "rl_sequencing_artifact_version": 0.0,
+        "rl_sequencing_policy_id": 0.0,
+        "success_probability_calibration_bin": 0.0,
+        "success_probability_model_version": 0.0,
+        "uncertainty_channels": 0.0,
+        "uncertainty_disagreement": 0.0,
+        "uncertainty_score": 0.08333333333333333
+      },
+      "extra_type_offender_count": 0,
+      "kpi": {
+        "dead_loop_rate": 0.0,
+        "dense_recovery_success_rate": 0.0,
+        "false_positive_grasp_rate": 0.0,
+        "first_attempt_success_rate": 0.7583333333333333,
+        "median_cycle_time_s": 2.6604224889467734,
+        "pick_success_rate": 0.7583333333333333,
+        "safety_rejection_rate": 0.0,
+        "total_attempts": 120
+      },
+      "name": "replay_drift_synthetic_v1",
+      "path": "tests/data/replay/replay_drift_synthetic_v1.jsonl",
+      "record_count": 120,
+      "slo": {
+        "pack_name": "replay_drift_synthetic_v1",
+        "passes_gate": true,
+        "stages": [
+          {
+            "kpi": {
+              "count": 120,
+              "p50_ms": 20.168080875596747,
+              "p95_ms": 29.929243832637038,
+              "p99_ms": 35.053631129181284
+            },
+            "p95_gate_ms": 60.0,
+            "passes_gate": true,
+            "required": true,
+            "stage": "decision_latency_ms"
+          },
+          {
+            "kpi": {
+              "count": 120,
+              "p50_ms": 28.116923325457535,
+              "p95_ms": 45.41963983847185,
+              "p99_ms": 50.412196161166264
+            },
+            "p95_gate_ms": 80.0,
+            "passes_gate": true,
+            "required": true,
+            "stage": "ranking_latency_ms"
+          },
+          {
+            "kpi": {
+              "count": 120,
+              "p50_ms": 81.62117187592487,
+              "p95_ms": 116.77741336967019,
+              "p99_ms": 132.6062857473449
+            },
+            "p95_gate_ms": 220.0,
+            "passes_gate": true,
+            "required": false,
+            "stage": "fusion_latency_ms"
+          }
+        ]
+      },
+      "telemetry_offender_count": 0
+    },
+    {
+      "extra_field_coverage": {
+        "adaptation_applied_changes": 0.0,
+        "adaptation_mode": 0.0,
+        "attempt_wall_time_s": 1.0,
+        "decision_latency_ms": 1.0,
+        "degraded_mode_active": 1.0,
+        "drift_severity": 1.0,
+        "failure_recommendation_id": 0.0,
+        "failure_taxonomy_class": 0.0,
+        "fused_view_count": 0.0,
+        "fusion_evidence_quality": 0.0,
+        "fusion_latency_ms": 1.0,
+        "model_lifecycle_phase": 0.0,
+        "multi_view_occlusion_reduced": 0.0,
+        "ood_flagged": 1.0,
+        "predicted_success_probability": 0.0,
+        "ranking_latency_ms": 1.0,
+        "rl_action_applied": 0.0,
+        "rl_action_blocked_by_mask": 0.0,
+        "rl_action_proposed": 0.0,
+        "rl_artifact_version": 0.0,
+        "rl_baseline_action": 0.0,
+        "rl_candidate_agreement_kendall_tau": 0.0,
+        "rl_candidate_agreement_top1": 0.0,
+        "rl_candidate_breakdown": 0.0,
+        "rl_candidate_mask_total": 0.0,
+        "rl_candidate_pruned_count": 0.0,
+        "rl_confidence": 0.0,
+        "rl_fallback_reason_code": 0.0,
+        "rl_fallback_triggered": 0.0,
+        "rl_mode": 0.0,
+        "rl_override": 0.0,
+        "rl_policy_id": 0.0,
+        "rl_ranking_artifact_version": 0.0,
+        "rl_ranking_kendall_tau": 0.0,
+        "rl_ranking_policy_id": 0.0,
+        "rl_ranking_regret_top1": 0.0,
+        "rl_reason_features": 0.0,
+        "rl_router_path": 0.0,
+        "rl_sequencing_action_agree": 0.0,
+        "rl_sequencing_action_baseline": 0.0,
+        "rl_sequencing_action_proposed": 0.0,
+        "rl_sequencing_artifact_version": 0.0,
+        "rl_sequencing_policy_id": 0.0,
+        "success_probability_calibration_bin": 0.0,
+        "success_probability_model_version": 0.0,
+        "uncertainty_channels": 0.0,
+        "uncertainty_disagreement": 0.0,
+        "uncertainty_score": 0.175
+      },
+      "extra_type_offender_count": 0,
+      "kpi": {
+        "dead_loop_rate": 0.0,
+        "dense_recovery_success_rate": 0.0,
+        "false_positive_grasp_rate": 0.0,
+        "first_attempt_success_rate": 0.48333333333333334,
+        "median_cycle_time_s": 2.6746685484915544,
+        "pick_success_rate": 0.48333333333333334,
+        "safety_rejection_rate": 0.0,
+        "total_attempts": 120
+      },
+      "name": "replay_ood_synthetic_v1",
+      "path": "tests/data/replay/replay_ood_synthetic_v1.jsonl",
+      "record_count": 120,
+      "slo": {
+        "pack_name": "replay_ood_synthetic_v1",
+        "passes_gate": true,
+        "stages": [
+          {
+            "kpi": {
+              "count": 120,
+              "p50_ms": 20.168080875596747,
+              "p95_ms": 29.929243832637038,
+              "p99_ms": 35.053631129181284
+            },
+            "p95_gate_ms": 60.0,
+            "passes_gate": true,
+            "required": true,
+            "stage": "decision_latency_ms"
+          },
+          {
+            "kpi": {
+              "count": 120,
+              "p50_ms": 28.116923325457535,
+              "p95_ms": 45.41963983847185,
+              "p99_ms": 50.412196161166264
+            },
+            "p95_gate_ms": 80.0,
+            "passes_gate": true,
+            "required": true,
+            "stage": "ranking_latency_ms"
+          },
+          {
+            "kpi": {
+              "count": 120,
+              "p50_ms": 81.62117187592487,
+              "p95_ms": 116.77741336967019,
+              "p99_ms": 132.6062857473449
+            },
+            "p95_gate_ms": 220.0,
+            "passes_gate": true,
+            "required": false,
+            "stage": "fusion_latency_ms"
+          }
+        ]
+      },
+      "telemetry_offender_count": 0
+    }
+  ],
+  "runtime_slo": {
+    "capability_group": "latency",
+    "p95_attempt_wall_time_s_by_mode": {
+      "auto": 0.18228879646749555,
+      "closed_loop": null,
+      "dense_autonomous": 0.1859524029575411,
+      "dense_clutter": 0.18228879646749555,
+      "easy": 0.07865091638396661
+    },
+    "p95_decision_latency_ms": 29.929243832637038,
+    "p95_decision_latency_ms_gate": 60.0,
+    "p95_fusion_latency_ms": 117.364058697265,
+    "p95_fusion_latency_ms_gate": 220.0,
+    "p95_ranking_latency_ms": 47.02341382973614,
+    "p95_ranking_latency_ms_gate": 80.0,
+    "passes_gate": true
+  },
+  "target_thresholds": {
+    "auto": {
+      "dead_loop_rate_max": 0.002
+    },
+    "calibration": {
+      "calibration_brier_score_max": 0.08,
+      "calibration_log_loss_max": 0.28
+    },
+    "dense": {
+      "dead_loop_rate_max": 0.01,
+      "false_positive_grasp_rate_max": 0.02
+    },
+    "drift_ood": {
+      "drift_detection_precision_min": 0.9,
+      "drift_detection_recall_min": 0.85,
+      "ood_rejection_precision_min": 0.9,
+      "ood_rejection_recall_min": 0.8
+    },
+    "easy": {
+      "dead_loop_rate_max": 0.0,
+      "false_positive_grasp_rate_max": 0.005,
+      "median_cycle_time_increase_pct_max": 5.0
+    },
+    "multi_view": {
+      "multi_view_occlusion_reduction_min_pct": 20.0
+    },
+    "ranking": {
+      "probability_rank_lift_top1_min_pts": 1.5
+    },
+    "runtime_slo": {
+      "p95_decision_latency_ms_max": 60.0,
+      "p95_fusion_latency_ms_max": 220.0,
+      "p95_ranking_latency_ms_max": 80.0
+    },
+    "soak": {
+      "dead_loop_rate_max": 0.005,
+      "min_attempts": 2000.0
+    }
+  }
+}

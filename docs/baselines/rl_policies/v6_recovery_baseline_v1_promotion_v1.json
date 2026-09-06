@@ -1,0 +1,102 @@
+{
+  "code_commit": "37e8a95a9ae2d5c65042966b0111fde80649e2db",
+  "config_hash": "c30e3d8d840c63fbb2c3925bbe41efd3fe83788c2fdb4bb96779801a70f9e733",
+  "dataset_hash": "358229925177b4b3010c60a99e1bab611c60f86419a839f6856829fc7d40b90e",
+  "dataset_id": "v7_promotion_canonical",
+  "dataset_paths": [
+    "tests/data/replay/replay_easy_canonical_v1.jsonl",
+    "tests/data/replay/replay_dense_canonical_v1.jsonl"
+  ],
+  "dataset_provenance": {
+    "dataset_hash": "358229925177b4b3010c60a99e1bab611c60f86419a839f6856829fc7d40b90e",
+    "dataset_id": "v7_promotion_canonical",
+    "fit_for": "offline promotion-gate decision over canonical packs",
+    "input_source": "synthetic_deterministic",
+    "leakage_proven": null,
+    "not_fit_for": [
+      "real-hardware lift",
+      "a guarantee of live-loop improvement"
+    ],
+    "source_pack_paths": null
+  },
+  "degeneracy_note": "DEGENERATE candidate policy: the gate ABSTAINED because the policy collapsed to a single action (reasons include degenerate_single_action_policy), so the off-policy WIS importance weights collapse and NO lift can be estimated. The policy is NOT promotable.",
+  "estimators": {
+    "direct_method": {
+      "circular": true,
+      "estimator": "DirectMethod_policy_expected_reward",
+      "note": "policy self-estimate, not fit from logged data; informational, does not feed verdict",
+      "num_records": 418,
+      "value": 2.7876350131600875
+    },
+    "fitted_q_dm": {
+      "estimator": "TabularFittedQ_mean_logged_reward",
+      "fraction_covered": 1.0,
+      "num_covered_records": 418,
+      "num_records": 418,
+      "num_state_action_cells": 3,
+      "value": 0.5598086124401896
+    },
+    "fqe": {
+      "algorithm": "placeholder_sequential_rl_not_implemented",
+      "note": "This gate scopes offline bandit policies; FQE is a placeholder for future sequential RL."
+    },
+    "wis": {
+      "baseline_value": 0.5598086124401914,
+      "bootstrap_n": 1000,
+      "effective_sample_size": 418.0000000000012,
+      "epsilon": 0.05,
+      "estimator": "WIS_self_normalized_epsilon_smoothed",
+      "importance_weight_clip": 100.0,
+      "lift": -4.9960036108132044e-15,
+      "lift_ci_bootstrap": {
+        "lower": -5.329070518200751e-15,
+        "method": "bootstrap",
+        "n": 418,
+        "upper": -4.218847493575595e-15
+      },
+      "num_clipped": 0,
+      "num_records": 418,
+      "num_records_with_weight": 418,
+      "target_ci_bootstrap": {
+        "lower": 0.5119617224880341,
+        "method": "bootstrap",
+        "n": 418,
+        "upper": 0.6028708133971241
+      },
+      "target_value": 0.5598086124401864,
+      "weight_concentration_index": 0.002392344497607643
+    }
+  },
+  "extraction": {
+    "num_records_dropped": 0,
+    "num_records_in_scope": 600,
+    "num_records_total": 1000,
+    "num_triples": 418
+  },
+  "generated_at_iso": "1970-01-01T00:00:00+00:00",
+  "policy_artifact_sha256": "cd0452bba96cf0729159ea9d2142ba5a7593e61d4be9db574755fac2ce987321",
+  "policy_family": "v6_recovery",
+  "policy_id": "v6_recovery_baseline_v1@1",
+  "policy_version": 1,
+  "reasons": [
+    "degenerate_single_action_policy"
+  ],
+  "report_kind": "promotion",
+  "reward_interpretation": "the WIS/DM lift is estimated over the SYNTHETIC canonical soak-generated packs (authored outcome distribution, see dataset_provenance), NOT real hardware. A verdict characterises the gate over synthetic data; it is NOT a real-hardware lift.",
+  "reward_model": "synthetic_canonical_soak_deterministic",
+  "schema_version": 2,
+  "seed": 1,
+  "thresholds": {
+    "min_lift_over_baseline": 0.01,
+    "min_lower_bound_lift": 0.0,
+    "min_n_effective": 10.0,
+    "min_records_with_weight": 5
+  },
+  "training_scope": "dense",
+  "verdict": "abstain",
+  "verdict_meaning": {
+    "abstain": "the policy could NOT be graded (too few effective samples, or a degenerate single-action policy) -- no improvement claim either way.",
+    "fail": "the off-policy WIS lift did not clear the thresholds (regression or below the positive floor).",
+    "pass": "the off-policy WIS lift over the synthetic packs cleared the thresholds (positive floor + CI lower bound + min effective sample size). NOT a real-hardware lift."
+  }
+}

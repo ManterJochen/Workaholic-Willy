@@ -1,0 +1,147 @@
+{
+  "behaviour_policy_assumption": {
+    "epsilon": 0.05,
+    "kind": "epsilon_smoothed_deterministic",
+    "note": "Logs are deterministic; epsilon-smoothing applied to make importance weights well-defined. WIS estimates carry documented bias under this assumption."
+  },
+  "bootstrap_n": 1000,
+  "dataset_hash": "534c0bf594bf3cb5c935879fd2b77673104dc7afec615275753d45a0916b285b",
+  "dataset_id": "v5_ope_canonical",
+  "dataset_paths": [
+    "tests\\data\\replay\\replay_easy_canonical_v1.jsonl",
+    "tests\\data\\replay\\replay_dense_canonical_v1.jsonl"
+  ],
+  "dataset_provenance": {
+    "dataset_hash": "534c0bf594bf3cb5c935879fd2b77673104dc7afec615275753d45a0916b285b",
+    "dataset_id": "v5_ope_canonical",
+    "fit_for": "off-policy candidate/ranking/sequencing shadow-telemetry evaluation",
+    "input_source": "synthetic_deterministic",
+    "leakage_proven": null,
+    "not_fit_for": [
+      "real-hardware lift measurement",
+      "a promotion decision on its own"
+    ],
+    "source_pack_paths": null
+  },
+  "importance_weight_clip": 100.0,
+  "num_records": 1000,
+  "report_kind": "ope",
+  "reward_coefficients": {
+    "collision_event": -1.5,
+    "cycle_time_seconds": -0.3,
+    "dead_loop": -2.0,
+    "failed_attempt": -0.5,
+    "perception_cost": -0.2,
+    "success": 1.0
+  },
+  "reward_interpretation": "reward = the LOCKED OPE V1 coefficients applied to LOGGED record outcomes/metrics (real-records-derived, NOT a synthetic outcome model). The WIS/DM section values are OFF-POLICY ESTIMATES with documented bias (importance-weight clip + epsilon-smoothing) -- NOT a guaranteed or real live-loop lift; the candidate and ranking sections may be non-estimable.",
+  "reward_model": "logged_records_derived",
+  "rng_seed": 1,
+  "schema_version": 2,
+  "sections": {
+    "candidate": {
+      "estimators": {
+        "wis": {
+          "ci_bootstrap": {
+            "lower": 0.041792137383726696,
+            "method": "bootstrap",
+            "n": 1000,
+            "upper": 0.10675095412429828
+          },
+          "ci_normal_approx": {
+            "lower": 0.040124652648055724,
+            "method": "normal_approx",
+            "n": 1000,
+            "upper": 0.10667247864793572
+          },
+          "coverage_warning": "behaviour_action_unknown_in_logs: U0 replay packs do not store per-candidate-id; WIS collapses to mean per-attempt reward.",
+          "effective_sample_size": 1000.0,
+          "estimable": false,
+          "estimator": "WIS",
+          "num_clipped": 0,
+          "num_records": 1000,
+          "value": 0.07339856564799573,
+          "weight_concentration_index": 0.001
+        }
+      },
+      "policy_kind": "candidate_selection"
+    },
+    "ranking": {
+      "estimators": {
+        "wis": {
+          "ci_bootstrap": {
+            "lower": 0.041792137383726696,
+            "method": "bootstrap",
+            "n": 1000,
+            "upper": 0.10675095412429828
+          },
+          "ci_normal_approx": {
+            "lower": 0.040124652648055724,
+            "method": "normal_approx",
+            "n": 1000,
+            "upper": 0.10667247864793572
+          },
+          "coverage_warning": "behaviour_action_unknown_in_logs: U0 replay packs do not store per-candidate ranks; WIS collapses to mean per-attempt reward.",
+          "effective_sample_size": 1000.0,
+          "estimable": false,
+          "estimator": "WIS",
+          "num_clipped": 0,
+          "num_records": 1000,
+          "value": 0.07339856564799573,
+          "weight_concentration_index": 0.001
+        }
+      },
+      "policy_kind": "ranking"
+    },
+    "sequencing": {
+      "estimators": {
+        "direct_method": {
+          "ci_bootstrap": {
+            "lower": -0.033690724152060966,
+            "method": "bootstrap",
+            "n": 63,
+            "upper": -0.033690724152060966
+          },
+          "ci_normal_approx": {
+            "lower": -0.03369072415206097,
+            "method": "normal_approx",
+            "n": 63,
+            "upper": -0.03369072415206096
+          },
+          "estimator": "DirectMethod",
+          "fraction_covered": 1.0,
+          "num_states_covered": 63,
+          "num_states_evaluated": 63,
+          "value": -0.033690724152060966
+        },
+        "fqe": {
+          "algorithm": "tabular_bandit_gamma_0",
+          "num_state_action_cells": 2,
+          "num_state_cells": 1
+        },
+        "wis": {
+          "ci_bootstrap": {
+            "lower": -0.09640342792167265,
+            "method": "bootstrap",
+            "n": 63,
+            "upper": 0.02612920987805474
+          },
+          "ci_normal_approx": {
+            "lower": -0.09717042124187722,
+            "method": "normal_approx",
+            "n": 63,
+            "upper": 0.022127245665495163
+          },
+          "effective_sample_size": 53.25836364388518,
+          "estimable": true,
+          "estimator": "WIS",
+          "num_clipped": 0,
+          "num_records": 63,
+          "value": -0.03752158778819105,
+          "weight_concentration_index": 0.01882180395991201
+        }
+      },
+      "policy_kind": "sequencing"
+    }
+  }
+}
