@@ -1355,6 +1355,7 @@ class GraspCalculator:
 
         telemetry.setdefault("rejected_ik", 0)
         kept_quality: list[IKQualityMetrics | None] = []
+        feasibility_reranked = False
         if ik_service is not None:
             ranked_all, kept_quality, ik_telemetry = self._apply_ik_filter(
                 ranked_all,
@@ -1390,6 +1391,7 @@ class GraspCalculator:
                     weights=_feas_w,
                     feasibility_config=_feas_cfg,
                 )
+                feasibility_reranked = True
 
         candidates = [self._to_grasp_point(score, seg_meta) for score in ranked_all]
         # RL shadow-only feasibility_score: the IK filter above computed a per-candidate
@@ -1398,16 +1400,18 @@ class GraspCalculator:
         # pre-execution reachability predictor; the descent-timeout failures of the sim are
         # reachability failures the geometric score is blind to.
         #
-        # Guarded on the constructor weights alone, and that is a defect. The re-rank branches on the
-        # effective weights, which fall back to the per-call ``feasibility_weight`` and
-        # ``feasibility_config`` that the pick loop supplies; on that path the re-rank re-sorts
-        # ``ranked_all`` while ``kept_quality`` keeps the order the IK filter left it in, so the zip
-        # below pairs each candidate with another candidate's metrics, and the top-level
-        # ``feasibility_score`` is live as well.
+        # Stamped only when the feasibility re-rank did not run, which is what
+        # ``feasibility_reranked`` records. The re-rank re-sorts ``ranked_all`` while ``kept_quality``
+        # keeps the order the IK filter left it in, so a stamp written afterwards would pair each
+        # candidate with another candidate's metrics. The flag is the condition the re-rank itself
+        # branches on, not the constructor field: the effective weights fall back to the per-call
+        # ``feasibility_weight`` and ``feasibility_config``, which is the path the pick loop takes.
+        # When the re-rank does run, the top-level ``feasibility_score`` is live and carries the same
+        # signal.
         #
         # Shadow precedence outranks the dead top-level ``0.0`` (``_shadow_aggregator``), while
         # ``GraspPoint.score``, the deterministic order and the success-model vector are untouched.
-        if self._feasibility_weights is None and kept_quality:
+        if not feasibility_reranked and kept_quality:
             for _cand, _q in zip(candidates, kept_quality):
                 if _q is not None:
                     _cand.metadata.setdefault("shadow", {})["feasibility_score"] = round(
