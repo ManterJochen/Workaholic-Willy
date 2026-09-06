@@ -3,31 +3,8 @@
 #   pip install -r requirements.txt        NVIDIA GPU, the supported path
 #   pip install -r requirements-cpu.txt    a host that cannot take the CUDA wheels
 #
-# These two files are the whole dependency set. There are no optional extras:
-# a package that is only installed "if you need it" is one whose absence is
-# discovered on the day it is needed. They differ only in the PyTorch block
-# below, and every version is pinned exactly so an install is reproducible.
-#
-# The CUDA wheels import fine on a machine with no GPU; torch simply reports
-# cuda.is_available() == False. That is why this file, not the CPU one, is what
-# CI installs: the runner then resolves the same dependency set the workstation
-# ships.
-
 # ---------------------------------------------------------------------------
-# PyTorch, CUDA 12.8
-#
-# The +cu128 local version is load-bearing. --extra-index-url adds an index
-# rather than replacing one, so a plain torch==2.7.1 is equally satisfiable
-# from PyPI, where it is the CPU build, and the resolver is free to pick
-# either. Naming the local version makes the CPU wheel a non-match.
-#
-# --index-url would also fix that and would be wrong: it replaces the default
-# index, and pydantic, numpy and opencv are not on the PyTorch one.
-#
-# The RTX 5080 is Blackwell (compute capability sm_120) and requires CUDA 12.8
-# or newer. The cu128 wheels carry sm_120 kernels; cu121 does not.
-#
-# torchvision 0.22.1 is the release that pairs with torch 2.7.1.
+# PyTorch and CUDA 12.8 wheels.
 # ---------------------------------------------------------------------------
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.7.1+cu128
@@ -43,140 +20,57 @@ scipy==1.17.1
 pillow==12.2.0
 opencv-contrib-python==4.13.0.92
 matplotlib==3.10.8
-
-# The 3D grasp viewer and the point cloud utilities.
 open3d==0.19.0
-
-# Needs system PortAudio at runtime. On Linux install libportaudio2, otherwise
-# the top level import in src/models/speech/speech_to_text.py raises OSError.
 sounddevice==0.5.5
-
-# Within epoch progress for training runs, which are hours long and otherwise
-# report once per epoch. Pinned rather than left to whatever pulls it in.
 tqdm==4.67.3
-
-# ---------------------------------------------------------------------------
-# Perception models
-# ---------------------------------------------------------------------------
 transformers==5.5.4
-
-# Required by fastapi.testclient, which the console tests use. It also arrives
-# transitively through huggingface_hub; pinned here because a transitive drop
-# would make those tests skip silently rather than fail.
-httpx==0.28.1
 
 # ---------------------------------------------------------------------------
 # Scene generation
 # ---------------------------------------------------------------------------
-# Mesh loading for the scene generator's real assets (GSO, YCB .obj and .ply):
-# measuring a mesh extent and authoring it into a USD stage.
 trimesh==5.0.0
-
-# The render.engine: mujoco datagen backend, for hosts that cannot install
-# Isaac Sim. It settles the scene and does not render; rendering is the numpy
-# z-buffer in datagen/render/raster.py, because MuJoCo's headless path needs
-# hardware OpenGL and osmesa is Linux only.
 mujoco==3.12.0
 
 # ---------------------------------------------------------------------------
 # Safety collision backend
 # ---------------------------------------------------------------------------
-# self_collision.backend ships as 'fcl', so this is part of the default
-# install. Coal is preferred and has no pip wheel (conda-forge only, pointed at
-# by WILLY_COAL_PREFIX); python-fcl is the guarded fallback and ships Windows
-# wheels. Without either, the guard warns and runs the coarse capsule proxy.
-# Run python -m src.robot.safety.planning --check to see which engine resolves.
 python-fcl==0.7.0.11
 
 # ---------------------------------------------------------------------------
 # Vendor SDKs
-#
-# Installed unconditionally. Both import lazily inside their driver factory, so
-# an installed package with no hardware attached costs nothing at runtime, and
-# a driver installed only "if you need it" is one whose absence is discovered
-# on the day it is needed.
 # ---------------------------------------------------------------------------
-# rtde_control, rtde_receive, rtde_io, dashboard_client and the bundled
-# robotiq_gripper module, used by src/robot/drivers/ur/connection.py and
-# src/robot/grippers/robotiq.py. A native win_amd64 wheel exists for cp311, so
-# no C++ toolchain is needed. setPayload takes the centre of gravity in metres,
-# which is why connection.py converts at the boundary.
 ur_rtde==1.6.5
-
-# librealsense Python bindings, used by RealSenseRGBDStreamer in
-# src/camera/setup/image_taking/rgbd.py under rgbd_backend: realsense. The
-# import is deferred. Pinned to the librealsense build this cell runs; a device
-# on different firmware may need a different patch release.
 pyrealsense2==2.58.3.10794
 
 # ---------------------------------------------------------------------------
 # Operator console
-#
-# The api/ package is the only tree allowed to import a web framework, and
-# nothing under src/ may import api back. Both directions are proven by an AST
-# scan in the test suite, so the claim holds whether or not these packages are
-# installed.
 # ---------------------------------------------------------------------------
 fastapi==0.118.0
 uvicorn[standard]==0.37.0
-
-# Multipart form parsing for one endpoint: uploading a recording to
-# /v1/voice/transcribe.
 python-multipart==0.0.20
+httpx==0.28.1
 
 # ---------------------------------------------------------------------------
 # Voice and gesture surfaces
-#
-# Not on the grasping path. These power the hand and gesture detectors in
-# src/models/handdetection/ and the speech helper in src/models/speech/. Both
-# import cleanly without a detector being constructed.
 # ---------------------------------------------------------------------------
-# 1.0.1 and not 0.10.x: mediapipe==0.10.21 cannot be installed alongside the
-# pins above. pip resolves it by downgrading numpy to 1.26.4 and opencv to
-# 4.11.0.86, both of which torch, scipy and Isaac work against.
-# The MediaPipe task bundles are a separate operator side download; see
-# config/data/models/hand.yaml for the URLs and
-# python -m src.models.handdetection --check for whether this host has them.
 mediapipe==1.0.1
-
-# Decoding what a browser records. POST /v1/voice/transcribe reads 16 bit WAV
-# with the standard library, and the console encodes WAV in the browser so the
-# common path needs nothing extra. MediaRecorder gives audio/webm in Chrome and
-# Firefox and audio/mp4 in Safari, which is what this decodes.
-#
-# 13.1.0 and not 17.x or 18.x: those install and then fail on import under
-# Windows application control policy, which refuses freshly published unsigned
-# binaries. 14.4.0 has no cp311 Windows wheel and falls back to a source build
-# that fails. PyAV is BSD-3-Clause and its wheels bundle an LGPL FFmpeg build.
 av==13.1.0
 
 # ---------------------------------------------------------------------------
 # Offline training
-#
-# Not runtime serving dependencies. The runtime success predictor is
-# deliberately sklearn free, with a late scoped import.
 # ---------------------------------------------------------------------------
-# The U1 success probability model and the V phase candidate, ranking,
-# recovery and OPE policies, plus their python -m src.robot.grasping.rl CLIs.
 scikit-learn==1.9.0
 
-# The HuggingFace Trainer used by RT-DETR fine tuning
-# (python -m src.models.detection.closed_set.train). Inference needs neither.
+# Training deps for closed-set detection.
 accelerate==1.11.0
 
 # ---------------------------------------------------------------------------
 # Promotion signing
-#
-# The promotion gate's trust root is the SHA-256 attestation chain and needs no
-# crypto. These add a real signature on top. The repo ships no key, so without
-# a configured signer the signature stays "none" and nothing is faked.
 # ---------------------------------------------------------------------------
-# Ed25519 reference signer over a local PEM key.
 cryptography==45.0.7
 
-# AWS KMS reference signer, imported lazily inside AwsKmsSigner in
-# src/robot/grasping/calibration/signing.py. A GCP or Azure backend would add
-# its own SDK.
+# AWS KMS reference signer.
+# A GCP or Azure backend would add its own SDK.
 boto3==1.43.89
 
 # ---------------------------------------------------------------------------
@@ -188,10 +82,5 @@ pytest==9.0.3
 pytest-cov==7.1.0
 pip-audit==2.10.0
 
-# TLS against the operating system's trust store instead of certifi's bundled
-# roots. Fetching model weights fails on a network whose proxy terminates TLS
-# and re-signs with a corporate CA that is installed in the OS store and that
-# certifi has never heard of. It does not disable verification; only the
-# trusted roots change. scripts/model_weights/fetch.py imports it inside a
-# try/except and reports which trust store it used.
+# For safe downloading of model weights and other assets.
 truststore==0.10.4
