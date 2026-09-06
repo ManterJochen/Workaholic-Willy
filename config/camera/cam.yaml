@@ -1,13 +1,28 @@
+# The camera rigs this cell can open, and which one it opens.
+#
+# `rigs` below is the catalogue: a webcam pair, two single-device stereo cameras and a RealSense
+# RGB-D. Configuring a cell means listing the rig that matches the hardware on the bench and
+# giving it either its device indices or its serial number. `source` picks the rig variant and
+# therefore which fields that rig accepts: `webcam_pair`, `single_device` or `rgbd`.
+#
+# `rigs` is a list, and a list in an overlay replaces the base list whole instead of merging into
+# it (`src/config/_merge.py`), so a profile that changes one rig restates the complete set.
+#
+# `enabled` is read by validation and by `StereoCapturePipeline`, which nothing outside the tests
+# constructs: `active_rig_id` must name an enabled rig, the serial refusals count enabled RGB-D
+# rigs, and an `auto` probe considers enabled rigs. Nothing a real cell runs consults it: the
+# RGB-D selectors go by `source` and by `rig_id`, and `FrameProvider` opens a rig by id.
 cameras:
-  # --- Active-Mode ---
-  # auto : Scan all enabled rigs, pick whichever is currently reachable.
-  #        Convenient during development, but slow on Windows because
-  #        each probed index goes through every installed OpenCV backend.
-  # rig  : Skip probing entirely, open exactly `active_rig_id`.
-  #        Use this once you know your setup: huge startup speedup.
+  # --- Active mode ---
+  # auto : probe every enabled rig and take the ones that answer. Convenient while the bench is
+  #        still changing, and slow where a rig sets `backend: 0`, because the probe then opens
+  #        that index through every installed OpenCV backend.
+  # rig  : skip probing and open exactly `active_rig_id`, which starts far faster.
+  # Read by `StereoCapturePipeline` in src/camera/pipeline/stereo_capture.py, which nothing
+  # outside the tests constructs. The schema reads it as well, to check `active_rig_id`.
   active_mode: auto
 
-  # Must be set when active_mode == "rig". Valid values:
+  # Must name an enabled rig below when active_mode is "rig"; validation fails otherwise.
   #   "webcam_main":    two USB webcams forming a stereo pair
   #   "stereo_dev0":    single side-by-side stereo device at index 0
   #   "stereo_dev3":    single side-by-side stereo device at index 3
@@ -15,71 +30,120 @@ cameras:
   active_rig_id: null
 
 
+  # --- Stereo calibration board ---
+  # The printed ChArUco board the stereo rigs are calibrated against, in millimetres, and the
+  # standalone ArUco marker used for pose estimation. These lengths set the metric scale of every
+  # stereo result, so measure them off the printed board rather than trusting the values here.
   stereo_calibration:
     charuco_squares_x: 10
     charuco_squares_y: 7
     charuco_square_length_mm: 26.0
+    # The ArUco marker printed inside each board square. It must be smaller than
+    # `charuco_square_length_mm`, which the schema checks when the tree loads.
     charuco_marker_length_mm: 20.0
+    # Image size the rectification maps are built for, so it must match the per-eye image the
+    # active rig delivers. `StereoRectifier` refuses a pair of any other size, against the size
+    # inside the stereo map once one exists: changing this key does not re-cut existing maps.
     frame_size: [1280, 720]
+    # cv.stereoRectify alpha. 0.0 keeps only pixels valid in both views, 1.0 keeps every source
+    # pixel and leaves black borders where one view had none.
     rectify_alpha: 0.0
+    # The standalone ArUco marker, not the board: `ArucoPoseEstimator` scales the pose it solves
+    # by this edge length. Distinct from `charuco_marker_length_mm` above.
     marker_length_mm: 50.0
+    # OpenCV dictionary for both the board and the standalone marker. The hand-eye marker is a
+    # separate physical artefact configured under `camera.hand_eye` and may use another.
     aruco_dict_name: "DICT_5X5_100"
 
   rigs:
-    # --- Webcam-Pair ---
+    # --- Webcam pair ---
+    # Two independent USB cameras driven as a stereo pair. Both are configured identically and a
+    # pair whose resolution disagrees is refused.
     - rig_id: webcam_main
       enabled: true
       source: webcam_pair
 
+      # Frame each camera is asked for and must report back; another size fails the open.
       frame_size: [1280, 720]
       fps: 30
+      # Calibration pairs that must already exist before recording is skipped, and the count at
+      # which an interactive recording session stops. `min_pairs` may not exceed `max_pairs`.
       min_pairs: 10
       max_pairs: 40
 
-      # OpenCV backend. 0 == CAP_ANY (tries every backend, slow on Win).
-      # 700 == CAP_DSHOW (fast, works with most USB webcams on Windows).
-      # 1400 == CAP_MSMF (modern Windows Media Foundation).
+      # OpenCV capture backend, as a cv.CAP_* constant. 0 is CAP_ANY, which tries every installed
+      # backend and is slow on Windows. 700 is CAP_DSHOW, which opens most USB webcams on Windows
+      # quickly. 1400 is CAP_MSMF, Windows Media Foundation.
       backend: 700
+      # How many device indices are probed when the two ids below are not both set: indices 0
+      # through this value minus one are opened in turn.
       max_cam_scan: 3
 
-      # Leave null to auto-detect in scan order (integrated webcams
-      # are filtered out). Set explicit indices for deterministic runs.
+      # Explicit OpenCV device indices for the two cameras; the schema refuses two equal ids.
+      # Unless both are set, the rig scans and takes the last two indices that returned a frame,
+      # which skips a built-in webcam at index 0 only when more than two answer. Setting them
+      # makes left and right repeatable.
       cam_left_id: 0
       cam_right_id: 1
 
       quality:
+        # true asks the device for YUY2 or YUYV, false for MJPG. Uncompressed avoids compression
+        # artefacts in the calibration images and costs USB bandwidth.
         prefer_uncompressed: false
+        # null leaves the camera's own value alone. A number is written to the device after
+        # `disable_auto_features` has switched the matching automatic off.
         manual_exposure: null
         manual_gain: null
         manual_wb: null
+        # Switch auto exposure, auto white balance and autofocus off before the manual values
+        # above are written. Fixed settings keep exposure constant across a calibration set.
         disable_auto_features: true
-        warmup_frames: 5          # only used for actual recording
+        warmup_frames: 5          # frames grabbed before the settings are read back off the device
+        # Largest frame-rate difference tolerated between the two cameras of this pair; a wider
+        # gap refuses the pair.
         fps_tolerance: 3.0
 
       calibration_paths:
+        # Root of this rig's calibration artefacts. `stereo_map_file`, the left and right image
+        # directories and their globs derive from it, and each can be written out to override.
         base_dir: calibration/webcam_main
 
-    # --- Single Stereo Device (Index 0) ---
+    # --- Single stereo device at index 0 ---
+    # One capture device that delivers both eyes in one frame. The frame is cropped, split by
+    # `layout`, and each half is brought to `per_eye_frame_size`.
     - rig_id: stereo_dev0
       enabled: false
       source: single_device
 
       device_index: 0
+      # Full frame the device is asked for, and the size it must report back: a device that
+      # delivers another size fails the open. `per_eye_frame_size` is one half after the split.
+      # Nothing checks it against `stereo_calibration.frame_size`, the size a calibration is
+      # computed at, so the two are set to agree by hand.
       device_frame_size: [2560, 720]
       per_eye_frame_size: [1280, 720]
       fps: 30
       min_pairs: 10
       max_pairs: 40
+      # Where the two eyes sit in the device frame: "horizontal" splits at the middle column,
+      # "vertical" at the middle row.
       layout: horizontal
+      # Pixels trimmed off each edge before the frame is split, for a device that pads its output
+      # or carries a border. A crop that would leave nothing is skipped and logged.
       crop_left: 0
       crop_right: 0
       crop_top: 0
       crop_bottom: 0
 
-      # See webcam_main. 0 may enable better quality on some stereo
-      # devices via native drivers; 700 gives the fastest enumeration.
+      # See webcam_main for the constants. 0 (CAP_ANY) lets a native driver serve the device,
+      # which some side-by-side cameras need for their full resolution; 700 (CAP_DSHOW)
+      # enumerates fastest.
       backend: 0
+      # true scales an eye that came out of the split at another size to `per_eye_frame_size`;
+      # false refuses the frame instead, which surfaces a wrong `layout` or a stale crop.
       allow_resize: true
+      # Laplacian-variance floor a recorded calibration pair must reach to be saved; null saves
+      # every pair. Only the interactive recording path reads it.
       min_sharpness: null
 
       quality:
@@ -89,12 +153,16 @@ cameras:
         manual_wb: null
         disable_auto_features: true
         warmup_frames: 5
+        # Frame-rate gap tolerated between the requested `fps` and what the device reports; a
+        # wider gap is logged, not refused.
         fps_tolerance: 3.0
 
       calibration_paths:
         base_dir: calibration/stereo_dev0
 
-    # --- Single Stereo Device (Index 3) ---
+    # --- Single stereo device at index 3 ---
+    # A second entry for the same kind of device on another USB index; see stereo_dev0 for what
+    # the keys mean.
     - rig_id: stereo_dev3
       enabled: false
       source: single_device
@@ -126,44 +194,72 @@ cameras:
       calibration_paths:
         base_dir: calibration/stereo_dev3
 
-    # --- RGB-D Kamera (z.B. Intel RealSense d435) ---
-    # One camera: serial_number: null opens the first available RealSense (device_index is not read by
-    # RealSenseRGBDStreamer, only the serial). A two-camera cell (the September UR3e rig is 2x d435
-    # eye-to-hand) needs two rigs here, each with its own serial_number, so each opens the right physical
-    # device. The serials are a bench fact of the specific cameras, so the second rig is added at bring-up,
-    # not shipped with a placeholder. The per-camera extrinsics map is separate: see decision D2 and
-    # robot.grasping.fusion.cameras.
+    # --- RGB-D camera, for example an Intel RealSense D435 ---
+    # One camera: `serial_number: null` opens the first RealSense the SDK offers, and
+    # `RealSenseRGBDStreamer` reads only the serial, never `device_index`. A two-camera
+    # eye-to-hand cell needs two rigs here, each with its own serial, so each opens the right
+    # physical device; `cam.eth2.yaml` with `robot.eth2.yaml` ships that cell as a worked example.
+    # Serials are a bench fact of the specific cameras, so a second rig is filled in at bring-up
+    # rather than shipped with a placeholder. The per-camera extrinsics are separate: they live in
+    # `robot.grasping.fusion.cameras`, keyed by the `rig_id` set here, and a key with no matching
+    # RGB-D rig stops the cell at build time. A real cell needs at least one RGB-D rig in this
+    # list, and the first of them is its primary camera.
     - rig_id: realsense_d435
       enabled: false
       source: rgbd
 
       device_index: 0
-      serial_number: null      # a two-camera cell sets an explicit serial here AND on a second rig
+      serial_number: null      # a two-camera cell sets a serial here and another on the second rig
       fps: 30
       backend: 0
 
       color_resolution: [1280, 720]
       depth_resolution: [1280, 720]
+      # Map depth onto the colour frame, so a colour pixel and its depth pixel are the same pixel.
+      # Everything that reads a depth inside a colour mask assumes this. Acted on by the
+      # "realsense" driver only; `OpenCvRGBDStreamer` stores the value and aligns nothing.
       align_depth_to_color: true
 
+      # Driver for this rig. "realsense" is pyrealsense2 with native aligned depth; "opencv" is
+      # the generic VideoCapture and OpenNI path. A RealSense on the "opencv" driver hands back an
+      # empty depth channel, because its depth is reachable only through librealsense.
       rgbd_backend: realsense
+      # Read only when `rgbd_backend` is "realsense". A null leaf leaves the device or SDK default.
       realsense:
+        # The infrared pattern projector, which is what gives this camera depth on untextured
+        # surfaces.
         enable_emitter: true
         laser_power_mw: null
+        # Name of a device depth preset, matched case-insensitively. An unknown name is logged and
+        # the device default kept, so a misspelling never takes the stream down.
         visual_preset: null
+        # Metres per raw depth unit, overriding what the device reports. A wrong value scales
+        # every depth, and with it every grasp distance, by a constant factor.
         depth_units_m: null
+        # Write the colour intrinsics and distortion the device reports to
+        # `calibration_paths.intrinsics_file` when the stream opens.
         export_intrinsics: false
+        # Depth filters, applied in this order by `RealSenseRGBDStreamer._build_filters`.
         post_processing:
+          # Shrinks the depth map; the streamer then resizes it back onto the colour grid.
           decimation: false
           spatial: true
           temporal: true
+          # Fills depth holes by extrapolating from their neighbours. It invents surface, and a
+          # grasp planned onto invented surface fails without a signal, so a hole is left honest.
           hole_filling: false
 
       quality:
+        # Under `rgbd_backend: realsense` only `warmup_frames` is read here, as the frames waited
+        # for before the intrinsics are read; the rest of the block reaches a device through
+        # OpenCV and applies to the "opencv" driver.
         prefer_uncompressed: false
         disable_auto_features: false
         warmup_frames: 15
         fps_tolerance: 3.0
 
       calibration_paths:
+        # `intrinsics_file` derives from this as `<base_dir>/intrinsics.json`, which
+        # `export_intrinsics` writes. Nothing reads it back from config: `load_intrinsics` takes
+        # a path, and its only caller passes the hand-detection CLI's `--intrinsics`.
         base_dir: calibration/realsense_d435

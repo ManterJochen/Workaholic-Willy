@@ -1,33 +1,24 @@
 # ============================================================================
-# Block measurement layer: grasping.decision, a profile layer, chained last.
+# Decision profile   --profile decision   (layers onto robot.yaml, chained last)
 #
 #   WILLY_PROFILE=sim,decision      (or: --profile sim,decision)
 #
-# One of the twelve `grasping.*` blocks that ship `enabled: false`. All twelve
-# are wired: the schema-enumerated wiring guard drives each flag differentially
-# and measured 0 inert. Only `fusion` has ever been measured ON-BOX over the
-# config boot path. This layer exists so the other eleven can be, one at a time,
-# with each number meaning exactly one thing.
+# Turns on `robot.grasping.decision`, one of the `grasping.*` blocks that ship disabled. It is a
+# profile layer rather than an edit to robot.yaml so that the base tree stays as it is: every
+# other runner and every gate that reads it are unaffected, and the block is enabled by name
+# rather than by remembering which line was toggled.
 #
-# Why a profile and not an edit to robot.yaml. A block that has not been measured
-# must not become anyone's default, and a block that has been measured should be
-# enabled deliberately, with its number in the commit that enables it. A profile
-# layer keeps both true: nothing under `<default>` moves, every other runner and
-# every existing gate stays byte-identical, and the measurement is reproducible
-# by name months later rather than by remembering which line was toggled.
+# What `decision` is: the auto gate. `DecisionEngine` in src/robot/grasping/decision.py decides
+# whether the stack may execute a grasp autonomously, and it is fail-closed. On real hardware an
+# inconclusive verdict refuses the pick rather than attempting it, so this is the block least
+# worth meeting for the first time on a physical cell.
 #
-# What `decision` IS. The auto gate: `DecisionEngine` decides whether the stack
-# may execute a grasp autonomously, and it is fail-closed: on real hardware an
-# inconclusive verdict refuses the pick rather than attempting it. That is why it
-# is first of the eleven: in September it is the block standing between a
-# prompt and the arm moving, so it is the one whose behaviour we least want to
-# meet for the first time on a real cell.
+# Expect the pick count to fall, not rise: a gate that never refuses is not a gate. What the layer
+# has to answer is whether it refuses the right picks and says why, so read `decision_action` and
+# `decision_reason_code` off the `DecisionReport` the engine returns, not the pick count alone.
 #
-# Enabling it is expected to reduce the pick count, not raise it. A gate that
-# never refuses is not a gate. The question this measurement answers is not "does
-# the rate go up" but "does it refuse the right picks, and does it say why".
-# Read `dense_decision` / `dense_auto_reason` in the calculator telemetry and the
-# typed DecisionReport, not the lift count alone.
+# The block's other keys are unset here and take their schema defaults; see
+# `GraspingDecisionConfig` in src/config/schema/robot/grasping_schema.py.
 # ============================================================================
 
 robot:

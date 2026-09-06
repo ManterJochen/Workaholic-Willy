@@ -1,0 +1,107 @@
+# ============================================================================
+# Camera layer for a cell with two fixed RGB-D cameras.
+#
+#   WILLY_PROFILE=ur5e,eth2       the bench cell of robot.ur5e.yaml, with two cameras
+#
+# Two Intel RealSense D435 class devices, both bolted in the cell looking at the same bin
+# from different angles, neither on the wrist. That is what eye-to-hand means here: the
+# transform from a camera to the robot base is fixed, so it is measured once by the
+# calibration and read from a file, rather than composed from the arm's pose every frame.
+#
+# `rigs` replaces the base list rather than extending it. An overlay list replaces the base
+# value outright (`src/config/_merge.py`), so the four rigs `cam.yaml` declares are gone
+# under this profile and these two are the whole camera inventory. That is deliberate:
+# `build_real_components` picks the cell's camera as the first rig with `source: rgbd` and
+# does not consult `enabled`, so a leftover rig in the list is a camera the cell might open.
+#
+# Rig order is not cosmetic. The first RGB-D rig is the primary camera: the grasp is
+# synthesised from its view and every other camera only confirms what it sees. Moving the
+# primary moves every number this cell measures.
+# ============================================================================
+cameras:
+  # Read by nothing on the RGB-D pick path. The only live constraint is the schema, which
+  # requires `active_rig_id` to name one enabled rig when this is `rig`, and this cell opens
+  # two. `auto` makes no claim the code cannot honour. The rig list below is what selects a
+  # camera here, not this key.
+  active_mode: auto
+
+  rigs:
+    # --- the primary camera ---
+    - rig_id: cam_left
+      enabled: true
+      source: rgbd
+      fps: 30
+
+      # The only stable way to tell two identical cameras apart. `RealSenseRGBDStreamer` binds
+      # a device by serial and never reads `device_index`, which is an OpenCV capture index and
+      # not a RealSense identity. With no serial the SDK hands over whatever it offers first, an
+      # order that survives neither a reboot nor a replug. Two D435s that swap identity do
+      # not fail: they return a complete, plausible scene with the views exchanged, so every
+      # fused position is mirrored about the rig axis. The schema refuses two enabled RGB-D
+      # rigs where either has no serial, and refuses a serial shared by both.
+      #
+      # Read them with `rs-enumerate-devices -s` and set the two variables, or replace these
+      # defaults with the literals. The placeholder loads so the profile can be validated;
+      # it will not open a camera.
+      serial_number: "${WILLY_CAM_LEFT_SERIAL:-left-camera-serial-not-set}"
+
+      # The default is `opencv`, which returns colour with an empty depth channel. A D435
+      # profile that leaves this out looks configured and delivers no depth.
+      rgbd_backend: realsense
+
+      # Depth and colour must share one pixel grid, because a segmentation mask is computed
+      # on the colour frame and then used to index depth.
+      align_depth_to_color: true
+
+      realsense:
+        post_processing:
+          # The librealsense-recommended smoothing, on.
+          spatial: true
+          temporal: true
+          # Off, deliberately. A hole in the depth map is a surface the sensor could not
+          # measure, and the grasp-depth reference treats it as missing. Filling it invents
+          # surface at an invented distance, which a grasp is then planned against.
+          hole_filling: false
+
+      # Where this rig's intrinsics file would go. Derived from `rig_id` when omitted, so both
+      # values restate the default. Nothing under this profile writes one: that needs
+      # `realsense.export_intrinsics`, and the cell takes its intrinsics off the device instead.
+      calibration_paths:
+        base_dir: calibration/cam_left
+
+    # --- the second view ---
+    - rig_id: cam_right
+      enabled: true
+      source: rgbd
+      fps: 30
+      serial_number: "${WILLY_CAM_RIGHT_SERIAL:-right-camera-serial-not-set}"
+      rgbd_backend: realsense
+      align_depth_to_color: true
+      realsense:
+        post_processing:
+          spatial: true
+          temporal: true
+          hole_filling: false
+      calibration_paths:
+        base_dir: calibration/cam_right
+
+# ============================================================================
+# Where the two cameras stand is not configured here.
+#
+# There are no mounting angles or standoff distances in this file, because the pick path
+# never reads a mounting pose: it reads the CAMERA to BASE transform the eye-to-hand
+# calibration measured, one artifact per camera, named in
+# `robot.grasping.fusion` over in robot.eth2.yaml. Wherever the cameras end up bolted, the
+# calibration is what tells the cell.
+#
+# What the placement has to achieve is a geometric argument rather than a configured one.
+# The two views exist so that a surface one camera cannot see is measured by the other, so
+# the cameras want a wide angle between them and both want the bin unoccluded by the arm
+# at its park pose. A second camera beside the first buys almost nothing.
+#
+# Prove each camera streams on its own before building the cell. This runs the detector and
+# the segmenter over the frame too, so it needs the models installed as well as the camera:
+#
+#   WILLY_PROFILE=ur5e,eth2 python -m src.robot.perception --rig cam_left
+#   WILLY_PROFILE=ur5e,eth2 python -m src.robot.perception --rig cam_right
+# ============================================================================

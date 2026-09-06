@@ -1,30 +1,26 @@
-# Sim profile overlay (WILLY_PROFILE=sim), deep-merged onto object.yaml.
-# GroundingDINO for the sim real-vision (M2) path: downloaded from HF (local:false) on first run.
-# Only the objectdetector entry diverges; `detector`/`rtdetr` are inherited from the base file.
+# Sim profile overlay, deep-merged onto object.yaml when WILLY_PROFILE includes sim.
+# GroundingDINO for the simulated vision path; `local: false` fetches the weights from the Hub on
+# first run. Only `objectdetector` diverges here, and every other key of the base file is inherited.
 objectdetector:
   model_path: ""
-  # Stays tiny, and that is a measured decision, not inertia. The full story is in
-  # .ai-memory/perception-pipeline-plan.md 4c; the short version:
-  #
-  #   run_m2_pick  tiny 10/10 @0.112 s/call   |  base 10/10 @0.127 s/call   -> indistinguishable
-  #   run_fused_pick (overhead coarse, 3 coloured cubes, park-pose view):
-  #                tiny 1 detection            |  base 0 detections         -> base sees nothing
-  #
-  # Same scene, same 0.2 threshold, same code path, only this field swapped. A model that grounds
-  # nothing is not "slightly worse", it is a cell that cannot pick at all, so "one model everywhere"
-  # is refused here, and the detector stays a per-cell choice. run_dense_pick still selects base
-  # explicitly for dense YCB piles, where it is the measured winner. Both remain right, on different
-  # scenes, which is exactly why this is config and not a constant.
+  # The detector checkpoint is a per-cell choice, not a fixed best. The tiny checkpoint grounds
+  # sparse scenes on which the base checkpoint returns nothing at all, and a detector that grounds
+  # nothing is a cell that cannot pick; the base checkpoint is the better one on dense clutter,
+  # which is why `src/willy_sim/run_dense_pick.py` overrides this field for its own scenes. On a
+  # scene that yields no detection, try the other checkpoint before lowering `threshold`.
   model_id: "IDEA-Research/grounding-dino-tiny"
   threshold: 0.2
   local: false
   optim:
-    # The validated M2 baseline runs with torch_dtype + attn UNSET: the detector loads native fp32 weights
-    # and its autocast(dtype=None) => fp16-autocast compute, full recall on the small (~46 px) overhead
-    # cube. The production base is torch_dtype:auto (=fp16 weights on CUDA), which drops the cube (measured:
-    # torch_dtype:"float32" took M2 8/10 -> 0/3 on-box; only the unset path reproduces the baseline). A
-    # `null` overlay leaf would keep the base "auto" (deep-merge contract), so use the loader's reset
-    # sentinel "__null__" to force the field back to unset. channels_last off (memory-format, inert).
+    # This is the recall path for small objects: `torch_dtype` and `attn_implementation` both
+    # unset, so the model loads fp32 weights and runs the forward pass under fp16 autocast.
+    # Small is about 46 px across here: the scene's 30 mm cube under an overhead camera 1000 mm
+    # above it, at the default lens fx of about 1527 over a 640 px width.
+    # Naming a dtype is not the same thing, "float32" included, because `src/models/_inference.py`
+    # forwards a named dtype to `torch.autocast` as well, and small objects go missing again.
+    # A `null` leaf would keep the base value `auto` (fp16 weights on CUDA), so the loader's reset
+    # sentinel "__null__" is the only way an overlay can force a field back to unset.
+    # `channels_last` is a memory format rather than a numerical setting, and is off here.
     torch_dtype: "__null__"
     attn_implementation: "__null__"
     channels_last: false

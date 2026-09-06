@@ -1,16 +1,19 @@
 # ============================================================================
-# Sim profile overlay (WILLY_PROFILE=sim), deep-merged onto robot.yaml.
+# Sim profile overlay: the Isaac work cell, deep-merged onto robot.yaml.
 #
-# Activated by the `sim` profile (willy_sim's load_sim_config forces it; or set
-# WILLY_PROFILE=sim + load the default `data` tree). Replaces the old, fully
-# separate `config/data_sim` tree: everything the Isaac cell needs that
-# Differs from the UR-default production robot config lives here, and everything
-# else is inherited from robot.yaml. Values are unchanged from the validated
-# M1/M2/EIH runs, just expressed as an overlay instead of a parallel tree.
+# `src/config/loader.py` merges this file whenever the active profile chain contains
+# `sim`, which `WILLY_PROFILE=sim` selects and which willy_sim's `load_sim_config` sets
+# for the duration of a sim load. A second layer, as in `WILLY_PROFILE=sim,ur3e`, puts a
+# different UR on top of it. What the Isaac cell needs differently from the UR
+# production config lives here and everything unlisted is inherited from robot.yaml,
+# though parts of it restate the base rather than change it: the calibration block, the
+# gripper vendor and widths, and parts of the sim and self_collision blocks.
 #
-# Deep-merge note: a `null` overlay leaf keeps the base value (src/config/_merge.py),
-# so this overlay only ever sets non-null values or adds new keys (e.g. the cameras
-# subtree, near_clip_m). Where the sim wants a base scalar changed, it is set explicitly.
+# A `null` leaf in an overlay keeps the base value instead of clearing it
+# (`src/config/_merge.py`), so a leaf here reaches the tree only when it is non-null or when
+# the base does not carry the key, as `assets_root` does; `scene: null` restates a base null
+# and changes nothing. Forcing an inherited field back to null takes the `__null__` reset
+# sentinel that `src/config/loader.py` defines.
 # ============================================================================
 robot:
   vendor: "sim"
@@ -20,73 +23,61 @@ robot:
     mock_mode: false
     backend: "isaac"
     scene: null
-    # Combined UR5e + Robotiq 2F-85 articulation (one root prim); gripper shares the same prim.
+    # One combined UR5e and Robotiq 2F-85 articulation, so the gripper shares the arm's root prim.
     robot_prim_path: "/World/UR5e"
     gripper_prim_path: "/World/UR5e"
-    gripper_variant: "Robotiq_2f_85"          # USD Gripper variant selection on the ur5e asset
+    gripper_variant: "Robotiq_2f_85"          # the `Gripper` variant selected on the UR5e USD asset
     home_joint_positions: [0.0, -1.0, 0.9, 0.0, 0.0, 0.0]
-    park_joint_positions: [3.14, -1.0, 0.9, 0.0, 0.0, 0.0]   # arm swung to -X, clear of overhead cam
-    assets_root: "D:/isaacsim_assets/Assets/Isaac/5.1"
+    park_joint_positions: [3.14, -1.0, 0.9, 0.0, 0.0, 0.0]   # swings the arm out of the camera view
+    # Where the Isaac sample assets live. Null asks Isaac itself, through
+    # `get_assets_root_path()`, which is right on a normal install. Set it only where the
+    # assets sit somewhere Isaac does not look, and prefer the environment variable over
+    # a literal so the file stays portable:
+    #     assets_root: ${WILLY_ISAAC_ASSETS_ROOT:-}
+    assets_root: null
     headless: true
     cameras:
-      overhead:                                # eye-to-hand fixed cam, 1 m above the workspace
+      overhead:                                # eye-to-hand camera 1000 mm above the table
         prim_path: "/World/Cameras/Overhead"
         mounting_mode: "eye_to_hand"
         position_mm: [450.0, 0.0, 1000.0]
         resolution: [640, 480]
-        # This value is inert on the nadir PATH, and the 1.0 m default it replaced was not a bug.
-        # Corrected 2026-08-17 after measuring; the previous comment here asserted the opposite and
-        # was wrong on both halves, so it is replaced rather than softened.
+        # Inert on this camera, and null is the deliberate value. `willy_sim/scene/build.py` calls
+        # `set_clipping_range` only on the branch a camera with `mount_aim_mm` takes, so a nadir
+        # camera keeps Isaac's 1.0 m default near plane whatever this key says.
         #
-        # (a) inert: nothing applies this key to the nadir overhead camera. `scene/build.py` calls
-        # `set_clipping_range` only on the tilted branch, so this camera keeps whatever Isaac gives
-        # it. "The config says 0.05" and "the camera has 0.05" are different claims; the second was
-        # never checked until a probe printed the camera's own range back.
+        # That default is load-bearing on the ground-truth path: it hides the home-pose arm link
+        # that overlaps the object, so the instance-id mask stays clean. The object's top face is
+        # 50 mm above the table and this camera is 1000 mm above it, so the object sits inside the
+        # 1.0 m plane as well. On this geometry a clean instance mask and an object-bearing
+        # rendered depth cannot both hold, and only a scene change resolves it: park the arm out of
+        # view for perception, or raise the camera. So the single-camera ground-truth runners keep
+        # this default, the real-vision path parks the arm and sets its own close clip in code
+        # (`willy_sim/perception/vision.py`), and `run_multiview_pick` drops this camera's clip to
+        # 0.05 m in code, rendering the arm, and adds the obliques, which have no arm overlap.
         #
-        # (b) the 1.0 m near clip is load-bearing, not a defect, and `scene/build.py:479` says so:
-        # it hides the home-pose arm link that overlaps the object, so the instance-id mask stays
-        # clean. Measured by forcing a 0.05 m clip on this camera: the arm re-enters the frame, the
-        # mask drops to 2116 px, the MaskAnalyzer rejects it as too small, and the pick dies one step
-        # Earlier than before: 8 telemetry keys instead of 23.
-        #
-        # What this means for rendered depth on m1, which is the real finding. The camera sits at
-        # BASE z = 1000 mm and the object's top face is 963 mm away, inside the 1.0 m plane. So on
-        # this camera geometry you cannot have both at once:
-        #     clean instance mask (arm clipped away)  XOR  object present in the depth render
-        # Measured, and it is exactly the probe's pre-registered "object absent" reading:
-        #     rendered:  target_depth = 1000.0 mm == camera_base_z = 1000.0   (the table behind it)
-        #     GT oracle: target_depth =  963.0 mm <  camera_base_z = 1000.0   (the object, 3/3)
-        # Resolving it needs a scene change (park the arm out of view for perception, or raise the
-        # camera), not a config value. Until that decision is made, M1 stays on the GT-oracle path
-        # (measured 3/3) and the rendered-depth September path is the multiview runner (measured 5/5
-        # with two oblique cameras that have no arm-overlap problem).
-        #
-        # Not yet verified, and it is the lesson that already cost two wrong conclusions here:
-        # whether this value actually reaches the authored camera. "The config says 0.05" and "the
-        # camera has 0.05" are different claims and only the second one matters; read it back off
-        # the camera after authoring before believing it.
-        # Back to `null` (= Isaac's 1.0 m default), deliberately. Leaving 0.05 here would have been
-        # harmless today (nothing applies it) and a landmine tomorrow: the obvious "fix" is to
-        # make build.py apply this key on the nadir branch too, and that would silently take M1 from
-        # 3/3 to 0/3 by letting the arm back into the instance mask. The value a future wire-through
-        # must find here is the one this camera actually needs.
+        # A close value here is harmless while nothing applies it and a trap the moment something
+        # does: wiring this key through to the nadir branch lets the arm back into the instance
+        # mask and breaks the ground-truth pick. Authoring a value is also not proof the camera
+        # took it; read the clipping range back off the camera before believing it.
         near_clip_m: null
-      wrist:                                   # eye-in-hand wrist cam (child of wrist_3_link)
+      wrist:                                   # eye-in-hand camera, a child of wrist_3_link
         prim_path: "/World/UR5e/wrist_3_link/wrist_cam"
         mounting_mode: "eye_in_hand"
         resolution: [640, 480]
-        near_clip_m: 0.02                       # close-range; avoids the 1.0 m black-RGB clip
-        # Mount in the wrist-link local frame: offset to the side + look straight down parallel to
-        # the gripper (aim X == offset X) so the gripper stays out of frame.
+        near_clip_m: 0.02                       # close range; Isaac's 1.0 m default renders black
+        # Mount in the wrist-link local frame: offset to the side and aimed along the wrist's +Y,
+        # which is the gripper's approach axis, so the gripper stays out of frame.
         mount_offset_mm: [130.0, 20.0, 0.0]
         mount_aim_mm:    [130.0, 457.0, 0.0]
         mount_up_hint:   [0.0, -1.0, 0.0]
-      # Multi-view: two fixed eye-to-hand obliques, one per side, so occlusion from either side / the
-      # arm reaching in from either approach is covered by at least one view (two-sided redundancy, measured
-      # in run_occlusion_probe). Authored + consumed only by run_multiview_pick (build_combined_scene authors
-      # just "overhead", so these are inert for M1/M2/EIH/dense -> byte-identical). For a fixed eye-to-hand
-      # camera, mount_aim_mm is reused as the WORLD-frame look-at target (the bin centre); near_clip 0.05 m
-      # because the side view sits closer than the overhead (the 1.0 m default would clip it to black).
+      # Two fixed eye-to-hand obliques, one per side, so a target occluded from one side is still
+      # covered by the other view. `willy_sim/scene/build.py` authors `overhead` alone, so these two
+      # entries do nothing for the single-camera runners; `run_multiview_pick` and the bin and pile
+      # runners author them from these values. On a fixed eye-to-hand camera `mount_aim_mm` is the
+      # world-frame look-at target, here the bin centre. The near clip is 0.05 m because a
+      # side camera stands about 870 mm from its aim point, inside Isaac's 1.0 m default plane,
+      # which would render it black.
       oblique_L:
         prim_path: "/World/Cameras/ObliqueL"
         mounting_mode: "eye_to_hand"
@@ -102,6 +93,7 @@ robot:
         resolution: [640, 480]
         near_clip_m: 0.05
 
+    # Scene authoring and run parameters for the sim runners; none of it reaches the driver.
     scene_setup:
       object:   { size_mm: [30.0, 30.0, 50.0], position_mm: [450.0, 0.0, 25.0], mass_kg: 0.05, static_friction: 1.5, dynamic_friction: 1.3 }
       table:    { size_mm: [800.0, 800.0, 400.0], position_mm: [450.0, 0.0, -200.0] }
@@ -110,10 +102,11 @@ robot:
       gate:     { lift_threshold_mm: 50.0, pass_fraction: 0.8 }
       render_warmup_steps: 20
 
-  # Cartesian workspace box (mm) for the sim cell. Spans the calibration viewpoints + ETH pose
-  # generator (tool high over the table) and the LOW grasp poses (grasp-centre TCP ~z=37 at the cube;
-  # z_min must include these or the SafetyPreflight WorkspaceGuard rejects every grasp: z_min was 100,
-  # which excluded the picks). z_min=0 = the table top; the 20 mm safety margin then floors at z=20.
+  # Cartesian workspace box (mm) for this cell. It has to span both the calibration viewpoints, the
+  # tool held high over the table, and the low grasp poses: a top-down grasp on the cube puts the
+  # TCP near z=37, and the SafetyPreflight WorkspaceGuard rejects every motion whose target falls
+  # outside this box. z_min 0.0 is the table top, and `safety.limits.workspace_margin_mm`, 20 mm in
+  # robot.yaml, then floors the guard at z=20.
   workspace_limits:
     x_min: 100.0
     x_max: 700.0
@@ -122,33 +115,35 @@ robot:
     z_min: 0.0
     z_max: 600.0
 
-  # Retreat/safe pose: must sit inside workspace_limits (the SafetyPreflight WorkspaceGuard gates the
-  # retreat-to-safe motion on that box). The production default (0, -300, 400) is outside this cell's
-  # x[100,700], so override it here (tool-down, high, off the -Y side, clear of the picks at x=450).
+  # Retreat pose, and it must sit inside workspace_limits: `_check_safe_pose_in_workspace` refuses
+  # the tree at config load otherwise, because the WorkspaceGuard would reject a retreat motion
+  # aimed outside that box. Nothing moves to the pose today: its only reader is the willy_sim
+  # reach doctor (`harness/reach.py`). The production default (0, -300, 400) is outside this cell's
+  # x[100, 700], hence the override: tool high, off the -Y side, clear of the picks at x=450.
   safe_pose:
     x: 450.0
     y: -300.0
     z: 400.0
 
-  # SafetyPreflight is wired into the sim pick path. The sim arm IS a UR5e, but the joint-limit
-  # guard keys its bundled vendor table by model ('ur5e'); for vendor='sim' (model 'isaac-sim') there
-  # is no bundled table, so the guard fails closed (unavailable) without explicit limits. Give it the
-  # UR5e +/-360 deg/axis factory envelope so valid grasps pass while out-of-envelope joints are caught.
+  # SafetyPreflight is wired into the sim pick path. The built-in joint-limit table is keyed on a
+  # Universal Robots vendor and this cell's vendor is `sim`, so without explicit limits the guard
+  # reports UNAVAILABLE and fails closed. The arm is physically a UR5e, so these are its factory
+  # +/-360 deg per-axis envelope: valid grasps pass and out-of-envelope joints are still caught.
   safety:
     joint_limits:
       min_deg: [-360.0, -360.0, -360.0, -360.0, -360.0, -360.0]
       max_deg: [360.0, 360.0, 360.0, 360.0, 360.0, 360.0]
-    # The whole ik_quality + motion_continuity family is sized for a servo drive: an IK jump is an
-    # unfollowable discontinuity, and the singularity checks (condition_number / min_singular_value)
-    # guard against Jacobian velocity amplification near a singularity. The sim `move_joint` interpolates
-    # (0.03 rad/step, up to 250 steps -> ~7.5 rad walked smoothly) and is position-controlled + move()
-    # FK-verifies the achieved TCP, so NONE of those servo failure modes exist here: large single-move
-    # reconfigs (home->grasp ~113 deg wrist) and near-singular grasp configs are physically safe to drive.
-    # -> widen the jump / step / singularity limits to the drive's real capability (still rejecting true
-    # IK-garbage: condition > 1000, sigma < 1e-4, a wildly wrong branch). Measured: real-vision M2 picks
-    # land condition up to ~365 + min_sigma ~7e-4 on awkward-but-valid configs. (Deep-merge keeps unlisted
-    # fields at defaults.) Per-cell only; UR/production thresholds are untouched, and the workspace /
-    # joint-limit / self-collision / payload guards remain strict.
+    # ik_quality and motion_continuity are sized for a servo drive, where an IK jump is an
+    # unfollowable discontinuity and a near-singular configuration amplifies joint velocity. The
+    # Isaac drive has neither failure mode: `move_joint` is position-controlled and walks the move
+    # in 0.03 rad waypoints, up to 250 of them and so about 7.5 rad in one command, and `move()`
+    # verifies the achieved TCP by FK. The jump, step and singularity limits are therefore widened
+    # to what this drive can really follow, which passes a large single-move reconfiguration and an
+    # awkward but valid near-singular grasp while still rejecting IK garbage: a condition number
+    # above 1000, a smallest singular value under 1e-4, a wildly wrong branch. Deep-merge leaves
+    # every unlisted field, the enforce flags included, at the robot.yaml value, and the widening
+    # is per-cell: the UR thresholds and the workspace, joint-limit, self-collision and payload
+    # guards are untouched.
     ik_quality:
       max_jump_rad: 3.5
       max_condition_number: 1000.0
@@ -158,30 +153,30 @@ robot:
       max_orientation_step_deg: 180.0
       max_tcp_step_mm: 1000.0
     dwell:
-      # The sim's wait_until_steady steps the physics; calling it as a pre-move gate inside the pick loop
-      # conflicts with the loop's own stepping and breaks the picks (measured m1 0/10). On real hardware
-      # wait_until_steady reads a controller steady signal (no stepping) so the gate works there. The
-      # steady gate is therefore disabled for the sim cell (mechanism validated by mock + real hw).
+      # The sim's `wait_until_steady` steps the physics itself, so as a pre-move gate inside the
+      # pick loop it fights the loop's own stepping and the picks fail. It is off for this cell.
+      # On real hardware the same call reads a controller steady signal and steps nothing, so the
+      # gate works there and robot.yaml leaves it on.
       require_steady_before_motion: false
-    # Self-collision: the Coal mesh backend is now the standard check (Tim, 2026-06-28). Rationale: the
-    # Capsule guard over-rejects the UR5e reach-down grasps (~30 mm link_2|link_5 false positives, why it was
-    # off), and relying on Isaac physics / "the picks looked fine" was unsafe: the demo had clear collisions
-    # that every pick reported as good. The only trustworthy arm-vs-arm + arm-vs-gripper check is the
-    # vertex-exact Coal mesh backend, so it is ON by default here (`backend: fcl` = Coal-preferred,
-    # python-fcl fallback; natural grasps clear at ~19.6 mm > 10 mm, the flipped branch rejects at 0 mm).
-    # Consistency trade-off (accepted): this needs Coal (or python-fcl) + the mesh bundle; on macOS/CI without
-    # Coal the mesh check is unavailable, so the sim cell is no longer "test-clean alone" there.
+    # The arm is physically a UR5e, so `kinematics_model` opts this non-UR vendor into the bundled
+    # UR DH table: the guard then measures arm against arm and arm against gripper instead of base,
+    # tool and fixture capsules alone. It must equal `sim.robot_model`, which the config load
+    # cross-validates. The bundled DH base frame is rotated 180 deg about Z from the Isaac UR5e USD
+    # `base_link`, and `kinematics_base_yaw_deg` is what turns the arm capsules back into the frame
+    # the base, tool and fixture capsules already use. `backend: fcl` is the vertex-exact mesh
+    # check, Coal preferred with python-fcl as the fallback; it needs one of those engines plus the
+    # model's mesh bundle, and without them the guard logs the degradation and drops back to the
+    # capsule proxy, which over-rejects the reach-down grasps this cell makes.
     self_collision:
       backend: "fcl"
       kinematics_model: "ur5e"
       kinematics_base_yaw_deg: 180.0
       min_distance_mm: 10.0
-      # Hand the same clearance to cuRobo so it stops returning paths this guard will reject. The two
-      # engines use different geometry (cuRobo: spheres; guard: exact meshes), so without this they
-      # disagreed by fractions of a millimetre and the plan lost: measured 9.44-9.47 mm cuRobo plans
-      # against this 10.000 mm guard, costing 3 of 10 UR5e picks to what read like bad grasping. With it,
-      # the same run is 10/10 with zero self-collision rejections. NB this is a separate number, not
-      # derived: a UR3e cannot absorb 10 mm (see robot.ur3e.yaml).
+      # The same clearance handed to the trajectory planner, so it stops returning paths this guard
+      # would then reject: cuRobo plans against a sphere model while the guard re-checks the exact
+      # meshes, and the two disagree by fractions of a millimetre. Not derived from
+      # `min_distance_mm`, because how much margin a planner can absorb depends on how tightly its
+      # spheres fit that arm: a UR3e finds no plan at all at 10 mm (see robot.ur3e.yaml).
       planner_margin_mm: 10.0
 
   gripper:
@@ -189,16 +184,14 @@ robot:
     max_width_mm: 85.0          # Robotiq 2F-85 opening
     min_width_mm: 5.0
 
-    # The sim cell declares its tool frame in the same place a real cell does. This used to be
-    # `sim.tcp_offset_mm: 132.0` (a scalar) paired with a quaternion hardcoded in the sim driver:
-    # two values for one transform, one of them invisible to config. That split is what let
-    # `gripper_mount` swap a gripper's width profile while the arm went on using the 2F-85's geometry
-    # (measured: a mounted EZU-35 ran 8 mm out, an EGU-50 17 mm).
-    #
-    # source: "willy" is the honest label for a simulator; the driver composes flange<->TCP and
-    # there is no controller holding a tool register at all. The values are the measured 2F-85 mount:
-    # 132 mm along flange +Y, and a -90 deg rotation about flange X mapping the TCP's +Z (approach)
-    # onto flange +Y. A `gripper_mount` override replaces both at bootstrap.
+    # The sim cell declares its tool frame in the same place a real cell does, so the flange-to-TCP
+    # transform has one owner and both halves of it are visible to config. `source: "willy"` says
+    # the driver composes flange and TCP inside its own boundary, which is the honest label for a
+    # simulator: there is no controller holding a tool register at all. The values are the 2F-85
+    # mount, 132 mm along flange +Y plus a -90 deg rotation about flange X that maps the TCP's +Z,
+    # the approach axis, onto flange +Y. Only the `bootstrap_sim_cell(gripper_mount=...)` argument
+    # swaps in a mounted gripper's own flange-to-TCP translation; the same key set in YAML mounts
+    # that gripper and its width profile and leaves the arm on this 2F-85 offset.
     tool_frame:
       source: "willy"
       offset_mm: [0.0, 132.0, 0.0]
@@ -213,21 +206,27 @@ robot:
       good:      2.5
       marginal:  5.0
 
-  # Multi-camera calibration map (Feature 3). Each fixed eye-to-hand camera in the multi-view rig is
-  # calibrated individually (run_eth_calibrate --camera <id>) and points at its own persisted artifact.
-  # This block is inert by default: fusion.enabled stays false, so build_config_frame_resolvers returns
-  # {} for every normal runner. run_multiview_pick --calibrated opts in explicitly (it forces
-  # fusion.enabled locally) and then consumes these per-camera extrinsics instead of the sim GT oracle.
-  # The camera ids match robot.sim.cameras (so the oblique poses are authored from the same config).
+  # Multi-camera calibration map: every fixed eye-to-hand camera in the multi-view rig is calibrated
+  # on its own (`run_eth_calibrate --camera <id>`) and points at its own persisted artifact. The
+  # camera ids have to match the entries in `robot.sim.cameras`, since the oblique poses are
+  # authored from that same block. The map is inert while `grasping.fusion.enabled` stays false:
+  # `build_config_frame_resolvers` returns an empty map and every runner keeps the sim ground-truth
+  # extrinsics. `run_multiview_pick --calibrated` is the explicit opt-in, enabling fusion for the
+  # resolver build and consuming these artifacts instead. Fail-closed: an enabled camera whose
+  # artifact is missing or unreadable raises at construction rather than running a smaller rig than
+  # was asked for.
   grasping:
     fusion:
+      # The calibration runners namespace their artifacts by robot model, so a two-robot bench
+      # cannot lose one arm's calibration by running the other's. Keep the `ur5e` segment in step
+      # with `sim.robot_model`: `run_eth_calibrate` writes into `logs/calibration/<robot_model>/`.
       cameras:
         overhead:
           mounting_mode: "eye_to_hand"
-          extrinsics_artifact_path: "logs/calibration/eth_overhead.json"
+          extrinsics_artifact_path: "logs/calibration/ur5e/eth_overhead.json"
         oblique_L:
           mounting_mode: "eye_to_hand"
-          extrinsics_artifact_path: "logs/calibration/eth_oblique_L.json"
+          extrinsics_artifact_path: "logs/calibration/ur5e/eth_oblique_L.json"
         oblique_R:
           mounting_mode: "eye_to_hand"
-          extrinsics_artifact_path: "logs/calibration/eth_oblique_R.json"
+          extrinsics_artifact_path: "logs/calibration/ur5e/eth_oblique_R.json"

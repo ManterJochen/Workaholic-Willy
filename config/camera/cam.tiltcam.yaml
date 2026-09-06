@@ -1,60 +1,62 @@
 # ============================================================================
-# Tilted dual-d435 CAMERA rig: the camera half of the September cell.
+# Tilted dual-D435 camera rig: the camera half of a two-camera cell.
 #
 #   WILLY_PROFILE=ur3e,tiltcam        real UR3e cell with the tilted pair
 #   WILLY_PROFILE=sim,ur3e,tiltcam    the same optics in Isaac
 #
-# Paired with `robot.tiltcam.yaml`, deliberately under the same profile name.
-# That file places two eye-to-hand cameras at 70 deg elevation, 900 mm from the
-# aim point, and authors their lens to a d435's 69.4 deg RGB FOV. This file is
-# the other half: the two physical cameras those positions describe.
+# Paired with `config/robot/robot.tiltcam.yaml` under the same profile name on
+# purpose. That file places two eye-to-hand cameras at 70 deg elevation, 900 mm
+# from the aim point, and authors their lens to a D435's 69.4 deg RGB field of
+# view. This file is the other half: the two physical cameras those positions
+# describe. Under two separate profile names a cell could run the tilted
+# geometry against a single-camera config, or the reverse, and neither half
+# would report a problem.
 #
-# Splitting them across two profiles would let a cell run the tilted geometry
-# against a single-camera config, or vice versa, and neither side would notice.
-#
-# Why this file had to exist. The base `cam.yaml` ships exactly one RGB-d rig,
-# disabled, with `serial_number: null`. The September cell is two D435s, so the
-# rig it will actually run could not be expressed at all. `rigs` is a list and
-# the loader replaces a list wholesale on merge, so this overlay states the
-# cell's complete camera set rather than patching the base one.
+# The complete camera set is restated here rather than patched. `cameras.rigs`
+# is a list, `src/config/_merge.py` replaces a list wholesale, and the base
+# `config/camera/cam.yaml` carries a single RGB-D rig, so a two-camera cell
+# cannot be reached by overlaying fields onto that rig.
 #
 # The serials are the point. Two identical D435s on one bus can only be told
 # apart by serial: `RealSenseRGBDStreamer` binds a device with
 # `rs_config.enable_device(serial)` and, with no serial, takes whatever the SDK
-# offers first, an enumeration order that is not stable across boots or
-# replugs. Two cameras that swap identity do not fail. They produce a complete,
+# offers first, an enumeration order that survives neither a reboot nor a
+# replug. Two cameras that swap identity do not fail. They produce a complete,
 # plausible scene with left and right exchanged, every fused position mirrored
 # about the rig axis, and the pick goes confidently to the wrong place.
 #
-# So both rigs ship disabled with null serials: the tree loads, and the moment
-# you enable both without filling the serials the config refuses, with a message
-# that says how to read them. That refusal is the feature.
+# So both rigs ship disabled with null serials: the tree loads, and enabling
+# both while a serial is still null makes `CameraSystemConfig` in
+# `src/config/schema/camera/cam_schema.py` refuse the tree, with a message that
+# says how to read the serials. The same validator refuses one serial written
+# on both rigs, which would bind a single physical camera twice.
 #
 #   Bench step: read the serials, one line, with either camera unplugged first
-#   if you want to be certain which is which:
+#   to be certain which is which:
 #
 #     rs-enumerate-devices -s
 #     # or:
 #     python -c "import pyrealsense2 as rs; print([d.get_info(rs.camera_info.serial_number) \
 #       for d in rs.context().devices])"
 #
-#   Then set `serial_number` per rig and flip `enabled: true` on both.
+#   Then set `serial_number` per rig and `enabled: true` on both.
 #
 # Naming: the rig ids match the robot layer's camera keys (`oblique_L` /
 # `oblique_R`) so the two halves read as one cell. Which physical camera is
-# "left" is decided by the serial you put here, not by cable order.
+# "left" is decided by the serial set here, not by cable order.
 #
-# Status: (2)-analytical. The geometry mirrors robot.tiltcam.yaml; no d435 pair
-# has ever been enumerated, calibrated or streamed by this repo.
+# The geometry mirrors `config/robot/robot.tiltcam.yaml` and states an intended
+# mounting: no D435 pair has been enumerated, calibrated or streamed by this
+# repository.
 # ============================================================================
 cameras:
   rigs:
     - rig_id: oblique_L
-      enabled: false           # -> true once serial_number below is filled
+      enabled: false           # Enable only after serial_number below is filled
       source: rgbd
 
-      device_index: 0          # IGNORED once serial_number is set; kept for a single-camera fallback
-      serial_number: null      # REQUIRED before enabling both rigs (see the header)
+      device_index: 0          # Ignored once serial_number is set; kept for a one-camera fallback
+      serial_number: null      # Required before both rigs are enabled; see the header
       fps: 30
       backend: 0
 
@@ -73,12 +75,17 @@ cameras:
           decimation: false
           spatial: true
           temporal: true
-          # A tilted view sees object sides at a steep angle, which is where a d435 drops depth. Hole
-          # filling invents surface, and the grasp-depth top-reference would then sample invented
-          # geometry, so it stays off: an honest hole is a measurable signal (the perception exerciser
-          # prints the hole fraction inside each mask); a filled hole is a confident wrong number.
+          # A tilted view sees object sides at a steep angle, which is where a D435 drops depth.
+          # Hole filling invents surface, and the top-referenced grasp depth in
+          # `src/robot/perception/realsense_source.py` takes the nearest real surface over the
+          # mask, so it would sample that invented geometry. An unfilled hole stays measurable:
+          # `python -m src.robot.perception` prints the hole fraction inside each mask, while a
+          # filled hole reports a confident wrong number.
           hole_filling: false
 
+      # Under `rgbd_backend: realsense` only warmup_frames is read: RealSenseRGBDStreamer
+      # discards that many frames before reading intrinsics. The other three keys are read
+      # by the opencv backend alone.
       quality:
         prefer_uncompressed: false
         disable_auto_features: false
@@ -89,11 +96,11 @@ cameras:
         base_dir: calibration/oblique_L
 
     - rig_id: oblique_R
-      enabled: false           # -> true once serial_number below is filled
+      enabled: false           # Enable only after serial_number below is filled
       source: rgbd
 
       device_index: 1
-      serial_number: null      # REQUIRED before enabling both rigs (see the header)
+      serial_number: null      # Required before both rigs are enabled; see the header
       fps: 30
       backend: 0
 

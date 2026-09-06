@@ -1,22 +1,35 @@
+# Segmentation models: the mask source of the perception stack, built by `src/models/factory.py`.
+# `segmenting.sim.yaml` overlays this file when WILLY_PROFILE includes sim.
+#
+# SAM2, prompted with one box and returning one mask. `local: True` reads the weights from
+# `model_path` and downloads nothing; `local: false` pulls `model_id` from the Hub. The path below
+# is not present in a fresh checkout, so a cell that keeps `local: True` has to put the SAM2 files
+# there first.
 segmenter:
   model_path: "src/models/segmentation/model"
   model_id: "facebook/sam2-hiera-large"
   local: True
   optim:
+    # `auto` means fp16 on CUDA and fp32 elsewhere. fp16 costs recall on small objects; leaving
+    # `torch_dtype` unset keeps fp32 weights, which is what a cell picking small parts wants.
     torch_dtype: auto
     attn_implementation: sdpa
     channels_last: true
     compile: false
     compile_mode: reduce-overhead
 
-# Segmentation backend selection: "sam2" (realtime, box-prompted) | "oneformer" (research, higher-accuracy, GPU-heavy).
+# Which segmenter is built: "sam2" takes one box and cuts one object; "oneformer" segments the
+# whole image with its own trained vocabulary and the box then selects among the segments, for more
+# GPU time per frame.
 segmenter_backend: "sam2"
 
-# OneFormer universal segmenter (instance masks). Active when segmenter_backend: "oneformer".
+# The OneFormer block, required when `segmenter_backend` is "oneformer": asking for that backend
+# without this block refuses the build instead of falling back to SAM2.
 oneformer:
   model_path: ""
   model_id: "shi-labs/oneformer_coco_swin_large"
   local: false
+  # The only value the schema accepts and the only mode the wrapper implements.
   task: "instance"
   optim:
     torch_dtype: auto

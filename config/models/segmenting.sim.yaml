@@ -1,14 +1,15 @@
-# Sim profile overlay (WILLY_PROFILE=sim), deep-merged onto segmenting.yaml.
-# Sam2 for the sim real-vision (M2) path: downloaded from HF (local:false) on first run.
-# Only the segmenter entry diverges; `segmenter_backend`/`oneformer` are inherited from the base file.
+# Sim profile overlay, deep-merged onto segmenting.yaml when WILLY_PROFILE includes sim.
+# SAM2 for the simulated vision path; `local: false` fetches the weights from the Hub on first run.
+# Only `segmenter` diverges here, and every other key of the base file is inherited.
 segmenter:
   model_path: ""
   local: false
   optim:
-    # Reset to the validated M2 baseline: torch_dtype + attn UNSET (native fp32 weights + fp16-autocast).
-    # A `null` leaf would keep the production base "auto" (fp16 weights), so use the loader's reset
-    # sentinel "__null__". channels_last off (numerically inert). See object.sim.yaml for the measured
-    # 8/10 -> 0/3 regression that the unset path fixes.
+    # The same unset-dtype path as `object.sim.yaml`: fp32 weights with fp16 autocast, which is
+    # what holds recall on small objects. A `null` leaf would keep the base value `auto` (fp16
+    # weights on CUDA), so the loader's reset sentinel "__null__" is the only way an overlay can
+    # force a field back to unset. `channels_last` is a memory format rather than a numerical
+    # setting, and is off here.
     torch_dtype: "__null__"
     attn_implementation: "__null__"
     channels_last: false

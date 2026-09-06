@@ -1,16 +1,23 @@
-# KUKA EKI/KRL robot config template.
+# KUKA EthernetKRL robot configuration template.
 #
-# This file is not loaded automatically by the config loader. Copy these
-# values into robot.yaml or a deployment-specific profile overlay after the
-# matching KRL/EKI XML contract exists on the controller.
+# The config loader does not read this file. Copy these values into `robot.yaml`, or into a
+# profile overlay, once the controller side exists: the KRL program and the EKI channel
+# definition are in `config/robot/templates/kuka/`, whose README says where each file goes on
+# the controller.
 
 robot:
   vendor: "kuka"
 
+  # The KUKA driver does not read this block: `src/robot/drivers/kuka/arm.py` clamps nothing from
+  # it, and its readers are the UR driver and the calibration routine. `workspace_limits` below is
+  # what a KUKA cell actually enforces.
   motion_limits:
     max_velocity: 1.0
     max_acceleration: 0.5
 
+  # Cartesian bounding box in millimetres, enforced by the driver's `WorkspaceGuard` and by
+  # `SafetyPreflight`. Every min must be strictly below its max or the config is refused at load.
+  # Replace these bounds with the reachable volume of the installed cell before driving anything.
   workspace_limits:
     x_min: -500.0
     x_max:  500.0
@@ -19,25 +26,39 @@ robot:
     z_min:  100.0
     z_max:  600.0
 
+  # "none" builds a no-op gripper that still satisfies the `Gripper` Protocol, so a cell runs
+  # before its end-effector is chosen. `max_width_mm` is the physical open width in millimetres;
+  # `min_width_mm` is a policy floor on commanded widths and must be strictly below it.
   gripper:
     vendor: "none"
     max_width_mm: 150.0
     min_width_mm: 0.0
 
   kuka:
+    # `model` and `dof` become the capabilities the driver reports: a 6-axis kr6-r900 gets the
+    # bundled descriptor, and any other pair builds one from these two values.
+    #
+    # `controller` and `transport` are not fields of `KukaConfig` in
+    # `src/config/schema/robot/kuka_schema.py`, and the schema refuses unknown keys, so copying
+    # those two lines into `robot.yaml` makes the config fail to load. EthernetKRL is the only
+    # transport the driver implements.
     model: "kr6-r900"
     controller: "krc4"
     dof: 6
     transport: "eki"
-    # KUKA controller network address. Only used when EKI is in client
-    # mode (Willy dials the controller); informational otherwise.
+    # Network address of the KUKA controller. Read only when `eki.role` is "client", where it is
+    # the host the driver dials; under "server" it is informational.
     controller_ip: "${KUKA_ROBOT_IP:-192.168.1.20}"
     eki:
-      # Python application's role. For typical EthernetKRL setups, the
-      # robot-side KRL program opens the connection to this Python server.
+      # The role of this Python application, not of the controller. "server" listens on
+      # `host`:`port` and lets the KRL program dial in, which is what the bundled
+      # `EkiHwInterface.xml` expects; "client" dials `controller_ip` instead.
       role: "server"
+      # The local bind address under role "server"; role "client" ignores it.
       host: "${WILLY_EKI_HOST:-0.0.0.0}"
       port: 7000
+      # Per-operation timeout in seconds, covering connect, request and reply, and ack.
       timeout_s: 5.0
+      # Period in seconds of the background echo probes; 0.0 turns them off.
       heartbeat_s: 0.5
       buffer_size: 65536

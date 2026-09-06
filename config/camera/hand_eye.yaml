@@ -1,19 +1,36 @@
+# Sample-collection tuning for the two hand-eye calibration workflows. `CalibrationRoutine` in
+# `src/robot/execution/calibration.py` builds the calibrator named by `mode`, hands these
+# thresholds to the sample collector in `src/calibration/eye_hand/common.py`, and reuses the same
+# two diversity numbers in the workspace guard that generates the calibration poses.
 hand_eye:
-  # NOTE: these `enabled` flags are documentation only: no code reads them (verified). They record the
-  # cell's intended posture. The September rig is two fixed eye-to-hand D435s, so eye_to_hand is the base
-  # default; the sim overlay (hand_eye.sim.yaml) already sets eye_to_hand too. A wrist-camera cell flips
-  # them back.
-  # Fixed-camera workflow: returns Transform(CAMERA -> BASE).
+  # The two `enabled` flags are documentation only: no code reads them. They record which mounting
+  # the cell intends. The base tree ships the fixed-camera posture, so `eye_to_hand` is on and
+  # `eye_in_hand` is off; a wrist-camera cell flips them, and the sim overlay
+  # (`camera/hand_eye.sim.yaml`) turns both on.
+  # Fixed-camera workflow: returns `Transform(CAMERA -> BASE)`.
   eye_to_hand:
     enabled: true
+    # The schema pins this block to `eye_to_hand`. The mounting is chosen by which block a caller
+    # passes to `CalibrationRoutine`, not by editing this value.
     mode: "eye_to_hand"
+    # Poses required before the solver runs. Four is the floor the AX=XB solve accepts, and the
+    # poses must rotate about two independent axes or the transform is not determined.
     min_samples: 6
+    # A new sample is kept only when it differs from every stored pose by more than this distance
+    # or by more than `min_angle`. Raising the pair widens the spread; raise it too far and the
+    # pose generator cannot find enough poses inside the workspace limits.
     min_distance_mm: 40.0
+    # Rotation half of the same diversity test, in degrees.
     min_angle: 10.0
+    # Side length of the printed ArUco marker in millimetres. It sets the scale of every solved
+    # translation, so a value that does not match the physical marker scales the whole calibration.
     marker_length_mm: 50.0
+    # OpenCV predefined dictionary the marker was generated from. Only names that
+    # `cv2.aruco.getPredefinedDictionary` knows are accepted, and it must match the printed marker.
     aruco_dict_name: "DICT_5X5_100"
 
-  # Tool-mounted-camera workflow: returns Transform(CAMERA -> TOOL).
+  # Tool-mounted-camera workflow: returns `Transform(CAMERA -> TOOL)`. The five collection settings
+  # carry the same meaning as in the block above.
   eye_in_hand:
     enabled: false
     mode: "eye_in_hand"

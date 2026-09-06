@@ -1,10 +1,23 @@
-# Phase T7 preset: dense_clutter with active recovery + uncertainty gating.
+# Grasp preset: dense clutter, with scene recovery and uncertainty gating armed.
+#
+# A preset is not part of the config tree the loader validates. `apply_preset` in
+# `src/robot/grasping/replay/presets.py` deep-merges this file onto an already loaded `robot:`
+# block, so `python -m src.config` never sees it and a misspelt key merges in silently. Only
+# `validate_preset` re-validates the merged result against the schema and rejects it.
 grasping:
+  # `dense_clutter` samples the pile rather than one object. It is listed in the shipped
+  # `apply_modes` of both blocks below, which is what lets them take effect at all.
   default_mode: dense_clutter
   recovery:
     enabled: true
+    # `next_viewpoint` moves the camera, not the scene. The two physical actions, `nudge_target`
+    # and `container_agitate`, are refused unless `recovery.fixture` declares a motion envelope.
     allowed_actions:
       - next_viewpoint
   uncertainty:
     enabled: true
+    # Fused uncertainty at or above this value fail-closes the attempt. While the layer is enabled
+    # this replaces `decision.auto_uncertainty_threshold`, and 0.4 is that key's own default, so
+    # arming the layer does not by itself move the gate. The gate lives in the decision layer, so
+    # `decision.enabled` must be true as well or nothing is refused here.
     fail_closed_threshold: 0.4

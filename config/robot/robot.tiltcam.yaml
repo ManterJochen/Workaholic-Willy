@@ -1,72 +1,65 @@
 # ============================================================================
-# Tilted dual-d435 CAMERA rig, a profile layer, chained after a robot layer.
+# Tilted camera rig: a camera-only profile layer, chained after a robot layer.
 #
 #   WILLY_PROFILE=sim,ur3e,tiltcam
 #
-# Models the camera rig of the real cell instead of the sim's historical nadir
-# view: two Intel RealSense D435s, both eye-to-hand, mounted off to the side and
-# tilted roughly 70 degrees up from the table plane rather than hanging directly
-# over the scene.
+# Two Intel RealSense D435s, both eye-to-hand, mounted off to the side and tilted
+# roughly 70 degrees up from the table plane instead of hanging over the scene.
 #
-# It is a separate layer from the robot on purpose. Bringing up a new arm and
-# changing the optics at the same time would make a pick-rate change
-# uninterpretable: you could not tell the arm from the camera. Chained, the same
-# robot can be run with either rig and the difference measured:
+# The optics are a separate layer from the robot so that one arm can be run under
+# either rig:
 #
-#   WILLY_PROFILE=sim,ur3e            nadir overhead  (control)
-#   WILLY_PROFILE=sim,ur3e,tiltcam    tilted pair     (the real cell)
+#   WILLY_PROFILE=sim,ur3e            the nadir overhead camera
+#   WILLY_PROFILE=sim,ur3e,tiltcam    the tilted pair
 #
-# What actually changes, and why it is not cosmetic:
-#   * Silhouette != footprint. A tilted view sees object sides, so the top-down
-#     assumption behind footprint-based grasp synthesis no longer holds exactly.
-#   * Real parallax. Depth error projects into grasp position differently than it
-#     does under a nadir view.
-#   * The nadir CAMERA->BASE shortcut is invalid. `build_combined_scene` detects the
-#     aim point and fits the true CV-optical extrinsic from Isaac's own projection
-#     instead (the same oracle the validated oblique rigs use).
-#   * Field of view. Isaac's default lens is narrower than a d435's 69.4 deg RGB
-#     stream, so the sim has been framing a smaller slice of the table than the
-#     real camera will. Stating hfov_deg authors the lens to match.
+# What the tilt changes:
+#   * A tilted view sees object sides, so a silhouette is no longer the object's
+#     footprint and the top-down assumption behind footprint-based grasp synthesis
+#     no longer holds exactly.
+#   * The view has real parallax, so depth error projects into grasp position
+#     differently than it does under a nadir view.
+#   * The top-down camera-to-base shortcut is invalid. Where a camera declares an aim
+#     point, `build_combined_scene` fits the true CV-optical extrinsic from Isaac's own
+#     projection instead of using `top_down_camera_to_base_matrix`.
+#   * Isaac's default lens is narrower than a D435's 69.4 deg RGB stream and frames a
+#     smaller slice of the table than the real camera, so `hfov_deg` authors the lens
+#     to match the sensor this camera stands in for.
 #
-# Geometry: positions are derived, not hand-picked. They come from
-# `camera_position_for_elevation` at elevation 70 deg, azimuth -/+90 deg,
-# distance 900 mm from the aim point, and `willy_sim/harness/coverage.py`
-# verifies at load time that the resulting cones actually contain the
-# configured scene.
+# The positions are derived rather than picked by hand: `camera_position_for_elevation`
+# at elevation 70 deg, azimuth -90 and +90 deg, distance 900 mm from the aim point.
+# `src/willy_sim/harness/coverage.py` checks, before the Isaac boot, that the resulting
+# view cones still contain the configured scene.
 #
-# Anchored on the UR3e cell's workspace centre (350, 0, 50). Chaining this onto a
-# differently-anchored robot layer is allowed: the coverage audit reports whether
+# The aim point (350, 0, 50) sits over the scene the `ur3e` layer authors. Chaining this
+# onto a robot layer anchored elsewhere is allowed: the coverage audit reports whether
 # the scene still falls inside the frame.
 #
-# Status: (2)-analytical. Elevation 70 deg and the 900 mm standoff are the stated
-# intent for the Sept rig, to be replaced by measured mounting values once the real
-# cameras are on their brackets.
+# Elevation 70 deg and the 900 mm standoff are the intended mounting geometry, derived
+# rather than measured off physical brackets.
 # ============================================================================
 robot:
   sim:
     cameras:
-      # Camera A. Listed under both names on purpose: it is one physical camera,
-      # and the single-view path looks up "overhead" while the multi-view path
-      # looks up "oblique_L".
+      # Camera A, listed under two names because it is one physical camera: the
+      # single-view path looks up `overhead` and the multi-view path looks up
+      # `oblique_L`.
       overhead:
         position_mm: [350.0, -307.8, 895.7]
-        mount_aim_mm: [350.0, 0.0, 50.0]      # setting an aim = author by look-at, not nadir
+        mount_aim_mm: [350.0, 0.0, 50.0]      # an aim point authors this camera by look-at
         mount_up_hint: [0.0, 0.0, 1.0]
         hfov_deg: 69.4                        # D435 RGB stream (datasheet)
-        # Mandatory at this standoff: Isaac's 1.0 m default near clip sits behind a
-        # camera 0.9 m from its target, so the whole frame would come back empty.
-        # Consequence to keep in mind: the M1 ground-truth path relied on that 1.0 m
-        # clip to hide the arm from the instance mask, so a tilted M1 run may see arm
-        # links the nadir run did not.
+        # Mandatory at this standoff: Isaac's 1.0 m default near clip sits behind a camera
+        # 0.9 m from its target, so without it the whole frame comes back empty. It has a
+        # cost: the ground-truth path relies on that 1.0 m clip to hide the arm from the
+        # instance mask, so a tilted run can see arm links a nadir run does not.
         near_clip_m: 0.05
       oblique_L:
         position_mm: [350.0, -307.8, 895.7]
         mount_aim_mm: [350.0, 0.0, 50.0]
         hfov_deg: 69.4
         near_clip_m: 0.05
-      # Camera B, the opposite side. Together with A this is the two-sided
-      # redundancy the occlusion probe measured: the arm reaching in from either
-      # approach still leaves the target visible to at least one view.
+      # Camera B, on the opposite side. The pair is what keeps a target visible: an arm
+      # reaching in from either approach still leaves it in view of at least one camera.
       oblique_R:
         position_mm: [350.0, 307.8, 895.7]
         mount_aim_mm: [350.0, 0.0, 50.0]

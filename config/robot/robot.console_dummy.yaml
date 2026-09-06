@@ -1,19 +1,19 @@
 # ============================================================================
 # Console dummy   --profile console_dummy
 #
-# A cell the operator console can drive END TO END with no hardware at all: no controller, no camera,
-# no GPU. Every screen (preflight, prepare, connect, pick with its live event stream, history)
-# becomes exercisable at a desk, which is what the frontend is developed and reviewed against.
+# A cell the operator console can drive end to end with no hardware at all: no controller, no
+# camera, no GPU. Preflight, cell build and connect, a pick with its live event stream and history
+# all become exercisable at a desk.
 #
-# What it is not. This proves the console, never the cell. A dummy arm accepts every motion and
-# reports success, so a green run here says the UI and the API agree, and nothing whatsoever about
-# grasping. The honest cell-level validation lives elsewhere and is already done: `ursim` drives real
-# UR controller software (measured 20/20 on both UR3e and UR5e), and Isaac drives the perception and
-# grasp stack. This profile deliberately replaces both, and a screen that renders a dummy run must
-# not imply otherwise; `CellOut.vendor` and `TelemetryOut.simulated` are how the UI says so.
+# What it is not. This profile proves the console, never the cell. The dummy arm carries no
+# kinematic model, accepts every motion and reports success, so a green run here says the console
+# and the library agree and says nothing about grasping. Cell-level validation lives in the other
+# profiles: `robot.ursim.yaml` points the UR driver at real controller software, and the Isaac sim
+# drives the perception and grasp stack. A screen that renders a dummy run must not imply
+# otherwise; `CellOut.vendor` and `TelemetryOut.simulated` are how the console says which it is.
 #
-# Pair it with `POST /v1/cell/build?rehearse=true`, which substitutes the desk scene for the camera
-# and the models. Together: the whole console, at a desk, in seconds.
+# Pair it with `POST /v1/cell/build?rehearse=true`, which substitutes a fixed desk scene for the
+# camera and the perception models. Together: the whole console, at a desk, in seconds.
 #
 #   python -m api --profile console_dummy
 # ============================================================================
@@ -24,17 +24,19 @@ robot:
   gripper:
     vendor: "dummy"
     tool_frame:
-      # Declared, because `from_robot_config` refuses an undeclared tool frame on any real path and a
-      # console profile that dodges that check would hide the very refusal an operator must meet.
-      # The numbers are the 2F-85's, i.e. a real gripper's, but on a dummy arm they move nothing.
+      # Declared rather than left at the default: an undeclared tool frame blocks the preflight on
+      # a real vendor and the real-arm driver refuses to connect on it, so a console profile that
+      # skipped it would model a cell that cannot come up. The numbers are a 2F-85's; on a dummy
+      # arm they move nothing.
       source: "willy"
       offset_mm: [0.0, 0.0, 132.0]
       rotation_quat_xyzw: [-0.70710678, 0.0, 0.0, 0.70710678]
 
   safety:
     payload:
-      # A coherent pair rather than the shipped "not measured yet" markers, for the same reason as
-      # above: the console should exercise the happy path, not trip a guard that exists for real cells.
+      # The shipped `mass_kg: 0.0` marks a tool nobody has weighed: on a real vendor that blocks
+      # the preflight and the driver refuses to connect. A coherent mass and centre of gravity keep
+      # the console on the checklist's ok path; a dummy arm carries nothing either way.
       enforce: true
       mass_kg: 1.5
       cog_mm: [0.0, 0.0, 60.0]

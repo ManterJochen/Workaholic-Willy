@@ -1,10 +1,13 @@
-# Robot Configuration
+# Robot configuration: the vendor and its driver block, the arm's limits, the mounted
+# end-effector, the vendor-neutral safety guards and the grasping behaviour. This is the base
+# layer every `robot.*.yaml` profile overlay merges onto, and it describes one worked cell: a
+# Universal Robots arm carrying a Robotiq 2F-85, planning with cuRobo.
 #
-# vendor: which driver create_arm() should build. Switch to "kuka" to
-#         activate the KUKA EthernetKRL driver and edit the matching
-#         `kuka:` block below. Switch to "sim" to drive the Isaac /
-#         pure-Python mock arm via the `sim:` block. The kuka_eki.yaml
-#         template under `templates/` is a safe starting point.
+# `vendor` selects which driver `create_arm()` builds, and is checked against the `RobotVendor`
+# enum as the config loads, so a typo is refused there rather than at the first motion. Each
+# vendor owns a sibling block below and only the matching one is read: "ur", "kuka" for the
+# EthernetKRL driver, "sim" for the Isaac or pure-Python mock arm, "dummy" for the featureless
+# in-process stub. `templates/kuka_eki.yaml` is a starting point for a KUKA cell.
 robot:
   vendor: "ur"
 
@@ -13,35 +16,40 @@ robot:
   # ----------------------------------------------------------------------
   ur:
     ip: "192.168.1.100"
-    rtde_frequency: 0.0        # 0 = default (125 Hz)
-    # cuRobo is the planner. "ik" is the controller's straight line, which knows nothing about the
-    # bench, the bin or anything else in the cell and will drive through all of it. Fail-closed: with
-    # no cuRobo environment the move is refused (CONTROLLER_REJECTED), it never degrades to blind IK,
-    # so check the cell first with `python -m src.robot.safety.planning --doctor`. What the
-    # planner knows about your cell is `safety.planning_world`; with that block off it plans against
-    # its own robot model and a generic table and nothing else.
+    rtde_frequency: 0.0        # 0 = the controller picks its own rate, 125 Hz, not zero hertz
+    # Approach-phase planner. "curobo" plans a collision-free trajectory in the isolated planner
+    # process (safety.planning) and executes it waypoint by waypoint. "ik" is the controller's
+    # straight line, which knows nothing about the bench, the bin or anything else in the cell and
+    # will drive through all of it. The "curobo" path is fail-closed: with no cuRobo environment
+    # the move is refused with CONTROLLER_REJECTED and never degrades to blind IK, so confirm that
+    # environment first with `python -m src.robot.safety.planning --doctor`. What the planner knows
+    # about the cell comes from `safety.planning_world`; with that block off it plans against its
+    # own robot model and a generic 1.6 m table and nothing else.
     motion_planner: "curobo"
 
   # ----------------------------------------------------------------------
-  # SIM block (Isaac-Sim or pure-Python mock). Only consulted when
-  # robot.vendor == "sim". Set mock_mode: true to run a deterministic
-  # CI-friendly mock that requires no NVIDIA / Isaac install.
+  # Sim block (Isaac Sim or pure-Python mock). Only consulted when
+  # robot.vendor == "sim". With mock_mode: true the driver touches no
+  # Isaac SDK at all: connect() succeeds at once and each motion updates
+  # a cached TCP, so a machine with no NVIDIA install can drive it.
   # ----------------------------------------------------------------------
   sim:
     enabled: false
     mock_mode: false
     backend: "isaac"
-    # Which UR the sim cell drives: "ur5e" (default) | "ur3e" | "ur10e". Selects the Lula solver config, the
-    # Isaac USD and the cuRobo {model}.yml (see src/robot/drivers/sim/robot_models.py). On an enabled
-    # sim cell this must match safety.self_collision.kinematics_model (cross-validated at config load).
+    # Which UR the sim cell drives: "ur5e", "ur3e" or "ur10e". It selects the Lula solver config,
+    # the Isaac USD and the cuRobo {model}.yml; see src/robot/drivers/sim/robot_models.py. On an
+    # enabled sim cell it must equal safety.self_collision.kinematics_model, which config load
+    # cross-checks, because otherwise the guard evaluates one arm against the other's link lengths.
     robot_model: "ur5e"
     scene: null
     robot_prim_path: null
     gripper_prim_path: null
     headless: true
   # ----------------------------------------------------------------------
-  # Dummy driver block. No knobs today; present so the YAML shape stays
-  # stable when projects opt into the dummy backend.
+  # Dummy driver block. Only consulted when robot.vendor == "dummy". The
+  # driver is featureless by intent and the block carries no fields; it
+  # exists so the YAML shape stays stable if one is ever added.
   # ----------------------------------------------------------------------
   dummy: {}
 
@@ -59,95 +67,112 @@ robot:
 
   gripper:
     vendor: "robotiq"
-    max_width_mm: 85.0         # Robotiq 2F-85 physical opening (was 150.0; no Robotiq opens that far,
-                               # and the driver's count map is anchored on this value: a wrong max meant
-                               # every commanded width landed short on real hardware)
-    min_width_mm: 5.0          # smallest MEANINGFUL grip (a policy floor, NOT the physical closed width;
-                               # the 2F-85 closes to 0 mm. The driver anchors its count map on 0, not
-                               # on this, so this no longer distorts the mapping. See robotiq.py)
-    closed_width_mm: 0.0       # the PHYSICAL closed width: what get_width_mm() reads with the jaws shut
-                               # on nothing. Measured 2026-08-09 why this is its own key: grasp
-                               # verification asks "did the jaws collapse on nothing?", which is a
-                               # question about the mechanism. Reading min_width_mm (5.0) there put the
-                               # threshold at 7 mm and reported a genuinely held 6 mm part as an empty
-                               # grasp. Same confusion the count map already had to untangle.
+    max_width_mm: 85.0         # the mounted gripper's physical open width, here the Robotiq
+                               # 2F-85. The Robotiq driver anchors its count map on this value, so
+                               # a number set as a policy ceiling lands every commanded width short.
+    min_width_mm: 5.0          # smallest meaningful grip: a policy floor, not the physical closed
+                               # width, which is closed_width_mm. It clamps commanded widths only;
+                               # the count map in robotiq.py is anchored on 0.
+    closed_width_mm: 0.0       # the physical closed width: what get_width_mm() reads with the jaws
+                               # shut on nothing, 0 mm on a 2F-85. Kept apart from min_width_mm
+                               # because grasp verification asks whether the jaws collapsed on
+                               # nothing and reads this key: the 5 mm policy floor in its place
+                               # puts that threshold at 7 mm and reports a genuinely held 6 mm part
+                               # as an empty grasp.
 
-    # Where the GRASP centre sits on the FLANGE. Left undeclared here on purpose: this is a per-cell
-    # bench measurement (the coupling plate plus the gripper), and a plausible-looking default is how
-    # the next cell inherits a wrong frame silently. A real UR driver refuses to connect while this
-    # says `undeclared`; that refusal is the feature.
+    # Where the grasp centre sits on the flange. Left undeclared here on purpose: this is a
+    # per-cell bench measurement of the coupling plate plus the gripper, and a plausible-looking
+    # default is how the next cell inherits a wrong frame in silence. A real UR driver refuses to
+    # connect while this says `undeclared`; that refusal is the feature.
     #
-    # Why it matters: every pose this stack commands is the grasp centre, and the UR driver hands poses
-    # straight to moveL in whatever frame the controller's tool register holds. At the UR factory
-    # default (identity at the flange) a top-down grasp commanding z=37 mm drives the FLANGE to 37 mm
-    # and the fingertips ~95 mm below the table. Nothing downstream catches it: the WorkspaceGuard
-    # bounds the commanded number, and no profile declares a table fixture.
+    # Why it matters: every pose this stack commands is the grasp centre, and the UR driver hands
+    # poses straight to moveL in whatever frame the controller's tool register holds. At the UR
+    # factory default, identity at the flange, a top-down grasp commanding z=37 mm drives the
+    # flange to 37 mm and the fingertips about 95 mm below the table. No guard names the cause: the
+    # workspace guard bounds the commanded number, and this file declares no fixture, so a table
+    # exists only where a profile adds one, as robot.ur5e.yaml adds a bench.
     #
-    #   source: "willy"      this driver composes flange<->TCP itself and the controller runs a bare
-    #                        flange. Needs no vendor SDK call, and it is the only mode that also covers
-    #                        the cuRobo path, which plans to tool0 and executes moveJ.
+    #   source: "willy"      this driver composes flange to TCP itself and the controller runs a
+    #                        bare flange. Needs no vendor SDK call. The cuRobo path, which plans
+    #                        to tool0 and executes moveJ, is handed the flange goal in both modes.
     #   source: "polyscope"  an operator set the TCP on the teach pendant; the driver passes poses
-    #                        through and only verifies the controller agrees.
+    #                        through and only verifies that the controller agrees.
     #
-    # Either way connect() derives what the controller is actually running,
-    # inv(base->flange from the bundled DH table) @ getForwardKinematics(q), and refuses a mismatch.
-    # No setTcp / getTCPOffset is involved: neither symbol is confirmed to exist in the pinned SDK.
-    # The two modes predict different answers (identity vs the declared transform, 132 mm and 90 deg
-    # apart for the 2F-85), so a pass also proves which mode the cell is in.
+    # Either way connect() derives what the controller is actually running, the bundled DH table's
+    # base-to-flange transform inverted and composed with getForwardKinematics(q), and refuses a
+    # mismatch beyond `verify_tolerance_mm`. No setTcp is involved: nothing writes the controller's
+    # tool register. getTCPOffset is not part of this derivation either, though connection.py calls
+    # it once per connection so fk(q) can pass an explicit offset. The two modes predict different
+    # answers, identity
+    # against the declared transform, 132 mm and 90 deg apart for the 2F-85, so a passing check
+    # also shows which mode the cell is in.
     #
-    # For a 2F-85 on a UR flange the sim driver's measured values are
+    # For a 2F-85 on a UR flange the sim driver carries
     #   offset_mm: [0.0, 132.0, 0.0]
     #   rotation_quat_xyzw: [-0.70710678, 0.0, 0.0, 0.70710678]   # -90 deg about flange X
-    # Re-measure them on the real coupling before trusting them; take cog_mm in the same session.
+    # Measure them on the real coupling before trusting them, and take safety.payload.cog_mm in the
+    # same bench session.
     tool_frame:
       source: "undeclared"
 
   calibration:
-    # Mechanical settle time after each pose move, before image capture.
+    # How long the routine waits after each pose move before it captures: spent on the driver's
+    # steady signal where it has one, slept otherwise.
     settle_time_s: 0.5
 
-    # Random orientation deviation (deg) when generating calibration poses.
+    # Half-amplitude in degrees of the random per-axis perturbation added around the tool-down
+    # base orientation when calibration poses are generated. Wider means more diverse poses.
     orientation_spread_deg: 15.0
 
-    # Pose-generator retry budget per pose before giving up.
+    # How many random samples the pose generator may reject per pose before it raises. Raising it
+    # helps a narrow workspace; a generator that still gives up wants a wider box, not more tries.
     max_attempts_per_pose: 200
 
-    # Quality classification bands. Inclusive upper bounds.
+    # RMSE bands in mm that label a hand-eye calibration result, each an inclusive upper bound and
+    # strictly increasing. They label the result and do not gate it: the extrinsics are saved
+    # whatever the RMSE, so judging it stays with the operator.
     quality_bands_mm:
       excellent: 1.0
       good:      2.5
       marginal:  5.0
 
   # ----------------------------------------------------------------------
-  # Vendor-neutral safety knobs. Enforced *in addition to* controller-side
-  # safety (UR safety planes, KUKA SafeOperation, etc.); the more
-  # restrictive value always wins. Tighten these for fragile end-effectors
-  # or smaller maintenance cells.
+  # Vendor-neutral safety knobs. Enforced in addition to controller-side
+  # safety (UR safety planes, KUKA SafeOperation and the like); the more
+  # restrictive value always wins. Tighten these for fragile
+  # end-effectors or smaller maintenance cells.
   #
-  # Every sub-block owns an ``enforce`` flag (default true). Setting
+  # Most sub-blocks own an ``enforce`` flag, default true. Setting
   # ``enforce: false`` removes that guard from the per-move
   # SafetyPreflight pipeline at construction time; it does not just
-  # silence its log output. See ``src/robot/safety/preflight.py``
-  # for the canonical guard order.
+  # silence its log output. ``limits`` is the exception, because the
+  # workspace box is always wired, and ``planning_world`` and
+  # ``trajectory_check`` gate on ``enabled`` instead. See
+  # ``src/robot/safety/preflight.py`` for the canonical guard order.
   # ----------------------------------------------------------------------
   safety:
-    # Workspace margin, subtracted from each workspace face before the workspace guard runs.
+    # Margin subtracted from every face of workspace_limits before the workspace guard runs.
+    # The workspace box is the one guard that is always wired, so ``enforce`` here is read nowhere.
     # (Per-move velocity/acceleration limits live in config.motion_limits, not here.)
     limits:
       enforce: true
       workspace_margin_mm: 20.0
 
-    # Per-axis joint hard limits + margin. UR populates
-    # min/max from RTDE telemetry at connect; the static fallback below
-    # is only consulted on KUKA / SIM or when telemetry is unavailable.
+    # Per-axis joint hard limits and the margin the guard keeps between a commanded angle and the
+    # limit. The static lists below are read first and override everything else. With them null a
+    # UR falls back to the built-in factory table in safety/joint_limits.py, plus or minus 360 deg
+    # on every axis, and no other vendor has one: no driver reads joint limits from RTDE telemetry.
+    # With neither source the guard fails closed while enforce is true. The two lists are set
+    # together or not at all, one entry per axis, with min_deg below max_deg on every axis.
     joint_limits:
       enforce: true
       margin_deg: 5.0
       min_deg: null
       max_deg: null
 
-    # IK-solution quality checks: NaN, joint jump, Jacobian
-    # condition number, near-limit proximity.
+    # Quality checks on the joint solution the driver produced: NaN or wrong DoF, a per-axis jump
+    # beyond max_jump_rad, which signals a wrap-around ambiguity, a near-singular Jacobian by
+    # condition number or smallest singular value, and proximity to the joint limits.
     ik_quality:
       enforce: true
       max_jump_rad: 1.0
@@ -155,16 +180,24 @@ robot:
       max_condition_number: 250.0
       limit_proximity_deg: 2.0
 
-    # Step-size guard between consecutive accepted targets.
+    # Step size allowed between consecutive accepted targets, which catches a stray command that
+    # would slam the arm across the workspace. The first target after a preflight reset is always
+    # accepted, since there is no previous one to compare against.
     motion_continuity:
       enforce: true
       max_joint_step_deg: 45.0
       max_orientation_step_deg: 30.0
       max_tcp_step_mm: 250.0
 
-    # Mass / CoG / inertia envelope. ``mass_kg`` is the
-    # currently mounted payload, ``max_mass_kg`` is the absolute upper
-    # bound the guard refuses to set regardless.
+    # Mass / CoG / inertia envelope of the mounted tool plus payload. ``mass_kg`` is what is
+    # mounted now, ``max_mass_kg`` is the absolute upper bound the guard refuses to set regardless,
+    # ``cog_mm`` is the centre-of-gravity offset from the flange and ``inertia_kgm2`` the diagonal
+    # tensor. A real UR pushes mass_kg and cog_mm to the controller at connect while enforce is
+    # true, so the shipped pair of enforce: true and mass_kg: 0.0 is refused there rather than
+    # overwriting the controller's payload for a tool that is really mounted. Weigh the whole
+    # assembly (coupling plate, wrist-borne cables and hoses, any carried workpiece) and set both
+    # keys, or set enforce: false for a genuinely bare flange. A declared mass left at
+    # cog_mm [0, 0, 0] is refused too: that describes a point mass at the flange face.
     payload:
       enforce: true
       mass_kg: 0.0
@@ -172,35 +205,42 @@ robot:
       cog_mm:      [0.0, 0.0, 0.0]
       inertia_kgm2: [0.0, 0.0, 0.0]
 
-    # Self-collision guard. ``capsule`` is the default
-    # always-available backend. Switch to ``fcl`` and populate
-    # ``mesh_dir`` with operator-supplied STL files to use the FCL
-    # backend (requires the optional ``python-fcl`` package).
+    # Link-against-link and link-against-fixture collision. ``capsule`` is the always-available
+    # proxy: each arm link becomes a capsule of ``link_radii_mm``, or a single 60 mm default where
+    # that list is null, and every pair is checked in closed form. ``min_distance_mm`` is the
+    # smallest signed distance two monitored shapes may reach. ``mesh_dir`` names a directory
+    # holding a ``{model}_collision_meshes.npz`` bundle in place of the one shipped with the safety
+    # package. ``fixtures`` are axis-aligned boxes in the base frame, checked by both backends and,
+    # with ``planning_world.include_fixtures``, handed to the planner as well; an empty list leaves
+    # the bench, the bin and every wall invisible to the guard.
     self_collision:
       enforce: true
-      # Exact meshes, not the capsule proxy. The proxy cannot see the gripper at a joint gate: it builds
-      # the tool capsule from target_pose, and gate_joint_target (every commanded joint move, and the
-      # cuRobo final-config gate) never sets one. Measured on the joint context that gate builds, at
-      # joints [1.95, 0.38, -1.33, -0.55, 2.00, 0.79]: capsule accepts, fcl rejects with
-      # "forearm|lfinger: mesh distance 0.367 mm". Over 4000 random configurations the two disagree on
-      # 18 % (ur5e) and 30 % (ur3e) of poses, and the capsule proxy accepts configurations whose true
-      # mesh distance is 0.000 mm on both robots. Cost: 0.085 ms -> 9.6 ms per check.
-      # Requires an engine (python-fcl, or Coal via WILLY_COAL_PREFIX) and a bundle for the model.
-      # Non-UR vendors have neither and fall back to the proxy by construction.
+      # Exact meshes, not the capsule proxy. The proxy cannot see the gripper at a joint gate: it
+      # builds the tool capsule from target_pose, and gate_joint_target, which every commanded
+      # joint move takes, never sets one. The cuRobo final-config gate is a pose gate and does set
+      # one. The two disagree on a large share of arm configurations: at joints
+      # [1.95, 0.38, -1.33, -0.55, 2.00, 0.79] the proxy accepts and the meshes reject with
+      # `forearm|lfinger: mesh distance 0.367 mm`, and there are configurations the proxy
+      # accepts whose true mesh distance is 0.000 mm. Cost: about 0.085 ms for the proxy
+      # against about 9.6 ms per check.
+      # Requires an engine (python-fcl, or Coal via WILLY_COAL_PREFIX) and a bundle for the model;
+      # with either missing the guard warns once and runs the capsule proxy instead. A non-UR
+      # vendor reaches it only by naming kinematics_model, as robot.sim.yaml does with ur5e.
       backend: "fcl"
       min_distance_mm: 10.0
       link_radii_mm: null
       mesh_dir: null
       fixtures: []
 
-    # Post-Stop dwell and steady-state gating (consumed directly by
-    # the execution layer; not part of the per-move pipeline).
+    # Steady-state gating, consumed by the grasp execution policy rather than by the per-move
+    # pipeline: before each commanded approach, grasp and retreat move it blocks on the driver's
+    # steady signal for up to steady_timeout_s and fails closed on timeout.
     dwell:
       require_steady_before_motion: true
       steady_timeout_s: 5.0
 
-    # What the trajectory planner is told about your cell. Off by default, and with it off the
-    # planner knows its own robot model and a generic 1.6 m table, and nothing else: not your
+    # What the trajectory planner is told about the cell. Off by default, and with it off the
+    # planner knows its own robot model and a generic 1.6 m table, and nothing else: not the
     # bench, not the bin, not a fixture. It plans straight through all of them, and the only
     # thing that objects is the one-shot guard on the final configuration, which cannot see a
     # path. Enabling it needs a declared support plane, because registering a world replaces the
@@ -210,7 +250,7 @@ robot:
     # is not box-shaped has to be enclosed by one, and perceived geometry cannot reach it at all.
     planning_world:
       enabled: false
-      # Measure three things at the bench and this block is done. `height_mm` is the TOP surface of
+      # Measure three things at the bench and this block is done. `height_mm` is the top surface of
       # whatever the robot stands over, read with a rule against the robot's base plate, sign
       # included (a bench below the base plate is negative). `extent_mm` has to cover everywhere the
       # arm can reach over it; oversizing is cheap, a gap is not. Then fill the fixtures list above
@@ -223,27 +263,30 @@ robot:
       #     extent_mm: [1600.0, 1600.0]     # 1.6 x 1.6 m of bench
       #     thickness_mm: 50.0              # body, so a path cannot slip underneath
       #
-      # A trade worth knowing before you set it: a slab at the bench surface makes the planner refuse
-      # low top-down reaches. The sim runners that most resemble a production pick sank their floor
-      # to a top of -50 mm for exactly that reason. Whichever you choose, it belongs here where it is
-      # visible, not buried in a runner.
+      # A trade worth knowing before setting it: a slab level with the bench surface makes the
+      # planner refuse low top-down reaches, so a cell that picks close to the surface sinks the
+      # slab's top below it, around -50 mm. Either way the number belongs here, where it is
+      # visible, rather than in runner code.
       support_plane: null
       include_fixtures: true
+      # Refuse to plan when the declared world could not be registered with the planner. False
+      # logs the failure and plans on against the planner's own boot world instead.
       require_registration: true
       # Tell the planner the gripper is carrying something. Off by default, and with it off every
       # lift, transit and place after a successful close is planned as if the hand were empty, which
       # on a cell lifting a part out of a bin is the geometry most likely to meet a wall. The box is
       # as wide as the jaws closed plus `lateral_margin_mm`, and as long as `length_mm`, which is a
-      # declared worst case rather than a measurement: the grasp knows the part at the grasp line and
-      # nothing about the rest of it. `sphere_slots` is the collision budget the planner reserves;
-      # 16 fits the automatic sphere fit for a hand-sized box, 4 does not.
+      # declared worst case rather than a measurement: the grasp knows the part at the grasp line
+      # and nothing about the rest of it. `sphere_slots` is the collision budget the planner keeps;
+      # 16 fits the automatic sphere fit for a hand-sized box, 4 does not, and too few raises rather
+      # than degrading.
       payload:
         enabled: false
         sphere_slots: 16
         length_mm: 120.0
         lateral_margin_mm: 10.0
 
-    # Judge a planned PATH configuration by configuration, not only where it ends. Off by default,
+    # Judge a planned path configuration by configuration, not only where it ends. Off by default,
     # and with it off the middle of a cuRobo plan executes unexamined: the sim applies each waypoint
     # straight to the articulation and the real UR moveJ's them in turn, so a plan that grazes a
     # fixture halfway and lands clear passes every check there is. Guard set is the same one a
@@ -251,194 +294,205 @@ robot:
     # payload), run before the first waypoint moves rather than as they execute, because a refusal
     # partway leaves the arm standing on a path already judged unsafe. Cost is about 9.6 ms per
     # configuration with the exact-mesh backend, so 0.3 to 1.0 s before a 30 to 100 waypoint move.
-    # `stride` above 1 samples the path instead of checking it, and leaves the rest unexamined.
+    # `stride` above 1 samples the path instead of checking it and leaves the rest unexamined; the
+    # final configuration is checked whatever the stride.
     trajectory_check:
       enabled: false
       stride: 1
 
   # ----------------------------------------------------------------------
   # Vendor-neutral grasping behaviour: which mode runs, how many attempts,
-  # where records go. Safety always remains under ``robot.safety``; nothing
-  # here can relax a safety limit or unlock a recovery action the mode profile
-  # forbids.
+  # where records go. Safety stays under `robot.safety`; nothing here can
+  # relax a safety limit or unlock a recovery action the mode profile forbids.
   #
   # Closed-loop refinement, verification, multi-view fusion, feasibility and
   # occlusion scoring, clutter ordering, scene recovery and the learned success
-  # model are all part of this section and all default to off. They are not
-  # written here because this cell does not change them:
+  # model belong to this section as well. They all default to off and this cell
+  # leaves them off, so their blocks are not written here at all:
   #
   #     python -m src.config where grasping --tier all   # every knob
   #     python -m src.config explain robot.grasping.fusion.enabled
   #
-  # To turn one on, add its block back with ``enabled: true``.
+  # To turn one on, add its block back with `enabled: true`.
   # ----------------------------------------------------------------------
   grasping:
-    # Where the parts stand. An input the grasp calculator has always accepted and nothing ever
-    # passed, so until 2026-08-14 the table-clearance check was skipped entirely: `rejected_table`
-    # was 0 in 2128 of 2128 telemetry lines, while the independent datagen reference rejected 37 % of
-    # the same candidates for driving a finger under the support.
+    # Which geometry stage proposes grasp candidates. `support_footprint` reconstructs the target
+    # as its visible footprint extruded onto the support plane, then solves for an anchor height
+    # that clears the surface. `silhouette` anchors on the visible surface and leaves the collision
+    # filter to discard what does not fit, which cannot work when the constraint is the support
+    # surface itself: a filter can refuse a grasp, it cannot relocate one.
     #
-    # `height_mm` is the workspace surface. It is refined per pick by the target's own lowest point,
-    # fused across every camera that identified it, and the higher of the two wins. That is measured,
-    # not chosen: over 1073 reference objects a declared constant is too low on 100 % of parts that
-    # stand on another part, while the fused footprint was never too low in a single case. Too high
-    # only refuses grasps; too low drives a finger through a surface.
-    #
-    # `container.floor_height_mm` is optional and describes a bin, tray or KLT: the surface inside it
-    # that parts rest on, in BASE mm. Not the height of the bin, not its rim. A KLT standing on the
-    # table raises what its contents rest on by the thickness of its own floor, and a planner that
-    # thinks the support is the table will allow a finger that many millimetres too low. Leave it
-    # `null` and the workspace surface is used.
-    #
-    # Known limit, so it is not rediscovered: even fused, the footprint reads high inside a bin
-    # (p90 13.3 mm against 1.7 mm in the open, because the walls hide the base). Declaring the
-    # container floor does not change that: the floor is the lower of the two and the observation
-    # still wins.
-    #
-    # It was long assumed that this is what costs the `bin` family its grasps. Measured 2026-08-14
-    # and refuted: running the whole D5 evaluation with `refine_from_target: false` (the support
-    # plane on the declared table height instead of the observed footprint, a 40 mm difference on a
-    # binned object) reproduces every family's coverage and every rejection count exactly
-    # (bin 29.2 %, overall 53.7 %, `finger_collision` 818 both ways). The plane is measurably too
-    # high in a bin and it is measurably not what limits bin grasps. The binding constraint is
-    # finger collision, and the support plane never enters the top four rejection reasons at all.
-    # Do not spend another pass on the plane looking for the bin gap.
-    #
-    # `min_clearance_mm` is how far the gripper envelope has to stay above that surface. 5.0 is the
-    # calculator's own historical default, so this line changes nothing by existing.
-    #
-    # Swept 0 / 2 / 5 mm on the gate subset (n=354), because the value had never been measured:
-    #   0 mm  precision 18.87 %  coverage 28.81 %  top-1 24.29 %
-    #   2 mm  precision 20.00 %  coverage 28.53 %  top-1 24.01 %
-    #   5 mm  precision 22.08 %  coverage 28.53 %  top-1 24.29 %
-    # The strictness is nearly free: 5 mm buys 3.2 pp of precision for 0.28 pp of coverage and leaves
-    # top-1 flat. Lowering it does not unlock flat parts: the 2F-85 fingertip reaches 28.72 mm past
-    # the grasp centre, so a top-down grasp needs an object >= 33.72 mm tall to clear 5 mm even when
-    # it sits on the very top edge, and 34.1 % of reference objects are shorter than that. Those parts
-    # need suction (measured 35.3 % top-1 at 63.3 % coverage, against the jaw's ~24 %), not a smaller
-    # number here.
-    # Which geometry stage proposes grasp candidates.
-    #
-    # `support_footprint` (default since 2026-08-14) reconstructs the target as its visible footprint
-    # extruded onto the calibrated support plane, then solves for an anchor height that clears the
-    # surface. `silhouette` is the historical stage: it anchors on the visible surface and lets the
-    # collision filter discard the result, which cannot work when the constraint IS the support
-    # surface, because a filter can refuse but not relocate a grasp.
-    #
-    # Measured through the real calculator on the D5 gate subset (n=354), against true geometry:
-    #   silhouette          precision 22.08 %  top-1 24.29 %  coverage 28.53 %
-    #   support_footprint   precision 63.59 %  top-1 43.50 %  coverage 53.67 %
-    #   + fused cloud       precision 64.60 %  top-1 55.93 %  coverage 64.69 %
-    # Per family top-1: packed 26.6 -> 44.1 %, pile 11.1 -> 35.2 %, sparse 30.3 -> 55.6 %.
-    # Honest exception: `bin` went 12.5 -> 8.3 % on this subset (n=24: two objects against three);
-    # on the full 270-scene set (n=152) the same stage measured 27.6 % against 14.5 %.
-    #
-    # It needs a BASE support plane and a CAMERA->BASE transform. Without both it stands down to the
-    # silhouette stage by itself; the `geometry_stage` telemetry key records which one ran.
+    # `support_footprint` needs a BASE support plane and a `CAMERA->BASE` transform. Without both
+    # it stands down to the silhouette stage by itself, and the `geometry_stage` telemetry key
+    # records which stage ran.
     geometry:
       stage: "support_footprint"
+      # Push every reconstructed face outward by this much. A depth image loses the grazing rim of
+      # a curved surface, so the measured footprint comes out smaller than the object and every
+      # consequence of that is one-sided; a non-zero value biases the estimate the safe way.
       inflate_mm: 0.0
-    # The learned grasp ranker, in shadow. Measured on 1,611 (scene, view, object) units of
-    # v1_proof, out of fold and grouped by object: the first candidate physically closes 84.1 % of
-    # the time under this ranker, against 51.6 % under the calculator's own order and 54.4 % for
-    # picking at random. That is "valid", not "holds"; the label is our own analytic verdict and the
-    # pilot's hold rate is 5.62 %, so a shake decides promotion, not this.
-    #
-    # Enabling it adds deep_ranker_* telemetry and changes no ordering and no decision. The point of
-    # shadow is `would_change_top1`: whether turning it on would do anything, answered on real picks.
-    # The learned 6-DoF grasp generator, selected by `grasping.calculator: deep`. Inert while the
-    # calculator is 'geometric' (the default), and fail-closed when it is not: `calculator: deep`
-    # with no readable artifact refuses to build the cell rather than quietly running the analytic
-    # stack under the learned generator's name.
+    # The learned 6-DoF grasp generator, selected by `grasping.calculator: deep`. Inert while
+    # `calculator` is `geometric`, which is the default. Fail-closed when it is not: `calculator:
+    # deep` with no readable artifact refuses to build the cell rather than quietly running the
+    # analytic stack under the learned generator's name.
     deep_generator:
+      # Weights written by `python -m src.robot.grasping.deep train-set`. Null means the learned
+      # generator cannot be selected, and `calculator: deep` then refuses. The file is checked by
+      # its stamped kind and artifact version before it loads, so weights from an older generator
+      # are refused by name instead of run.
       artifact_path: null
+      # Torch device for inference. Null resolves it the way every other model does, through
+      # `src/utility/device.py`, so `WILLY_DEVICE` is honoured; a named device the machine does not
+      # have raises rather than falling back to CPU.
       device: null
+      # Graspability cut belonging to an older decoder that this build does not load. The generator
+      # `calculator: deep` runs ranks by its own per-slot confidence and reads this key nowhere, so
+      # setting it changes nothing; the generator logs that once at load.
       minimum_score: 0.5
+    # The learned grasp ranker, in shadow: it scores every candidate, telemetry records what it
+    # would have chosen, and the order never changes. Enabling it adds the `deep_ranker_*` keys and
+    # changes no ordering and no decision; `deep_ranker_would_change_top1` is the point, because it
+    # answers on real picks whether turning it on would do anything.
     deep_ranker:
       enabled: false
+      # Where the fitted ranker lives. The card beside the trees is committed, the trees are not;
+      # regenerate them with `python -m datagen train-ranker`.
       artifact_dir: assets/models/grasp_ranker/v1
-      # Stage two. `valid_jaw_v1` predicts our own analytic verdict, which makes anything measured
-      # with it self-referential; `held_jaw_v1` predicts whether Isaac's shake could not pull the
-      # object out. Measured 2026-08-24 on identical rows, folds and features with only the target
-      # changed, both graded on `held`: 0.8947 against 0.7749 AUROC. Per stratum the physics target
-      # wins everywhere, and on `too_wide` the `valid`-trained model scores 0.5220, a coin toss.
-      # `valid_jaw_v1` is still shipped beside it and this key selects between them.
+      # Which feature contract to score under. It must match the artifact: the scorer refuses a
+      # mismatch rather than scoring a vector the model was never fitted on. `held_jaw_v1` predicts
+      # whether a shake could not pull the object out; `valid_jaw_v1`, shipped beside it, predicts
+      # this stack's own analytic verdict, which makes anything measured with it self-referential.
       spec: held_jaw_v1
+    # Where the parts stand, and the input the table-clearance check needs: that check runs only
+    # when this block supplies a plane, so without it a candidate that drives a finger under the
+    # support is rejected by nothing. The plane is resolved per pick by
+    # `src/robot/grasping/collision/support_resolver.py`.
     support:
+      # The workspace surface in BASE mm, the table. Parts inside a container use
+      # `container.floor_height_mm` instead when that is set.
       height_mm: 0.0
+      # Surface normal in BASE. A non-vertical normal describes a tilted tray or a slope; the
+      # closing-axis levelling and the clearance check both honour it.
       normal: [0.0, 0.0, 1.0]
+      # Raise the declared height to the target's own lowest point, fused over every camera that
+      # identified it, whenever that point is higher; never lower it. A declared constant cannot
+      # know that a part is standing on another part, and too high only refuses grasps while too
+      # low drives a finger through a surface. Known limit: inside a bin the walls hide the base,
+      # so the fused estimate reads high and some valid low grasps are refused. Declaring
+      # `container.floor_height_mm` does not fix that, because the higher of the two still wins.
       refine_from_target: true
+      # How far the gripper envelope must stay above the support surface. 5.0 is also the schema
+      # default, so writing it changes nothing. Lowering it does not unlock flat parts: a 2F-85
+      # fingertip reaches 28.72 mm past the grasp centre, so a top-down grasp needs an object at
+      # least 33.72 mm tall to clear 5 mm even when the grasp sits on its very top edge. Parts
+      # shorter than that need a different end effector, not a smaller number here.
       min_clearance_mm: 5.0
-      # The bin, if there is one. `floor_height_mm` is what the parts stand on; the interior box is
-      # what they stand inside, and until 2026-08-14 the candidate filter had no idea it existed:
-      # a target cloud, the neighbours' clouds and a support plane, and a plane is a floor. Replaying
-      # the reference verdict on the rank-0 winners that lose the ranking gap on `finger_collision`
-      # put 60.9 % of them against a bin wall rather than an object; inside the `bin` family, 14 of
-      # 14. No camera closes that (no detector segments a wall as an instance), so it is declared.
-      #
-      # Set it for safety, not for the rate. Measured over 354 jaw-graspable reference objects,
-      # top-1 went 55.9 -> 56.2 %: flat. What moves is candidate precision (64.6 -> 80.7 %) and the
-      # `bin` ranking gap (15 objects -> 1). It converts "the ranker chose a grasp that hits the
-      # wall" into "the ranker offered nothing", neutral in a simulator, the difference between a
-      # retry and a collision on a real cell.
-      #
-      # Left off here because this cell has no bin. A cell that does sets all three:
-      #   interior_min_mm: [300.0, -100.0, 0.0]     # inside floor corner, BASE mm
-      #   interior_max_mm: [600.0,  100.0, 147.0]   # rim corner
-      #   wall_collision_enabled: true
-      # Declaring the box alone changes nothing; the flag is the decision. Setting the flag without
-      # the box raises at config load rather than running a cell that believes it is protected.
+      # The bin, tray or KLT the parts sit inside, if there is one. Everything here defaults to no
+      # container, which is what this cell has.
       container:
+        # The inside floor in BASE mm, the surface the parts rest on: not the height of the bin,
+        # not its rim. A KLT standing on the table raises what its contents rest on by the
+        # thickness of its own floor, and a planner that takes the table for the support will
+        # allow a finger that many millimetres too low. Null uses the workspace surface above.
         floor_height_mm: null
+        # Lower corner of the container's interior box in BASE mm (x, y, z), the empty volume parts
+        # are poured into; z is the inside floor, the same surface as `floor_height_mm`. A cell
+        # with a bin declares something like [300.0, -100.0, 0.0].
         interior_min_mm: null
+        # Upper corner of that interior box in BASE mm. z is the rim, the height a finger may pass
+        # over from outside, and every axis must exceed `interior_min_mm`: [600.0, 100.0, 147.0].
         interior_max_mm: null
+        # Treat the four vertical walls of the interior box as collision geometry, sampled into
+        # points and appended to what the candidate filter already checks. That filter sees a
+        # target cloud, the neighbours' clouds and a support plane, and a plane is a floor, so a
+        # bin wall stays invisible until this is on; declaring the box alone changes nothing, this
+        # flag is the decision. No camera closes that gap, because no detector segments a wall as
+        # an instance. Set it for safety rather than for the pick rate: it finds no extra grasps,
+        # it stops the ranker offering one that drives a finger into the side of the bin, which is
+        # the difference between a retry and a collision. Fail-closed: setting it without both
+        # interior corners raises at config load, because a cell that wrongly believes its walls
+        # are protected is worse than one that knows they are not.
         wall_collision_enabled: false
+        # How far outward from each interior face the wall material is sampled. Sampling only the
+        # inner face would leave a finger standing inside a thick wall undetected. A KLT wall is
+        # typically 3 to 8 mm.
         wall_thickness_mm: 5.0
+        # Point spacing on the sampled walls. Matches the calculator's own `geometry_voxel_size_mm`
+        # default, so wall points arrive at the density of the neighbour points they are checked
+        # alongside.
         wall_sample_mm: 8.0
+    # Which behaviour profile a pick runs under when the caller names none: `easy`, `auto`,
+    # `dense_clutter`, `closed_loop` or `dense_autonomous`. `auto` decides dense sampling per scene
+    # and runs neither closed-loop refinement nor verification.
     default_mode: "auto"
+    # Upper bound on autonomous attempts inside one `pick()` call.
     max_attempts: 5
+    # Opt-in JSONL path for `GraspAttemptRecord` logging: set it and every `pick()` appends one
+    # record, which is what the soak, KPI and RL tooling read. Null is off, and so is an
+    # environment reference that expands to nothing, because the loader substitutes before it
+    # parses. Per-candidate features are written only while `rl.mode` is `rl_shadow`; a log
+    # collected under any other mode stays valid for KPIs and diagnosis but leaves a pairwise
+    # ranker nothing to rank.
     record_log_path: null
 
   # ----------------------------------------------------------------------
-  # RL optimisation extension layer. Defaults preserve byte-identical
-  # production behaviour: ``mode: hybrid_ml`` keeps the deterministic
-  # stack with promoted ML scorers active, no RL artifact is loaded, and
-  # the RL telemetry-completeness gate stays dormant (it only fires for
-  # ``rl_shadow``/``rl_active``/``rl_experimental``).
+  # RL optimisation extension layer. The defaults keep production behaviour
+  # byte-identical: `mode: hybrid_ml` runs the deterministic stack with the
+  # promoted ML scorers, loads no RL artifact, and leaves the RL
+  # telemetry-completeness gate dormant, because that gate fires only for
+  # `rl_shadow`, `rl_active` and `rl_experimental`.
   #
-  # The schema rejects any RL-active mode without ``policy_id`` and
-  # ``artifact_path``, and the runtime also rejects every RL-active mode
-  # with a typed ``RLModeNotImplementedError``. See
-  # ``src/robot/grasping/rl/__init__.py``.
+  # The schema rejects any RL-active mode without `policy_id` and
+  # `artifact_path`. The runtime admits `rl_shadow` and rejects only
+  # `rl_active` and `rl_experimental`, with a typed
+  # `RLModeNotImplementedError`. See `src/robot/grasping/rl/__init__.py`.
   #
-  # Authority hierarchy (hard lock): robot.safety > runtime/hardware
-  # > deterministic geometry > deterministic recovery > ML/RL.
+  # Authority hierarchy, a hard lock: `robot.safety` outranks runtime and
+  # hardware constraints, which outrank deterministic geometry, which outranks
+  # deterministic recovery, which outranks ML and RL.
   # ----------------------------------------------------------------------
   rl:
+    # Which optimisation layer runs. `hybrid_ml` is the production stack: the deterministic
+    # pipeline plus the promoted ML scorers, with no RL artifact loaded.
     mode: "hybrid_ml"
+    # Identifier of the promoted policy an RL-active mode runs. The schema requires it for those
+    # modes and nothing reads it otherwise.
     policy_id: null
+    # Path to that policy's artifact. The schema requires it for every RL-active mode.
     artifact_path: null
-    # Learner runtime tier: "stdlib" (default, pure-stdlib shipping path) |
-    # "numpy" | "torch" (opt-in, lazily-imported heavier tiers for exploring
-    # stronger models; never the ship default, always below the safety mask).
+    # Which tier the learner runs on. `stdlib` is the shipping path: pure standard library,
+    # deterministic, no extra dependency. `numpy` and `torch` are opt-in heavier tiers, imported
+    # lazily by the Tier-0 online accumulator, always subordinate to the safety action mask.
+    # `torch` is not built and raises when that accumulator is built, which no config path does.
     runtime_tier: "stdlib"
-    # Tier-0 online learning (shadow-only, zero grasp influence). Requires an RL mode.
+    # Tier-0 online learning, shadow-only and with no influence on any grasp. The schema refuses it
+    # outside an RL mode, and that validator is its only reader: nothing builds the online
+    # coordinator, so setting it changes nothing.
     online_update_enabled: false
 
   # ----------------------------------------------------------------------
-  # KUKA-only block. Only consulted when robot.vendor == "kuka".
-  # See config/robot/templates/kuka/README.md for the
-  # controller-side KRL + EKI XML templates.
+  # KUKA-only block, consulted only when `robot.vendor` is `kuka`. The
+  # controller-side KRL and EKI XML templates are described in
+  # `config/robot/templates/kuka/README.md`.
   # ----------------------------------------------------------------------
   kuka:
+    # `kr6-r900` with `dof: 6` is the one combination the driver holds a built-in capability
+    # descriptor for; any other name builds the descriptor out of these two fields instead.
     model: "kr6-r900"
     dof: 6
-    controller_ip: "192.168.1.20"   # KUKA controller network address
+    controller_ip: "192.168.1.20"   # Read only when `eki.role` is client; unused under server
+    # EthernetKRL transport: EKI and KRL over TCP with XML payloads.
     eki:
       role: "server"          # Willy listens; KRL dials in
+      # Local bind address while `role` is server. 0.0.0.0 accepts the controller on any interface.
       host: "0.0.0.0"
+      # TCP port of the EKI channel. It must match `<PORT>` in the controller-side
+      # EkiHwInterface.xml, or the two ends never meet.
       port: 7000
+      # Per-operation timeout in seconds, covering connect, request and reply, and ack.
       timeout_s: 5.0
+      # Period in seconds of the background `<Echo>` probes that keep the link observable.
       heartbeat_s: 0.5
+      # Reader receive buffer in bytes.
       buffer_size: 65536
 

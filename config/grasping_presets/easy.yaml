@@ -1,7 +1,18 @@
-# Phase T7 preset: easy/safe pick. Disables uncertainty and recovery.
+# Grasp preset: the conservative pick, with uncertainty gating and recovery motion both off.
+#
+# A preset is not part of the config tree the loader validates. `apply_preset` in
+# `src/robot/grasping/replay/presets.py` deep-merges this file onto an already loaded `robot:`
+# block, so `python -m src.config` never sees it and a misspelt key merges in silently. Only
+# `validate_preset` re-validates the merged result against the schema and rejects it.
 grasping:
+  # `easy` samples a single object, runs neither pre-grasp refinement nor post-grasp verification,
+  # and its behaviour profile permits no recovery action at all.
   default_mode: easy
+  # Recovery motion off. `easy` is excluded from `recovery.apply_modes` anyway, so this restates
+  # the guarantee the mode already carries and returns a cell that armed recovery elsewhere to off.
   recovery:
     enabled: false
+  # Uncertainty fusion off, which leaves the decision layer on its own
+  # `decision.auto_uncertainty_threshold`.
   uncertainty:
     enabled: false

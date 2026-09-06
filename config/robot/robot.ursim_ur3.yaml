@@ -1,19 +1,20 @@
 # ============================================================================
-# URSim UR3e layer   --profile ursim,ursim_ur3
+# URSim UR3e layer, selected as `WILLY_PROFILE=ursim,ursim_ur3`.
 #
-# Layers onto `ursim` and changes one thing: which robot the driver thinks it is holding.
+# It layers onto `ursim` and changes one thing: which robot the driver thinks it is
+# holding. That one key is load-bearing. `ur.model` selects the safety DH chain, the
+# exact-mesh collision bundle and the cuRobo robot config, so a UR3e planned against UR5e
+# link lengths (a2/a3 -243.55/-213.2 mm against -425/-392.2 mm) is what setting it here
+# prevents. `_verify_tool_frame` derives the controller's active tool frame from that same
+# DH table, so pointing the UR5e chain at a UR3e controller makes the driver refuse to
+# connect. Where `safety.self_collision.kinematics_model` is set, it is cross-validated
+# against this key at config load and the two must name the same model.
 #
-# Why that one thing matters. `ur.model` keys the safety DH chain, the exact-mesh collision bundle
-# and the cuRobo robot config. A UR3e planned against UR5e link lengths (a2/a3 -425/-392.2 mm vs
-# -243.55/-213.2) is the failure this field exists to prevent. `_verify_tool_frame` derives the
-# controller's active tool frame from that same DH table, so pointing the UR5e chain at a UR3e
-# controller must refuse. That refusal is worth running deliberately as a negative control before
-# trusting the positive one.
-#
-# Start the matching container first:  URSIM_FRESH=1 scripts/ursim/ursim.sh up UR3
-# Every container start comes up in local mode, fresh or reused. Measured 2026-08-19: the
-# `RemoteControlEnabled=true` file survives a stop/start, the top-right Local/Remote selector does
-# not, and nothing in the dashboard protocol can move it. Re-enable at the pendant each time.
+# Start the matching container on the UR3 image first, and fresh (`URSIM_FRESH=1`), with
+# the URSim helper under `scripts/ursim/`. Every container start comes up in local mode,
+# fresh or reused: the `RemoteControlEnabled=true` file survives a stop and start, the
+# top-right Local/Remote selector does not, and nothing in the dashboard protocol can move
+# it. Re-enable it at the pendant each time.
 # ============================================================================
 
 robot:

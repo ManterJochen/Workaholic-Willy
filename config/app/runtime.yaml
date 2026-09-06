@@ -1,10 +1,9 @@
-# Workaholic-Willy: runtime tuning for app-level services.
+# Runtime tuning for the app-level services.
 #
-# These values are operator-tunable. They control memory footprint,
-# UX timing, and image-stream quality. They are not safety-critical:
-# editing them cannot move the robot. Validation is performed by
-# `src/config/schema/app.py` on every load.
+# The one block here is operator-tunable and not safety-critical: editing it cannot move the robot.
+# The file is optional and the schema defaults apply when it is absent. Validation is by
+# `RuntimeConfig` in src/config/schema/runtime.py on every load.
 
 runtime:
   image_encoding:
-    frame_quality: 60              # JPEG quality for live frame stream
+    frame_quality: 60              # JPEG quality, 1 to 100, for the console viewfinder frames

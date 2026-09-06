@@ -1,12 +1,17 @@
-# Camera overlay for WILLY_PROFILE=web (a webcam-pair dev rig).
+# Camera overlay for `WILLY_PROFILE=web`, a development rig built from two USB webcams. The layer
+# name means webcam; it has nothing to do with a web service.
 #
-# This is a profile overlay: the loader deep-merges it onto cam.yaml, so it needs to state only what
-# changes, not a full copy of the tree. It used to be a 133-line machine-generated clone of cam.yaml
-# that re-stated 110 keys to change 2; that clone drifts silently the moment cam.yaml changes. The two
-# real decisions: skip device probing and open exactly the webcam pair.
+# The loader deep-merges this onto `camera/cam.yaml`, so it states only what changes: skip the
+# device probe, and open exactly the webcam pair. Everything else, the `webcam_main` rig definition
+# included, stays in `cam.yaml`; restating keys here would let the two copies drift apart.
 #
-# (The profile name "web" is a historical misnomer: it is a webcam overlay, unrelated to the removed
-# web API. Not renamed here because `sim,web` is the named regression case for the fix in 39c8e77.)
+# The layer name selects three files (`app/runtime.web.yaml`, `camera/cam.web.yaml` and
+# `robot/robot.web.yaml`), so renaming the profile means renaming all three.
 cameras:
+  # `rig` opens `active_rig_id` directly instead of testing every enabled rig for availability.
+  # That probe is the slow path on Windows, because each candidate index is opened through the
+  # OpenCV backends.
   active_mode: rig
+  # The rig has to be defined in `cam.yaml` and enabled there; the schema refuses the tree if it is
+  # missing or disabled.
   active_rig_id: webcam_main

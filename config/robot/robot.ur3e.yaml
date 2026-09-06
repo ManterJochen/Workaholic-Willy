@@ -5,110 +5,110 @@
 #   WILLY_PROFILE=ur3e            real UR3e cell (vendor: ur, from base robot.yaml)
 #   (or: any willy_sim runner with --robot-model ur3e)
 #
-# The loader applies profile layers left-to-right, so with `sim,ur3e` every
-# `*.sim.yaml` overlay merges first and this file then states only what changes
-# because the arm is a UR3e instead of a UR5e. That is deliberate: the `sim` layer
-# carries measured values (notably the detector torch_dtype reset that small-object
-# recall depends on) and those must exist exactly once, not once per robot.
+# Profile layers apply left to right, so with `sim,ur3e` every `*.sim.yaml` overlay merges
+# first and this file then states only what changes because the arm is a UR3e instead of a
+# UR5e. Values that belong to the simulator rather than to the arm, such as the detector
+# `torch_dtype` that small-object recall depends on, stay in the `sim` layer and exist
+# exactly once there, not once per robot.
 #
-# Under bare `ur3e` (no `sim`) the vendor stays `ur` and the `robot.sim.*` keys
-# below are loaded-but-inert; what matters for a real arm is `ur.model`,
-# `workspace_limits`, `safe_pose` and the `safety.*` block.
+# Under bare `ur3e` (no `sim`) the vendor stays `ur` and the `robot.sim.*` keys below are
+# loaded but inert; what a real arm reads is `ur.model`, `workspace_limits`,
+# `home_joint_positions` and the `safety.*` block. `safe_pose` is read by the load-time
+# workspace check and the sim reach audit, never by the driver.
 #
-# Why anything changes at all: reach. A UR5e works a 850 mm sphere about its
-# shoulder; a UR3e works 500 mm. Every position in the sim cell was authored for
-# the UR5e, and most of them are simply untouchable by this arm, measured by
-# `willy_sim/harness/reach.py`, which runs before the Isaac boot:
+# Everything below follows from reach. A UR5e works a 850 mm sphere about its shoulder and
+# a UR3e works 500 mm, so positions authored for the longer arm are untouchable by this one:
 #
-#   safe_pose (450, -300, 400)        r = 595 mm  ->  95 mm out of reach
-#   workspace corner (700,-350,600)   r = 902 mm  -> 402 mm out of reach
+#   safe_pose (450, -300, 400)         r = 595 mm, 95 mm out of reach
+#   workspace corner (700, -350, 600)  r = 902 mm, 402 mm out of reach
 #
-# So the cell is re-anchored closer to the base. Every number below is stated with
-# its radius about the UR3e shoulder (d1 = 151.85 mm above the base plane) as a
-# percentage of the 500 mm working sphere. Anything past ~85% is near-singular:
-# the arm is almost straight there and has little orientation freedom left, which
-# a top-down grasp needs.
+# The cell is therefore re-anchored closer to the base, and every position here is given
+# with its radius about the UR3e shoulder (d1 = 151.85 mm above the base plane) as a
+# percentage of the 500 mm working sphere. Past about 85% the arm is nearly straight and has
+# little orientation freedom left, which a top-down grasp needs, so 85% is the ceiling this file
+# aims at, enforced by nothing. `src/willy_sim/harness/reach.py` measures the reach-critical
+# points, the object, the marker, `safe_pose`, the worst eye-in-hand viewpoint and the worst
+# workspace corner, against that sphere and reports what does not fit, without an Isaac boot.
 #
-# Status: geometry is (2)-analytical, derived from the datasheet reach, not yet
-# confirmed on-box. Arc 5 boots this cell and measures the pick rate.
+# The geometry is derived from the datasheet reach and is not confirmed on a physical arm.
 # ============================================================================
 robot:
-  # Arms the self-collision guard for a real UR3e. Two reasons this line is load-bearing:
-  #   1. Without it, ur.model stays at its "ur5e" default (ur_schema.py) while
-  #      safety.self_collision.kinematics_model below is "ur3e"; the cross-field validator in
-  #      robot_schema.py then refuses `WILLY_PROFILE=ur3e` at load (correct, but it means the layer
-  #      was sim-only until now).
-  #   2. If a production config sets NO kinematics_model, the guard falls back to the arm's
-  #      capabilities.model, which is derived from ur.model. A wrong ur.model would then drive a UR3e
-  #      against UR5e link lengths (a2/a3 = -425/-392.2 vs -243.55/-213.2 mm) with no error raised.
-  # Inert under WILLY_PROFILE=sim (vendor: sim); merges with the ip/motion_planner from base robot.yaml.
+  # Names the UR a real cell drives, and two things break on a wrong value. This key
+  # contradicting `safety.self_collision.kinematics_model` below makes a cross-field validator
+  # in robot_schema.py refuse `WILLY_PROFILE=ur3e` at load. A cell that sets no
+  # `kinematics_model` at all has the self-collision guard fall back to the arm's
+  # `capabilities.model`, which is derived from this key, and then check a UR3e against UR5e
+  # link lengths. The real-cell preflight warns about that fallback; the guard itself is silent.
+  # Inert under `WILLY_PROFILE=sim` (vendor: sim); merges with the ip and motion_planner from
+  # base robot.yaml.
   ur:
     model: "ur3e"
   sim:
     robot_model: "ur3e"
-    # The Isaac ur3e.usd ships bare. Unlike ur5e/ur10e it bakes in no Robotiq
-    # variant (verified at byte level: no `Gripper` variant set, no `Robotiq`
-    # token). The 2F-85 is therefore mounted as a standalone USD on the wrist and
-    # merged into the arm articulation. Same physical gripper as the UR5e cell, so
-    # tcp_offset_mm (132 mm) and the gripper block are inherited unchanged.
+    # The Isaac ur3e asset ships bare: unlike ur5e and ur10e it bakes in no Robotiq variant, so
+    # a UR3e cell has to name a mount. The scene builder refuses one that does not, rather than
+    # let it come up as a bare 6-DoF arm and fail much later on a missing finger joint. This
+    # mounts the 2F-85 as a standalone USD on the wrist, merged
+    # into the arm articulation. It is the same physical gripper as the UR5e cell, so the
+    # `gripper` block carries over unchanged, its 132 mm `tool_frame.offset_mm` included. There
+    # is no `tcp_offset_mm` config key; 132 is also the mount constant in `willy_sim/grippers.py`.
     gripper_mount: "robotiq_2f85"
 
-    # The park pose (arm swung clear of the overhead camera before perceiving) is inherited from the
-    # UR5e layer as [3.14, -1.0, 0.9, 0, 0, 0]. Measured, that pose puts a UR3e's grasp-centre TCP at
-    # r = 520 mm about its shoulder: 104% of its 500 mm working sphere, i.e. the arm fully extended
-    # and near-singular. (The same joints on a UR5e sit at 92.5%, comfortably inside.) Moving out of a
-    # near-singular configuration is where IK stops converging, and the symptom is a non-deterministic
-    # MotionStatus.timeout: measured 4-8 of 10 real-vision picks, on byte-identical grasp candidates.
+    # Where the arm parks, swung clear of the overhead camera, before the scene is perceived.
+    # The UR5e layer's [3.14, -1.0, 0.9, 0, 0, 0] puts a UR3e grasp-centre TCP at r = 489 mm,
+    # 98% of its 500 mm working sphere: all but fully extended and near-singular, which is where
+    # IK stops converging. The symptom is a non-deterministic `MotionStatus.TIMEOUT` on a scene
+    # that has not changed. (The same joints on a UR5e sit at 92.5%, comfortably inside.)
     #
-    # This pose keeps the same -X swing (so the arm still clears the overhead camera's view of the
-    # object) but folds the elbow: r = 328 mm = 66% of reach, world TCP (-269, -131, 284), and the
-    # exact-mesh self-collision guard clears it at the configured 10 mm.
+    # This pose keeps the same -X swing, so the arm still clears the overhead camera's view of
+    # the object, and folds the elbow instead: r = 304 mm, 61% of reach, world TCP
+    # (-122, -131, 398), and the exact-mesh self-collision guard clears it at the configured
+    # 10 mm.
     park_joint_positions: [3.14, -1.7, 1.2, -1.2, -1.57, 0.0]
 
-    # NOTE (honest): robot_prim_path stays "/World/UR5e" for now. It is a cosmetic
-    # Isaac stage path (add_reference_to_stage mounts ur3e.usd there perfectly
-    # well), but 9 runners hardcode the literal, so de-hardcoding it is its own
-    # change. The path is a label here, not a claim about which arm is loaded.
+    # `robot_prim_path` is deliberately not overridden and stays at the `/World/UR5e` the `sim`
+    # layer sets. It is a cosmetic Isaac stage path, and `add_reference_to_stage` mounts
+    # ur3e.usd there just as well, but several willy_sim modules hardcode the literal, so
+    # changing it is its own change. The path is a label here, not a claim about which arm is
+    # loaded.
 
     cameras:
       overhead:
-        # Follows the scene to its new anchor (nadir over the object).
+        # Follows the re-anchored scene, so this fixed camera stays nadir over the object.
         position_mm: [350.0, 0.0, 1000.0]
 
     scene_setup:
-      # r = 372 mm (74% of reach), comfortably inside, with orientation freedom
-      # left for a top-down grasp. The UR5e anchor (450, 0, 25) is r = 468 mm,
-      # which IS inside the sphere but at 94% of it, i.e. an almost-straight arm.
+      # The object anchor: r = 372 mm, 74% of reach, which leaves orientation freedom for a
+      # top-down grasp. The UR5e anchor (450, 0, 25) is r = 468 mm, inside the sphere too, but at
+      # 94% of it, which is an almost-straight arm. The table sits directly under it.
       object: { position_mm: [350.0, 0.0, 25.0] }
       table:  { position_mm: [350.0, 0.0, -200.0] }
-      # Measured on-box 2026-07-24: with the marker at the UR5e-derived (350,-150,6) the EIH
-      # calibration collected **0 of 24 samples**: every viewpoint was either workspace_rejected or
-      # ik_failed. The marker itself is reachable; the hemisphere of CAMERA viewpoints around it is
-      # not. The wrist camera must stand off 235-275 mm from the marker and look back at it, so each
-      # tool pose lands roughly (+115, 0, +134) mm from the marker, which pushed x to 441-501 mm and
-      # y to -235 mm, outside this cell's box on both axes.
+      # Marker placement is decided by where the wrist camera has to stand, not by the marker.
+      # The eye-in-hand routine holds the camera 235 to 275 mm (`radii_mm`) off the marker and
+      # looks back at it, so what has to fit is a ring of poses around the marker rather than one
+      # offset from it: the camera stands 80 to 158 mm out horizontally and 193 to 258 mm above,
+      # turning with each of the six azimuths, and the tool rides a little closer in. At the UR5e
+      # cell's (450, -150) that ring reaches x = 608 mm, r = 631 mm about the shoulder, outside
+      # this cell's `workspace_limits` and past its 500 mm sphere, and every viewpoint comes
+      # back `workspace_rejected` or `ik_failed` while the marker itself is perfectly reachable.
+      # Moved in to (150, -40) the whole hemisphere fits: the reach audit puts its worst viewpoint
+      # at r = 417 mm, 83.4% of reach, inside the 85% ceiling the header names.
       #
-      # The replacement was searched offline against the box + an 85%-of-reach ceiling (the same rule
-      # the rest of this file uses) and confirmed on-box. Two values move, and only these two:
-      #   marker (350,-150) -> (150,-40)  the viewpoint cluster is what has to fit, not the marker
-      #   elevations 16/30 -> 20/35  buys 60 deg -> 70 deg of tool-orientation spread, which is what
-      #                              conditions the AX=XB solve; the radii and azimuths are unchanged.
-      # Two on-box measurements, and they disagree with the offline search; the measured numbers win:
-      #   (180,-60)  20/24 samples, rmse 0.0004 mm, pass   worst viewpoint 90.2% of reach
-      #   (150,-40)  17/24 samples, rmse 0.0010 mm, pass   worst viewpoint 83.4% of reach
-      # The search predicted 24/24 for both. It does not model IK or motion success, only the box and the
-      # reach sphere, so trust it for direction (0/24 -> working) and not for tuning. (150,-40) ships: it
-      # is the only one of the two that clears the 90%-of-reach dexterity bar the layer tests enforce, and
-      # 17 samples at rmse 0.001 mm / 0.003 mm vs the oracle is far past what the gate needs. The three
-      # samples that costs are not worth sitting at the edge of the envelope, where this arm is documented
-      # (see park_joint_positions above) to fail non-deterministically.
-      marker: { position_mm: [150.0, -40.0, 6.0] }          # r = 208 mm (42%)
+      # The elevations are 20 and 35 deg against the schema default of 16 and 30: that widens
+      # the tool-orientation spread from 60 deg to 70 deg, which is what conditions the AX=XB
+      # hand-eye solve. The radii and azimuths are unchanged.
+      #
+      # A candidate placement can be checked offline against the workspace box and the reach
+      # sphere, but that check models neither IK nor motion success. It says whether a placement
+      # is possible at all; it does not rank two placements that are both possible.
+      marker: { position_mm: [150.0, -40.0, 6.0] }          # r = 213 mm (43%)
       eih_viewpoints: { radii_mm: [235.0, 275.0], elevations_deg: [20.0, 35.0], azimuths_deg: [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] }
 
-  # Re-anchored so the whole box is reachable: the far top corner (400, +/-200, 320)
-  # is r = 478 mm (96%); the guard no longer admits targets the arm cannot touch.
-  # (The UR5e box has exactly that defect: its corner (700,-350,600) is r = 897 mm
-  # against an 850 mm reach. Tracked separately; not introduced here.)
+  # The Cartesian box the WorkspaceGuard admits targets in, re-anchored so the whole box is
+  # reachable: the far top corner (400, +/-200, 320) is r = 478 mm, 96% of reach. A box that
+  # declares points the arm cannot touch turns an unreachable target into an opaque IK failure
+  # instead of a clean rejection, which is what the UR5e box does at its own corner
+  # (700, -350, 600), r = 897 mm against 850 mm of reach; it is not a template to copy.
   workspace_limits:
     x_min: 100.0
     x_max: 400.0
@@ -117,75 +117,79 @@ robot:
     z_min: 0.0
     z_max: 320.0
 
-  # Where `move_home()` sends this arm. Measured 2026-08-09: the shipped default (a UR5e-authored
-  # constant) puts a UR3e's grasp centre at z = 561.9 mm and r = 466.9 mm (93.4% of its 500 mm reach,
-  # past the 85% this file treats as near-singular), while this cell's own workspace_limits stop at
-  # z = 320. So the natural first motion on the bench left the declared box, and `move_home` warned and
-  # drove anyway. It now refuses instead, which is why this key has to exist.
+  # The joint configuration `move_home()` returns this arm to, in radians. A UR3e cell has to
+  # set it: the shipped default is a UR5e pose that puts a UR3e grasp centre at z = 561.9 mm
+  # and r = 466.9 mm, 93.4% of its 500 mm reach, while this cell's own `workspace_limits` stop
+  # at z = 320. The UR driver's `move_home` runs the workspace guard and fails closed, so an
+  # arm left on the default refuses the most natural first motion on a new bench.
   #
-  # Chosen from a round-decimal grid (the same style as park_joint_positions) rather than an optimiser's
-  # output, because a home pose has to be recognisable by eye: base swung to +X, shoulder down, elbow
-  # bent, wrist neutral. TCP (310.6, 130.6, 259.4), r = 353 mm = 70.7% of reach, a clear 30 mm inside
-  # the box on every axis, and the exact-mesh self-collision guard clears it.
-  # (2)-analytical: derived from the bundled DH table, never yet commanded on a physical UR3e.
+  # Taken off a round-decimal grid rather than from an optimiser, because a home pose has to be
+  # recognisable by eye: base swung to +X, shoulder down, elbow bent, wrist neutral. TCP
+  # (310.6, 130.6, 259.4), r = 353 mm, 70.7% of reach, a clear 30 mm inside the box on every
+  # axis, and the exact-mesh self-collision guard clears it. Derived from the bundled DH table,
+  # never commanded on a physical UR3e.
   home_joint_positions: [3.14, -1.0, 1.0, -1.7, -1.57, 0.0]
 
-  # r = 368 mm (74%). Kept a clear 20 mm inside workspace_limits on every axis,
-  # because the WorkspaceGuard applies a 20 mm safety margin to the box and would
-  # otherwise reject the retreat motion it is supposed to permit.
+  # The retreat pose, at r = 368 mm, 74% of reach. It is held a clear 20 mm inside
+  # `workspace_limits` on every axis, the amount the WorkspaceGuard shrinks the box by through
+  # `safety.limits.workspace_margin_mm`, 20 mm in base robot.yaml, so a move here would clear the
+  # guard. No code commands that move yet; the readers are the load check and the reach audit.
   safe_pose:
     x: 300.0
     y: -170.0
     z: 280.0
 
   calibration:
-    # Measured on-box 2026-07-24, reproduced. The eye-to-hand pose generator samples the workspace box,
-    # and on this arm the full box is mostly untouchable: 16 of 22 poses came back status=timeout (the
-    # near-singular failure documented for park_joint_positions above) and the routine collected 4
-    # samples, not enough to solve. Restricted to the upper 50-90% of the z range it collects 9 and
-    # solves exactly (rmse 0.0000 mm, quality excellent, gate pass). A UR5e needs no entry here: it
-    # collects 17/22 on the full box.
+    # The z band the eye-to-hand pose generator samples, as a fraction of
+    # `workspace_limits.z_max` and keyed by marker source. A UR3e reaches only the upper part
+    # of its own box, so sampling the full range spends most poses on configurations that come
+    # back status=timeout and collects too few samples to solve the hand-eye transform; the
+    # 0.5 to 0.9 band below solves it exactly. A UR5e reaches the full box and needs no entry
+    # here.
     #
-    # ground_truth only, deliberately. The same band applied to the ArUco source collapses it to 1/22
-    # with 21 timeouts: measured twice, at two different xy widths, so it is the band and not chance.
-    # The pose box is the sampler's range, not a filter: moving a bound re-draws every pose, so the two
-    # sources land on unrelated pose sets and a band that helps one can wreck the other.
+    # `ground_truth` only, deliberately. The pose box is the sampler's range and not a filter,
+    # so moving a bound re-draws every pose: the two sources land on unrelated pose sets, and a
+    # band that helps one wrecks the other. This band applied to `aruco` leaves that source with
+    # almost nothing to solve from.
     #
-    # UR3e ETH-ArUco therefore has NO validated setting yet: best measured is rmse 4.48 mm (marginal)
-    # at z 0.40-0.90 with a +-75 mm xy box, vs 6.44 mm (poor) shipped, on 8-11 samples. Left open rather
-    # than papered over: the September cell picks its real camera height and board size physically, and
-    # that is the lever this is really about (the UR3e cannot lift the board as high, so its overhead
-    # camera sees a smaller marker: ~790 mm away vs the UR5e's ~610 mm).
+    # No `aruco` entry is set, because no band is validated for this arm, so that source keeps
+    # its shipped 0.55-0.75 default. The lever there is physical rather than configured: a UR3e
+    # cannot hold the board as high, so its overhead camera sees the marker from about 790 mm
+    # against a UR5e's 610 mm, and camera height and board size are what fix it.
+    # `run_eth_calibrate --z-frac LO,HI` overrides this band for a single run.
     pose_box_z_frac:
       ground_truth: [0.5, 0.9]
 
-  # Measured on-box 2026-07-24: the UR3e real-vision (M2) cell is 5/10 with a tangential top-down close
-  # and 10/10 with a radial one (zero failures). A vision-detected grasp has a varying azimuth and this
-  # arm cannot plan the tangential close at any azimuth (0/4 vs 4/4). It is an ARM property, so the cell
-  # declares it here instead of every operator remembering `--radial-closing`. The UR5e absorbs both and
-  # leaves it off.
+  # When a silhouette is near-isotropic its principal axis is degenerate, so the jaw closes
+  # along the radial direction from base to grasp instead of following that noise. It is a
+  # property of the arm and not of the scene: a UR3e cannot plan a tangential top-down close at
+  # any azimuth while the radial one plans at every azimuth, and a vision-detected grasp arrives
+  # at a varying azimuth. The cell declares it here so that no operator has to remember
+  # `--radial-closing` on the three sim runners that read the key; the `cells.py` builders do not
+  # pass it, so on a real cell it reaches nothing. It needs a BASE-frame transform to have a
+  # radial direction to aim along, and the deep calculator ignores it, predicting its own closing
+  # axis. A UR5e plans both closes and leaves the default of false.
   grasping:
     isotropic_radial_closing: true
 
   safety:
-    # Must track sim.robot_model: the self-collision guard picks its DH chain by
-    # this key, and the UR3e's links are far shorter (a2/a3 = -243.55/-213.2 mm vs
-    # the UR5e's -425/-392.2). Driving a UR3e against UR5e link lengths would place
-    # every link somewhere it is not, so a cross-field validator in robot_schema.py
-    # rejects the mismatch at load time rather than letting it run.
+    # Selects the DH chain the self-collision guard evaluates this arm against. It has to match
+    # `sim.robot_model` on a sim cell and `ur.model` on a real one, and a cross-field validator
+    # in robot_schema.py refuses a mismatch at load rather than letting it run. The UR3e's links
+    # are much shorter than the UR5e's (a2/a3 = -243.55/-213.2 mm against -425/-392.2), so the
+    # wrong chain places every link somewhere it is not and returns wrong verdicts silently.
     self_collision:
       kinematics_model: "ur3e"
-      # The UR3e cannot absorb the UR5e's 10 mm planner margin. Two separate on-box measurements, kept
-      # apart here because they answer different questions:
-      #   1. planner sweep: it plans 6/6 up to 6 mm, and 0/6 at 10 mm.
-      #   2. pick campaign: an earlier build derived this value from min_distance_mm (10 mm here) and
-      #      the cell went 10/10 -> 0/10. Caught on-box, not in review; that is why the value is
-      #      per-robot and explicit rather than derived.
-      # Cause: the UR3e's links are far thinner, so inflating every collision sphere by half the margin
-      # makes the arm read as permanently self-colliding. 4 mm keeps a clear gap below the 6 mm ceiling
-      # while still narrowing the planner/guard disagreement the margin exists to close.
+      # Clearance handed to the trajectory planner so it stops proposing configurations the
+      # exact-mesh guard then rejects. Per-robot and explicit, never derived from
+      # `min_distance_mm`: how much margin a planner can absorb depends on how tightly its
+      # sphere model fits that arm. A UR5e plans at 10 mm; a UR3e's thinner links read as
+      # permanently self-colliding once every sphere is inflated by half the margin, and it
+      # finds no plan at all above roughly 6 mm. 4.0 keeps a clear gap under that ceiling while
+      # still narrowing the disagreement between planner and guard that the margin exists to
+      # close.
       planner_margin_mm: 4.0
     payload:
-      # UR3e rated payload is 3 kg (UR5e: 5 kg). The guard refuses to set a payload
-      # above this regardless of what a caller asks for.
+      # UR3e rated payload is 3 kg (UR5e: 5 kg). The schema refuses a `payload.mass_kg`
+      # above this at load, and the PayloadGuard re-checks the same pair before every motion.
       max_mass_kg: 3.0

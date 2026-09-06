@@ -1,11 +1,23 @@
+# Whisper speech-to-text: where the weights come from, how the microphone is opened, and what the
+# decoder is asked for. Read by `src.models.speech.speech_to_text.WhisperSpeechToText`, which the
+# console reaches over POST /v1/voice/transcribe. Nothing on the grasp path reads this block.
 stt:
+  # `local: True` below reads `model_path` from disk and downloads nothing, and that directory is
+  # not in a fresh checkout: either put Whisper weights there, or set `local: false` to pull
+  # `model_id` from the Hub.
   model_id: "openai/whisper-small"
   model_path: "src/models/speech/model"
+  # The microphone stream. Audio that arrives from anywhere else is resampled to `samplerate`, so
+  # that key is the model's input rate and not only a device setting.
   samplerate: 16000
   blocksize: 8000
   channels: 1
   dtype: "int16"
+  # Seconds of audio per transcription: `samplerate * chunk_duration` samples buffer before the
+  # model is asked anything.
   chunk_duration: 3
+  # `language` and `task` become Whisper's decoder prompt, so `task: translate` returns English
+  # from a non-English `language`.
   language: "german"
   task: "translate"
   local: True

@@ -1,49 +1,60 @@
 # ============================================================================
-# URSim profile   --profile ursim   (layers onto robot.yaml)
+# URSim profile layer, selected as `WILLY_PROFILE=ursim`, layered onto `robot.yaml`.
 #
-# Points the UR driver at a URSim container on localhost instead of a real controller, and declares
-# the two things `URRobotArm.connect()` fails closed on. Both refusals are deliberate and both were
-# exercised against URSim on 2026-08-18 before this profile existed:
+# It points the UR driver at a URSim container on localhost instead of a real controller.
+# URSim is real UR controller software driving a robot that does not exist, so the vendor
+# stays `ur` and the real driver runs: this is not a simulated driver. The profile also
+# declares what `URRobotArm.connect()` refuses to start without:
 #
-#   * `safety.payload.enforce: true` with `mass_kg: 0.0`: connecting would push setPayload(0.0) and
-#     overwrite the controller's payload for a mounted tool.
-#   * `gripper.tool_frame.source: undeclared`: nobody has said where the grasp centre sits on the
-#     flange, so the driver cannot know whether a commanded pose means the TCP or the flange.
+#   * `safety.payload.enforce: true` with `mass_kg: 0.0`: connecting would push
+#     setPayload(0.0) and overwrite the controller's payload for a mounted tool.
+#   * `gripper.tool_frame.source: undeclared`: nobody has said where the grasp centre sits
+#     on the flange, so the driver cannot know whether a commanded pose means the TCP or
+#     the flange.
 #
-# The numbers below are a simulator's numbers. They exist so the code PATH can be exercised, not
-# because anybody weighed a tool. The 2F-85 values are the ones the Isaac driver already carries
-# (132 mm stand-off, -90 deg about flange X); the payload is a plausible 2F-85-plus-coupling mass.
-# On a real cell every one of them is a bench measurement; see ToolFrameConfig's own docstring on
-# why the rotational half is the dangerous half.
+# The numbers below are a simulator's numbers: they exist so the code path can be
+# exercised, not because anybody weighed a tool. The rotation is the 2F-85 one the Isaac
+# cell runs, -90 deg about flange X; the stand-off is not. `robot.sim.yaml` puts its 132 mm
+# on flange +Y, the axis that rotation maps the approach onto, and this profile puts the same
+# 132 mm on flange +Z, so the two halves belong to different flange conventions. `willy` mode
+# expects a bare flange at the controller, so nothing in URSim checks the pair. The payload is
+# a plausible mass for a 2F-85 with its coupling. On a real cell every one of them is a bench
+# measurement; the `ToolFrameConfig` docstring says why the rotational half is the
+# dangerous half.
 #
-# URSim must be in remote control. In Local mode the controller never runs an externally-sent
-# program, so RTDEControlInterface times out with a message that names nothing. `connect()` now
-# diagnoses that case explicitly (measured 2026-08-18). Enable it at
-# http://localhost:6080/vnc.html -> menu -> Settings -> System -> Remote Control -> Enable, then
-# switch the top-right selector from Local to Remote.
+# URSim must be in remote control. In local mode the controller runs no program sent from
+# outside, so RTDEControlInterface times out with a message that names nothing; `connect()`
+# diagnoses that case explicitly. Enable it at http://localhost:6080/vnc.html under
+# `menu -> Settings -> System -> Remote Control -> Enable`, then switch the top-right
+# selector from Local to Remote.
 #
-# Bring the container up with: scripts/ursim/ursim.sh up UR5   (or UR3)
+# Bring the container up first, on the UR5 or UR3 image, with the URSim helper under
+# `scripts/ursim/`.
 # ============================================================================
 
 robot:
   vendor: ur
   ur:
     ip: "127.0.0.1"
-    # 0.0 = let ur_rtde pick the controller default. Frequency was refuted as a cause of the control
-    # timeout (500/250/125/50/10 Hz all failed identically at 6.1 s), so there is nothing to tune here.
+    # 0.0 leaves the rate to the controller. It is this stack's sentinel and not ur_rtde's,
+    # which reads 0.0 as zero hertz and fails synchronisation after 6.1 s, so the UR connection
+    # translates it to -1.0 at the driver boundary. Past that translation the rate does not
+    # decide whether the control interface connects, so there is nothing to tune here.
     rtde_frequency: 0.0
-    # Not the base tree's "curobo": the URSim container has no GPU, so the cuRobo sidecar cannot
-    # start there and the fail-closed path would refuse every move. This profile exercises the
-    # Driver against a real controller, not the planner.
+    # Not the base tree's "curobo": the sidecar runs on the machine driving the cell rather
+    # than in the container, spawned from the cuRobo environment under `ext_deps/`. Where that
+    # is missing the UR path is fail-closed: it refuses every move with CONTROLLER_REJECTED and
+    # never degrades to blind IK. This profile exercises the driver against a real controller,
+    # not the planner.
     motion_planner: "ik"
 
   gripper:
-    vendor: "none"          # the container has no end-effector; the I/O paths are exercised directly
+    vendor: "none"          # no end-effector on the container; a no-op gripper stands in
     tool_frame:
-      # `willy` = the controller runs a bare flange and this driver composes the transform. That is
-      # what URSim actually is (no tool configured), so this is the honest source for it. Declaring
-      # `polyscope` here instead is the deliberate disagreement test: the driver derives the
-      # controller's active frame and must refuse.
+      # `willy` means the controller runs a bare flange and this driver composes the
+      # transform, which is what URSim is: no tool is configured on it. Declaring
+      # `polyscope` instead makes the frame the driver derives from the controller
+      # disagree with this declaration, and the driver then refuses to connect.
       source: "willy"
       offset_mm: [0.0, 0.0, 132.0]
       rotation_quat_xyzw: [-0.70710678, 0.0, 0.0, 0.70710678]
@@ -53,6 +64,7 @@ robot:
     payload:
       enforce: true
       mass_kg: 1.5
-      # Not [0, 0, 0]: that is the "not measured yet" marker, and pushing it would tell the controller
-      # a 1.5 kg tool is a point mass at the flange face.
+      # Not [0, 0, 0]: that is the "not measured yet" marker, and pushing it would tell the
+      # controller a 1.5 kg tool is a point mass at the flange face, so `connect()` refuses
+      # the pair.
       cog_mm: [0.0, 0.0, 60.0]

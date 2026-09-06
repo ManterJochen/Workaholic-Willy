@@ -1,0 +1,208 @@
+# ============================================================================
+# UR5e real cell layer.
+#
+#   WILLY_PROFILE=ur5e            a real UR5e on a bench
+#   WILLY_PROFILE=ur5e,eth2       the same bench with two fixed RGB-D cameras
+#
+# The base `robot.yaml` already describes a UR5e: `vendor: ur`, `ur.model` defaults to
+# `ur5e`, and the gripper block is a Robotiq 2F-85. What it does not describe is a cell.
+# It ships a symmetric +/-500 mm workspace placeholder, no home pose, no tool frame, no
+# weighed payload and no calibration, because those are facts about one bench and a
+# plausible default for any of them is how the next cell inherits a wrong value in
+# silence. This layer is where a bench states them.
+#
+# The simulator does not merge this file. `sim_profile_chain` in `src/willy_sim/config.py`
+# appends a robot layer only when the requested model differs from its default, and its
+# default is `ur5e`, so `--robot-model ur5e` produces the chain `sim` alone. That is the
+# right outcome for a file carrying bench measurements: the Isaac cell has its own answers
+# in `robot.sim.yaml` and must not inherit a real tool frame or a real calibration path.
+# It is also an asymmetry with `robot.ur3e.yaml`, which is a robot layer and is merged in
+# sim and on hardware alike.
+#
+# The line this file draws, and it decides which keys carry a value here:
+#
+#   A wrong value that fails closed ships as a worked example with its assumption stated.
+#   A workspace box that is too small refuses a motion, visibly, and the operator widens
+#   it. Those keys are set below.
+#
+#   A wrong value that fails open does not ship at all. A tool frame or a payload that is
+#   merely plausible drives the arm into the bench and logs a success. Those keys are
+#   written out below as commented blocks with what to measure, so the shipped refusals
+#   stay armed: `python -m src.robot.execution.real_cell --check` reports them as blocking
+#   and `URRobotArm.connect` refuses the cell until they are filled in.
+#
+# The bench this file assumes: a flat surface level with the robot base plane, 550 mm deep
+# and 800 mm wide, its near edge 250 mm out from the base. Every value below follows from
+# that and from the 850 mm sphere a UR5e works about its shoulder, which sits 162.5 mm
+# above the base plane. `src/willy_sim/harness/reach.py` measures a configured point
+# against that sphere without booting anything.
+# ============================================================================
+robot:
+  ur:
+    # The controller address, as an environment reference so the file is the same on every
+    # bench. `${VAR:-default}` is the loader's substitution syntax and it runs before the
+    # YAML is parsed, so the default has to be a valid scalar.
+    ip: "${WILLY_UR_IP:-192.168.1.100}"
+
+    # cuRobo is inherited from base robot.yaml and is fail-closed on the `move()` path a
+    # grasp takes: with no cuRobo environment that move is refused as CONTROLLER_REJECTED
+    # rather than degrading to the controller's straight line, which knows nothing about the
+    # bench. `move_home` and the joint moves are gated but never planned. Check the cell with
+    # `python -m src.robot.safety.planning --doctor` before the first motion.
+
+  # The Cartesian box the WorkspaceGuard admits targets in, and the box `move_home` checks
+  # its destination against. It is the bench, not the arm: the far corner (800, 400, 700)
+  # is r = 1044 mm about the shoulder, and every corner at x = 800 sits past the 850 mm
+  # sphere, so the reach limits this cell along that edge and the box limits it elsewhere.
+  #
+  # `z_min: 0.0` rather than the base file's 100.0, because the guard shrinks the box by
+  # `safety.limits.workspace_margin_mm` (20 mm) on every face and the grasp centre of a
+  # top-down pick on a part standing on this bench sits at z = 25 to 90 mm. With the base
+  # placeholder the effective floor is z = 120 mm and every such grasp is refused, which
+  # looks like a perception failure and is a configuration one.
+  workspace_limits:
+    x_min: 250.0
+    x_max: 800.0
+    y_min: -400.0
+    y_max: 400.0
+    z_min: 0.0
+    z_max: 700.0
+
+  # The joint configuration `move_home()` returns the arm to, in radians. Every cell has to
+  # set it. The shipped default is the arm straight up, which puts the flange at
+  # (0.0, -232.9, 1079.4) mm, outside this box on z and on x, and `move_home` fails closed
+  # on that check rather than warning past it, so the most natural first motion on a new
+  # bench is refused until this key exists.
+  #
+  # Base swung to +X, shoulder down, elbow bent, wrist neutral: flange (538.2, 132.5,
+  # 388.3) mm, r = 598.5 mm, 70.4 % of reach, and a clear 100 mm inside the box on every
+  # axis. Round decimals rather than an optimiser's output, because a home pose has to be
+  # recognisable by eye. The base angle is 3.14 and not 0 because the UR controller's base
+  # frame is rotated 180 degrees about Z from the Isaac stage frame; a home vector copied
+  # from `robot.sim.yaml` lands mirrored to -X, where the bench is not.
+  #
+  # `move_home` checks the pose the controller reports, which is the flange while
+  # `gripper.tool_frame.source` is `willy` and the TCP once a tool is set on the pendant.
+  # Derived from the bundled DH table; never commanded on a physical UR5e.
+  home_joint_positions: [3.14, -1.4, 1.6, -1.6, -1.57, 0.0]
+
+  # A declared retreat position, r = 607 mm, 71 % of reach, well inside `workspace_limits`.
+  # Nothing commands a motion to it: the readers are `_check_safe_pose_in_workspace` in
+  # robot_schema.py, which refuses a value outside the unshrunk box at load, and the sim
+  # reach audit.
+  safe_pose:
+    x: 500.0
+    y: -250.0
+    z: 400.0
+
+  safety:
+    self_collision:
+      # Selects the DH chain and the collision mesh bundle the guard evaluates this arm
+      # against. Unset, the guard falls back to the arm's `capabilities.model`, which is
+      # derived from `ur.model` and works, but the load-time validator that compares the
+      # two is guarded on this key being set, and a wrong `ur.model` is then caught only at
+      # connect, where `URRobotArm` compares it against the model the controller reports,
+      # and only where that model names a size. The bundle for this value ships at
+      # `src/robot/safety/data/ur5e_collision_meshes.npz`.
+      kinematics_model: "ur5e"
+
+      # `planner_margin_mm` stays at its 0.0 default. A UR5e plans at the 10 mm
+      # `min_distance_mm` the base file sets; the per-robot margin exists for arms whose
+      # thinner links read as permanently self-colliding once every sphere is inflated.
+
+      # The bench, as a collision box the guard evaluates every configuration against.
+      # With the shipped empty list there is no table in the collision world at all, so
+      # nothing refuses a motion that passes through the bench surface. Half extents are
+      # half the box: this is 550 mm deep, 800 mm wide and 50 mm thick, with its top face
+      # at z = 0, which is the support plane the grasp stack is told about below.
+      fixtures:
+        - name: "bench"
+          center_mm: [525.0, 0.0, -25.0]
+          half_extents_mm: [275.0, 400.0, 25.0]
+
+    # What the trajectory planner is allowed to know about the cell. With this block off,
+    # cuRobo plans against its own robot model and a generic table, so a plan may route
+    # straight through the bench and the one-shot guard on the final configuration cannot
+    # see it, because that guard judges a destination and not a path. Registering a world
+    # replaces the planner's own rather than adding to it, which is why `support_plane` is
+    # required as soon as this is enabled.
+    planning_world:
+      enabled: true
+      support_plane:
+        height_mm: 0.0
+        extent_mm: [800.0, 800.0]
+        thickness_mm: 50.0
+
+  grasping:
+    # Where every `pick()` appends its `GraspAttemptRecord`, as an environment reference so
+    # a bring-up can turn recording on without editing the tree. An empty expansion is off.
+    # A bring-up with no record log cannot be diagnosed afterwards and gives the soak, KPI
+    # and RL tooling nothing to read.
+    record_log_path: "${WILLY_RECORD_LOG:-}"
+
+# ============================================================================
+# The four bench measurements, deliberately not set.
+#
+# The first three below are refused by the shipped code until they are filled in. Nothing
+# refuses the disabled camera rig in item 4. That is the design:
+# `python -m src.robot.execution.real_cell --check` reports three blocking items on this
+# layer, and `URRobotArm.connect` refuses the first two before it opens a socket. Copy the
+# block, measure the values on your own cell, and paste it into this file.
+#
+# 1. The tool frame. Where the grasp centre sits on the flange. Every pose this stack
+#    commands is the grasp centre, so an undeclared or guessed tool frame means a top-down
+#    grasp commanding z = 37 mm drives the flange there and the fingertips through the
+#    bench. `source: willy` means this driver composes flange to TCP and the controller
+#    runs a bare flange; `polyscope` means the pendant holds it and this driver only
+#    verifies it at connect. The schema also rejects a declared source left at identity,
+#    so half a declaration does not pass either.
+#
+#     gripper:
+#       tool_frame:
+#         source: "willy"
+#         offset_mm: [0.0, 0.0, 0.0]                  # measure the coupling plus the gripper
+#         rotation_quat_xyzw: [0.0, 0.0, 0.0, 1.0]    # measure it in the same session
+#
+# 2. The payload. `connect()` refuses `enforce: true` with `mass_kg: 0.0` before it opens
+#    the socket, because connecting would push a zero payload to the controller and leave
+#    its protective-stop model under-reading a mounted tool. A genuinely bare flange is
+#    `enforce: false`, not zero. A declared mass with an all-zero centre of gravity is
+#    refused for the same reason: it tells the controller a multi-kilogram tool is a point
+#    mass at the flange face, which also corrupts gravity compensation and therefore every
+#    wrench reading. Weigh the tool and any workpiece it carries on a bench scale, and
+#    measure the centre of gravity in the same session as the tool frame.
+#
+#     safety:
+#       payload:
+#         mass_kg: 0.0                                # weigh it
+#         cog_mm: [0.0, 0.0, 0.0]                     # measure it
+#
+# 3. The camera to base calibration. Perception reports grasps in the camera frame, and
+#    without a resolver the driver refuses every motion as INVALID_TARGET, which looks
+#    like a broken cell. `from_robot_config` refuses to build a real cell at all rather
+#    than let that happen. Both keys are needed: the builder returns nothing unless
+#    `fusion.enabled` is true and a path is set.
+#
+#    Run the calibration, which moves the robot:
+#      python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --check
+#      python -m src.robot.execution.real_cell.calibrate --rig realsense_d435
+#    then point this key at what it wrote, by default under `calibration/real`.
+#
+#    Turning `fusion.enabled` on also arms the shadow voxel substrate, which ingests
+#    perception frames and emits telemetry. It changes no grasp and no motion, because the
+#    gate that would let fused evidence decide is `fusion.commit_policy.enabled` and that
+#    stays off, but it is not free at runtime.
+#
+#     grasping:
+#       fusion:
+#         enabled: true
+#         extrinsics_artifact_path: "calibration/real/eth_realsense_d435.json"
+#
+#    The calibrate `--check` above validates the config and the rig, not this key. What reads
+#    it is `python -m src.robot.execution.real_cell --check`, and that does not open the file,
+#    so a green check with a missing artifact still fails when the cell is built.
+#
+# 4. The camera itself. The base `camera/cam.yaml` ships its RealSense rig with
+#    `enabled: false` and no serial. One camera works with the shipped rig once it is
+#    enabled; a two-camera cell is the `eth2` layer, which replaces the rig list.
+# ============================================================================

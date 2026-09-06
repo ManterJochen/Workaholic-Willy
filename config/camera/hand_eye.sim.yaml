@@ -1,19 +1,24 @@
-# Sim profile overlay (WILLY_PROFILE=sim), deep-merged onto hand_eye.yaml.
-# Hand-eye calibration tuning for the Isaac sim cell. marker_length_mm + aruco_dict_name are the
-# Single source of truth for the rendered ArUco board (willy_sim builds a board to match). Values
-# unchanged from the validated ETH/EIH calibration runs; only the diverging keys are listed.
+# Overlay for `WILLY_PROFILE=sim`, deep-merged onto `camera/hand_eye.yaml`; only the keys that
+# differ from the base are listed. `marker_length_mm` and `aruco_dict_name` are the single source
+# of truth for the ArUco target: the sim renders its marker from these two values and the
+# calibrator detects with them, so changing one moves both halves together. As in the base file,
+# the `enabled` flags are documentation only and no code reads them.
 hand_eye:
-  # Eye-to-hand: fixed overhead camera, marker on the tool -> Transform(CAMERA -> BASE).
+  # Fixed camera, marker on the tool: returns `Transform(CAMERA -> BASE)`.
   eye_to_hand:
     enabled: true
+    # Denser sampling than the base tree: more poses, and a smaller step accepted between them.
+    # Every generated pose still has to sit inside the workspace limits, so lowering the two
+    # diversity thresholds is what lets a denser set survive the filter.
     min_samples: 8
     min_distance_mm: 20.0
     min_angle: 8.0
+    # The rendered marker is built to this size and dictionary.
     marker_length_mm: 48.0
     aruco_dict_name: "DICT_4X4_50"
-  # Eye-in-hand: wrist camera, fixed marker -> Transform(CAMERA -> TOOL).
+  # Wrist camera, fixed marker: returns `Transform(CAMERA -> TOOL)`.
   eye_in_hand:
-    enabled: true          # the sim validates BOTH ETH and EIH; base defaults this off for the ETH rig
+    enabled: true          # the sim cell calibrates both mountings; the base tree ships this off
     min_samples: 8
     min_distance_mm: 20.0
     min_angle: 8.0

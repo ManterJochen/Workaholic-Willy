@@ -1,31 +1,29 @@
 # ============================================================================
-# RL x datagen   --profile rl_datagen        (see .ai-memory/rl-datagen-arc.md)
+# RL x datagen: the profile the offline RL data sweeps run under.
 #
-# Turns the U-stack ON so a pick over a datagen scene emits the fifteen feature keys the offline RL
-# ranking/candidate trainers read. Without this the trainers see `_project_feature(None) -> 0.0` for
-# thirteen of fifteen and degenerate, which is exactly what happened on 2026-07-17 and cost a day.
+# Selected with `WILLY_PROFILE=rl_datagen`. `datagen/rl/collect.py` and `datagen/rl/occupancy.py`
+# load it by name, through `load_robot_config(profile="rl_datagen")`.
 #
-# Mode is auto, and it is not a preference. Measured against the schema on 2026-08-19:
+# It turns on the grasping blocks that produce the fifteen features listed as
+# `RANKING_FEATURE_KEYS` in `src/robot/grasping/rl/ranking_policy.py`, so a pick over a datagen
+# scene logs rows the offline candidate and ranking trainers can learn from. Most of the fifteen
+# are attempt-level: a per-candidate row carries `geometric_score`, `predicted_success_probability`
+# and `shadow_predicted_success_probability`, and reads 0.0 for the rest, which is what
+# `python -m datagen.rl.occupancy` measures. A block left off does not leave a hole: the trainers
+# project a missing feature to 0.0, so a policy fitted without these blocks degenerates rather than
+# failing.
 #
-#     watchdog       apply_modes ('auto',)                      <- drift_severity, ood_flagged,
-#                                                                  degraded_mode_active
-#     uncertainty    ('auto', 'dense_clutter', 'dense_autonomous')
-#     feasibility    ('auto', 'dense_clutter', 'dense_autonomous')
-#     success_model  ('easy', 'auto', 'dense_clutter', 'dense_autonomous')
-#     fusion         no mode gate
-#     performance    no mode gate
+# The grasp mode decides as much as the blocks do. `robot.grasping.default_mode` in
+# `config/robot/robot.yaml` selects `auto`, and neither loader here reads it: both build through
+# `datagen.rl.occupancy.build_service`, which passes `mode=GraspMode.AUTO` to
+# `AutonomousGraspService.from_robot_config`, and an explicit `mode` wins over the config default.
+# Under `easy` the decision layer is skipped and the `uncertainty` and `feasibility` overlays are
+# locked out by their `apply_modes`. `deep_ranker`, `fusion` and `success_model` are not gated by
+# mode at all; `success_model.apply_modes` reaches the effective-config snapshot and nothing else.
 #
-# `watchdog` is auto-only, so `auto` is the single mode under which all fifteen features are
-# reachable. Any other mode silently drops three of them to zero.
-#
-# The mode is not a config key: `grasping.mode` does not exist and the loader rejects it (measured).
-# It is chosen where the service is built, so the runner passes GraspMode.auto. This is the
-# `--mode` vs `--grasp-mode` trap from docs/grasping-config-reference.md section 3: a profile that looks
-# complete can still run in the wrong mode, and then most of the blocks below are inert.
-#
-# This profile is for data generation, not for a cell. It enables blocks the shipped tree keeps off
-# on purpose, and it is pointed at scenes on disk, not at a robot. Do not layer it onto `ursim` or a
-# real profile.
+# For data generation, not for a cell: it enables blocks the shipped tree keeps off on purpose, and
+# it points at scenes on disk rather than at a robot. Do not layer it onto `ursim` or onto a
+# real-hardware profile.
 # ============================================================================
 
 robot:
@@ -45,64 +43,81 @@ robot:
   grasping:
     # --- the feature producers --------------------------------------------------------------------
     decision:
-      enabled: true         # the AUTO gate itself; also the source of decision_latency_ms
+      enabled: true         # the fail-closed decision layer; source of `decision_latency_ms`
 
-    # The one component with a measured advantage that had never scored a real candidate.
-    # `held_jaw_v1` reaches AUROC 0.8947 out of fold on 13,788 rows across 863 object groups, against
-    # a width-only baseline of 0.7769, and it shipped as the schema default with `enabled: false`.
-    # It changes NO ordering and NO decision; it stamps `deep_ranker_*` telemetry saying what it would
-    # have chosen. Turned on here, in the offline feature sweep, because that runs the real pick path
-    # on CPU without an Isaac box.
+    # The learned grasp ranker in shadow: it scores every candidate and stamps `deep_ranker_*`
+    # telemetry with what it would have chosen, changing no ordering and no decision. On here so a
+    # sweep records that comparison beside the geometric order. The fitted trees are gitignored, so
+    # nothing is scored until `python -m datagen train-ranker` writes them. That command reads
+    # neither key here: it writes `--out-model`/`--spec`, whose defaults produce
+    # `bootstrap_jaw_v1.json`, while the runtime loads `<artifact_dir>/<spec>.json`.
     deep_ranker:
       enabled: true
 
     fusion:
       enabled: true         # the shadow voxel substrate
-      # Measured, not guessed: on bin_000009 the wrist depth starts at 55 mm, below the shipped
-      # 80 mm floor: the camera is close in these scenes. Left at 80 it would clip real surface off
-      # the nearest view, which is the one with the best look at the target.
+      # Minimum valid depth sample; anything nearer is rejected. A datagen scene puts the wrist
+      # camera closer than the 80 mm default, which would discard real surface from the nearest
+      # view, the one with the best look at the target. Must stay below `depth_max_mm`.
       depth_min_mm: 40.0
       geometry:
-        enabled: true       # fuse each object across cameras and change the CANDIDATES
-        # The one setting here that is a cost knob, and it is set for this profile only.
-        # Measured 2026-08-19 on bin_000009: `_fused_scene` took 182.7 s of a 187 s pick, because
-        # the overlap metric is chunked brute force over clouds it documents as "a few thousand
-        # points at most", and one datagen object's cloud is 37,119 points. Decimating for the
-        # Match decision only leaves the fused cloud the generator plans on at full resolution.
-        # Default is 0.0 (off): no shipped cell is affected by this line existing.
+        enabled: true       # fuse each object across cameras; this switch changes the candidates
+        # Decimate each cloud to one point per 4 mm for the association scoring only; the fused
+        # cloud the generator plans on is rebuilt from the full-resolution clouds, so the match
+        # decision gets cheaper and the geometry does not get coarser. The default is 0.0, off, and
+        # only this profile sets it: `_overlap_fraction` is chunked brute force over clouds it
+        # assumes are a few thousand points, and a path-traced datagen cloud is an order of
+        # magnitude past that, at which fusion becomes nearly the whole cost of a pick. Applies to
+        # the `overlap` metric only.
         score_voxel_mm: 4.0
-      # `cameras` stays empty on purpose. It is the config source `build_config_frame_resolvers`
-      # normally builds resolvers from, and it is fail-closed on calibration artifacts. Datagen's
-      # extrinsics live per scene in scene.json, and the wrist camera moves with the posed arm, so
-      # they are not a cell constant at all. The runner supplies `camera_frame_resolvers` directly,
-      # which is what the pick loop actually reads (verified at pick_loop.py:1712).
+      # `cameras` stays unset on purpose. It is what `build_config_frame_resolvers` builds the
+      # per-camera `CAMERA -> BASE` resolvers from, and it is fail-closed on missing calibration
+      # artifacts. A datagen scene carries its own extrinsics in `scene.json` and its wrist camera
+      # moves with the posed arm, so neither is a cell constant; the runner sets
+      # `BinPickingOrchestrator.camera_frame_resolvers` directly, which is what the pick loop reads.
+      # Unset also leaves `configured_camera_ids` empty, which does not disarm
+      # `geometry.on_camera_unavailable`: the pick loop falls back to the hand-wired resolver map
+      # as the expected set. Nothing is missing here only because the rig builds its sources and
+      # resolvers from the same views.
 
     uncertainty:
-      enabled: true         # uncertainty_score, uncertainty_disagreement
+      # The decision report carries `uncertainty_score` either way; this block only decides whether
+      # it is the fused value or the legacy `(1 - top_score)` fallback. The channel spread is
+      # written as `channel_disagreement`, so nothing writes `uncertainty_disagreement`.
+      enabled: true         # the fused-uncertainty layer
 
     feasibility:
-      enabled: true         # feasibility_score
+      # Inert as written: the overlay is wired only when `weight` is above 0.0 too, and the schema
+      # default is 0.0, so no re-rank runs and the per-candidate `feasibility_score` stays 0.0. The
+      # shadow stamp that would carry the IK signal needs an `ik_service` this path does not build.
+      enabled: true         # the feasibility-aware ranking overlay
 
     success_model:
-      enabled: true         # predicted_success_probability (+ its shadow)
+      enabled: true         # source of `predicted_success_probability`, shadow only
 
     performance:
-      enabled: true         # ranking_latency_ms, fusion_latency_ms, decision_latency_ms
+      enabled: true         # arms the latency SLO gate; the spans are recorded either way
 
   # --- the behaviour policy -----------------------------------------------------------------------
-  # `rl_shadow` is what builds the shadow router, and the router is what populates
-  # `_candidate_log`, the per-candidate 15-key feature rows this whole arc is here to collect.
-  # Without it the records carry no per-candidate features at all.
+  # `rl_shadow` is the only mode that builds the shadow router, and the router is what writes the
+  # per-candidate feature rows into `record.extra.rl_candidate_features`. Under any other mode the
+  # records still carry outcomes and roll up into KPIs, but a pairwise ranker trained on them has
+  # nothing to rank.
   #
-  # The bootstrap that makes this non-circular: with no artifact paths set, the router falls back to
-  # the committed baselines (v2_candidate / v3_ranking). Those are the degenerate policies that abstain
-  # honestly, which is fine and in fact correct here. They are the behaviour policy: what generated
-  # the data. Training a better one from data the old one produced is exactly what off-policy offline
-  # RL is for, and the alternative (train on data the new policy chose) is the on-policy trap.
-  # Named explicitly, because the schema refuses `rl_shadow` without `policy_id` + `artifact_path`.
-  # That refusal is right and worth keeping: a cell running a shadow policy nobody can name is a cell
-  # whose telemetry cannot be attributed afterwards. The implicit fallback to these same files exists
-  # in `maybe_build_shadow_router`, and writing them out is strictly better than relying on it.
+  # The two artifacts named here are not in the tree; `train-candidate-policy` and
+  # `train-ranking-policy` under `python -m src.robot.grasping.rl` write exactly those paths.
+  # Until they exist `maybe_build_shadow_router` warns once and returns None, so a pick logs no
+  # candidate rows. They are the behaviour policy: they abstain rather than reorder, so the corpus
+  # records what the deterministic stack chose.
+  # Fitting a better policy on data an earlier policy produced is what off-policy offline training
+  # is for; fitting it on data the new policy chose is the trap it avoids.
+  #
+  # Written out rather than left implicit, for two reasons. The schema refuses `rl_shadow` without
+  # `policy_id` and `artifact_path`, and that refusal is worth keeping: a shadow policy nobody can
+  # name is telemetry nobody can attribute afterwards. And `maybe_build_shadow_router` would
+  # otherwise fall back to these same files without saying so. A bare `policy_id` matches any
+  # version of that policy, `name@version` pins one, and a declaration that matches neither refuses
+  # the router instead of labelling the data with the wrong policy name.
   rl:
     mode: "rl_shadow"
     policy_id: "v2_candidate_baseline_v1"

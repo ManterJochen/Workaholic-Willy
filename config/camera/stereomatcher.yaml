@@ -1,44 +1,63 @@
+# SGBM stereo matching, applied to every stereo rig in `camera/cam.yaml`. `DisparityComputer` in
+# `src/calibration/stereo/sub_modules/disparity.py` reads this block and passes it to
+# `cv.StereoSGBM_create`. The keys keep OpenCV's camelCase spelling, which is what the YAML must
+# use even though Python reaches the same fields under snake_case names.
 stereomatcher:
   # --- Core SGBM parameters ---
   minDisparity: 0
-  # numDisparities must be divisible by 16. Larger = supports closer
-  # objects at the cost of memory + compute. 320 covers typical desk
-  # distance scenes.
+  # Width of the disparity search in pixels. It must be a positive multiple of 16 or the config is
+  # refused. A larger value reaches closer objects and costs memory and compute; 320 covers a scene
+  # at desk distance.
   numDisparities: 320
-  # blockSize must be odd. 5 to 9 is the usable range for SGBM. Smaller =
-  # better edge preservation; larger = smoother in low-texture regions.
+  # Matching window in pixels, and it must be odd. 5 to 9 is the usable range for SGBM: smaller
+  # preserves edges, larger smooths low-texture regions.
   blockSize: 7
-  # P1/P2 control the smoothness penalty. null -> auto-computed as
-  # 8*channels*blockSize^2 and 32*channels*blockSize^2 (OpenCV default).
+  # Smoothness penalties for a one-pixel disparity step and for a larger one. `null` computes them
+  # as 8*channels*blockSize^2 and 32*channels*blockSize^2, OpenCV's recommendation, with channels
+  # fixed at 3. Setting both is accepted only when p2 is at least p1.
   p1: null
   p2: null
+  # Percent by which the best match must beat the runner-up before it is trusted. Raising it trades
+  # wrong depths on textureless surfaces for holes where nothing wins clearly.
   uniquenessRatio: 10
+  # Largest blob of similar disparity still cleared as noise. A speck at the wrong depth is worse
+  # than a hole, because a grasp can be planned onto it; 0 disables the filter.
   speckleWindowSize: 50
+  # Disparity spread allowed inside one blob before it counts as a separate surface rather than one
+  # speckle. It acts only through speckleWindowSize; on its own it changes nothing.
   speckleRange: 1
+  # Tolerance in pixels of the left-right consistency check: a pixel survives only when the
+  # left-to-right and right-to-left matches agree within it. It removes occlusion-edge depths,
+  # which are exactly the depths a grasp planner would otherwise aim at. -1 disables the check.
   disp12MaxDiff: 1
 
   # --- Quality knobs ---
-  # "sgbm"      = StereoSGBM (default, best quality but slowest)
-  # "sgbm_3way" = MODE_SGBM_3WAY: ~2x faster with similar quality at 720p.
+  # Which SGBM variant runs. `sgbm` is the full matcher and the schema default; `sgbm_3way` selects
+  # MODE_SGBM_3WAY, about twice as fast at 720p for comparable quality.
   mode: sgbm_3way
 
-  # Subpixel disparity refinement. Costs essentially nothing and removes
-  # +/-0.5 px quantisation that translates to ~1 to 3 mm depth error at
-  # typical desk distances.
+  # No code reads this key. `DisparityComputer` never consults it, and the disparity it returns is
+  # fractional either way, because the matcher output is scaled by 16 and divided back.
   subpixel: true
 
-  # Realtime only: exponential smoothing on disparity to reduce flicker.
-  # 0.0 = disabled; 0.6 is a good starting point for the live overlay.
+  # Exponential moving average across disparity frames, for the live stream. 0.0 disables it;
+  # otherwise the new frame carries this weight and the previous one carries `1 - alpha`, so a
+  # value near 1.0 barely smooths and 0.6 is a reasonable starting point for a viewfinder. A pixel
+  # with no disparity in the new frame keeps the previous frame's value, so the output can carry a
+  # stale depth through a short dropout.
   temporal_alpha: 0.0
 
   # --- WLS post-filter (cv.ximgproc) ---
-  # Single biggest depth-quality improvement on textureless surfaces
-  # (walls, table tops, smooth objects). Requires opencv-contrib-python.
+  # Weighted least squares smoothing of the disparity map: it fills low-texture surfaces such as
+  # walls, table tops and smooth objects while keeping edges. It needs `cv2.ximgproc` from
+  # opencv-contrib-python, and when that is missing the matcher falls back to plain SGBM without
+  # raising, so a cell that relies on the filter has to confirm the package is installed.
   wls:
     enabled: true
-    # Smoothness: higher fills holes more aggressively.
+    # Smoothing strength: higher fills holes more aggressively.
     lambda: 8000.0
-    # Edge sensitivity: lower preserves edges more strictly.
+    # Edge sensitivity: lower keeps edges sharper.
     sigma_color: 1.5
-    # Run a right-side matcher for left/right consistency confidence.
+    # Run a second matcher on the right image for a left-right consistency confidence map. It is
+    # built only while `enabled` is true; on its own it does nothing.
     lr_check: true

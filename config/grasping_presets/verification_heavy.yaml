@@ -1,6 +1,17 @@
-# Phase T7 preset: verification-heavy closed loop with recovery enabled.
+# Grasp preset: the closed loop, with pre-grasp refinement and post-grasp verification demanded.
+#
+# A preset is not part of the config tree the loader validates. `apply_preset` in
+# `src/robot/grasping/replay/presets.py` deep-merges this file onto an already loaded `robot:`
+# block, so `python -m src.config` never sees it and a misspelt key merges in silently. Only
+# `validate_preset` re-validates the merged result against the schema and rejects it.
 grasping:
+  # `closed_loop` requires a second-scan refiner and a verification policy. When either is not
+  # wired into the service the pick is refused with a `MODE_NOT_AVAILABLE` outcome instead of being
+  # degraded to an open-loop attempt, so this preset only runs on a cell that supplies both.
   default_mode: closed_loop
+  # Recovery applies only in the modes listed in `recovery.apply_modes`, which ships as auto,
+  # dense_clutter and dense_autonomous. `closed_loop` is not among them, so this flag stays off at
+  # runtime unless the cell adds the mode to that list.
   recovery:
     enabled: true
     allowed_actions:
