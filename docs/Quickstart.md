@@ -2,9 +2,9 @@
 
 From a fresh clone to a pick you can watch, on a desk with no robot and no camera attached.
 
-Two example scripts carry the whole of it. `scripts/examples/01_robot_setup.py` reports what your
+Two example scripts carry the whole of it. `scripts/examples/cell/01_robot_setup.py` reports what your
 configuration claims the cell is and runs the desk-side preflight over it.
-`scripts/examples/03_pick.py` builds a cell on a dummy arm and drives one pick through the real
+`scripts/examples/cell/03_first_pick.py` builds a cell on a dummy arm and drives one pick through the real
 grasp stack. Neither needs hardware, and no example commands a motion unless you pass `--live`.
 
 ## What you are installing
@@ -51,7 +51,7 @@ Everything below runs from the repository root.
 
 ```bash
 python -m src.config                       # validate the YAML tree
-python scripts/examples/01_robot_setup.py  # then read it back as a cell
+python scripts/examples/cell/01_robot_setup.py  # then read it back as a cell
 ```
 
 Against the shipped tree, the second command reports a UR cell and three blocking preflight items:
@@ -78,7 +78,7 @@ explains what each item looks like at the cell if you skip it.
 ## 3. Run one pick, with no robot
 
 ```bash
-python scripts/examples/03_pick.py
+python scripts/examples/cell/03_first_pick.py
 ```
 
 This builds a cell on a dummy arm against a synthetic scene and runs the real pick path: config
@@ -122,7 +122,7 @@ chain, applied left to right:
 | `eth2` | the fusion half of a cell with two fixed RGB-D cameras. Use it as `ur5e,eth2` |
 
 ```bash
-WILLY_PROFILE=ur5e python scripts/examples/01_robot_setup.py
+WILLY_PROFILE=ur5e python scripts/examples/cell/01_robot_setup.py
 python -m src.config --profile ur5e,eth2 --print
 ```
 
@@ -144,7 +144,7 @@ A cell with no `CAMERA->BASE` transform builds, connects, and then refuses every
 `INVALID_TARGET`, which at the bench looks like a broken robot. Calibration is what removes that
 third blocking item, and it is a bench procedure rather than a command you can rehearse away:
 [calibration setup](calibration-setup.md) is the page to work from, and
-`scripts/examples/02_calibration.py` is the guided walkthrough that runs the same routine.
+`scripts/examples/calibration/10_eye_to_hand.py` is the guided walkthrough that runs the same routine.
 
 ## 6. Grasp presets
 
@@ -252,21 +252,22 @@ cell refuses to boot without. [Make Isaac ready](isaac-ready.md) is the setup, a
 [`src/willy_sim/`](../src/willy_sim/README.md) is the runner catalogue.
 
 ```bash
-python scripts/examples/07_sim.py                                # checks this box, runs nothing
+python scripts/examples/sim/70_sim_pick.py                                # checks this box, runs nothing
 <isaac-sim>\python.bat -m src.willy_sim.run_m1_pick --runs 10    # known-pose pick
 ```
 
 ## 9. The checks that gate a change
 
 ```bash
-ruff check src config api datagen tests scripts/examples
-mypy src api datagen scripts/examples
-pytest tests --cov=src --cov-fail-under=80
+ruff check src api datagen tests scripts
+mypy src api datagen scripts
+pytest tests --cov=src --cov=api --cov=datagen --cov-fail-under=80
 python -m src.robot.grasping.replay --soak-report
 ```
 
-`scripts/examples/` is linted and type-checked with the library, so an example that stops matching
-the API fails the same gate the library does.
+`scripts/` is linted and type-checked with the library, so an example or a workstation tool that
+stops matching the API fails the same gate the library does. `config/` is not in those lists: it is
+the YAML tree, and the Python that reads it lives in `src/config`.
 
 ## Where to go next
 
@@ -277,7 +278,7 @@ the API fails the same gate the library does.
 - [`src/robot/README.md`](../src/robot/README.md), the driver contract, and
   [`src/robot/drivers/`](../src/robot/drivers/README.md) for UR, KUKA, Isaac and the dummy.
 - [`src/config/`](../src/config/README.md), the loader and the schemas, and [`config/`](../config/), the YAML you edit.
-- [`scripts/examples/`](../scripts/examples/README.md), the seven examples in dependency order.
+- [`scripts/examples/`](../scripts/examples/README.md), twenty-nine examples in topic folders, one per decision.
 - [`docs/runbooks/real_cell_first_pick.md`](runbooks/real_cell_first_pick.md), the ordered bring-up
   from a validated configuration to a commanded motion, and
   [`docs/runbooks/ur3e_cell_bringup.md`](runbooks/ur3e_cell_bringup.md), which includes URSim in

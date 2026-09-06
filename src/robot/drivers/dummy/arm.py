@@ -136,7 +136,7 @@ class DummyRobotArm(RobotArm):
 
         This arm is why the attestation exists. A script that prints a cleared-safety
         line while driving this class, whose `move_to_joints` below simply drives, is
-        reporting a run in which no guard ran, which `scripts/examples/03_pick.py:7-14`
+        reporting a run in which no guard ran, which `scripts/examples/cell/03_first_pick.py`
         records. A run on the dummy is a wiring rehearsal and never a safety
         demonstration, and this is where it says so about itself.
         """

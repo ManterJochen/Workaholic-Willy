@@ -30,12 +30,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Run as a script, `python scripts/examples/01_robot_setup.py` puts only `scripts/examples/` on
-# sys.path, and `import src...` then fails. Every example needs the repository root, so it is added
-# once here rather than once per example: importing this module is what every example does first
-# anyway. The tests import an example as a module and an operator runs the file, and those are two
-# different environments. This file sits at `<repo>/scripts/examples/`, so the root is two parents
-# up; the repository is not pip installable, so there is no import path without this.
+# Run as a script, `python scripts/examples/cell/01_robot_setup.py` puts only the directory holding
+# that file on sys.path, and `import src...` then fails. Every example needs the repository root, so
+# it is added once here rather than once per example: importing this module is what every example
+# does first anyway. The tests import an example as a module and an operator runs the file, and those
+# are two different environments. This file sits at `<repo>/scripts/examples/`, so the root is two
+# parents up; the repository is not pip installable, so there is no import path without this. An
+# example in a topic folder reaches this module by putting its own parent on sys.path first, which
+# is the one line of boilerplate the folders cost.
 _REPO_ROOT = str(Path(__file__).resolve().parents[2])
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)

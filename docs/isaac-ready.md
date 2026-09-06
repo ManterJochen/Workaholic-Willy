@@ -25,7 +25,7 @@ Download the standalone package and unpack it. Everything is driven through its 
 `python.bat` on Windows and `python.sh` on Linux, which already carries `isaacsim`, `omni.*` and a
 matching torch. The repository's own virtual environment cannot import `isaacsim` however the
 configuration is set, so a runner started with the wrong interpreter fails eight imports deep.
-`scripts/examples/07_sim.py` checks that first and refuses with the fix.
+`scripts/examples/sim/70_sim_pick.py` checks that first and refuses with the fix.
 
 Keep the whole stack on one fast drive.
 
@@ -107,7 +107,7 @@ cmd /c "<isaac-sim>\python.bat -m src.willy_sim.run_m2_pick --runs 10 > m2.log 2
 ```
 
 The full catalogue, eye-in-hand, multi-view, fused, suction, industrial and the two calibrations, is
-in the [willy_sim README](../src/willy_sim/README.md), and `scripts/examples/07_sim.py` fronts the
+in the [willy_sim README](../src/willy_sim/README.md), and `scripts/examples/sim/70_sim_pick.py` fronts the
 first three.
 
 A simulator rate proves the software and never the cell. Contact friction is a model, the depth is a

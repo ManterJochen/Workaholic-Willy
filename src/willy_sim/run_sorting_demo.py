@@ -21,7 +21,7 @@ What keeps the filmed motion clean:
 Filmed in segments, each its own Isaac boot because SimulationApp is a singleton, then stitched by
 ``--concat`` with title cards, the way ``run_klt_combined_demo`` does it.
 
-On-box only: needs Isaac plus the cuRobo/Coal engines. ``scripts/ext_deps/install_ext_deps.ps1`` installs both
+On-box only: needs Isaac plus the cuRobo/Coal engines. ``scripts/ext_deps/install.ps1`` installs both
 into ``ext_deps/``, which is where the code looks by default, so no environment variable is needed.
 Run with Isaac's bundled python from the repo root:
 

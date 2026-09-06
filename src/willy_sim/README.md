@@ -78,7 +78,7 @@ Beyond the pick gates: cinematic recorders (`run_dense_demo`, `run_dense_demo_en
 <isaac-sim>\python.bat -m src.willy_sim.run_m1_pick --runs 10
 ```
 
-`scripts/examples/07_sim.py` fronts the first three and checks the interpreter before anything
+`scripts/examples/sim/70_sim_pick.py` fronts the first three and checks the interpreter before anything
 else, which is the single most common way an hour disappears here.
 
 ## Contents
@@ -157,4 +157,4 @@ The seams in `harness/`:
 - [robot/execution/autonomous_grasp](../robot/execution/autonomous_grasp/README.md), the pick path the runners drive
 - [robot/grasping](../robot/grasping/README.md), the vendor-neutral grasp stack under test
 - [ext_deps](../../ext_deps/README.md), how to install cuRobo and Coal
-- `scripts/examples/07_sim.py`, the readiness check and a fronted run
+- `scripts/examples/sim/70_sim_pick.py`, the readiness check and a fronted run

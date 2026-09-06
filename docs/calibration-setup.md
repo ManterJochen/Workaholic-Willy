@@ -141,7 +141,7 @@ where the marker stays visible before you run a sweep.
 ## 5. Rehearse, then run the sweep
 
 ```bash
-python scripts/examples/02_calibration.py --rig realsense_d435       # the guided walkthrough
+python scripts/examples/calibration/10_eye_to_hand.py --rig realsense_d435       # the guided walkthrough
 python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --check
 ```
 

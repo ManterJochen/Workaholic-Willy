@@ -41,7 +41,7 @@ What is real and what is scripted, precisely:
 
 This is a demo runner, not the production service, and it is not validated on real hardware.
 
-On-box only: needs Isaac plus the cuRobo and Coal engines. ``scripts/ext_deps/install_ext_deps.ps1``
+On-box only: needs Isaac plus the cuRobo and Coal engines. ``scripts/ext_deps/install.ps1``
 installs both into ``ext_deps/``, which is where the code looks by default; no environment variable
 is needed. Run with Isaac's bundled python from the repository root:
 

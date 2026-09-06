@@ -113,7 +113,7 @@ mock mode and on an Isaac workstation. `CalibrationRoutine` solves both the eye-
 (`T_cam_to_base`) and the eye-in-hand transform (`T_cam_to_tool`) against a real marker source.
 
 `from_robot_config` has a live caller in [`real_cell`](real_cell/README.md) and in
-`scripts/examples/03_pick.py`, and both rehearse the whole path on a dummy arm. Beyond that
+`scripts/examples/cell/03_first_pick.py`, and both rehearse the whole path on a dummy arm. Beyond that
 rehearsal, nothing in this layer has executed against a physical controller.
 
 The operator console in [`api/`](../../../api/README.md) consumes this layer over HTTP. The
@@ -127,4 +127,4 @@ dependency runs one way only: nothing under `src/` may import a web framework or
 - [robot/core](../core/README.md), the Protocols this layer drives
 - [robot/safety](../safety/README.md), the fail-closed guards every motion passes through
 - [willy_sim](../../willy_sim/README.md), the Isaac runners that consume this layer
-- `scripts/examples/03_pick.py`, one grasp end to end through `Cell` and `PickRun`
+- `scripts/examples/cell/03_first_pick.py`, one grasp end to end through `Cell` and `PickRun`

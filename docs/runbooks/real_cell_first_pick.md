@@ -84,7 +84,7 @@ shipped refusals stay armed.
 ### 3. Does the whole software path work, with no hardware?
 
 ```bash
-python scripts/examples/01_robot_setup.py            # the config side, commands nothing
+python scripts/examples/cell/01_robot_setup.py            # the config side, commands nothing
 python -m src.robot.execution.real_cell --rehearse --runs 3
 ```
 
@@ -102,7 +102,7 @@ The rehearsal is not grasp-quality evidence. The dummy arm carries no safety pre
 ### 4. Does the arm answer?
 
 ```bash
-python scripts/examples/01_robot_setup.py --live      # connects, reads back, commands no motion
+python scripts/examples/cell/01_robot_setup.py --live      # connects, reads back, commands no motion
 ```
 
 This proves the network path, the SDK, the configuration and the controller state read. `connect()`

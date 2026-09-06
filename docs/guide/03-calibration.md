@@ -11,7 +11,7 @@ the commands are `python -m src.robot.execution.real_cell.calibrate` on a real c
 [`src/calibration/README.md`](../../src/calibration/README.md) for the typed extrinsics, the stereo
 runtime and persistence, and
 [`src/calibration/eye_hand/README.md`](../../src/calibration/eye_hand/README.md) for the two
-workflows themselves. [`scripts/examples/02_calibration.py`](../../scripts/examples/02_calibration.py)
+workflows themselves. [`scripts/examples/calibration/10_eye_to_hand.py`](../../scripts/examples/calibration/10_eye_to_hand.py)
 is the runnable walkthrough against the library API.
 
 Sibling guides: [01](01-configuration.md) . [02](02-models.md) . **03** . [04](04-robot-and-safety.md)
@@ -291,7 +291,7 @@ answer.
 `AutonomousGraspService.from_robot_config()` is the config-driven boot path, and it has live callers:
 `build_real_cell` and `build_rehearsal_cell` in `src/robot/execution/autonomous_grasp/cells.py`, which is what
 `python -m src.robot.execution.real_cell`, the operator console and
-[`scripts/examples/03_pick.py`](../../scripts/examples/03_pick.py) all reach through `Cell`; plus
+[`scripts/examples/cell/03_first_pick.py`](../../scripts/examples/cell/03_first_pick.py) all reach through `Cell`; plus
 `src/willy_sim/run_multiview_pick.py` and `run_eih_pick.py`, and `datagen/rl/occupancy.py`.
 
 Inside that path, `from_robot_config` builds the singular resolver from
@@ -384,7 +384,7 @@ zero, so its residual is unconfirmed on a real bench.
 | The two workflows, the multi-camera map and their traps | [`src/calibration/eye_hand/README.md`](../../src/calibration/eye_hand/README.md) |
 | The bench session: print the board, run the sweep, wire the artifact in | [docs/calibration-setup.md](../calibration-setup.md) |
 | Running one camera against a real robot, and the flags | [`src/robot/execution/real_cell/README.md`](../../src/robot/execution/real_cell/README.md) |
-| Both modes driven from Python | [`scripts/examples/02_calibration.py`](../../scripts/examples/02_calibration.py) |
+| Both modes driven from Python | [`scripts/examples/calibration/10_eye_to_hand.py`](../../scripts/examples/calibration/10_eye_to_hand.py) |
 | Config layering, `explain` and `where` | [01](01-configuration.md) |
 | Camera intrinsics, and building an arm | [02](02-models.md) . [04](04-robot-and-safety.md) |
 | The pick that consumes the transform | [05](05-pick-loop.md) |

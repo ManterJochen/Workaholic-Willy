@@ -19,7 +19,7 @@ The motion guarantees are those of ``run_sorting_demo``: cuRobo plans every arm 
 well-conditioned on the centreline, and the carry and set-down are render-safe kinematic surrogates.
 The decision is what the demo is showing.
 
-On-box only: needs Isaac plus the cuRobo/Coal engines. ``scripts/ext_deps/install_ext_deps.ps1`` installs both
+On-box only: needs Isaac plus the cuRobo/Coal engines. ``scripts/ext_deps/install.ps1`` installs both
 into ``ext_deps/``, which is where the code looks by default, so no environment variable is needed.
 Run with Isaac's bundled python from the repo root:
 

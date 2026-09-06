@@ -2,9 +2,9 @@
 
 The defect this exists to end is a report of a cleared safety layer from a run that
 never reached one. `SafetyPreflight` lives in the driver, the dummy driver carries none
-(`drivers/dummy/arm.py:140` says so), and a run with `policy.preflight` set to `None`
+(`drivers/dummy/arm.py` says so), and a run with `policy.preflight` set to `None`
 looks exactly like a run that passed six guards.
-`scripts/examples/03_pick.py:7-14` records the case in its own words. The question is
+`scripts/examples/cell/03_first_pick.py` records the case in its own words. The question is
 the one every caller of the library API asks: hand over an arm, and be told what it
 will refuse.
 

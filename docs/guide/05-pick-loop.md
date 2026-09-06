@@ -53,7 +53,7 @@ no config at all: `effective_config` stays `None` and no overlay runs.
 | Caller | Constructor | Why that one |
 | --- | --- | --- |
 | `build_real_cell` and `build_rehearsal_cell` in `src/robot/execution/autonomous_grasp/cells.py` | `from_robot_config` | a whole cell in one call: physical, or a desk rehearsal on a dummy arm |
-| `python -m src.robot.execution.real_cell`, the operator console, and [`scripts/examples/03_pick.py`](../../scripts/examples/03_pick.py) | `from_robot_config`, through `Cell` and those two builders | the terminal, the browser and a Python script drive one construction |
+| `python -m src.robot.execution.real_cell`, the operator console, and [`scripts/examples/cell/03_first_pick.py`](../../scripts/examples/cell/03_first_pick.py) | `from_robot_config`, through `Cell` and those two builders | the terminal, the browser and a Python script drive one construction |
 | `run_multiview_pick.py` with `--boot config`, its default | `from_robot_config` | the simulator booting the way a real cell boots |
 | `datagen/rl/occupancy.py` | `from_robot_config` | features from the real stack rather than from a copy of it |
 | `run_m1_pick`, `run_m2_pick`, `run_dense_pick`, `run_attribute_pick`, and `run_eih_pick` by default | `from_components` | the simulator gripper needs a session the vendor registry cannot reach |
@@ -154,7 +154,7 @@ not guarding.
 the stage table are in the [real_cell README](../../src/robot/execution/real_cell/README.md), the
 bring-up procedure in [real_cell_first_pick.md](../runbooks/real_cell_first_pick.md), and the same
 path with a narrated inventory of which layers ran in
-[`scripts/examples/03_pick.py`](../../scripts/examples/03_pick.py).
+[`scripts/examples/cell/03_first_pick.py`](../../scripts/examples/cell/03_first_pick.py).
 
 ## 4. A worked example in the simulator
 
@@ -195,7 +195,7 @@ Two traps: several runners declare `def main() -> None` and therefore always exi
 line rather than the exit code; and `run_m2_pick` deliberately forces the model library offline,
 because the simulator's own runtime closes the HTTP client and an online boot crashes, so a machine
 with no cached detector weights fails rather than downloading ([02](02-models.md)).
-[`scripts/examples/07_sim.py`](../../scripts/examples/07_sim.py) fronts the first runners and checks
+[`scripts/examples/sim/70_sim_pick.py`](../../scripts/examples/sim/70_sim_pick.py) fronts the first runners and checks
 the interpreter before anything else, which is the single most common way an hour disappears here.
 
 ## 5. The retry loop, and clearing a whole bin

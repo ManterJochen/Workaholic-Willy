@@ -5,7 +5,7 @@ to read a filename to guess what it belongs to.
 
 | Folder | What it does | Start here |
 |---|---|---|
-| [`examples/`](examples/) | seven runnable examples that drive the library API, in dependency order, from an empty cell to a pick | [`examples/README.md`](examples/README.md) |
+| [`examples/`](examples/) | twenty-nine runnable examples that drive the library API, one per decision you have to make, from an unopened box to a trained model | [`examples/README.md`](examples/README.md) |
 | [`ext_deps/`](ext_deps/) | installs Coal and cuRobo into `ext_deps/`: micromamba, both environments from the committed lockfiles, the pinned cuRobo clone with both kernel backends, the UR5e and UR3e descriptors, then the doctor | [`ext_deps/README.md`](../ext_deps/README.md) |
 | [`model_weights/`](model_weights/) | fetches the perception model weights (detector, segmenter, VLM) into the shared Hugging Face cache | `python scripts/model_weights/fetch.py --list` |
 | [`ursim/`](ursim/) | brings URSim up in Docker under WSL and proves this stack talks to real UR controller software: the SDK, the driver, both I/O grippers, the gripper socket, the protective-stop path | [`ursim/README.md`](ursim/README.md) |

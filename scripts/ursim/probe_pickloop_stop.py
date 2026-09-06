@@ -37,7 +37,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 # And this directory, so the singular-height table is read from the probe that explains it rather
 # than declared a second time here. Two declarations of one height is how the two files came to
-# disagree by 10 mm. `scripts/examples/06_full_pipeline.py` imports its siblings the same way.
+# disagree by 10 mm. `scripts/examples/pipeline/80_full_pipeline.py` imports its siblings the same way.
 _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)

@@ -164,8 +164,8 @@ python -m src.robot.execution.real_cell --rehearse --runs 3
 Two rehearsals that need nothing but the clone, and print what they actually did:
 
 ```bash
-python scripts/examples/01_robot_setup.py     # is this cell described coherently?
-python scripts/examples/03_pick.py            # one grasp on a dummy arm, and which layers ran
+python scripts/examples/cell/01_robot_setup.py     # is this cell described coherently?
+python scripts/examples/cell/03_first_pick.py            # one grasp on a dummy arm, and which layers ran
 ```
 
 The same pick from Python, which is what those examples call:
@@ -256,24 +256,32 @@ Full surface, error envelope and event contract: [`api/README.md`](api/README.md
 
 ## Examples
 
-Seven executable examples in dependency order, sharing one output shape. They call the library
-rather than shelling out to a command line, so each one is also a worked example of the API.
+Twenty-nine executable examples, and each one covers a single decision you have to make: it shows
+the alternatives, runs them, and says what each costs. Where an answer fails, the example runs the
+failure, because a refusal is what you will actually meet. They call the library rather than
+shelling out, so every one is also a worked example of the API.
 
 > Nothing moves unless you pass `--live`. Every example that can drive an arm defaults to a
 > rehearsal: it loads the configuration, builds the real components, runs every check that needs no
 > motion, and commands nothing.
 
-| Run | What you learn |
-|---|---|
-| [`01_robot_setup.py`](scripts/examples/01_robot_setup.py) | Is this cell described coherently, and does the controller agree? |
-| [`02_calibration.py`](scripts/examples/02_calibration.py) | Where the camera is in the robot's frame, eye-to-hand and eye-in-hand. |
-| [`03_pick.py`](scripts/examples/03_pick.py) | One grasp, and which layers actually ran. |
-| [`04_datagen.py`](scripts/examples/04_datagen.py) | Build a corpus from your own objects, priced before it starts, with no GPU. |
-| [`05_train.py`](scripts/examples/05_train.py) | Train a generator, and read the number that means something. |
-| [`06_full_pipeline.py`](scripts/examples/06_full_pipeline.py) | All of it, stopping at the first blocking stage. |
-| [`07_sim.py`](scripts/examples/07_sim.py) | The same pick in Isaac, where a wrong answer is free. |
+The numbering runs across the folders, so reading in numeric order is a path from an unopened box to
+a trained model. The folders let you go straight to the question you have.
 
-Full index: [`scripts/examples/README.md`](scripts/examples/README.md).
+| Folder | The decisions in it |
+|---|---|
+| [`cell/`](scripts/examples/cell/) | which vendor, which gripper, one grasp end to end, and whether the arm plans or drives a straight line |
+| [`calibration/`](scripts/examples/calibration/) | a fixed camera, a wrist camera, and the two places a two-camera cell is wired wrong |
+| [`perception/`](scripts/examples/perception/) | which detector, what to do when it is confidently wrong, and where depth comes from |
+| [`safety/`](scripts/examples/safety/) | the six guards refusing on purpose, the exact meshes against the proxy, and declaring your bench |
+| [`grasping/`](scripts/examples/grasping/) | a jaw or a cup, the analytic ranker or the learned one, and the thirteen switches that ship off |
+| [`datagen/`](scripts/examples/datagen/) | your parts or public ones, what a scene decides, which engine, geometry against physics, and the corpus |
+| [`train/`](scripts/examples/train/) | the whole chain on your own parts, the public-corpus road, the two knobs, the report, and the limits |
+| [`sim/`](scripts/examples/sim/) | the same pick where a wrong answer is free |
+| [`pipeline/`](scripts/examples/pipeline/) | all of it, stopping at the first blocking stage |
+
+Start with [`scripts/examples/cell/01_robot_setup.py`](scripts/examples/cell/01_robot_setup.py). Full index:
+[`scripts/examples/README.md`](scripts/examples/README.md).
 
 ---
 
@@ -364,7 +372,7 @@ src/
 api/                        the console backend: FastAPI, seven routers, an event hub
 frontend/                   the console UI: React and Vite, built into api/static/
 datagen/                    synthetic scenes, analytic grasp labels, a physics reward
-scripts/                    the seven examples, the URSim probes, the build and bake tools
+scripts/                    the examples, the URSim probes, the build and bake tools
 ext_deps/                   the single install root for Coal and cuRobo; the payload is ignored
 tests/                      the suite, torch-free, gated at 80 percent coverage
 docs/                       the guide, the runbooks, the math references, and the media
@@ -379,9 +387,9 @@ docs/                       the guide, the runbooks, the math references, and th
 Continuous integration runs lint, types, tests, coverage and the soak gate on every change. Locally:
 
 ```bash
-ruff check src config api datagen tests scripts/examples
-mypy src api datagen scripts/examples
-pytest tests --cov=src --cov-fail-under=80
+ruff check src api datagen tests scripts
+mypy src api datagen scripts
+pytest tests --cov=src --cov=api --cov=datagen --cov-fail-under=80
 python -m src.robot.grasping.replay --soak-report
 ```
 
