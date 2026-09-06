@@ -50,7 +50,7 @@ from src.config.loader import active_profile, reload_config, set_active_profile
 from src.robot.execution.autonomous_grasp.rehearsal import RehearsalPerceptionSource
 from src.robot.perception.viewfinder import colour_source_kind, peek_color_of
 
-_SHIPPED = Path(__file__).resolve().parents[1] / "backend" / "config" / "data"
+_SHIPPED = Path(__file__).resolve().parents[1] / "config"
 
 #: A 1x1 PNG, so the overlay path can be exercised without rendering one.
 _PNG = bytes.fromhex(
@@ -267,14 +267,14 @@ class TheTwoPicturesAreNeverBlurredTests(unittest.TestCase):
         first = read_viewfinder(console)
         self.assertEqual(first.age_s, 0.0)
         self.assertFalse(first.age_is_exact, "an unseen overlay cannot be dated, only bounded")
-        self.assertIn("AT LEAST this old", first.human)
+        self.assertIn("it is at least this old", first.human)
 
         # Now this process WATCHES the image change, so the next age is real to within a poll.
         console.session.service.calculator.last_debug_image_png = _PNG + bytes([0])
         second = read_viewfinder(console)
         self.assertEqual(second.age_s, 0.0)
         self.assertTrue(second.age_is_exact)
-        self.assertNotIn("AT LEAST this old", second.human)
+        self.assertNotIn("it is at least this old", second.human)
 
     def test_the_jpeg_quality_argument_actually_reaches_the_encoder(self) -> None:
         """Pinned because the config key it comes from had no reader at all before this endpoint."""

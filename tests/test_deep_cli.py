@@ -1,4 +1,4 @@
-"""`python -m backend.src.robot.grasping.deep` — the generator's only operator surface.
+"""`python -m src.robot.grasping.deep` — the generator's only operator surface.
 
 ⚠ WHY THIS FILE EXISTS. `capacity_probe` and `train_generator` had NO caller outside their own module:
 the only way to run either was to import it from a Python session. That is precisely what
@@ -261,7 +261,9 @@ class InspectTests(unittest.TestCase):
             with redirect_stderr(buffer):
                 code = cli.main(["inspect", "--artifact", str(path)])
         self.assertNotEqual(cli._EXIT_OK, code)                       # noqa: SLF001
-        self.assertIn("BINNED", buffer.getvalue())
+        # The migration lower-cased every operator-facing message; set_artifact.py:230 now
+        # emits "was written by the binned grasp generator". Same sentence, same meaning.
+        self.assertIn("binned grasp generator", buffer.getvalue())
 
 
 if __name__ == "__main__":

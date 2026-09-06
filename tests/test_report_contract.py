@@ -122,7 +122,7 @@ def _trailing_newlines(func: ast.FunctionDef) -> list[str]:
     r"""Every literal in the body that could actually END the rendered text with a newline.
 
     ⛔⛔ **THE NEWLINE GUARD'S FIRST REAL FINDING WAS A FALSE ALARM, AND THE REPAIR HAD TWO BUGS OF
-    ITS OWN.** MEASURED 2026-09-04: `backend/config/tree.py` returns ``f"config error:\n{self.error}"``.
+    ITS OWN.** MEASURED 2026-09-04: `src/config/tree.py` returns ``f"config error:\n{self.error}"``.
     An f-string is a `JoinedStr` whose constant pieces are separate nodes, so the old check saw
     ``'config error:\n'``, flagged it, and was wrong: the value cannot end there, because the last
     component is a `FormattedValue`. The method's docstring said "no trailing newline" and it was right.
@@ -377,7 +377,7 @@ class UnsetSemanticsTests(unittest.TestCase):
         type checker, because `_Unset` is a plain class rather than a singleton mypy can reason
         about. The first real call site failed on it::
 
-            backend/config/loader.py:172: error: Argument 2 to "_validated_chain" has incompatible
+            src/config/loader.py:172: error: Argument 2 to "_validated_chain" has incompatible
             type "str | _Unset | None"; expected "str | None"  [arg-type]
 
         It is a `TypeGuard` over `isinstance` now. A SECOND instance of `_Unset` is the one input
@@ -456,7 +456,7 @@ class UnsetSemanticsTests(unittest.TestCase):
 
         self.assertTrue(found_canonical, "the canonical sentinel is gone; this sweep proves nothing")
         self.assertEqual(
-            offenders, [], "a private sentinel came back; import UNSET from backend.src.contracts"
+            offenders, [], "a private sentinel came back; import UNSET from src.contracts"
         )
 
 

@@ -223,7 +223,7 @@ class TheRenderedBlockTests(unittest.TestCase):
             cli._print_frame_health(frame, tap, backend_note="")
         text = out.getvalue()
         self.assertIn("16/16 (100.0%)", text)
-        self.assertIn("mask(s) have NO real depth", text)
+        self.assertIn("mask(s) have no real depth at all", text)
 
     def test_an_empty_mask_is_a_segmenter_miss_not_a_camera_fault(self) -> None:
         """⛔ `mask_px == 0` divides by zero and, derived as `holes == mask_px`, reports a camera
@@ -239,7 +239,7 @@ class TheRenderedBlockTests(unittest.TestCase):
         with redirect_stdout(out):
             cli._print_frame_health(frame, tap, backend_note="")
         self.assertIn("mask_px=0 (empty)", out.getvalue())
-        self.assertNotIn("NO real depth", out.getvalue())
+        self.assertNotIn("no real depth at all", out.getvalue())
 
 
 if __name__ == "__main__":  # pragma: no cover

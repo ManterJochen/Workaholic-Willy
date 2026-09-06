@@ -21,7 +21,7 @@ from src.models import factory
 from src.models.perception_spec import PerceptionSpec
 
 _REPO = Path(__file__).resolve().parents[1]
-_CELLS = _REPO / "backend" / "src" / "robot" / "execution" / "autonomous_grasp" / "cells.py"
+_CELLS = _REPO / "src" / "robot" / "execution" / "autonomous_grasp" / "cells.py"
 
 
 def _models() -> ModelsConfig:

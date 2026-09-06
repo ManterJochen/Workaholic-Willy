@@ -14,7 +14,7 @@ This module locks the Phase U12 deliverables:
    sections (determinism).
 5. The ``--soak-report`` CLI exits ``0``, writes the JSON artifact, and
    the artifact round-trips through :mod:`json`.
-6. ``QUICKSTART.md`` and the three operator READMEs reference
+6. ``docs/Quickstart.md`` and the three operator READMEs reference
    ``docs/runbooks/`` so on-call operators can find the runbooks from
    any entry-point document.
 """
@@ -48,10 +48,10 @@ _REQUIRED_RUNBOOK_SECTIONS = (
     "Rollback",
 )
 _DOC_LINK_TARGETS = (
-    "QUICKSTART.md",
-    "src/robot/grasping/grasping_README.md",
-    "src/robot/robot_README.md",
-    "src/config/config_README.md",
+    "docs/Quickstart.md",
+    "src/robot/grasping/README.md",
+    "src/robot/README.md",
+    "src/config/README.md",
 )
 _EXPECTED_GATE_KEYS = (
     "min_attempts_met",
@@ -395,7 +395,11 @@ class SimSoakReportTests(unittest.TestCase):
             self.assertEqual(report["gate"]["slo_packs_pass"], "not_applicable")
             self.assertEqual(report["min_attempts_floor"], 300)
             self.assertIn("min_attempts floor=300", report["provenance"]["note"])
-            self.assertIn("NOT hardware-representative", report["provenance"]["note"])
+            # De-shouted by the docs/prose rewrite, same sentence: `soak_cli.py` emitted
+            # "REAL Isaac-physics sim picks (NOT hardware-representative)." before the migration
+            # and emits "Real Isaac-physics sim picks (not hardware-representative)." now. The
+            # claim the banner has to carry is unchanged, so pin the words rather than the shout.
+            self.assertIn("not hardware-representative", report["provenance"]["note"])
             # KPI is present + honest (false_positive structurally 0 in sim)
             self.assertEqual(report["kpi"]["false_positive_grasp_rate"], 0.0)
 

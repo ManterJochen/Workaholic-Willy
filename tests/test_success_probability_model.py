@@ -237,7 +237,7 @@ class ArtifactLoadAndPredictTests(unittest.TestCase):
         bad = dict(model_payload)
         bad["schema_version"] = 999
         with self.assertRaises(ArtifactSchemaError):
-            from backend.src.robot.grasping.scoring.success_probability import (
+            from src.robot.grasping.scoring.success_probability import (
                 _model_from_payload,
             )
             _model_from_payload(bad, {})
@@ -249,7 +249,7 @@ class ArtifactLoadAndPredictTests(unittest.TestCase):
         names[0], names[1] = names[1], names[0]
         bad["feature_names"] = names
         with self.assertRaises(ArtifactSchemaError):
-            from backend.src.robot.grasping.scoring.success_probability import (
+            from src.robot.grasping.scoring.success_probability import (
                 _model_from_payload,
             )
             _model_from_payload(bad, {})
@@ -459,7 +459,7 @@ class RuntimeIsolationTests(unittest.TestCase):
         # and feeds the carrier in (via the extracted ``builders``
         # composition helper); the runtime facade forwards the typed
         # telemetry through ``PickSessionReport``. Any *other* file under
-        # backend/src/robot/grasping/ or backend/src/robot/execution/
+        # src/robot/grasping/ or src/robot/execution/
         # importing the predictor remains a regression.
         "src/robot/grasping/loop/pick_loop.py",
         "src/robot/execution/autonomous_grasp/service.py",

@@ -409,7 +409,7 @@ class SceneRecoveryContextBiasTests(unittest.TestCase):
 class TelemetryCatalogTests(unittest.TestCase):
 
     def test_uncertainty_fail_closed_in_catalog(self) -> None:
-        from backend.src.robot.grasping.replay.telemetry_catalog import (
+        from src.robot.grasping.replay.telemetry_catalog import (
             TELEMETRY_CATALOG,
         )
 

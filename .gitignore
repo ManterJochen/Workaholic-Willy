@@ -32,8 +32,11 @@ Thumbs.db
 .idea/
 *.swp
 
-# Generated datasets (datagen). Large; the output path is configurable and defaults here.
-data/
+# Generated datasets (datagen). Large; the output path is configurable and defaults to
+# data/datagen under the repository root. Anchored with a leading slash, because an
+# unanchored rule matches a directory called data at any depth and would hide the shipped
+# collision mesh bundles under src/robot/safety/data and the test fixtures under tests/data.
+/data/
 
 # Downloaded model weights (HuggingFace cache).
 assets/models/hf/

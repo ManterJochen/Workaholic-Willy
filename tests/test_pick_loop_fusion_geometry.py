@@ -353,7 +353,11 @@ class StandDownIsNeverSilentTests(unittest.TestCase):
         with self.assertLogs(_LOGGER, level="WARNING") as captured:
             self.assertIsNone(orch._fused_scene(_frame(), _IDENTITY))
 
-        self.assertTrue(any("SINGLE-VIEW" in line for line in captured.output))
+        # pick_loop.py:1869 now warns "... the cell is running single-view"; the migration
+        # lower-cased the shout. The reason half distinguishes this branch from the next test.
+        self.assertTrue(any("the cell is running single-view" in line
+                            and "no multi-camera perception source is wired" in line
+                            for line in captured.output))
 
     def test_enabled_without_a_transform_warns(self) -> None:
         orch = _orchestrator(
@@ -363,7 +367,9 @@ class StandDownIsNeverSilentTests(unittest.TestCase):
         with self.assertLogs(_LOGGER, level="WARNING") as captured:
             self.assertIsNone(orch._fused_scene(_frame(), None))
 
-        self.assertTrue(any("SINGLE-VIEW" in line for line in captured.output))
+        self.assertTrue(any("the cell is running single-view" in line
+                            and "no CAMERA->BASE transform is available" in line
+                            for line in captured.output))
 
     def test_a_missing_camera_warns_under_degrade(self) -> None:
         rig = _Rig((CameraObservation(camera_id="left", frame=_frame()),))

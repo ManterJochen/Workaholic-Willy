@@ -202,7 +202,9 @@ class TheRetiredFamilyIsRefusedTests(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:
                 calculator.preload()
         message = str(caught.exception)
-        self.assertIn("BINNED", message)
+        # set_artifact.py:230 now says "was written by the binned grasp generator"; the
+        # migration lower-cased it, the retirement is still what is named.
+        self.assertIn("binned grasp generator", message)
         self.assertIn("train-set", message, "the refusal has to say what to do instead")
 
     def test_the_factory_preflight_refuses_it_too(self) -> None:

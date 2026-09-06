@@ -351,3 +351,10 @@ under `src/` imports it, and the web framework it needs is an optional extra.
 odd; `temporal_alpha` sits in `[0, 1]`; a duplicate `rig_id` is rejected; `aruco_dict_name` is checked
 against the OpenCV catalogue; duplicate model keys across `models/*.yaml` are rejected; and camera rigs
 are a discriminated union on `source` (`webcam_pair`, `single_device`, `rgbd`).
+
+**Changing config in anger has runbooks.** This page describes the tree; the ordered procedures
+that edit it on a live cell live under [`docs/runbooks/`](../../docs/runbooks/):
+[`real_cell_first_pick.md`](../../docs/runbooks/real_cell_first_pick.md) for the first pick on a
+physical arm and [`ur3e_cell_bringup.md`](../../docs/runbooks/ur3e_cell_bringup.md) for a robot the
+stack has not run before. Measuring the extrinsics those procedures write is
+[`docs/calibration-setup.md`](../../docs/calibration-setup.md).

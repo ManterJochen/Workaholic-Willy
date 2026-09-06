@@ -184,26 +184,26 @@ class CliArgumentTests(unittest.TestCase):
     """The CLI's refusals, which are the part that keeps a bench session safe."""
 
     def test_pin_value_parsing_accepts_the_obvious_spellings(self) -> None:
-        from backend.src.robot.drivers.ur.__main__ import _parse_pin_value
+        from src.robot.drivers.ur.__main__ import _parse_pin_value
 
         for spec, want in (("4=1", (4, True)), ("0=low", (0, False)), ("2=ON", (2, True))):
             self.assertEqual(_parse_pin_value(spec), want)
 
     def test_an_ambiguous_pin_value_is_refused_rather_than_guessed(self) -> None:
-        from backend.src.robot.drivers.ur.__main__ import _parse_pin_value
+        from src.robot.drivers.ur.__main__ import _parse_pin_value
 
         for spec in ("4", "4=maybe", "x=1"):
             with self.subTest(spec=spec), self.assertRaises(SystemExit):
                 _parse_pin_value(spec)
 
     def test_measure_without_a_watched_input_is_refused(self) -> None:
-        from backend.src.robot.drivers.ur.__main__ import main
+        from src.robot.drivers.ur.__main__ import main
 
         with self.assertRaises(SystemExit):
             main(["--measure", "4=1"])
 
     def test_doing_nothing_is_refused(self) -> None:
-        from backend.src.robot.drivers.ur.__main__ import main
+        from src.robot.drivers.ur.__main__ import main
 
         with self.assertRaises(SystemExit):
             main([])

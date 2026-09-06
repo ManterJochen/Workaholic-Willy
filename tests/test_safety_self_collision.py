@@ -230,8 +230,8 @@ class SelfCollisionGuardTests(unittest.TestCase):
         # The fcl mesh backend catches the flipped-branch self-penetration (forearm|gripper,
         # ~43 mm) the capsule proxy SKIPS, and accepts the clean natural branch. Skipped if the
         # optional python-fcl / mesh bundle is absent.
-        from backend.src.robot.safety._fcl_self_collision import make_backend
-        from backend.src.robot.safety._ur_kinematics import ur_link_transforms_mm
+        from src.robot.safety._fcl_self_collision import make_backend
+        from src.robot.safety._ur_kinematics import ur_link_transforms_mm
         backend = make_backend("ur5e")
         if backend is None:
             self.skipTest("python-fcl / ur5e mesh bundle not available (optional dependency)")
@@ -358,8 +358,8 @@ class SelfCollisionGuardTests(unittest.TestCase):
 
     def test_broadphase_cull_matches_brute(self) -> None:
         # The broadphase sphere cull is conservative -> byte-identical verdict to the brute path.
-        from backend.src.robot.safety._fcl_self_collision import make_backend
-        from backend.src.robot.safety._ur_kinematics import ur_link_transforms_mm
+        from src.robot.safety._fcl_self_collision import make_backend
+        from src.robot.safety._ur_kinematics import ur_link_transforms_mm
         backend = make_backend("ur5e")
         if backend is None:
             self.skipTest("mesh backend not available (optional dependency)")
@@ -372,7 +372,7 @@ class SelfCollisionGuardTests(unittest.TestCase):
     def test_continuous_monitor_margin_and_failsafe(self) -> None:
         # The continuous monitor STOPS on a collision within margin, PASSES a clear config, and
         # fail-safes to STOP when a check overruns its budget. SOFTWARE avoidance, not certified.
-        from backend.src.robot.safety.continuous_monitor import (
+        from src.robot.safety.continuous_monitor import (
             ContinuousCollisionMonitor,
             ContinuousGuardProfile,
             MonitorStatus,
@@ -419,7 +419,7 @@ class MeshBackendModelGateTests(unittest.TestCase):
     """
 
     def test_status_distinguishes_unknown_model_from_missing_geometry(self) -> None:
-        from backend.src.robot.safety._fcl_self_collision import mesh_backend_status
+        from src.robot.safety._fcl_self_collision import mesh_backend_status
 
         # a model with no bundled DH chain cannot place link meshes at all
         self.assertEqual(mesh_backend_status("definitely-not-a-robot"), "unknown_model")
@@ -430,13 +430,13 @@ class MeshBackendModelGateTests(unittest.TestCase):
     def test_bundled_models_are_known_and_have_geometry(self) -> None:
         """ur5e AND ur3e must never report unknown_model/no_bundle: both bundles are committed in-repo.
         (Whether the engine imports is host-dependent, so "ok" and "no_engine" are both acceptable.)"""
-        from backend.src.robot.safety._fcl_self_collision import mesh_backend_status
+        from src.robot.safety._fcl_self_collision import mesh_backend_status
 
         for model in ("ur5e", "ur3e"):
             self.assertIn(mesh_backend_status(model), {"ok", "no_engine"}, model)
 
     def test_make_backend_logs_and_degrades_for_a_model_without_geometry(self) -> None:
-        from backend.src.robot.safety import _fcl_self_collision as fcl
+        from src.robot.safety import _fcl_self_collision as fcl
 
         with self.assertLogs(fcl.__name__, level="WARNING") as caught:
             backend = fcl.make_backend("ur10e")
@@ -444,10 +444,10 @@ class MeshBackendModelGateTests(unittest.TestCase):
         joined = "\n".join(caught.output)
         self.assertIn("ur10e", joined)
         self.assertIn("no_bundle", joined)
-        self.assertIn("CAPSULE", joined)  # the operator is told WHAT it degraded to
+        self.assertIn("capsule guard", joined)  # the operator is told WHAT it degraded to
 
     def test_unknown_model_also_degrades_loudly(self) -> None:
-        from backend.src.robot.safety import _fcl_self_collision as fcl
+        from src.robot.safety import _fcl_self_collision as fcl
 
         with self.assertLogs(fcl.__name__, level="WARNING") as caught:
             self.assertIsNone(fcl.make_backend("definitely-not-a-robot"))
@@ -459,7 +459,7 @@ class UR3eCollisionBundleTests(unittest.TestCase):
 
     @staticmethod
     def _bundle(model: str):
-        from backend.src.robot.safety.planning.environment import collision_mesh_bundle
+        from src.robot.safety.planning.environment import collision_mesh_bundle
 
         return np.load(collision_mesh_bundle(model))
 

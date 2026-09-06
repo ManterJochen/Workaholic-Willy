@@ -412,7 +412,7 @@ class MoveHomeIsGatedTests(unittest.TestCase):
 
     def test_a_guard_rejection_stops_it(self) -> None:
         """The destination guards must reach move_home like every other joint move."""
-        from backend.src.robot.core import MotionCommand, MotionResult, MotionStatus
+        from src.robot.core import MotionCommand, MotionResult, MotionStatus
 
         arm = self._arm()
         arm._preflight = MagicMock()

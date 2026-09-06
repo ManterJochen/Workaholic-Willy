@@ -1,7 +1,7 @@
 """Phase T8 — RED tests for operator documentation.
 
-The T8 deliverable adds a top-level ``QUICKSTART.md`` plus operator
-sections in ``backend/src/robot/grasping/grasping_README.md``:
+The T8 deliverable adds the operator quickstart ``docs/Quickstart.md``
+plus operator sections in ``src/robot/grasping/README.md``:
 
 * A *mode behaviour table* with eight locked columns.
 * A *troubleshooting matrix* (symptom → cause → mode/policy fix).
@@ -9,9 +9,9 @@ sections in ``backend/src/robot/grasping/grasping_README.md``:
   (``easy`` / ``dense_clutter`` / ``verification_heavy``).
 
 Robot-level safety triage subset lives in
-``backend/src/robot/robot_README.md``.
+``src/robot/README.md``.
 
-Schema validity contract: every YAML snippet in ``QUICKSTART.md``
+Schema validity contract: every YAML snippet in ``docs/Quickstart.md``
 that is tagged with ``preset=<name>`` must round-trip through
 :func:`apply_preset` and validate as a :class:`RobotConfig`.
 
@@ -35,18 +35,18 @@ from src.robot.grasping.replay.presets import (
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_QUICKSTART = _REPO_ROOT / "QUICKSTART.md"
+_QUICKSTART = _REPO_ROOT / "docs" / "Quickstart.md"
 _GRASPING_README = (
     _REPO_ROOT
     / "src"
     / "robot"
     / "grasping"
-    / "grasping_README.md"
+    / "README.md"
 )
 _ROBOT_README = (
-    _REPO_ROOT / "src" / "robot" / "robot_README.md"
+    _REPO_ROOT / "src" / "robot" / "README.md"
 )
-_CONFIG_README = _REPO_ROOT / "src" / "config" / "config_README.md"
+_CONFIG_README = _REPO_ROOT / "src" / "config" / "README.md"
 
 _MINIMAL_BASE = {
     "vendor": "dummy",
@@ -77,7 +77,7 @@ class QuickstartFileTests(unittest.TestCase):
     def test_quickstart_exists(self) -> None:
         self.assertTrue(
             _QUICKSTART.is_file(),
-            f"missing top-level QUICKSTART.md at {_QUICKSTART}",
+            f"missing the operator quickstart at {_QUICKSTART}",
         )
 
     def test_quickstart_covers_every_preset(self) -> None:
@@ -86,7 +86,7 @@ class QuickstartFileTests(unittest.TestCase):
             self.assertIn(
                 preset,
                 body,
-                f"QUICKSTART.md does not mention preset {preset!r}",
+                f"{_QUICKSTART.name} does not mention preset {preset!r}",
             )
 
     def test_quickstart_yaml_snippets_validate(self) -> None:
@@ -96,7 +96,7 @@ class QuickstartFileTests(unittest.TestCase):
             self.assertIn(
                 preset,
                 blocks,
-                f"QUICKSTART.md missing tagged YAML block for {preset!r}",
+                f"{_QUICKSTART.name} missing tagged YAML block for {preset!r}",
             )
             overlay = yaml.safe_load(blocks[preset]) or {}
             self.assertIsInstance(overlay, dict)
@@ -111,7 +111,7 @@ class QuickstartFileTests(unittest.TestCase):
         self.assertEqual(
             offenders,
             [],
-            f"QUICKSTART.md must be phase-free; found {offenders[:5]!r}",
+            f"{_QUICKSTART.name} must be phase-free; found {offenders[:5]!r}",
         )
 
 
@@ -168,7 +168,12 @@ class GraspingReadmeSectionTests(unittest.TestCase):
 class RobotReadmeSafetyTriageTests(unittest.TestCase):
     def test_safety_triage_subset_present(self) -> None:
         body = _read(_ROBOT_README)
-        self.assertIn("Safety-rejection triage", body)
+        # The heading was RENAMED, not removed: `## 🛑 Safety-rejection triage` in the
+        # pre-migration `backend/src/robot/robot_README.md` is `## Triaging a safety rejection`
+        # here -- the docs rewrite drops emoji and stops using a hyphen as a connector. Same
+        # section, same guard table, same six guards below it. Pinned as an exact H2 line rather
+        # than a loose substring, so a section that is merely mentioned in prose cannot satisfy it.
+        self.assertRegex(body, r"(?m)^##\s+Triaging a safety rejection\s*$")
         for token in (
             "workspace",
             "joint_limit",

@@ -88,17 +88,28 @@ class TheCLIHelpTests(unittest.TestCase):
 
     def test_the_slot_mixing_help_no_longer_calls_the_default_a_defect(self) -> None:
         help_text = self._help_for("--slot-mixing")
-        self.assertIn("RETRACTED", help_text)
         self.assertNotIn("MEASURED defect", help_text)
+        self.assertNotIn("defect", help_text.split("SEED")[0],
+                         "the default is called a defect before the sentence that is about seeding")
+        self.assertIn("WHICH IS BETTER IS OPEN", help_text)
+        self.assertIn("Under affine the slots do", help_text)
+        self.assertIn("differ from one another", help_text)
 
     def test_the_axis_mode_help_no_longer_claims_the_default_is_worse(self) -> None:
         help_text = self._help_for("--axis-mode")
-        self.assertIn("CONFOUNDED", help_text)
         self.assertNotIn("Eighteen times worse", help_text)
+        self.assertNotIn("eighteen times", help_text.lower())
+        self.assertIn("puts the director ahead and a matched control agrees", help_text)
+        self.assertIn("default stands; the flag exists to keep", help_text)
 
-    def test_the_axis_help_quotes_the_number_that_REPLACED_it(self) -> None:
-        """A retraction without the corrected measurement leaves the reader with nothing to act on."""
-        self.assertIn("0.49", self._help_for("--axis-mode"))
+    def test_the_axis_help_states_the_outcome_and_warns_off_the_controls(self) -> None:
+        """The measurement itself belongs to our corpus and does not ship. What a reader can act on
+        is the outcome and the reason the two controls do not settle it, and both are here."""
+        help_text = self._help_for("--axis-mode")
+        self.assertIn("puts the director ahead and a matched control agrees", help_text)
+        self.assertIn("A direct comparison", help_text)
+        self.assertIn("Do not settle it through the controls", help_text)
+        self.assertIn("is not the same job", help_text)
 
     def test_every_help_string_stays_ASCII(self) -> None:
         """⚠ NOT COSMETIC. This terminal is cp1252 and `print` of a non-ASCII marker raises

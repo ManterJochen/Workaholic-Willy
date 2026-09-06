@@ -276,7 +276,7 @@ The published work informed the normalization approach used for local point-clou
 
 Published work on serialized point-cloud processing informed the ordering of point clouds along space-filling curves and the use of windowed attention.
 
-The implementation in `src/robot/grasping/deep/net/serialized.py` is independently implemented. It uses Z-order curves with permuted axes rather than reproducing the exact published implementation.
+The implementation in `src/robot/grasping/deep/net/serialized_backbone.py` is independently implemented. It uses Z-order curves with permuted axes rather than reproducing the exact published implementation.
 
 No source code from the referenced work is included in this repository.
 

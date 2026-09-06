@@ -234,7 +234,9 @@ class PickPathTests(unittest.TestCase):
         with self.assertLogs(_LOGGER, level="WARNING") as captured:
             orch._best_result_over_segmentations(_frame())
 
-        self.assertTrue(any("wall-collision check is NOT running" in line
+        # pick_loop.py:2049 now warns "the wall-collision check is not running for this
+        # attempt"; the migration lower-cased the shout, the warning is the same one.
+        self.assertTrue(any("wall-collision check is not running" in line
                             for line in captured.output))
 
     def test_the_walls_are_built_once(self) -> None:

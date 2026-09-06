@@ -19,6 +19,7 @@ change confirms it: per-candidate live stayed 7/19. That is the expected result,
 
 from __future__ import annotations
 
+import re
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -149,7 +150,15 @@ class TheCatalogSaysWhoWritesThemTests(unittest.TestCase):
             "src/robot/grasping/replay/telemetry_catalog.py"
         ).read_text(encoding="utf-8")
         self.assertIn("_fusion_geometry_extras", source)
-        self.assertIn("had NO producer until", source)
+        # The producer sentence, read across the comment's own line wrapping. The catalog has
+        # to name what writes these three and where the value it joins is stamped, or a
+        # declared field with no producer is invisible again.
+        flowed = re.sub(r"\s*\n\s*#\s*", " ", source)
+        self.assertIn(
+            "`_fusion_geometry_extras` joins the geometry fusion telemetry stamped on "
+            "`orchestrator._fusion_geometry_telemetry` to these catalog names",
+            flowed,
+        )
 
     def test_the_disagreement_alias_is_documented(self) -> None:
         from pathlib import Path

@@ -53,7 +53,11 @@ class AnUncheckedPathIsAnnouncedTests(unittest.TestCase):
         finally:
             logger.removeHandler(recorder)
             logger.setLevel(previous)
-        return [line for line in recorder.lines if "UNEXAMINED" in line]
+        # De-shouted by the prose rewrite, same sentence: `preflight.py` emitted
+        # "a %d-waypoint PLANNED PATH is executing UNEXAMINED between its endpoints:" before the
+        # migration and emits "a %d-waypoint planned path is executing unexamined between its
+        # endpoints:" now. The word that identifies the line is still the word the line is about.
+        return [line for line in recorder.lines if "unexamined" in line]
 
     def test_a_planned_path_with_the_check_off_is_announced(self) -> None:
         said = self._run(_preflight(check=False), _waypoints(40))
@@ -97,7 +101,7 @@ class TheShippedTreeIsWhyThisIsAWarningTests(unittest.TestCase):
     profile ever ships with the check ON, this test says so and the decision can be revisited."""
 
     def test_every_shipped_profile_carries_the_combination(self) -> None:
-        from backend.config.loader import load_robot_config
+        from src.config.loader import load_robot_config
 
         for profile in (None, "sim", "rl_datagen"):
             with self.subTest(profile=profile):
@@ -114,7 +118,7 @@ class TheShippedTreeIsWhyThisIsAWarningTests(unittest.TestCase):
         from pathlib import Path
 
         yaml = (Path(__file__).resolve().parents[1]
-                / "config/data/robot/robot.yaml").read_text(encoding="utf-8")
+                / "config/robot/robot.yaml").read_text(encoding="utf-8")
         self.assertIn("executes unexamined", yaml)
 
 

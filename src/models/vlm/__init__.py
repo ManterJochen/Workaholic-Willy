@@ -5,7 +5,7 @@
 
     backend = TwoStageBackend(detector=Qwen3VLGrounder(model_id=...), segmenter=sam2)
 
-Nothing here imports torch or transformers at module scope. See [vlm_README.md](vlm_README.md).
+Nothing here imports torch or transformers at module scope. See [README.md](README.md).
 """
 
 from __future__ import annotations

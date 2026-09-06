@@ -32,8 +32,8 @@ import unittest
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
-_CONNECTION = _REPO / "backend" / "src" / "robot" / "drivers" / "ur" / "connection.py"
-_VIEWER = _REPO / "backend" / "src" / "robot" / "grasping" / "visualization" / "open3d_viewer.py"
+_CONNECTION = _REPO / "src" / "robot" / "drivers" / "ur" / "connection.py"
+_VIEWER = _REPO / "src" / "robot" / "grasping" / "visualization" / "open3d_viewer.py"
 
 
 class _BlockImport:
@@ -142,7 +142,7 @@ class TheViewerTurnsBothFaultsIntoASentenceTests(unittest.TestCase):
             with self.assertRaises(ImportError) as caught:
                 open3d_viewer._import_open3d()
         message = str(caught.exception)
-        self.assertIn("IS installed", message)
+        self.assertIn("open3d is installed", message)
         self.assertNotIn("pip install open3d", message)
         self.assertIsInstance(caught.exception.__cause__, OSError)
 

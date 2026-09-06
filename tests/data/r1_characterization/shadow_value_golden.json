@@ -1,0 +1,359 @@
+{
+  "multi_fail": {
+    "behavior_candidate_id": null,
+    "candidate_log": null,
+    "outcome": "rescanned_exhausted",
+    "router_calls": [
+      {
+        "kw": {
+          "attempt_id": "pick:3:rescan",
+          "states": [
+            {
+              "attempt_index": 0,
+              "attempt_index_clipped": 0,
+              "baseline_action": "grasp",
+              "commit_reobserve_count": 0,
+              "commit_reobserve_count_clipped": 0,
+              "last_failure_class": "unknown",
+              "last_outcome_label": "failure",
+              "max_attempts": 3,
+              "max_reobserve_attempts": 0
+            },
+            {
+              "attempt_index": 1,
+              "attempt_index_clipped": 1,
+              "baseline_action": "grasp",
+              "commit_reobserve_count": 0,
+              "commit_reobserve_count_clipped": 0,
+              "last_failure_class": "unknown",
+              "last_outcome_label": "failure",
+              "max_attempts": 3,
+              "max_reobserve_attempts": 0
+            },
+            {
+              "attempt_index": 2,
+              "attempt_index_clipped": 2,
+              "baseline_action": "abort",
+              "commit_reobserve_count": 0,
+              "commit_reobserve_count_clipped": 0,
+              "last_failure_class": "unknown",
+              "last_outcome_label": "failure",
+              "max_attempts": 3,
+              "max_reobserve_attempts": 0
+            }
+          ]
+        },
+        "phase": "sequencing"
+      },
+      {
+        "kw": {
+          "attempt_id": "pick:3:rescan",
+          "baseline_action": "continue",
+          "state_key": {
+            "last_candidate_count_bucket": "0",
+            "last_occlusion_bucket": "unknown",
+            "mode_bucket": "dense",
+            "views_seen_bucket": "0"
+          }
+        },
+        "phase": "perception"
+      },
+      {
+        "kw": {
+          "attempt_id": "pick:3:rescan",
+          "attempt_index": 2,
+          "baseline_action": "re_segment",
+          "max_recovery_attempts": 3,
+          "state_key": {
+            "attempt_index_bucket": "2",
+            "dense_bucket": "dense",
+            "failure_class_bucket": "unknown",
+            "last_outcome_bucket": "failed",
+            "reobserve_count_bucket": "0"
+          }
+        },
+        "phase": "recovery"
+      }
+    ],
+    "slots_set": {
+      "_behavior_candidate_id": false,
+      "_candidate_log": false,
+      "_perception_telemetry": true,
+      "_ranking_telemetry": false,
+      "_recovery_telemetry": true,
+      "_sequencing_telemetry": true
+    },
+    "v4_sequencing_states": [
+      {
+        "attempt_index": 0,
+        "attempt_index_clipped": 0,
+        "baseline_action": "grasp",
+        "commit_reobserve_count": 0,
+        "commit_reobserve_count_clipped": 0,
+        "last_failure_class": "unknown",
+        "last_outcome_label": "failure",
+        "max_attempts": 3,
+        "max_reobserve_attempts": 0
+      },
+      {
+        "attempt_index": 1,
+        "attempt_index_clipped": 1,
+        "baseline_action": "grasp",
+        "commit_reobserve_count": 0,
+        "commit_reobserve_count_clipped": 0,
+        "last_failure_class": "unknown",
+        "last_outcome_label": "failure",
+        "max_attempts": 3,
+        "max_reobserve_attempts": 0
+      },
+      {
+        "attempt_index": 2,
+        "attempt_index_clipped": 2,
+        "baseline_action": "abort",
+        "commit_reobserve_count": 0,
+        "commit_reobserve_count_clipped": 0,
+        "last_failure_class": "unknown",
+        "last_outcome_label": "failure",
+        "max_attempts": 3,
+        "max_reobserve_attempts": 0
+      }
+    ]
+  },
+  "no_perception": {
+    "behavior_candidate_id": null,
+    "candidate_log": null,
+    "outcome": "no_perception",
+    "router_calls": [
+      {
+        "kw": {
+          "attempt_id": "pick:1:exhausted",
+          "states": [
+            {
+              "attempt_index": 0,
+              "attempt_index_clipped": 0,
+              "baseline_action": "abort",
+              "commit_reobserve_count": 0,
+              "commit_reobserve_count_clipped": 0,
+              "last_failure_class": "unknown",
+              "last_outcome_label": "failure",
+              "max_attempts": 3,
+              "max_reobserve_attempts": 0
+            }
+          ]
+        },
+        "phase": "sequencing"
+      },
+      {
+        "kw": {
+          "attempt_id": "pick:1:exhausted",
+          "baseline_action": "stop",
+          "state_key": {
+            "last_candidate_count_bucket": "0",
+            "last_occlusion_bucket": "unknown",
+            "mode_bucket": "dense",
+            "views_seen_bucket": "0"
+          }
+        },
+        "phase": "perception"
+      },
+      {
+        "kw": {
+          "attempt_id": "pick:1:exhausted",
+          "attempt_index": 0,
+          "baseline_action": "abort_recovery",
+          "max_recovery_attempts": 3,
+          "state_key": {
+            "attempt_index_bucket": "0",
+            "dense_bucket": "dense",
+            "failure_class_bucket": "unknown",
+            "last_outcome_bucket": "failed",
+            "reobserve_count_bucket": "0"
+          }
+        },
+        "phase": "recovery"
+      }
+    ],
+    "slots_set": {
+      "_behavior_candidate_id": false,
+      "_candidate_log": false,
+      "_perception_telemetry": true,
+      "_ranking_telemetry": false,
+      "_recovery_telemetry": true,
+      "_sequencing_telemetry": true
+    },
+    "v4_sequencing_states": [
+      {
+        "attempt_index": 0,
+        "attempt_index_clipped": 0,
+        "baseline_action": "abort",
+        "commit_reobserve_count": 0,
+        "commit_reobserve_count_clipped": 0,
+        "last_failure_class": "unknown",
+        "last_outcome_label": "failure",
+        "max_attempts": 3,
+        "max_reobserve_attempts": 0
+      }
+    ]
+  },
+  "success": {
+    "behavior_candidate_id": "a0_c0",
+    "candidate_log": [
+      {
+        "candidate_id": "a0_c0",
+        "executed": true,
+        "features": {
+          "decision_latency_ms": 0.0,
+          "degraded_mode_active": 0.0,
+          "drift_severity": 0.0,
+          "feasibility_score": 0.33,
+          "fused_view_count": 0.0,
+          "fusion_evidence_quality": 0.0,
+          "fusion_latency_ms": 0.0,
+          "geometric_score": 0.11,
+          "multi_view_occlusion_reduced": 0.0,
+          "ood_flagged": 0.0,
+          "predicted_success_probability": 0.0,
+          "ranking_latency_ms": 0.0,
+          "shadow_predicted_success_probability": 0.0,
+          "uncertainty_disagreement": 0.0,
+          "uncertainty_score": 0.0
+        },
+        "geometry": {
+          "approach_tilt_deg": 180.0,
+          "grasp_z_mm": 400.0,
+          "grip_width_mm": 40.0
+        },
+        "rank": 0
+      }
+    ],
+    "outcome": "executed",
+    "router_calls": [
+      {
+        "kw": {
+          "attempt_id": "a0",
+          "candidate_ids": [
+            "a0_c0"
+          ],
+          "deterministic_ranking": [
+            "a0_c0"
+          ],
+          "per_candidate_features": {
+            "a0_c0": {
+              "decision_latency_ms": 0.0,
+              "degraded_mode_active": 0.0,
+              "drift_severity": 0.0,
+              "feasibility_score": 0.33,
+              "fused_view_count": 0.0,
+              "fusion_evidence_quality": 0.0,
+              "fusion_latency_ms": 0.0,
+              "geometric_score": 0.11,
+              "multi_view_occlusion_reduced": 0.0,
+              "ood_flagged": 0.0,
+              "predicted_success_probability": 0.0,
+              "ranking_latency_ms": 0.0,
+              "shadow_predicted_success_probability": 0.0,
+              "uncertainty_disagreement": 0.0,
+              "uncertainty_score": 0.0
+            }
+          }
+        },
+        "phase": "ranking"
+      },
+      {
+        "kw": {
+          "attempt_id": "pick:1:executed",
+          "states": []
+        },
+        "phase": "sequencing"
+      },
+      {
+        "kw": {
+          "attempt_id": "pick:1:executed",
+          "baseline_action": "stop",
+          "state_key": {
+            "last_candidate_count_bucket": "1-2",
+            "last_occlusion_bucket": "unknown",
+            "mode_bucket": "dense",
+            "views_seen_bucket": "0"
+          }
+        },
+        "phase": "perception"
+      }
+    ],
+    "slots_set": {
+      "_behavior_candidate_id": true,
+      "_candidate_log": true,
+      "_perception_telemetry": true,
+      "_ranking_telemetry": true,
+      "_recovery_telemetry": false,
+      "_sequencing_telemetry": true
+    },
+    "v4_sequencing_states": []
+  },
+  "v3_direct_call": {
+    "behavior_candidate_id": "a0_c0",
+    "candidate_log": [
+      {
+        "candidate_id": "a0_c0",
+        "executed": true,
+        "features": {
+          "decision_latency_ms": 0.0,
+          "degraded_mode_active": 0.0,
+          "drift_severity": 0.0,
+          "feasibility_score": 0.33,
+          "fused_view_count": 0.0,
+          "fusion_evidence_quality": 0.0,
+          "fusion_latency_ms": 0.0,
+          "geometric_score": 0.11,
+          "multi_view_occlusion_reduced": 0.0,
+          "ood_flagged": 0.0,
+          "predicted_success_probability": 0.0,
+          "ranking_latency_ms": 0.0,
+          "shadow_predicted_success_probability": 0.0,
+          "uncertainty_disagreement": 0.0,
+          "uncertainty_score": 0.0
+        },
+        "geometry": {
+          "approach_tilt_deg": 180.0,
+          "grasp_z_mm": 400.0,
+          "grip_width_mm": 40.0
+        },
+        "rank": 0
+      }
+    ],
+    "router_calls": [
+      {
+        "kw": {
+          "attempt_id": "a0",
+          "candidate_ids": [
+            "a0_c0"
+          ],
+          "deterministic_ranking": [
+            "a0_c0"
+          ],
+          "per_candidate_features": {
+            "a0_c0": {
+              "decision_latency_ms": 0.0,
+              "degraded_mode_active": 0.0,
+              "drift_severity": 0.0,
+              "feasibility_score": 0.33,
+              "fused_view_count": 0.0,
+              "fusion_evidence_quality": 0.0,
+              "fusion_latency_ms": 0.0,
+              "geometric_score": 0.11,
+              "multi_view_occlusion_reduced": 0.0,
+              "ood_flagged": 0.0,
+              "predicted_success_probability": 0.0,
+              "ranking_latency_ms": 0.0,
+              "shadow_predicted_success_probability": 0.0,
+              "uncertainty_disagreement": 0.0,
+              "uncertainty_score": 0.0
+            }
+          }
+        },
+        "phase": "ranking"
+      }
+    ],
+    "v3_set": true
+  }
+}

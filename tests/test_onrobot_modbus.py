@@ -186,7 +186,7 @@ class GripTests(_Served):
         before = len(self.box.writes)
         with self.assertRaises(ModbusError) as caught:
             self.rg.grip(width_mm=40.0, force_n=60.0)
-        self.assertIn("TOOL POWER", str(caught.exception))
+        self.assertIn("tool power is cycled", str(caught.exception))
         self.assertEqual(len(self.box.writes), before, "nothing may be written after a refusal")
 
     def test_stop_writes_the_stop_control_value(self) -> None:
@@ -220,7 +220,7 @@ class ProbeTests(_Served):
         reading = self.rg.probe()
         self.assertTrue(reading.blocked)
         self.assertEqual(reading.exit_code, 1)
-        self.assertIn("Cycle TOOL POWER", reading.render())
+        self.assertIn("Cycle tool power", reading.render())
 
     def test_to_dict_is_json_safe(self) -> None:
         import json

@@ -99,7 +99,7 @@ class RobotAxisTests(unittest.TestCase):
     def test_the_default_robot_leaves_the_argv_untouched(self) -> None:
         """A single-robot matrix must be byte-identical to every one taken before this axis existed --
         otherwise the comparison to earlier measurements is lost."""
-        from backend.src.willy_sim.run_mode_matrix import DEFAULT_ROBOT, cell_command
+        from src.willy_sim.run_mode_matrix import DEFAULT_ROBOT, cell_command
 
         self.assertEqual(
             cell_command("py", "m1", "easy", runs=3, result_json="r.json", robot_model=DEFAULT_ROBOT),
@@ -107,7 +107,7 @@ class RobotAxisTests(unittest.TestCase):
         )
 
     def test_another_robot_is_selected_on_the_command_line(self) -> None:
-        from backend.src.willy_sim.run_mode_matrix import cell_command
+        from src.willy_sim.run_mode_matrix import cell_command
 
         cmd = cell_command("py", "m1", "easy", runs=3, result_json="r.json", robot_model="ur3e")
         self.assertEqual(cmd[cmd.index("--robot-model") + 1], "ur3e")
@@ -115,7 +115,7 @@ class RobotAxisTests(unittest.TestCase):
     def test_radial_closing_is_opt_in(self) -> None:
         """The shorter arm needs it (a UR3e cannot reach a TANGENTIAL top-down close at any azimuth);
         leaving it off must change nothing."""
-        from backend.src.willy_sim.run_mode_matrix import cell_command
+        from src.willy_sim.run_mode_matrix import cell_command
 
         self.assertNotIn(
             "--radial-closing", cell_command("py", "m1", "easy", runs=1, result_json="r.json"))
@@ -124,7 +124,7 @@ class RobotAxisTests(unittest.TestCase):
             cell_command("py", "m1", "easy", runs=1, result_json="r.json", radial_closing=True))
 
     def test_cells_are_labelled_by_robot_only_when_it_is_not_the_default(self) -> None:
-        from backend.src.willy_sim.run_mode_matrix import scene_label
+        from src.willy_sim.run_mode_matrix import scene_label
 
         self.assertEqual(scene_label("m1"), "m1")
         self.assertEqual(scene_label("m1", "ur5e"), "m1")
@@ -132,7 +132,7 @@ class RobotAxisTests(unittest.TestCase):
 
     def test_two_robots_appear_as_separate_rows(self) -> None:
         """The point of the axis: both cells measured side by side, neither hidden by the other."""
-        from backend.src.willy_sim.run_mode_matrix import matrix_from_cells
+        from src.willy_sim.run_mode_matrix import matrix_from_cells
 
         agg = matrix_from_cells([
             {"scene": "m1", "robot": "ur5e", "mode": "easy", "passed": 10, "runs": 10, "results": []},
@@ -144,7 +144,7 @@ class RobotAxisTests(unittest.TestCase):
     def test_known_limits_follow_the_scene_not_the_robot(self) -> None:
         """The KNOWN_LIMITED notes describe the REFINER, so they must still annotate a cell running on
         another arm -- otherwise a known-unviable combination would read as an unexplained failure."""
-        from backend.src.willy_sim.run_mode_matrix import matrix_from_cells
+        from src.willy_sim.run_mode_matrix import matrix_from_cells
 
         agg = matrix_from_cells([
             {"scene": "ur3e/m2", "robot": "ur3e", "mode": "closed_loop",

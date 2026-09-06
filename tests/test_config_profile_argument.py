@@ -14,7 +14,7 @@ holder in the process. ``load_config(profile=...)`` needs no reload at all: the 
 chain, so two profiles are two entries rather than one entry fought over.
 
 ⚠ **``profile=None`` IS A VALUE, ``UNSET`` IS THE ABSENCE.** That distinction is the whole reason the
-parameter defaults to :data:`~backend.src.contracts.UNSET`, and it is the one an argparse ``None``
+parameter defaults to :data:`~src.contracts.UNSET`, and it is the one an argparse ``None``
 can silently destroy: a CLI that forwards its untyped ``--profile`` straight through would disable
 ``WILLY_PROFILE`` for every operator who exports it.
 """

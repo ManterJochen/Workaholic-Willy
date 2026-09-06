@@ -384,7 +384,7 @@ class CuroboProbeHonestyTests(unittest.TestCase):
 
         summary = probe_curobo("ur3e.yml").summary
         self.assertIn("ur3e.yml", summary)
-        self.assertIn("NOT verified", summary)
+        self.assertIn("not verified", summary)
 
     def test_available_still_reflects_only_the_interpreter(self) -> None:
         """Pinning the semantics, so a future reader does not widen `available` and quietly make the

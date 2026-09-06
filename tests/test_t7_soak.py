@@ -35,7 +35,6 @@ from src.robot.grasping.replay.telemetry_catalog import audit_records
 _THRESHOLDS_PATH = (
     Path(__file__).resolve().parents[1]
     / "config"
-    / "data"
     / "robot"
     / "kpi_thresholds.yaml"
 )

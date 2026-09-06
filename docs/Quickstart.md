@@ -159,6 +159,45 @@ merges in silently. `validate_preset` re-validates the merged result and is what
 | `dense_clutter` | `dense_clutter` | recovery bounded to `next_viewpoint`, plus uncertainty fusion |
 | `verification_heavy` | `closed_loop` | pre-grasp refinement and post-grasp verification |
 
+Each block below is the shipped overlay. Paste it under your `robot:` block, or call
+`apply_preset`.
+
+`easy`, the minimum-risk single-object pick:
+
+```yaml preset=easy
+grasping:
+  default_mode: easy
+  recovery:
+    enabled: false
+  uncertainty:
+    enabled: false
+```
+
+`dense_clutter`, bin picking with a bounded second look:
+
+```yaml preset=dense_clutter
+grasping:
+  default_mode: dense_clutter
+  recovery:
+    enabled: true
+    allowed_actions:
+      - next_viewpoint
+  uncertainty:
+    enabled: true
+    fail_closed_threshold: 0.4
+```
+
+`verification_heavy`, the closed loop for items where a missed slip is unacceptable:
+
+```yaml preset=verification_heavy
+grasping:
+  default_mode: closed_loop
+  recovery:
+    enabled: true
+    allowed_actions:
+      - next_viewpoint
+```
+
 Three things the files say about themselves and the table cannot. `easy` is excluded from
 `recovery.apply_modes` anyway, so switching recovery off there restates a guarantee the mode already
 carries. In `dense_clutter`, `fail_closed_threshold: 0.4` is the default of

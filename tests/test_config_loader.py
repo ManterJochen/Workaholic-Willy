@@ -13,7 +13,7 @@ from src.config.loader import available_profiles, set_active_profile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "src" / "config" / "data"
+DATA_DIR = ROOT / "config"
 
 
 def _copy_data_tree(tmp_dir: str) -> Path:

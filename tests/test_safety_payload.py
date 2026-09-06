@@ -151,7 +151,7 @@ class URConnectPayloadRefuseTests(unittest.TestCase):
 
     @staticmethod
     def _arm(**payload):  # type: ignore[no-untyped-def]
-        from backend.src.robot.drivers.ur.arm import URRobotArm
+        from src.robot.drivers.ur.arm import URRobotArm
 
         cfg = RobotConfig.model_validate({
             "vendor": "ur", "safety": {"payload": payload},
@@ -168,7 +168,7 @@ class URConnectPayloadRefuseTests(unittest.TestCase):
         return arm, conn
 
     def test_enforce_true_zero_mass_refuses_before_opening_the_socket(self) -> None:
-        from backend.src.robot.core import RobotConnectionError
+        from src.robot.core import RobotConnectionError
 
         arm, conn = self._arm(enforce=True, mass_kg=0.0)
         with self.assertRaises(RobotConnectionError) as cm:

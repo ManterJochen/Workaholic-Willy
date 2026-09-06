@@ -253,7 +253,8 @@ class FlagsThatCannotApplyTests(unittest.TestCase):
             ["where", "gripper", "--profile", "nosuch"],
         ):
             with self.subTest(argv=argv):
-                self.assertIn("searches the SCHEMA compiled into this checkout", self._refusal(argv))
+                self.assertIn("searches the schema compiled into this checkout, not a YAML tree",
+                              self._refusal(argv))
 
     def test_the_combinations_that_always_worked_still_do(self) -> None:
         """⚠ The refusals must be narrow. `--print` on the default command and `--tier` on `where`

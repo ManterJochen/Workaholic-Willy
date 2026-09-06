@@ -300,8 +300,8 @@ class IsaacRobotArmPreflightWiringTests(unittest.TestCase):
     """The SIM driver runs the preflight when one is injected."""
 
     def _arm(self, preflight: SafetyPreflight | None) -> "IsaacRobotArm":
-        from backend.src.robot.drivers.sim.arm import IsaacRobotArm
-        from backend.src.robot.drivers.sim.config import SimRobotConfig
+        from src.robot.drivers.sim.arm import IsaacRobotArm
+        from src.robot.drivers.sim.config import SimRobotConfig
 
         cfg = SimRobotConfig(enabled=True, mock_mode=True)
         return IsaacRobotArm(cfg, safety_preflight=preflight)

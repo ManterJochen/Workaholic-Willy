@@ -112,8 +112,11 @@ class RefusalTests(unittest.TestCase):
             with self.assertRaises(ValueError) as raised:
                 load_set_generator(path)
         message = str(raised.exception)
-        self.assertIn("BINNED", message, "the refusal no longer names the family")
-        self.assertIn("retired", message.lower())
+        # The family is named in prose, not shouted: the migration lowered the shout and kept every
+        # element of the refusal (commit note `.commits/robot/08-grasping-deep.md`, the prose
+        # convention). The phrase is pinned in full rather than one word of it.
+        self.assertIn("binned grasp generator", message, "the refusal no longer names the family")
+        self.assertIn("retired on 2026-09-04", message, "the retirement is no longer dated")
         self.assertIn("train-set", message, "the refusal has to say what to run instead")
 
     def test_a_binned_CHECKPOINT_is_refused_by_the_same_branch(self) -> None:
@@ -124,7 +127,10 @@ class RefusalTests(unittest.TestCase):
             torch.save({"kind": "grasp_generator_checkpoint", "state_dict": {}}, path)
             with self.assertRaises(ValueError) as raised:
                 load_set_generator(path)
-        self.assertIn("BINNED", str(raised.exception))
+        message = str(raised.exception)
+        self.assertIn("binned grasp generator ('grasp_generator_checkpoint')", message,
+                      "the checkpoint kind does not reach the one refusal branch")
+        self.assertIn("retired on 2026-09-04", message, "the retirement is no longer dated")
 
     def test_the_LIVE_kind_is_not_caught_by_the_retirement_branch(self) -> None:
         """⚠ THE SUBSTRING TRAP, CONTROLLED FOR. 'grasp_generator' IS a substring of

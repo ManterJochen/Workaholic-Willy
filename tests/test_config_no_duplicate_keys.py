@@ -26,7 +26,7 @@ from pathlib import Path
 import yaml
 
 _ROOT = Path(__file__).resolve().parents[1]
-_CONFIG_DATA = _ROOT / "src" / "config" / "data"
+_CONFIG_DATA = _ROOT / "config"
 
 
 class _DuplicateDetectingLoader(yaml.SafeLoader):

@@ -21,7 +21,7 @@ from src.config import ConfigError, load_config, reload_config
 from src.config._provenance import Origin, index_origins, nearest_keys
 from src.config.loader import set_active_profile
 
-DATA = Path(__file__).resolve().parents[1] / "src" / "config" / "data"
+DATA = Path(__file__).resolve().parents[1] / "config"
 
 
 class _Tree(unittest.TestCase):

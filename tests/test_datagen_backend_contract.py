@@ -1,7 +1,7 @@
-"""Every name `datagen` imports from `backend` still exists, and the private ones are listed.
+"""Every name `datagen` imports from `src` still exists, and the private ones are listed.
 
 ⛔⛔ **THE REASON THIS GUARD EXISTS: NOTHING ELSE CAN SEE THIS BREAK.** `datagen` reaches into
-`backend` at 119 name-imports across 37 modules, and MEASURED, **68 of those sit inside a function
+`src` at 119 name-imports across 37 modules, and MEASURED, **68 of those sit inside a function
 body**. (Counted as NAMES; counted as import statements it is 97 and 52, which is the same surface
 seen two ways. The name is what breaks, so the name is what this counts.) Two instruments that look
 like they cover it do not:
@@ -11,11 +11,11 @@ like they cover it do not:
   * **mypy is configured with `ignore_missing_imports = true`** (`pyproject.toml:32`), so a module
     that has VANISHED is a silent pass, not an error.
 
-So a rename on the `backend` side surfaces only when that code path actually runs, which for this
+So a rename on the `src` side surfaces only when that code path actually runs, which for this
 tool can be several hours into a render. That is not a hypothetical: it is the failure that occurred
 on 2026-09-04, in exactly this shape.
 
-⚠ **THE DEPENDENCY IS ONE-WAY AND STAYS THAT WAY.** `datagen` imports `backend`; `backend` never
+⚠ **THE DEPENDENCY IS ONE-WAY AND STAYS THAT WAY.** `datagen` imports `src`; `src` never
 imports `datagen`. That direction is asserted here too, because the day it reverses this guard is
 measuring a cycle instead of a contract.
 
@@ -47,7 +47,7 @@ _MIN_MODULES = 30
 
 
 def _module_file(dotted: str) -> Path | None:
-    """The file behind `backend.a.b`, whether it is a module or a package."""
+    """The file behind `src.a.b`, whether it is a module or a package."""
     base = _REPO.joinpath(*dotted.split("."))
     for candidate in (base.with_suffix(".py"), base / "__init__.py"):
         if candidate.is_file():
@@ -59,7 +59,7 @@ def _defined_names(path: Path) -> set[str]:
     """Every name a module binds at top level, including what it re-exports.
 
     A re-export counts: `from x import y` at module level genuinely makes `y` importable from here,
-    and several `backend` packages are deliberately built that way.
+    and several `src` packages are deliberately built that way.
     """
     names: set[str] = set()
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -96,7 +96,7 @@ def _edges() -> list[tuple[Path, str, str, bool]]:
         }
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module \
-                    and node.module.startswith("backend"):
+                    and (node.module == "src" or node.module.startswith("src.")):
                 deferred = id(node) in in_function
                 for alias in node.names:
                     out.append((path, node.module, alias.name, deferred))
@@ -107,7 +107,7 @@ class TheSurfaceStillResolvesTests(unittest.TestCase):
 
     def test_every_target_module_exists(self) -> None:
         missing = sorted({module for _, module, _, _ in _edges() if _module_file(module) is None})
-        self.assertEqual(missing, [], "datagen imports backend modules that are not on disk")
+        self.assertEqual(missing, [], "datagen imports src modules that are not on disk")
 
     def test_every_imported_name_exists(self) -> None:
         """⛔ THE ONE THAT CATCHES A RENAME. A module that still exists but no longer defines the
@@ -119,12 +119,12 @@ class TheSurfaceStillResolvesTests(unittest.TestCase):
                 continue  # reported by the test above
             if name == "*" or name in _defined_names(target):
                 continue
-            # A submodule import (`from backend.pkg import submodule`) binds a module, not a name.
+            # A submodule import (`from src.pkg import submodule`) binds a module, not a name.
             if _module_file(f"{module}.{name}") is not None:
                 continue
             where = "deferred" if deferred else "module level"
             broken.append(f"{path.relative_to(_REPO)} ({where}): {module}.{name}")
-        self.assertEqual(broken, [], "datagen imports names backend no longer defines")
+        self.assertEqual(broken, [], "datagen imports names src no longer defines")
 
     def test_the_scan_actually_found_the_surface(self) -> None:
         """A test that asserts over an empty set passes loudest of all."""
@@ -176,7 +176,7 @@ class PrivateCrossingsAreWrittenDownTests(unittest.TestCase):
 class NoPathTricksTests(unittest.TestCase):
     """⛔⛔ THE SHAPE THIS SCAN CANNOT SEE, FENCED OFF SO IT CANNOT ARRIVE.
 
-    Everything above reads `from backend... import X`, a DOTTED import. A module that instead pushes
+    Everything above reads `from src... import X`, a DOTTED import. A module that instead pushes
     a directory onto `sys.path` and then writes a bare `import sibling` is invisible to this guard,
     to a dotted-string grep, and to a prose sweep, because the module's own path never appears as a
     string anywhere.
@@ -190,7 +190,7 @@ class NoPathTricksTests(unittest.TestCase):
 
     ⚠ THE DISCRIMINATOR IS A STRING LITERAL, and it is exact rather than clever. A safe insert names
     the repo root positionally: `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))`, and
-    carries no string literal at all, which is why dotted `from backend...` imports keep working and
+    carries no string literal at all, which is why dotted `from src...` imports keep working and
     this scan keeps seeing them. An insert that reaches INTO a package has to spell a directory,
     and spelling it is what makes a bare sibling import possible.
     """
@@ -236,7 +236,7 @@ class NoPathTricksTests(unittest.TestCase):
 
 
 class TheDependencyIsOneWayTests(unittest.TestCase):
-    """`backend` must never import `datagen`. The moment it does, this is a cycle, not a contract."""
+    """`src` must never import `datagen`. The moment it does, this is a cycle, not a contract."""
 
     def test_backend_never_imports_datagen(self) -> None:
         offenders = []
@@ -250,7 +250,7 @@ class TheDependencyIsOneWayTests(unittest.TestCase):
                 )
                 if any(m == "datagen" or m.startswith("datagen.") for m in imported):
                     offenders.append(str(path.relative_to(_REPO)))
-        self.assertEqual(sorted(set(offenders)), [], "backend must not import datagen")
+        self.assertEqual(sorted(set(offenders)), [], "src must not import datagen")
 
 
 if __name__ == "__main__":  # pragma: no cover

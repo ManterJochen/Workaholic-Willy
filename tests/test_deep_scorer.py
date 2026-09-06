@@ -209,7 +209,9 @@ class TheArtifactRefusesWhatItShouldTests(unittest.TestCase):
         """Ranking-only is an owner decision, and it has to travel WITH the model or it becomes a
         probability by assumption the first time somebody reads the number."""
         card = self._payload()["card"]
-        self.assertIn("NOT a calibrated probability", card["claims"])
+        # ranker/training.py:178 now writes "ranking only: not a calibrated probability";
+        # the migration lower-cased the shout, the claim is unchanged.
+        self.assertIn("not a calibrated probability", card["claims"])
         self.assertIn("GroupKFold", card["split"])
         self.assertEqual(self._payload()["kind"], ARTIFACT_KIND)
 

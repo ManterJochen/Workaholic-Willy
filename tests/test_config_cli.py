@@ -1,4 +1,4 @@
-"""``python -m backend.config`` as a real subprocess, against a config tree that is not the repo's.
+"""``python -m src.config`` as a real subprocess, against a config tree that is not the repo's.
 
 Rescued from ``test_config_editor_cli.py`` when ``backend/config/editor.py`` was deleted (2026-08-09).
 Despite living in that file, this test never touched the editor: it exercises the config CLI's entry
@@ -6,13 +6,13 @@ point end to end.
 
 **Why a subprocess and not ``main([...])``.** ``tests/test_config_explain.py`` already calls ``main``
 in-process, which is cheaper and covers the argument handling. It cannot cover what this does: that
-``python -m backend.config`` works as a module entry point at all, with a clean environment, no inherited
+``python -m src.config`` works as a module entry point at all, with a clean environment, no inherited
 ``WILLY_PROFILE``, and a ``--data`` tree somewhere else on disk. Those are exactly the conditions an
 operator's first command runs under, and the ones an import-time or packaging mistake breaks first. It is
 also the only test anywhere of the ``--data`` and ``--print`` flags.
 
 **It contributes zero measured coverage, and that is the point.** ``coverage`` does not instrument the
-child process, so running this file alone reports *"Module backend.config was never imported"*. What it
+child process, so running this file alone reports *"Module src.config was never imported"*. What it
 protects is therefore invisible to ``--cov-fail-under``: deleting it would cost nothing on the coverage
 report and would remove the only check that the entry point runs at all.
 """
@@ -28,7 +28,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT / "src" / "config" / "data"
+DATA_DIR = ROOT / "config"
 
 
 class ConfigCliSubprocessTests(unittest.TestCase):

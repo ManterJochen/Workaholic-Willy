@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover (only on installs without the optional e
 MEDIAPIPE_AVAILABLE: Final[bool] = _available
 
 MEDIAPIPE_INSTALL_HINT: Final[str] = (
-    "Install the optional voice/gesture extra: pip install -r requirements/voice.txt"
+    "mediapipe is pinned in requirements.txt: pip install -r requirements.txt"
 )
 
 

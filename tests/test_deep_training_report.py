@@ -104,7 +104,9 @@ class ThePlateauTests(unittest.TestCase):
         self.assertLess(report.plateau_epoch, 45)
         # ⚠ THE MARKER IS ASCII. It was a non-ASCII glyph until 2026-09-04, and `print` of it
         # raised UnicodeEncodeError on a cp1252 console, taking `deep report` down entirely.
-        self.assertIn("[PLATEAU] AT EPOCH", format_report(report))
+        # run_report.py:438 emits "  [PLATEAU] at epoch {n}: ..." -- the migration lower-cased
+        # the prose after the marker; the ASCII marker itself is unchanged.
+        self.assertIn("[PLATEAU] at epoch", format_report(report))
 
     def test_a_run_that_never_settles_says_so(self) -> None:
         report = build_report("climb", _run([0.004 * i for i in range(80)]))

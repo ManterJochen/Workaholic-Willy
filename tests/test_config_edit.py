@@ -29,7 +29,7 @@ from src.config.edit import (
 )
 from src.config.loader import active_profile, load_config, reload_config, set_active_profile
 
-_SHIPPED = Path(__file__).resolve().parents[1] / "src" / "config" / "data"
+_SHIPPED = Path(__file__).resolve().parents[1] / "config"
 
 
 def _comment_lines(path: Path) -> int:
@@ -229,7 +229,7 @@ class ConfigEditTests(unittest.TestCase):
         """Pinned as a measurement, not an opinion.
 
         The cheap way to write a config value is ``yaml.safe_load`` the file, patch the dict,
-        ``safe_dump`` it back. It is shorter than everything in ``backend/config/edit.py`` and it is
+        ``safe_dump`` it back. It is shorter than everything in ``src/config/edit.py`` and it is
         what a future contributor will reach for. This measures the two side by side on the same file
         and the same key, so the tradeoff is a number rather than a preference.
 

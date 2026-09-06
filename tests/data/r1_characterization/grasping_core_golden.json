@@ -1,0 +1,523 @@
+{
+  "compute": {
+    "empty_mask": {
+      "candidates": [],
+      "n_candidates": 0,
+      "telemetry": {
+        "best_score": 0.0,
+        "candidates_geometry": 0,
+        "candidates_silhouette": 0,
+        "final": 0,
+        "grasp_sampling_mode": "auto",
+        "mask_pixels": 0,
+        "mask_size": 576,
+        "rejected_collision": 0,
+        "rejected_table": 0,
+        "rejected_workspace": 0
+      }
+    },
+    "planar_box_base_frame": {
+      "candidates": [
+        {
+          "approach": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "frame": "base",
+          "grip_width_mm": 55.0,
+          "label": "centroid",
+          "metadata_keys": [
+            "approach_clearance_mm",
+            "aspect_ratio",
+            "axis_alignment",
+            "axis_consistency",
+            "confidence_kind",
+            "depth_confidence",
+            "extent_major_px",
+            "extent_minor_px",
+            "feasibility_score",
+            "geometric_score",
+            "label",
+            "mask_area_px",
+            "normal_opposition",
+            "orientation_deg",
+            "planner",
+            "pose_confidence",
+            "reachability_score",
+            "score_components",
+            "segmentation",
+            "source",
+            "source_frame",
+            "stability",
+            "stability_score",
+            "total_score"
+          ],
+          "position_mm": [
+            97.5,
+            -52.5,
+            1300.0
+          ],
+          "score": 0.79098
+        },
+        {
+          "approach": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "frame": "base",
+          "grip_width_mm": 55.0,
+          "label": "axis_end_pos",
+          "metadata_keys": [
+            "aspect_ratio",
+            "axis_alignment",
+            "axis_consistency",
+            "confidence_kind",
+            "depth_confidence",
+            "extent_major_px",
+            "extent_minor_px",
+            "feasibility_score",
+            "geometric_score",
+            "label",
+            "mask_area_px",
+            "normal_opposition",
+            "orientation_deg",
+            "planner",
+            "pose_confidence",
+            "reachability_score",
+            "score_components",
+            "segmentation",
+            "source",
+            "source_frame",
+            "stability",
+            "stability_score",
+            "total_score"
+          ],
+          "position_mm": [
+            119.5,
+            -52.5,
+            1300.0
+          ],
+          "score": 0.79098
+        },
+        {
+          "approach": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "frame": "base",
+          "grip_width_mm": 55.0,
+          "label": "axis_end_neg",
+          "metadata_keys": [
+            "aspect_ratio",
+            "axis_alignment",
+            "axis_consistency",
+            "confidence_kind",
+            "depth_confidence",
+            "extent_major_px",
+            "extent_minor_px",
+            "feasibility_score",
+            "geometric_score",
+            "label",
+            "mask_area_px",
+            "normal_opposition",
+            "orientation_deg",
+            "planner",
+            "pose_confidence",
+            "reachability_score",
+            "score_components",
+            "segmentation",
+            "source",
+            "source_frame",
+            "stability",
+            "stability_score",
+            "total_score"
+          ],
+          "position_mm": [
+            75.5,
+            -52.5,
+            1300.0
+          ],
+          "score": 0.79098
+        }
+      ],
+      "n_candidates": 3,
+      "telemetry": {
+        "approach_clearance_mm": 200.0,
+        "best_score": 0.79098,
+        "camera_base_z_mm": 300.0,
+        "candidates_geometry": 0,
+        "candidates_silhouette": 3,
+        "closing_levelled": true,
+        "dense_auto_reason": "default_silhouette",
+        "dense_decision": false,
+        "final": 3,
+        "geometry_stage": "silhouette",
+        "grasp_sampling_mode": "auto",
+        "mask_non_convexity": 0.0,
+        "mask_pixels": 120,
+        "mask_size": 576,
+        "rejected_collision": 0,
+        "rejected_ik": 0,
+        "rejected_table": 0,
+        "rejected_workspace": 0,
+        "support_footprint_ready": false,
+        "target_cloud_z_max_mm": 1300.0,
+        "target_cloud_z_min_mm": 1300.0,
+        "target_depth_max_mm": 1000.0,
+        "target_depth_min_mm": 1000.0,
+        "topology_risk": 0.0
+      }
+    },
+    "planar_box_dense": {
+      "candidates": [
+        {
+          "approach": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "frame": "camera",
+          "grip_width_mm": 55.0,
+          "label": "centroid",
+          "metadata_keys": [
+            "approach_clearance_mm",
+            "aspect_ratio",
+            "axis_alignment",
+            "axis_consistency",
+            "confidence_kind",
+            "depth_confidence",
+            "extent_major_px",
+            "extent_minor_px",
+            "feasibility_score",
+            "geometric_score",
+            "label",
+            "mask_area_px",
+            "normal_opposition",
+            "orientation_deg",
+            "planner",
+            "pose_confidence",
+            "reachability_score",
+            "score_components",
+            "segmentation",
+            "source",
+            "stability",
+            "stability_score",
+            "total_score"
+          ],
+          "position_mm": [
+            -2.5,
+            -2.5,
+            1000.0
+          ],
+          "score": 0.79098
+        },
+        {
+          "approach": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "frame": "camera",
+          "grip_width_mm": 55.0,
+          "label": "axis_end_pos",
+          "metadata_keys": [
+            "aspect_ratio",
+            "axis_alignment",
+            "axis_consistency",
+            "confidence_kind",
+            "depth_confidence",
+            "extent_major_px",
+            "extent_minor_px",
+            "feasibility_score",
+            "geometric_score",
+            "label",
+            "mask_area_px",
+            "normal_opposition",
+            "orientation_deg",
+            "planner",
+            "pose_confidence",
+            "reachability_score",
+            "score_components",
+            "segmentation",
+            "source",
+            "stability",
+            "stability_score",
+            "total_score"
+          ],
+          "position_mm": [
+            19.5,
+            -2.5,
+            1000.0
+          ],
+          "score": 0.79098
+        },
+        {
+          "approach": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "frame": "camera",
+          "grip_width_mm": 55.0,
+          "label": "axis_end_neg",
+          "metadata_keys": [
+            "aspect_ratio",
+            "axis_alignment",
+            "axis_consistency",
+            "confidence_kind",
+            "depth_confidence",
+            "extent_major_px",
+            "extent_minor_px",
+            "feasibility_score",
+            "geometric_score",
+            "label",
+            "mask_area_px",
+            "normal_opposition",
+            "orientation_deg",
+            "planner",
+            "pose_confidence",
+            "reachability_score",
+            "score_components",
+            "segmentation",
+            "source",
+            "stability",
+            "stability_score",
+            "total_score"
+          ],
+          "position_mm": [
+            -24.5,
+            -2.5,
+            1000.0
+          ],
+          "score": 0.79098
+        }
+      ],
+      "n_candidates": 3,
+      "telemetry": {
+        "approach_clearance_mm": 200.0,
+        "best_score": 0.79098,
+        "candidates_geometry": 0,
+        "candidates_silhouette": 3,
+        "closing_levelled": false,
+        "dense_auto_reason": "explicit",
+        "dense_decision": true,
+        "dense_fallback": "none",
+        "dense_runtime_ms": "<volatile>",
+        "dense_sampling_points": 20,
+        "dense_timeout": false,
+        "final": 3,
+        "geometry_stage": "silhouette",
+        "grasp_sampling_mode": "dense_clutter",
+        "mask_pixels": 120,
+        "mask_size": 576,
+        "rejected_collision": 0,
+        "rejected_ik": 0,
+        "rejected_table": 0,
+        "rejected_workspace": 0,
+        "support_footprint_ready": false,
+        "topology_risk": 0.0
+      }
+    },
+    "planar_box_mm": {
+      "candidates": [
+        {
+          "approach": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "frame": "camera",
+          "grip_width_mm": 55.0,
+          "label": "centroid",
+          "metadata_keys": [
+            "approach_clearance_mm",
+            "aspect_ratio",
+            "axis_alignment",
+            "axis_consistency",
+            "confidence_kind",
+            "depth_confidence",
+            "extent_major_px",
+            "extent_minor_px",
+            "feasibility_score",
+            "geometric_score",
+            "label",
+            "mask_area_px",
+            "normal_opposition",
+            "orientation_deg",
+            "planner",
+            "pose_confidence",
+            "reachability_score",
+            "score_components",
+            "segmentation",
+            "source",
+            "stability",
+            "stability_score",
+            "total_score"
+          ],
+          "position_mm": [
+            -2.5,
+            -2.5,
+            1000.0
+          ],
+          "score": 0.79098
+        },
+        {
+          "approach": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "frame": "camera",
+          "grip_width_mm": 55.0,
+          "label": "axis_end_pos",
+          "metadata_keys": [
+            "aspect_ratio",
+            "axis_alignment",
+            "axis_consistency",
+            "confidence_kind",
+            "depth_confidence",
+            "extent_major_px",
+            "extent_minor_px",
+            "feasibility_score",
+            "geometric_score",
+            "label",
+            "mask_area_px",
+            "normal_opposition",
+            "orientation_deg",
+            "planner",
+            "pose_confidence",
+            "reachability_score",
+            "score_components",
+            "segmentation",
+            "source",
+            "stability",
+            "stability_score",
+            "total_score"
+          ],
+          "position_mm": [
+            19.5,
+            -2.5,
+            1000.0
+          ],
+          "score": 0.79098
+        },
+        {
+          "approach": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "frame": "camera",
+          "grip_width_mm": 55.0,
+          "label": "axis_end_neg",
+          "metadata_keys": [
+            "aspect_ratio",
+            "axis_alignment",
+            "axis_consistency",
+            "confidence_kind",
+            "depth_confidence",
+            "extent_major_px",
+            "extent_minor_px",
+            "feasibility_score",
+            "geometric_score",
+            "label",
+            "mask_area_px",
+            "normal_opposition",
+            "orientation_deg",
+            "planner",
+            "pose_confidence",
+            "reachability_score",
+            "score_components",
+            "segmentation",
+            "source",
+            "stability",
+            "stability_score",
+            "total_score"
+          ],
+          "position_mm": [
+            -24.5,
+            -2.5,
+            1000.0
+          ],
+          "score": 0.79098
+        }
+      ],
+      "n_candidates": 3,
+      "telemetry": {
+        "approach_clearance_mm": 200.0,
+        "best_score": 0.79098,
+        "candidates_geometry": 0,
+        "candidates_silhouette": 3,
+        "closing_levelled": false,
+        "dense_auto_reason": "default_silhouette",
+        "dense_decision": false,
+        "final": 3,
+        "geometry_stage": "silhouette",
+        "grasp_sampling_mode": "auto",
+        "mask_non_convexity": 0.0,
+        "mask_pixels": 120,
+        "mask_size": 576,
+        "rejected_collision": 0,
+        "rejected_ik": 0,
+        "rejected_table": 0,
+        "rejected_workspace": 0,
+        "support_footprint_ready": false,
+        "topology_risk": 0.0
+      }
+    }
+  },
+  "pick_loop": {
+    "attempts": 1,
+    "outcome": "executed",
+    "reasons": [],
+    "target_index": null
+  }
+}

@@ -38,11 +38,11 @@ def _av_is_loadable() -> tuple[bool, str]:
     ⚠ `find_spec` answers "is it installed", and on Windows that is a different question. Smart App
     Control refuses freshly-published unsigned binaries until they accumulate reputation, so `av`
     resolves and then `import av` dies with `DLL load failed ... Eine Anwendungssteuerungsrichtlinie
-    hat diese Datei blockiert`. That is a fact about the box, not a defect here -- and CI does not
-    install `requirements/voice.txt` at all, so this skip is the ordinary case there.
+    hat diese Datei blockiert`. That is a fact about the box, not a defect here. CI installs
+    `requirements.txt`, which pins `av`, so the skip is the local-box case rather than the CI one.
     """
     if importlib.util.find_spec("av") is None:
-        return (False, "av is not installed (it is an optional extra: requirements/voice.txt)")
+        return (False, "av is not installed (requirements.txt pins it)")
     try:
         import av  # noqa: F401,PLC0415
     except Exception as error:                                   # noqa: BLE001 - report, not fail
@@ -180,7 +180,7 @@ class BrowserFormatTests(unittest.TestCase):
 
 
 class MissingDecoderTests(unittest.TestCase):
-    """The answer on a host that has no optional extra -- which is every CI runner."""
+    """The answer on a host where the decoder for other containers cannot be imported."""
 
     def test_a_missing_decoder_is_a_CAPABILITY_error_naming_the_fix(self) -> None:
         """⚠ `AudioFormatUnsupported`, not `AudioDecodeError`, and the endpoint maps it to 501 rather
@@ -203,14 +203,14 @@ class MissingDecoderTests(unittest.TestCase):
         finally:
             builtins.__import__ = real_import
         message = str(caught.exception)
-        self.assertIn("requirements/voice.txt", message)
+        self.assertIn("pip install -r requirements.txt", message)
         self.assertIn("WAV", message)
 
     def test_the_upload_description_no_longer_promises_what_it_cannot_do(self) -> None:
         """The old one said "WAV/FLAC/OGG" flatly. It now says which needs nothing and which needs
         the extra -- the whole defect in one sentence, on the endpoint that had it."""
         self.assertIn("WAV", describe_upload)
-        self.assertIn("voice.txt", describe_upload)
+        self.assertIn("requirements.txt", describe_upload)
         self.assertIn("webm", describe_upload)
 
 

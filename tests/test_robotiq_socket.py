@@ -288,7 +288,7 @@ class ProbeTests(_Served):
         text = self.client.probe().render()
         self.assertFalse(text.endswith("\n"))
         text.encode("ascii")
-        self.assertIn("CONFIRM", text)
+        self.assertIn("confirm that on this unit", text)
 
     def test_a_fault_is_reported_not_raised(self) -> None:
         self.server.vars["FLT"] = 9

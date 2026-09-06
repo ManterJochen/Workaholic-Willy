@@ -1,0 +1,139 @@
+{
+  "label_policy_global": "label := (final_outcome == 'succeeded'); Phase U+ overrides may add audit-time corrections via extra.verification_failed_after_success, mirroring the locked Phase T7 KPI semantics.",
+  "manifest_version": 1,
+  "packs": [
+    {
+      "generator": {
+        "callable": "generate_soak_records",
+        "module": "backend.src.robot.grasping.replay.soak",
+        "scenarios": [
+          {
+            "attempts": 400,
+            "cycle_time_jitter_s": 0.2,
+            "cycle_time_mean_s": 1.5,
+            "failure_class_weights": {
+              "no_target": 1.0,
+              "no_valid_grasp": 2.0,
+              "succeeded": 197.0
+            },
+            "mode": "easy",
+            "name": "easy_canonical",
+            "recovery_success_rate": 0.0,
+            "seed": 1001
+          }
+        ]
+      },
+      "capability_group": "baseline",
+      "label_policy": "success := final_outcome == 'succeeded'; no auxiliary verification overrides at U0.",
+      "name": "replay_easy_canonical_v1",
+      "path": "tests/data/replay/replay_easy_canonical_v1.jsonl",
+      "record_count": 400,
+      "sha256": "21b801f40ac1d218e3747f77eb0f1d35eaeeda24d1cf0fa04aae57d53a31f463"
+    },
+    {
+      "generator": {
+        "callable": "generate_soak_records",
+        "module": "backend.src.robot.grasping.replay.soak",
+        "scenarios": [
+          {
+            "attempts": 400,
+            "cycle_time_jitter_s": 0.7,
+            "cycle_time_mean_s": 3.5,
+            "failure_class_weights": {
+              "decision_fail_closed": 4.0,
+              "execution_failed": 18.0,
+              "no_valid_grasp": 14.0,
+              "recovery_exhausted": 4.0,
+              "succeeded": 360.0
+            },
+            "mode": "dense_clutter",
+            "name": "dense_canonical_clutter",
+            "recovery_success_rate": 0.6,
+            "seed": 2001
+          },
+          {
+            "attempts": 200,
+            "cycle_time_jitter_s": 0.8,
+            "cycle_time_mean_s": 3.8,
+            "failure_class_weights": {
+              "decision_fail_closed": 3.0,
+              "execution_failed": 10.0,
+              "no_valid_grasp": 8.0,
+              "recovery_exhausted": 4.0,
+              "succeeded": 175.0
+            },
+            "mode": "dense_autonomous",
+            "name": "dense_canonical_autonomous",
+            "recovery_success_rate": 0.55,
+            "seed": 2002
+          }
+        ]
+      },
+      "capability_group": "baseline",
+      "label_policy": "success := final_outcome == 'succeeded'; dense-recovery denominator follows Phase T7 KPI contract.",
+      "name": "replay_dense_canonical_v1",
+      "path": "tests/data/replay/replay_dense_canonical_v1.jsonl",
+      "record_count": 600,
+      "sha256": "0d423d57567eba7daa63b5424d9cd55213e170af1429b0d90dc6b4a583796c1e"
+    },
+    {
+      "generator": {
+        "callable": "generate_soak_records",
+        "module": "backend.src.robot.grasping.replay.soak",
+        "scenarios": [
+          {
+            "attempts": 120,
+            "cycle_time_jitter_s": 0.5,
+            "cycle_time_mean_s": 2.6,
+            "failure_class_weights": {
+              "decision_fail_closed": 10.0,
+              "execution_failed": 15.0,
+              "succeeded": 90.0,
+              "verification_failed": 5.0
+            },
+            "mode": "auto",
+            "name": "drift_baseline",
+            "recovery_success_rate": 0.4,
+            "seed": 3001
+          }
+        ]
+      },
+      "capability_group": "baseline",
+      "label_policy": "drift_label := extra.drift_label (bool); first half stable (drift_label=False, low residuals), second half degraded (drift_label=True, ramping calibration / predicted-observed / hand-eye / verification residuals + lower depth confidence). Watchdog KPI gate (U9-G): precision \u2265 0.90, recall \u2265 0.85.",
+      "name": "replay_drift_synthetic_v1",
+      "path": "tests/data/replay/replay_drift_synthetic_v1.jsonl",
+      "record_count": 120,
+      "sha256": "a56c89dec8a8717a7516e6ca577c68a30b593db3c0785a9394d62e809a4721b3"
+    },
+    {
+      "generator": {
+        "callable": "generate_soak_records",
+        "module": "backend.src.robot.grasping.replay.soak",
+        "scenarios": [
+          {
+            "attempts": 120,
+            "cycle_time_jitter_s": 0.5,
+            "cycle_time_mean_s": 2.7,
+            "failure_class_weights": {
+              "decision_fail_closed": 20.0,
+              "execution_failed": 10.0,
+              "no_valid_grasp": 30.0,
+              "succeeded": 60.0
+            },
+            "mode": "auto",
+            "name": "ood_baseline",
+            "recovery_success_rate": 0.35,
+            "seed": 4001
+          }
+        ]
+      },
+      "capability_group": "baseline",
+      "label_policy": "ood_label := extra.ood_label (bool); first half in-distribution (ood_label=False, ood_score \u2248 0.85), second half perturbed (ood_label=True, ood_score \u2248 0.10). Watchdog KPI gate (U9-G): precision \u2265 0.90, recall \u2265 0.80.",
+      "name": "replay_ood_synthetic_v1",
+      "path": "tests/data/replay/replay_ood_synthetic_v1.jsonl",
+      "record_count": 120,
+      "sha256": "27613edf0b681a3573f588c211f34cbcc4c216225160266d530170605aa442b4"
+    }
+  ],
+  "extra_telemetry_version": 1
+}

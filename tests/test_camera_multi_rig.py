@@ -21,7 +21,7 @@ import yaml
 
 from src.config.schema.camera.cam_schema import CameraSystemConfig
 
-_TILTCAM = Path(__file__).resolve().parents[1] / "src/config/data/camera/cam.tiltcam.yaml"
+_TILTCAM = Path(__file__).resolve().parents[1] / "config/camera/cam.tiltcam.yaml"
 
 
 def _rig(rig_id: str, *, enabled: bool = True, serial: str | None = None) -> dict:

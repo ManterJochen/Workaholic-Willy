@@ -52,7 +52,12 @@ _ALLOWED: dict[str, str] = {
 }
 
 #: Where the sweep looks. Tests are excluded: a test may name any class it likes.
-_ROOTS = (Path("backend/src"), Path("datagen"), Path("api"))
+#:
+#: ⚠ THE LIBRARY ROOT IS `src`, NOT `backend/src`. A root that does not exist is skipped in
+#: silence by `_offenders`, so spelling it wrong shrinks the sweep to `datagen` and `api` and the
+#: whole library stops being checked. The stale-ledger test is what notices: its two `src/...`
+#: entries stop being found and report as stale.
+_ROOTS = (Path("src"), Path("datagen"), Path("api"))
 
 
 def _calls(path: Path) -> set[str]:
@@ -205,13 +210,17 @@ class TheSelectorReachesTheCellTests(unittest.TestCase):
     def test_the_refusal_names_a_command_that_EXISTS(self) -> None:
         """⚠ It used to say `datagen train-generator`, which has never existed — verified against
         `datagen --help`. A fail-closed message that sends the operator to a phantom command turns a
-        two-minute fix into a hunt."""
+        two-minute fix into a hunt.
+
+        ⚠ THE SUBCOMMAND IS `train-set`, SPELLED IN FULL. `deep/__main__.py` registers `train-set`
+        and no bare `train`, so asserting the prefix would pass on a message naming a command that
+        does not exist. The module is `src.robot.grasping.deep`: the library root is `src`."""
         from src.robot.execution.autonomous_grasp.cells import build_rehearsal_components
 
         with self.assertRaises(FileNotFoundError) as caught:
             build_rehearsal_components(self._cfg("deep"))
         self.assertNotIn("datagen train-generator", str(caught.exception))
-        self.assertIn("backend.src.robot.grasping.deep train", str(caught.exception))
+        self.assertIn("python -m src.robot.grasping.deep train-set", str(caught.exception))
 
     def test_an_unknown_selector_refuses_by_name(self) -> None:
         from src.robot.grasping.calculator_factory import build_calculator

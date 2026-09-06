@@ -1,7 +1,7 @@
 """Hand and gesture detection (MediaPipe): palm centre in 2-D and 3-D, thumbs up / thumbs down.
 
-Optional and standalone: nothing in the grasp pipeline imports this package, and mediapipe is an
-optional extra (`requirements/voice.txt`). Importing this module works without mediapipe installed.
+Optional and standalone: nothing in the grasp pipeline imports this package, and mediapipe is
+pinned in `requirements.txt`. Importing this module works without mediapipe installed.
 Constructing a detector is what refuses, with a message naming the config key and the model
 download.
 

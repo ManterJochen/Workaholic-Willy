@@ -337,7 +337,7 @@ class WatchdogEnforcementTests(unittest.TestCase):
 
 class GraspingWatchdogConfigSchemaTests(unittest.TestCase):
     def test_easy_block_mode_rejected(self) -> None:
-        from backend.config.schema.robot.robot_schema import (
+        from src.config.schema.robot.robot_schema import (
             GraspingWatchdogConfig,
         )
 
@@ -345,7 +345,7 @@ class GraspingWatchdogConfigSchemaTests(unittest.TestCase):
             GraspingWatchdogConfig(block_modes=("easy",))
 
     def test_disordered_ladder_rejected(self) -> None:
-        from backend.config.schema.robot.robot_schema import (
+        from src.config.schema.robot.robot_schema import (
             GraspingWatchdogConfig,
         )
 

@@ -241,9 +241,9 @@ class OnUnavailableTests(unittest.TestCase):
             vlm=_FakeBackend(error=OSError("no weights")), model_id="qwen",
             degrade=True, fallback_factory=lambda: fallback,
         )
-        with self.assertLogs("backend.src.models.vlm.availability", level=logging.WARNING) as first:
+        with self.assertLogs("src.models.vlm.availability", level=logging.WARNING) as first:
             guard.perceive(None, "the broken part")
-        with self.assertLogs("backend.src.models.vlm.availability", level=logging.WARNING) as second:
+        with self.assertLogs("src.models.vlm.availability", level=logging.WARNING) as second:
             guard.perceive(None, "the broken part")
         self.assertTrue(guard.degraded)
         self.assertEqual(fallback.calls, 2)

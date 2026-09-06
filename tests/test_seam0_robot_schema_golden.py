@@ -12,8 +12,8 @@ must be byte-identical at three surfaces:
     string constraint, and ``additionalProperties:false`` (``extra='forbid'``) across the whole tree. This is
     the strongest single proof. NOTE: ``model_json_schema()`` output is pydantic-version-sensitive — captured
     on **pydantic==2.13.4**; a routine pydantic bump reds this independent of the split (regen deliberately then).
-(B) the loaded PRODUCTION config tree (``backend/config/data``).
-(C) the loaded SIM config = the same ``backend/config/data`` tree under the ``sim`` profile (the ``*.sim.yaml``
+(B) the loaded PRODUCTION config tree (``config/`` at the repository root).
+(C) the loaded SIM config = the same ``config/`` tree under the ``sim`` profile (the ``*.sim.yaml``
     overlays; the old separate ``data_sim`` tree was consolidated into it). Reached through the same loader.
 """
 
@@ -33,7 +33,7 @@ _SCHEMA = _DIR / "robot_config_schema_golden.json"
 _DATA = _DIR / "loaded_config_data_golden.json"
 _DATA_SIM = _DIR / "loaded_config_data_sim_golden.json"
 # The sim config is now the production tree under the `sim` profile (no separate data_sim/ tree).
-_SIM_DATA_DIR = Path(__file__).resolve().parent.parent / "config" / "data"
+_SIM_DATA_DIR = Path(__file__).resolve().parent.parent / "config"
 
 
 def _schema_blob() -> str:

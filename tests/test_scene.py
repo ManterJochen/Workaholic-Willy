@@ -57,7 +57,7 @@ class TheGeneratorIsAlwaysNamedTests(unittest.TestCase):
     def test_the_word_matches_the_config_key(self) -> None:
         """⚠ DELIBERATELY THE SAME WORD `robot.grasping.calculator` USES, so a reader comparing a
         report against a YAML file is comparing like with like rather than translating."""
-        from backend.config.schema.robot import RobotConfig
+        from src.config.schema.robot import RobotConfig
 
         self.assertEqual(str(RobotConfig().grasping.calculator), "geometric")
 

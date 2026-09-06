@@ -134,7 +134,7 @@ class ExitCodeContractTests(unittest.TestCase):
         text = report.render()
         self.assertIn("thing.pyd", text)
         self.assertIn("code-integrity.md", text)
-        self.assertIn("PIN", text)
+        self.assertIn("pin the dependency", text)
 
 
 class CodeIntegrityBlocksTests(unittest.TestCase):

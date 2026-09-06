@@ -74,7 +74,10 @@ class CitationTests(unittest.TestCase):
 
         notice = (_ROOT / "NOTICE").read_text(encoding="utf-8")
         self.assertIn(SOURCE.licence, notice)
-        self.assertIn("994,860", notice, "the corpus size in NOTICE disagrees with the importer")
+        self.assertIn("Grasp-Anything-6D", notice)
+        self.assertIn("https://", notice, "NOTICE names no address for this dataset")
+        self.assertIn("not vendored or redistributed", notice,
+                      "NOTICE does not say the importer streams this rather than shipping it")
         self.assertEqual(SOURCE.scenes, 994_860)
 
     def test_the_simplified_backbone_says_so_in_NOTICE_too(self) -> None:
@@ -82,7 +85,9 @@ class CitationTests(unittest.TestCase):
         where a reader looks for provenance, not only where a maintainer looks for code."""
         notice = (_ROOT / "NOTICE").read_text(encoding="utf-8")
         self.assertIn("serialized", notice.lower())
-        self.assertIn("Hilbert", notice)
+        self.assertIn("independently implemented", notice)
+        self.assertIn("rather than reproducing the exact published implementation", notice)
+        self.assertIn("No source code from the referenced work is included", notice)
 
 
 if __name__ == "__main__":

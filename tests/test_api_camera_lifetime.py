@@ -41,7 +41,7 @@ import numpy as np
 from api.cell import Console, set_console
 from api.lifecycle import CellState, CellTransitionError, release_perception
 
-_SHIPPED = pathlib.Path(__file__).resolve().parents[1] / "backend" / "config" / "data"
+_SHIPPED = pathlib.Path(__file__).resolve().parents[1] / "config"
 
 
 class DeviceBusy(RuntimeError):

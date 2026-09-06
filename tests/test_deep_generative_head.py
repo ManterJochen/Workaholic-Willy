@@ -161,8 +161,11 @@ class HonestyTests(unittest.TestCase):
 
         text = Path("src/robot/grasping/deep/net/generative_head.py").read_text(
             encoding="utf-8")
-        self.assertIn("NOTHING HERE IS MEASURED YET", text)
-        self.assertIn("IT IS AN ARM, NOT A REPLACEMENT", text)
+        # generative_head.py now writes the same two sentences in the migration's ASCII,
+        # unshouted convention: "Nothing here is measured." and "It is an arm, not a
+        # replacement". Same claims, same file, lower case.
+        self.assertIn("Nothing here is measured", text)
+        self.assertIn("It is an arm, not a replacement", text)
 
 
 if __name__ == "__main__":

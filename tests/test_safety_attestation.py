@@ -97,7 +97,7 @@ class TheFourPosturesTests(unittest.TestCase):
         attestation = SafetyAttestation.of(Partial())
         self.assertIn("self_collision", attestation.omitted)
         self.assertNotIn("self_collision", attestation.guards)
-        self.assertIn("NOT enforced: self_collision", attestation.render())
+        self.assertIn("not enforced: self_collision", attestation.render())
         self.assertIn("self_collision", attestation.to_dict()["omitted"])
 
     def test_a_full_pipeline_omits_nothing_and_says_nothing(self) -> None:
@@ -112,7 +112,7 @@ class TheFourPosturesTests(unittest.TestCase):
 
         attestation = SafetyAttestation.of(Gated())
         self.assertEqual(attestation.omitted, ())
-        self.assertNotIn("NOT enforced", attestation.render())
+        self.assertNotIn("not enforced", attestation.render())
 
     def test_the_workspace_guard_can_never_be_reported_as_omitted(self) -> None:
         """⚠ IT IS WIRED UNCONDITIONALLY, being the one non-negotiable surface. Seeing it in
@@ -208,7 +208,7 @@ class EveryDriverWeShipAnswersTests(unittest.TestCase):
         attestation = SafetyAttestation.of(DummyRobotArm())
         self.assertIs(attestation.posture, SafetyPosture.UNGATED)
         self.assertFalse(attestation.enforced)
-        self.assertIn("NOTHING", attestation.render())
+        self.assertIn("nothing gates its motion", attestation.render())
 
     def test_the_guard_can_fail(self) -> None:
         """⭐ THE SELF-FAILING CONTROL: the completeness check must be able to reject."""

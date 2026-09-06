@@ -213,13 +213,13 @@ class LifecycleTests(unittest.TestCase):
 class ConfigTests(unittest.TestCase):
     def test_the_vendor_is_selectable_from_config(self) -> None:
         """THE gap this closes: a real cell could not previously say it had a suction gripper at all."""
-        from backend.config.schema.robot.robot_schema import GripperConfig
+        from src.config.schema.robot.robot_schema import GripperConfig
 
         cfg = GripperConfig.model_validate({"vendor": "vacuum", "max_width_mm": 30.0, "min_width_mm": 0.0})
         self.assertEqual(cfg.vendor, "vacuum")
 
     def test_width_limits_come_from_the_gripper_config(self) -> None:
-        from backend.config.schema.robot.robot_schema import GripperConfig
+        from src.config.schema.robot.robot_schema import GripperConfig
 
         cfg = GripperConfig.model_validate({"vendor": "vacuum", "max_width_mm": 25.0, "min_width_mm": 1.0})
         g = _gripper(FakeIO(), config=cfg)
@@ -227,7 +227,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_the_wiring_block_is_inert_for_a_jaw_cell(self) -> None:
         """Defaults must not imply a claim about any particular cell."""
-        from backend.config.schema.robot.robot_schema import GripperConfig
+        from src.config.schema.robot.robot_schema import GripperConfig
 
         cfg = GripperConfig()
         self.assertEqual(cfg.vendor, "robotiq")
@@ -237,7 +237,7 @@ class ConfigTests(unittest.TestCase):
     def test_out_of_range_pins_are_rejected_at_load(self) -> None:
         from pydantic import ValidationError
 
-        from backend.config.schema.robot.robot_schema import VacuumGripperConfig
+        from src.config.schema.robot.robot_schema import VacuumGripperConfig
 
         with self.assertRaises(ValidationError):
             VacuumGripperConfig.model_validate({"vacuum_output_pin": 99})

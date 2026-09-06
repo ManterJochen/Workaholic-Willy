@@ -7,7 +7,7 @@
     decision.reason     # RouteReason.NON_ENGLISH
     decision.describe() # 'vlm (non_english)'
 
-See [routing_README.md](routing_README.md) for the rules and their vocabulary limits.
+See [README.md](README.md) for the rules and their vocabulary limits.
 """
 
 from __future__ import annotations

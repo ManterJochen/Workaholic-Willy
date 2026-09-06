@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover - the console is an optional extra
 
 from src.config.loader import active_profile, reload_config, set_active_profile
 
-_SHIPPED = Path(__file__).resolve().parents[1] / "src" / "config" / "data"
+_SHIPPED = Path(__file__).resolve().parents[1] / "config"
 
 
 def _dummy_tree(target: Path, *, gripper: str = "none") -> None:

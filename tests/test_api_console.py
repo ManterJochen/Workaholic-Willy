@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover - the console is an optional extra
 
 from src.config.loader import active_profile, reload_config, set_active_profile
 
-_SHIPPED = Path(__file__).resolve().parents[1] / "backend" / "config" / "data"
+_SHIPPED = Path(__file__).resolve().parents[1] / "config"
 
 
 @unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")

@@ -80,7 +80,7 @@ class StampTests(unittest.TestCase):
         """⚠ A scene's labels are written together or not at all. Half an object's grasps is a corpus
         row that looks complete and is not, and every count downstream is per object."""
         source = Path("datagen/grasps/labels.py").read_text(encoding="utf-8")
-        self.assertIn("CHECKED BETWEEN SCENES, NEVER INSIDE ONE", source)
+        self.assertIn("Checked between scenes, never inside one", source)
 
     def test_the_report_carries_the_budget_and_says_it_is_partial(self) -> None:
         """A budgeted corpus and a complete one are different statements about a dataset and the

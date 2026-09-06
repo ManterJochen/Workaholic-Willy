@@ -1,10 +1,16 @@
-"""Gap D2 — markdown link-resolution test.
+"""Gap D2 - markdown link-resolution test.
 
-The past QUICKSTART drift (broken Phase-U link, etc.) landed because no test resolved doc links. This
-scans the operator-facing docs (QUICKSTART + runbooks + every `backend/src` package README, incl.
-willy_sim/models/calibration/camera/geometry — extended in R10.3a), extracts every relative markdown
-link, strips the anchor/query, and asserts the target file exists. http(s)/mailto and pure-anchor links
-are skipped. Runs in the mock/CI suite (pure filesystem).
+The past quickstart drift (broken Phase-U link, etc.) landed because no test resolved doc links. This
+scans EVERY markdown document in the repository, extracts every relative markdown link, strips the
+anchor/query, and asserts the target file exists. http(s)/mailto and pure-anchor links are skipped.
+Runs in the mock/CI suite (pure filesystem).
+
+The set used to be enumerated by hand: `QUICKSTART.md`, `README.md`, `docs/*.md`, `docs/runbooks/*.md`,
+`docs/guide/*.md` and every `backend/src/**/*_README.md`. Two of those roots stopped existing when the
+library moved to `src/` and every `<pkg>_README.md` became `README.md`, which left a hand-written list
+silently scanning nothing -- the exact failure mode of a hand-written list. Enumerating the tree
+instead cannot rot that way, and it covers the documents the old list never reached (`api/`,
+`datagen/`, `scripts/`, `frontend/`, `config/`) as well as the ones it did.
 """
 
 from __future__ import annotations
@@ -28,21 +34,23 @@ _SKIP_PREFIXES = ("http://", "https://", "mailto:", "#")
 _CODE = re.compile(r"```.*?```|`[^`]*`", re.S)
 
 
+#: Directories that hold no documentation of ours: third-party trees, build output and run logs.
+#: Dot-directories go with them (`.git`, `.venv`, and the `.commits/` message archive), which is why
+#: this is a name test rather than a fixed list of four.
+_SKIP_DIRS = frozenset({"node_modules", "ext_deps", "logs"})
+
+
 def _docs() -> list[Path]:
-    files: list[Path] = [_ROOT / "QUICKSTART.md", _ROOT / "README.md"]
-    files += sorted((_ROOT / "docs" / "runbooks").glob("*.md"))
-    # ⛔ THE TOP LEVEL OF docs/ WAS OUTSIDE THIS SET, AND THAT WAS FOUND BY A READER RATHER THAN BY
-    # CI. `calibration-setup.md`, `grasping-math.md`, `safety-math.md`, `code-integrity.md` and
-    # `isaac-ready.md` all link into the source with `../`, the same shape that rotted in QUICKSTART
-    # before this test existed, and nothing checked them. README.md is in for the same reason: it is
-    # the single most-read file in the repository and carried four links that no test resolved.
-    files += sorted((_ROOT / "docs").glob("*.md"))
-    # The docs/guide/ set is the end-to-end walkthrough (config -> models -> calibration -> robot+safety
-    # -> pick loop). It links into the source with `../../` on nearly every page, which is exactly the
-    # link shape that rotted in QUICKSTART before this test existed.
-    files += sorted((_ROOT / "docs" / "guide").glob("*.md"))
-    files += sorted((_ROOT / "backend" / "src").rglob("*[Rr][Ee][Aa][Dd][Mm][Ee]*.md"))
-    return [f for f in files if f.exists()]
+    """Every markdown document in the repository, third-party and generated trees aside."""
+    return sorted(
+        path
+        for path in _ROOT.rglob("*.md")
+        if path.is_file()
+        and not any(
+            part in _SKIP_DIRS or part.startswith(".")
+            for part in path.relative_to(_ROOT).parts[:-1]
+        )
+    )
 
 
 @pytest.mark.parametrize("doc", _docs(), ids=lambda f: str(f.relative_to(_ROOT)).replace("\\", "/"))
@@ -63,23 +71,23 @@ def test_relative_markdown_links_resolve(doc: Path) -> None:
 
 
 def _canon_docs() -> list[Path]:
-    """The session-facing canon: CLAUDE.md + every `.ai-memory/*.md`.
+    """The same documents, judged by the weaker of the two link conventions.
 
-    CLAUDE.md's first line orders every session to read these INSTEAD of re-scanning the code, so a link
-    here pointing at a file the code no longer has is a load-bearing lie -- exactly how a session ends up
-    citing `grasping/pick_loop.py` after the fcbf002 reorg moved it. This guard makes that an invariant.
+    This case used to hold `CLAUDE.md` plus `.ai-memory/*.md`, a session-facing canon that linked into
+    the source with the repo-root convention (`](backend/...)`) rather than relative to itself. Neither
+    file travelled into this repository, so the case was scanning an empty list and asserting over
+    nothing. Pointing it at the same tree as the strict case keeps what it was for: a link that
+    resolves NEITHER from the repository root NOR from the document's own directory is a genuinely
+    dead target -- a moved or deleted file -- whichever convention its author had in mind.
     """
-    files = [_ROOT / "CLAUDE.md"]
-    files += sorted((_ROOT / ".ai-memory").glob("*.md"))
-    return [f for f in files if f.exists()]
+    return _docs()
 
 
 @pytest.mark.parametrize("doc", _canon_docs(), ids=lambda f: str(f.relative_to(_ROOT)).replace("\\", "/"))
 def test_canon_source_links_point_at_real_files(doc: Path) -> None:
     """A canon link must resolve -- from the repo root OR the file's own directory.
 
-    The `.ai-memory/*.md` files link into the source with the repo-root convention (`](backend/...)`),
-    which is legitimate: a session reads them from the repo root. So this accepts EITHER resolution and
+    A document may legitimately link with either convention, so this accepts EITHER resolution and
     flags only links that resolve NEITHER way -- i.e. a genuinely dead target (a moved or deleted file),
     which is the rot this guards against, not a convention choice.
     """

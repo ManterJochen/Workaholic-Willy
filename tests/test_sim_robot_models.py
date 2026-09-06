@@ -1,6 +1,6 @@
 """UR model registry + the config validators that gate it (UR3e bring-up).
 
-The registry (``backend/src/robot/drivers/sim/robot_models.py``) de-locks the historically UR5e-hardcoded sim
+The registry (``src/robot/drivers/sim/robot_models.py``) de-locks the historically UR5e-hardcoded sim
 driver: ``robot_model`` selects the Lula solver config, the Isaac USD and the cuRobo ``{key}.yml``. It shipped
 without tests; these cover the contract plus the two config validators that make a typo'd / half-migrated cell
 fail at config-load instead of ~60 s into an Isaac boot (or, worse, silently against the wrong DH chain).
@@ -204,7 +204,7 @@ class RealUrSelfCollisionModelCouplingTests(unittest.TestCase):
         WILLY_PROFILE=sim,web composed vendor='kuka' with kinematics_model='ur5e' and loaded cleanly."""
         with self.assertRaises(ValidationError) as ctx:
             self._ur_config(model="ur5e", kinematics_model="ur3e", vendor="dummy")
-        self.assertIn("UNIVERSAL ROBOTS DH table", str(ctx.exception))
+        self.assertIn("Universal Robots DH table", str(ctx.exception))
 
     def test_an_unknown_ur_model_is_rejected_at_load(self) -> None:
         from src.config.schema.robot.ur_schema import URConfig

@@ -60,9 +60,9 @@ class TheShippedProfileTests(unittest.TestCase):
 
     def test_the_shipped_declaration_now_builds_a_router(self) -> None:
         """⭐ THE REGRESSION THAT WAS LIVE. This is the exact value in
-        `backend/config/data/robot/robot.rl_datagen.yaml:108`, and before the fix it produced None."""
+        `config/robot/robot.rl_datagen.yaml:123`, and before the fix it produced None."""
         declared = "v2_candidate_baseline_v1"
-        yaml = (_REPO / "config" / "data" / "robot" / "robot.rl_datagen.yaml")
+        yaml = (_REPO / "config" / "robot" / "robot.rl_datagen.yaml")
         self.assertIn(f'policy_id: "{declared}"', yaml.read_text(encoding="utf-8"),
                       "the shipped value moved; this test is asserting about the wrong string")
 
@@ -89,7 +89,7 @@ class TheShippedProfileTests(unittest.TestCase):
         from unittest import mock
 
         with mock.patch.dict(os.environ, {"WILLY_PROFILE": "rl_datagen"}):
-            from backend.config.loader import load_config
+            from src.config.loader import load_config
 
             cfg = load_config()
         self.assertEqual(cfg.robot.rl.mode, "rl_shadow")
@@ -136,12 +136,14 @@ class TheLogSaysWhichReadingAppliedTests(unittest.TestCase):
         with self.assertLogs("RLShadowWiring", level="INFO") as loose:
             maybe_build_shadow_router(_rl("v2_candidate_baseline_v1"))
         text = "\n".join(loose.output)
-        self.assertIn("by NAME", text)
+        # shadow.py:234 now logs "matches the artifact %r by name; the version was not
+        # declared"; the migration lower-cased the shout, the fact logged is the same.
+        self.assertIn("by name", text)
         self.assertIn("v2_candidate_baseline_v1@1", text, "it names the value that would pin it")
 
         with self.assertLogs("RLShadowWiring", level="INFO") as exact:
             maybe_build_shadow_router(_rl("v2_candidate_baseline_v1@1"))
-        self.assertNotIn("by NAME", "\n".join(exact.output))
+        self.assertNotIn("by name", "\n".join(exact.output))
 
     def test_a_refusal_says_the_declaration_carried_no_version(self) -> None:
         """Because the most likely reason a name-only declaration fails is that the operator meant a

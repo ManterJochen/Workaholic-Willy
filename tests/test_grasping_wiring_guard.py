@@ -104,11 +104,51 @@ def _prerequisites(flag: str, tmpdir: Path) -> dict[str, Any]:
         # ``fusion.geometry.enabled`` installs; with the parent off there is no carrier to put
         # them on.
         return {"fusion": {"geometry": {"enabled": True}}}
+    if flag == "deep_ranker.enabled":
+        # The ranker's TREES are gitignored (`.gitignore:52`), so no checkout carries them and
+        # `DeepRankerContext.from_config` fail-safes to None on a missing artifact -- the flag is
+        # wired (builders.py:1078) and would still look inert here. Supply a real artifact, the
+        # same way `fusion.enabled` supplies real extrinsics, so the switch has something to load.
+        return {"deep_ranker": {"artifact_dir": _write_ranker_artifact(tmpdir)}}
     if flag == "fusion.enabled":
         # The fusion substrate enforces a strict frame contract, so the overlay refuses
         # to wire without a CAMERA->BASE resolver. Supply a real persisted artifact.
         return {"fusion": {"extrinsics_artifact_path": _write_identity_extrinsics(tmpdir)}}
     return {}
+
+
+def _write_ranker_artifact(directory: Path) -> str:
+    """A real, loadable one-tree ranker under the spec the schema defaults to.
+
+    Fitted on nothing and it does not need to be: this guard asks whether the operator's value
+    reaches a runtime carrier, and the carrier is built only when the artifact loads.
+    """
+    import json
+
+    from src.config.schema.robot.grasping_schema import GraspingDeepRankerConfig
+    from src.robot.grasping.deep.ranker.features import spec_named
+    from src.robot.grasping.deep.ranker.runtime import ARTIFACT_KIND, ARTIFACT_VERSION
+
+    defaults = GraspingDeepRankerConfig()
+    spec = spec_named(str(defaults.spec))
+    artifact = directory / f"{spec.name}.json"
+    if not artifact.exists():
+        artifact.write_text(
+            json.dumps({
+                "kind": ARTIFACT_KIND,
+                "artifact_version": ARTIFACT_VERSION,
+                "spec": spec.name,
+                "features": list(spec.features),
+                "init_score": 0.0,
+                "learning_rate": 0.1,
+                "base_rate": 0.5,
+                # One tree, one node, and that node is a leaf: `feature == -1`.
+                "trees": [{"feature": [-1], "threshold": [0.0],
+                           "left": [-1], "right": [-1], "value": [0.0]}],
+            }),
+            encoding="utf-8",
+        )
+    return str(directory)
 
 
 def _write_identity_extrinsics(directory: Path) -> str:
@@ -353,8 +393,10 @@ class GraspingFlagsReachTheRuntimeTests(unittest.TestCase):
                         # must SAY SO. A silent acceptance here is the failure mode.
                         with self.assertRaises(Exception) as ctx:
                             _build(_merge(prereq, _nest(flag, True)))
+                        # grasping_schema.py:2075 now says "... never reaches the pick path.";
+                        # the migration lower-cased the shout, the refusal is unchanged.
                         self.assertIn(
-                            "NEVER REACHES THE PICK PATH",
+                            "never reaches the pick path",
                             str(ctx.exception),
                             f"`grasping.{flag}` is declared unwired but the refusal does "
                             "not explain itself to the operator who hit it.",

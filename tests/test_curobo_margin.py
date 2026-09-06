@@ -131,9 +131,9 @@ class SidecarImportabilityTests(unittest.TestCase):
         source = Path(
             "src/robot/safety/planning/_curobo_margin.py"
         ).read_text(encoding="utf-8")
-        self.assertNotIn("from backend", source)
+        self.assertNotIn("from src", source)
         self.assertNotIn("from .", source)
-        self.assertNotIn("import backend", source)
+        self.assertNotIn("import src", source)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 """Phase T7 — RED tests for the KPI threshold schema and YAML.
 
 Q8=A locks the canonical threshold artefact at
-``backend/config/data/robot/kpi_thresholds.yaml``, parsed by a typed
-schema under ``backend.config.schema.robot``.
+``config/robot/kpi_thresholds.yaml``, parsed by a typed
+schema under ``src.config.schema.robot``.
 
 Contract:
 
@@ -34,7 +34,6 @@ from src.config.schema.robot.kpi_schema import KpiThresholdsConfig
 _THRESHOLDS_PATH = (
     Path(__file__).resolve().parents[1]
     / "config"
-    / "data"
     / "robot"
     / "kpi_thresholds.yaml"
 )

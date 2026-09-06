@@ -29,7 +29,7 @@ Public surface
 * :func:`is_vendor_registered` and :func:`unregister_arm_driver` inspect and undo a
   registration.
 
-``drivers_README.md`` is the step-by-step guide to completing a new vendor.
+``README.md`` is the step-by-step guide to completing a new vendor.
 """
 
 from __future__ import annotations

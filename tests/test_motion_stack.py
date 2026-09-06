@@ -90,7 +90,7 @@ class ReadingTests(unittest.TestCase):
             text = MotionStack.from_robot_config(_Robot(ur_model="ur3e")).probe().render()
         self.assertFalse(text.endswith("\n"))
         text.encode("ascii")
-        self.assertIn("(model: ur3e -- from robot.ur.model)", text)
+        self.assertIn("(model: ur3e, from robot.ur.model)", text)
         self.assertIn("fully anchored", text)
 
     def test_exit_code_is_on_the_report(self) -> None:
@@ -109,7 +109,10 @@ class ReadingTests(unittest.TestCase):
             payload = MotionStack.from_robot_config(_Robot(ur_model="ur3e")).probe().to_dict()
         self.assertEqual(payload["model"], "ur3e")
         self.assertEqual(payload["model_source"], "robot.ur.model")
-        self.assertIn("NOT verified from here", payload["curobo"]["available_means"])
+        self.assertIn(
+            "the robot descriptor inside it is not verified from here",
+            payload["curobo"]["available_means"],
+        )
         import json
 
         json.dumps(payload)  # no custom encoder, or this raises

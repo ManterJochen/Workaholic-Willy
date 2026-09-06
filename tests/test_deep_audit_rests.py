@@ -114,12 +114,29 @@ class TheInertKeyIsNamedTests(unittest.TestCase):
 
     def test_it_was_NOT_wired_across_and_the_reason_is_a_measurement(self) -> None:
         """⛔ THE TEMPTING REPAIR WOULD HAVE BEEN HARMFUL. `decode_set_prediction` takes a
-        `min_confidence`, so wiring `minimum_score` into it looks obvious. MEASURED on 640 real
-        proposals, the set head's confidences span 0.389 to 0.401, so the key's default of 0.5 would
-        drop 100 % of candidates and the cell would emit nothing while looking like a bad model."""
+        `min_confidence`, so wiring `minimum_score` into it looks obvious. On this repository's own
+        640 proposals the set head's confidences spanned 0.389 to 0.401, so the key's default of 0.5
+        would have dropped every candidate and the cell would emit nothing while looking like a bad
+        model.
+
+        ⚠ THE COMMENT NO LONGER QUOTES THAT RANGE, AND MAY NOT. A confidence range measured on our
+        artifact describes nothing a customer training on their own cell will see
+        (`.commits/robot/08-grasping-deep.md`, and the log line is recorded as a deliberate change
+        in `.migration/allow/robot.txt`). What has to survive is the argument, which holds for any
+        artifact: the negation, the uncalibrated head that makes the threshold inapplicable, the
+        shipped default the threshold actually is, and the consequence of applying it anyway. All
+        four are pinned here, so the reason cannot quietly thin out to the bare assertion.
+        """
         source = _CALCULATOR.read_text(encoding="utf-8")
 
-        self.assertIn("0.389", source, "the measurement that justifies leaving it alone is missing")
+        self.assertIn("It is not wired across, deliberately.", source,
+                      "the negation that justifies leaving it alone is missing")
+        self.assertIn("is not calibrated", source,
+                      "the property that makes the threshold inapplicable is missing")
+        self.assertIn("`minimum_score`'s default of 0.5", source,
+                      "the threshold the argument turns on is missing")
+        self.assertIn("can drop every candidate", source,
+                      "the consequence of wiring it across anyway is missing")
         # ⚠ THE SLICE IS TAKEN BY AST, NOT BY THE NEXT FUNCTION'S NAME. It used to end at
         # `def _decode(`, the binned decoder, which was deleted with its family and took the slice's
         # right-hand edge with it. A boundary named after a neighbour breaks when the neighbour goes.

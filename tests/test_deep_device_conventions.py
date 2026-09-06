@@ -27,7 +27,7 @@ from unittest import mock
 
 from src.robot.grasping.deep.calculator import _resolve_device
 
-_DEVICE = "backend.src.utility.device"
+_DEVICE = "src.utility.device"
 
 
 class ItUsesTheSharedHelperTests(unittest.TestCase):

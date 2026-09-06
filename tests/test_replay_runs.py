@@ -134,7 +134,9 @@ class TestSoakGate(unittest.TestCase):
             text = SoakGate.over_sim_records(log, min_attempts=1).evaluate().render()
         self.assertFalse(text.endswith("\n"))
         text.encode("ascii")
-        self.assertIn("NOT gated", text)
+        # runs.py:310 now says "pick_success_rate is reported, not gated: there is no
+        # comparable sim baseline yet"; the migration lower-cased the shout.
+        self.assertIn("not gated", text)
 
 
 if __name__ == "__main__":  # pragma: no cover

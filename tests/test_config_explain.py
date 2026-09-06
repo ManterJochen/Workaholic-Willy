@@ -19,7 +19,7 @@ from src.config.__main__ import main
 from src.config._schema_index import field_doc, schema_index
 from src.config.explain import explain, explain_key, find_keys
 
-DATA = Path(__file__).resolve().parents[1] / "src" / "config" / "data"
+DATA = Path(__file__).resolve().parents[1] / "config"
 
 
 class SchemaIndexTests(unittest.TestCase):
@@ -49,7 +49,7 @@ class FieldDocTests(unittest.TestCase):
         """Willy documents fields with `#:` comments, which Pydantic does NOT lift into the JSON schema
         — so the explanation existed, was maintained, and was invisible to every tool."""
         doc = field_doc("robot.ur.model")
-        self.assertIn("NOT cosmetic", doc)
+        self.assertIn("Not cosmetic", doc)
 
     def test_an_unknown_path_returns_empty_rather_than_raising(self) -> None:
         self.assertEqual(field_doc("robot.nope.nope"), "")
@@ -80,7 +80,7 @@ class StructuredExplanationTests(unittest.TestCase):
         self.assertEqual(len(detail.layers), 2)
         self.assertTrue(detail.layers[-1].winner)
         self.assertFalse(detail.layers[0].winner)
-        self.assertIn("0/6 at 10 mm", detail.comment)
+        self.assertIn("no plan at all above roughly 6 mm", detail.comment)
 
     def test_a_value_that_is_legitimately_none_can_still_be_shown_as_set(self) -> None:
         """``has_value`` exists because ``None`` is a real value here -- an unconfigured serial IS null.
@@ -112,12 +112,15 @@ class ExplainTests(unittest.TestCase):
             "robot.safety.self_collision.planner_margin_mm", DATA, ("sim", "ur3e"), value=4.0,
         )
         self.assertIn("why (comment above that line)", text)
-        self.assertIn("0/6 at 10 mm", text, "the measured evidence must survive into the answer")
+        self.assertIn(
+            "no plan at all above roughly 6 mm", text,
+            "the measured evidence must survive into the answer",
+        )
 
     def test_a_never_written_field_says_so_instead_of_pretending(self) -> None:
         text = explain_key("robot.ur.model", DATA, (), value="ur5e")
         self.assertIn("no YAML sets this", text)
-        self.assertIn("NOT cosmetic", text)  # ...but its meaning is still explained
+        self.assertIn("Not cosmetic", text)  # ...but its meaning is still explained
 
     def test_an_unknown_key_is_named_as_such_with_a_suggestion(self) -> None:
         text = explain_key("robot.sim.robot_modell", DATA, ("sim",))
@@ -337,7 +340,7 @@ class VendorCouplingTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError) as ctx:
             self._cfg(vendor="kuka", kinematics_model="ur5e")
-        self.assertIn("UNIVERSAL ROBOTS DH table", str(ctx.exception))
+        self.assertIn("Universal Robots DH table", str(ctx.exception))
 
     def test_unset_is_always_fine(self) -> None:
         """The honest configuration for another vendor: leave it unset and let the guard use the capsule
@@ -364,7 +367,7 @@ class AliasedProvenanceTests(unittest.TestCase):
         text = explain_key("camera.stereomatcher.num_disparities", DATA, (), value=320)
         self.assertIn("stereomatcher.yaml:", text)
         self.assertNotIn("no YAML sets this", text)
-        self.assertIn("divisible by 16", text)  # ...and its comment comes with it
+        self.assertIn("multiple of 16", text)  # ...and its comment comes with it
 
 
 class EveryFieldIsExplainedTests(unittest.TestCase):
@@ -413,9 +416,9 @@ class EveryFieldIsExplainedTests(unittest.TestCase):
         from src.config._schema_index import field_doc
 
         # `#:` marker
-        self.assertIn("NOT cosmetic", field_doc("robot.ur.model"))
+        self.assertIn("Not cosmetic", field_doc("robot.ur.model"))
         # plain `#` block
-        self.assertIn("de-locks", field_doc("robot.sim.robot_model"))
+        self.assertIn("Lula config", field_doc("robot.sim.robot_model"))
         # trailing comment on the field's own line, reached THROUGH a list-item segment
         self.assertIn("identity handle", field_doc("robot.sim.scene_setup.objects[].name"))
         # an aliased path resolves back to the attribute that declares it
