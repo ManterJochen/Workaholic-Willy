@@ -26,7 +26,9 @@ select = ["F", "E4", "E7", "E9"]
 # ---------------------------------------------------------------------------
 # Mypy
 #
-# Enforced across src, config, datagen and api with no per-module exemptions.
+# Enforced across src, api and datagen with no per-module exemptions. The loader
+# and the schema live in src/config and are covered by src; the `config` tree at
+# the repository root is YAML and holds no Python.
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
@@ -53,7 +55,7 @@ markers = [
 # Coverage
 # ---------------------------------------------------------------------------
 [tool.coverage.run]
-source = ["src", "config"]
+source = ["src", "api", "datagen"]
 branch = false
 omit = [
   # Only code that CI on CPU cannot execute, so the number stays honest. There
@@ -91,6 +93,18 @@ omit = [
   "*/willy_sim/run_*.py",
   "*/willy_sim/inspect_wrist_cam.py",
   "*/willy_sim/scene.py",
+  # The datagen render and physics engines, for the same reason: each one drives
+  # Isaac, MuJoCo or CoACD, and none of the three is installable on the runner.
+  # Their engine imports are lazy, so these modules import cleanly and would
+  # otherwise count as executable lines no CI run can ever reach. Everything else
+  # in datagen is counted, including the scene authoring, the analytic grasp
+  # labels, the corpus builders and the CLI.
+  "*/datagen/render/isaac.py",
+  "*/datagen/render/mujoco_engine.py",
+  "*/datagen/render/convex_decomposition.py",
+  "*/datagen/grasps/physics_isaac.py",
+  "*/datagen/grasps/physics_mujoco.py",
+  "*/datagen/verify_robot.py",
 ]
 
 [tool.coverage.report]

@@ -15,13 +15,14 @@ permissions:
   contents: read
 
 jobs:
-  # One job, because there is one dependency set. Everything the project needs
-  # is in requirements.txt, so there is no install variant left to test
-  # separately.
+  # One job, because there is one dependency set. The two requirements files
+  # differ only in the index URL and the two torch pins; every other package and
+  # version is the same line for line.
   #
-  # The runner has no GPU and installs the CUDA wheels anyway: they import
-  # without a device, so CI resolves the same set the workstation ships. What is
-  # checked here is that the pin resolves and imports.
+  # The runner installs the CPU file, because it has no GPU and the CUDA wheels
+  # are several gigabytes it would never execute. What could rot is the two
+  # files drifting apart, and test_requirements_parity.py fails on that offline,
+  # so the job runs the smaller install without checking a smaller set.
   #
   # The claim that the library imports no web framework, and that nothing under
   # src/ imports api/, is proven by AST scan in the test suite rather than by
@@ -42,22 +43,32 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-cpu.txt
 
-      - name: Torch pin resolves and imports
+      - name: Torch imports
         run: python -c "import torch, torchvision; print('torch', torch.__version__, '| cuda available:', torch.cuda.is_available())"
 
+      # `config` is in none of the three lists below: it is the YAML tree, and the
+      # Python that reads it lives in src/config, which `src` already covers. mypy
+      # fails outright on a directory that holds no Python, and coverage measures
+      # nothing there.
+      #
+      # `scripts` is linted and typed whole, not just the examples. Neither tool
+      # imports a module, so the workstation tools that need Isaac or a robot are
+      # checked here as readily as the rest, and a script nothing checks is the
+      # thing that rots first.
       - name: Ruff
-        run: ruff check src config api datagen tests scripts/examples
+        run: ruff check src api datagen tests scripts
 
       - name: Mypy
-        run: mypy src config api datagen scripts/examples
+        run: mypy src api datagen scripts
 
       - name: Pytest and coverage
         run: |
           pytest tests \
             --cov=src \
-            --cov=config \
+            --cov=api \
+            --cov=datagen \
             --cov-report=term-missing \
             --cov-report=xml \
             --cov-fail-under=80
