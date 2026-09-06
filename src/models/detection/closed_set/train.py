@@ -19,8 +19,8 @@ CLI (mirrors ``success_model_calibration``)::
 
 A dataset dir is ``<data-dir>/{train,val}/`` each with ``images/`` + ``annotations.json`` (val optional).
 Heavy deps (torch / transformers Trainer / accelerate) are imported inside the train/eval functions so
-this module, its COCO/manifest helpers and the CLI import cleanly without the training stack
-(``requirements/train.txt``). Exit codes: ``0`` ok, ``2`` bad args / missing data, ``3`` train failure.
+this module, its COCO/manifest helpers and the CLI import cleanly on a host that has none of them.
+Exit codes: ``0`` ok, ``2`` bad args / missing data, ``3`` train failure.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from src.utility.log_cfg import create_logger
 #: A training run is long and unattended, so its inputs, its silent downgrades and the checkpoint path
 #: go to a file rather than to the terminal that started it. Module scope (like the EKI client's
 #: logger) because this module is functions + a CLI, not a class; the import is stdlib-only, so the
-#: module still imports without ``requirements/train.txt``.
+#: module still imports where torch, transformers and accelerate are absent.
 _LOG = create_logger("RtDetrTrain", log_file=RTDETR_TRAIN_LOG_FILE, log_dir=MODELS_LOG_DIR)
 
 DEFAULT_BASE_MODEL = "PekingU/rtdetr_r50vd"
@@ -225,8 +225,8 @@ def train_rtdetr(*, data_dir: str, output_dir: str, config: TrainConfig) -> dict
     """Fine-tune RT-DETR on ``<data_dir>/train`` (+ optional ``/val``), export to ``output_dir``.
 
     Returns the written manifest. The heavy imports (torch / transformers Trainer / accelerate) sit
-    inside this function so the module stays importable without ``requirements/train.txt``, and the
-    train split is resolved before them so a missing dataset fails without the training stack.
+    inside this function so the module stays importable without them, and the train split is resolved
+    before them so a missing dataset fails without the training stack.
     """
     started = time.perf_counter()
     # The run header names its fields instead of dumping `config.to_dict()`; the full config is

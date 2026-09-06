@@ -59,7 +59,7 @@ def _dummy_tree(target: Path, *, gripper: str = "none") -> None:
     robot.write_text(text, encoding="utf-8")
 
 
-@unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class CellLifecycleTests(unittest.TestCase):
     GRIPPER = "none"
 
@@ -225,7 +225,7 @@ class CellLifecycleTests(unittest.TestCase):
         self.assertEqual(response.json()["code"], "wrong_state")
 
 
-@unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class SubstitutedGripperTests(CellLifecycleTests):
     """A config asking for a Robotiq on a non-UR arm -- the silent-success trap, refused."""
 
@@ -256,7 +256,7 @@ class SubstitutedGripperTests(CellLifecycleTests):
     test_a_preview_names_the_arm_and_gripper_it_was_issued_for = None  # type: ignore[assignment]
 
 
-@unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class MotionWarningTests(unittest.TestCase):
     """What the preview warns about, derived from the BUILT gripper rather than from config text."""
 
@@ -338,7 +338,7 @@ if __name__ == "__main__":  # pragma: no cover
     unittest.main()
 
 
-@unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class StatusPanelTests(CellLifecycleTests):
     """What the panel reads, and -- more importantly -- what it refuses to read."""
 
@@ -382,7 +382,7 @@ class StatusPanelTests(CellLifecycleTests):
         self.assertIsNotNone(body["joint_positions"])
 
 
-@unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class DiagnosticsTests(CellLifecycleTests):
     """The buttons that move nothing."""
 

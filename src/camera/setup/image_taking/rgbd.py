@@ -212,9 +212,8 @@ class RealSenseRGBDStreamer:
             import pyrealsense2 as rs  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover (exercised only on bare envs)
             raise ImportError(
-                "pyrealsense2 is not installed. Install it with "
-                "`pip install -r requirements/camera-realsense.txt`, or pass a "
-                "custom rs_module."
+                "pyrealsense2 is not installed. It is pinned in requirements.txt, so "
+                "`pip install -r requirements.txt` supplies it, or pass a custom rs_module."
             ) from exc
         self._rs = rs
         return rs

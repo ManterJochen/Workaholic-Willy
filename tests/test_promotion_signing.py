@@ -29,7 +29,7 @@ try:
 except ImportError:  # pragma: no cover - environment-dependent
     _HAS_CRYPTO = False
 
-_SKIP_REASON = "requires the optional 'cryptography' dependency (requirements/signing.txt)"
+_SKIP_REASON = "requires the 'cryptography' dependency, which requirements.txt pins"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMITTED_ARTIFACT = REPO_ROOT / "assets" / "models" / "success_probability" / "v1"

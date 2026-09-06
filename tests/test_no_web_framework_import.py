@@ -1,6 +1,6 @@
 """L7 D8 — the library never imports a web framework, and the console never leaks into it.
 
-Workaholic-Willy is a library + CLI stack. R10 removed the dead optional `requirements/web.txt` and this
+Workaholic-Willy is a library + CLI stack. R10 removed the dead optional web dependencies and this
 test made "no web framework in the library" a contract: an AST scan of `backend/**/*.py` asserts no
 module actually `import`s `fastapi`/`uvicorn`/`starlette`. (AST, not a string scan, so the many honest
 docstring MENTIONS don't false-positive.)

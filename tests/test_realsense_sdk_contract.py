@@ -5,8 +5,8 @@ an **injected fake ``rs`` module**. That proves our logic calls what we think it
 nothing about whether librealsense HAS those names, or what its functions do to a frame. It is the
 same position the UR driver was in before URSim, and the same fix applies: drive the real SDK.
 
-librealsense installs and loads with **no device attached** (``requirements/camera-realsense.txt``,
-already a declared optional dependency), and ``rs.software_device`` lets synthetic frames be pushed
+librealsense installs and loads with **no device attached** (``pyrealsense2`` is pinned in
+``requirements.txt``), and ``rs.software_device`` lets synthetic frames be pushed
 through the real processing blocks. So the half of the driver that TRANSFORMS DATA can be validated
 now, months before a D435 exists.
 
@@ -49,7 +49,7 @@ from pathlib import Path
 
 import numpy as np
 
-try:  # optional dependency: declared in requirements/camera-realsense.txt, absent on CI
+try:  # pyrealsense2 is pinned in requirements.txt, and the wheel is absent on some hosts
     import pyrealsense2 as rs
 
     _HAS_RS = True

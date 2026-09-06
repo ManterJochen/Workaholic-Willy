@@ -27,7 +27,7 @@ from src.config.loader import active_profile, reload_config, set_active_profile
 _SHIPPED = Path(__file__).resolve().parents[1] / "config"
 
 
-@unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class ConsoleApiTests(unittest.TestCase):
     """A fresh app and a scratch config tree per test."""
 

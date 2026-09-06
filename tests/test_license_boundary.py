@@ -10,8 +10,8 @@ most expensive to discover.
 
 * **Installed distributions** — the obvious one: ``pip install graspnetAPI``.
 * **Imports** — the sneaky one: a vendored copy in the source tree imports fine with nothing in
-  ``requirements/``. This is what the removed adapter did (``import DeepLabV3Plus.network``), bridged by
-  an env var so no dependency file ever mentioned it.
+  ``requirements.txt``. This is what the removed adapter did (``import DeepLabV3Plus.network``),
+  bridged by an env var so no dependency file ever mentioned it.
 * **Prose** — deliberately included (owner decision, 2026-08-11). A doc saying "set
   ``WILLY_<X>_WEIGHTS`` to the checkpoint" is a working install guide for a licence we cannot use, and it
   reads as endorsement. Catching the name in prose catches the intent before the code exists.

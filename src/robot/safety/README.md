@@ -64,8 +64,9 @@ reclassifying anything.
 
 ## The collision-mesh bundles ship
 
-`data/` holds three committed bundles: `ur5e_collision_meshes.npz`, `ur3e_collision_meshes.npz` and
-`schunk_egu50_collision_meshes.npz`, the last being the ur5e arm with a different gripper. They are
+`data/` holds four committed bundles: `ur5e_collision_meshes.npz`, `ur3e_collision_meshes.npz`,
+`ur10e_collision_meshes.npz` and `schunk_egu50_collision_meshes.npz`, the last being the ur5e arm
+with a different gripper. They are
 per-DH-frame vertex and face arrays, so no config is needed to find them: with
 `self_collision.mesh_dir` left at `null` the guard loads the bundle for its own model out of this
 directory. `mesh_dir` names an alternate directory for a bundle you baked yourself.

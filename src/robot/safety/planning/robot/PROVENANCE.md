@@ -58,6 +58,34 @@ Three things about that generator are load-bearing:
   URDF joints from `wrist_3` through `flange` to `tool0` are identical across the UR e-series, so the
   transform from DH frame 6 to `tool0` is identity for every model here.
 
+## Robot: Universal Robots UR10e
+
+Same standard UR DH family, and the longest arm with committed geometry here. The row lives in
+[`../../_ur_kinematics.py`](../../_ur_kinematics.py):
+
+```
+a = [0, -0.6127, -0.57155, 0, 0, 0]                  m
+d = [0.1807, 0, 0, 0.17415, 0.11985, 0.11655]        m
+```
+
+Its collision geometry is
+[`../../data/ur10e_collision_meshes.npz`](../../data/ur10e_collision_meshes.npz), baked by the same
+generator under the same DH-frame recipe, so it carries the same 27 keys as the ur5e bundle: six arm
+links and the three Robotiq bodies, each as vertices, faces and a frame index.
+
+Two properties of that bundle are worth checking before trusting it, and both hold. The nine Robotiq
+arrays are byte-identical to the ur5e bundle's, which is what the generator's `tool0` rule requires:
+the transform from DH frame 6 to `tool0` is identity across the e-series, so the tool geometry is
+copied rather than recomputed. The arm links are not identical and carry this model's own lengths:
+`upper_arm__v` spans 749.1 mm against 545.2 mm on the ur5e, each about 136 mm and 120 mm longer than
+its own DH link (612.7 mm and 425.0 mm), which is the joint housing at either end.
+
+With this bundle committed, `self_collision.backend: fcl` and `mesh_dir` at `null` resolve to exact
+meshes for a ur10e cell: `mesh_backend_status("ur10e")` no longer answers `no_bundle`, and answers
+`ok` wherever an engine is installed.
+There is no committed planner descriptor for this model: the arm-link sphere fit is produced on the
+target box, as described below, and the arm-link surface augmentation stays ur5e only.
+
 ## Gripper: Robotiq 2F-85
 
 Collision geometry is committed and vertex-exact in

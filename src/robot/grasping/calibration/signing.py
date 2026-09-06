@@ -6,12 +6,12 @@ with a real key-management story, a cloud KMS, an HSM or a CI signing identity, 
 :class:`Signer` to sign the promotion chain SHA when building a report, and a :class:`Verifier` to
 check it when verifying one.
 
-This repository ships no committed key and installs no crypto by default, so the signature stays
-``"none"`` and no trust root is implied that does not exist. Faking PKI in a repository with no
-key-management story would be theatre: the SHA chain is the trust here, and the signature is a seam
-to plug into. The reference Ed25519 implementation lazily imports the optional ``cryptography``
-dependency from ``requirements/signing.txt``, while the :class:`Signer` and :class:`Verifier`
-Protocols carry no crypto dependency at all. The reference cloud-KMS implementation,
+This repository ships no committed key, so the signature stays ``"none"`` and no trust root is
+implied that does not exist. Faking PKI in a repository with no key-management story would be
+theatre: the SHA chain is the trust here, and the signature is a seam to plug into. The reference
+Ed25519 implementation imports ``cryptography`` lazily, and the :class:`Signer` and
+:class:`Verifier` Protocols carry no crypto dependency at all, so a caller who plugs in their own
+signer pulls in nothing. The reference cloud-KMS implementation,
 :class:`AwsKmsSigner` with :class:`AwsKmsVerifier`, signs and verifies through the asymmetric AWS KMS
 operations behind a lazy ``boto3``; another provider, GCP KMS or Azure Key Vault, is the same
 Protocol with that SDK.
@@ -139,8 +139,8 @@ def _boto3_kms_client(region_name: str | None) -> Any:
         import boto3  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover (exercised only on bare envs)
         raise ImportError(
-            "AwsKmsSigner/AwsKmsVerifier require boto3 "
-            "(pip install -r requirements/signing.txt), or inject a client=."
+            "AwsKmsSigner/AwsKmsVerifier require boto3, which requirements.txt pins, "
+            "or inject a client=."
         ) from exc
     return boto3.client("kms", region_name=region_name)
 

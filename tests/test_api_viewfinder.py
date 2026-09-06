@@ -285,7 +285,7 @@ class TheTwoPicturesAreNeverBlurredTests(unittest.TestCase):
         self.assertLess(len(low.image), len(high.image))
 
 
-@unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class TheEndpointTests(unittest.TestCase):
     """Over real HTTP, against a real rehearsal cell built through the real build path."""
 

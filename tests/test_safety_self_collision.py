@@ -418,31 +418,48 @@ class MeshBackendModelGateTests(unittest.TestCase):
     "this cell has no exact-mesh self-collision authority".
     """
 
+    @staticmethod
+    def _known_model_without_geometry() -> str:
+        """A model whose DH chain is bundled and whose mesh bundle is not.
+
+        Read off the tree rather than written down, because baking a bundle for one of these
+        is a normal thing to do and must move this example rather than break the test.
+        """
+        from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
+        from src.robot.safety.planning.environment import collision_mesh_bundle
+
+        for model in sorted(UR_DH_TABLES_M):
+            if not collision_mesh_bundle(model, None).exists():
+                return model
+        raise AssertionError("every model with a DH chain now ships geometry; this test needs "
+                             "a different example of the no_bundle branch")
+
     def test_status_distinguishes_unknown_model_from_missing_geometry(self) -> None:
         from src.robot.safety._fcl_self_collision import mesh_backend_status
 
         # a model with no bundled DH chain cannot place link meshes at all
         self.assertEqual(mesh_backend_status("definitely-not-a-robot"), "unknown_model")
-        # ur10e IS a known model (DH bundled) but has no committed mesh bundle. Proving this token is
-        # "no_bundle" and not "unknown_model" is what proves the ur5e hardcode is gone.
-        self.assertEqual(mesh_backend_status("ur10e"), "no_bundle")
+        # this one IS a known model (DH bundled) and has no committed mesh bundle. Proving the
+        # token is "no_bundle" and not "unknown_model" is what proves the ur5e hardcode is gone.
+        self.assertEqual(mesh_backend_status(self._known_model_without_geometry()), "no_bundle")
 
     def test_bundled_models_are_known_and_have_geometry(self) -> None:
-        """ur5e AND ur3e must never report unknown_model/no_bundle: both bundles are committed in-repo.
+        """A model with a committed bundle must never report unknown_model or no_bundle.
         (Whether the engine imports is host-dependent, so "ok" and "no_engine" are both acceptable.)"""
         from src.robot.safety._fcl_self_collision import mesh_backend_status
 
-        for model in ("ur5e", "ur3e"):
+        for model in ("ur5e", "ur3e", "ur10e"):
             self.assertIn(mesh_backend_status(model), {"ok", "no_engine"}, model)
 
     def test_make_backend_logs_and_degrades_for_a_model_without_geometry(self) -> None:
         from src.robot.safety import _fcl_self_collision as fcl
 
+        model = self._known_model_without_geometry()
         with self.assertLogs(fcl.__name__, level="WARNING") as caught:
-            backend = fcl.make_backend("ur10e")
-        self.assertIsNone(backend, "no ur10e mesh bundle -> must fall back, not fabricate a backend")
+            backend = fcl.make_backend(model)
+        self.assertIsNone(backend, f"no {model} mesh bundle -> must fall back, not fabricate one")
         joined = "\n".join(caught.output)
-        self.assertIn("ur10e", joined)
+        self.assertIn(model, joined)
         self.assertIn("no_bundle", joined)
         self.assertIn("capsule guard", joined)  # the operator is told WHAT it degraded to
 

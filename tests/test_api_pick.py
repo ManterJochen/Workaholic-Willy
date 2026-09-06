@@ -47,7 +47,7 @@ def _dummy_tree(target: Path) -> None:
     robot.write_text(text, encoding="utf-8")
 
 
-@unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class PickRunTests(unittest.TestCase):
     def setUp(self) -> None:
         from api.app import create_app
@@ -224,7 +224,7 @@ class PickRunTests(unittest.TestCase):
         self.assertEqual([e.seq for e in events], [7, 8, 9, 10])
 
 
-@unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class EventHubTests(unittest.TestCase):
     """The sequencing guarantees, without a robot in the way."""
 
@@ -271,7 +271,7 @@ if __name__ == "__main__":  # pragma: no cover
     unittest.main()
 
 
-@unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class MediaTests(unittest.TestCase):
     """The overlay stream and speech-to-text: optional, and neither one moves anything."""
 
@@ -396,7 +396,7 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(len(samples), 1600, "one sample per FRAME, not per channel")
 
 
-@unittest.skipIf(TestClient is None, "requirements/api.txt is not installed (optional extra)")
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class HistoryTests(unittest.TestCase):
     """What survives the process, what does not, and the one KPI that cannot be measured."""
 
