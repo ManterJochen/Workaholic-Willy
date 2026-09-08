@@ -41,6 +41,7 @@ from .pose import URPose
 from .pose_adapter import pose_to_urpose, urpose_to_pose
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.robot.safety.planning.live_world import LivePlannerWorld
     from collections.abc import Callable
 
     from .curobo_motion import CuroboUrPlanner
@@ -141,6 +142,11 @@ class URRobotArm(RobotArm):
         self._motion_planner = config.ur.motion_planner
         self._curobo_client_factory = curobo_client_factory
         self._curobo_ur: CuroboUrPlanner | None = None
+        #: The cell as the cameras see it, asked immediately before every plan. Handed in by
+        #: whatever composes the cell rather than built here: a driver may not reach up into
+        #: perception, and this one only ever asks. `None` is the unchanged path, where the
+        #: declared world is registered once and the planner keeps it for the life of the cell.
+        self._live_world: "LivePlannerWorld | None" = None
 
     # ------------------------------------------------------------------
     # Tool frame (flange <-> TCP)
@@ -939,11 +945,55 @@ class URRobotArm(RobotArm):
                 require_registration=bool(
                     getattr(world_cfg, "require_registration", True)
                 ),
+                live_world=self._live_world,
+                link_origins=self._self_link_origins_mm,
+                # The path guard lives on this arm rather than on the planner, and the two
+                # have to be looking at the same cell: a planner routing around a tote the
+                # guard cannot see gives a path that avoids it and a gate that would have
+                # passed one straight through.
+                on_perceived_obstacles=self._preflight.set_perceived_obstacles,
             )
             payload_cfg = getattr(world_cfg, "payload", None)
             if payload_cfg is not None and bool(getattr(payload_cfg, "enabled", False)):
                 self._curobo_ur.enable_payload(int(payload_cfg.sphere_slots))
         return self._curobo_ur
+
+    @property
+    def live_planner_world(self) -> "LivePlannerWorld | None":
+        """What this arm asks before it plans, or `None` where nothing was handed in.
+
+        Read by whatever holds the scene, which is the pick loop: it is the only thing that
+        knows which object an attempt is reaching for, and that object has to be left out of
+        the world or the planner refuses to approach it.
+        """
+        return self._live_world
+
+    def set_live_planner_world(self, world: "LivePlannerWorld | None") -> None:
+        """Hand this arm the thing that answers what the cell looks like right now.
+
+        Set before the first planned move. An arm that already built its planner passes it
+        on, so a cell that wires this after connecting still gets it.
+        """
+        self._live_world = world
+        if self._curobo_ur is not None:
+            self._curobo_ur.set_live_world(world)
+
+    def _self_link_origins_mm(self) -> "list[list[float]] | None":
+        """Where this arm's own links are, in BASE millimetres, for taking the robot out of the view.
+
+        A fixed camera watching a cell sees the robot, and a robot registered as an obstacle
+        cannot move at all. `None` where the model has no bundled kinematic chain or the
+        connection cannot answer, and the world source then refuses to build a perceived
+        world rather than registering the arm as geometry.
+        """
+        from src.robot.safety._ur_kinematics import ur_link_origins_mm
+
+        try:
+            joints = np.asarray(self._conn.get_joint_positions(), dtype=np.float64)
+        except Exception:  # noqa: BLE001 - a cell that cannot say where it is has no self to filter
+            return None
+        origins = ur_link_origins_mm(str(self.config.ur.model), joints)
+        return None if origins is None else [[float(v) for v in point] for point in origins]
 
     def _default_curobo_client_factory(self) -> Callable[[], CuroboPlanClient]:
         """A cuRobo client bound to this cell robot model and to its guard planner margin.

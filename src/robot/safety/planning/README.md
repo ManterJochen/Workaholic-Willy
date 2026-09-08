@@ -29,10 +29,12 @@ pick paths, the simulator driver and the real UR execution path alike.
 | `doctor.py` | The deep check. Where `--check` reads paths, this loads every engine: it imports the collision engine and runs a real distance query, spawns the sidecar's own interpreter, verifies the robot descriptor inside it, and reports how many kernel backends resolve. An operating-system application-control refusal is classified as its own outcome. |
 | `curobo_client.py` | `CuroboPlanClient`, in-process and standard-library only. It spawns and drives the sidecar and imports no planner code, so it type-checks in the main environment. |
 | `curobo_planner_server.py` | The sidecar itself, run by the planner's own interpreter and never imported here. |
-| `world.py` | Converts the cell's static geometry into the shape the planner accepts. Pure: config in, wire dictionaries out. |
+| `world.py` | Converts the cell's declared geometry into the shape the planner accepts: boxes and meshes, metres and WXYZ, plus the merge rule that stops a caller deleting the bench. Pure: config in, wire dictionaries out. |
+| `perceived.py` | What the cameras see, as geometry: several camera views fused into one cloud, the robot filtered out of it, and out of that either turned boxes or a distance field over a grid. Pure, so an adversarial frame is a unit test. |
+| `live_world.py` | What an arm asks before every plan: it holds the cameras, the transforms and the declared world, answers with the cell as it is, and refuses when nobody can vouch for it. |
 | `_curobo_attach.py` | Tells the planner the gripper is carrying something, by deriving the attachment link the shipped UR configs do not declare. |
 | `_curobo_margin.py` | Tells the planner the clearance the self-collision guard will demand, by deriving it into a temporary config. |
-| [`robot/`](robot/) | The committed reference geometry and its label: [`PROVENANCE.md`](robot/PROVENANCE.md), the sphere-map generator `build_gripper_spheres.py`, and `ur5e_gripper_spheres.yml`. |
+| [`robot/`](robot/) | The committed reference geometry and its label: [`PROVENANCE.md`](robot/PROVENANCE.md), the one sphere fit in `gripper_spheres.py`, its command line `build_gripper_spheres.py`, and the committed maps `ur5e_gripper_spheres.yml` and `schunk_egu50_gripper_spheres.yml`. |
 
 ## Why the planner runs in another process
 
@@ -44,9 +46,42 @@ The units and conventions flip at that boundary. This stack is millimetres and X
 planner is metres and WXYZ. Goal poses cross as `tool0` in the base frame, in metres, with a WXYZ
 quaternion, and the trajectory comes back as joint waypoints in the planner's own joint order.
 
-The planner's collision world is axis-aligned boxes and nothing else. It has no mesh, point-cloud or
-voxel channel, so perceived geometry cannot reach it and anything that is not box-shaped has to be
-enclosed in one.
+## What the planner is told about the cell
+
+Three kinds of geometry reach it, and the difference between them is not academic.
+
+| Channel | What it is for | Cost, measured on this box |
+| --- | --- | --- |
+| Boxes | What an operator writes down, and the only kind a refusal can name. Bounded by the planner's collision slots, so something always has to be left out and the report has to say what. | 21.6 ms to register 41 |
+| Meshes | How a container keeps its hollow. As a box a tote is solid and a cell can never reach into it. Declared under `planning_world.meshes`; the sidecar reads the file itself, because a tote is tens of thousands of triangles and this is a line-based protocol. | 6.4 ms to register one |
+| A distance field | The whole scene at once, at the resolution it is cut to, with nothing dropped for want of a slot. Built from the same cloud as the boxes. | 13.7 ms to build 179,560 cells, 1.9 ms to register |
+
+⛔ **The field is positive INSIDE an obstacle and negative in free space.** That is the opposite of
+the distance-to-obstacle a person would write, and the wrong sign fails silently: measured here
+against the same wall, written the intuitive way it registered without an error, reported success,
+and the planner drove straight through it.
+
+⛔ **The guards cannot read a mesh or a field.** They work on boxes, so geometry declared as a mesh is
+known to the planner and to nothing else, and the perceived boxes are what the path guard is given.
+That asymmetry is deliberate and it points the safe way: the box that encloses a turned box is
+bigger, so a guard is never more permissive than the planner.
+
+### The world is rebuilt before every plan
+
+A world registered once is a photograph. Everything that arrived afterwards is invisible to the
+planner, and a plan through an obstacle it never received looks exactly like a plan through empty
+space at every layer above. So `planning_world.enabled` also turns on a refresh that runs immediately
+before every plan, for any motion rather than only for a pick, and a world nobody can vouch for
+refuses the motion instead of being planned against.
+
+Measured end to end through the real sidecar, with a wall that exists in no config file:
+
+```bash
+python scripts/curobo/probe_live_world.py
+```
+
+An empty cell plans, the wall stops the plan, taking the wall away lets it plan again. The middle one
+alone would prove nothing: a planner that refuses everything looks identical.
 
 ## Usage
 

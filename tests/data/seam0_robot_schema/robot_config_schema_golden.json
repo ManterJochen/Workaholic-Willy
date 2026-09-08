@@ -2117,9 +2117,162 @@
       "title": "PayloadSafetyConfig",
       "type": "object"
     },
+    "PerceivedWorldConfig": {
+      "additionalProperties": false,
+      "description": "Turning what the cameras see into obstacles the planner routes around.\n\nThis has no opt-in of its own. A cell that declares ``planning_world`` has said the planner\nshould know its surroundings, and a photograph taken once at startup is not that: everything that\narrived afterwards is invisible to it while looking exactly like empty space in every log there\nis. So it follows ``planning_world.enabled``, and ``enabled`` here is the way out rather than the\nway in, for a cell that wants its bench declared and nothing camera driven.\n\nWhat it costs, stated before the knobs. Every plan waits for a depth frame, converts it and\nregisters a world, and a frame older than ``max_age_ms`` refuses the motion rather than planning\nagainst a cell that had time to change. That refusal is the point of the feature and it is also\nthe way it will first annoy somebody: a camera that stalls stops the arm.",
+      "properties": {
+        "cluster_voxel_mm": {
+          "default": 25.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 500.0,
+          "title": "Cluster Voxel Mm",
+          "type": "number"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "floor_to_plane": {
+          "default": true,
+          "title": "Floor To Plane",
+          "type": "boolean"
+        },
+        "margin_mm": {
+          "default": 15.0,
+          "maximum": 500.0,
+          "minimum": 0.0,
+          "title": "Margin Mm",
+          "type": "number"
+        },
+        "max_age_ms": {
+          "default": 500.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 60000.0,
+          "title": "Max Age Ms",
+          "type": "number"
+        },
+        "max_boxes": {
+          "default": 8,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Max Boxes",
+          "type": "integer"
+        },
+        "min_points": {
+          "default": 12,
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Min Points",
+          "type": "integer"
+        },
+        "pixel_stride": {
+          "default": 2,
+          "maximum": 16,
+          "minimum": 1,
+          "title": "Pixel Stride",
+          "type": "integer"
+        },
+        "plane_clearance_mm": {
+          "default": 5.0,
+          "maximum": 200.0,
+          "minimum": 0.0,
+          "title": "Plane Clearance Mm",
+          "type": "number"
+        },
+        "self_radius_mm": {
+          "default": 90.0,
+          "maximum": 1000.0,
+          "minimum": 0.0,
+          "title": "Self Radius Mm",
+          "type": "number"
+        },
+        "tool_radius_mm": {
+          "default": 150.0,
+          "maximum": 1000.0,
+          "minimum": 0.0,
+          "title": "Tool Radius Mm",
+          "type": "number"
+        },
+        "voxel_field_mm": {
+          "default": 0.0,
+          "maximum": 200.0,
+          "minimum": 0.0,
+          "title": "Voxel Field Mm",
+          "type": "number"
+        },
+        "voxel_size_mm": {
+          "default": 10.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 200.0,
+          "title": "Voxel Size Mm",
+          "type": "number"
+        }
+      },
+      "title": "PerceivedWorldConfig",
+      "type": "object"
+    },
+    "PlannerMeshConfig": {
+      "additionalProperties": false,
+      "description": "A piece of the cell the planner routes around as the shape it is, rather than as a box.\n\nThe one case that pays for itself is a container. As a box a tote is solid, so a cell that\ndeclares one can never reach into it; as a mesh it keeps its hollow and the planner takes the arm\ndown between the walls. The same goes for a machine with an opening, a fixture with a slot, or\nanything else whose useful part is the space inside it.\n\n\u26d4 THE GUARD CANNOT READ A MESH. The path guard and the one-shot guards work on boxes, so\ngeometry declared here is known to the planner and to nothing else. That is not a gap to paper\nover silently: if this shape must also be enforced, declare the parts of it that matter as\n``self_collision.fixtures`` boxes as well, and accept that a box around a hollow is solid.\n\n``path`` is read by the planning sidecar, in its own process, so it has to be a path that process\ncan open. Anything trimesh loads works: STL, OBJ, PLY, GLB.",
+      "properties": {
+        "center_mm": {
+          "default": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Center Mm",
+          "type": "array"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "scale": {
+          "default": 1.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 1000.0,
+          "title": "Scale",
+          "type": "number"
+        },
+        "yaw_deg": {
+          "default": 0.0,
+          "maximum": 360.0,
+          "minimum": -360.0,
+          "title": "Yaw Deg",
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "title": "PlannerMeshConfig",
+      "type": "object"
+    },
     "PlanningWorldConfig": {
       "additionalProperties": false,
-      "description": "What the trajectory planner is told about the cell, as axis-aligned boxes in the base frame.\n\nSeparate from the guard's own fixture list only in what consumes it: the guard checks a single\ncommanded configuration, the planner shapes the whole path. ``include_fixtures`` keeps the two one\ndeclaration, so a bin wall added for the guard is a bin wall the planner routes around.\n\nThe planner's world model is boxes and nothing else. It has no mesh, point-cloud or voxel channel,\nso perceived geometry cannot reach it, and anything that is not box-shaped has to be enclosed in\none.",
+      "description": "What the trajectory planner is told about the cell, as axis-aligned boxes in the base frame.\n\nSeparate from the guard's own fixture list only in what consumes it: the guard checks a single\ncommanded configuration, the planner shapes the whole path. ``include_fixtures`` keeps the two one\ndeclaration, so a bin wall added for the guard is a bin wall the planner routes around.\n\nThe planner takes three kinds of geometry and the choice between them is a real one. Boxes are\nwhat an operator writes down and what a refusal can name. A mesh is how a container keeps its\nhollow, so a cell can reach into a tote instead of treating it as a solid block. A distance field\nover a grid is how the whole scene arrives at once, with nothing left out for want of a collision\nslot: see :class:`PerceivedWorldConfig`, which turns what the cameras see into boxes, a field, or\nboth, and is on whenever this block is.",
       "properties": {
         "enabled": {
           "default": false,
@@ -2131,8 +2284,18 @@
           "title": "Include Fixtures",
           "type": "boolean"
         },
+        "meshes": {
+          "items": {
+            "$ref": "#/$defs/PlannerMeshConfig"
+          },
+          "title": "Meshes",
+          "type": "array"
+        },
         "payload": {
           "$ref": "#/$defs/AttachedPayloadConfig"
+        },
+        "perceived": {
+          "$ref": "#/$defs/PerceivedWorldConfig"
         },
         "require_registration": {
           "default": true,
@@ -3652,8 +3815,26 @@
     },
     "SupportPlaneConfig": {
       "additionalProperties": false,
-      "description": "The bench, table or floor the cell stands on, as one axis-aligned slab in the base frame.\n\n``height_mm`` is the top surface, the number an operator can measure: put a rule on the bench and\nread the height above the robot's base plate. The slab is built downwards from there by\n``thickness_mm``, so raising the thickness never moves the surface the arm must stay above.\n\nSizing it is a real decision: a slab at the bench surface makes the planner refuse low top-down\nreaches, which is why the sim runners closest to a production pick sink their floor to a top of\n``-50 mm`` and carry no walls at all.",
+      "description": "The bench, table or floor the cell stands on, as one axis-aligned slab in the base frame.\n\n``height_mm`` is the top surface, the number an operator can measure: put a rule on the bench and\nread the height above the robot's base plate. The slab is built downwards from there by\n``thickness_mm``, so raising the thickness never moves the surface the arm must stay above.\n\nSizing it is a real decision: a slab at the bench surface makes the planner refuse low top-down\nreaches, which is why the sim runners closest to a production pick sink their floor to a top of\n``-50 mm`` and carry no walls at all.\n\n``center_mm`` is where the slab sits in the base plane, and it exists because a robot is not\nalways bolted to the middle of its table. A cell with its base at the head of a 550 mm bench that\nruns from x=250 to x=800 has no bench at all under the half it works over, unless the slab is\neither moved there or made wide enough to reach it from the centre. Both work; only one of them\nstops short of covering ground the arm never visits. Oversizing remains the answer for a cell\nthat will not touch its config, and it is harmless where the workspace limits already forbid the\nspace behind the robot.",
       "properties": {
+        "center_mm": {
+          "default": [
+            0.0,
+            0.0
+          ],
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Center Mm",
+          "type": "array"
+        },
         "extent_mm": {
           "default": [
             2000.0,

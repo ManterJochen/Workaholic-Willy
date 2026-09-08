@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from src.robot.safety.planning.world import planner_cuboid
+
 if TYPE_CHECKING:
     from src.willy_sim.harness.depth_noise import DepthNoiseConfig
     from src.robot.grasping.geometry.filters import CloudOutlierConfig
@@ -774,17 +776,12 @@ def build_service(
     # together, and without it the planner stays blind to the walls. Cuboids are BASE frame, metres, WXYZ.
     if curobo_bin_world and _effective_planner == "curobo" and _bin_fixtures:
         _cub = [
-            {
-                "name": _fx.name,
-                "dims_m": [2.0 * float(_fx.half_extents_mm[0]) / 1000.0,
-                           2.0 * float(_fx.half_extents_mm[1]) / 1000.0,
-                           2.0 * float(_fx.half_extents_mm[2]) / 1000.0],
-                "pose": [float(_fx.center_mm[0]) / 1000.0, float(_fx.center_mm[1]) / 1000.0,
-                         float(_fx.center_mm[2]) / 1000.0, 1.0, 0.0, 0.0, 0.0],
-            }
+            planner_cuboid(
+                _fx.name, _fx.center_mm, [2.0 * float(h) for h in _fx.half_extents_mm]
+            )
             for _fx in _bin_fixtures
         ]
-        _cub.append({"name": "floor", "dims_m": [2.0, 2.0, 0.05], "pose": [0.0, 0.0, -0.026, 1.0, 0.0, 0.0, 0.0]})
+        _cub.append(planner_cuboid("floor", (0.0, 0.0, -26.0), (2000.0, 2000.0, 50.0)))
         _n_world = arm.set_curobo_world(_cub)
         print(f"[curobo-world] registered {_n_world}/{len(_cub)} obstacles (bin walls + floor) -> cuRobo plans "
               f"AROUND the walls (bin 'really real' for the planner)", flush=True)

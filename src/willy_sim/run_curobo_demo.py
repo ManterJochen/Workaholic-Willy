@@ -26,6 +26,8 @@ from pathlib import Path
 
 import numpy as np
 
+from src.robot.safety.planning.world import planner_cuboid
+
 from src.willy_sim.run_dense_demo_endgame import CINE_POS_M, CINE_RES, _banner
 from src.willy_sim.run_dense_pick import _blocking_specs, build_service
 
@@ -128,10 +130,14 @@ def record(planner: str, *, out_path: str | None = None, headless: bool = True, 
                 continue
             pm, qw = objs[i].get_world_pose()
             d = specs[i].size_mm if i < len(specs) else (40.0, 40.0, 40.0)
+            # Written out rather than through `planner_cuboid`, and this is the one place
+            # where that is right: these poses come from the simulator with a full
+            # orientation, and the helper writes a yaw about base Z because that is what a
+            # fitted box has. The pose here is already metres and WXYZ, straight off the prim.
             cub.append({"name": lbl.replace(" ", "_"), "dims_m": [float(x) / 1000.0 for x in d],
                         "pose": [float(pm[0]), float(pm[1]), float(pm[2]),
                                  float(qw[0]), float(qw[1]), float(qw[2]), float(qw[3])]})
-        cub.append({"name": "floor", "dims_m": [2.0, 2.0, 0.05], "pose": [0.0, 0.0, -0.026, 1, 0, 0, 0]})
+        cub.append(planner_cuboid("floor", (0.0, 0.0, -26.0), (2000.0, 2000.0, 50.0)))
         arm.set_curobo_world(cub)
 
     home_z = float(np.asarray(homes[target_idx][0])[2])

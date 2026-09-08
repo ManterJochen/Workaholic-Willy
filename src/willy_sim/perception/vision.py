@@ -266,8 +266,12 @@ class MultiObjectVisionPerceptionSource:
                 len(segmentations), self._detect_prompt(),
                 (time.perf_counter() - started) * 1000.0, empty_masks, depth_mm.shape,
             )
+        # `rendered_depth_mm` is what the camera rendered, before the grasp-referenced
+        # overwrite above. A consumer building obstacle geometry needs the body of an
+        # object, and `depth_map` holds a sheet at its top face.
         return PerceptionFrame(
-            depth_map=depth_mm, intrinsics=intrinsics, segmentations=tuple(segmentations), rgb=rgb
+            depth_map=depth_mm, intrinsics=intrinsics, segmentations=tuple(segmentations), rgb=rgb,
+            timestamp=time.time(), surface_depth_map=rendered_depth_mm,
         )
 
 
@@ -402,6 +406,9 @@ class IsaacVisionPerceptionSource:
                 )
                 segmentations = ()
 
+        # The rendered surface is kept first, because the bias below is a grasp target and
+        # not a measurement.
+        rendered_depth_mm = depth_mm.copy()
         # Bias the grasp into the object body (larger depth = farther from cam = lower) over the
         # object mask, so the grip is mid-body rather than on the slippery top edge.
         if segmentations and self._grasp_depth_offset_mm:
@@ -424,5 +431,6 @@ class IsaacVisionPerceptionSource:
                 int(np.asarray(segmentations[0].mask).astype(bool).sum()), depth_mm.shape,
             )
         return PerceptionFrame(
-            depth_map=depth_mm, intrinsics=intrinsics, segmentations=segmentations, rgb=rgb
+            depth_map=depth_mm, intrinsics=intrinsics, segmentations=segmentations, rgb=rgb,
+            timestamp=time.time(), surface_depth_map=rendered_depth_mm,
         )

@@ -1,12 +1,11 @@
 _provenance:
-  robot: Universal Robots UR5e
   gripper: Robotiq 2F-85
   frame: tool0 (Y=approach, X=closing, Z=depth), metres
-  source: src/robot/safety/data/ur5e_collision_meshes.npz (vertex-exact)
+  source: ur5e_collision_meshes.npz
   generated_by: src/robot/safety/planning/robot/build_gripper_spheres.py
-  note: tool0 gripper spheres only (frame-correct, directly cuRobo-usable). Arm-link
-    spheres + the Lula-tuned complete ur5e.yml are on-box via scripts/curobo/build_ur5e_config.py.
-    See PROVENANCE.md.
+  note: tool0 gripper spheres only, frame-correct and directly cuRobo-usable. The
+    arm-link spheres and the complete robot descriptor are produced on-box by scripts/curobo/build_ur_config.py,
+    which reads this file. See PROVENANCE.md.
 collision_spheres:
   tool0:
   - center:

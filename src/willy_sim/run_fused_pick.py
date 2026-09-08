@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from src.robot.safety.planning.world import planner_cuboid
+
 from src.config.schema.robot import SimObjectConfig
 from src.willy_sim.harness.gate import GateResult, gate_passed
 from src.willy_sim.perception import GroundTruthPerceptionSource
@@ -89,8 +91,7 @@ def run_fused_gate(runs: int = 10, *, headless: bool = True, data_dir: str | Non
     # The low floor is the same obstacle set run_bin_clearing_demo uses: a 1 m slab whose top sits at
     # z = -50 mm keeps the arm from driving under the table without intruding into the grasp column.
     # Walls are deliberately omitted, because they make cuRobo refuse low top-down reaches.
-    _floor = {"name": "table_floor", "dims_m": [3.0, 3.0, 1.0],
-              "pose": [0.0, 0.0, -0.55, 1.0, 0.0, 0.0, 0.0]}
+    _floor = planner_cuboid("table_floor", (0.0, 0.0, -550.0), (3000.0, 3000.0, 1000.0))
     n_world = int(arm.set_curobo_world([_floor]))
     print(f"[curobo-world] registered {n_world} obstacle(s) (low floor top=-50mm)", flush=True)
 

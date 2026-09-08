@@ -246,8 +246,13 @@ robot:
     # path. Enabling it needs a declared support plane, because registering a world replaces the
     # planner's own rather than adding to it. `include_fixtures` reuses the list above, so a wall
     # declared for the guard is a wall the planner routes around: one description, not two that
-    # can disagree. The planner's world is axis-aligned boxes and nothing else, so anything that
-    # is not box-shaped has to be enclosed by one, and perceived geometry cannot reach it at all.
+    # can disagree.
+    #
+    # Enabling it also turns on `perceived` below, which rebuilds the world from the cameras
+    # before every plan, including moves that have nothing to do with a pick. That is the point:
+    # a world registered once is a photograph, and everything that arrived afterwards is
+    # invisible to the planner while looking exactly like empty space in every log there is. It
+    # has a price and the block states it.
     planning_world:
       enabled: false
       # Measure three things at the bench and this block is done. `height_mm` is the top surface of
@@ -262,6 +267,13 @@ robot:
       #     height_mm: -5.0                 # bench top, 5 mm below the robot's base plate
       #     extent_mm: [1600.0, 1600.0]     # 1.6 x 1.6 m of bench
       #     thickness_mm: 50.0              # body, so a path cannot slip underneath
+      #     center_mm: [0.0, 0.0]           # where the slab sits; the default is under the base
+      #
+      # `center_mm` matters when the robot is not bolted to the middle of its table. A base at the
+      # head of a bench running x=250 to x=800 has no bench under the half it works over unless
+      # the slab is moved there, and the alternative is to oversize `extent_mm` until a centred
+      # slab reaches it. Both work. The second also covers the space behind the robot, which is
+      # harmless where `workspace_limits` already forbids it and confusing to read.
       #
       # A trade worth knowing before setting it: a slab level with the bench surface makes the
       # planner refuse low top-down reaches, so a cell that picks close to the surface sinks the
@@ -269,6 +281,44 @@ robot:
       # visible, rather than in runner code.
       support_plane: null
       include_fixtures: true
+      # Geometry the planner routes around as the shape it is rather than as a box. The case that
+      # pays for itself is a container: as a box a tote is solid, so a cell that declares one can
+      # never reach into it; as a mesh it keeps its hollow. The sidecar reads the file itself, so
+      # the path has to be one that process can open, and anything trimesh loads works.
+      #
+      # The guards cannot read a mesh. Geometry declared here is known to the planner and to
+      # nothing else, so where the shape must also be enforced, declare the parts that matter as
+      # `self_collision.fixtures` boxes as well.
+      #
+      #   meshes:
+      #     - name: tote
+      #       path: assets/cell/tote.obj
+      #       center_mm: [500.0, 0.0, 0.0]
+      #       yaw_deg: 0.0
+      #       scale: 0.001                  # a mesh authored in millimetres
+      meshes: []
+      # What the cameras see, as obstacles. On whenever this block is: `enabled` here is the way
+      # out, for a cell that wants its bench declared and nothing camera driven. Every plan then
+      # waits for a depth frame, converts it and registers a world, and a frame older than
+      # `max_age_ms` refuses the motion rather than planning against a cell that had time to
+      # change. Measured on one camera at 848 x 480: 9 ms to build boxes and a distance field.
+      #
+      # `voxel_field_mm` is the difference between the planner seeing the nearest few obstacles
+      # and seeing the whole cell, and it is 0 until the sidecar reserves a grid at start-up.
+      perceived:
+        enabled: true
+        max_age_ms: 500.0
+        pixel_stride: 2
+        voxel_size_mm: 10.0
+        voxel_field_mm: 0.0
+        cluster_voxel_mm: 25.0
+        min_points: 12
+        margin_mm: 15.0
+        max_boxes: 8
+        floor_to_plane: true
+        plane_clearance_mm: 5.0
+        self_radius_mm: 90.0
+        tool_radius_mm: 150.0
       # Refuse to plan when the declared world could not be registered with the planner. False
       # logs the failure and plans on against the planner's own boot world instead.
       require_registration: true

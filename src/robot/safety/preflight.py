@@ -63,6 +63,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     )
     from src.geometry import Pose
     from src.robot.core import JointPositions, RobotArm
+    from src.robot.safety._capsule import AxisAlignedBox
 
 __all__ = [
     "SafetyPreflight",
@@ -405,6 +406,28 @@ class SafetyPreflight:
     # is a fail-closed selector over safety surfaces, and an operator typo in it would
     # silence a guard on a real joint move.
     _JOINT_MOVE_SKIP_GUARDS = ("workspace", "ik_quality", "motion_continuity")
+
+    def set_perceived_obstacles(self, boxes: "Sequence[AxisAlignedBox]") -> int:
+        """Tell every guard that can hold them about obstacles a camera saw. Returns how many were told.
+
+        The planner and this pipeline have to be looking at the same cell. A planner routing around a
+        tote this pipeline cannot see gives the worst of both: a path that avoids the tote, and a
+        gate that would have passed one straight through it, so nothing is actually holding the line.
+
+        Returning the count rather than nothing is deliberate. A caller that refreshes a world and is
+        told zero guards took it has learned that its cell has no guard capable of using obstacles,
+        which is a real state and one worth reporting rather than assuming.
+
+        An empty sequence clears them, which is what a cell must do the moment nobody can vouch for
+        what the cameras saw.
+        """
+        told = 0
+        for guard in self._guards:
+            setter = getattr(guard, "set_perceived_fixtures", None)
+            if callable(setter):
+                setter(tuple(boxes))
+                told += 1
+        return told
 
     def gate_trajectory(
         self,

@@ -36,6 +36,8 @@ Configuration
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import logging
 import math
 from typing import TYPE_CHECKING
@@ -105,14 +107,45 @@ class SelfCollisionGuard:
         self._tool_finger_span_mm = float(getattr(config, "tool_finger_span_mm", 150.0))
         self._base_radius_mm = float(getattr(config, "base_radius_mm", _DEFAULT_BASE_RADIUS_MM))
         self._base_height_mm = float(getattr(config, "base_height_mm", _DEFAULT_BASE_HEIGHT_MM))
-        self._fixtures = tuple(
+        self._declared_fixtures = tuple(
             AxisAlignedBox(
                 center_mm=np.asarray(fx.center_mm, dtype=np.float64),
                 half_extents_mm=np.asarray(fx.half_extents_mm, dtype=np.float64),
+                name=str(fx.name),
             )
             for fx in config.fixtures
         )
-        self._fixture_names = tuple(fx.name for fx in config.fixtures)
+        #: Obstacles a camera saw, set before a motion and cleared when nobody can vouch for them.
+        #: Separate from the declared list so a perceived box can never overwrite a measured one, and
+        #: so clearing them cannot take the bench with it.
+        self._perceived_fixtures: tuple[AxisAlignedBox, ...] = ()
+
+    @property
+    def _fixtures(self) -> "tuple[AxisAlignedBox, ...]":
+        """Everything this guard must keep the arm away from: declared first, then perceived.
+
+        Declared first so an operator reading a refusal meets the box they wrote down before the box
+        a camera inferred, and so the numbering of the unnamed ones is stable while the perceived
+        list changes underneath.
+        """
+        return self._declared_fixtures + self._perceived_fixtures
+
+    def set_perceived_fixtures(self, boxes: "Sequence[AxisAlignedBox]") -> None:
+        """Tell this guard about obstacles a camera saw, or clear them with an empty sequence.
+
+        The planner and this guard have to be looking at the same cell. A planner routing around a
+        tote the guard cannot see produces the worst of both: a path that avoids the tote and a gate
+        that would have allowed one straight through it, so nothing in the stack is holding the line.
+
+        The boxes are axis-aligned here while the planner takes them turned. That is deliberate and
+        it goes in the safe direction: an axis-aligned box enclosing a turned one is bigger, so this
+        guard is never more permissive than the planner. It can be stricter, and a diagonal part is
+        where that will show.
+
+        Never call this with obstacles nobody can vouch for. An empty sequence means the cell is back
+        to its declared geometry, which is the honest state when the cameras cannot answer.
+        """
+        self._perceived_fixtures = tuple(boxes)
 
     # ------------------------------------------------------------------
     # Capsule construction
@@ -289,7 +322,7 @@ class SelfCollisionGuard:
 
         # ---- capsule vs fixture --------------------------------------
         for k, fixture in enumerate(self._fixtures):
-            fname = self._fixture_names[k] or f"fixture_{k}"
+            fname = fixture.name or f"fixture_{k}"
             for name_i, cap_i in labelled:
                 d = capsule_box_distance_mm(cap_i, fixture)
                 if d < self._min_distance_mm:

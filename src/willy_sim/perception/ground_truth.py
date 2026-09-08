@@ -231,6 +231,9 @@ class GroundTruthPerceptionSource:
             )
             mask = np.zeros(depth_mm.shape, dtype=bool)
 
+        # Kept before the overwrite below: that value is where a jaw is driven, and a
+        # consumer building obstacle geometry needs the surface the camera rendered.
+        rendered_depth_mm = depth_mm.copy()
         if self._ground_truth_depth and bool(np.asarray(mask).any()):
             from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]
 
@@ -258,6 +261,8 @@ class GroundTruthPerceptionSource:
             intrinsics=intrinsics,
             segmentations=(seg,),
             rgb=rgb,
+            timestamp=time.time(),
+            surface_depth_map=rendered_depth_mm,
         )
 
 
@@ -416,6 +421,8 @@ class MultiObjectGroundTruthPerceptionSource:
             intrinsics=intrinsics,
             segmentations=tuple(segmentations),
             rgb=rgb,
+            timestamp=time.time(),
+            surface_depth_map=rendered_depth_mm,
         )
 
     def _maybe_top_reference(

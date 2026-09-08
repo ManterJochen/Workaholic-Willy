@@ -74,6 +74,56 @@ def test_units_and_quaternion_order_flip_at_this_boundary() -> None:
     assert plane["pose"][3:] == [1.0, 0.0, 0.0, 0.0]
 
 
+def test_the_bench_defaults_to_sitting_under_the_robot() -> None:
+    """Every configuration written before `center_mm` existed meant this box."""
+    (plane,) = build_planner_cuboids(
+        PlanningWorldConfig(enabled=True, support_plane=_bench(0.0, 50.0))
+    )
+    assert plane["pose"][:2] == pytest.approx([0.0, 0.0])
+
+
+def test_the_bench_can_sit_where_the_bench_is() -> None:
+    """A robot at the head of its table has no floor under the half it works over."""
+    plane_cfg = SupportPlaneConfig(
+        height_mm=0.0, extent_mm=(600.0, 800.0), thickness_mm=50.0, center_mm=(525.0, 0.0)
+    )
+    (plane,) = build_planner_cuboids(PlanningWorldConfig(enabled=True, support_plane=plane_cfg))
+    assert 1000.0 * plane["pose"][0] == pytest.approx(525.0)
+    assert 1000.0 * plane["pose"][1] == pytest.approx(0.0)
+    # The slab now spans x = 225 to 825, which is the bench, rather than -300 to 300, which is
+    # mostly the robot's own column.
+    half_x_mm = 1000.0 * plane["dims_m"][0] / 2.0
+    assert 1000.0 * plane["pose"][0] - half_x_mm == pytest.approx(225.0)
+    assert 1000.0 * plane["pose"][0] + half_x_mm == pytest.approx(825.0)
+
+
+def test_the_bench_covers_every_fixture_standing_on_it() -> None:
+    """The regression this exists for: a fixture with no floor under it.
+
+    A cell that declares a bin at the far end of a bench and a slab centred on the robot gets a
+    planner world where the bin floats: the planner will happily route a link through the space
+    where the table is, because in its world there is no table there.
+    """
+    bench = SupportPlaneConfig(
+        height_mm=0.0, extent_mm=(600.0, 800.0), thickness_mm=50.0, center_mm=(525.0, 0.0)
+    )
+    bin_wall = FixtureBoxConfig(
+        name="bin_far", center_mm=(700.0, 0.0, 75.0), half_extents_mm=(100.0, 200.0, 75.0)
+    )
+    plane, fixture = build_planner_cuboids(
+        PlanningWorldConfig(enabled=True, support_plane=bench), [bin_wall]
+    )
+
+    for axis in (0, 1):
+        plane_lo = plane["pose"][axis] - plane["dims_m"][axis] / 2.0
+        plane_hi = plane["pose"][axis] + plane["dims_m"][axis] / 2.0
+        fixture_lo = fixture["pose"][axis] - fixture["dims_m"][axis] / 2.0
+        fixture_hi = fixture["pose"][axis] + fixture["dims_m"][axis] / 2.0
+        assert plane_lo <= fixture_lo and fixture_hi <= plane_hi, (
+            f"axis {axis}: the fixture stands off the declared bench"
+        )
+
+
 def test_a_fixture_arrives_as_full_extents_at_its_centre() -> None:
     cfg = PlanningWorldConfig(enabled=True, support_plane=_bench())
     _, wall = build_planner_cuboids(cfg, [_wall("left", -180.0)])
@@ -204,6 +254,23 @@ def test_a_partial_registration_refuses_to_plan() -> None:
     )
     with pytest.raises(CuroboUnavailableError, match="confirmed 1 of 3"):
         planner.plan(_pose())
+
+
+def test_a_partial_registration_refuses_the_SECOND_move_too() -> None:
+    """The defect this pins: a refusal that fired once and then waved everything through.
+
+    The latch was set before the refusal was raised, so move one refused, and move two found the
+    client already built, skipped registration entirely, and planned against exactly the partial
+    world the refusal had been about. A guard that only ever fires once is worse than either answer.
+    """
+    client = _FakeClient([[0.0] * 6, [0.1] * 6], confirm=1)
+    planner = CuroboUrPlanner(
+        _FakeConn(), client_factory=lambda: client, world_cuboids=_cuboids(3)
+    )
+    for attempt in (1, 2):
+        with pytest.raises(CuroboUnavailableError, match="confirmed 1 of 3"):
+            planner.plan(_pose())
+        assert len(client.worlds) == attempt, "each refused move must try to register again"
 
 
 def test_a_partial_registration_can_be_accepted_deliberately() -> None:

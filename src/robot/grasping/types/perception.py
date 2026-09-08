@@ -53,6 +53,19 @@ class PerceptionFrame:
     #: This has never run on hardware. It is bucket 3 until an eye-in-hand cell stamps
     #: one.
     tool_pose: "Pose | None" = None
+    #: The depth the camera measured, before any grasp-referenced overwrite.
+    #:
+    #: `depth_map` is the grasp path's view of the scene: a producer may replace the depth
+    #: inside a detected mask with one number, the object's top surface plus a penetration,
+    #: because that is the depth a jaw is driven to. A consumer that wants the shape of what
+    #: is there cannot use it: every detected object is a sheet at its top face and the body
+    #: underneath reads as empty space. This field carries the untouched surface for those
+    #: consumers, and the planner's world is the first of them.
+    #:
+    #: `None` means the producer published nothing, not that the two agree. A consumer that
+    #: needs the measured surface refuses rather than falling back to `depth_map`, because
+    #: falling back would hand a planner a sheet and call it an obstacle.
+    surface_depth_map: np.ndarray | None = None
 
 
 @runtime_checkable

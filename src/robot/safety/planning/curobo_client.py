@@ -30,11 +30,15 @@ from src.robot.constants import CUROBO_CLIENT_LOG_FILE, create_robot_logger
 from ._curobo_attach import ENV_ATTACH_SPHERES
 from ._curobo_margin import ENV_SELF_COLLISION_MARGIN_MM
 from .environment import (
+    ENV_CUROBO_MESH_CACHE,
     ENV_CUROBO_STDERR,
+    ENV_CUROBO_VOXEL_GRID,
     curobo_cuboid_cache,
     curobo_env_available,
+    curobo_mesh_cache,
     curobo_python_path,
     curobo_robot_config,
+    curobo_voxel_grid,
 )
 
 __all__ = ["CuroboPlanClient", "CuroboUnavailableError", "curobo_env_available"]
@@ -109,6 +113,8 @@ class CuroboPlanClient:
         stderr_log: str | None = None,
         self_collision_margin_mm: float = 0.0,
         attach_spheres: int = 0,
+        mesh_cache: int | None = None,
+        voxel_grid: str | None = None,
     ) -> None:
         # Every path and knob resolves through safety.planning.environment, the single
         # anchor, so a caller overrides what it needs and the rest tracks the variables
@@ -125,6 +131,11 @@ class CuroboPlanClient:
         # Collision-sphere slots reserved for a carried payload. At 0 the sidecar robot
         # config is untouched and `attach_payload` refuses, which is the unchanged path.
         self._attach_spheres = max(0, int(attach_spheres))
+        # Slots for the two other kinds of obstacle. Both are reserved when the planner is
+        # BUILT, so they are decided here and never again: a mesh or a voxel grid sent to a
+        # planner that reserved none has nowhere to go. 0 and empty leave the sidecar as it was.
+        self._mesh_cache = max(0, int(mesh_cache if mesh_cache is not None else curobo_mesh_cache()))
+        self._voxel_grid = str(voxel_grid if voxel_grid is not None else curobo_voxel_grid()).strip()
         # The server stderr, carrying cuRobo warmup and plan diagnostics, goes to a log
         # file where one is requested through the parameter or WILLY_CUROBO_STDERR, and
         # is discarded otherwise. It is what makes the isolated server debuggable on-box.
@@ -161,6 +172,10 @@ class CuroboPlanClient:
             env[ENV_SELF_COLLISION_MARGIN_MM] = repr(self._self_collision_margin_mm)
         if self._attach_spheres > 0:
             env[ENV_ATTACH_SPHERES] = str(self._attach_spheres)
+        if self._mesh_cache > 0:
+            env[ENV_CUROBO_MESH_CACHE] = str(self._mesh_cache)
+        if self._voxel_grid:
+            env[ENV_CUROBO_VOXEL_GRID] = self._voxel_grid
         self._alive = True
         self._proc = subprocess.Popen(
             [self._python, "-u", self._script, self._robot, self._scene],
@@ -392,24 +407,36 @@ class CuroboPlanClient:
         )
         return None
 
-    def set_world(self, cuboids: list[dict]) -> int:
-        """Replace cuRobo's collision world with ``cuboids`` (the scene->planner world-model).
+    def set_world(self, cuboids: list[dict], meshes: "list[dict] | None" = None) -> int:
+        """Replace cuRobo's collision world with these obstacles (the scene->planner world-model).
 
         Each cuboid is ``{"name": str, "dims_m": [x,y,z], "pose": [px,py,pz,qw,qx,qy,qz]}``
-        in the base frame, in metres, with a WXYZ quaternion. It returns the count
-        registered, or 0 on failure. It is set once per scene or pick, and the ``plan``
-        calls after it route around these obstacles.
+        in the base frame, in metres, with a WXYZ quaternion. Each mesh is
+        ``{"name": str, "file_path": str, "pose": [...]}`` with an optional
+        ``"scale": [sx,sy,sz]``, and the sidecar reads the file itself: a tote is tens of
+        thousands of triangles and this is a line-based JSON pipe.
+
+        A mesh is how a container reaches the planner as the shape it is rather than as a
+        solid block. Meshes need slots reserved at spawn through ``mesh_cache``; without
+        them the sidecar has nowhere to put one and says so.
+
+        It returns the count registered, or 0 on failure. It replaces rather than extends,
+        so everything the planner must keep has to be in this one call.
         """
         if self._proc is None:
             self.start()
-        want = self._send({"cmd": "set_world", "cuboids": list(cuboids)})
+        request = {"cmd": "set_world", "cuboids": list(cuboids)}
+        if meshes:
+            request["meshes"] = list(meshes)
+        want = self._send(request)
         msg = self._recv(_PLAN_TIMEOUT_S, want=want)
         if msg and msg.get("world_set") is not None:
             count = int(msg["world_set"])
+            sent = len(cuboids) + len(meshes or ())
             # An obstacle the planner never received is one it will route straight
             # through, so the count registered rather than the count sent is what
             # matters.
-            logger.info("collision world set: %d of %d cuboid(s) registered", count, len(cuboids))
+            logger.info("collision world set: %d of %d obstacle(s) registered", count, sent)
             return count
         logger.error(
             "the cuRobo sidecar did not confirm the collision world (%d cuboid(s) sent); planning "
@@ -417,6 +444,54 @@ class CuroboPlanClient:
             len(cuboids),
         )
         return 0
+
+    def set_voxels(
+        self,
+        path: "str | None",
+        *,
+        dims_m: "Sequence[float]" = (),
+        voxel_size_m: float = 0.0,
+        pose: "Sequence[float]" = (),
+    ) -> "int | None":
+        """Register the live scene as a distance field over a grid, or clear it with ``path=None``.
+
+        This is the channel that carries a whole cell. The cuboid channel carries as many
+        obstacles as there are slots and the caller then has to choose which ones matter; a
+        grid carries everything the cameras saw, at the resolution it was cut to, and
+        nothing is left out.
+
+        ``path`` names a NumPy file holding the field as one flat array in the planner's
+        own voxel order. It is a file rather than numbers in the request because a 30 mm
+        grid over a 2 m cell is 179,560 values, which is not something to send down this
+        pipe before every motion.
+
+        ⛔ The field is positive INSIDE an obstacle and negative in free space. That is the
+        opposite of the distance-to-obstacle a person would write, and the wrong sign fails
+        silently: measured on this repository, a wall written the intuitive way registered
+        without an error, reported success, and the planner drove straight through it.
+        :mod:`src.robot.safety.planning.perceived` builds the field, and builds it in this
+        sign.
+
+        It returns the number of values registered, or ``None`` where the sidecar refused,
+        which is the state a caller must treat as no world at all.
+        """
+        if self._proc is None:
+            self.start()
+        request: dict = {"cmd": "set_voxels", "path": path}
+        if path:
+            request.update(
+                {"dims_m": list(dims_m), "voxel_size_m": float(voxel_size_m), "pose": list(pose)}
+            )
+        want = self._send(request)
+        msg = self._recv(_PLAN_TIMEOUT_S, want=want)
+        if msg and msg.get("voxels_set") is not None:
+            return int(msg["voxels_set"])
+        reason = (msg or {}).get("reason", "no reply")
+        logger.error(
+            "the cuRobo sidecar did not register the live scene (%s); planning continues against "
+            "the PREVIOUS world", reason,
+        )
+        return None
 
     def reserve_attach_spheres(self, slots: int) -> None:
         """Reserve payload collision spheres. Only takes effect before :meth:`start`."""

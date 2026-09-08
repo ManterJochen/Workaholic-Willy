@@ -38,6 +38,8 @@ from typing import Any
 
 import numpy as np
 
+from src.robot.safety.planning.world import planner_cuboid
+
 # --- cinematic framing (metres): an elevated front-right 3/4 view that sees both totes + the robot ---
 CINE_POS_M = (2.55, -2.35, 1.85)
 CINE_TARGET_M = (0.46, 0.0, 0.05)
@@ -139,17 +141,14 @@ def _register_curobo_world(arm: Any, fixtures: list) -> int:
     Returns the number of obstacles registered; 0 means cuRobo is not active.
     """
     cuboids = [
-        {
-            "name": fx.name,
-            "dims_m": [2.0 * float(fx.half_extents_mm[0]) / 1000.0,
-                       2.0 * float(fx.half_extents_mm[1]) / 1000.0,
-                       2.0 * float(fx.half_extents_mm[2]) / 1000.0],
-            "pose": [float(fx.center_mm[0]) / 1000.0, float(fx.center_mm[1]) / 1000.0,
-                     float(fx.center_mm[2]) / 1000.0, 1.0, 0.0, 0.0, 0.0],
-        }
+        planner_cuboid(
+            fx.name,
+            fx.center_mm,
+            [2.0 * float(h) for h in fx.half_extents_mm],
+        )
         for fx in fixtures
     ]
-    cuboids.append({"name": "floor", "dims_m": [2.0, 2.0, 0.05], "pose": [0.0, 0.0, -0.026, 1.0, 0.0, 0.0, 0.0]})
+    cuboids.append(planner_cuboid("floor", (0.0, 0.0, -26.0), (2000.0, 2000.0, 50.0)))
     return int(arm.set_curobo_world(cuboids))
 
 

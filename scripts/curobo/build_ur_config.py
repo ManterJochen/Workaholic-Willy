@@ -12,10 +12,13 @@ Ingredients, all of them already installed on a cell that can plan:
     references resolve under the cuRobo asset root.
   * collision spheres and ``default_q``: Isaac's model-tuned Lula ``{model}_robot_description.yaml``,
     converted into the cuRobo sphere-map format.
-  * tool0 gripper spheres: grid-fit from the baked Robotiq 2F-85 collision meshes in
-    ``src/robot/safety/data/ur5e_collision_meshes.npz``. The 2F-85 is the same gripper on every UR
-    flange and the bundle's frame 6 is cuRobo's ``tool0``, so this part is model-independent and is
-    reused unchanged for every model.
+  * tool0 gripper spheres: read from the committed sphere map for the gripper this cell runs,
+    ``src/robot/safety/planning/robot/{gripper}_gripper_spheres.yml``, which is produced by
+    ``build_gripper_spheres.py`` in the project venv from a baked bundle or from a vendor mesh.
+    Independent of the arm model, because the bundle's frame 6 is cuRobo's ``tool0`` on every UR
+    flange; not independent of the gripper, which is what ``--gripper`` selects. A cell running
+    something other than the 2F-85 and planning with the 2F-85 map is planning against a different
+    robot.
   * everything else: cuRobo's own ``ur10e.yml``, which carries the joint names, link names and
     end-effector link that every UR e-series model shares.
 
@@ -46,7 +49,8 @@ means changing it there, or the committed sphere map stops matching the on-box o
 Usage, on the box that owns the cell::
 
     python scripts/curobo/build_ur_config.py ur3e     # writes ur3e.urdf and ur3e.yml
-    python scripts/curobo/build_ur_config.py ur5e     # the ur5e recipe, including arm augmentation
+    python scripts/curobo/build_ur_config.py ur5e
+    python scripts/curobo/build_ur_config.py ur5e --gripper schunk_egu50    # the same arm, another hand     # the ur5e recipe, including arm augmentation
 
 Run it with the cuRobo environment's interpreter. cuRobo then answers where its own content directory
 is and nothing has to be guessed::
@@ -76,6 +80,13 @@ REPO = Path(__file__).resolve().parents[2]  # scripts/curobo/this.py, then scrip
 
 # --- 0) model + path resolution -------------------------------------------------------------------------
 MODEL = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("WILLY_UR_MODEL", "ur3e")).lower()
+# Which hand is on the flange. The arm model does not decide it: the same UR5e takes a Robotiq 2F-85
+# or a Schunk EGU-50, and the planner has to model the one that is actually there. Mirrors the safety
+# guard's `collision_mesh_variant`, which selects the same bundle for the exact-mesh check.
+GRIPPER = "ur5e"
+for _i, _arg in enumerate(sys.argv):
+    if _arg == "--gripper" and _i + 1 < len(sys.argv):
+        GRIPPER = sys.argv[_i + 1]
 
 #: Relative to an Isaac install root: where the per-model Lula descriptions live. Stable across Isaac
 #: versions; the *install root* is what differs from box to box, so only that is searched for.
@@ -197,38 +208,25 @@ for entry in lula["collision_spheres"]:  # Lula = list of single-key {link: [ {c
         sphere_map[link] = [{"center": [float(c) for c in s["center"]], "radius": float(s["radius"])}
                             for s in spheres]
 
-# --- 2a) tool0 Robotiq 2F-85 spheres: model-independent, since bundle frame 6 is tool0 --------------------
-# The library's own answer for this path is
-# ``src/robot/safety/planning/environment.collision_mesh_bundle("ur5e")``, which anchors the same
-# directory from inside the package. It is not imported here: this file runs under a Python that
-# cannot import the package at all.
-_MESH_NPZ = REPO / "src/robot/safety/data/ur5e_collision_meshes.npz"
-_MESH = np.load(_MESH_NPZ, allow_pickle=True)  # gripper__v / lfinger__v / rfinger__v, mm, tool0 frame
-
-
-def _grid_fit_spheres(verts_mm: np.ndarray, cell_mm: float, rmax_mm: float) -> list[dict[str, object]]:
-    """One tight sphere per occupied voxel, returned in metres.
-
-    The centre is the voxel's vertex centroid and the radius is the largest vertex distance from it,
-    capped at ``rmax_mm`` and floored at 6 mm so a voxel holding a single vertex still has a body.
-    """
-    v = np.asarray(verts_mm, dtype=np.float64)
-    keys = np.floor(v / cell_mm).astype(np.int64)
-    out: list[dict[str, object]] = []
-    for key in {tuple(k) for k in keys}:
-        pts = v[np.all(keys == np.asarray(key), axis=1)]
-        c = pts.mean(0)
-        r = min(float(np.max(np.linalg.norm(pts - c, axis=1))), rmax_mm)
-        out.append({"center": [round(float(x) / 1000.0, 4) for x in c], "radius": round(max(r, 6.0) / 1000.0, 4)})
-    return out
-
-
-sphere_map["tool0"] = (
-    _grid_fit_spheres(_MESH["gripper__v"], cell_mm=44.0, rmax_mm=24.0)
-    + _grid_fit_spheres(_MESH["lfinger__v"], cell_mm=34.0, rmax_mm=17.0)
-    + _grid_fit_spheres(_MESH["rfinger__v"], cell_mm=34.0, rmax_mm=17.0)
-)
-print(f"tool0 spheres mesh-fit from {_MESH_NPZ.name} (2F-85, model-independent): {len(sphere_map['tool0'])}")
+# --- 2a) tool0 gripper spheres: the committed map for the gripper this cell runs --------------------------
+# Read rather than fitted here. The fit lives in one place,
+# `src/robot/safety/planning/robot/gripper_spheres.py`, and produces a committed file per gripper; a
+# test compares that file against the fit so the two cannot drift. This script used to carry its own
+# copy of the same arithmetic and always fitted the Robotiq 2F-85, under a comment calling it model
+# independent. It is independent of the arm and not of the hand: with a Schunk EGU-50 bolted on, the
+# guard read that bundle through `collision_mesh_variant` and the planner still modelled a Robotiq.
+_SPHERE_MAP = REPO / f"src/robot/safety/planning/robot/{GRIPPER}_gripper_spheres.yml"
+if not _SPHERE_MAP.is_file():
+    raise SystemExit(
+        f"no committed sphere map at {_SPHERE_MAP}. Write one in the project venv first:\n"
+        f"  .venv/Scripts/python.exe -m src.robot.safety.planning.robot.build_gripper_spheres "
+        f"--variant {GRIPPER}\n"
+        "or, for a gripper with no baked bundle, fit it from the vendor mesh with --mesh."
+    )
+_gripper_cfg = yaml.safe_load(_SPHERE_MAP.read_text(encoding="utf-8"))
+sphere_map["tool0"] = _gripper_cfg["collision_spheres"]["tool0"]
+print(f"tool0 spheres: {len(sphere_map['tool0'])} from {_SPHERE_MAP.name} "
+      f"({_gripper_cfg.get('_provenance', {}).get('gripper', GRIPPER)})")
 
 # --- 2b) ARM-link surface augmentation: ur5e only ---------------------------------------------------------
 # The bundle's arm meshes and the DH chain used to place them are ur5e-specific. Applying them to
@@ -236,6 +234,10 @@ print(f"tool0 spheres mesh-fit from {_MESH_NPZ.name} (2F-85, model-independent):
 # model-tuned Lula arm spheres.
 if MODEL == "ur5e":
     try:
+        # The arm bundle, which is a different thing from the gripper map read above: these
+        # are the ur5e's own link meshes, and this branch is ur5e only for exactly that reason.
+        _ARM_NPZ = REPO / "src/robot/safety/data/ur5e_collision_meshes.npz"
+        _MESH = np.load(_ARM_NPZ, allow_pickle=True)
         import trimesh  # type: ignore[import-not-found]
         from curobo.sphere_fit import SphereFitType, fit_spheres_to_mesh  # type: ignore[import-not-found]
 

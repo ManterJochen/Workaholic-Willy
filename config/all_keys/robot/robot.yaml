@@ -68,9 +68,36 @@ robot:
     # [default: null]
     home_joint_positions: null
 
-    # Per-camera entry inside :class:`SimConfig.cameras`.
-    # Empty. Each entry under `cameras:` is keyed by YOUR name for the thing (a rig id, say) and holds a
-    # full block; the index lists its keys.
+    # The cameras authored into the sim scene, keyed by YOUR name for each one. The same name is
+    # what `grasping.fusion.cameras` calibrates, so a two-camera cell uses one name per camera in
+    # both places.
+    # [default: {}]
+    #
+    #   cameras:
+    #     overhead:
+    #       # Where the camera prim is authored in the stage. Empty means the scene builder places it.
+    #       prim_path: ""
+    #       # Fixed to the cell or bolted to the wrist. It decides which of the two mount blocks below
+    #       # is read: position_mm for a fixed camera, mount_* for one on the flange.
+    #       # [one of: eye_to_hand | eye_in_hand]
+    #       mounting_mode: eye_to_hand
+    #       # Near clip in metres. Null keeps Isaac's own. It is load-bearing on a wrist camera,
+    #       # where it is what hides the gripper from its own view.
+    #       near_clip_m: null
+    #       # Pixels, [width, height]. Null keeps Isaac's default.
+    #       resolution: null
+    #       # Horizontal field of view in degrees, meaning the FOV of the real sensor this camera
+    #       # stands in for: a RealSense D435 RGB stream is 69.4. Null keeps Isaac's lens, which is
+    #       # narrower and frames less of the table than the real cell does, a silent sim-to-real gap.
+    #       hfov_deg: null
+    #       # Fixed cameras only: where it sits in the world, in mm. Null means authored elsewhere.
+    #       position_mm: null
+    #       # Wrist cameras only: the mount in the wrist link's own frame, in mm.
+    #       mount_offset_mm: null
+    #       # Wrist cameras only: the point the camera looks at, in mm.
+    #       mount_aim_mm: null
+    #       # Wrist cameras only: which way is up for the mount, as a direction.
+    #       mount_up_hint: null
     cameras: {}
 
     # The fixed simulator timestep in seconds, used for BOTH physics and rendering (1/60 s by default).
@@ -794,10 +821,13 @@ robot:
       support_plane: null
       # Bench geometry in robot base frame (mm).
       # height_mm: measured top-surface height; slab extends downward by thickness_mm.
-      # extent_mm: X/Y size, centred on robot base; must cover the reachable area.
+      # extent_mm: X/Y size, centred on center_mm; must cover the reachable area.
       # thickness_mm: slab depth below the top surface; does not affect height_mm.
+      # center_mm: where the slab sits in the base plane. Needed when the robot is not bolted to the
+      #   middle of its table: a base at the head of a bench running x=250 to x=800 has no bench under
+      #   the half it works over unless the slab is moved there. Oversizing extent_mm is the other way.
       # Only active when robot.safety.planning_world.enabled is true.
-      # Defaults: height=0.0, extent=[2000.0, 2000.0], thickness=50.0.
+      # Defaults: height=0.0, extent=[2000.0, 2000.0], thickness=50.0, center=[0.0, 0.0].
 
       # Whether the planner is told that the gripper is CARRYING something.
       payload:
@@ -825,6 +855,108 @@ robot:
       # What happens when the planner confirms fewer obstacles than it was sent.
       # [default: true]
       require_registration: true
+
+      # Geometry the planner routes around as the shape it is rather than as a box. The case that pays
+      # for itself is a container: as a box a tote is solid, so a cell can never reach into it; as a
+      # mesh it keeps its hollow. The planning sidecar reads the file itself, in its own process, so
+      # the path has to be one that process can open; anything trimesh loads works (STL, OBJ, PLY, GLB).
+      # The guards cannot read a mesh: geometry declared here is known to the PLANNER and to nothing
+      # else, so where the shape must also be enforced, declare the parts that matter as
+      # self_collision.fixtures boxes as well.
+      # Only active when robot.safety.planning_world.enabled is true.
+      # [default: []]
+      #
+      #   meshes:
+      #     - name: tote                      # unique among every obstacle; duplicates collapse
+      #       path: assets/cell/tote.obj      # read by the planning sidecar, in its own process
+      #       center_mm: [500.0, 0.0, 0.0]    # where the mesh origin sits in the base frame
+      #       yaw_deg: 0.0                    # rotation about base Z; a tote stands on a floor
+      #       scale: 0.001                    # 0.001 for a mesh authored in millimetres
+      meshes: []
+
+      # What the cameras see, turned into obstacles the planner routes around. It has no opt-in of its
+      # own: a cell that declares planning_world has said the planner should know its surroundings, and
+      # a picture taken once at start-up is not that. `enabled` here is the way OUT, for a cell that
+      # wants its bench declared and nothing camera driven.
+      perceived:
+
+        # The way out, not the way in. planning_world.enabled is what turns this on.
+        # [default: true]
+        enabled: true
+
+        # A frame older than this is not planned against, and the motion is refused rather than planned
+        # against a cell that had time to change. Measured from the shutter rather than from the
+        # conversion, because that is the time in which the cell could have changed. A frame with no
+        # capture time counts as unknown age and therefore as too old.
+        # [default: 500.0]
+        max_age_ms: 500.0
+
+        # Read every nth pixel of every frame. 1 reads all of them. The cheapest lever there is, and
+        # not an approximation while it stays under the voxel size in image terms: at a metre a D435
+        # pixel is about 1.6 mm, so a 10 mm voxel spans six pixels. Measured on an 848 x 480 frame:
+        # 33 ms at 1, 9 ms at 2, with the resulting box within a millimetre.
+        # [default: 2]
+        pixel_stride: 2
+
+        # Cloud thinning before anything else, in mm. Smaller keeps more shape and costs more time.
+        # [default: 10.0]
+        voxel_size_mm: 10.0
+
+        # Edge length of a voxel in the distance field handed to the planner, in mm. 0 sends none.
+        # This is the difference between the planner seeing the nearest few obstacles and seeing the
+        # whole cell: the box channel is bounded by the planner's collision slots, so something always
+        # has to be left out, while a distance field carries everything the cameras saw.
+        # The planner allocates the grid when it STARTS, from the workspace limits and this number, so
+        # both have to be settled before the sidecar spawns. A planner started without a voxel
+        # reservation refuses the field, and refusing the field refuses the motion.
+        # Measured: a 30 mm field over a two metre cell is 13.7 ms to build and 1.9 ms to register.
+        # [default: 0.0]
+        voxel_field_mm: 0.0
+
+        # The grid the clustering runs on, in mm. Two points in touching cells are one object, so this
+        # is also the gap at which two parts stop being one obstacle. Must not be finer than
+        # voxel_size_mm, or one object splits into one cluster per point.
+        # [default: 25.0]
+        cluster_voxel_mm: 25.0
+
+        # Below this a cluster is sensor noise rather than a thing.
+        # [default: 12]
+        min_points: 12
+
+        # Grown on every side of every perceived box, in mm. A box that is exactly the measured hull is
+        # a box the planner will graze, and depth noise at an edge is one-sided.
+        # [default: 15.0]
+        margin_mm: 15.0
+
+        # How many perceived boxes there is room for beside the declared ones. The planner reserves a
+        # fixed number of collision slots when it starts, so this is a real ceiling: the nearest
+        # survive and the rest are counted and named in the report, because an obstacle the planner
+        # never received is one it will route straight through.
+        # [default: 8]
+        max_boxes: 8
+
+        # Carry each perceived box down to the support plane instead of stopping at the surface that
+        # was seen. A depth camera measures surfaces, not bodies: a part on a bench comes back as its
+        # top face, and a planner routing around that sheet drives a link through the part under it.
+        # One cost worth knowing: a container whose rim the camera sees and that nobody declared
+        # becomes a solid block from rim to bench, and the cell can then never reach into it.
+        # [default: true]
+        floor_to_plane: true
+
+        # How far above the declared plane a point still counts as the plane, in mm.
+        # [default: 5.0]
+        plane_clearance_mm: 5.0
+
+        # Radius of the capsules that stand for the arm's own links, in mm. A fixed camera sees the
+        # robot, and a robot registered as an obstacle cannot move at all. Deliberately generous: a
+        # point wrongly kept is an obstacle that is not there, and a point wrongly dropped is a hole
+        # exactly where the arm is.
+        # [default: 90.0]
+        self_radius_mm: 90.0
+
+        # Radius of the last capsule, which covers the gripper and whatever it is holding, in mm.
+        # [default: 150.0]
+        tool_radius_mm: 150.0
 
     # Whether a PLANNED PATH is checked configuration by configuration before any of it is commanded.
     trajectory_check:
@@ -1534,9 +1666,23 @@ robot:
       # [default: null]
       extrinsics_artifact_path: null
 
-      # One camera's calibration entry in the central ``fusion.cameras`` map.
-      # Empty. Each entry under `cameras:` is keyed by YOUR name for the thing (a rig id, say) and holds a
-      # full block; the index lists its keys.
+      # One calibration entry per camera, keyed by the same name the camera has elsewhere: a
+      # `robot.sim.cameras` key in sim, a rig id on real hardware. Every camera in a multi-view cell
+      # is calibrated and loaded on its own, so each one names its own artefact.
+      # Only active when robot.grasping.fusion.enabled is true.
+      # [default: {}]
+      #
+      #   cameras:
+      #     overhead:
+      #       # Whether this camera takes part. False leaves it configured and unused.
+      #       enabled: true
+      #       # How it is mounted, which decides what its artefact means: CAMERA to BASE for a fixed
+      #       # camera, CAMERA to TOOL for one on the flange.
+      #       # [one of: eye_to_hand | eye_in_hand]
+      #       mounting_mode: eye_to_hand
+      #       # Where this camera's persisted extrinsics live. Required: a camera in this map with no
+      #       # artefact is a camera nothing can place.
+      #       extrinsics_artifact_path: logs/calibration/ur5e/eth_overhead.json
       cameras: {}
 
       # Fuse each object's SURFACE across the fixed cameras, and feed that to the grasp generator.

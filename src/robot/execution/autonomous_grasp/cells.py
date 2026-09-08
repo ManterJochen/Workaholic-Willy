@@ -256,10 +256,61 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
     from .service import AutonomousGraspService
 
     calculator, perception, resolver, multi_camera = build_real_components(robot_cfg, prompt)
-    return AutonomousGraspService.from_robot_config(
+    service = AutonomousGraspService.from_robot_config(
         robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
         multi_camera_perception=multi_camera,
         **overrides,
+    )
+    _wire_live_planner_world(robot_cfg, service, perception)
+    return service
+
+
+def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception: Any) -> None:
+    """Give the arm something that can say what the cell looks like right now, if it asked for one.
+
+    Here rather than inside the service, because this is the only place that holds all three
+    pieces: the camera the components builder opened, the transform the calibration produced,
+    and the arm the service built. The layers below cannot reach across those and are not
+    supposed to.
+
+    A cell that did not ask gets nothing and behaves exactly as before. A cell that asked and
+    cannot have it, which today means a wrist camera, is told at build time rather than at the
+    first motion: an eye-in-hand transform changes between the shutter and the moment the
+    geometry is built, and a world displaced by the arm travel is worse than no world at all.
+    """
+    import logging
+
+    from .live_world import (
+        LiveWorldUnavailable,
+        RigDepthSource,
+        build_live_planner_world,
+        static_camera_to_base_mm,
+    )
+
+    arm = getattr(getattr(service, "runtime", None), "orchestrator", None)
+    arm = getattr(arm, "arm", None)
+    setter = getattr(arm, "set_live_planner_world", None)
+    streamer = getattr(perception, "streamer", None)
+    resolver = getattr(getattr(service, "runtime", None), "orchestrator", None)
+    resolver = getattr(resolver, "frame_resolver", None)
+    if not callable(setter) or streamer is None or resolver is None:
+        return
+
+    try:
+        transform = static_camera_to_base_mm(resolver)
+    except LiveWorldUnavailable as exc:
+        logging.getLogger(__name__).warning("no live planner world for this cell: %s", exc)
+        return
+
+    world = build_live_planner_world(
+        robot_cfg,
+        [(getattr(streamer, "rig_id", "camera"), RigDepthSource(streamer), transform)],
+    )
+    if world is None:
+        return
+    setter(world)
+    logging.getLogger(__name__).info(
+        "live planner world wired: %d camera(s), refreshed before every plan", len(world.cameras)
     )
 
 

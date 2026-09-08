@@ -304,38 +304,56 @@ class WalkthroughExampleTests(unittest.TestCase):
     """
 
     @staticmethod
-    def _example(name: str):
-        """Import an example by file name. They are scripts, not a package."""
-        import importlib.util
+    def _examples_dir():
         from pathlib import Path
 
-        path = Path(__file__).resolve().parents[1] / "scripts" / "examples" / f"{name}.py"
-        spec = importlib.util.spec_from_file_location(name, path)
+        return Path(__file__).resolve().parents[1] / "scripts" / "examples"
+
+    @staticmethod
+    def _example(name: str):
+        """Import an example by its path under `scripts/examples`. They are scripts, not a package."""
+        import importlib.util
+
+        import sys
+
+        path = WalkthroughExampleTests._examples_dir() / f"{name}.py"
+        assert path.is_file(), f"no example at {path}"
+        spec = importlib.util.spec_from_file_location(path.stem, path)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)
+        # Registered before it executes, which is the documented recipe and not a detail: a module
+        # that defines a dataclass has that class look its own module up in `sys.modules` while it
+        # is being built, and an unregistered module makes that lookup return `None`.
+        sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         return module
 
     def test_the_rehearsal_pick_runs_end_to_end(self) -> None:
-        self.assertEqual(self._example("03_pick").main([]), 0)
+        self.assertEqual(self._example("cell/03_first_pick").main([]), 0)
 
     def test_robot_setup_reads_the_real_config(self) -> None:
         """It reports the config preflight's verdict. A non-zero exit here means a CHECK came out
         wrong, which is a finding about the config -- not about the example."""
-        self.assertIn(self._example("01_robot_setup").main([]), (0, 1))
+        self.assertIn(self._example("cell/01_robot_setup").main([]), (0, 1))
 
     def test_it_runs_under_a_profile_chain(self) -> None:
         """Profile layering is one of the things these teach, so it has to survive being layered."""
-        self.assertIn(self._example("01_robot_setup").main(["--profile", "ur3e"]), (0, 1))
+        self.assertIn(self._example("cell/01_robot_setup").main(["--profile", "ur3e"]), (0, 1))
 
     def test_every_example_answers_help(self) -> None:
-        """A `--help` that raises is an example nobody can start. Cheapest possible smoke test, and
-        it covers the four that need no config at all."""
+        """A `--help` that raises is an example nobody can start.
+
+        Every example in the tree, found rather than listed. A hand-written list is how this test
+        came to name seven files that no longer exist: the examples moved into topic folders and the
+        list stayed where it was, so it tested nothing until it tested the wrong thing.
+        """
         import contextlib
         import io
 
-        for name in ("01_robot_setup", "02_calibration", "03_pick", "04_datagen",
-                     "05_train", "06_full_pipeline", "07_sim"):
+        found = sorted(self._examples_dir().glob("*/[0-9]*.py"))
+        self.assertGreater(len(found), 20, "the example tree is smaller than it should be")
+        for path in found:
+            name = f"{path.parent.name}/{path.stem}"
             with self.subTest(example=name), contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(SystemExit) as caught:
                     self._example(name).main(["--help"])
@@ -431,7 +449,7 @@ class ExampleEnvironmentTests(unittest.TestCase):
 
         before = os.environ.get("WILLY_PROFILE")
         with contextlib.redirect_stdout(io.StringIO()):
-            self._example("01_robot_setup").main(["--profile", "ur3e"])
+            self._example("cell/01_robot_setup").main(["--profile", "ur3e"])
         self.assertEqual(os.environ.get("WILLY_PROFILE"), before,
                          "the example leaked WILLY_PROFILE into the process")
 

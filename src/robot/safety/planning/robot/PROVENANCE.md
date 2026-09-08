@@ -100,6 +100,38 @@ collision spheres grid-fit from that bundle by
 it reads the committed bundle and writes the map beside itself, so the gripper exists as a labelled,
 regenerable file in this repository. The spheres are frame-correct and directly usable by the planner.
 
+## The hand is not the arm
+
+A sphere map describes an END EFFECTOR, and the bundles are named after arms. The same Robotiq sits
+in the ur5e bundle, the ur3e one and the ur10e one, so one map covers all three; a different hand
+needs its own. [`schunk_egu50_gripper_spheres.yml`](schunk_egu50_gripper_spheres.yml) is the second
+one, 46 spheres against the Robotiq's 36.
+
+This mattered more than it looks. `scripts/curobo/build_ur_config.py` carried its own copy of the fit
+and always used the Robotiq bundle, under a comment calling it model independent. It is independent
+of the ARM and not of the HAND, so a cell running the Schunk had a safety guard that read the right
+bundle through `collision_mesh_variant` and a planner that modelled a Robotiq. The on-box script now
+reads the committed map for the gripper it is told about:
+
+```
+python scripts/curobo/build_ur_config.py ur5e --gripper schunk_egu50
+```
+
+A gripper nobody has baked a bundle for is fitted from its own mesh, which is the path a customer
+with a vendor STL takes:
+
+```
+.venv/Scripts/python.exe -m src.robot.safety.planning.robot.build_gripper_spheres     --mesh vendor/eoat.stl --gripper eoat --scale-to-mm 1000 --out eoat_gripper_spheres.yml
+```
+
+Two things that file cannot check and a person has to: the mesh must already be in the `tool0` frame,
+and `--scale-to-mm` must be right. Metres read as millimetres is a hand a thousand times too small,
+and it plans happily straight through everything it should have hit.
+
+The fit itself lives in [`gripper_spheres.py`](gripper_spheres.py), in one place, and
+`tests/test_gripper_spheres.py` compares every committed map against it so the file and the generator
+cannot drift apart.
+
 ## The planner robot config
 
 The complete descriptor the planner loads, named by `WILLY_CUROBO_ROBOT` and defaulting to

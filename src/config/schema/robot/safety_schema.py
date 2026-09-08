@@ -279,11 +279,25 @@ class SupportPlaneConfig(StrictModel):
     Sizing it is a real decision: a slab at the bench surface makes the planner refuse low top-down
     reaches, which is why the sim runners closest to a production pick sink their floor to a top of
     ``-50 mm`` and carry no walls at all.
+
+    ``center_mm`` is where the slab sits in the base plane, and it exists because a robot is not
+    always bolted to the middle of its table. A cell with its base at the head of a 550 mm bench that
+    runs from x=250 to x=800 has no bench at all under the half it works over, unless the slab is
+    either moved there or made wide enough to reach it from the centre. Both work; only one of them
+    stops short of covering ground the arm never visits. Oversizing remains the answer for a cell
+    that will not touch its config, and it is harmless where the workspace limits already forbid the
+    space behind the robot.
     """
 
     height_mm: float = Field(default=0.0)
     extent_mm: tuple[float, float] = (2000.0, 2000.0)
     thickness_mm: float = Field(default=50.0, gt=0.0, le=2000.0)
+    #: Where the slab is centred in the base plane, millimetres. The default is the base itself,
+    #: which is what every configuration written before this field existed meant.
+    #:
+    #: Note the asymmetry with ``height_mm``, which is the slab's top rather than its centre: a
+    #: height is measured against a surface an operator can put a rule on, and a position is not.
+    center_mm: tuple[float, float] = (0.0, 0.0)
 
     @model_validator(mode="after")
     def _check_extent(self) -> SupportPlaneConfig:
@@ -335,6 +349,147 @@ class AttachedPayloadConfig(StrictModel):
     lateral_margin_mm: float = Field(default=10.0, ge=0.0, le=500.0)
 
 
+class PlannerMeshConfig(StrictModel):
+    """A piece of the cell the planner routes around as the shape it is, rather than as a box.
+
+    The one case that pays for itself is a container. As a box a tote is solid, so a cell that
+    declares one can never reach into it; as a mesh it keeps its hollow and the planner takes the arm
+    down between the walls. The same goes for a machine with an opening, a fixture with a slot, or
+    anything else whose useful part is the space inside it.
+
+    ⛔ THE GUARD CANNOT READ A MESH. The path guard and the one-shot guards work on boxes, so
+    geometry declared here is known to the planner and to nothing else. That is not a gap to paper
+    over silently: if this shape must also be enforced, declare the parts of it that matter as
+    ``self_collision.fixtures`` boxes as well, and accept that a box around a hollow is solid.
+
+    ``path`` is read by the planning sidecar, in its own process, so it has to be a path that process
+    can open. Anything trimesh loads works: STL, OBJ, PLY, GLB.
+    """
+
+    #: Unique among every obstacle. The planner keys its world by name and a duplicate silently
+    #: collapses two obstacles into one.
+    name: str = Field(min_length=1)
+
+    #: Mesh file the planning sidecar reads. Absolute, or relative to the working directory it runs
+    #: in, which is the repository root.
+    path: str = Field(min_length=1)
+
+    #: Where the mesh origin sits in the base frame, millimetres.
+    center_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    #: Rotation about base Z, degrees. A tote stands on a floor; if yours needs three angles, rotate
+    #: the mesh once in a modelling tool and ship it that way.
+    yaw_deg: float = Field(default=0.0, ge=-360.0, le=360.0)
+
+    #: Uniform scale. 0.001 turns a mesh authored in millimetres into the metres the planner uses.
+    scale: float = Field(default=1.0, gt=0.0, le=1000.0)
+
+
+class PerceivedWorldConfig(StrictModel):
+    """Turning what the cameras see into obstacles the planner routes around.
+
+    This has no opt-in of its own. A cell that declares ``planning_world`` has said the planner
+    should know its surroundings, and a photograph taken once at startup is not that: everything that
+    arrived afterwards is invisible to it while looking exactly like empty space in every log there
+    is. So it follows ``planning_world.enabled``, and ``enabled`` here is the way out rather than the
+    way in, for a cell that wants its bench declared and nothing camera driven.
+
+    What it costs, stated before the knobs. Every plan waits for a depth frame, converts it and
+    registers a world, and a frame older than ``max_age_ms`` refuses the motion rather than planning
+    against a cell that had time to change. That refusal is the point of the feature and it is also
+    the way it will first annoy somebody: a camera that stalls stops the arm.
+    """
+
+    #: The way out, not the way in. ``planning_world.enabled`` is what turns this on.
+    enabled: bool = Field(default=True)
+
+    #: A frame older than this is not planned against, milliseconds.
+    #:
+    #: Measured from the shutter rather than from the conversion, because that is the time in which
+    #: the cell could have changed. A frame with no capture time counts as unknown age and therefore
+    #: as too old: a producer that does not stamp its frames has to be fixed, not trusted.
+    max_age_ms: float = Field(default=500.0, gt=0.0, le=60_000.0)
+
+    #: Read every nth pixel of every frame. 1 reads all of them.
+    #:
+    #: The cheapest lever there is, and not an approximation while it stays under the voxel size in
+    #: image terms: at a metre a D435 pixel is about 1.6 mm, so a 10 mm voxel spans six pixels and
+    #: every second pixel fills the same voxels the whole frame would. Measured on an 848 x 480
+    #: frame: 33 ms at 1, 9 ms at 2, with the resulting box within a millimetre.
+    pixel_stride: int = Field(default=2, ge=1, le=16)
+
+    #: Cloud thinning before anything else, millimetres. Smaller keeps more shape and costs more time.
+    voxel_size_mm: float = Field(default=10.0, gt=0.0, le=200.0)
+
+    #: Edge length of a voxel in the distance field handed to the planner, millimetres. 0 sends none.
+    #:
+    #: This is the difference between the planner seeing the nearest few obstacles and seeing the
+    #: whole cell. The box channel is bounded by the planner collision slots, so something always has
+    #: to be left out and the report has to say what; a distance field carries everything the cameras
+    #: saw at the resolution it is cut to.
+    #:
+    #: ⛔ The planner allocates the grid when it STARTS. The volume comes from the workspace limits
+    #: and the resolution from this key, and both have to be settled before the sidecar spawns: a
+    #: planner started without a voxel reservation refuses the field, and refusing the field refuses
+    #: the motion rather than planning against half a cell.
+    #:
+    #: Measured on this repository: a 30 mm field over a two metre cell is 13.7 ms to build, 1.9 ms
+    #: to register, and it blocked a path a plan otherwise took.
+    voxel_field_mm: float = Field(default=0.0, ge=0.0, le=200.0)
+
+    #: The grid the clustering runs on, millimetres. Two points in touching cells are one object, so
+    #: this is also the gap at which two parts stop being one obstacle.
+    cluster_voxel_mm: float = Field(default=25.0, gt=0.0, le=500.0)
+
+    #: Below this a cluster is sensor noise rather than a thing.
+    min_points: int = Field(default=12, ge=1, le=100_000)
+
+    #: Grown on every side of every box, millimetres. A box that is exactly the measured hull is a
+    #: box the planner will graze, and depth noise at an edge is one-sided.
+    margin_mm: float = Field(default=15.0, ge=0.0, le=500.0)
+
+    #: How many perceived boxes there is room for beside the declared ones.
+    #:
+    #: The planner reserves a fixed number of collision slots when it starts, so this is a real
+    #: ceiling and not a preference. The nearest survive and the rest are counted and named in the
+    #: report, because an obstacle the planner never received is one it will route straight through.
+    max_boxes: int = Field(default=8, ge=0, le=64)
+
+    #: Carry each box down to the support plane instead of stopping at the surface that was seen.
+    #:
+    #: A depth camera measures surfaces, not bodies: a part on a bench comes back as its top face and
+    #: nothing else, and a planner routing around that sheet will drive a link through the part under
+    #: it. Carrying the box down is the conservative reading. It has one cost worth knowing: a
+    #: container whose rim the camera sees and that nobody declared becomes a solid block from rim to
+    #: bench, and the cell can then never reach into it. Declaring the container as a mesh is the
+    #: fix, and turning this off is the other one.
+    floor_to_plane: bool = Field(default=True)
+
+    #: How far above the declared plane a point still counts as the plane, millimetres.
+    plane_clearance_mm: float = Field(default=5.0, ge=0.0, le=200.0)
+
+    #: Radius of the capsules that stand for the arm's own links, millimetres.
+    #:
+    #: A fixed camera sees the robot, and a robot registered as an obstacle cannot move at all. The
+    #: capsules are deliberately generous: a point wrongly kept is an obstacle that is not there, and
+    #: a point wrongly dropped is a hole exactly where the arm is.
+    self_radius_mm: float = Field(default=90.0, ge=0.0, le=1000.0)
+
+    #: Radius of the last capsule, which covers the gripper and whatever it is holding, millimetres.
+    tool_radius_mm: float = Field(default=150.0, ge=0.0, le=1000.0)
+
+    @model_validator(mode="after")
+    def _check_grids(self) -> PerceivedWorldConfig:
+        if self.cluster_voxel_mm < self.voxel_size_mm:
+            raise ValueError(
+                f"perceived.cluster_voxel_mm ({self.cluster_voxel_mm}) is finer than "
+                f"perceived.voxel_size_mm ({self.voxel_size_mm}). Clustering on a grid finer than the "
+                "cloud splits one object into one cluster per point, and nothing downstream would "
+                "say so."
+            )
+        return self
+
+
 class PlanningWorldConfig(StrictModel):
     """What the trajectory planner is told about the cell, as axis-aligned boxes in the base frame.
 
@@ -342,9 +497,12 @@ class PlanningWorldConfig(StrictModel):
     commanded configuration, the planner shapes the whole path. ``include_fixtures`` keeps the two one
     declaration, so a bin wall added for the guard is a bin wall the planner routes around.
 
-    The planner's world model is boxes and nothing else. It has no mesh, point-cloud or voxel channel,
-    so perceived geometry cannot reach it, and anything that is not box-shaped has to be enclosed in
-    one.
+    The planner takes three kinds of geometry and the choice between them is a real one. Boxes are
+    what an operator writes down and what a refusal can name. A mesh is how a container keeps its
+    hollow, so a cell can reach into a tote instead of treating it as a solid block. A distance field
+    over a grid is how the whole scene arrives at once, with nothing left out for want of a collision
+    slot: see :class:`PerceivedWorldConfig`, which turns what the cameras see into boxes, a field, or
+    both, and is on whenever this block is.
     """
 
     enabled: bool = Field(default=False)
@@ -352,6 +510,20 @@ class PlanningWorldConfig(StrictModel):
     payload: AttachedPayloadConfig = Field(default_factory=AttachedPayloadConfig)
     include_fixtures: bool = Field(default=True)
     require_registration: bool = Field(default=True)
+    perceived: PerceivedWorldConfig = Field(default_factory=PerceivedWorldConfig)
+    meshes: list[PlannerMeshConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_mesh_names(self) -> PlanningWorldConfig:
+        names = [m.name for m in self.meshes]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise ValueError(
+                f"planning_world.meshes declares {duplicates} more than once. The planner keys its "
+                "world by name, so duplicates collapse into one obstacle and the others are silently "
+                "absent."
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_support_declared(self) -> PlanningWorldConfig:

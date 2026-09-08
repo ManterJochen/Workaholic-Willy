@@ -74,6 +74,8 @@ logger = create_robot_logger("PlanningEnvironment", PLANNING_ENVIRONMENT_LOG_FIL
 ENV_CUROBO_PYTHON = "WILLY_CUROBO_PYTHON"              #: interpreter of the cuRobo env
 ENV_CUROBO_ROBOT = "WILLY_CUROBO_ROBOT"               #: cuRobo robot descriptor (default ``ur5e.yml``)
 ENV_CUROBO_CUBOID_CACHE = "WILLY_CUROBO_CUBOID_CACHE"  #: reserved collision-world cuboid slots
+ENV_CUROBO_MESH_CACHE = "WILLY_CUROBO_MESH_CACHE"      #: reserved collision-world mesh slots
+ENV_CUROBO_VOXEL_GRID = "WILLY_CUROBO_VOXEL_GRID"      #: live-scene grid, ``x,y,z,voxel`` in metres
 ENV_CUROBO_STDERR = "WILLY_CUROBO_STDERR"             #: optional server-stderr log file
 ENV_CUROBO_MAX_ATTEMPTS = "WILLY_CUROBO_MAX_ATTEMPTS"  #: sidecar: plan attempts (seed batches)
 ENV_CUROBO_GRAPH_FROM_ATTEMPT = "WILLY_CUROBO_GRAPH_FROM_ATTEMPT"  #: sidecar: first graph-seeded attempt
@@ -97,6 +99,24 @@ def curobo_robot_config() -> str:
 def curobo_cuboid_cache() -> str:
     """How many collision-world cuboid slots the sidecar reserves at boot."""
     return os.environ.get(ENV_CUROBO_CUBOID_CACHE, _DEFAULT_CUROBO_CUBOID_CACHE)
+
+
+def curobo_mesh_cache() -> str:
+    """Mesh slots the planner reserves at boot. ``"0"`` means the mesh channel is not available.
+
+    Reserving is what makes the channel exist at all: cuRobo allocates its collision storage once,
+    when the planner is built, so a mesh sent to a planner that reserved none has nowhere to go.
+    """
+    return os.environ.get(ENV_CUROBO_MESH_CACHE, "0")
+
+
+def curobo_voxel_grid() -> str:
+    """The live-scene grid as ``x,y,z,voxel`` in metres, or empty for no voxel storage.
+
+    Same reservation rule as the meshes, with one more number: the size and resolution of the grid
+    are fixed when the planner starts, because the storage is allocated for exactly that many cells.
+    """
+    return os.environ.get(ENV_CUROBO_VOXEL_GRID, "")
 
 
 def curobo_env_available() -> bool:

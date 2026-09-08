@@ -32,6 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
+from src.robot.safety.planning.world import planner_cuboid
 from src.willy_sim.harness.bootstrap import bootstrap_sim_cell
 from src.willy_sim.harness.cli import add_cell_arguments, cell_profile_kwargs
 from src.willy_sim.harness.gate import (
@@ -311,16 +312,12 @@ def build_service(
         arm._preflight = SafetyPreflight.from_safety_config(_safety, cell.robot.workspace_limits)
         if curobo_bin_world:
             _cuboids = [
-                {"name": fx.name,
-                 "dims_m": [2.0 * float(fx.half_extents_mm[0]) / 1000.0,
-                            2.0 * float(fx.half_extents_mm[1]) / 1000.0,
-                            2.0 * float(fx.half_extents_mm[2]) / 1000.0],
-                 "pose": [float(fx.center_mm[0]) / 1000.0, float(fx.center_mm[1]) / 1000.0,
-                          float(fx.center_mm[2]) / 1000.0, 1.0, 0.0, 0.0, 0.0]}
+                planner_cuboid(
+                    fx.name, fx.center_mm, [2.0 * float(h) for h in fx.half_extents_mm]
+                )
                 for fx in bin_walls
             ]
-            _cuboids.append({"name": "floor", "dims_m": [2.0, 2.0, 0.05],
-                             "pose": [0.0, 0.0, -0.026, 1.0, 0.0, 0.0, 0.0]})
+            _cuboids.append(planner_cuboid("floor", (0.0, 0.0, -26.0), (2000.0, 2000.0, 50.0)))
             _n = arm.set_curobo_world(_cuboids)
             print(f"[bin] {len(_fixtures)} walls -> SafetyPreflight + {_n} cuRobo obstacles (plans around the walls)",
                   flush=True)

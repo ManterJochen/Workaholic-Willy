@@ -33,6 +33,8 @@ from typing import Any
 
 import numpy as np
 
+from src.robot.safety.planning.world import planner_cuboid
+
 from src.willy_sim.run_sorting_demo import (
     _DECISION_BGR,
     _DECISION_TXT,
@@ -454,8 +456,8 @@ def record_clearing(out: str, *, headless: bool = True, fps: int = 24, capture_e
     # the walls buy nothing, while the low floor still keeps the arm from driving under the table. This
     # is the arrangement ``run_m2_pick`` uses to reach low table objects: no obstacle intrudes into the
     # grasp column.
-    _floor = {"name": "table_floor", "dims_m": [3.0, 3.0, 1.0],
-              "pose": [0.0, 0.0, -0.55, 1.0, 0.0, 0.0, 0.0]}  # 1 m-thick slab, top at z=-0.05 m
+    # 1 m-thick slab, top at z = -50 mm
+    _floor = planner_cuboid("table_floor", (0.0, 0.0, -550.0), (3000.0, 3000.0, 1000.0))
     n_world = int(arm.set_curobo_world([_floor]))
     print(f"[curobo-world] registered {n_world} obstacle(s) (low floor top=-50mm; walls omitted so the jaw "
           f"descends clean)", flush=True)

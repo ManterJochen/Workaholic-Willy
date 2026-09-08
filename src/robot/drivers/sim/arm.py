@@ -21,9 +21,9 @@ Three guarantees hold throughout:
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -49,8 +49,14 @@ from ...core import (
     RobotMotionRejected,
 )
 from ...safety import SafetyPreflight
+from ...safety._ur_kinematics import ur_link_origins_mm
 from ...safety.continuous_monitor import ContinuousCollisionMonitor, ContinuousGuardAbort
 from ...safety.planning import CuroboPlanClient, CuroboUnavailableError
+from ...safety.planning.live_world import WorldRefresh, refresh_planner_world
+from ...safety.planning.world import merge_planner_worlds
+
+if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from ...safety.planning.live_world import LivePlannerWorld
 from .adapter import (
     willy_joints_to_isaac,
     willy_pose_to_isaac,
@@ -290,6 +296,11 @@ class IsaacRobotArm(RobotArm):
         self._curobo_unavailable_reason: str = ""
         #: Obstacles re-sent underneath every scene registration; see set_planner_base_world.
         self._planner_base_world: list[dict] = []
+        #: The cell as the cameras see it, asked immediately before every plan. `None` is the
+        #: unchanged path: the planner keeps whatever world a runner last registered.
+        self._live_world: "LivePlannerWorld | None" = None
+        #: What the most recent refresh did, for a report and for an operator asking why.
+        self._last_world_refresh: "WorldRefresh | None" = None
 
         # The mock-mode kinematic cache, which is also the placeholder state before
         # connect. In mock_mode the motion methods update these in place and the reads
@@ -1048,6 +1059,13 @@ class IsaacRobotArm(RobotArm):
         except Exception as exc:  # noqa: BLE001 (no planner is "no plan", reported by the caller)
             _LOGGER.warning("planned joint move requested but cuRobo is unavailable: %s", exc)
             return None
+        stale = self._refresh_planner_world()
+        if stale:
+            # The one caller refuses on a `None` path, which is what a world nobody can
+            # vouch for has to produce: a joint move plans through the same cell a pose
+            # move does.
+            _LOGGER.error("planned joint move refused. %s", stale)
+            return None
         try:
             return client.plan_joint([float(q) for q in start], [float(q) for q in target])
         except CuroboUnavailableError as exc:
@@ -1163,9 +1181,7 @@ class IsaacRobotArm(RobotArm):
         keeps planning against the previous world on failure, and an obstacle the
         planner never received is one it routes straight through.
         """
-        merged = [*self._planner_base_world]
-        known = {c.get("name") for c in merged}
-        merged.extend(c for c in cuboids if c.get("name") not in known)
+        merged = merge_planner_worlds(self._planner_base_world, cuboids)
         try:
             count = self._get_curobo_client().set_world(merged)
         except CuroboUnavailableError:
@@ -1177,6 +1193,79 @@ class IsaacRobotArm(RobotArm):
                 "straight through", count, len(merged),
             )
         return count
+
+    @property
+    def live_planner_world(self) -> "LivePlannerWorld | None":
+        """What this arm asks before it plans, or `None` where nothing was handed in.
+
+        Read by whatever holds the scene, which is the pick loop: it is the only thing that
+        knows which object an attempt is reaching for, and that object has to be left out of
+        the world or the planner refuses to approach it.
+        """
+        return self._live_world
+
+    def set_live_planner_world(self, world: "LivePlannerWorld | None") -> None:
+        """Hand this arm the thing that answers what the cell looks like right now.
+
+        Handed in rather than built here, because a driver may not reach up into
+        perception: the composition root owns the cameras and the transforms and this arm
+        only ever asks. Setting `None` restores the behaviour of registering a world once
+        and planning against it forever.
+        """
+        self._live_world = world
+
+    @property
+    def last_world_refresh(self) -> "WorldRefresh | None":
+        """What the most recent refresh did, or `None` where none has run."""
+        return self._last_world_refresh
+
+    def _self_link_origins_mm(self) -> "list[list[float]] | None":
+        """Where this arm's own links are, in BASE millimetres, for taking the robot out of the view.
+
+        `None` where the model has no bundled kinematic chain or the arm is not connected.
+        The world source treats that as a cell that cannot describe itself and refuses to
+        build a perceived world, which is the right answer: a camera that can see the robot
+        and a robot that cannot say where it is produce an obstacle exactly where the arm
+        is standing.
+        """
+        if self._arm_subset is None:
+            return None
+        joints = np.asarray(self._arm_subset.get_joint_positions(), dtype=np.float64)
+        ordered = np.asarray(
+            [float(joints[_ARM_JOINT_NAMES.index(name)]) for name in _ARM_JOINT_NAMES],
+            dtype=np.float64,
+        )
+        origins = ur_link_origins_mm(str(self._config.robot_model), ordered)
+        # Plain numbers across the boundary: the world source is pure geometry and takes
+        # points, not this repository's arrays.
+        return None if origins is None else [[float(v) for v in point] for point in origins]
+
+    def _refresh_planner_world(self, *, near_point_mm: "Sequence[float] | None" = None) -> str:
+        """Refresh the planner world before a plan. An empty string means it may go ahead.
+
+        It returns the reason instead of raising, because both callers already have a shape
+        for refusing a motion and neither wants an exception mid-pick. Without a live world
+        configured this does nothing and returns nothing.
+        """
+        if self._live_world is None:
+            return ""
+        refresh = refresh_planner_world(
+            source=self._live_world,
+            client=self._get_curobo_client(),
+            link_origins_mm=self._self_link_origins_mm(),
+            near_point_mm=near_point_mm,
+        )
+        self._last_world_refresh = refresh
+        # The guard hears about the same obstacles, including the empty list when the world
+        # could not be vouched for: a guard left holding boxes from a refused refresh is
+        # checking a cell that no longer exists.
+        if self._preflight is not None:
+            self._preflight.set_perceived_obstacles(refresh.guard_boxes)
+        if not refresh.ok:
+            _LOGGER.error("%s", refresh.render())
+            return refresh.render()
+        _LOGGER.info("%s", refresh.render())
+        return ""
 
     def _drive_curobo(
         self, pose: "Pose", *, current_joints: "JointPositions | None" = None
@@ -1215,6 +1304,12 @@ class IsaacRobotArm(RobotArm):
         arm_q = np.asarray(self._arm_subset.get_joint_positions(), dtype=np.float64)  # _ARM_JOINT_NAMES order
         try:
             client = self._get_curobo_client()
+            stale = self._refresh_planner_world(near_point_mm=[float(v) for v in pose.position_mm])
+            if stale:
+                return MotionResult.failed(
+                    MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+                    message=f"planner world not refreshed, so this move is refused. {stale}",
+                )
             start = [float(arm_q[_ARM_JOINT_NAMES.index(n)]) for n in client.joint_names]  # -> server order
             traj = client.plan(start, goal_pos_m, goal_quat_wxyz)
         except CuroboUnavailableError as exc:

@@ -197,6 +197,111 @@ class SelfCollisionGuardTests(unittest.TestCase):
                 self.assertFalse(d.accepted, msg=d.message)
                 self.assertIs(d.reason, SafetyReason.SELF_COLLISION)
 
+    #: Where a perceived box has to sit for each backend to be able to see it at all.
+    #:
+    #: The two backends check different things, which the module docstring states and this pins: the
+    #: capsule proxy roots the tool in ``target_pose`` and compares it against boxes, while the
+    #: exact-mesh path roots every link in ``target_joints`` and compares those. A test that put one
+    #: box in one place would prove only whichever half its backend happens to read.
+    _PERCEIVED_CASES = (
+        ("capsule", (600.0, 200.0, 300.0), (600.0, 200.0, 300.0)),
+        ("fcl", (-422.3, -232.9, 486.7), (-422.3, -232.9, 486.7)),
+    )
+
+    def test_a_perceived_obstacle_refuses_the_same_way_a_declared_one_does(self) -> None:
+        """The planner and this guard have to be looking at the same cell.
+
+        A planner routing around a tote the guard cannot see gives the worst of both: a path that
+        avoids the tote, and a gate that would have passed one straight through it. So an obstacle a
+        camera saw is refused exactly as a fixture written in the config is, and it says which one.
+        """
+        from src.robot.safety._capsule import AxisAlignedBox
+
+        for backend, tool_mm, box_mm in self._PERCEIVED_CASES:
+            with self.subTest(backend=backend):
+                guard = SelfCollisionGuard(SelfCollisionSafetyConfig(backend=backend))
+                ctx = self._ctx(
+                    pose=_pose(*tool_mm),
+                    joints=JointPositions(list(self._FIXTURE_JOINTS)),
+                    arm=_ur_arm(),
+                )
+                self.assertTrue(guard.evaluate(ctx).accepted, "nothing is there yet")
+
+                guard.set_perceived_fixtures(
+                    [
+                        AxisAlignedBox(
+                            center_mm=np.asarray(box_mm, dtype=np.float64),
+                            half_extents_mm=np.asarray([60.0, 60.0, 60.0], dtype=np.float64),
+                            name="seen_00_tote",
+                        )
+                    ]
+                )
+                refused = guard.evaluate(ctx)
+                self.assertFalse(refused.accepted, msg=refused.message)
+                self.assertIs(refused.reason, SafetyReason.SELF_COLLISION)
+                self.assertIn(
+                    "seen_00_tote", refused.message,
+                    "a refusal that will not say which box refused sends an operator to look at all "
+                    "of them",
+                )
+
+    def test_clearing_the_perceived_obstacles_puts_the_cell_back(self) -> None:
+        """The moment nobody can vouch for what a camera saw, the guard must stop believing it."""
+        from src.robot.safety._capsule import AxisAlignedBox
+
+        spot = (600.0, 200.0, 300.0)
+        guard = SelfCollisionGuard(SelfCollisionSafetyConfig(backend="capsule"))
+        ctx = self._ctx(
+            pose=_pose(*spot),
+            joints=JointPositions(list(self._FIXTURE_JOINTS)),
+            arm=_ur_arm(),
+        )
+        guard.set_perceived_fixtures(
+            [
+                AxisAlignedBox(
+                    center_mm=np.asarray(spot, dtype=np.float64),
+                    half_extents_mm=np.asarray([60.0, 60.0, 60.0], dtype=np.float64),
+                    name="seen_00",
+                )
+            ]
+        )
+        self.assertFalse(guard.evaluate(ctx).accepted)
+
+        guard.set_perceived_fixtures([])
+        self.assertTrue(guard.evaluate(ctx).accepted)
+
+    def test_a_declared_fixture_survives_every_perceived_one(self) -> None:
+        """Clearing what a camera saw must never take the bench with it."""
+        from src.robot.safety._capsule import AxisAlignedBox
+
+        spot = (600.0, 200.0, 300.0)
+        declared = FixtureBoxConfig(
+            name="post", center_mm=spot, half_extents_mm=(60.0, 60.0, 60.0)
+        )
+        guard = SelfCollisionGuard(
+            SelfCollisionSafetyConfig(fixtures=[declared], backend="capsule")
+        )
+        ctx = self._ctx(
+            pose=_pose(*spot),
+            joints=JointPositions(list(self._FIXTURE_JOINTS)),
+            arm=_ur_arm(),
+        )
+
+        guard.set_perceived_fixtures(
+            [
+                AxisAlignedBox(
+                    center_mm=np.asarray([2000.0, 0.0, 0.0], dtype=np.float64),
+                    half_extents_mm=np.asarray([10.0, 10.0, 10.0], dtype=np.float64),
+                    name="seen_00",
+                )
+            ]
+        )
+        guard.set_perceived_fixtures([])
+
+        refused = guard.evaluate(ctx)
+        self.assertFalse(refused.accepted, msg=refused.message)
+        self.assertIn("post", refused.message)
+
     def test_the_capsule_proxy_cannot_see_the_tool_on_a_joint_only_context(self) -> None:
         """The reason the shipped default is ``fcl``.
 

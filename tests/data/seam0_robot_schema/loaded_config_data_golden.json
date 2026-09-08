@@ -607,7 +607,23 @@
           "lateral_margin_mm": 10.0
         },
         "include_fixtures": true,
-        "require_registration": true
+        "require_registration": true,
+        "perceived": {
+          "enabled": true,
+          "max_age_ms": 500.0,
+          "pixel_stride": 2,
+          "voxel_size_mm": 10.0,
+          "voxel_field_mm": 0.0,
+          "cluster_voxel_mm": 25.0,
+          "min_points": 12,
+          "margin_mm": 15.0,
+          "max_boxes": 8,
+          "floor_to_plane": true,
+          "plane_clearance_mm": 5.0,
+          "self_radius_mm": 90.0,
+          "tool_radius_mm": 150.0
+        },
+        "meshes": []
       },
       "trajectory_check": {
         "enabled": false,

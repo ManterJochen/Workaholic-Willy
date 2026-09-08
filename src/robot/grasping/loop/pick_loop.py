@@ -1033,6 +1033,7 @@ class BinPickingOrchestrator:
             best_result, target_index, ordering_decision = (
                 self._best_result_over_segmentations(frame)
             )
+            self._offer_masks_to_planner_world(frame, target_index)
             if best_result is None or not best_result.is_success:
                 action = self._decide_action(
                     best_result.reasons if best_result is not None else ()
@@ -1980,6 +1981,41 @@ class BinPickingOrchestrator:
         if with_neighbours:
             self._fusion_geometry_telemetry["fused_neighbour_points"] = fused.neighbour_points
         return fused
+
+    def _offer_masks_to_planner_world(
+        self, frame: "PerceptionFrame", target_index: "int | None"
+    ) -> None:
+        """Tell the planner world which object this attempt is reaching for, and what the rest are.
+
+        Two things come out of this and only one is optional. The names let a refusal say
+        which object refused instead of printing a number. The target has to be left out of
+        the world entirely: it is the one obstacle the arm is deliberately driving into, and
+        a goal inside an obstacle has no plan at all.
+
+        Duck-typed through the arm, because a cell without a live planner world has nothing
+        to offer and this loop has no business knowing what one is. An arm that answers
+        `None` costs one attribute lookup per attempt.
+
+        The masks carry the frame capture time, not the time of this call. They age exactly
+        like the frame they came from, so a target mask from half a second ago stops being
+        used rather than cutting a hole in the world where the object no longer is.
+        """
+        world = getattr(self.arm, "live_planner_world", None)
+        if world is None:
+            return
+        labelled = [
+            (str(getattr(seg, "label", "") or f"object_{index}"), mask)
+            for index, seg in enumerate(frame.segmentations)
+            if (mask := getattr(seg, "mask", None)) is not None
+        ]
+        exclude = []
+        if target_index is not None and 0 <= target_index < len(frame.segmentations):
+            target_mask = getattr(frame.segmentations[target_index], "mask", None)
+            if target_mask is not None:
+                exclude.append(target_mask)
+        world.offer_segmentation(
+            labelled_masks=labelled, exclude_masks=exclude, timestamp=frame.timestamp
+        )
 
     def _best_result_over_segmentations(
         self, frame: PerceptionFrame

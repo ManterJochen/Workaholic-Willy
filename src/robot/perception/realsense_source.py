@@ -20,6 +20,7 @@ proven answer.
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from typing import Any
 
@@ -166,6 +167,20 @@ class RealSenseVisionPerceptionSource:
             return None
         return np.ascontiguousarray(np.asarray(colour))
 
+    @property
+    def streamer(self) -> Any:
+        """The camera this source reads, for a consumer that needs depth without the models.
+
+        The planner world is that consumer. It refreshes before every motion, and a full
+        perceive runs a detector and a segmenter for hundreds of milliseconds to answer a
+        question it never asks: it wants to know where geometry is, not what it is called.
+
+        Handed out rather than reached for. The composition root owns the rig and this
+        source owns nothing it did not receive, so this is a view of the same handle rather
+        than a second one.
+        """
+        return self._streamer
+
     def close(self) -> None:
         """Release the camera. Idempotent, and it never raises.
 
@@ -231,6 +246,13 @@ class RealSenseVisionPerceptionSource:
             segmentations.append(seg)
 
         rgb = bgr[..., ::-1]  # BGR -> RGB for any debugging consumer (no reader in robot/ today)
+        # `rendered_depth_mm` is the surface as the sensor reported it, and the loop above
+        # did not touch it: only `depth_mm` carries the grasp-referenced overwrite.
+        # Publishing it costs a reference and is the difference between an obstacle with a
+        # body and a sheet at its top face. `time.time` rather than a monotonic clock
+        # because a consumer compares this against its own wall clock to decide whether the
+        # world is too old to plan against.
         return PerceptionFrame(
-            depth_map=depth_mm, intrinsics=intrinsics, segmentations=tuple(segmentations), rgb=rgb
+            depth_map=depth_mm, intrinsics=intrinsics, segmentations=tuple(segmentations), rgb=rgb,
+            timestamp=time.time(), surface_depth_map=rendered_depth_mm,
         )

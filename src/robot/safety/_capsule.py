@@ -51,10 +51,17 @@ class Capsule:
 @dataclass(frozen=True, slots=True)
 class AxisAlignedBox:
     """An axis-aligned box in the robot base frame, as ``center_mm`` and per-axis
-    ``half_extents_mm``."""
+    ``half_extents_mm``.
+
+    ``name`` is what an operator reads in a refusal. It defaults to empty, which every existing
+    caller relies on, and the guards fall back to a positional name when it is. A cell with three
+    declared fixtures and a refusal that says only "fixture" tells an operator to go and look at all
+    three.
+    """
 
     center_mm: np.ndarray
     half_extents_mm: np.ndarray
+    name: str = ""
 
 
 def segment_point_distance_mm(p0: np.ndarray, p1: np.ndarray, q: np.ndarray) -> float:

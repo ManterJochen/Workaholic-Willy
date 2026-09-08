@@ -45,11 +45,20 @@ ROBOT = sys.argv[1] if len(sys.argv) > 1 else "ur5e.yml"
 # every attempt. Both are overridable through the environment.
 _PLAN_MAX_ATTEMPTS = int(os.environ.get("WILLY_CUROBO_MAX_ATTEMPTS", "16"))
 _PLAN_GRAPH_FROM = int(os.environ.get("WILLY_CUROBO_GRAPH_FROM_ATTEMPT", "1"))
-# cuRobo sizes its collision-world cache to the cuboid count of the initial scene, so
-# the boot scene carries this many far-away placeholder cuboids to reserve the slots,
-# and `set_world` later replaces them with the real obstacles, the bin walls and
-# neighbour bodies. argv[2] overrides the reserved count.
+# How many obstacles of each kind this planner can ever hold. cuRobo allocates its
+# collision storage once, at construction, and `collision_cache` is the supported way to
+# say how much: the alternative this replaced was booting fifteen far-away placeholder
+# cuboids purely to make the initial scene big enough, which reserved cuboids and nothing
+# else.
+#
+# Reserving a kind is what makes it available at all. A mesh sent to a planner built with
+# no mesh storage has nowhere to go, and a voxel grid likewise, so the two env vars below
+# are the difference between a channel existing and not.
 CUBOID_CACHE = int(sys.argv[2]) if len(sys.argv) > 2 else 16
+MESH_CACHE = int(os.environ.get("WILLY_CUROBO_MESH_CACHE", "0") or 0)
+#: `x,y,z,voxel` in metres: the size of the volume a live scene can occupy and how finely
+#: it is cut. Unset leaves the planner with no voxel storage, which changes nothing.
+VOXEL_GRID = os.environ.get("WILLY_CUROBO_VOXEL_GRID", "").strip()
 
 
 #: The id of the request being answered. Without it a late reply is indistinguishable
@@ -66,6 +75,13 @@ CUBOID_CACHE = int(sys.argv[2]) if len(sys.argv) > 2 else 16
 #: untraceable case this removes.
 _REQUEST_ID: object = None
 
+#: The cuboids most recently registered, re-sent underneath a voxel grid.
+#:
+#: Registration replaces the collision world rather than extending it, so a caller that
+#: sends a live scene would otherwise delete the bench, the bin and every fixture it
+#: declared, with nothing said about it anywhere.
+_LAST_CUBOIDS: dict = {}
+
 
 def _emit(obj: dict) -> None:
     if _REQUEST_ID is not None:
@@ -81,13 +97,17 @@ try:
     from curobo.motion_planner import MotionPlanner, MotionPlannerCfg  # type: ignore[import-not-found]
     from curobo.types import GoalToolPose, JointState  # type: ignore[import-not-found]
 
-    # The boot world is a real table plus CUBOID_CACHE-1 far-away placeholder cuboids
-    # that reserve collision slots for `set_world` to fill with the scene obstacles. The
-    # table is load-bearing: with no floor, cuRobo plans a contorted path from park to
-    # pre-grasp that ends far from the goal.
+    # The boot world is a real table and nothing else. It is load-bearing: with no floor,
+    # cuRobo plans a contorted path from park to pre-grasp that ends far from the goal.
+    # The slots for everything a caller registers later are reserved through
+    # `collision_cache` below rather than by filling this scene with placeholders.
     _world = {"table": {"dims": [1.6, 1.6, 0.05], "pose": [0.0, 0.0, -0.026, 1, 0, 0, 0]}}
-    _world.update({f"rsv{i}": {"dims": [0.01, 0.01, 0.01], "pose": [0.0, 0.0, -100.0 - i, 1, 0, 0, 0]}
-                   for i in range(max(0, CUBOID_CACHE - 1))})
+    _collision_cache: dict = {"cuboid": max(1, CUBOID_CACHE)}
+    if MESH_CACHE > 0:
+        _collision_cache["mesh"] = MESH_CACHE
+    if VOXEL_GRID:
+        _dx, _dy, _dz, _vs = (float(v) for v in VOXEL_GRID.split(","))
+        _collision_cache["voxel"] = {"layers": 1, "dims": [_dx, _dy, _dz], "voxel_size": _vs}
     # Teach the planner the clearance the safety guard will demand, so it stops
     # returning paths the guard was always going to refuse: measured, 9.44 to 9.47 mm
     # plans against a 10.000 mm guard margin. The transform lives in a sibling module,
@@ -147,7 +167,14 @@ try:
             print(f"[attach] {_asrc} already declares {ATTACHED_LINK_NAME}; using it as it is",
                   file=sys.stderr, flush=True)
 
-    _planner = MotionPlanner(MotionPlannerCfg.create(robot=_ROBOT_IN_USE, scene_model={"cuboid": _world}))
+    _planner = MotionPlanner(
+        MotionPlannerCfg.create(
+            robot=_ROBOT_IN_USE,
+            scene_model={"cuboid": _world},
+            collision_cache=_collision_cache,
+        )
+    )
+    print(f"[cache] {_collision_cache}", file=sys.stderr, flush=True)
     _planner.warmup(enable_graph=True, num_warmup_iterations=5)
     _DT = float(_planner.trajopt_solver.config.interpolation_dt)
     _N = len(_planner.joint_names)
@@ -273,14 +300,82 @@ for _line in sys.stdin:
             print(f"[detach] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             _emit({"detached": False, "reason": f"{type(exc).__name__}: {exc}"})
         continue
+    if cmd == "set_voxels":
+        # Register the live scene as a distance field over a grid, which is the channel
+        # that carries a whole cell rather than the eight boxes a slot budget leaves room
+        # for.
+        #
+        # ⛔ THE SIGN IS THE WHOLE THING, AND THE WRONG ONE FAILS SILENTLY. cuRobo reads a
+        # value above minus half a voxel as occupied, so the field is positive INSIDE an
+        # obstacle and negative in free space, which is the opposite of the
+        # distance-to-obstacle a person would write. Measured both ways against the same
+        # wall: positive-inside refused the path, positive-outside registered without an
+        # error, reported success, and planned straight through it.
+        #
+        # The field arrives as a file path rather than as numbers in this request: a 30 mm
+        # grid over a 2 m cell is 179,560 values, and that is not something to send down a
+        # JSON pipe once per motion. Reading it here costs about 2 ms.
+        try:
+            if _collision_cache.get("voxel") is None:
+                _emit({"voxels_set": None,
+                       "reason": "this planner was started with no voxel storage; set "
+                                 "WILLY_CUROBO_VOXEL_GRID before it starts"})
+                continue
+            path = req.get("path")
+            if not path:
+                _planner.update_world(SceneCfg.create({"cuboid": _LAST_CUBOIDS or _world}))
+                _emit({"voxels_set": 0})
+                continue
+            import numpy as _np  # type: ignore[import-not-found]
+
+            field = _np.load(path)
+            grid = {
+                "scene": {
+                    "dims": list(req["dims_m"]),
+                    "pose": list(req["pose"]),
+                    "voxel_size": float(req["voxel_size_m"]),
+                    "feature_tensor": torch.as_tensor(
+                        field, dtype=torch.float16, device="cuda"
+                    ),
+                }
+            }
+            _planner.update_world(
+                SceneCfg.create({"cuboid": _LAST_CUBOIDS or _world, "voxel": grid})
+            )
+            _emit({"voxels_set": int(field.shape[0])})
+        except Exception as exc:  # noqa: BLE001 - report, never take the sidecar down mid-session
+            print(f"[set_voxels] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            _emit({"voxels_set": None, "reason": f"{type(exc).__name__}: {exc}"})
+        continue
     if cmd == "set_world":
-        # Replace the cuRobo collision world with the caller obstacles, which in sim are
-        # the bin walls and neighbour cuboids, in the base frame in metres. The cuboids
-        # are [{"name","dims_m":[x,y,z],"pose":[px,py,pz,qw,qx,qy,qz]}].
+        # Replace the cuRobo collision world with the caller obstacles, in the base frame
+        # in metres.
+        #   cuboids: [{"name","dims_m":[x,y,z],"pose":[px,py,pz,qw,qx,qy,qz]}]
+        #   meshes:  [{"name","file_path","pose":[...], "scale":[sx,sy,sz] optional}]
+        #
+        # A mesh is how a container reaches the planner as the shape it is. As a box a
+        # tote is solid and the cell can never reach into it; as a mesh it keeps its
+        # hollow. The file is read here rather than sent through the pipe, because a tote
+        # is tens of thousands of triangles and this is a newline-delimited JSON protocol.
         try:
             world = {c["name"]: {"dims": list(c["dims_m"]), "pose": list(c["pose"])} for c in req["cuboids"]}
-            _planner.update_world(SceneCfg.create({"cuboid": world}))
-            _emit({"world_set": len(world)})
+            scene = {"cuboid": world}
+            meshes = req.get("meshes") or []
+            if meshes:
+                scene["mesh"] = {
+                    m["name"]: {
+                        "file_path": m["file_path"],
+                        "pose": list(m["pose"]),
+                        **({"scale": list(m["scale"])} if m.get("scale") else {}),
+                    }
+                    for m in meshes
+                }
+            _planner.update_world(SceneCfg.create(scene))
+            # Remembered because registering voxels replaces the world too, and the
+            # declared boxes have to go back underneath them or the bench disappears the
+            # moment a camera speaks.
+            _LAST_CUBOIDS = world
+            _emit({"world_set": len(world) + len(meshes)})
         except Exception as exc:  # noqa: BLE001
             _emit({"world_set": None, "reason": f"{type(exc).__name__}: {exc}"})
         continue

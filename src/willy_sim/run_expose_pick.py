@@ -55,6 +55,8 @@ from typing import Any
 
 import numpy as np
 
+from src.robot.safety.planning.world import planner_cuboid
+
 # The bin-clearing cell and its scoring helpers, reused. These imports stay module-level and
 # import-safe because Isaac is imported lazily inside record_expose.
 from src.willy_sim.run_bin_clearing_demo import (
@@ -240,7 +242,7 @@ def record_expose(out: str, *, headless: bool = True, prompt: str | None = None,
 
     # The cuRobo world is one low floor with its top at z=-50 mm and no KLT walls, so the jaw descends
     # clear. run_bin_clearing_demo registers the same floor.
-    _floor = {"name": "table_floor", "dims_m": [3.0, 3.0, 1.0], "pose": [0.0, 0.0, -0.55, 1.0, 0.0, 0.0, 0.0]}
+    _floor = planner_cuboid("table_floor", (0.0, 0.0, -550.0), (3000.0, 3000.0, 1000.0))
     n_world = int(arm.set_curobo_world([_floor]))
     print(f"[curobo-world] registered {n_world} obstacle(s)", flush=True)
     if n_world <= 0:
