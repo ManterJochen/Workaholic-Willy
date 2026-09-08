@@ -83,7 +83,6 @@ class MultiObjectVisionPerceptionSource:
         object_labels: "list[str] | None" = None,
         session: Any | None = None,
         warmup_steps: int = 20,
-        grasp_top_penetration_mm: float = 12.0,
         mask_completion: MaskCompletion = DEFAULT_MASK_COMPLETION,
     ) -> None:
         # Either a ready-made perception backend, or the detector and segmenter a runner passes.
@@ -108,7 +107,6 @@ class MultiObjectVisionPerceptionSource:
         self._object_labels = list(object_labels) if object_labels else None
         self._session = session
         self._warmup = max(1, warmup_steps)
-        self._grasp_top_penetration_mm = float(grasp_top_penetration_mm)
         #: Mask-completion policy. The default is ``DEFAULT_MASK_COMPLETION``;
         #: `robot/perception/mask_completion.py` carries what each policy does and why.
         self._mask_completion = MaskCompletion(mask_completion)
@@ -120,9 +118,8 @@ class MultiObjectVisionPerceptionSource:
         )
         self._log.info(
             "multi-object vision source ready: prompt=%r canonical_labels=%d warmup=%d "
-            "top_penetration=%.1f mm mask_completion=%s",
-            prompt, len(self._object_labels or ()), self._warmup,
-            self._grasp_top_penetration_mm, self._mask_completion,
+            "mask_completion=%s",
+            prompt, len(self._object_labels or ()), self._warmup, self._mask_completion,
         )
         camera.add_distance_to_image_plane_to_frame()
         try:
@@ -195,7 +192,7 @@ class MultiObjectVisionPerceptionSource:
 
         depth_mm = metres_to_millimetres(np.asarray(self._camera.get_depth(), dtype=np.float64))
         depth_mm = np.where(np.isfinite(depth_mm), depth_mm, 0.0)
-        rendered_depth_mm = depth_mm.copy()  # top-referencing reads the true surface from here
+        rendered_depth_mm = depth_mm.copy()  # a separate array, so noise on one does not land on both
         intrinsics = np.asarray(self._camera.get_intrinsics_matrix(), dtype=np.float64)
 
         frame = self._camera.get_current_frame()
@@ -230,12 +227,6 @@ class MultiObjectVisionPerceptionSource:
                 # SegmentationResult is frozen, so the relabelled, mask-completed segmentation is
                 # built with replace: the same values in a new instance, never mutated in place.
                 seg = replace(seg, label=seg_label, mask=mask.astype(np.uint8))
-                if mask.any():
-                    vals = rendered_depth_mm[mask]
-                    vals = vals[vals > 0.0]
-                    if vals.size:
-                        grasp_depth_mm = float(np.min(vals)) + self._grasp_top_penetration_mm
-                        depth_mm = np.where(mask, grasp_depth_mm, depth_mm)
                 segmentations.append(seg)
                 if not mask.any():
                     empty_masks += 1
@@ -266,9 +257,11 @@ class MultiObjectVisionPerceptionSource:
                 len(segmentations), self._detect_prompt(),
                 (time.perf_counter() - started) * 1000.0, empty_masks, depth_mm.shape,
             )
-        # `rendered_depth_mm` is what the camera rendered, before the grasp-referenced
-        # overwrite above. A consumer building obstacle geometry needs the body of an
-        # object, and `depth_map` holds a sheet at its top face.
+        # What the camera rendered, under a mask as everywhere else. This source used to replace
+        # every pixel under a detection with one number, the nearest surface plus 12 mm, so an
+        # object reached the calculator as a flat sheet at its top face with no body and no
+        # sides. The grasp anchor is one number about one candidate and is decided by
+        # `grasping.geometry`; the picture the rest of the stack reasons from is the measurement.
         return PerceptionFrame(
             depth_map=depth_mm, intrinsics=intrinsics, segmentations=tuple(segmentations), rgb=rgb,
             timestamp=time.time(), surface_depth_map=rendered_depth_mm,

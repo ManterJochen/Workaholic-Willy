@@ -151,6 +151,39 @@ def preflight_calculator(robot_cfg: "RobotConfig") -> str:
     return choice
 
 
+#: The depth levers on `grasping.geometry`, with the value that means "do nothing". Only a value
+#: that differs from these is forwarded, for two reasons. A cell that configures none of them builds
+#: the calculator with exactly the arguments it built before, so the default path is unchanged. And
+#: the deep branch below refuses any active kwarg it cannot honour: forwarding the do-nothing value
+#: unconditionally would refuse every deep cell over settings that ask for nothing.
+_DEPTH_LEVERS: Final[dict[str, Any]] = {
+    "grasp_depth_reference": "centre",
+    "grasp_top_penetration_mm": 0.0,
+    "grasp_top_quantile": 10.0,
+    "depth_band_mm": None,
+    "depth_band_near_pct": 10.0,
+}
+
+
+def _depth_kwargs(robot_cfg: "RobotConfig", supplied: "dict[str, Any]") -> "dict[str, Any]":
+    """What `grasping.geometry` asks the calculator to do with the depth under a mask.
+
+    An argument the construction site passed already wins: an explicit value at the call site is a
+    deliberate choice by a runner, and config is the default for cells that do not make one.
+    """
+    geometry = getattr(getattr(robot_cfg, "grasping", None), "geometry", None)
+    if geometry is None:
+        return {}
+    out: dict[str, Any] = {}
+    for name, inert in _DEPTH_LEVERS.items():
+        if name in supplied:
+            continue
+        value = getattr(geometry, name, inert)
+        if value != inert:
+            out[name] = value
+    return out
+
+
 def build_calculator(robot_cfg: "RobotConfig", **kwargs: Any) -> Any:
     """The generator this cell's config asks for, built from ``kwargs`` common to both.
 
@@ -159,6 +192,7 @@ def build_calculator(robot_cfg: "RobotConfig", **kwargs: Any) -> Any:
     understand, which is the protocol's rule and the reason a new analytic config block cannot
     break it.
     """
+    kwargs.update(_depth_kwargs(robot_cfg, kwargs))
     choice = str(getattr(robot_cfg.grasping, "calculator", "geometric"))
     if choice == "geometric":
         from src.robot.grasping.generation.calculator import GraspCalculator  # noqa: PLC0415

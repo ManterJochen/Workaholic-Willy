@@ -313,7 +313,7 @@ class RobustnessTests(unittest.TestCase):
         _ = io
 
     def test_explaining_a_camera_key_with_a_decorated_comment_does_not_crash(self) -> None:
-        self.assertEqual(main(["explain", "camera.cameras.active_mode"]), 0)
+        self.assertEqual(main(["explain", "camera.cameras.primary_rig_id"]), 0)
 
 
 class VendorCouplingTests(unittest.TestCase):

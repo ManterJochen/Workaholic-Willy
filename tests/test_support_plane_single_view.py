@@ -40,6 +40,9 @@ import unittest
 import numpy as np
 
 from src.robot.grasping.collision import resolve_support_plane
+from src.robot.grasping.loop.pick_loop import (
+    _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM,
+)
 
 
 class _Seg:
@@ -150,6 +153,83 @@ class TheConsequenceOfAFlatCloudIsThePlaneOnTopOfTheObjectTests(unittest.TestCas
             declared_height_mm=0.0, target_clouds_base_mm=[reaching], refine_from_target=True,
         )
         self.assertAlmostEqual(resolved.plane.offset_mm, 0.0)
+
+
+class TheExtentIsMeasuredInTheFrameTheNormalLivesInTests(unittest.TestCase):
+    """⛔ THE GUARD READ THE CAMERA'S DEPTH SPAN AND CALLED IT HEIGHT.
+
+    `support_config.normal` is a BASE vector and the target cloud arrives in CAMERA, so the guard
+    projected camera coordinates onto a base-frame axis. Every test above is a pure z-flip, where the
+    camera's depth axis and the base's height axis are the same line up to a sign, so none of them
+    could see it. It was harmless only because the perception producer flattened the depth under each
+    mask: the extent was exactly 0.0 in both frames and this branch could never fire either way.
+
+    A camera looking down at 45 degrees is the case that separates them, and it takes a scene built
+    for it. A surface that is FLAT IN BASE appears to such a camera as a depth ramp, so the guard
+    measured in CAMERA sees tens of millimetres of "extent" where the object has no height at all,
+    clears, and lets the support plane be relocated onto the top of the object. Every candidate below
+    it is then rejected as under the table. That is the 577 mm defect's family: a quantity used in
+    the wrong frame, where the wrong answer is plausible.
+    """
+
+    #: A camera 800 mm up and 800 mm out, tilted 45 degrees down. Its depth axis is not the base
+    #: height axis, which is the whole point.
+    _S = 0.7071067811865476
+    _TILTED = np.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, -_S, -_S, 800.0],
+        [0.0, -_S, _S, 800.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ])
+
+    def _flat_in_base(self, rows: slice, cols: slice) -> "tuple[_Seg, _Frame]":
+        """A depth image whose masked pixels all land at ONE height in BASE.
+
+        base_z = -s*y + s*z + 800 with y = (v - cy) * z / fy, so holding base_z constant means
+        z * (1 - (v - cy) / fy) is constant. The result is a ramp in the image and a plane in BASE.
+        """
+        fy, cy = float(_K[1, 1]), float(_K[1, 2])
+        depth = np.zeros((60, 60), dtype=np.float32)
+        mask = np.zeros((60, 60), dtype=bool)
+        mask[rows, cols] = True
+        for v in range(*rows.indices(60)):
+            depth[v, cols] = 700.0 / (1.0 - (v - cy) / fy)
+        return _Seg(mask), _Frame(depth)
+
+    def test_the_scene_really_is_flat_in_base_and_a_ramp_in_the_camera(self) -> None:
+        """The control. Without it the test below could pass because the scene is degenerate."""
+        seg, frame = self._flat_in_base(slice(10, 50), slice(10, 50))
+        loop = _loop_with(None, _K)  # no support config -> no guard -> the raw base cloud
+
+        cloud = loop._target_cloud_base_mm(seg, frame, self._TILTED)
+
+        assert cloud is not None
+        # A micron of tolerance: the depth image is float32, so the construction is exact only
+        # to that. The quantity under test is tens of millimetres.
+        self.assertLess(float(cloud[:, 2].max() - cloud[:, 2].min()), 1e-3, "flat in BASE")
+        under_mask = np.asarray(frame.depth_map)[np.asarray(seg.mask).astype(bool)]
+        self.assertGreater(float(under_mask.max() - under_mask.min()),
+                           _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM, "a ramp in the CAMERA")
+
+    def test_a_flat_top_face_seen_OBLIQUELY_refuses_to_locate_the_support(self) -> None:
+        seg, frame = self._flat_in_base(slice(10, 50), slice(10, 50))
+        loop = _loop_with(_Support(), _K)
+
+        self.assertIsNone(loop._target_cloud_base_mm(seg, frame, self._TILTED))
+
+    def test_the_returned_cloud_is_still_the_base_frame_one(self) -> None:
+        """The repair moved the guard below the transform. What comes back must not have moved."""
+        seg, frame = _depth_and_mask(flat=False)
+        loop = _loop_with(_Support(), _K)
+
+        cloud = loop._target_cloud_base_mm(seg, frame, _CAM_TO_BASE)
+
+        self.assertIsNotNone(cloud)
+        assert cloud is not None
+        # Straight down from 800 mm: base z = 800 - camera z, so a 700..760 mm depth ramp lands at
+        # 40..100 mm above the bench.
+        self.assertAlmostEqual(float(cloud[:, 2].min()), 40.0, places=3)
+        self.assertAlmostEqual(float(cloud[:, 2].max()), 100.0, places=3)
 
 
 if __name__ == "__main__":  # pragma: no cover

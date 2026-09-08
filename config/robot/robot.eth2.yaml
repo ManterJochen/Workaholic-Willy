@@ -51,26 +51,29 @@ robot:
       # artifact for the first `source: rgbd` rig in `camera.cameras.rigs`, the primary camera.
       extrinsics_artifact_path: "calibration/real/eth_cam_left.json"
 
-      # Every camera except the primary, one entry per camera, each with its own artifact.
+      # Every camera this cell fuses, the primary included, one entry each with its own artifact.
       #
-      # The primary is omitted on purpose, and that is the trap of the whole file. Four places
-      # read this map and two of them disagree about what belongs in it. `_build_multi_camera_rig`
-      # builds the extra-camera rig from this map with the primary filtered out, because the
-      # primary already streams through the main perception source. The orchestrator's
-      # `configured_camera_ids` is built from the same map with only disabled entries dropped,
-      # and the pick loop then reports every configured camera that delivered no frame. List the
-      # primary here and it is permanently among the missing: a warning on every pick under
-      # `on_camera_unavailable: degrade`, and a raised RuntimeError on every pick under
-      # `refuse`.
+      # The primary used to be left out here, and that asymmetry cost two things. The counter that
+      # warns about a single-view cell reads this map, so a correctly configured two-camera cell was
+      # told it had one and advised to add a second, on every build. And `robot.sim.yaml` listed its
+      # own primary while this file was documented not to, so the same key taught opposite shapes
+      # depending on which file an operator read first.
       #
-      # `robot.sim.yaml` lists all three of its cameras including its primary. That is
-      # correct there, because the Isaac runner builds its own rig that includes the
-      # primary, and it is wrong here. Do not copy the shape of that block.
+      # The primary is still left out of the EXTRA-camera rig that `_build_multi_camera_rig` opens,
+      # because it already streams through the cell's main perception source and fusing a second
+      # copy of it would cost a full detect and segment pass for a view already present. It is also
+      # left out of `configured_camera_ids`, the list a pick waits for, because it never arrives
+      # through that rig. Both of those are decided in code from the primary's name, not by leaving
+      # it out of this file.
       #
-      # The cost of leaving the primary out is one false line at construction: the counter
-      # that warns about a single-view cell also reads this map, so it reports one
-      # calibrated camera and recommends adding a second while the cell is fusing two.
+      # `cam_left` appears here and in `extrinsics_artifact_path` above. Both must name the same
+      # artifact: a disagreement is refused when the config loads, because which of the two a cell
+      # ends up using depends on which loader ran.
       cameras:
+        cam_left:
+          enabled: true
+          mounting_mode: "eye_to_hand"
+          extrinsics_artifact_path: "calibration/real/eth_cam_left.json"
         cam_right:
           enabled: true
           # A fixed camera: the artifact is CAMERA to BASE and loads into a resolver that

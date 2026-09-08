@@ -9,25 +9,28 @@
 # it (`src/config/_merge.py`), so a profile that changes one rig restates the complete set.
 #
 # `enabled` is read by validation and by `StereoCapturePipeline`, which nothing outside the tests
-# constructs: `active_rig_id` must name an enabled rig, the serial refusals count enabled RGB-D
-# rigs, and an `auto` probe considers enabled rigs. Nothing a real cell runs consults it: the
+# constructs: the serial refusals count enabled RGB-D rigs, and its probe considers enabled rigs.
+# A real cell reads it through `primary_rig_id`, which is refused at build when it names a rig
+# that is switched off. The RGB-D selectors otherwise go by `source` and by `rig_id`: the
 # RGB-D selectors go by `source` and by `rig_id`, and `FrameProvider` opens a rig by id.
 cameras:
-  # --- Active mode ---
-  # auto : probe every enabled rig and take the ones that answer. Convenient while the bench is
-  #        still changing, and slow where a rig sets `backend: 0`, because the probe then opens
-  #        that index through every installed OpenCV backend.
-  # rig  : skip probing and open exactly `active_rig_id`, which starts far faster.
-  # Read by `StereoCapturePipeline` in src/camera/pipeline/stereo_capture.py, which nothing
-  # outside the tests constructs. The schema reads it as well, to check `active_rig_id`.
-  active_mode: auto
-
-  # Must name an enabled rig below when active_mode is "rig"; validation fails otherwise.
+  # --- Which rig this cell opens ---
+  # Required, and it must name one of the rigs below.
   #   "webcam_main":    two USB webcams forming a stereo pair
   #   "stereo_dev0":    single side-by-side stereo device at index 0
   #   "stereo_dev3":    single side-by-side stereo device at index 3
   #   "realsense_d435": Intel RealSense RGB-D
-  active_rig_id: null
+  #
+  # It replaced a pair of keys, `active_mode` and `active_rig_id`, that only the stereo calibration
+  # pipeline read. The grasp path took the first rig with `source: rgbd` by list position, and that
+  # rule did not consult `enabled`, so this profile would have opened `realsense_d435` below even
+  # though it ships switched off. The order of a YAML list is not a place to keep a decision this
+  # size.
+  #
+  # This profile names the webcam pair, because it is the only rig here that is enabled. A grasp
+  # cell needs an RGB-D primary, so building one on this profile is refused with a message that
+  # says so and names the RGB-D rigs there are. Switch `realsense_d435` on and name it here instead.
+  primary_rig_id: webcam_main
 
 
   # --- Stereo calibration board ---

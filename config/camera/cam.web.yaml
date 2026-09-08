@@ -8,10 +8,5 @@
 # The layer name selects three files (`app/runtime.web.yaml`, `camera/cam.web.yaml` and
 # `robot/robot.web.yaml`), so renaming the profile means renaming all three.
 cameras:
-  # `rig` opens `active_rig_id` directly instead of testing every enabled rig for availability.
-  # That probe is the slow path on Windows, because each candidate index is opened through the
-  # OpenCV backends.
-  active_mode: rig
-  # The rig has to be defined in `cam.yaml` and enabled there; the schema refuses the tree if it is
-  # missing or disabled.
-  active_rig_id: webcam_main
+  # The rig has to be defined in `cam.yaml`; the schema refuses the tree if it is missing.
+  primary_rig_id: webcam_main

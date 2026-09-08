@@ -66,9 +66,6 @@ class RealSenseVisionPerceptionSource:
         Optional 3x3 K override. The D1 seam: leave ``None`` to use the streamer's factory K (the
         D435 ships calibrated), or pass a bench-calibrated K to override it. The source records
         which was used on the frame's provenance via ``intrinsics_source``.
-    grasp_top_penetration_mm
-        Bias the grasp depth this far below each object's nearest (top) surface. A single top-down view
-        sees only the top; gripping the very edge slips, so the grasp is referenced to the top + this.
     warmup_grabs
         Throwaway grabs before the real one, so a physical camera's auto-exposure / auto-white-balance
         has settled. A real RealSense needs a handful; a fake ignores it.
@@ -87,7 +84,6 @@ class RealSenseVisionPerceptionSource:
         prompt: str,
         object_labels: tuple[str, ...] = (),
         intrinsics: np.ndarray | None = None,
-        grasp_top_penetration_mm: float = 3.0,
         warmup_grabs: int = 5,
         mask_completion: MaskCompletion = DEFAULT_MASK_COMPLETION,
     ) -> None:
@@ -108,7 +104,6 @@ class RealSenseVisionPerceptionSource:
         self._prompt = prompt
         self._object_labels = tuple(object_labels)
         self._intrinsics_override = None if intrinsics is None else np.asarray(intrinsics, dtype=np.float64)
-        self._grasp_top_penetration_mm = float(grasp_top_penetration_mm)
         self._warmup_grabs = max(0, int(warmup_grabs))
         #: What to do with a mask that underfills its detection box. `mask_completion.py` carries
         #: the measurement behind the default and the reason this is a lever.
@@ -209,7 +204,11 @@ class RealSenseVisionPerceptionSource:
         rgbd = self._streamer.grab()
         bgr = np.ascontiguousarray(np.asarray(rgbd.color))          # detector/segmenter take OpenCV BGR
         depth_mm = np.asarray(rgbd.depth, dtype=np.float64)         # uint16 mm as float; 0 == hole
-        rendered_depth_mm = depth_mm.copy()                         # true surface, read for top-referencing
+        # A copy, not the same array, and that is the point of keeping both fields. Their
+        # contents are identical here; what separates them is what happens after, because a
+        # noise harness replaces `depth_map` to stand in for a real sensor and leaves this one
+        # measured. Aliasing would quietly hand the planner the noise as well.
+        rendered_depth_mm = depth_mm.copy()
 
         if self._intrinsics_override is not None:
             intrinsics = self._intrinsics_override.copy()
@@ -233,25 +232,24 @@ class RealSenseVisionPerceptionSource:
             label = self._canonical_label(getattr(seg, "label", "") or "")
             mask = self._maybe_fill_to_detection_box(np.asarray(seg.mask).astype(bool), det)
             seg = replace(seg, label=label, mask=mask.astype(np.uint8))
-            # Top-referenced depth: read the nearest real surface over the mask, skipping D435
-            # holes (0), and overlay grasp_depth = that top + penetration. Holes inside the mask
-            # are not sampled; if the whole mask is holes (all 0), the raw depth stays, so the
-            # failure is visible downstream rather than silently grasping at a fabricated plane.
-            if mask.any():
-                vals = rendered_depth_mm[mask]
-                vals = vals[vals > 0.0]
-                if vals.size:
-                    grasp_depth_mm = float(np.min(vals)) + self._grasp_top_penetration_mm
-                    depth_mm = np.where(mask, grasp_depth_mm, depth_mm)
             segmentations.append(seg)
 
         rgb = bgr[..., ::-1]  # BGR -> RGB for any debugging consumer (no reader in robot/ today)
-        # `rendered_depth_mm` is the surface as the sensor reported it, and the loop above
-        # did not touch it: only `depth_mm` carries the grasp-referenced overwrite.
-        # Publishing it costs a reference and is the difference between an obstacle with a
-        # body and a sheet at its top face. `time.time` rather than a monotonic clock
-        # because a consumer compares this against its own wall clock to decide whether the
-        # world is too old to plan against.
+        # The depth this publishes is the depth the sensor measured, under a mask as everywhere
+        # else. It used to replace every pixel under a mask with one number, the nearest surface
+        # plus a few millimetres, because that is the plane a jaw is driven to. Six stages
+        # downstream read the same array for the shape of what is there and got a flat sheet:
+        # the antipodal search found no opposing normals, the dense sampler measured no
+        # curvature, the support-plane refinement saw an extent of exactly zero, and the
+        # multi-camera fusion fused sheets. Where a grasp is anchored inside an object is one
+        # number about one candidate and it is decided by `grasping.geometry`, not by
+        # overwriting the picture everything else reasons from.
+        #
+        # `surface_depth_map` stays, and now carries the same measurement without the sensor
+        # noise a harness may add to `depth_map`: the planner's obstacle world is built from it,
+        # and an obstacle that flickers frame to frame is worse than one that is slightly wrong.
+        # `time.time` rather than a monotonic clock because a consumer compares this against its
+        # own wall clock to decide whether the world is too old to plan against.
         return PerceptionFrame(
             depth_map=depth_mm, intrinsics=intrinsics, segmentations=tuple(segmentations), rgb=rgb,
             timestamp=time.time(), surface_depth_map=rendered_depth_mm,

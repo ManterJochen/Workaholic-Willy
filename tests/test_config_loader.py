@@ -41,13 +41,13 @@ class ConfigLoaderTests(unittest.TestCase):
     def test_default_config_loads_and_is_immutable(self) -> None:
         cfg = load_config()
 
-        self.assertEqual(cfg.camera.cameras.active_mode, "auto")
+        self.assertEqual(cfg.camera.cameras.primary_rig_id, "webcam_main")
         self.assertEqual(cfg.camera.hand_eye.eye_to_hand.mode, "eye_to_hand")
         self.assertEqual(cfg.camera.hand_eye.eye_in_hand.mode, "eye_in_hand")
         self.assertEqual(cfg.robot.vendor, "ur")
 
         with self.assertRaises(ValidationError):
-            cfg.camera.cameras.active_mode = "rig"
+            cfg.camera.cameras.primary_rig_id = "stereo_dev0"
 
     def test_profile_is_part_of_loader_cache_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -83,8 +83,7 @@ class ConfigLoaderTests(unittest.TestCase):
             )
             (root / "camera" / "cam.qa.yaml").write_text(
                 "cameras:\n"
-                "  active_mode: rig\n"
-                "  active_rig_id: qa_rig\n"
+                "  primary_rig_id: qa_rig\n"
                 "  rigs:\n"
                 "    - rig_id: qa_rig\n"
                 "      enabled: true\n"

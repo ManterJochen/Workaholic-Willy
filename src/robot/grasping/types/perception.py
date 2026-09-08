@@ -9,7 +9,7 @@ and recovery, names them without importing the orchestrator that consumes them.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover (a type-only import, so this module stays dependency-light)
@@ -131,12 +131,31 @@ class MappedCameraRig:
     """
 
     sources: Mapping[str, PerceptionSource]
+    #: Why each camera was absent from the last :meth:`acquire_all`, keyed by camera id. Filled on
+    #: every call and empty when every camera answered. It exists because the protocol's error
+    #: channel is absence, and absence carries no reason: the caller can see that a camera did not
+    #: deliver, and without this it cannot say whether the device is unplugged, the pipeline never
+    #: started, or a driver raised. Recorded rather than raised, because one camera that fails must
+    #: not take away the frames the others delivered.
+    last_failures: dict[str, str] = field(default_factory=dict)
 
     def acquire_all(self) -> tuple[CameraObservation, ...]:
-        return tuple(
-            CameraObservation(camera_id=name, frame=source.acquire())
-            for name, source in self.sources.items()
-        )
+        """Every camera that answered, in insertion order. A camera that raised is simply absent.
+
+        The contract above says absent, and this used to raise. One camera whose pipeline had not
+        started took the whole pick with it, and `on_camera_unavailable`, whose entire purpose is to
+        choose between degrading and refusing when a camera is missing, could never observe a
+        missing camera, because the exception left before the comparison ran. Both of its branches
+        were unreachable with the only rig implementation in the tree.
+        """
+        self.last_failures.clear()
+        observations: list[CameraObservation] = []
+        for name, source in self.sources.items():
+            try:
+                observations.append(CameraObservation(camera_id=name, frame=source.acquire()))
+            except Exception as exc:  # noqa: BLE001 (one camera's failure is not the rig's)
+                self.last_failures[name] = f"{type(exc).__name__}: {exc}"
+        return tuple(observations)
 
     def close(self) -> None:
         """Hand back every device the sources of this rig hold. Duck-typed, idempotent, never raises.

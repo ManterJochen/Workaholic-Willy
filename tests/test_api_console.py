@@ -116,7 +116,10 @@ class ConsoleApiTests(unittest.TestCase):
         """
         from src.config.explain import explain_in
 
-        for key in ("robot.safety.payload.mass_kg", "camera.cameras.active_rig_id"):
+        # The second key was `camera.cameras.active_rig_id` until it became `primary_rig_id`, a
+        # required string that can no longer be None. `stereomatcher.p1` is one of the 45 that
+        # still is, so the case this guard exists for is still exercised.
+        for key in ("robot.safety.payload.mass_kg", "camera.stereomatcher.p1"):
             with self.subTest(key):
                 body = self.client.get("/v1/config/explain", params={"key": key}).json()
                 expected = explain_in(
@@ -128,7 +131,7 @@ class ConsoleApiTests(unittest.TestCase):
         """⛔ THE DISTINCTION THE DRIFT DESTROYED. An unconfigured ``serial_number`` IS ``null``;
         reporting that as "nobody set this" tells an operator the opposite of what the tree says."""
         body = self.client.get(
-            "/v1/config/explain", params={"key": "camera.cameras.active_rig_id"}
+            "/v1/config/explain", params={"key": "camera.stereomatcher.p1"}
         ).json()
         self.assertIn("= None", body["text"])
 

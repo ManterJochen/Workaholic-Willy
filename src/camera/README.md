@@ -77,9 +77,10 @@ orchestration, and a console teardown closes exactly the device it opened.
 Constructing a streamer touches no device, so a provider is told about every configured rig and
 opens only what it is asked to open: knowing a rig costs nothing, holding one is a deliberate act.
 
-**Rig selection** in `StereoCapturePipeline`: an explicit `rig_id` wins; otherwise
-`active_mode == "rig"` uses `active_rig_id`, and `active_mode == "auto"` probes every enabled rig
-and uses those that answer.
+**Rig selection**: `camera.cameras.primary_rig_id` names the rig a CELL opens, and
+`build_real_components` refuses a primary that is disabled or is not an RGB-D rig. The stereo
+calibration pipeline is a tool over the whole catalogue rather than a cell: an explicit `rig_id`
+argument wins there, and otherwise it works on every enabled rig that answers a probe.
 
 ## The two RGB-D backends
 

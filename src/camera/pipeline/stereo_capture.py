@@ -56,7 +56,7 @@ class StereoCapturePipeline:
 
         Args:
             rig_id: Explicit rig to target. ``None`` resolves from the configuration, either
-                the single ``active_rig_id`` or every enabled rig that probes as available.
+                every enabled rig that probes as available.
             force_record: Re-record calibration images even when enough exist.
             clear_existing: Delete the existing calibration images first.
 
@@ -110,12 +110,13 @@ class StereoCapturePipeline:
         if rig_id is not None:
             return [self._select_enabled_rig(enabled, rig_id)]
 
-        if self.camera_config.active_mode == "rig":
-            active_id = self.camera_config.active_rig_id
-            if not active_id:
-                raise RuntimeError("active_mode='rig' requires active_rig_id")
-            return [self._select_enabled_rig(enabled, active_id)]
-
+        # Every enabled rig that answers. There used to be a `camera.cameras.active_mode` key whose
+        # "rig" setting made this open one named camera instead, and this class was its only reader:
+        # the grasp path chose its camera three other ways and consulted neither that key nor the id
+        # beside it. Two places naming "the" camera and disagreeing is worse than one, so the mode is
+        # gone and the id it pointed at became `primary_rig_id`, which is what a cell opens. This is a
+        # calibration tool over the whole catalogue, so it keeps working over the catalogue, and a
+        # caller that wants one rig passes `rig_id`.
         available = [rig for rig in enabled if self._is_available(rig)]
         if not available:
             raise RuntimeError("No enabled camera rigs are currently available")

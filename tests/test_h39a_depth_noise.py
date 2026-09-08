@@ -68,6 +68,30 @@ class DepthNoiseTests(unittest.TestCase):
         self.assertLess(float(np.ptp(noisy[keep][:, 2])), 0.3 * float(np.ptp(noisy[:, 2])))
         self.assertGreater(len(noisy) - len(keep), 0)  # outliers were actually removed
 
+    def test_the_noise_lands_on_the_grasp_depth_and_NOT_on_the_surface(self) -> None:
+        """⚠ THE TWO FIELDS NOW DIFFER BY EXACTLY THIS, and nothing asserted it.
+
+        Both carry the same measurement since the producers stopped flattening the depth under a
+        mask, so the noise harness is the only thing that separates them. That separation is the
+        design rather than an oversight: the grasp path should see what a real sensor delivers, and
+        the planner's obstacle world is built from the clean field, because an obstacle that jumps a
+        few millimetres every frame is worse than one that is slightly wrong.
+        """
+        depth, _, intr = _depth_patch()
+        frame = PerceptionFrame(depth_map=depth, intrinsics=intr, segmentations=(),
+                                surface_depth_map=depth.copy())
+
+        class _Inner:
+            def acquire(self) -> PerceptionFrame:
+                return frame
+
+        wrapped = NoisyDepthPerceptionSource(
+            _Inner(), DepthNoiseConfig(gaussian_sigma_mm=2.0))
+        out = wrapped.acquire()
+
+        self.assertFalse(np.array_equal(out.depth_map, depth), "the grasp depth must be noisy")
+        np.testing.assert_array_equal(out.surface_depth_map, depth)
+
     def test_wrapper_passthrough_when_disabled(self) -> None:
         depth, _, intr = _depth_patch()
         frame = PerceptionFrame(depth_map=depth, intrinsics=intr, segmentations=())

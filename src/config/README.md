@@ -23,13 +23,13 @@ from src.config import load_config
 
 cfg = load_config()                            # validated, immutable AppConfig
 
-cfg.camera.cameras.active_mode
+cfg.camera.cameras.primary_rig_id
 cfg.camera.stereomatcher.num_disparities
 cfg.models.stt.model_id
 cfg.runtime.image_encoding.frame_quality
 ```
 
-`cfg` is frozen: assigning to `cfg.camera.cameras.active_mode` raises. Configs are values, not state.
+`cfg` is frozen: assigning to `cfg.camera.cameras.primary_rig_id` raises. Configs are values, not state.
 Schema classes are also safe to import on their own, without the loader:
 
 ```python
@@ -78,7 +78,7 @@ who greps the files sees only half the configuration.
 ```
 AppConfig
   camera  : CameraConfig
-    cameras       (active_mode, rigs, stereo_calibration: ChArUco/ArUco board)
+    cameras       (primary_rig_id, rigs, stereo_calibration: ChArUco/ArUco board)
     stereomatcher (SGBM + WLS + temporal; the YAML keeps OpenCV's camelCase)
     hand_eye      (independent eye-to-hand and eye-in-hand workflows)
   models  : ModelsConfig

@@ -25,6 +25,7 @@ from unittest import mock
 import numpy as np
 
 from src.config.schema.robot import RobotConfig
+from src.robot.execution.autonomous_grasp.cells import CellBuildRefused
 from src.robot.grasping.types.perception import MappedCameraRig
 
 class _Handle:
@@ -62,8 +63,10 @@ def _rig(rig_id: str, source: str = "rgbd"):
 
 
 def _app_cfg(*rig_ids: str):
+    """The first id is the primary, which is now named rather than inferred from list position."""
     cfg = mock.Mock()
     cfg.camera.cameras.rigs = [_rig(name) for name in rig_ids]
+    cfg.camera.cameras.primary_rig_id = rig_ids[0] if rig_ids else ""
     return cfg
 
 
@@ -215,7 +218,7 @@ class ItFailsClosedTests(unittest.TestCase):
         single pick -- refusing all of them under `refuse`, warning on all of them under `degrade`.
         Say it once, here, while an operator is watching."""
         box: list = []
-        with self.assertRaises(SystemExit) as caught:
+        with self.assertRaises(CellBuildRefused) as caught:
             _build(_robot_cfg(geometry=True, cameras={"overhead": True, "ghost": True}),
                    _app_cfg("overhead", "oblique"), box)
 

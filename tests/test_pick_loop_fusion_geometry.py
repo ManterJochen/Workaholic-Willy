@@ -14,6 +14,7 @@ candidate object its own fused cloud, and every way the rig can fall short is ei
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -161,6 +162,37 @@ class WorkingRigTests(unittest.TestCase):
 
         assert fused is not None
         self.assertIsNone(fused.cloud_for(0))
+
+
+class TheIndexIsTheSegmentationIndexTests(unittest.TestCase):
+    """The one that would have returned the wrong object's surface, in silence.
+
+    `cloud_for(idx)` is addressed by segmentation index at the candidate loop, and the primary mask
+    list used to be compacted: a segmentation with no mask was dropped, so every later object shifted
+    down one slot. The lookup is bounds-safe, so nothing raises; object two would simply be planned
+    against object three's surface. Latent today, because `SegmentationResult.mask` is not optional,
+    which is why it is worth a test rather than a comment: the day someone makes it optional, this is
+    what tells them.
+    """
+
+    def test_a_mask_less_segmentation_does_not_shift_the_ones_after_it(self) -> None:
+        rig = _Rig((CameraObservation(camera_id="left", frame=_frame(boxes=((10, 22), (24, 30)))),))
+        orch = _orchestrator(
+            multi_camera_perception=rig,
+            camera_frame_resolvers={"left": _Resolver()},
+            fusion_geometry_config=_enabled(),
+        )
+        primary = _frame(boxes=((10, 22), (24, 30)))
+        # A segmentation with no mask in the MIDDLE, which is the position that shifts the rest.
+        holed = replace(primary, segmentations=(
+            primary.segmentations[0], SimpleNamespace(mask=None), primary.segmentations[1]))
+
+        fused = orch._fused_scene(holed, _IDENTITY)
+
+        assert fused is not None
+        self.assertEqual(3, len(fused.clouds_base_mm), "one slot per segmentation, in order")
+        self.assertIsNone(fused.cloud_for(1), "the mask-less one owns its slot and fuses nothing")
+        self.assertIsNotNone(fused.cloud_for(2), "the object after it kept its own index")
 
 
 class MappedCameraRigTests(unittest.TestCase):

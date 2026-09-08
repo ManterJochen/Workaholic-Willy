@@ -379,8 +379,15 @@ class GraspCalculator:
         # Silhouette grasp-depth reference + penetration. The defaults ("centre", 0.0) give a
         # median-referenced grasp depth with no penetration. "top" references a near-surface quantile
         # of the masked depth; the penetration descends every silhouette candidate below its
-        # referenced surface so the fingers wrap the object instead of resting on it. The dense path
-        # is unchanged by both: it uses real point-cloud contacts.
+        # referenced surface so the fingers wrap the object instead of resting on it. The dense
+        # path is unchanged by both: it builds its own cloud and finds its own contacts, so a
+        # silhouette-level depth reference does not apply to it.
+        #
+        # That sentence used to say the dense path "uses real point-cloud contacts", which was the
+        # word for something it could not do. While the producers replaced the depth under each mask
+        # with one scalar, the dense sampler measured no curvature and found no opposing normals on
+        # any object: 660 samples and 0 pairs, because every normal on a plane points the same way.
+        # The contacts are real now because the input is.
         self._grasp_depth_reference = str(grasp_depth_reference)
         self._grasp_top_penetration_mm = float(grasp_top_penetration_mm)
         self._grasp_top_quantile = float(grasp_top_quantile)
@@ -874,7 +881,10 @@ class GraspCalculator:
                 geometry_points = geometry_points[_keep]
         # (default-off) a fused multi-view target cloud (BASE frame) overrides the single-view
         # geometry source so the antipodal generator searches real side-face contacts a top-down view
-        # cannot see. Transform BASE->CAMERA (the generator's frame) and force the geometry-first
+        # cannot see. That was only true of the cloud's provenance and not of its content until the
+        # producers stopped flattening the depth under each mask: every camera contributed a sheet at
+        # its own view of the top face, so fusing two views fused two sheets and no side face existed
+        # to find. Transform BASE->CAMERA (the generator's frame) and force the geometry-first
         # path: the mask-based dense sampler rebuilds the cloud from depth+mask, so it cannot consume
         # a pre-built cloud. Default None leaves geometry_points and dense_decision unchanged, which
         # is byte-identical.
@@ -916,6 +926,14 @@ class GraspCalculator:
                 voxel_size_mm=self.geometry_voxel_size_mm,
                 max_points=self.max_geometry_points,
                 cloud_outlier_filter=self._cloud_outlier_filter,  # None keeps it byte-identical
+                # `normal_radius_mm` is deliberately not forwarded, and that is a discrepancy
+                # rather than a decision. This sampler defaults to 12.0 mm while the
+                # geometry-first path uses `self.normal_radius_mm`, 18.0 by default, so one
+                # pipeline estimates surface normals at two radii depending on which branch it
+                # took. Not corrected here because forwarding it moves the dense rung's measured
+                # numbers, and that rung measured 28.4 % coverage against 28.5 % for the branch
+                # beside it: a number that small is not worth moving without re-running the
+                # ladder that produced it.
             )
             dense_geometry_poses = self._generator.dense_geometry_poses(
                 samples,
@@ -939,8 +957,15 @@ class GraspCalculator:
                     dense_elapsed_ms,
                     self.dense_runtime_budget_ms,
                 )
+                # `geometry_points`, the same array every other call site uses, and not
+                # `cloud.points_mm`. This branch reached past the outlier filter applied above, so a
+                # call that overran its dense budget searched contacts on unfiltered points while an
+                # identical call that did not overrun searched filtered ones. Invisible while the
+                # perception producer flattened the depth under each mask, because a plane has no
+                # outliers to remove; on a measured surface the filter is the thing that keeps a
+                # speckle pixel in front of the part from becoming a contact.
                 geometry_poses = [] if cloud.is_empty else self._generator.geometry_first_poses(
-                    self._generator.limit_geometry_points(cloud.points_mm),
+                    self._generator.limit_geometry_points(geometry_points),
                     analysis=analysis,
                     depth_confidence=depth_confidence,
                 )
@@ -959,6 +984,13 @@ class GraspCalculator:
                 depth_confidence=depth_confidence,
             )
         if other_object_masks:
+            # The same outlier filter the target cloud gets. Every other cloud in this method is
+            # filtered and this one was not, which cost nothing while the perception producer
+            # flattened the depth under a mask: a plane has no outliers. On a measured surface it is
+            # the asymmetry that matters most, because the collision veto is one point
+            # (`collision_checker.py`, `if colliding_indices:`), so a single speckle pixel on a
+            # neighbour can reject every candidate on the target. `None`, the default, means no
+            # filter call and the same array as before.
             neighbours = scene_collision_cloud(
                 list(other_object_masks),
                 depth_arr,
@@ -968,6 +1000,10 @@ class GraspCalculator:
                 min_depth_mm=1.0,
                 voxel_size_mm=self.geometry_voxel_size_mm,
             )
+            if self._cloud_outlier_filter is not None and neighbours.size > 0:
+                _nkeep = apply_cloud_outlier_filter(neighbours, self._cloud_outlier_filter)
+                if _nkeep.size > 0:  # a filter that empties a real surface is a filter, not a scene
+                    neighbours = neighbours[_nkeep]
             if neighbours.size > 0:
                 telemetry["scene_neighbour_points"] = int(neighbours.shape[0])
                 if scene_points_mm is None:

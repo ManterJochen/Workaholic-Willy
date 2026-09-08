@@ -50,6 +50,11 @@
 # repository.
 # ============================================================================
 cameras:
+  # This overlay replaces the rig list rather than extending it, so the base profile's
+  # `primary_rig_id` names a rig that no longer exists here and it has to be restated. Both rigs
+  # below ship `enabled: false` until their serial numbers are filled in, so the tree validates and
+  # a cell built on it is refused at build time rather than opening a camera nobody configured.
+  primary_rig_id: oblique_L
   rigs:
     - rig_id: oblique_L
       enabled: false           # Enable only after serial_number below is filled

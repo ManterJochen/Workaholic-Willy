@@ -133,7 +133,7 @@ class HandDetectConfig(StrictModel):
     #: Path to the MediaPipe hand-landmark ``.task`` bundle; a relative path resolves against the
     #: process working directory. Download:
     #: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
-    model_path: str = "assets/models/mediapipe/hand_landmarker.task"
+    model_path: str = "assets/models/hf/mediapipe/hand_landmarker.task"
 
     #: Upper bound on simultaneously tracked hands -> ``num_hands``. The 3-D
     #: :class:`~src.models.handdetection.hand_finder.HandFinder` refuses a frame with more than one
@@ -179,7 +179,7 @@ class GestureDetectConfig(StrictModel):
     #: Path to the MediaPipe gesture-recognizer ``.task`` bundle; like the hand-landmark bundle it
     #: is an operator download rather than a repository file. Download:
     #: https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task
-    model_path: str = "assets/models/mediapipe/gesture_recognizer.task"
+    model_path: str = "assets/models/hf/mediapipe/gesture_recognizer.task"
 
     #: -> ``num_hands``.
     max_hands: int = Field(default=2, ge=1, le=4)

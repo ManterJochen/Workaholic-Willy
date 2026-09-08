@@ -206,8 +206,15 @@ robot:
       good:      2.5
       marginal:  5.0
 
-  # Multi-camera calibration map: every fixed eye-to-hand camera in the multi-view rig is calibrated
-  # on its own (`run_eth_calibrate --camera <id>`) and points at its own persisted artifact. The
+  # Every camera this cell fuses, the primary included, each calibrated on its own
+  # (`run_eth_calibrate --camera <id>`) and pointing at its own persisted artifact.
+  #
+  # Listing the primary here used to be described as correct for the simulator and wrong for a real
+  # cell, because the real path excluded it and the boot banner counted the map. That asymmetry is
+  # gone: the map means the whole camera inventory everywhere, so this block was already the right
+  # shape and the documentation around it was the part that was wrong. The primary is still left out
+  # of the extra-camera rig a real cell opens, because it already streams through the cell's main
+  # perception source. The
   # camera ids have to match the entries in `robot.sim.cameras`, since the oblique poses are
   # authored from that same block. The map is inert while `grasping.fusion.enabled` stays false:
   # `build_config_frame_resolvers` returns an empty map and every runner keeps the sim ground-truth

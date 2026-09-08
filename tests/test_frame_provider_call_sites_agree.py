@@ -5,7 +5,7 @@
 `CameraSystemConfig` MODEL -- where the other four pass `list(cfg.camera.cameras.rigs)`.
 
 The failure is the quiet kind twice over. A Pydantic model is TRUTHY, so `FrameProvider`'s own
-`if not rigs` guard let it through; iterating a model yields `('active_mode', 'auto')` pairs, so
+`if not rigs` guard let it through; iterating a model yields `('primary_rig_id', 'webcam_main')` pairs, so
 `rig.rig_id` raised `AttributeError`; and the command's `except (FileNotFoundError, ImportError,
 ValueError)` does not catch that, so `handdetection --rig` exited 1 with a traceback that reads like
 "no hand was found".

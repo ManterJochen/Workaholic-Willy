@@ -24,6 +24,7 @@ from .config import (
 )
 from .report import AutonomousGraspOutcome, AutonomousGraspReport
 from .cells import (
+    CellBuildRefused,
     build_real_cell,
     build_real_components,
     build_rehearsal_cell,
@@ -40,6 +41,7 @@ from .service import (
 
 __all__ = [
     "AutonomousGraspOutcome",
+    "CellBuildRefused",
     "build_real_cell",
     "build_rehearsal_cell",
     "build_real_components",

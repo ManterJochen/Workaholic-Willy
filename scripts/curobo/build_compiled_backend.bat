@@ -49,10 +49,29 @@ if not exist "%CUROBO_SRC%\setup.py" (
     exit /b 2
 )
 
-REM -- locate the MSVC developer environment without hardcoding a path ---------
+REM -- use an already active x64 toolchain, else locate one -------------------
+REM A caller who has already run vcvars64, or who started a 64-bit developer prompt, has
+REM everything this build needs. Requiring vswhere in that case refuses a working toolchain on
+REM the strength of an installer layout under %ProgramFiles(x86)%, which is the one part of this
+REM script a user without administrator rights cannot produce. setuptools does not need it
+REM either: with DISTUTILS_USE_SDK set below it returns the ambient environment verbatim and
+REM never looks.
+REM
+REM The test is the value of VSCMD_ARG_TGT_ARCH and not its presence. A plain Developer Command
+REM Prompt sets it to x86, and setuptools would then hand torch a 32-bit environment for a
+REM 64-bit interpreter, which links and produces an extension the interpreter cannot load.
+REM `where cl.exe` is not a substitute either: a permanently PATH-ed MSVC bin directory passes
+REM it with no INCLUDE and no LIB, and the failure arrives later as a missing header.
+if /i "%VSCMD_ARG_TGT_ARCH%"=="x64" (
+    echo [1/3] using the active x64 MSVC environment
+    goto :toolchain_ready
+)
+
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (
-    echo [error] vswhere.exe not found. Install the Visual Studio Build Tools:
+    echo [error] no active x64 MSVC environment and vswhere.exe is not installed.
+    echo         Either run this from a 64-bit developer prompt, or call vcvars64.bat first,
+    echo         or install the Visual Studio Build Tools:
     echo         winget install --id Microsoft.VisualStudio.2022.BuildTools
     exit /b 2
 )
@@ -61,12 +80,15 @@ for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * ^
         -property installationPath`) do set "VSPATH=%%i"
 if "%VSPATH%"=="" (
     echo [error] no Visual Studio installation with the C++ toolset.
-    echo         Install the "Desktop development with C++" workload.
+    echo         Install the "Desktop development with C++" workload, or run this from a
+    echo         64-bit developer prompt if a toolchain is already set up for your user.
     exit /b 2
 )
 
 echo [1/3] activating MSVC from "%VSPATH%"
 call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
+
+:toolchain_ready
 
 REM -- traps 1 to 3, defused, in this order -----------------------------------
 REM  * quoted set: no trailing space in the value

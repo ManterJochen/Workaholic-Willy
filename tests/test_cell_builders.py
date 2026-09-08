@@ -26,6 +26,7 @@ from unittest import mock
 from src.config.schema.robot import RobotConfig
 from src.robot.execution.autonomous_grasp import (
     AutonomousGraspService,
+    CellBuildRefused,
     build_real_cell,
     build_real_components,
     build_rehearsal_cell,
@@ -161,7 +162,7 @@ class ARehearsalIsAlwaysARehearsalTests(unittest.TestCase):
         cfg = RobotConfig.model_validate({"vendor": "ur", "grasping": {}})
         app_cfg = mock.Mock()
         app_cfg.camera.cameras.rigs = []
-        with mock.patch("src.config.load_config", return_value=app_cfg),              self.assertRaises(SystemExit):
+        with mock.patch("src.config.load_config", return_value=app_cfg),              self.assertRaises(CellBuildRefused):
             build_real_cell(cfg, prompt="x")
         self.assertEqual(str(getattr(cfg.vendor, "value", cfg.vendor)), "ur")
 
@@ -209,23 +210,107 @@ class ItStaysTorchFreeTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "False", "importing the cell builders pulled torch")
 
 
+class TheRefusalIsCATCHABLETests(unittest.TestCase):
+    """⛔⛔ IT USED TO BE `SystemExit`, AND BOTH CALLERS WERE WRITTEN TO CATCH `Exception`.
+
+    `api/routers/cell.py` answers 422 `build_refused` from an `except Exception`, and
+    `real_cell/__main__.py` returns its config exit code from another. `SystemExit` is a
+    `BaseException`, so neither could fire: the console answered 500 with no message and the bench
+    printed a bare traceback, for a refusal an operator was meant to read as "your config says X".
+
+    ⚠ IT WENT UNNOTICED BECAUSE NOTHING COULD REACH ONE. The cell took the first rig with
+    `source: rgbd` by list position and there was always such a rig, even switched off. Naming the
+    primary camera made these refusals reachable on the base profile and on tiltcam, which would have
+    turned a latent 500 into a certain one on every profile there is.
+    """
+
+    def test_it_is_an_Exception_so_the_designed_handlers_see_it(self) -> None:
+        self.assertTrue(issubclass(CellBuildRefused, Exception))
+
+    def test_the_pattern_both_callers_use_actually_catches_it(self) -> None:
+        """Written as the callers write it, rather than as an assertion about a class tree: what
+        broke was not the type, it was that `except Exception` walked straight past it."""
+        caught = None
+        try:
+            raise CellBuildRefused("primary_rig_id names a webcam pair")
+        except Exception as exc:  # noqa: BLE001 - this IS the caller's line, verbatim
+            caught = exc
+
+        self.assertIsInstance(caught, CellBuildRefused)
+
+    def test_it_is_NOT_a_bare_BaseException(self) -> None:
+        """The guard against someone reaching for `SystemExit` again for the clean exit code. The CLI
+        gets its exit code from its own handler; the refusal must not carry one."""
+        self.assertFalse(issubclass(CellBuildRefused, SystemExit))
+
+
 class RealCellRefusesCleanlyTests(unittest.TestCase):
-    def test_no_rgbd_rig_is_refused_by_name_before_any_model_loads(self) -> None:
-        """The refusal an operator meets first, and it must name the fix rather than the symptom."""
+    """Which camera a cell opens is named by `camera.cameras.primary_rig_id`, and every way of
+    getting that wrong is refused before a model is loaded.
+
+    ⛔ IT USED TO BE THE FIRST RIG WITH `source: rgbd`, BY LIST POSITION, and that predicate did not
+    consult `enabled` while two others over the same list did. The shipped base profile ships its
+    only RGB-D rig switched off, so the cell opened it anyway and the failure surfaced at the device
+    instead of at the config that caused it.
+    """
+
+    @staticmethod
+    def _rig(rig_id: str, *, source: str = "rgbd", enabled: bool = True) -> mock.Mock:
+        rig = mock.Mock()
+        rig.rig_id = rig_id
+        rig.source = source
+        rig.enabled = enabled
+        return rig
+
+    def _refusal(self, rigs: list, primary: str) -> str:
         app_cfg = mock.Mock()
-        app_cfg.camera.cameras.rigs = []
+        app_cfg.camera.cameras.rigs = rigs
+        app_cfg.camera.cameras.primary_rig_id = primary
         with mock.patch("src.config.load_config", return_value=app_cfg), \
-             self.assertRaises(SystemExit) as caught:
+             self.assertRaises(CellBuildRefused) as caught:
             build_real_components(_cfg(), "an object")
-        message = str(caught.exception)
-        self.assertIn("no RGB-D rig", message)
+        return str(caught.exception)
+
+    def test_a_primary_that_names_nothing_is_refused_by_name(self) -> None:
+        """The refusal an operator meets first, and it must name the fix rather than the symptom."""
+        message = self._refusal([], "realsense_d435")
+
+        self.assertIn("primary_rig_id", message)
+        self.assertIn("realsense_d435", message)
+
+    def test_a_DISABLED_primary_is_refused_rather_than_opened(self) -> None:
+        """The case the old list-position rule got wrong on the shipped base profile."""
+        message = self._refusal([self._rig("realsense_d435", enabled=False)], "realsense_d435")
+
+        self.assertIn("enabled: false", message)
+        self.assertIn("primary_rig_id", message)
+
+    def test_a_primary_that_is_not_RGBD_NAMES_the_rigs_that_are(self) -> None:
+        """⚠ THE LIST, NOT JUST THE DEMAND. "Name the RGB-D rig" asks the operator for the one fact
+        they have just shown they do not have, and this function is holding the list while it says
+        it. The base profile is exactly this case: its only enabled rig is a webcam pair."""
+        message = self._refusal(
+            [self._rig("webcam_main", source="webcam_pair"),
+             self._rig("realsense_d435", enabled=False)],
+            "webcam_main")
+
+        self.assertIn("RGB-D", message)
+        self.assertIn("realsense_d435", message)
         self.assertIn("src.robot.perception", message)
+
+    def test_a_profile_with_no_depth_camera_at_all_says_THAT_instead(self) -> None:
+        """Pointing at a standalone camera check would be advice nobody can follow: there is no
+        camera to check. The two cases get different sentences because they have different fixes."""
+        message = self._refusal([self._rig("webcam_main", source="webcam_pair")], "webcam_main")
+
+        self.assertIn("no RGB-D rig", message)
+        self.assertNotIn("src.robot.perception", message)
 
     def test_build_real_cell_propagates_that_refusal(self) -> None:
         app_cfg = mock.Mock()
         app_cfg.camera.cameras.rigs = []
         with mock.patch("src.config.load_config", return_value=app_cfg), \
-             self.assertRaises(SystemExit):
+             self.assertRaises(CellBuildRefused):
             build_real_cell(_cfg(), prompt="an object")
 
 

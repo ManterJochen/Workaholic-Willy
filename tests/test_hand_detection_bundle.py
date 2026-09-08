@@ -10,7 +10,7 @@ category, thumbs-up silently stops being recognised and starts reporting as "som
 Nothing else in the suite would notice: the mapping is total, so it has no failure mode to observe.
 Reading the labels out of the bundle is what turns that silent degradation into a red test.
 
-The bundles are an operator download (`assets/models/mediapipe/`, gitignored). Absent, everything
+The bundles are an operator download (`assets/models/hf/mediapipe/`, gitignored). Absent, everything
 here skips -- CI has no model files and must not fail for that reason.
 
 Measured 2026-08-23 against the `float16/latest` bundles, on five of MediaPipe's own test images:
@@ -34,7 +34,7 @@ from src.models.handdetection.gestures import to_hand_gesture
 from src.models.handdetection.model_files import MEDIAPIPE_AVAILABLE
 from src.models.handdetection.types import HandGesture
 
-_BUNDLES = Path("assets/models/mediapipe")
+_BUNDLES = Path("assets/models/hf/mediapipe")
 _LANDMARKER = _BUNDLES / "hand_landmarker.task"
 _GESTURE = _BUNDLES / "gesture_recognizer.task"
 

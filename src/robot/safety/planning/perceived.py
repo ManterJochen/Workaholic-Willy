@@ -16,10 +16,14 @@ direction that hurts:
   1. Lose a box. Every cluster that does not survive is counted and named with the reason. An
      obstacle the planner never received is one it drives straight through, and the count of those
      belongs in the same report as the boxes that did survive.
-  2. Trust a grasp depth. `PerceptionFrame.depth_map` may carry one number over each detected mask,
-     the object's top surface plus a penetration, because that is where a jaw is driven. Building a
-     box from it yields a sheet at the top face and empty space where the body is. This module reads
-     `surface_depth_map` and refuses when there is none.
+  2. Trust a grasp depth. A producer may replace the depth inside each detected mask with one
+     number, the object's top surface plus a penetration, because that is where a jaw is driven.
+     Building a box from that yields a sheet at the top face and empty space where the body is. The
+     views this module takes come off the camera handle rather than out of a `PerceptionFrame`, so
+     the overwrite was never on this path at all: while every other stage received sheets, the
+     planner's world had real geometry, for a reason nothing here said out loud. It is worth saying,
+     because the fix that removed the overwrite did not change this module and could easily be read
+     as having done so.
   3. Model the bench as an obstacle. Everything the camera sees includes the table the arm works
      over, and a table registered as a hundred small boxes both fills the planner's slots and
      duplicates the support plane the operator already declared. Points at or below the declared

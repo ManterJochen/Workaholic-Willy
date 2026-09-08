@@ -38,15 +38,13 @@ Thumbs.db
 # collision mesh bundles under src/robot/safety/data and the test fixtures under tests/data.
 /data/
 
-# Downloaded model weights (HuggingFace cache).
+# Downloaded model weights: everything scripts/model_weights/fetch.py writes, the MediaPipe
+# task bundles under mediapipe/ included.
 assets/models/hf/
 
 # Frontend (the operator console).
 frontend/node_modules/
 api/static/
-
-# Operator-downloaded MediaPipe task bundles (hand/gesture).
-assets/models/mediapipe/
 
 # The fitted grasp ranker's TREES.
 assets/models/grasp_ranker/**/*.json

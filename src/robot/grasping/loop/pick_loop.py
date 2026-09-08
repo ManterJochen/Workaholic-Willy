@@ -731,6 +731,13 @@ class BinPickingOrchestrator:
     # What the multi-camera geometry fusion actually did this frame (cameras that contributed,
     # objects fused). Empty while fusion is off, so the telemetry stays byte-identical.
     _fusion_geometry_telemetry: dict = field(default_factory=dict, init=False, repr=False)
+    # Where the table ended up for the object being evaluated, and whether that height was
+    # declared or observed. `SupportResolution.as_telemetry` produced exactly this and had no
+    # caller in the tree. Kept on the orchestrator rather than pushed into the record, because
+    # `GraspAttemptRecord` is a frozen contract with catalog, KPI and RL consumers and a plane
+    # height is not worth opening it; the log line at the resolution site is what an operator
+    # needs, and a later change can join this.
+    _support_telemetry: dict = field(default_factory=dict, init=False, repr=False)
     # (config key, BASE points). The walls are fixed geometry; rebuilding them every attempt would
     # be waste in the one path that runs on every pick.
     _container_wall_cache: "tuple[tuple, np.ndarray] | None" = field(
@@ -824,10 +831,15 @@ class BinPickingOrchestrator:
     def _resolve_support(self, seg, frame, camera_to_base):  # noqa: ANN001, ANN202
         """The support plane for this pick: the declared height, raised by what the cameras saw.
 
-        The observation is the fused target cloud when one is available, because a single view of a bin
-        sees the part over the wall and reports its rim as the base: measured p90 error 50.6 mm in the
-        bin family against 13.3 mm fused. When no fused cloud exists the current view's own target cloud
-        is used, which is still correct and only noisier. ``support_config`` unset returns ``None``, the
+        The observation is an externally supplied fused target cloud when one is available, because
+        a single view of a bin sees the part over the wall and reports its rim as the base: measured
+        p90 error 50.6 mm in the bin family against 13.3 mm fused. Otherwise the current view's own
+        target cloud is used, which is still correct and only noisier.
+
+        "Fused" here means `external_target_geometry_base_mm`, the cloud a simulator runner hands in
+        for one labelled target, and not the multi-camera fusion under `grasping.fusion.geometry`
+        that a real cell runs. The two are different seams and this one has never seen the other's
+        output, so a cell with two calibrated cameras refines its support plane from a single view. ``support_config`` unset returns ``None``, the
         key is never added, and the path is byte-identical.
         """
         if self.support_config is None:
@@ -900,25 +912,34 @@ class BinPickingOrchestrator:
         # Vertical extent is the cheap, honest test for whether the support was observed. It is
         # measured along the support normal rather than along z, so a tilted tray works the same
         # way.
+        # And therefore it is measured in BASE, after the transform. `support_config.normal` is a
+        # BASE vector and this cloud arrives in CAMERA, so the check used to project base-frame
+        # coordinates onto a camera-frame axis: it was reading the camera's own depth span and
+        # calling it height. Harmless while the producer flattened the depth, because the span was
+        # exactly 0.0 either way and this branch could never fire. With a measured surface it decides
+        # whether the support plane is refined, and on an obliquely mounted camera a flat horizontal
+        # top face spans a large distance in depth and no height at all, so the guard would clear and
+        # the plane would land on top of the object. That is the same family as the 577 mm defect.
+        matrix = getattr(camera_to_base, "to_matrix", None)
+        transform = _np.asarray(matrix() if callable(matrix) else camera_to_base, dtype=float)
+        if transform.shape != (4, 4):
+            _LOG.warning(
+                "support refinement got a CAMERA->BASE of shape %s, not (4, 4); the target cloud is "
+                "not refining the support plane this attempt", transform.shape)
+            return None
+        base_points = points @ transform[:3, :3].T + transform[:3, 3]
         if self.support_config is not None:
             normal = _np.asarray(self.support_config.normal, dtype=float).reshape(3)
             length = float(_np.linalg.norm(normal))
             if length > 1e-12:
-                along = points @ (normal / length)
+                along = base_points @ (normal / length)
                 if float(along.max() - along.min()) < _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM:
                     _LOG.debug(
                         "single-view target cloud spans %.1f mm along the support normal (< %.1f); "
                         "it has not observed the support, so the declared height stands",
                         float(along.max() - along.min()), _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM)
                     return None
-        matrix = getattr(camera_to_base, "to_matrix", None)
-        transform = _np.asarray(matrix() if callable(matrix) else camera_to_base, dtype=float)
-        if transform.shape != (4, 4):
-            _LOG.warning(
-                "support refinement got a CAMERA->BASE of shape %s, not (4, 4); the target cloud is "
-                "NOT refining the support plane this attempt", transform.shape)
-            return None
-        return points @ transform[:3, :3].T + transform[:3, 3]
+        return base_points
 
     def run(self) -> PickReport:
         """Execute the loop and return a :class:`PickReport`.
@@ -1409,12 +1430,19 @@ class BinPickingOrchestrator:
                 support_z = float(plane.offset_mm)
 
             obstacles = None
+            obstacle_objects = 0
             if fused_scene is not None:
+                # Every other object's fused cloud. Read from `clouds_base_mm`, which is the tuple
+                # the fused scene actually carries, rather than from an attribute name looked up
+                # with a default: `getattr(fused_scene, "indices", ())` named nothing on this type,
+                # so it returned empty on every pick and the ranker scored every candidate against
+                # no obstacle at all, with `jaw_clearance_mm` pinned at its no-obstacle value.
                 others = [
-                    cloud for other in getattr(fused_scene, "indices", ())
+                    cloud for other in range(len(fused_scene.clouds_base_mm))
                     if other != index and (cloud := fused_scene.cloud_for(other)) is not None
                     and cloud.size
                 ]
+                obstacle_objects = len(others)
                 if others:
                     import numpy as _np  # noqa: PLC0415
 
@@ -1424,7 +1452,9 @@ class BinPickingOrchestrator:
                 context.ranker, context.spec, list(getattr(result, "candidates", ()) or ()),
                 target_points_mm=target, obstacle_points_mm=obstacles, support_z_mm=support_z,
             )
-            _stamp(result, outcome.as_dict())
+            # How many objects the clearance was measured against. A zero here is what the defect
+            # above looked like from the outside, and it looked like nothing at all.
+            _stamp(result, {**outcome.as_dict(), "deep_ranker_obstacle_objects": obstacle_objects})
         except Exception:  # noqa: BLE001 (an optional observer may never cost an attempt)
             _LOG.exception("deep_ranker shadow scoring failed; the pick is unaffected")
 
@@ -1888,19 +1918,30 @@ class BinPickingOrchestrator:
         # whose resolver never built, so that camera is one nobody waits for.
         expected = set(self.configured_camera_ids) or set(resolvers)
         missing = sorted(expected - delivered)
+        # Why each absent camera was absent, when the rig recorded it. Absence is the protocol's only
+        # error channel, so without this the policy below can say that a camera did not deliver and
+        # not whether the device is unplugged, the pipeline never started, or a driver raised.
+        why_absent = dict(getattr(self.multi_camera_perception, "last_failures", None) or {})
         if missing:
+            reasons = "; ".join(f"{cam}: {why_absent[cam]}" for cam in missing if cam in why_absent)
             if str(config.on_camera_unavailable) == "refuse":
                 raise RuntimeError(
                     f"grasping.fusion.geometry: configured camera(s) {missing} delivered no frame "
                     "and on_camera_unavailable='refuse'"
+                    + (f" ({reasons})" if reasons else "")
                 )
             _LOG.warning(
-                "grasping.fusion.geometry: camera(s) %s delivered no frame; continuing with %s",
+                "grasping.fusion.geometry: camera(s) %s delivered no frame%s; continuing with %s",
                 missing,
+                f" ({reasons})" if reasons else "",
                 sorted(delivered & expected) or "no other camera (single-view)",
             )
 
         views: list[ObservedView] = []
+        #: Cameras that answered with a frame and found nothing on it. Counted so the difference
+        #: between "no camera looked" and "a camera looked and the bin was empty there" survives
+        #: into the telemetry.
+        grounded_nothing: list[str] = []
         for observation in observations:
             resolver = resolvers.get(observation.camera_id)
             if resolver is None:
@@ -1927,6 +1968,17 @@ class BinPickingOrchestrator:
                 if mask is not None
             )
             if not masks:
+                # A camera that delivered a frame and grounded nothing on it. That is a legitimate
+                # answer, not a fault: a camera looking at an empty stretch of bin has done its job,
+                # so it counts as delivered and the missing-camera policy above stays out of it.
+                # It used to be a bare `continue`. The option's own description promises that a cell
+                # must never fall back to single-view silently, and this was the way it did.
+                grounded_nothing.append(observation.camera_id)
+                _LOG.info(
+                    "grasping.fusion.geometry: camera %r delivered a frame and grounded nothing on "
+                    "it; it contributes no surface this pick",
+                    observation.camera_id,
+                )
                 continue
             views.append(
                 ObservedView(
@@ -1938,13 +1990,33 @@ class BinPickingOrchestrator:
                 )
             )
 
+        # One entry per segmentation, in order, and not compacted. `cloud_for(idx)` is addressed by
+        # segmentation index at the candidate loop, so dropping a mask-less segmentation here would
+        # shift every later object down one and hand the calculator a different object's surface.
+        # Silently: the lookup is bounds-safe and returns a cloud, just the wrong one. Unreachable
+        # today because `SegmentationResult.mask` is not optional, which is exactly why it is worth
+        # closing now rather than when someone makes it so. An empty mask stands in for a
+        # segmentation that has none, and `fuse_scene_geometry` associates nothing to it.
+        #
+        # The stand-in has the frame's shape, because the back-projection validates mask against
+        # depth and a token-sized array would raise where the real one only selects nothing.
+        _empty = np.zeros(np.asarray(frame.depth_map).shape[:2], dtype=bool)
         primary_masks = tuple(
-            mask
+            _empty if mask is None else mask
             for mask in (getattr(seg, "mask", None) for seg in frame.segmentations)
-            if mask is not None
         )
+        if not any(mask is not _empty for mask in primary_masks):
+            primary_masks = ()
         if not views or not primary_masks:
-            self._fusion_geometry_telemetry = {"fused_views_used": 0, "fused_objects": 0}
+            # Still stamped, and with the counters: "no camera contributed" and "two cameras
+            # looked and found nothing" are different answers, and the difference is the whole
+            # reason a second camera was bought.
+            self._fusion_geometry_telemetry = {
+                "fused_views_used": 0,
+                "fused_objects": 0,
+                "cameras_grounded_nothing": len(grounded_nothing),
+                "cameras_absent": len(missing),
+            }
             return None
 
         with_neighbours = bool(getattr(config, "neighbour_scene_enabled", False))
@@ -1970,6 +2042,10 @@ class BinPickingOrchestrator:
             "fused_views": list(fused.views_used),
             "fused_objects": fused.objects_fused,
             "fused_objects_total": len(fused.clouds_base_mm),
+            # Delivered a frame, grounded nothing on it. Not a fault, and not the same as absent.
+            "cameras_grounded_nothing": len(grounded_nothing),
+            # Configured, delivered no frame at all. What `on_camera_unavailable` acts on.
+            "cameras_absent": len(missing),
             # How well the cameras agreed, not just how many answered: the mean association score
             # over the pairs that won their assignment. The telemetry catalog declares
             # `fusion_evidence_quality` as a unit interval without saying what it means; this is the
@@ -2180,6 +2256,23 @@ class BinPickingOrchestrator:
             if support is not None and support_cfg is not None and camera_to_base is not None:
                 extra_kwargs["support_plane"] = support.plane
                 extra_kwargs["min_table_clearance_mm"] = support_cfg.min_clearance_mm
+                # Where the table ended up, and whether it was declared or observed.
+                # `SupportResolution.as_telemetry` was written for this and had no caller anywhere in
+                # the tree; the only plane number reaching a log was a camera depth from the
+                # collision filter, which is not a height. That cost nothing while single-view
+                # refinement was structurally inert: the target cloud's extent along the support
+                # normal was exactly 0.0 against a 25 mm gate, because the producer flattened the
+                # depth under every mask, so the plane was always the declared one. It refines now.
+                # `resolve_support_plane` only ever raises the plane and every millimetre it rises
+                # eats into a 5 mm clearance budget, so a plane walking up onto the object has to be
+                # visible while it happens.
+                self._support_telemetry = support.as_telemetry()
+                if support.source == "observed":
+                    _LOG.info(
+                        "support plane observed at %.1f mm, %.1f mm above the declared %.1f mm, "
+                        "from this object's own cloud",
+                        support.height_mm, support.height_mm - support.declared_mm,
+                        support.declared_mm)
             elif support is not None:
                 _LOG.warning(
                     "support plane configured but no CAMERA->BASE transform is available; "

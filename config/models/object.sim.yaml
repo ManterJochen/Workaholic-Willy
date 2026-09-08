@@ -1,8 +1,8 @@
 # Sim profile overlay, deep-merged onto object.yaml when WILLY_PROFILE includes sim.
-# GroundingDINO for the simulated vision path; `local: false` fetches the weights from the Hub on
-# first run. Only `objectdetector` diverges here, and every other key of the base file is inherited.
+# GroundingDINO for the simulated vision path. The weights come from the base file now, at
+# assets/models/hf, so nothing downloads at run time and nothing lands outside the checkout.
+# Only `objectdetector` diverges here, and every other key of the base file is inherited.
 objectdetector:
-  model_path: ""
   # The detector checkpoint is a per-cell choice, not a fixed best. The tiny checkpoint grounds
   # sparse scenes on which the base checkpoint returns nothing at all, and a detector that grounds
   # nothing is a cell that cannot pick; the base checkpoint is the better one on dense clutter,
@@ -10,7 +10,6 @@ objectdetector:
   # scene that yields no detection, try the other checkpoint before lowering `threshold`.
   model_id: "IDEA-Research/grounding-dino-tiny"
   threshold: 0.2
-  local: false
   optim:
     # This is the recall path for small objects: `torch_dtype` and `attn_implementation` both
     # unset, so the model loads fp32 weights and runs the forward pass under fp16 autocast.

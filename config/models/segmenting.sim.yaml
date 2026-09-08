@@ -1,9 +1,8 @@
 # Sim profile overlay, deep-merged onto segmenting.yaml when WILLY_PROFILE includes sim.
-# SAM2 for the simulated vision path; `local: false` fetches the weights from the Hub on first run.
+# SAM2 for the simulated vision path. The weights come from the base file now, at
+# assets/models/hf, so nothing downloads at run time and nothing lands outside the checkout.
 # Only `segmenter` diverges here, and every other key of the base file is inherited.
 segmenter:
-  model_path: ""
-  local: false
   optim:
     # The same unset-dtype path as `object.sim.yaml`: fp32 weights with fp16 autocast, which is
     # what holds recall on small objects. A `null` leaf would keep the base value `auto` (fp16

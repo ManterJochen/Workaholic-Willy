@@ -203,7 +203,7 @@ def _locate_on_rig(config: Any, args: argparse.Namespace) -> int:
     # `FrameProvider` wants the list of rigs, which is what `.rigs` supplies. Handing it
     # `config.camera.cameras`, the `CameraSystemConfig` model, gets past the provider's own
     # `if not rigs` guard, because a Pydantic model is truthy; iterating a model then yields
-    # `('active_mode', 'auto')` pairs, so `rig.rig_id` raises `AttributeError`, which the
+    # `('primary_rig_id', 'webcam_main')` pairs, so `rig.rig_id` raises `AttributeError`, which the
     # `except (FileNotFoundError, ImportError, ValueError)` handler in `main` does not catch, and
     # the command exits 1 with a traceback that reads like "no hand was found". The other
     # `FrameProvider` call sites spell it the same way: `cells.py:139`,

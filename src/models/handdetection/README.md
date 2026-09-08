@@ -29,17 +29,14 @@ message naming the config key, the resolved absolute path and the download URL.
 are not in this repository: they are binaries and the operator picks the revision.
 
 ```bash
-mkdir -p assets/models/mediapipe
-curl -Lo assets/models/mediapipe/hand_landmarker.task \
-  https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
-curl -Lo assets/models/mediapipe/gesture_recognizer.task \
-  https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task
+# The script reads the two URLs from constants.py, which is where the code reads them too.
+python scripts/model_weights/fetch.py --mediapipe
 
 python -m src.models.handdetection --check      # exit 0 only when both are actually there
 python -m src.models.handdetection --frame hand.jpg --gestures   # prove it on a picture
 ```
 
-`assets/models/mediapipe/` is gitignored. The paths come from `models.handdetect.model_path` and
+`assets/models/hf/mediapipe/` is gitignored. The paths come from `models.handdetect.model_path` and
 `models.gesturedetect.model_path` in [`config/models/hand.yaml`](../../../config/models/hand.yaml),
 so an operator who keeps the bundles elsewhere changes the config, not the code.
 

@@ -5,16 +5,20 @@
 # Top-level camera section: which rig is active and the rig catalogue.
 cameras:
 
-  # ── Active-Mode ───────────────────────────────────────────────────── auto : Scan all enabled rigs, pick
-  # whichever is currently reachable.
-  # [REQUIRED - no default] [one of: auto | rig]
-  active_mode: auto
-
-  # Must be set when active_mode == "rig". Valid values: "webcam_main" two USB webcams forming a stereo
-  # pair, "stereo_dev0" single side-by-side stereo device at index 0 "stereo_dev3" single side-by-side
-  # stereo device at index 3 "realsense_d435" Intel RealSense RGB-D
-  # [default: null]
-  active_rig_id: null
+  # Which rig this cell opens. Required, and it must name one of the rigs below.
+  #
+  # It replaced a pair of keys, `active_mode` and `active_rig_id`, that only the stereo calibration
+  # tool ever read. The grasp path chose its camera by taking the FIRST rig with `source: rgbd` in
+  # list order, and that rule did not consult `enabled`, so the shipped base profile would open a
+  # camera its own config declares off. Three pieces of code selected from one list by three
+  # different rules.
+  #
+  # The rig must exist. It does not have to be enabled at load, because a profile whose cameras are
+  # still waiting for their serial numbers is not a malformed file; a cell built on a disabled or
+  # non RGB-D primary is refused when it is BUILT, with a message that names the RGB-D rigs there
+  # are. Changing it changes which camera the cell opens, and therefore every number it measures.
+  # [REQUIRED - no default]
+  primary_rig_id: webcam_main
 
   # Stereo-calibration ChArUco board parameters + this block's ArUco marker settings.
   stereo_calibration:
@@ -61,7 +65,7 @@ cameras:
 
     # --- entry 0: webcam_main ---
 
-      # The name you use to address this camera everywhere else: `camera.cameras.active_rig_id`
+      # The name you use to address this camera everywhere else: `camera.cameras.primary_rig_id`
       # selects it, `python -m src.robot.perception --rig <id>` opens it,
       # `FrameProvider.grab(rig_id)` keys on it, and if you omit `calibration_paths.base_dir` the schema
       # invents `calibration/<rig_id>` from it.
@@ -173,7 +177,7 @@ cameras:
 
     # --- entry 1: stereo_dev0 ---
 
-      # The name you use to address this camera everywhere else: `camera.cameras.active_rig_id`
+      # The name you use to address this camera everywhere else: `camera.cameras.primary_rig_id`
       # selects it, `python -m src.robot.perception --rig <id>` opens it,
       # `FrameProvider.grab(rig_id)` keys on it, and if you omit `calibration_paths.base_dir` the schema
       # invents `calibration/<rig_id>` from it.
@@ -294,7 +298,7 @@ cameras:
 
     # --- entry 3: realsense_d435 ---
 
-      # (RGB-D rig.) The name you use to address this camera everywhere else: `camera.cameras.active_rig_id`
+      # (RGB-D rig.) The name you use to address this camera everywhere else: `camera.cameras.primary_rig_id`
       # selects it, `python -m backend.src.robot.perception --rig <id>` opens it,
       # `FrameProvider.grab(rig_id)` keys on it, and if you omit `calibration_paths.base_dir` the schema
       # invents `calibration/<rig_id>` from it

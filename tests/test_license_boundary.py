@@ -71,6 +71,26 @@ _SKIP_DIRS = frozenset({
     ".ruff_cache", "node_modules", "htmlcov", ".idea", ".vscode",
 })
 
+#: Repo-relative path prefixes that hold downloaded third-party payloads.
+#:
+#: Same reason as ``ext_deps`` above: a file this repository did not write is not this repository's
+#: prose, and a scanner that reads it is reporting on somebody else's project. It is a prefix rather
+#: than a name in ``_SKIP_DIRS`` because the membership test there runs per path component, so an
+#: entry of "hf" would exempt every directory called ``hf`` anywhere in the tree.
+#:
+#: Measured, which is why the entry exists rather than being a precaution. A BERT wordpiece
+#: vocabulary holds one token per line, and ``vocab.txt`` in ``IDEA-Research/grounding-dino-tiny``
+#: holds ``acronym``. The forbidden-name check is a case-insensitive substring match, ACRONYM is a
+#: forbidden grasp dataset, and ``.txt`` is scanned, so the first fetch of that detector turns this
+#: gate red on an ordinary English noun inside a tokenizer.
+#:
+#: The skip is paired with a guard, because a skip list is how a hole gets in. See
+#: ``test_the_weights_directory_holds_only_downloaded_files``: everything under the prefix has to
+#: match the layout the downloaders themselves produce, so an authored file placed there is a
+#: failure rather than an exemption. That is the counter-measure ``_SKIP_DIR_EXCEPTIONS`` below
+#: records the need for, learned when ``ext_deps`` hid our own install guide.
+_SKIP_PREFIXES = ("assets/models/hf/",)
+
 #: Files inside a skipped directory that ARE ours and must be scanned anyway.
 #:
 #: MEASURED HOLE (2026-08-20). ``ext_deps/`` is skipped because it holds third-party payloads that are
@@ -132,8 +152,90 @@ def _repo_files(suffixes: tuple[str, ...]) -> list[Path]:
             part in _SKIP_DIRS for part in path.relative_to(REPO).parts
         ):
             continue
+        if rel.startswith(_SKIP_PREFIXES):
+            continue
         out.append(path)
     return out
+
+
+class DownloadedWeightsAreNotOursToPoliceTests(unittest.TestCase):
+    """The prefix above exempts downloaded payloads. This is what stops it exempting anything else.
+
+    A directory the scanner does not read is a directory where a forbidden install guide could sit
+    unseen, which is exactly what ``ext_deps`` did with our own README. The difference here is that
+    the layout under the prefix is imposed by the downloaders rather than chosen by a person, so "did
+    somebody author this" is a question the tree can answer: ``hub/`` and ``xet/`` are Hugging Face's
+    own cache, ``mediapipe/`` holds the two ``.task`` bundles, ``torch/`` is ``TORCH_HOME``, and
+    anything else was put there by hand.
+    """
+
+    #: What the fetchers produce. ``hub`` and ``xet`` come from ``HF_HOME``, ``mediapipe`` from
+    #: ``scripts/model_weights/fetch.py --mediapipe``, ``torch`` from ``TORCH_HOME``.
+    _EXPECTED_TOP_LEVEL = frozenset({"hub", "xet", "mediapipe", "torch"})
+
+    def test_the_weights_directory_holds_only_downloaded_files(self) -> None:
+        from src.utility.paths import weights_root
+
+        root = weights_root()
+        if not root.is_dir():
+            self.skipTest(f"{root} does not exist; nothing has been fetched on this box")
+        unexpected = sorted(
+            child.name for child in root.iterdir()
+            if child.name not in self._EXPECTED_TOP_LEVEL and not child.name.startswith(".")
+        )
+        self.assertEqual(
+            unexpected, [],
+            f"{root} is skipped by the licence scanner because it holds downloaded payloads. These "
+            f"entries are not something a downloader produces, so they are authored files sitting "
+            f"inside a directory nothing reads. Move them out, or add them to _SKIP_DIR_EXCEPTIONS "
+            f"so they are scanned where they are.",
+        )
+
+    def test_the_skip_prefix_is_a_prefix_and_not_a_directory_name(self) -> None:
+        """A name in ``_SKIP_DIRS`` matches per path component, so "hf" would exempt every directory
+        called ``hf`` anywhere. The prefix form exempts one place."""
+        for prefix in _SKIP_PREFIXES:
+            with self.subTest(prefix=prefix):
+                self.assertIn("/", prefix.rstrip("/"))
+                self.assertTrue(prefix.endswith("/"))
+                self.assertNotIn(prefix.rstrip("/").rsplit("/", 1)[-1], _SKIP_DIRS)
+
+    def test_the_same_bytes_are_exempt_here_and_caught_elsewhere(self) -> None:
+        """The discriminating control. One file, two locations, opposite outcomes, so the exemption
+        is proved to be scoped rather than global and cannot quietly widen.
+
+        The content is a real tokenizer line. ``acronym`` is an ordinary English noun and also a
+        forbidden grasp dataset, and the check is a case-insensitive substring, which is how a BERT
+        wordpiece vocabulary trips a licence gate.
+        """
+        from src.utility.paths import weights_root
+
+        root = weights_root() / "hub"
+        root.mkdir(parents=True, exist_ok=True)
+        inside = root / "_licence_control_vocab.txt"
+        outside = REPO / "assets" / "_licence_control_vocab.txt"
+        self.addCleanup(inside.unlink, True)
+        self.addCleanup(outside.unlink, True)
+        for target in (inside, outside):
+            target.write_text("acronym" + chr(10) + "anvil" + chr(10), encoding="utf-8")
+
+        scanned = {_rel(p) for p in _repo_files((".txt",))}
+        self.assertNotIn(_rel(inside), scanned, "a downloaded payload is being scanned")
+        self.assertIn(_rel(outside), scanned, "the exemption reaches past the weights directory")
+
+    def test_the_scanner_still_reads_the_rest_of_assets(self) -> None:
+        """The control on scope. The decision was to exempt downloaded weights specifically, so a
+        file elsewhere under ``assets/`` must still be scanned. If the prefix were widened to
+        ``assets/``, this is what says so."""
+        scanned = {_rel(p) for p in _repo_files((".md", ".txt", ".py"))}
+        self.assertTrue(
+            any(r.startswith("assets/") for r in scanned),
+            "nothing under assets/ is scanned any more, so the exemption grew past weights",
+        )
+        self.assertFalse(
+            any(r.startswith("assets/models/hf/") for r in scanned),
+            "the weights exemption is not taking effect",
+        )
 
 
 class LicenseBoundaryTests(unittest.TestCase):

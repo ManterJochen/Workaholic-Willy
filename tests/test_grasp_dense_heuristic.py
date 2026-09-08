@@ -164,7 +164,7 @@ class DenseDecisionTests(unittest.TestCase):
             telemetry=telemetry,
         )
         self.assertFalse(decision)
-        self.assertEqual(telemetry["dense_auto_reason"], "cooldown_after_overrun")
+        self.assertEqual(telemetry["dense_auto_reason"], "degraded_after_overrun")
 
     def test_cooldown_can_be_overridden_by_explicit_true(self) -> None:
         calc = _make_calc()

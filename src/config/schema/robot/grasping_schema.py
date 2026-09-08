@@ -1392,12 +1392,24 @@ class RobotGraspingFusionConfig(StrictModel):
     cameras: dict[str, CameraExtrinsicsConfig] = Field(
         default_factory=dict,
         description=(
-            "Multi-camera calibration map: camera_id -> {enabled, mounting_mode, extrinsics_artifact_path}. "
-            "The central place to declare + individually calibrate several cameras (multi-view). "
-            "``build_config_frame_resolvers`` turns it into a {camera_id -> FrameResolver} map (eye_to_hand "
-            "-> StaticCameraToBaseResolver, eye_in_hand -> EyeInHandFrameResolver). Empty (default) = the "
-            "single-camera path via ``extrinsics_artifact_path`` (byte-identical). Fail-closed: an "
-            "enabled camera with a missing/invalid artifact raises at construction."
+            "Every camera this cell fuses, keyed by the id it has in ``camera.cameras.rigs``, "
+            "INCLUDING the primary. One list answers 'how many cameras does this cell have', and a "
+            "simulator and a real cell mean the same thing by it. Each entry carries {enabled, "
+            "mounting_mode, extrinsics_artifact_path}, so every camera is calibrated and loaded on "
+            "its own. ``build_config_frame_resolvers`` turns it into a {camera_id -> FrameResolver} "
+            "map (eye_to_hand -> StaticCameraToBaseResolver, eye_in_hand -> EyeInHandFrameResolver). "
+            "Empty (default) is a single-camera cell using the ``extrinsics_artifact_path`` key "
+            "beside this one. Fail-closed: an enabled camera with a missing or invalid artifact "
+            "raises at construction. "
+            "The primary used to be excluded, and the exclusion cost two things. The boot banner "
+            "counts this map, so a correctly configured two-camera cell was told it had one and "
+            "advised to add a second. And ``robot.sim.yaml`` listed its own primary while a real "
+            "cell was documented not to, so the two profiles taught opposite shapes. The primary is "
+            "still left out of the extra-camera rig, because it already streams through the cell's "
+            "main perception source and fusing a second copy of it costs a full detect and segment "
+            "pass for a view already present. If the primary is listed here, its artifact must be "
+            "the same one ``fusion.extrinsics_artifact_path`` names; a disagreement is refused at "
+            "load."
         ),
     )
     geometry: FusionGeometryConfig = Field(
@@ -1848,6 +1860,69 @@ class GraspingGeometryStageConfig(StrictModel):
             "object and every consequence of that is one-sided (an under-estimated span, a finger "
             "that clips a flank on the way in). Non-zero biases the estimate in the safe direction. "
             "Default 0.0 = the measurement above, which was taken without it."
+        ),
+    )
+    grasp_depth_reference: Literal["centre", "top"] = Field(
+        default="centre",
+        description=(
+            "Where in the object's depth spread the silhouette stage anchors a grasp. 'centre' is "
+            "the median of the measured surface under the mask. 'top' is a low quantile of it, the "
+            "near face. Measured on the D5 gate subset (n=354, neighbours rung): centre reaches "
+            "22.08 % precision and 24.29 % top-1, against 19.44 / 22.03 for top at q=25 and 18.24 / "
+            "21.47 for top at q=10. 'top' does what it promises and it is not enough: rank-0 'no "
+            "candidate' falls from 65.4 to 60.2 %, so more objects clear the table, while every "
+            "failure reason rises with it. The 2F-85 contact patch reaches 14.4 mm behind the grasp "
+            "centre and 23.6 mm in front, so anchoring on the near face puts most of the patch in "
+            "the air above the object: it buys clearance by giving up grip. Keep 'centre' unless a "
+            "measurement on your parts says otherwise."
+        ),
+    )
+    grasp_top_penetration_mm: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=50.0,
+        description=(
+            "How far below the reference above the grasp is driven. Only read when "
+            "grasp_depth_reference is 'top', where the reference is the near face and closing on "
+            "the very edge of a part slips. Until now the perception producer applied a fixed 3 mm "
+            "of this to the depth map itself before anything downstream saw it, so no cell could "
+            "set it and every consumer that wanted the object's shape got a flat sheet instead. The "
+            "descend belongs here, where it is one number applied to one candidate, rather than in "
+            "an image that six other stages read for geometry."
+        ),
+    )
+    grasp_top_quantile: float = Field(
+        default=10.0,
+        ge=0.0,
+        le=50.0,
+        description=(
+            "Which quantile of the under-mask depth counts as the near face when "
+            "grasp_depth_reference is 'top'. A percentile rather than the minimum, because one "
+            "speckle pixel in front of the part would otherwise set the whole object's grasp plane. "
+            "Only read when the reference is 'top'."
+        ),
+    )
+    depth_band_mm: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=500.0,
+        description=(
+            "Keep only the depth within this much of the near face, and discard the rest before the "
+            "cloud is built. A segmentation mask usually spills a few pixels past the object onto "
+            "the bench, and those pixels are metres of surface behind it: they drag the median, "
+            "inflate the object's apparent depth spread, and put table points into the geometry the "
+            "fingers are planned against. Null, the default, keeps every pixel under the mask. This "
+            "lever could not do anything at all while the producer flattened the depth, because "
+            "every percentile of a constant is that constant."
+        ),
+    )
+    depth_band_near_pct: float = Field(
+        default=10.0,
+        ge=0.0,
+        le=50.0,
+        description=(
+            "Which quantile of the under-mask depth the band above is measured from. Only read when "
+            "depth_band_mm is set."
         ),
     )
 

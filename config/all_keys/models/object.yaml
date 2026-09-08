@@ -8,12 +8,12 @@ objectdetector:
   # Where GroundingDINO's weights are loaded from when `local: true` a directory of HF model files on this
   # box, no download.
   # [REQUIRED - no default]
-  model_path: backend/src/models/detection/model
+  model_path: assets/models/hf/detection/IDEA-Research--grounding-dino-tiny
 
   # If `local: true`, this is ignored and the model is loaded from `model_path`. If `local: false`, this
   # specifies the HF Hub id to download the model from.
   # [default: null]
-  model_id: ""
+  model_id: IDEA-Research/grounding-dino-tiny
 
   # Confidence floor in 0..1 applied inside `post_process_grounded_object_detection`; boxes scoring below it
   # never leave the detector.
@@ -63,7 +63,7 @@ rtdetr:
   # Local directory for the RT-DETR closed-set detector's weights when `local: true`; ignored when false
   # (then `model_id`, e.g. PekingU/rtdetr_r50vd, is fetched).
   # [REQUIRED - no default]
-  model_path: ""
+  model_path: assets/models/hf/detection/PekingU--rtdetr_r50vd
 
   # Model identifier for fetching the RT-DETR weights from the Hub if `local` is false.
   # [default: null]
@@ -73,9 +73,9 @@ rtdetr:
   # [REQUIRED - no default]
   threshold: 0.4
 
-  # Load RT-DETR offline from `model_path` (true) or from the Hub `model_id` (false, the shipped value).
+  # Load RT-DETR offline from `model_path` (true, the shipped value) or from the Hub `model_id` (false).
   # [REQUIRED - no default]
-  local: false
+  local: true
 
   # Optional inference-time optimizations for torch-based models.
   optim:
@@ -131,13 +131,13 @@ pipeline:
       model_id: Qwen/Qwen3-VL-4B-Instruct
 
       # A local directory for the Qwen3-VL checkpoint.
-      # [default: null]
-      model_path: null
+      # [default: null] [DIFFERS from the default]
+      model_path: assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct
 
       # Passes `local_files_only=True` to the VLM's processor and model loads, so nothing is downloaded on
       # first use.
-      # [default: false]
-      local: false
+      # [default: false] [DIFFERS from the default]
+      local: true
 
       # Load at cell build (predictable latency, VRAM held from the start) rather than on the first complex
       # prompt (nothing paid until something needs it, one-off load pause mid-session).

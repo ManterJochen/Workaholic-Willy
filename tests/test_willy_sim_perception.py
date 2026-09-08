@@ -270,7 +270,7 @@ class MultiObjectVisionPerceptionSourceTests(unittest.TestCase):
         cam = _VisCam(depth_m, rgb)
         return MultiObjectVisionPerceptionSource(
             camera=cam, detector=detector, segmenter=segmenter, prompt="the sugar box",
-            object_labels=object_labels, warmup_steps=0, grasp_top_penetration_mm=12.0,
+            object_labels=object_labels, warmup_steps=0,
             mask_completion=mask_completion or DEFAULT_MASK_COMPLETION,
         ), cam
 
@@ -290,21 +290,45 @@ class MultiObjectVisionPerceptionSourceTests(unittest.TestCase):
         got = [s.label for s in frame.segmentations]
         self.assertEqual(got, ["sugar box", "tomato soup can"])  # canonicalized -> set_target_label matches
 
-    def test_top_references_depth_per_object(self) -> None:
+    def test_the_rendered_surface_reaches_the_frame_UNTOUCHED(self) -> None:
+        """⛔ THIS SOURCE USED TO OVERWRITE THE DEPTH UNDER EVERY MASK with one number, the nearest
+        surface plus 12 mm, and this test asserted that number. An object therefore arrived at the
+        calculator as a flat sheet at its top face: no body, no sides, no curvature. Where a grasp is
+        anchored inside an object is decided per candidate by `grasping.geometry` instead.
+        """
         labels = ["sugar box"]
         det = _FakeDetector(["sugar box"])
         mask = self._mask((slice(1, 3), slice(1, 3)))
         seg = _FakeSegmenter({"sugar box": mask})
         src, cam = self._src(det, seg, labels)
-        # object top reads 0.909 m over the mask (909 mm); elsewhere far 5 m.
+        # A face with relief: the near corner at 0.909 m, the rest of it 30 mm further away.
+        d = np.full((4, 4), 5.0)
+        d[1:3, 1:3] = 0.939
+        d[1, 1] = 0.909
+        cam._depth_m = d
+
+        frame = src.acquire()
+
+        m = np.asarray(frame.segmentations[0].mask).astype(bool)
+        self.assertAlmostEqual(float(frame.depth_map[1, 1]), 909.0)
+        self.assertAlmostEqual(float(frame.depth_map[2, 2]), 939.0, msg="relief was flattened away")
+        self.assertGreater(float(frame.depth_map[m].max() - frame.depth_map[m].min()), 0.0)
+        self.assertAlmostEqual(float(frame.depth_map[0, 0]), 5000.0)
+
+    def test_the_two_published_arrays_AGREE(self) -> None:
+        """`surface_depth_map` was added because `depth_map` was something else. They now carry the
+        same measurement, as separate arrays, so a noise harness can move one and not the other."""
+        det = _FakeDetector(["sugar box"])
+        seg = _FakeSegmenter({"sugar box": self._mask((slice(1, 3), slice(1, 3)))})
+        src, cam = self._src(det, seg, ["sugar box"])
         d = np.full((4, 4), 5.0)
         d[1:3, 1:3] = 0.909
         cam._depth_m = d
+
         frame = src.acquire()
-        m = np.asarray(frame.segmentations[0].mask).astype(bool)
-        # depth over the mask is overridden to top(909) + penetration(12) = 921; background untouched (5000).
-        np.testing.assert_allclose(frame.depth_map[m], 921.0, atol=1e-6)
-        self.assertAlmostEqual(float(frame.depth_map[0, 0]), 5000.0)
+
+        np.testing.assert_array_equal(frame.depth_map, frame.surface_depth_map)
+        self.assertIsNot(frame.depth_map, frame.surface_depth_map)
 
     def test_duplicate_label_detections_are_all_kept(self) -> None:
         # GDINO merges/duplicates: two phrases both canonicalize to "sugar box". We deliberately do NOT

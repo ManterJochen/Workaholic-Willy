@@ -903,16 +903,16 @@ def build_service(
     # uniform stamp they are no-ops. This applies to the ground-truth path only, because the vision source
     # has its own always-on top reference. The default "gt" keeps ground_truth_depth=True.
     _render_depth = depth_source == "rendered"
-    if _render_depth and vision:
-        raise SystemExit(
-            "--depth-source rendered is GT-path only (not --vision); the vision source has its own "
-            "always-on top-reference (a follow-up converges it)."
-        )
+    # `--depth-source rendered` used to be refused together with `--vision`, because the vision source
+    # applied its own top reference to the depth map on every frame and the two would have fought. It
+    # does not any more: the vision source publishes what the camera rendered, so the flag is about
+    # the ground-truth source alone and means nothing on the vision path rather than conflicting.
     _depth_band_mm = depth_band_mm if depth_band_mm > 0.0 else None
-    # In rendered mode the calculator owns the penetration descend below the referenced top surface,
-    # because the perception override is skipped, so it reuses the ycb penetration of about 12 mm. In gt
-    # mode this stays 0.0 and the perception override still does the descend.
-    _calc_pen_mm = float(_ycb_pen) if (_render_depth and _ycb_pen is not None) else 0.0
+    # The calculator owns the descend, on both paths. On the vision path this is now the only descend
+    # there is: the perception source no longer moves the depth map, so a penetration that does not
+    # reach the calculator does not happen at all. It is read only when the reference is "top", so on
+    # the shipped "centre" reference this stays inert whatever it is set to.
+    _calc_pen_mm = float(_ycb_pen) if (_ycb_pen is not None and (_render_depth or vision)) else 0.0
     perception: PerceptionSource  # both sources satisfy the acquire()->PerceptionFrame Protocol
     if vision:
         # Real perception: overhead RGB into GroundingDINO detect_all, with a multi-phrase prompt over the
@@ -953,7 +953,6 @@ def build_service(
             segmenter=Sam2Segmenter(cfg.models.segmenter),
             prompt=prompt, object_labels=_labels, session=arm.session,
             warmup_steps=max(25, sim.scene_setup.render_warmup_steps),
-            grasp_top_penetration_mm=float(_ycb_pen if _ycb_pen is not None else 12.0),
             mask_completion=_policy,
         )
     else:

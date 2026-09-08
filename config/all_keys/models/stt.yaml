@@ -11,7 +11,7 @@ stt:
 
   # Local directory holding the Whisper checkpoint, used when `local: true`
   # [REQUIRED - no default]
-  model_path: backend/src/models/speech/model
+  model_path: assets/models/hf/speech/openai--whisper-small
 
   # The sample rate in Hz that Whisper is fed at.
   # [REQUIRED - no default]

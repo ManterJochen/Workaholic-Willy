@@ -168,13 +168,26 @@ def _print_frame_health(frame: Any, tap: Any, *, backend_note: str) -> None:
         holes = int((raw[mask] == 0).sum())
         if holes == n:
             all_hole += 1
-        # Both numbers, side by side: what the sensor said, and the plane the robot would drive to.
-        # The second is the adapter's `min(real surface) + grasp_top_penetration_mm`.
-        plane = rendered[mask]
-        grasp = f"{float(plane.max()):.0f}" if plane.size else "?"
+        # Three numbers, because a surface has three that matter and the source no longer reduces it
+        # to one. `near` is the closest measured point on the object, `far` the deepest, and the
+        # spread between them is the object's visible relief. That spread used to be exactly zero for
+        # every object: the source overwrote the depth under each mask with one scalar, so this line
+        # printed a "grasp plane" that was the only value there was, computed with `max()` over a
+        # constant. On a real surface `max()` is the deepest pixel under the mask, which is the bench
+        # showing through a mask edge more often than it is the object.
+        #
+        # Where a grasp is anchored is not printed here any more, because this CLI does not know: it
+        # is decided per candidate from `grasping.geometry`, and printing one reading of it would be
+        # a number an operator could act on and the cell would not use.
+        measured = rendered[mask]
+        measured = measured[measured > 0.0]
+        if measured.size:
+            near, far = float(measured.min()), float(measured.max())
+            surface = f"near={near:.0f} far={far:.0f} relief={far - near:.0f} mm"
+        else:
+            surface = "no measured surface at all"
         print(f"  [{i}] label={label!r} mask_px={n} "
-              f"depth-holes-in-mask={holes}/{n} ({100.0 * holes / n:.1f}%) "
-              f"grasp-plane={grasp} mm")
+              f"depth-holes-in-mask={holes}/{n} ({100.0 * holes / n:.1f}%) {surface}")
     if all_hole:
         # The case the exit code is blind to, said out loud. A D435 on a specular or dark scene
         # returns lit RGB, so grounding succeeds, and dead depth; the adapter deliberately leaves

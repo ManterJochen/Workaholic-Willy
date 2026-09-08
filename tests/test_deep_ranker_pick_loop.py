@@ -23,9 +23,10 @@ import numpy as np
 
 from src.robot.grasping.collision.table_collision import SupportPlane
 from src.robot.grasping.deep.ranker.context import DeepRankerContext
-from src.robot.grasping.deep.ranker.features import BOOTSTRAP_JAW_V1
+from src.robot.grasping.deep.ranker.features import BOOTSTRAP_JAW_V1, HELD_JAW_V1
 from src.robot.grasping.deep.ranker.runtime import GbtRanker, RankerTree
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator
+from src.robot.grasping.multiview.scene_geometry import FusedSceneGeometry
 from src.robot.grasping.types.feedback import GraspResult
 from src.geometry import Frame
 
@@ -48,6 +49,24 @@ def _context() -> DeepRankerContext:
     ranker = GbtRanker(spec=BOOTSTRAP_JAW_V1.name, features=BOOTSTRAP_JAW_V1.features,
                        init_score=0.0, learning_rate=1.0, trees=(tree,), sha256="ab" * 32)
     return DeepRankerContext(ranker=ranker, spec=BOOTSTRAP_JAW_V1)
+
+
+def _clearance_context() -> DeepRankerContext:
+    """A ranker that splits on `jaw_clearance_mm`, so an obstacle cloud can move its answer.
+
+    `BOOTSTRAP_JAW_V1` has only pose features, so every obstacle produces the same score under it and
+    a test built on it would pass whether or not the cloud arrived. That is exactly how the missing
+    obstacle cloud stayed invisible.
+    """
+    clearance = HELD_JAW_V1.features.index("jaw_clearance_mm")
+    tree = RankerTree(
+        feature=np.asarray([clearance, -1, -1]), threshold=np.asarray([25.0, -2.0, -2.0]),
+        left=np.asarray([1, -1, -1]), right=np.asarray([2, -1, -1]),
+        value=np.asarray([0.0, -1.0, 1.0]),
+    )
+    ranker = GbtRanker(spec=HELD_JAW_V1.name, features=HELD_JAW_V1.features,
+                       init_score=0.0, learning_rate=1.0, trees=(tree,), sha256="cd" * 32)
+    return DeepRankerContext(ranker=ranker, spec=HELD_JAW_V1)
 
 
 class _Candidate:
@@ -131,14 +150,54 @@ class TheObstacleCloudComesFromTheBaseFrameSourceTests(unittest.TestCase):
     """`scene_points_mm` is CAMERA-frame and `fused_scene` is BASE. Mixing them is the same defect."""
 
     def test_the_fused_scene_supplies_the_obstacles(self) -> None:
-        fused = SimpleNamespace(
-            indices=(0, 1),
-            cloud_for=lambda i: (np.asarray([[15.0, 0.0, 40.0]]) if i == 1 else _cloud()),
+        # The REAL type, not a stand-in. A hand-built double once carried an `indices` attribute the
+        # fused scene has never had, so the seam read an empty tuple, scored every candidate against
+        # no obstacle, and this test passed throughout.
+        fused = FusedSceneGeometry(
+            clouds_base_mm=(_cloud(), np.asarray([[15.0, 0.0, 40.0]])),
+            views_used=("cam_right",),
+            associations=(),
         )
         result = _result()
         _orchestrator(deep_ranker_context=_context())._stamp_deep_ranker(
             result, {"geometry_points_base_mm": _cloud()}, fused, 0)
         self.assertTrue(result.telemetry["deep_ranker_scored"], result.telemetry)
+        # Object 0 is the target, so exactly one other object supplies obstacle points.
+        self.assertEqual(1, result.telemetry["deep_ranker_obstacle_objects"])
+
+    def test_the_obstacle_count_is_reported_so_an_empty_one_is_visible(self) -> None:
+        """A scene of one object has nothing to clear, and says so rather than staying silent."""
+        alone = FusedSceneGeometry(
+            clouds_base_mm=(_cloud(),), views_used=("cam_right",), associations=(),
+        )
+        result = _result()
+        _orchestrator(deep_ranker_context=_context())._stamp_deep_ranker(
+            result, {"geometry_points_base_mm": _cloud()}, alone, 0)
+        self.assertEqual(0, result.telemetry["deep_ranker_obstacle_objects"])
+
+    def test_the_obstacles_reach_the_scorer_and_change_the_score(self) -> None:
+        """The count alone would be satisfied by a number nobody reads. This asserts the effect.
+
+        Same target, same candidates; the only difference is a second object standing next to it. A
+        ranker that splits on jaw clearance cannot answer both the same way, and if it does then the
+        cloud never reached the scorer. The bootstrap spec cannot express this at all -- it carries
+        four pose features and no environment feature -- so the test uses the spec that has one.
+        """
+        context = _clearance_context()
+        alone = FusedSceneGeometry(
+            clouds_base_mm=(_cloud(),), views_used=("cam_right",), associations=(),
+        )
+        crowded = FusedSceneGeometry(
+            clouds_base_mm=(_cloud(), np.asarray([[12.0, 0.0, 40.0]] * 40)),
+            views_used=("cam_right",), associations=(),
+        )
+        scores = []
+        for scene in (alone, crowded):
+            result = _result()
+            _orchestrator(deep_ranker_context=context)._stamp_deep_ranker(
+                result, {"geometry_points_base_mm": _cloud()}, scene, 0)
+            scores.append(result.telemetry["deep_ranker_top_score"])
+        self.assertNotEqual(scores[0], scores[1])
 
     def test_a_camera_frame_scene_cloud_is_NOT_used_as_obstacles(self) -> None:
         """Handing it `scene_points_mm` must not change the score: it is in the wrong frame, so the

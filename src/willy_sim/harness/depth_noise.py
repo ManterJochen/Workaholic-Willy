@@ -92,4 +92,10 @@ class NoisyDepthPerceptionSource:
         rng = np.random.default_rng(self._config.seed + self._n)
         self._n += 1
         noisy = inject_depth_noise(frame.depth_map, self._config, rng)
+        # `depth_map` only, and `surface_depth_map` deliberately left clean. It reads as an
+        # oversight and it is the design: the grasp path should see what a real sensor
+        # delivers, noise included, while the planner's obstacle world is built from the other
+        # field, and an obstacle that jumps a few millimetres every frame is worse than one
+        # that is slightly wrong. The two fields carried different content until the producers
+        # stopped flattening the depth under a mask. Noise is what separates them now.
         return replace(frame, depth_map=noisy)

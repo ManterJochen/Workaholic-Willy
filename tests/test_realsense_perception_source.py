@@ -113,26 +113,69 @@ class IntrinsicsTests(unittest.TestCase):
 
 
 class DepthAndMaskTests(unittest.TestCase):
-    def test_top_referenced_depth_skips_holes(self) -> None:
-        # Depth 500 everywhere; inside a 10x10 mask put a nearer surface (400) and a hole (0). The grasp
-        # depth must reference the nearest REAL surface (400), not the hole, + penetration.
+    """⛔ THE DEPTH THIS SOURCE PUBLISHES IS THE DEPTH IT MEASURED, under a mask as everywhere else.
+
+    It used to overwrite every pixel under a detection with one number, the nearest real surface plus
+    a penetration, because that is the plane a jaw closes at. The tests here asserted that overwrite.
+    Six stages downstream read the same array for the SHAPE of an object and got a flat sheet, so the
+    antipodal search found no opposing normals, the dense sampler measured no curvature, the
+    support-plane refinement saw an extent of exactly zero, and the multi-camera fusion fused sheets.
+    Where a grasp is anchored inside an object is now decided per candidate by `grasping.geometry`.
+    """
+
+    def test_relief_under_a_mask_SURVIVES(self) -> None:
+        """The whole change in one assertion. A part 100 mm above the bench must still be 100 mm
+        above the bench after the source has looked at it."""
         depth = np.full((64, 64), 500, np.uint16)
         depth[20:30, 20:30] = 400
-        depth[22, 22] = 0  # a hole inside the mask
+        depth[24:26, 24:26] = 430  # relief WITHIN the object: a step down its visible face
         det = _Det(box=(20, 20, 30, 30))
         s = RealSenseVisionPerceptionSource(
             streamer=_FakeStreamer(_color(), depth, _K),
-            detector=_FakeDetector([det]), segmenter=_FakeSegmenter(), prompt="x",
-            grasp_top_penetration_mm=3.0, warmup_grabs=0)
-        frame = s.acquire()
-        dm = frame.depth_map
-        # over the mask -> 400 + 3; outside untouched at 500
-        self.assertAlmostEqual(float(dm[25, 25]), 403.0)
+            detector=_FakeDetector([det]), segmenter=_FakeSegmenter(), prompt="x", warmup_grabs=0)
+
+        dm = s.acquire().depth_map
+
+        self.assertAlmostEqual(float(dm[21, 21]), 400.0)
+        self.assertAlmostEqual(float(dm[24, 24]), 430.0, msg="the step was flattened away")
         self.assertAlmostEqual(float(dm[0, 0]), 500.0)
 
+    def test_the_object_has_a_DEPTH_SPREAD_at_all(self) -> None:
+        """Stated as the quantity the stages downstream actually consume. Under the overwrite this
+        was exactly zero for every object, which is why every gate that measured an extent, a
+        curvature or an opposition could only ever see one answer."""
+        depth = np.full((64, 64), 500, np.uint16)
+        depth[20:30, 20:30] = 400
+        depth[24:26, 24:26] = 430
+        det = _Det(box=(20, 20, 30, 30))
+        s = RealSenseVisionPerceptionSource(
+            streamer=_FakeStreamer(_color(), depth, _K),
+            detector=_FakeDetector([det]), segmenter=_FakeSegmenter(), prompt="x", warmup_grabs=0)
+
+        frame = s.acquire()
+        under_mask = frame.depth_map[np.asarray(frame.segmentations[0].mask).astype(bool)]
+
+        self.assertGreater(float(under_mask.max() - under_mask.min()), 0.0)
+
+    def test_a_hole_stays_a_hole(self) -> None:
+        """A pixel the sensor could not measure is 0, and it must not be filled in by anything here.
+        Inventing a surface at an invented distance is a surface a grasp is then planned against."""
+        depth = np.full((64, 64), 500, np.uint16)
+        depth[20:30, 20:30] = 400
+        depth[22, 22] = 0
+        det = _Det(box=(20, 20, 30, 30))
+        s = RealSenseVisionPerceptionSource(
+            streamer=_FakeStreamer(_color(), depth, _K),
+            detector=_FakeDetector([det]), segmenter=_FakeSegmenter(), prompt="x", warmup_grabs=0)
+
+        dm = s.acquire().depth_map
+
+        self.assertEqual(float(dm[22, 22]), 0.0)
+        self.assertAlmostEqual(float(dm[23, 23]), 400.0)
+
     def test_all_holes_mask_leaves_depth_unchanged(self) -> None:
-        # A mask over an all-holes region must NOT fabricate a grasp plane -- leave the raw (0) depth so
-        # the failure is visible downstream.
+        # A mask over an all-holes region reaches the calculator as holes, so the failure is visible
+        # downstream rather than answered with a fabricated plane.
         depth = np.full((64, 64), 500, np.uint16)
         depth[20:30, 20:30] = 0
         det = _Det(box=(20, 20, 30, 30))
@@ -141,6 +184,23 @@ class DepthAndMaskTests(unittest.TestCase):
             detector=_FakeDetector([det]), segmenter=_FakeSegmenter(), prompt="x", warmup_grabs=0)
         dm = s.acquire().depth_map
         self.assertEqual(float(dm[25, 25]), 0.0)
+
+    def test_the_two_published_arrays_AGREE(self) -> None:
+        """`surface_depth_map` exists because `depth_map` used to be something else. It now carries
+        the same measurement, and a harness that adds sensor noise to one is what separates them."""
+        depth = np.full((64, 64), 500, np.uint16)
+        depth[20:30, 20:30] = 400
+        det = _Det(box=(20, 20, 30, 30))
+        s = RealSenseVisionPerceptionSource(
+            streamer=_FakeStreamer(_color(), depth, _K),
+            detector=_FakeDetector([det]), segmenter=_FakeSegmenter(), prompt="x", warmup_grabs=0)
+
+        frame = s.acquire()
+
+        self.assertIsNotNone(frame.surface_depth_map)
+        np.testing.assert_array_equal(frame.depth_map, frame.surface_depth_map)
+        self.assertIsNot(frame.depth_map, frame.surface_depth_map,
+                         "they must be separate arrays, or noise on one lands on both")
 
     def test_the_default_leaves_a_tiny_mask_ALONE(self) -> None:
         """What ships. Measured 2026-08-20 over 270 reference scenes, replacing a mask with its box

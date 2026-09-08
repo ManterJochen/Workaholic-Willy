@@ -34,8 +34,25 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 
     from .service import AutonomousGraspService
 
-__all__ = ["build_real_cell", "build_real_components", "build_rehearsal_cell",
+__all__ = ["CellBuildRefused", "build_real_cell", "build_real_components", "build_rehearsal_cell",
            "build_rehearsal_components"]
+
+
+class CellBuildRefused(RuntimeError):
+    """This config cannot produce a cell, and the reason is in the message.
+
+    An `Exception`, and that is the whole point. These refusals used to be `SystemExit`, which is a
+    `BaseException`, so neither caller that was written to handle them could: `api/routers/cell.py`
+    catches `Exception` and answers 422 `build_refused`, and `real_cell/__main__.py` catches
+    `Exception` and returns its config exit code. Both were bypassed, so a refusal the operator was
+    meant to read as "your config says X" arrived at the console as a 500 with no message and at the
+    bench as a bare traceback.
+
+    It went unnoticed because no shipped profile could reach one: the cell took the first rig with
+    `source: rgbd` in list order and there was always such a rig, even switched off. Naming the
+    primary camera made the refusals reachable, on the base profile and on tiltcam, which turned a
+    latent 500 into a certain one on every profile there is.
+    """
 
 
 def build_rehearsal_components(robot_cfg: "RobotConfig") -> tuple[Any, Any, Any, Any]:
@@ -105,11 +122,39 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str) -> tuple[Any, A
     from src.robot.perception import RealSenseVisionPerceptionSource
 
     app_cfg = load_config()
-    rgbd = [r for r in app_cfg.camera.cameras.rigs if getattr(r, "source", None) == "rgbd"]
-    if not rgbd:
-        raise SystemExit(
-            "no RGB-D rig in camera.cameras.rigs; the real cell needs one. Enable the realsense rig "
-            "in the camera config, and prove it standalone with `python -m src.robot.perception`."
+    # The cell's camera is named, not inferred. This took the first rig with `source: rgbd` by list
+    # position and did not consult `enabled`, while the schema's own two-camera serial check used
+    # `source == "rgbd" and enabled` and this file's fusion guard used a third rule. Three predicates
+    # over one list, disagreeing. On the shipped base profile the consequence was concrete: its only
+    # RGB-D rig ships `enabled: false`, and this opened it anyway, so the failure arrived at the
+    # device instead of at the config that caused it.
+    rigs = list(app_cfg.camera.cameras.rigs)
+    rig_id = app_cfg.camera.cameras.primary_rig_id
+    primary = next((r for r in rigs if r.rig_id == rig_id), None)
+    if primary is None:  # the schema checks this, so reaching it means the config was built by hand
+        raise CellBuildRefused(
+            f"camera.cameras.primary_rig_id names {rig_id!r}, which is not in camera.cameras.rigs "
+            f"({sorted(r.rig_id for r in rigs)})."
+        )
+    if not getattr(primary, "enabled", True):
+        raise CellBuildRefused(
+            f"camera.cameras.primary_rig_id names {rig_id!r} and that rig has `enabled: false`. A "
+            "cell cannot run on a camera its own config declares off. Switch it on, or name a rig "
+            "that is on."
+        )
+    if getattr(primary, "source", None) != "rgbd":
+        # The RGB-D rigs are named, not just demanded. Telling someone to "name the RGB-D rig" is
+        # telling them to supply the one fact they have just demonstrated they do not have, and this
+        # function is holding the list while it says it.
+        depth_rigs = sorted(r.rig_id for r in rigs if getattr(r, "source", None) == "rgbd")
+        raise CellBuildRefused(
+            f"camera.cameras.primary_rig_id names {rig_id!r}, a {getattr(primary, 'source', '?')!r} "
+            "rig. A grasp cell needs an RGB-D primary: the grasp is synthesised from its depth. "
+            + (f"The RGB-D rigs here are {depth_rigs}. Name one of those instead, and prove it "
+               "standalone with `python -m src.robot.perception`."
+               if depth_rigs else
+               "There is no RGB-D rig in camera.cameras.rigs at all, so this profile cannot build a "
+               "grasp cell until one is added.")
         )
     # Every camera goes through the frame provider, the one class that owns rig identity, per-rig
     # lifecycle and open/release bookkeeping. The provider is told about every rig and opens
@@ -122,11 +167,10 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str) -> tuple[Any, A
     # so the console's teardown (`execution.lifecycle.release_perception` calling
     # `perception.close()`) closes exactly the device it opened.
     #
-    # Which rig is primary: the first RGB-D one. The grasp is synthesised from this camera and
-    # every other camera confirms what it sees, so moving the primary would move every measured
-    # number this cell has.
-    provider = FrameProvider(list(app_cfg.camera.cameras.rigs))
-    rig_id = rgbd[0].rig_id
+    # Which rig is primary: whichever `camera.cameras.primary_rig_id` names, checked above. The
+    # grasp is synthesised from this camera and every other camera confirms what it sees, so moving
+    # the primary moves every measured number this cell has.
+    provider = FrameProvider(rigs)
     provider.open_rig(rig_id)
     handle = provider.rig(rig_id)
     # The stack is built once and shared by every camera. It is the expensive part of a cell (two
@@ -223,7 +267,7 @@ def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, provider:
              if getattr(r, "source", None) == "rgbd"}
     unknown = [cam_id for cam_id in wanted if cam_id not in known]
     if unknown:
-        raise SystemExit(
+        raise CellBuildRefused(
             f"grasping.fusion.cameras names {unknown} but camera.cameras.rigs has no RGB-D rig with "
             f"that id (known: {sorted(known)}). A fused cell expects every configured camera to "
             "deliver a frame, so this would refuse or warn on every pick instead of once here."
@@ -253,12 +297,23 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
     ``overrides`` are forwarded to :meth:`AutonomousGraspService.from_robot_config`, so a caller
     that needs a mode, a policy or a live device handle still has one.
     """
+    from src.config import load_config
+
     from .service import AutonomousGraspService
 
     calculator, perception, resolver, multi_camera = build_real_components(robot_cfg, prompt)
+    # The same loader `build_real_components` used, and it caches, so this is the same object rather
+    # than a second read of the tree. Named here because the components tuple is a contract several
+    # callers unpack and a fifth element would move all of them.
+    rig_id = load_config().camera.cameras.primary_rig_id
     service = AutonomousGraspService.from_robot_config(
         robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
         multi_camera_perception=multi_camera,
+        # Which camera is the primary, told to the root rather than inferred there. It cannot read
+        # it: the key lives in the camera section and the root is handed a `RobotConfig`. Without it
+        # the primary is expected among the cameras a fused pick waits for, and it delivers through
+        # `perception` instead, so it would be missing on every pick.
+        primary_camera_id=rig_id,
         **overrides,
     )
     _wire_live_planner_world(robot_cfg, service, perception)

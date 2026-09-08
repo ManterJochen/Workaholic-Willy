@@ -1,8 +1,7 @@
 {
   "camera": {
     "cameras": {
-      "active_mode": "auto",
-      "active_rig_id": null,
+      "primary_rig_id": "webcam_main",
       "stereo_calibration": {
         "charuco_squares_x": 10,
         "charuco_squares_y": 7,
@@ -226,8 +225,8 @@
   },
   "models": {
     "objectdetector": {
-      "model_path": "src/models/detection/model",
-      "model_id": "",
+      "model_path": "assets/models/hf/detection/IDEA-Research--grounding-dino-tiny",
+      "model_id": "IDEA-Research/grounding-dino-tiny",
       "threshold": 0.4,
       "local": true,
       "optim": {
@@ -239,7 +238,7 @@
       }
     },
     "segmenter": {
-      "model_path": "src/models/segmentation/model",
+      "model_path": "assets/models/hf/segmentation/facebook--sam2-hiera-large",
       "model_id": "facebook/sam2-hiera-large",
       "local": true,
       "optim": {
@@ -252,7 +251,7 @@
     },
     "stt": {
       "model_id": "openai/whisper-small",
-      "model_path": "src/models/speech/model",
+      "model_path": "assets/models/hf/speech/openai--whisper-small",
       "samplerate": 16000,
       "blocksize": 8000,
       "channels": 1,
@@ -270,7 +269,7 @@
       }
     },
     "handdetect": {
-      "model_path": "assets/models/mediapipe/hand_landmarker.task",
+      "model_path": "assets/models/hf/mediapipe/hand_landmarker.task",
       "max_hands": 2,
       "threshold": 0.5,
       "tracking_threshold": 0.5,
@@ -279,7 +278,7 @@
       "min_depth_samples": 20
     },
     "gesturedetect": {
-      "model_path": "assets/models/mediapipe/gesture_recognizer.task",
+      "model_path": "assets/models/hf/mediapipe/gesture_recognizer.task",
       "max_hands": 2,
       "threshold": 0.5,
       "tracking_threshold": 0.5,
@@ -289,10 +288,10 @@
     "detector": "groundingdino",
     "segmenter_backend": "sam2",
     "rtdetr": {
-      "model_path": "",
+      "model_path": "assets/models/hf/detection/PekingU--rtdetr_r50vd",
       "model_id": "PekingU/rtdetr_r50vd",
       "threshold": 0.4,
-      "local": false,
+      "local": true,
       "optim": {
         "torch_dtype": "auto",
         "attn_implementation": "eager",
@@ -302,9 +301,9 @@
       }
     },
     "oneformer": {
-      "model_path": "",
+      "model_path": "assets/models/hf/segmentation/shi-labs--oneformer_coco_swin_large",
       "model_id": "shi-labs/oneformer_coco_swin_large",
-      "local": false,
+      "local": true,
       "task": "instance",
       "optim": {
         "torch_dtype": "auto",
@@ -321,8 +320,8 @@
         "segmenter": "sam2",
         "vlm": {
           "model_id": "Qwen/Qwen3-VL-4B-Instruct",
-          "model_path": null,
-          "local": false,
+          "model_path": "assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct",
+          "local": true,
           "preload": false,
           "on_unavailable": "refuse"
         }
@@ -899,7 +898,12 @@
       },
       "geometry": {
         "stage": "support_footprint",
-        "inflate_mm": 0.0
+        "inflate_mm": 0.0,
+        "grasp_depth_reference": "centre",
+        "grasp_top_penetration_mm": 0.0,
+        "grasp_top_quantile": 10.0,
+        "depth_band_mm": null,
+        "depth_band_near_pct": 10.0
       },
       "gripper_geometry": {
         "kind": "parallel_jaw",

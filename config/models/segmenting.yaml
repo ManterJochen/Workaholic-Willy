@@ -3,10 +3,10 @@
 #
 # SAM2, prompted with one box and returning one mask. `local: True` reads the weights from
 # `model_path` and downloads nothing; `local: false` pulls `model_id` from the Hub. The path below
-# is not present in a fresh checkout, so a cell that keeps `local: True` has to put the SAM2 files
-# there first.
+# is what `python scripts/model_weights/fetch.py sam2` writes, so a fresh checkout reaches it with
+# one command and the weights leave with the checkout.
 segmenter:
-  model_path: "src/models/segmentation/model"
+  model_path: "assets/models/hf/segmentation/facebook--sam2-hiera-large"
   model_id: "facebook/sam2-hiera-large"
   local: True
   optim:
@@ -24,11 +24,14 @@ segmenter:
 segmenter_backend: "sam2"
 
 # The OneFormer block, required when `segmenter_backend` is "oneformer": asking for that backend
-# without this block refuses the build instead of falling back to SAM2.
+# without this block refuses the build instead of falling back to SAM2. Fetched by
+# `python scripts/model_weights/fetch.py oneformer`, 1.8 GB. It is the one model in the catalogue
+# that publishes no safetensors at all, so the fetch keeps its .bin files where every other entry
+# drops them.
 oneformer:
-  model_path: ""
+  model_path: "assets/models/hf/segmentation/shi-labs--oneformer_coco_swin_large"
   model_id: "shi-labs/oneformer_coco_swin_large"
-  local: false
+  local: true
   # The only value the schema accepts and the only mode the wrapper implements.
   task: "instance"
   optim:

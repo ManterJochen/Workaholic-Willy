@@ -1,10 +1,11 @@
 # GroundingDINO, the open-vocabulary detector: it grounds a text prompt to boxes. `local: True`
-# reads `model_path` from disk and downloads nothing, and that directory is not in a fresh
-# checkout, so either put the weights there or set `local: false` with a Hub id in `model_id`,
-# for example "IDEA-Research/grounding-dino-base". `threshold` is the confidence a box must clear.
+# reads `model_path` from disk and downloads nothing, and `python scripts/model_weights/fetch.py
+# dino-tiny` writes exactly that directory. `local: false` pulls `model_id` from the Hub instead,
+# which is the same weights without the guarantee that deleting this checkout deletes them.
+# `threshold` is the confidence a box must clear.
 objectdetector:
-  model_path: "src/models/detection/model"
-  model_id: ""
+  model_path: "assets/models/hf/detection/IDEA-Research--grounding-dino-tiny"
+  model_id: "IDEA-Research/grounding-dino-tiny"
   threshold: 0.4
   local: True
   optim:
@@ -58,6 +59,12 @@ pipeline:
       # FP8 variant of this id; the bf16 checkpoint is set here, and it is the one the VLM tests
       # and the measured coordinate space in `src/models/vlm/qwen.py` come from.
       model_id: "Qwen/Qwen3-VL-4B-Instruct"
+      # Fetched by `python scripts/model_weights/fetch.py vlm-4b`, 9 GB, and read from disk
+      # rather than the Hub for the same reason as every other block here: a download that
+      # lands in the user profile outlives the checkout. This route is off by default, so
+      # nothing needs those 9 GB until `backend` above says vlm.
+      model_path: "assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct"
+      local: true
       preload: false          # false = load on the first prompt that reaches the VLM; true = at
                               # cell build, except under router.enabled, where the route is lazy
       on_unavailable: refuse  # refuse = reject the pick; degrade = fall back to the phrase grounder
@@ -75,12 +82,13 @@ pipeline:
 
 # The closed-set detector: RT-DETR's trained COCO classes, no prompt. Required by
 # `detector: "rtdetr"` and by `pipeline.kind: closed_set`; either one without this block is
-# refused. `local: false` pulls `model_id` from the Hub on first use, so `model_path` stays empty.
+# refused. `python scripts/model_weights/fetch.py rtdetr` writes `model_path`, 0.2 GB, and then
+# nothing about this block reaches the network at run time.
 rtdetr:
-  model_path: ""
+  model_path: "assets/models/hf/detection/PekingU--rtdetr_r50vd"
   model_id: "PekingU/rtdetr_r50vd"
   threshold: 0.4
-  local: false
+  local: true
   optim:
     torch_dtype: auto
     attn_implementation: "eager"

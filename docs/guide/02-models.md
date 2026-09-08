@@ -86,17 +86,23 @@ environment (section 3).
 
 ## 3. The weights, and what happens when they are missing
 
-**A fresh checkout has no weights.** The base profile sets `local: True` against checkpoint
-directories that are not in this repository and never were: `models.objectdetector.model_path` points
-at `src/models/detection/model`, and `models.segmenter` and `models.stt` do the same for their own
-packages. Either put the files there, or set `local: false` and name a Hub id in `model_id`.
+**A fresh checkout has no weights, and one command produces every one of them.** Since 2026-09-08
+every model block ships `local: True` at a path the fetch script writes:
+`models.objectdetector.model_path` is
+`assets/models/hf/detection/IDEA-Research--grounding-dino-tiny`, and `models.segmenter`,
+`models.stt`, `models.rtdetr`, `models.oneformer` and the VLM name their own directories under the
+same root. Before that the three live blocks pointed at
+`src/models/{detection,segmentation,speech}/model`, which is not in this repository and never was,
+and the detector's `model_id` was the empty string, so it could load neither locally nor from the
+Hub. A cell built from the shipped tree could not assemble a perception stack at all.
 
 **Only the detector checks.** GroundingDINO raises `FileNotFoundError` before it loads anything,
 naming the key, the configured path, the resolved absolute path, and both ways out:
 
 ```
 FileNotFoundError: models.objectdetector.local is true and model_path is
-'src/models/detection/model', but there is no such directory (resolved: ...).
+'assets/models/hf/detection/IDEA-Research--grounding-dino-tiny', but there is no such
+directory (resolved: ...).
 Nothing is downloaded in local mode: that is the point of the flag.
 ```
 
@@ -108,17 +114,26 @@ a missing speech model surfaces as a library error rather than as a named config
 traceback for which of the three you are looking at.
 
 **The fetch script.** [`scripts/model_weights/fetch.py`](../../scripts/model_weights/fetch.py)
-carries a catalogue with sizes and notes. It writes into the standard Hugging Face cache, and nothing
-lands in the repository.
+carries a catalogue with sizes and notes, and it writes into the repository rather than into a cache
+somewhere in the user profile.
 
 ```bash
 python scripts/model_weights/fetch.py --list
 python scripts/model_weights/fetch.py dino-tiny sam2      # the pair a real-vision pick needs
+python scripts/model_weights/fetch.py --mediapipe         # the hand and gesture .task bundles
 ```
 
-Its keys are `dino-tiny`, `dino-base`, `sam2`, `vlm-2b`, `vlm-4b`, `vlm-8b` and `vlm-4b-fp8`, and
-`--list` prints each with its approximate download size and what it is for. Exit codes: `0`
-everything asked for is in the cache, `1` at least one fetch failed, `2` an unknown key was named.
+Its keys are `dino-tiny`, `dino-base`, `rtdetr`, `sam2`, `oneformer`, `whisper`, `vlm-2b`, `vlm-4b`,
+`vlm-8b` and `vlm-4b-fp8`, and `--list` prints each with its approximate download size and what it is
+for. Exit codes: `0` everything asked for is present, `1` at least one fetch failed, `2` an unknown
+key was named.
+
+The catalogue also decides what is left on the Hub. Several repositories publish the same weights
+twice, once as `.safetensors` and once as `.bin`, and `transformers` reads only what the index names,
+so a per-model ignore list drops the duplicate: `openai/whisper-small` is 3.87 GB whole and 0.97 GB
+filtered, `IDEA-Research/grounding-dino-tiny` 1.38 against 0.69. It cannot be a blanket rule.
+`shi-labs/oneformer_coco_swin_large` publishes no safetensors at all, measured, so a global `*.bin`
+filter would fetch it empty and the failure would surface much later as a missing weight file.
 
 **Fetch with the environment that can reach the network, load with the one that owns the GPU.** The
 cache is shared, and the split matters for two reasons the script's own docstring gives. Every
@@ -130,13 +145,23 @@ one that loads a model fails certificate verification and the project environmen
 split has a fix, `pip install truststore`, which is pinned in both requirements files; the script
 imports it inside a `try` and reports which trust store it used.
 
-Weights land in `~/.cache/huggingface/hub` unless `HF_HOME` or `HF_HUB_CACHE` moves them. One
-in-repository cache is deliberate and separate: the paraphraser under `datagen/prompts/` points
-`HF_HOME` at `assets/models/hf` so its downloads travel with the clone.
+**Every byte lands under `assets/models/hf` inside the repository**, sub-categorised by what the
+model is for, and deleting the checkout deletes the weights with it. That is what the location is
+for. The default is the opposite: a download goes to `~/.cache/huggingface`, measured at 12 GB on
+this workstation, where it outlives every checkout, is shared silently between them, and cannot be
+reasoned about from inside the tree. `assets/models/hf/` is gitignored, so the layout travels with a
+clone while the gigabytes do not.
 
-**The overlay that makes the shipped tree loadable is the `sim` profile.** Its model overlays set
-`local: false` with a Hub id, so a simulated run fetches on first use instead of reading a directory
-that is not there:
+The fence is `fence_model_downloads()` in [`src/utility/paths.py`](../../src/utility/paths.py), and
+it has to run before `huggingface_hub` is imported: the hub reads its cache locations into module
+level constants at import time, so setting `HF_HOME` afterwards is accepted and changes nothing. That
+is why the fetch script calls it at the top of `main` and imports the hub inside a function.
+
+**The `sim` profile is still needed here, but no longer for the weights.** Its model overlays used to
+set `local: false` so that a simulated run fetched from the Hub instead of reading a directory that
+was not there. They inherit the base paths now, and what they still change is the dtype: the
+validated baseline loads fp32 weights with fp16 autocast, and the production `torch_dtype: auto`
+drops a small overhead cube that the unset path finds.
 
 ```powershell
 $env:WILLY_PROFILE = "sim"

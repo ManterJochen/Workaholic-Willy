@@ -140,6 +140,33 @@ WRITABLE: tuple[Writable, ...] = (
         ),
     ),
     Writable(
+        path="camera.cameras.primary_rig_id",
+        label="Primary camera",
+        measure=(
+            "Which of the rigs below this cell opens. The grasp is synthesised from its depth, so "
+            "every other camera confirms what this one saw and moving it moves every number the "
+            "cell measures. It has to be a rig with source: rgbd, and one that is enabled: a cell "
+            "built on anything else is refused at build with a message naming both. Writable here "
+            "for the same reason a camera serial is: it is a fact about the cell, and it is the "
+            "fact you set immediately after the serials, once you know which camera is which. It "
+            "cannot be changed while anything is connected, because it decides where the next "
+            "grasp comes from."
+        ),
+        requires_disconnected=True,
+    ),
+    Writable(
+        path="camera.cameras.rigs[*].enabled",
+        label="Camera in use",
+        measure=(
+            "Whether this rig is part of the cell. The bench order is: read the serials with "
+            "rs-enumerate-devices -s, write them in, then switch the rigs on. This is that last "
+            "step, and without it an operator could set a serial through the console and still had "
+            "to open the YAML by hand to use it. Read only when a cell is built, so switching a rig "
+            "while one is running changes nothing until the next build, which is why it is not "
+            "refused while connected: that would block the repair it exists for."
+        ),
+    ),
+    Writable(
         path="robot.ur.ip",
         label="UR controller address",
         measure=(
@@ -540,8 +567,8 @@ def read_key(cfg: Any, key: str) -> Any:
     Public together with the sentinel: `explain.py` imports both, and a consumer that cannot reach
     them carries a walker of its own returning ``None`` for both "missing" and "the value is None".
     45 of the default tree's 468 keys hold ``None``, and each of them prints as
-    ``camera.cameras.active_rig_id`` from such a walker and as
-    ``camera.cameras.active_rig_id = None`` from this one: one key, two answers, across the CLI in
+    ``camera.stereomatcher.p1`` from such a walker and as
+    ``camera.stereomatcher.p1 = None`` from this one: one key, two answers, across the CLI in
     `src/config/__main__.py` and the operator console, the two surfaces `KeyExplanation`
     (`explain.py`) is split out to keep in step. The drift sits one layer above that class, in what
     each surface finds out before calling it.

@@ -55,18 +55,26 @@ class DenseCooldownLatchTests(unittest.TestCase):
 
         with mock.patch("time.monotonic", _fake_monotonic):
             calc.compute(seg, depth, pixel_to_mm=5.0, unit="mm", dense_sampling=True)
-        self.assertTrue(calc._dense_last_overran, "an overrun must set the cooldown latch")
+        self.assertTrue(calc._dense_last_overran, "an overrun must set the degrade latch")
         self.assertTrue(calc.last_telemetry.get("dense_timeout"), "the overrun must stamp dense_timeout=True")
 
-        # Call 2 (auto): the cooldown latch must suppress dense AND short-circuit BEFORE the non-convexity
-        # probe (so mask_non_convexity is never stamped) — that absence is the proof the cooldown READ fired.
+        # Call 2 (auto): the latch must suppress dense AND short-circuit BEFORE the non-convexity
+        # probe (so mask_non_convexity is never stamped) — that absence is the proof the READ fired.
         calc.compute(seg, depth, pixel_to_mm=5.0, unit="mm", dense_sampling=None)
-        self.assertEqual(calc.last_telemetry.get("dense_auto_reason"), "cooldown_after_overrun")
+        self.assertEqual(calc.last_telemetry.get("dense_auto_reason"), "degraded_after_overrun")
         self.assertFalse(calc.last_telemetry.get("dense_decision"))
         self.assertNotIn(
             "mask_non_convexity", calc.last_telemetry,
-            "cooldown must short-circuit before the non-convexity probe stamps its key",
+            "the latch must short-circuit before the non-convexity probe stamps its key",
         )
+
+        # Call 3, and this is the part the name promised and the code never did. A cooldown ends;
+        # this does not. The latch is cleared inside the dense branch it suppresses, so nothing that
+        # happens later reaches the reset, and the calculator stays on the silhouette path for the
+        # rest of its life unless a caller asks for dense explicitly.
+        calc.compute(seg, depth, pixel_to_mm=5.0, unit="mm", dense_sampling=None)
+        self.assertEqual(calc.last_telemetry.get("dense_auto_reason"), "degraded_after_overrun")
+        self.assertTrue(calc._dense_last_overran, "there is no recovery, and the name now says so")
 
 
 class SyntheticIntrinsicsWarnOnceTests(unittest.TestCase):

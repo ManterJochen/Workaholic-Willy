@@ -1044,6 +1044,7 @@ def apply_orchestrator_overlays(
     grasping_cfg: Optional[RobotGraspingConfig],
     *,
     resolved_mode: "GraspMode",
+    primary_camera_id: str | None = None,
 ) -> None:
     """Apply the orchestrator overlays in place.
 
@@ -1175,9 +1176,15 @@ def apply_orchestrator_overlays(
         # cameras only: a camera switched off was not asked for.
         _fusion = getattr(grasping_cfg, "fusion", None)
         _cameras = getattr(_fusion, "cameras", None) or {}
+        # Every camera except the primary. The map names the cell's whole camera inventory, the
+        # primary included, so that one list answers "how many cameras does this cell have" and the
+        # simulator and a real cell mean the same thing by it. What this attribute means is narrower:
+        # which cameras a pick waits for. The primary delivers through `perception`, never through
+        # the extra-camera rig, so expecting it there makes it permanently missing, which is a
+        # warning on every pick under `degrade` and a raised refusal on every pick under `refuse`.
         runtime.orchestrator.configured_camera_ids = tuple(
             sorted(cam_id for cam_id, cam in _cameras.items()
-                   if bool(getattr(cam, "enabled", True))))
+                   if bool(getattr(cam, "enabled", True)) and cam_id != primary_camera_id))
     # The shortfall is reported once at construction, not once per pick.
     #
     # `on_camera_unavailable` governs the case where a camera the config asked for did not deliver.

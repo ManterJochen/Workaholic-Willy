@@ -179,8 +179,8 @@ class CameraFrameProviderTests(unittest.TestCase):
 
 
 class StereoCapturePipelineTests(unittest.TestCase):
-    def _pipeline(self, rigs, active_mode: str = "auto", active_rig_id: str | None = None) -> StereoCapturePipeline:
-        camera_config = SimpleNamespace(active_mode=active_mode, active_rig_id=active_rig_id, rigs=rigs)
+    def _pipeline(self, rigs) -> StereoCapturePipeline:  # noqa: ANN001
+        camera_config = SimpleNamespace(primary_rig_id=rigs[0].rig_id, rigs=rigs)
         calibration = SimpleNamespace(marker_length_mm=50.0, aruco_dict_name="DICT_5X5_100")
         return StereoCapturePipeline(camera_config, calibration, stereo_matcher=SimpleNamespace())
 
@@ -190,15 +190,16 @@ class StereoCapturePipelineTests(unittest.TestCase):
 
         self.assertEqual([rig.rig_id for rig in pipeline._resolve_target_rigs("b")], ["b"])
 
-    def test_resolves_active_rig_mode(self) -> None:
-        rigs = [_webcam_rig("a"), _single_rig("b")]
-        pipeline = self._pipeline(rigs, active_mode="rig", active_rig_id="a")
-
-        self.assertEqual([rig.rig_id for rig in pipeline._resolve_target_rigs()], ["a"])
-
-    def test_auto_mode_probes_enabled_rigs(self) -> None:
+    def test_it_resolves_every_enabled_rig_that_answers(self) -> None:
+        """⚠ THE `active_mode` KEY IS GONE and this class was its only reader. It offered "rig", one
+        named camera, beside this probing behaviour; meanwhile the grasp path chose its camera three
+        other ways and read neither that key nor the id next to it. Two places naming "the" camera
+        and disagreeing is worse than one, so the id became `camera.cameras.primary_rig_id`, which is
+        what a CELL opens, and this stayed what it always was: a calibration tool over the whole
+        catalogue, with `rig_id` for a caller that wants one.
+        """
         rigs = [_webcam_rig("a"), _single_rig("b"), _rgbd_rig("c")]
-        pipeline = self._pipeline(rigs, active_mode="auto", active_rig_id="a")
+        pipeline = self._pipeline(rigs)
         with patch.object(pipeline, "_is_available", side_effect=lambda rig: rig.rig_id != "b"):
             resolved = pipeline._resolve_target_rigs()
 

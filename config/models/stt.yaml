@@ -2,11 +2,11 @@
 # decoder is asked for. Read by `src.models.speech.speech_to_text.WhisperSpeechToText`, which the
 # console reaches over POST /v1/voice/transcribe. Nothing on the grasp path reads this block.
 stt:
-  # `local: True` below reads `model_path` from disk and downloads nothing, and that directory is
-  # not in a fresh checkout: either put Whisper weights there, or set `local: false` to pull
-  # `model_id` from the Hub.
+  # `local: True` below reads `model_path` from disk and downloads nothing, and
+  # `python scripts/model_weights/fetch.py whisper` writes that directory. It lands as 1.0 GB of
+  # safetensors out of the 3.9 GB this repository publishes across all weight formats.
   model_id: "openai/whisper-small"
-  model_path: "src/models/speech/model"
+  model_path: "assets/models/hf/speech/openai--whisper-small"
   # The microphone stream. Audio that arrives from anywhere else is resampled to `samplerate`, so
   # that key is the model's input rate and not only a device setting.
   samplerate: 16000

@@ -165,7 +165,7 @@ class _GraspCandidateGenerator:
         * ``None`` triggers heuristic auto:
 
           1. If the previous dense call exceeded the runtime budget,
-             skip dense (cooldown until an explicit override re-enables).
+             skip dense (for the life of this calculator, until an explicit override).
           2. Enable dense when ``other_object_masks`` is non-empty
              (clutter signal).
           3. Enable dense when the target mask is markedly non-convex,
@@ -184,12 +184,21 @@ class _GraspCandidateGenerator:
 
         if self._dense_overran_getter():
             telemetry["dense_decision"] = False
-            telemetry["dense_auto_reason"] = "cooldown_after_overrun"
-            # Degraded, not merely a decision: the previous dense call blew its
-            # runtime budget, so this attempt silently runs the weaker silhouette path.
+            telemetry["dense_auto_reason"] = "degraded_after_overrun"
+            # Not a cooldown, whatever it was called. The latch is cleared in exactly one place,
+            # inside the dense branch that this return has just skipped, so nothing that happens
+            # later can clear it: once set it holds for the life of this calculator, and only an
+            # explicit `dense_sampling=True` reaches the branch that resets it. The word "cooldown"
+            # promised a recovery that does not exist.
+            #
+            # And it is reachable now. The 150 ms budget was set against a loop that rejected every
+            # pair before constructing one, because the perception producer flattened the depth
+            # under each mask and a plane has no opposing normals. A measured surface makes the
+            # dense path do the work the budget was never tested against.
             logger.warning(
-                "Dense sampling skipped: cooldown after the previous dense call "
-                "overran its budget (silhouette fallback until an explicit override)"
+                "Dense sampling skipped: a previous dense call overran its budget, and this "
+                "calculator stays on the weaker silhouette path until it is rebuilt or a caller "
+                "passes dense_sampling=True"
             )
             return False
 

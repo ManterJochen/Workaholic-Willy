@@ -534,6 +534,14 @@ class AutonomousGraspService:
         arm: "RobotArm | None" = None,
         gripper: "Gripper | None" = None,
         multi_camera_perception: "MultiCameraPerceptionSource | None" = None,
+        #: Which camera id is the cell's primary, when the caller knows. It is not config the root
+        #: can read: which rig a cell opens is `camera.cameras.primary_rig_id`, in the camera
+        #: section, and this class is handed a `RobotConfig`. The overlays need it to leave the
+        #: primary out of the list of cameras a fused pick waits for, because the primary delivers
+        #: through `perception` and never through the extra-camera rig, so a primary that is expected
+        #: there is permanently missing. `None` expects every camera the map names, which is what
+        #: every caller got before.
+        primary_camera_id: str | None = None,
     ) -> "AutonomousGraspService":
         """Build the service from a validated ``RobotConfig`` tree.
 
@@ -730,7 +738,8 @@ class AutonomousGraspService:
 
         # Orchestrator overlays applied in place.
         apply_orchestrator_overlays(
-            runtime, grasping_cfg, resolved_mode=resolved_mode
+            runtime, grasping_cfg, resolved_mode=resolved_mode,
+            primary_camera_id=primary_camera_id,
         )
 
         # The half of multi-camera fusion that config cannot carry. The overlays above wire

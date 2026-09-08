@@ -104,6 +104,37 @@ python -m src.robot.safety.planning --doctor   # 0 healthy | 1 degraded | 2 bloc
 Nothing outside `ext_deps/` is touched: no system conda, no PATH or registry changes, no admin
 rights. Deleting this folder undoes all of it.
 
+### Without administrator rights, in full
+
+Measured 2026-09-08, because "no admin rights" was a claim and not yet a check. Three things
+contradicted it, and all three are closed now.
+
+* **The package caches.** `MAMBA_ROOT_PREFIX` was already inside `ext_deps/`; pip's was not, and held
+  607 MB in `AppData\Local\pip\Cache`. `PIP_CACHE_DIR` points into `ext_deps/` too now, so deleting
+  the folder really does undo everything.
+* **`git lfs install`** wrote `filter.lfs.*` into the user's global `.gitconfig`, which outlives
+  `ext_deps/` and belongs to every other repository on the machine. It bought nothing: the pinned
+  cuRobo revision ships an empty `.gitattributes`, so it declares no LFS filters and a clone of it
+  produces no `.git/lfs` directory. The call is gone from the script and from the manual recipe below.
+* **MAX_PATH, the one nobody predicts.** The deepest installed path was 281 characters against a 260
+  limit, and it worked here only because `HKLM\...\FileSystem\LongPathsEnabled` is 1, which needs
+  administrator rights to set. All 40 over-length paths belonged to `cuda-nvvp` and `nsight-compute`,
+  a visual profiler and a profiler GUI the planner never loads; they and their metapackages are out
+  of the lock. That moves the gate rather than removing it: the deepest survivor is 219 characters,
+  so a checkout root longer than 39 characters still needs the key.
+
+Two prerequisites this script cannot bootstrap, and it now says so in seconds instead of failing
+minutes in: `git` (Git for Windows installs per-user, choose "Only for me", or use the portable
+build) and `tar` (ships with Windows 10 1803 and later).
+
+The compiled backend is the normal case and the fallback is an emergency. A C++ toolchain is the one
+thing here whose usual installer wants administrator rights. Where none is present the build script
+exits 2, the install continues with a loud warning, and the planner runs on `cuda.core` alone with no
+spare, which is exactly the configuration that failed on 2026-08-30, when an application-control
+policy refused `cuda.core` on this machine and the compiled backend was the only reason the planner
+kept working. Build it as soon as a toolchain exists. `build_compiled_backend.bat` accepts an
+already-active x64 environment now, so a per-user toolchain is enough and vswhere is not required.
+
 The two sections below are what that script does, by hand. Read them when it fails, when installing
 on Linux or macOS, or when a version has to change.
 
@@ -229,7 +260,8 @@ cuRobo has two ways to run its CUDA kernels, and this repository installs both o
 below says why that is not optional.
 
 ```bash
-git lfs install
+# No `git lfs install`: the pinned revision ships an empty .gitattributes, so it declares no LFS
+# filters, and the call would write filter.lfs.* into your global .gitconfig for nothing.
 git clone https://github.com/NVlabs/curobo.git ext_deps/curobo
 cd ext_deps/curobo
 git checkout 8e734f3          # see "Which revision" below
@@ -289,7 +321,7 @@ The newest tag, `v0.8.0`, is older than this commit, so the pin tracks the branc
 
 ```bash
 # UTF-8 so a cp1252 console can print the tick mark of cuRobo
-PYTHONIOENCODING=utf-8 ext_deps/curobo_env/python.exe \
+$env:PYTHONIOENCODING=utf-8; ext_deps/curobo_env/python.exe \
     -m curobo.examples.getting_started.motion_planning
 
 # and check that both backends resolve

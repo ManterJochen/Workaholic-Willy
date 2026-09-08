@@ -92,8 +92,13 @@ class DeformableHandlingStrategy(Protocol):
 
     Strategies are pure: they observe the segmentation mask and the
     classifier-supplied :class:`DeformableClass` and return a typed
-    decision. They must not mutate the mask or perform IO. They may
-    inspect the depth map for PCA / shape diagnostics.
+    decision. They must not mutate the mask or perform IO.
+
+    ``depth_map`` is on the signature and no strategy reads it: both
+    implementations mark it ``# noqa: ARG002``. It stayed unread for a
+    reason that has just gone, since a depth map whose masked region held
+    one scalar carried no shape to diagnose. A strategy may read it now,
+    and none does yet.
     """
 
     def handle(

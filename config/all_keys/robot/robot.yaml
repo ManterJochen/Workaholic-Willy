@@ -1855,6 +1855,47 @@ robot:
       # [default: 0.0]
       inflate_mm: 0.0
 
+      # WHERE IN THE OBJECT'S DEPTH A GRASP IS ANCHORED, and how much of the depth under a mask is
+      # believed at all. All five defaults are the do-nothing position, so a cell that leaves them
+      # alone builds the calculator with the arguments it built before.
+      #
+      # These were unreachable until now, and not merely unused. The perception producer overwrote
+      # the depth inside every mask with one number, the nearest surface plus 3 mm, so every object
+      # arrived as a flat sheet at its top face: every percentile of the masked depth was that same
+      # number and all five keys were arithmetically incapable of doing anything. The producer
+      # publishes what it measured now and the grasp reference is decided here, on one candidate,
+      # rather than by overwriting the picture six other stages read for shape.
+      #
+      # 'centre' is the median of the measured surface, 'top' a low quantile of it. Measured on the
+      # D5 gate subset (n=354): centre 22.08 % precision and 24.29 % top-1, top at q=25 19.44 and
+      # 22.03, top at q=10 18.24 and 21.47. Nearer is worse, monotonically: the 2F-85 contact patch
+      # reaches 14.4 mm behind the grasp centre and 23.6 mm in front, so anchoring on the near face
+      # puts most of the patch in the air above the object.
+      # [default: centre] [one of: centre | top]
+      grasp_depth_reference: centre
+
+      # How far BELOW that reference the grasp is driven. Only read when the reference is 'top'.
+      # [default: 0.0]
+      grasp_top_penetration_mm: 0.0
+
+      # Which quantile of the under-mask depth counts as the near face. A percentile rather than the
+      # minimum, so one speckle pixel in front of the part cannot set the whole object's grasp plane.
+      # Only read when the reference is 'top'.
+      # [default: 10.0]
+      grasp_top_quantile: 10.0
+
+      # Keep only the depth within this much of the near face, and discard the rest before the cloud
+      # is built. A segmentation mask usually spills a few pixels past the object onto the bench, and
+      # those pixels are metres of surface behind it: they drag the median, inflate the object's
+      # apparent depth spread, and put table points into the geometry the fingers are planned
+      # against. Null keeps every pixel under the mask.
+      # [default: null]
+      depth_band_mm: null
+
+      # Which quantile the band above is measured from. Only read when depth_band_mm is set.
+      # [default: 10.0]
+      depth_band_near_pct: 10.0
+
     # Which gripper collision envelope the calculator filters grasp candidates against.
     gripper_geometry:
 

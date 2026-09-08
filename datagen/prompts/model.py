@@ -16,11 +16,10 @@ anonymous download of its config and its weights succeeds.
 
 from __future__ import annotations
 
-import os
 import time
-from pathlib import Path
 
 from src.utility.log_cfg import create_logger
+from src.utility.paths import fence_model_downloads, weights_root
 
 from datagen.constants import DATAGEN_LOG_DIR, PARAPHRASE_MODEL_LOG_FILE
 
@@ -35,20 +34,20 @@ MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"
 #: ``model.safetensors.index.json`` names, which is the sharded set, so fetching both doubles a
 #: 15 GB download for nothing.
 DOWNLOAD_IGNORE = ("consolidated*", "*.pth", "*.bin")
-#: Repo-relative, so a clone reproduces it. Resolved from this file rather than the working directory:
-#: `python -m datagen` may be run from anywhere and the weights must not land in two places.
-WEIGHTS_ROOT = Path(__file__).resolve().parents[2] / "assets" / "models" / "hf"
+#: The one root every downloaded model lives under. Resolved from the project root rather than the
+#: working directory: `python -m datagen` may be run from anywhere and the weights must not land in
+#: two places. This module used to compute it from its own depth, which is one more anchor to keep
+#: correct through a package move; `weights_root` is the single definition.
+WEIGHTS_ROOT = weights_root()
 
 
 def _anonymous_environment() -> None:
-    """Make an account impossible to use, so the no-account path is the only one ever exercised."""
-    os.environ["HF_HOME"] = str(WEIGHTS_ROOT)
-    os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
-    # Windows has no symlinks here, so the cache cannot deduplicate; saying so once beats a
-    # warning per file. Disk is not the constraint, legibility of the log is.
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-    for variable in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN"):
-        os.environ.pop(variable, None)
+    """Point the hub at :data:`WEIGHTS_ROOT` and make an account impossible to use.
+
+    The token variables are removed rather than ignored, so the no-account path is the only one ever
+    exercised: a download that depends on who is logged in is not reproducible.
+    """
+    fence_model_downloads()
 
 
 def weights_present() -> bool:

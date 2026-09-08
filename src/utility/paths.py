@@ -31,9 +31,11 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 __all__ = [
     "debug_dir",
     "ensure_dir",
+    "fence_model_downloads",
     "logs_dir",
     "project_root",
     "rotate_files",
+    "weights_root",
 ]
 
 
@@ -197,3 +199,51 @@ def debug_dir(
     # names the bucket whenever it deletes anything.
     rotate_files(target, max_files=max_files, patterns=rotate_patterns)
     return target
+
+
+def weights_root() -> Path:
+    """Where every downloaded model file lives: ``assets/models/hf`` under the project root.
+
+    One root, sub-categorised by whoever writes into it. Hugging Face lays out ``hub/`` and ``xet/``
+    itself, the fetch script writes a directory per model under a category such as ``detection`` or
+    ``vlm``, and the MediaPipe bundles sit in ``mediapipe/`` beside them.
+
+    Deleting the repository takes the weights with it, which is the reason for the location. A
+    user level cache does not have that property: a download that lands in the profile outlives every
+    checkout, is shared silently between them, and cannot be reasoned about from inside the tree.
+
+    Trained artifacts this repository produces, ``assets/models/success_probability`` and
+    ``assets/models/grasp_ranker``, are not under here. They are committed or generated rather than
+    fetched, and that difference is what this directory is ignored for.
+    """
+    return project_root() / "assets" / "models" / "hf"
+
+
+def fence_model_downloads() -> Path:
+    """Point every download library at :func:`weights_root` and return it.
+
+    Call this before importing ``huggingface_hub``, ``transformers`` or ``torch.hub``. The hub reads
+    its cache locations into module level constants at import time, so an assignment afterwards is
+    accepted by ``os.environ`` and changes nothing. The fence therefore belongs at an entry point
+    rather than in a runner that has already imported the stack.
+
+    ``HF_HOME`` rather than ``HF_HUB_CACHE``: the chunk store, the downloaded ``modules/`` and the
+    token file derive from ``HF_HOME``, so setting only the narrower variable leaves pieces in the
+    user profile.
+
+    ``TORCH_HOME`` is set for the same reason. The token variables are removed rather than ignored,
+    because an account makes the download path depend on who is logged in and this repository needs a
+    fetch anyone can reproduce.
+    """
+    import os
+
+    root = weights_root()
+    os.environ["HF_HOME"] = str(root)
+    os.environ["TORCH_HOME"] = str(root / "torch")
+    os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+    # Windows has no symlinks here, so the cache cannot deduplicate. Saying so once beats a warning
+    # per file.
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    for variable in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACEHUB_API_TOKEN"):
+        os.environ.pop(variable, None)
+    return root

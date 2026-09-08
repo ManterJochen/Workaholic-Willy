@@ -88,17 +88,36 @@ class TheTapSeesWhatTheAdapterConsumedTests(unittest.TestCase):
         depth[0, 0:7] = 0.0                        # 7 holes outside it
         return depth, mask
 
-    def test_the_frame_the_cli_used_to_read_can_only_say_zero_or_one_hundred(self) -> None:
-        """⛔ THE DEFECT, AS AN ASSERTION ABOUT THE OLD ARITHMETIC. Truth is 8 of 16; reading
-        `frame.depth_map` gives 0 of 16, because the mask was overwritten with a constant."""
+    def test_the_frame_now_reports_the_holes_it_has(self) -> None:
+        """The defect this class was written for is gone at its source, and the assertion is
+        inverted rather than deleted, because the inversion is the proof.
+
+        The source overwrote the depth under every mask with one scalar, so a mask holding even one
+        real depth pixel reported 0 holes and a mask holding none reported 100 %. Nothing in
+        between, on the figure this CLI exists to show. Truth on this scene is 8 of 16, and
+        `frame.depth_map` says 8 of 16.
+        """
         depth, mask = self._scene()
         streamer = _Streamer(depth)
         frame = _source(streamer, mask=mask).acquire()
 
         rendered = np.asarray(frame.depth_map)
         seg_mask = np.asarray(frame.segmentations[0].mask).astype(bool)
-        self.assertEqual(int((rendered[seg_mask] == 0).sum()), 0, "the old number, on real holes")
+        self.assertEqual(int((rendered[seg_mask] == 0).sum()), 8, "what the sensor measured")
         self.assertEqual(int((depth[seg_mask] == 0).sum()), 8, "the truth")
+
+    def test_the_tap_is_now_a_second_copy_of_what_the_frame_carries(self) -> None:
+        """Said out loud rather than left to be discovered. `_RawDepthTap` was built because
+        `frame.depth_map` could not be trusted for a hole count. It can now, and the frame also
+        publishes `surface_depth_map`, so the tap holds a third copy of one array. It still
+        guarantees that the depth and the masks come from the same grab, which is why it stays.
+        """
+        depth, mask = self._scene()
+        tap = _RawDepthTap(_Streamer(depth))
+        frame = _source(tap, mask=mask).acquire()
+
+        np.testing.assert_array_equal(tap.last_depth_mm, frame.depth_map)
+        np.testing.assert_array_equal(tap.last_depth_mm, frame.surface_depth_map)
 
     def test_the_tap_reports_the_truth_for_both_branches(self) -> None:
         depth, mask = self._scene()

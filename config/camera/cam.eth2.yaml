@@ -10,20 +10,21 @@
 #
 # `rigs` replaces the base list rather than extending it. An overlay list replaces the base
 # value outright (`src/config/_merge.py`), so the four rigs `cam.yaml` declares are gone
-# under this profile and these two are the whole camera inventory. That is deliberate:
-# `build_real_components` picks the cell's camera as the first rig with `source: rgbd` and
-# does not consult `enabled`, so a leftover rig in the list is a camera the cell might open.
+# under this profile and these two are the whole camera inventory.
 #
-# Rig order is not cosmetic. The first RGB-D rig is the primary camera: the grasp is
-# synthesised from its view and every other camera only confirms what it sees. Moving the
-# primary moves every number this cell measures.
+# Rig ORDER used to decide which of the two is the primary camera, because the cell took the first
+# rig with `source: rgbd` by list position. It does not any more: `primary_rig_id` above names it.
+# The primary still matters as much as it did, because the grasp is synthesised from its view and
+# every other camera only confirms what it sees, so moving it moves every number this cell measures.
+# What changed is that moving it is now an edit to a named key rather than a reordering nobody would
+# read as a decision.
 # ============================================================================
 cameras:
-  # Read by nothing on the RGB-D pick path. The only live constraint is the schema, which
-  # requires `active_rig_id` to name one enabled rig when this is `rig`, and this cell opens
-  # two. `auto` makes no claim the code cannot honour. The rig list below is what selects a
-  # camera here, not this key.
-  active_mode: auto
+  # Which of the two cameras below the cell opens. The grasp is synthesised from its view and
+  # `cam_right` confirms what it sees, so this decides which of the two is which. It used to be
+  # decided by the ORDER of the rig list, which is why the list order was described as load-bearing
+  # further down; it is not any more.
+  primary_rig_id: cam_left
 
   rigs:
     # --- the primary camera ---

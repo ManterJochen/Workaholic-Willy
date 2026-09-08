@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ._base import StrictModel
 from .camera import (
@@ -82,3 +82,37 @@ class AppConfig(StrictModel):
     models: ModelsConfig
     robot: RobotConfig | None = None
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+
+    @model_validator(mode="after")
+    def _the_primary_camera_is_calibrated_in_one_place(self) -> AppConfig:
+        """The primary camera's calibration may be stated twice, and then it must say one thing.
+
+        ``robot.grasping.fusion.cameras`` lists every camera that takes part in fusion, the primary
+        included, each with its own artifact. ``fusion.extrinsics_artifact_path`` beside it is the
+        primary's, and it stays: it is the key ``from_robot_config`` names when it refuses a cell
+        with no CAMERA to BASE transform, and the key ``real_cell --check`` reports on. So a cell
+        that lists its primary in the map has written the same fact down twice, and two artifacts
+        for one camera is a cell that is calibrated differently depending on which loader ran.
+
+        This lives on the root because it is the only place both halves are visible: which rig is
+        primary is ``camera.cameras.primary_rig_id`` and the map is under ``robot``. A validator on
+        the fusion block cannot see the camera section at all.
+        """
+        fusion = getattr(getattr(self.robot, "grasping", None), "fusion", None)
+        if fusion is None:
+            return self
+        entry = (getattr(fusion, "cameras", None) or {}).get(self.camera.cameras.primary_rig_id)
+        scalar = getattr(fusion, "extrinsics_artifact_path", None)
+        if entry is None or scalar is None:
+            return self
+        mapped = getattr(entry, "extrinsics_artifact_path", None)
+        if mapped is not None and str(mapped) != str(scalar):
+            raise ValueError(
+                f"the primary camera {self.camera.cameras.primary_rig_id!r} is calibrated twice "
+                f"and the two disagree: robot.grasping.fusion.extrinsics_artifact_path is "
+                f"{scalar!r} and its entry in robot.grasping.fusion.cameras is {mapped!r}. Both "
+                "must name the same artifact. Which of the two a cell ends up using depends on "
+                "which loader ran, so a cell configured this way is calibrated differently on two "
+                "code paths."
+            )
+        return self

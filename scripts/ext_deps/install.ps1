@@ -67,6 +67,10 @@ $locks = Join-Path $extDeps 'locks'
 # That matters for the -Clean test: a cache outside the folder would make a rebuild that claims to
 # start from nothing a lie.
 $env:MAMBA_ROOT_PREFIX = Join-Path $extDeps 'micromamba\root'
+# pip caches wheels too, and by default in the user profile, where deleting ext_deps/ does not
+# reach it. Measured on the reference workstation: 607 MB at AppData\Local\pip\Cache.
+# Redirecting it here is what makes the promise above true rather than nearly true.
+$env:PIP_CACHE_DIR = Join-Path $extDeps 'pip-cache'
 $mambaArgs = @('-c', 'conda-forge')
 if ($SslNoRevoke) { $mambaArgs += '--ssl-no-revoke' }
 
@@ -149,7 +153,10 @@ function Install-Curobo {
     Write-Step "cuRobo source at $CUROBO_REV"
     if ($Clean -and (Test-Path $source)) { Remove-Item -Recurse -Force $source }
     if (-not (Test-Path $source)) {
-        git lfs install | Out-Host
+        # No `git lfs install` here. It writes filter.lfs.* into the user's global .gitconfig,
+        # which outlives ext_deps/ and belongs to every other repository on the machine. It also
+        # buys nothing: the pinned cuRobo revision ships an empty .gitattributes, so it declares
+        # no LFS filters at all, and a clone of it produces no .git/lfs directory.
         git clone https://github.com/NVlabs/curobo.git $source | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'git clone failed' }
     }
@@ -174,15 +181,46 @@ function Install-Curobo {
     & $python -m pip install --quiet 'cuda-core==1.1.0' | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "cuda-core pin failed (exit $LASTEXITCODE)" }
 
+    # The compiled backend is the normal case. It is built unless the operator opts out, unless it
+    # is already there, or unless this machine has no C++ toolchain at all. Only the last of those
+    # is a fallback, and it is an emergency one: see the warning it prints.
+    $pybind = Join-Path $source 'curobo\_src\curobolib\backends\pybind'
+    $built = @('geometry', 'kinematics', 'optimization', 'trajectory') |
+        ForEach-Object { Join-Path $pybind "$_.cp310-win_amd64.pyd" }
+    $haveAll = ($built | Where-Object { Test-Path $_ }).Count -eq 4
+
     if ($SkipCompiledBackend) {
-        Write-Warning 'skipping the compiled backend: the planner now has one kernel backend, so'
-        Write-Warning 'one policy verdict, one broken wheel or one CUDA upgrade takes it down.'
-        Write-Warning 'Run scripts\curobo\build_compiled_backend.bat when MSVC is available.'
+        Write-Warning 'skipping the compiled backend on request: the planner then has one kernel'
+        Write-Warning 'backend, so one policy verdict, one broken wheel or one CUDA upgrade takes'
+        Write-Warning 'it down. Run scripts\curobo\build_compiled_backend.bat when a C++ toolchain'
+        Write-Warning 'is available.'
+    } elseif ($haveAll -and -not $Clean) {
+        Write-Step 'cuRobo, compiled kernel backend (pybind): already built, skipping'
     } else {
         Write-Step 'cuRobo, compiled kernel backend (pybind): several minutes'
         $bat = Join-Path $repo 'scripts\curobo\build_compiled_backend.bat'
         & cmd /c "`"$bat`"" | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "compiled backend build failed (exit $LASTEXITCODE)" }
+        $rc = $LASTEXITCODE
+        if ($rc -eq 2) {
+            # Exit 2 from that script means it never started: no active x64 environment and no
+            # toolchain to activate. Installing one needs administrator rights, and refusing the
+            # whole install over that would leave a machine without them unable to run this stack
+            # at all. So the install continues and the doctor below decides whether the result is
+            # usable: one backend is a warning and exits 0, no backend is broken and exits
+            # non-zero.
+            Write-Warning ''
+            Write-Warning 'EMERGENCY FALLBACK: no C++ toolchain, so the compiled kernel backend was'
+            Write-Warning 'not built. The planner will run on cuda.core alone, with no spare.'
+            Write-Warning 'This is not the intended configuration. On 2026-08-30 an application'
+            Write-Warning 'control policy refused cuda.core on this very machine, and the compiled'
+            Write-Warning 'backend was the only reason the planner kept working.'
+            Write-Warning 'Build it as soon as a toolchain exists, from a 64-bit developer prompt:'
+            Write-Warning '  scripts\curobo\build_compiled_backend.bat'
+        } elseif ($rc -ne 0) {
+            # Any other code means a toolchain was found and the build itself failed, which is a
+            # fault rather than a missing prerequisite.
+            throw "compiled backend build failed (exit $rc)"
+        }
     }
 
     Write-Step 'robot descriptors (ur5e, ur3e)'
@@ -196,6 +234,34 @@ function Install-Curobo {
 }
 
 # --------------------------------------------------------------------------------- run
+# What this script cannot bootstrap, checked before it downloads anything.
+#
+# micromamba, both environments, torch and cuRobo all arrive under ext_deps/ without
+# administrator rights. Two programs do not, and only one of them ships with Windows. git is used
+# three times to clone and pin the cuRobo source, and on a fresh machine it is simply absent, so
+# the install spent several minutes bootstrapping micromamba and building an environment before
+# failing with "the term 'git' is not recognized" at a point that says nothing about what to do.
+#
+# Checked here rather than at the call site so the answer arrives in seconds, and so a machine
+# missing both is told about both.
+$missing = @()
+foreach ($tool in @('git', 'tar')) {
+    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { $missing += $tool }
+}
+if ($missing.Count) {
+    Write-Host "missing prerequisite(s): $($missing -join ', ')" -ForegroundColor Red
+    if ($missing -contains 'git') {
+        Write-Host '  git: needed to clone the pinned cuRobo revision. Git for Windows installs' -ForegroundColor Red
+        Write-Host '       for a single user without administrator rights: choose "Only for me"' -ForegroundColor Red
+        Write-Host '       in the installer, or use the portable build.' -ForegroundColor Red
+    }
+    if ($missing -contains 'tar') {
+        Write-Host '  tar: ships with Windows 10 1803 and later; on an older build, install it or' -ForegroundColor Red
+        Write-Host '       unpack ext_deps/micromamba by hand.' -ForegroundColor Red
+    }
+    exit 2
+}
+
 $mamba = Get-Micromamba
 if ($Component -in @('all', 'coal')) { Install-Coal -Mamba $mamba }
 if ($Component -in @('all', 'curobo')) { Install-Curobo -Mamba $mamba }

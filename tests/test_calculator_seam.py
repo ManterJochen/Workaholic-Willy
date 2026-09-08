@@ -236,7 +236,7 @@ class TheSelectorReachesTheCellTests(unittest.TestCase):
         app_cfg = mock.Mock()
         app_cfg.camera.cameras.rigs = []
         with mock.patch("src.config.load_config", return_value=app_cfg), \
-             self.assertRaises(SystemExit):
+             self.assertRaises(cells.CellBuildRefused):
             cells.build_real_components(self._cfg("deep"), "an object")
         # It refuses on the CAMERA first, which is correct ordering -- no models load for a cell that
         # has no rig. The seam itself is pinned by the AST guard above.

@@ -71,18 +71,25 @@ class ConfigSchemaTests(unittest.TestCase):
         self.assertEqual(routine.min_angle, 10.0)
         self.assertEqual(routine.min_angle_deg, 10.0)
 
-    def test_camera_system_validates_active_rig_contract(self) -> None:
-        CameraSystemConfig(active_mode="auto", rigs=[_rig("a")])
-        CameraSystemConfig(active_mode="rig", active_rig_id="a", rigs=[_rig("a")])
+    def test_camera_system_validates_the_primary_rig_contract(self) -> None:
+        """`primary_rig_id` is required and must resolve. It replaced `active_mode` + `active_rig_id`,
+        an optional pair only the stereo calibration tool read, while the cell took the first RGB-D
+        rig by list position."""
+        CameraSystemConfig(primary_rig_id="a", rigs=[_rig("a")])
 
         with self.assertRaises(ValidationError):
-            CameraSystemConfig(active_mode="rig", rigs=[_rig("a")])
+            CameraSystemConfig(rigs=[_rig("a")])  # naming it is not optional
         with self.assertRaises(ValidationError):
-            CameraSystemConfig(active_mode="rig", active_rig_id="missing", rigs=[_rig("a")])
+            CameraSystemConfig(primary_rig_id="missing", rigs=[_rig("a")])
         with self.assertRaises(ValidationError):
-            CameraSystemConfig(active_mode="rig", active_rig_id="a", rigs=[_rig("a", enabled=False)])
-        with self.assertRaises(ValidationError):
-            CameraSystemConfig(active_mode="auto", rigs=[_rig("a"), _rig("a")])
+            CameraSystemConfig(primary_rig_id="a", rigs=[_rig("a"), _rig("a")])
+
+    def test_a_disabled_primary_LOADS_and_is_refused_where_the_camera_is_opened(self) -> None:
+        """⚠ DELIBERATELY NOT A LOAD ERROR. `cam.tiltcam.yaml` ships both of its rigs off until an
+        operator fills in their serial numbers, and a profile that is not ready to RUN is not a file
+        that is malformed. `build_real_components` refuses it where the message can say what to
+        switch on."""
+        CameraSystemConfig(primary_rig_id="a", rigs=[_rig("a", enabled=False)])
 
     def test_camera_rig_and_matcher_numeric_validation(self) -> None:
         with self.assertRaises(ValidationError):

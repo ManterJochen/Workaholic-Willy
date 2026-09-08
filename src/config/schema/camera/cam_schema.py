@@ -195,10 +195,19 @@ CameraRigUnion = Annotated[
 
 
 class CameraSystemConfig(StrictModel):
-    """Top-level camera section: which rig is active and the rig catalogue."""
+    """Top-level camera section: the rig catalogue, and which of them the cell runs on."""
 
-    active_mode: Literal["auto", "rig"]
-    active_rig_id: str | None = None
+    primary_rig_id: str = Field(
+        description=(
+            "Which rig the cell opens. Required, and it must name a rig in the list below. It was "
+            "`active_rig_id`, optional, and read only when `active_mode` was 'rig': nothing on the "
+            "grasp path consulted either, and three pieces of code chose the camera three "
+            "different ways. `build_real_components` took the first rig with `source: rgbd` by list "
+            "position and did not look at `enabled`, so the shipped base profile, whose only RGB-D "
+            "rig is switched off, would still open it. The order of a YAML list is not a place to "
+            "keep a decision this size."
+        ),
+    )
 
     stereo_calibration: CalibrationConfig | None = None
     rigs: list[CameraRigUnion]
@@ -211,14 +220,17 @@ class CameraSystemConfig(StrictModel):
         dupes = {x for x in ids if ids.count(x) > 1}
         if dupes:
             raise ValueError(f"duplicate rig_id(s): {sorted(dupes)}")
-        if self.active_mode == "rig":
-            if not self.active_rig_id:
-                raise ValueError("active_rig_id is required when active_mode is 'rig'")
-            active = next((rig for rig in self.rigs if rig.rig_id == self.active_rig_id), None)
-            if active is None:
-                raise ValueError(f"active_rig_id {self.active_rig_id!r} is not configured")
-            if not active.enabled:
-                raise ValueError(f"active_rig_id {self.active_rig_id!r} is disabled")
+        primary = next((rig for rig in self.rigs if rig.rig_id == self.primary_rig_id), None)
+        if primary is None:
+            raise ValueError(
+                f"primary_rig_id {self.primary_rig_id!r} is not configured; the rigs are "
+                f"{sorted(ids)}"
+            )
+        # `enabled` is not checked here, deliberately. `cam.tiltcam.yaml` ships both of its rigs off
+        # until an operator fills in their serial numbers, and a profile that is not ready to run is
+        # not the same thing as a file that is malformed: refusing it at load would make
+        # `python -m src.config` fail on a tree nobody has finished writing. The cell refuses to open
+        # a disabled primary when it is built, where the message can say what to switch on.
 
         # Two or more enabled RGB-D rigs are two or more physical cameras on one bus, and the serial
         # number is the only stable way to tell them apart. `RealSenseRGBDStreamer` binds a device

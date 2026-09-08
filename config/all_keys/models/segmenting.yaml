@@ -7,7 +7,7 @@ segmenter:
 
   # Where SAM2's weights come from when `local: true` a local directory of HF files, no download.
   # [REQUIRED - no default]
-  model_path: backend/src/models/segmentation/model
+  model_path: assets/models/hf/segmentation/facebook--sam2-hiera-large
 
   # Model ID for the SAM2 weights, used when `local` is false.
   # [default: null] [DIFFERS from the default]
@@ -54,15 +54,15 @@ oneformer:
 
   # Local directory for the OneFormer universal-segmentation weights.
   # [REQUIRED - no default]
-  model_path: ""
+  model_path: assets/models/hf/segmentation/shi-labs--oneformer_coco_swin_large
 
   # Model ID for the OneFormer universal-segmentation weights.
   # [default: null] [DIFFERS from the default]
   model_id: shi-labs/oneformer_coco_swin_large
 
-  # Load OneFormer offline from `model_path` (true) or from the Hub `model_id` (false, shipped).
+  # Load OneFormer offline from `model_path` (true, shipped) or from the Hub `model_id` (false).
   # [REQUIRED - no default]
-  local: false
+  local: true
 
   # Narrowed to ``instance`` because that is the only mode the wrapper implements: it always calls
   # ``post_process_instance_segmentation``, so a config asking for ``semantic`` or ``panoptic`` used to

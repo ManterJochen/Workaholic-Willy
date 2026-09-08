@@ -32,7 +32,7 @@ def _rig(rig_id: str, *, enabled: bool = True, serial: str | None = None) -> dic
 
 
 def _build(*rigs: dict) -> CameraSystemConfig:
-    return CameraSystemConfig(active_mode="auto", rigs=list(rigs))
+    return CameraSystemConfig(primary_rig_id=rigs[0]["rig_id"], rigs=list(rigs))
 
 
 class MultiRgbdSerialGuardTests(unittest.TestCase):
