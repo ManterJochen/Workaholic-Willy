@@ -39,39 +39,74 @@ if TYPE_CHECKING:
 
 
 def _find_rgbd_rig(camera_cfg: Any, rig_id: str | None) -> RGBDDeviceRigConfig:
-    """Pick the RGB-D rig to open: the named one, or the single one if unambiguous.
+    """Pick the rig to open: the one named by ``--rig``, else the cell's own primary.
 
-    Selects on the same key as the cell: ``build_real_components`` in
-    ``robot/execution/autonomous_grasp/cells.py`` filters on ``source == "rgbd"``. A bench run that
-    opened a different camera from the one the cell opens would be no evidence about the cell.
+    This tool and the cell have to name the same camera, and twice now they have not. A bench run
+    that opened a different camera from the one the cell opens is no evidence about the cell.
 
-    ``source`` is the discriminated union's own tag (``RGBDDeviceRigConfig.source``), so
-    ``source == "rgbd"`` means exactly "this rig is an RGBDDeviceRigConfig", which is what the cast
-    below asserts. ``RGBDDeviceRigConfig.rgbd_backend`` is the driver (default ``"opencv"``) and a
-    strictly narrower filter; selecting on it hides the misconfiguration this exerciser exists to
+    The first divergence was a different predicate. This file filtered on
+    ``rgbd_backend == "realsense"`` while ``build_real_components`` filtered on ``source == "rgbd"``,
+    which made the exerciser blind to rigs the cell would pick. ``source`` is the discriminated
+    union's own tag, so ``source == "rgbd"`` means exactly "this rig is an RGBDDeviceRigConfig",
+    which is what the cast below asserts. ``rgbd_backend`` is the driver, default ``"opencv"``, and a
+    strictly narrower filter: selecting on it hides the misconfiguration this exerciser exists to
     find, because a rig on the ``opencv`` backend returns colour with an empty depth channel and the
     depth-hole report is the instrument for exactly that.
 
-    Neither this predicate nor the cell's honours ``enabled``, while the schema's own two-camera
-    validator (``CameraSystemConfig._validate_rigs``) uses ``source == "rgbd" and r.enabled``. Three
-    predicates, and the strictest is the one that reasons about safety. Closing that is an owner
-    decision rather than a line of code.
+    The second arrived when the cell moved to ``camera.cameras.primary_rig_id`` and this function
+    still scanned the rig list. Measured on the shipped base profile: the cell names ``webcam_main``
+    and refuses it, while this tool found the single RGB-D rig, ``realsense_d435``, and opened it. A
+    strict subset became two different cameras.
+
+    So the default is the cell's key. ``--rig`` stays an override, because checking a rig before
+    switching it on is what a bench tool is for.
+
+    A disabled rig is a warning and a rig with no depth is a refusal, and the difference is not
+    severity. ``enabled: false`` is a config state the operator may be about to change, and this is
+    the tool they check with first. A missing depth channel is a fact about the hardware that no
+    config edit repairs, and this whole exerciser exists to report depth.
     """
-    rigs = list(getattr(getattr(camera_cfg, "cameras", None), "rigs", []) or [])
-    rgbd = [r for r in rigs if getattr(r, "source", None) == "rgbd"]
-    if rig_id is not None:
-        for r in rgbd:
-            if getattr(r, "rig_id", None) == rig_id:
-                return cast("RGBDDeviceRigConfig", r)
+    cameras = getattr(camera_cfg, "cameras", None)
+    rigs = list(getattr(cameras, "rigs", []) or [])
+    if rig_id is None:
+        rig_id = getattr(cameras, "primary_rig_id", None)
+        if not rig_id:
+            raise SystemExit(
+                "camera.cameras.primary_rig_id is not set, so there is no rig to open. Set it, or "
+                f"name one with --rig. Configured rigs: {sorted(r.rig_id for r in rigs)}."
+            )
+    named = next((r for r in rigs if getattr(r, "rig_id", None) == rig_id), None)
+    if named is None:
         raise SystemExit(
-            f"no RGB-D rig with rig_id={rig_id!r}; rgbd rigs: {[getattr(r, 'rig_id', '?') for r in rgbd]}"
+            f"no rig with rig_id={rig_id!r}; configured rigs: {sorted(r.rig_id for r in rigs)}."
         )
-    if len(rgbd) == 1:
-        return cast("RGBDDeviceRigConfig", rgbd[0])
-    raise SystemExit(
-        f"found {len(rgbd)} RGB-D rigs; pass --rig <rig_id>. "
-        f"candidates: {[getattr(r, 'rig_id', '?') for r in rgbd]}"
-    )
+    if getattr(named, "source", None) != "rgbd":
+        # The same fact the cell refuses on, in words an operator can carry between the two tools.
+        #
+        # It names the rigs that would work rather than the flag that would name one. Telling an
+        # operator to pass --rig leaves them reading the config to find out with what, and the answer
+        # is already in hand here. An empty list is the more useful of the two messages: it says the
+        # cell has no depth at all, which is a different problem from the wrong rig.
+        rgbd = sorted(r.rig_id for r in rigs if getattr(r, "source", None) == "rgbd")
+        available = (
+            f"RGB-D rigs in this config: {rgbd}. Name one with --rig."
+            if rgbd
+            else "This config declares no RGB-D rig at all, so there is nothing for this tool to "
+                 "open and no cell built from it can pick."
+        )
+        raise SystemExit(
+            f"rig {rig_id!r} is a {getattr(named, 'source', '?')!r} rig and this exerciser reports "
+            "depth, which it has none of. `build_real_components` refuses the same rig for the same "
+            f"reason: a grasp is synthesised from depth. {available}"
+        )
+    if not getattr(named, "enabled", True):
+        # Not a refusal. Proving a rig works is how an operator decides to switch it on.
+        print(
+            f"note: rig {rig_id!r} has `enabled: false`. Opening it anyway, because checking a rig "
+            "before enabling it is what this tool is for. A cell will refuse it until it is on.",
+            flush=True,
+        )
+    return cast("RGBDDeviceRigConfig", named)
 
 
 class _RawDepthTap:
@@ -203,7 +238,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prompt", default="an object", help="GroundingDINO phrase(s); ' ; '-separate for clutter")
     # The default is the only rig whose `source` is `rgbd`, which is what the cell selects, so the
     # help string names RGB-D rather than the RealSense driver.
-    ap.add_argument("--rig", default=None, help="rig_id of the RGB-D rig (default: the only RGB-D rig)")
+    ap.add_argument(
+        "--rig", default=None,
+        # The default moved when the selection did, and a help line that still described the old
+        # one would be the same defect one layer up: the tool would name the cell's camera and
+        # say it names the only one.
+        help="rig_id to open (default: camera.cameras.primary_rig_id, the rig a cell opens)",
+    )
     ap.add_argument("--warmup", type=int, default=5, help="throwaway grabs so auto-exposure settles")
     args = ap.parse_args(argv)
 

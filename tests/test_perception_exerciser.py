@@ -7,11 +7,18 @@ that was entirely holes skipped the overwrite and reported 100 %. Nothing in bet
 the module docstring calls "the real-hardware risk" and "a bench-tuning signal", and which an
 operator reads at the first real camera to decide whether their depth is good enough.
 
-⛔ **THE CAMERA.** This file selected its rig with `rgbd_backend == "realsense"` while
-`build_real_components` (cells.py:118) selected with `source == "rgbd"`. Fifteen lines below the
-selection, this module's own comment says the exerciser exists "to prove the SAME chain the cell runs
--- if the two acquire their frames differently, a green bench run stops being evidence about the
-cell." A different SELECTION is a stronger disagreement than a different acquisition.
+⛔ **THE CAMERA, TWICE.** This file selected its rig with `rgbd_backend == "realsense"` while
+`build_real_components` selected with `source == "rgbd"`. Fifteen lines below the selection, this
+module's own comment says the exerciser exists "to prove the SAME chain the cell runs -- if the two
+acquire their frames differently, a green bench run stops being evidence about the cell." A different
+SELECTION is a stronger disagreement than a different acquisition.
+
+⛔⛔ **AND THEN IT HAPPENED AGAIN, THE OTHER WAY ROUND.** The cell moved to
+`camera.cameras.primary_rig_id` (cells.py:132) and this file went on scanning the rig list for the
+single RGB-D one. MEASURED on the shipped base profile: the cell names `webcam_main`, a webcam pair,
+and refuses it; the exerciser opened `realsense_d435`, which is `enabled: false`, and said nothing.
+The first divergence made the tool useless, because a strict subset can only find less. The second
+made it MISLEADING, because it reported a green bench run about a camera the cell never opens.
 """
 
 from __future__ import annotations
@@ -165,61 +172,111 @@ class TheTapSeesWhatTheAdapterConsumedTests(unittest.TestCase):
         self.assertIsNone(tap.last_depth_mm)
 
 
-class TheTwoPredicatesAgreeTests(unittest.TestCase):
-    def _cfg(self, *rigs):
-        return SimpleNamespace(cameras=SimpleNamespace(rigs=list(rigs)))
+class TheTwoToolsNameTheSameCameraTests(unittest.TestCase):
+    """⛔ TWICE NOW THEY HAVE NOT, and the second time was worse than the first.
 
-    @staticmethod
-    def _cell_predicate(camera_cfg):
-        """`build_real_components`' own filter, copied here so the two can be compared."""
-        return [r for r in camera_cfg.cameras.rigs if getattr(r, "source", None) == "rgbd"]
+    First the exerciser filtered on ``rgbd_backend == "realsense"`` while the cell filtered on
+    ``source == "rgbd"``, so the exerciser was blind to rigs the cell would pick. That closed, and
+    then the cell moved to ``camera.cameras.primary_rig_id`` while this file still scanned the rig
+    list. Measured on the shipped base profile at that point: the cell named ``webcam_main`` and
+    refused it, the exerciser opened ``realsense_d435``. A strict subset became two different
+    cameras, which is the worse failure of the two: the first made the tool useless, the second made
+    it misleading.
+    """
 
-    def test_a_rig_the_cell_would_pick_is_no_longer_invisible_to_the_exerciser(self) -> None:
-        """⛔ THE DIVERGENCE. `rgbd_backend` defaults to "opencv" (cam_schema.py:172), so a rig with
-        `source: rgbd` and no explicit backend was chosen as PRIMARY by the cell and reported as
-        "found 0 realsense rigs" by the tool whose job is to prove the cell's chain."""
-        rig = SimpleNamespace(rig_id="overhead", source="rgbd", rgbd_backend="opencv", enabled=True)
-        cfg = self._cfg(rig)
-        self.assertEqual([r.rig_id for r in self._cell_predicate(cfg)], ["overhead"])
-        self.assertIs(_find_rgbd_rig(cfg, None), rig)
+    def _cfg(self, primary, *rigs):  # noqa: ANN001, ANN202
+        return SimpleNamespace(
+            cameras=SimpleNamespace(primary_rig_id=primary, rigs=list(rigs)))
 
-    def test_the_two_predicates_now_select_the_same_set_on_the_shipped_trees(self) -> None:
-        """⭐ THE CONTROL THAT MAKES THE TEST ABOVE MORE THAN A SYNTHETIC CLAIM. Run over the real
-        config, in both profiles that carry RGB-D rigs."""
+    def _rig(self, rig_id, source="rgbd", enabled=True, backend="realsense"):  # noqa: ANN001, ANN202
+        return SimpleNamespace(
+            rig_id=rig_id, source=source, enabled=enabled, rgbd_backend=backend)
+
+    def test_the_default_is_the_key_the_cell_reads(self) -> None:
+        second = self._rig("other")
+        cfg = self._cfg("overhead", self._rig("overhead"), second)
+        self.assertEqual(_find_rgbd_rig(cfg, None).rig_id, "overhead")
+        # And it is the key, not "the first" or "the only": with two candidates the old code demanded
+        # --rig, and the key answers the question instead.
+        self.assertEqual(
+            _find_rgbd_rig(self._cfg("other", self._rig("overhead"), second), None).rig_id, "other")
+
+    def test_rig_overrides_the_key(self) -> None:
+        cfg = self._cfg("overhead", self._rig("overhead"), self._rig("wrist"))
+        self.assertEqual(_find_rgbd_rig(cfg, "wrist").rig_id, "wrist")
+
+    def test_a_non_rgbd_rig_is_refused_in_the_cells_own_terms(self) -> None:
+        """⭐ THE OPERATOR CARRIES THE SENTENCE BETWEEN TWO TOOLS. ``build_real_components`` refuses a
+        primary that is not RGB-D and points at this exerciser; if the exerciser then opened it
+        happily, the advice would contradict the refusal that produced it."""
+        cfg = self._cfg(
+            "webcam_main",
+            self._rig("webcam_main", source="webcam_pair"),
+            self._rig("realsense_d435"),
+        )
+        with self.assertRaises(SystemExit) as caught:
+            _find_rgbd_rig(cfg, None)
+        message = str(caught.exception)
+        self.assertIn("webcam_pair", message)
+        self.assertIn("synthesised from depth", message)
+        # And it names what would work, rather than the flag that would name it.
+        self.assertIn("realsense_d435", message)
+
+    def test_a_config_with_no_rgbd_rig_at_all_says_so(self) -> None:
+        """A different problem from the wrong rig, and the empty list is what distinguishes them."""
+        cfg = self._cfg("webcam_main", self._rig("webcam_main", source="webcam_pair"))
+        with self.assertRaises(SystemExit) as caught:
+            _find_rgbd_rig(cfg, None)
+        self.assertIn("no RGB-D rig at all", str(caught.exception))
+
+    def test_a_disabled_rig_is_opened_with_a_note_rather_than_refused(self) -> None:
+        """⚠ NOT THE SAME AS THE CASE ABOVE, AND THE DIFFERENCE IS NOT SEVERITY. ``enabled: false`` is
+        a config state the operator may be about to change, and this is the tool they check with
+        first. A missing depth channel is a fact about the hardware that no config edit repairs."""
+        cfg = self._cfg("oblique_L", self._rig("oblique_L", enabled=False))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rig = _find_rgbd_rig(cfg, None)
+        self.assertEqual(rig.rig_id, "oblique_L")
+        self.assertIn("enabled: false", out.getvalue())
+        self.assertIn("A cell will refuse it", out.getvalue())
+
+    def test_an_unnamed_rig_and_an_unset_key_both_say_what_to_do(self) -> None:
+        with self.assertRaises(SystemExit) as missing:
+            _find_rgbd_rig(self._cfg("overhead", self._rig("overhead")), "nope")
+        self.assertIn("nope", str(missing.exception))
+        with self.assertRaises(SystemExit) as unset:
+            _find_rgbd_rig(self._cfg(None, self._rig("overhead")), None)
+        self.assertIn("primary_rig_id", str(unset.exception))
+
+    def test_over_the_shipped_profiles_the_two_tools_agree(self) -> None:
+        """⭐ THE CONTROL, AND THE ONE THAT WOULD HAVE CAUGHT BOTH DIVERGENCES. Everything above is
+        synthetic; this reads the real config. For every profile the exerciser must open the rig the
+        cell names, or refuse it for the reason the cell refuses it. It must never open a different
+        one."""
         import os
 
-        for profile in (None, "tiltcam"):
+        checked = 0
+        for profile in (None, "tiltcam", "ur3e,tiltcam", "sim", "console_dummy"):
             with self.subTest(profile=profile or "(base)"):
-                env = {"WILLY_PROFILE": profile} if profile else {}
-                with mock.patch.dict(os.environ, env, clear=False):
-                    if not profile:
-                        os.environ.pop("WILLY_PROFILE", None)
+                env = dict(os.environ)
+                env.pop("WILLY_PROFILE", None)
+                if profile:
+                    env["WILLY_PROFILE"] = profile
+                with mock.patch.dict(os.environ, env, clear=True):
                     from src.config.loader import load_config
 
                     cfg = load_config()
-                cell = {r.rig_id for r in self._cell_predicate(cfg.camera)}
-                tool = {r.rig_id for r in cfg.camera.cameras.rigs
-                        if getattr(r, "source", None) == "rgbd"}
-                self.assertEqual(cell, tool)
-                self.assertTrue(cell, "a profile with no RGB-D rig would make this vacuous")
-
-    def test_the_refusals_still_name_the_candidates(self) -> None:
-        a = SimpleNamespace(rig_id="l", source="rgbd", rgbd_backend="realsense", enabled=True)
-        b = SimpleNamespace(rig_id="r", source="rgbd", rgbd_backend="realsense", enabled=True)
-        with self.assertRaises(SystemExit) as ambiguous:
-            _find_rgbd_rig(self._cfg(a, b), None)
-        self.assertIn("pass --rig", str(ambiguous.exception))
-        self.assertIn("'l'", str(ambiguous.exception))
-
-        with self.assertRaises(SystemExit) as missing:
-            _find_rgbd_rig(self._cfg(a), "nope")
-        self.assertIn("nope", str(missing.exception))
-
-    def test_a_webcam_rig_is_still_not_an_rgbd_rig(self) -> None:
-        """The widening must not become 'anything with a rig_id'."""
-        cam = SimpleNamespace(rig_id="webcam_main", source="webcam_pair", enabled=True)
-        with self.assertRaises(SystemExit):
-            _find_rgbd_rig(self._cfg(cam), None)
+                named = cfg.camera.cameras.primary_rig_id
+                out = io.StringIO()
+                try:
+                    with redirect_stdout(out):
+                        chosen = _find_rgbd_rig(cfg.camera, None).rig_id
+                except SystemExit:
+                    chosen = named  # a refusal is about the rig the cell named, which is agreement
+                self.assertEqual(chosen, named)
+                checked += 1
+        self.assertGreaterEqual(checked, 3, "a test over no profile passes loudest")
 
 
 class TheRenderedBlockTests(unittest.TestCase):
