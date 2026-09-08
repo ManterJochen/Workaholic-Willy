@@ -83,7 +83,7 @@ def _build_gripper(robot_config: Any, vendor: str, arm: Any, arm_vendor: str) ->
     block = GripperConfig.model_validate(
         robot_config.gripper.model_copy(update={"vendor": vendor}).model_dump())
     config = robot_config.model_copy(update={"gripper": block, "vendor": arm_vendor})
-    calculator, perception, resolver, _ = build_rehearsal_components(config)
+    calculator, perception, resolver, _cameras, _lenses = build_rehearsal_components(config)
     service = AutonomousGraspService.from_robot_config(
         config, calculator=calculator, perception=perception, frame_resolver=resolver, arm=arm)
     return service.runtime.orchestrator.gripper

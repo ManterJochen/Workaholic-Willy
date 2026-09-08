@@ -48,9 +48,11 @@ __all__ = [
     "AssociationMetric",
     "AssociationResult",
     "SceneAssociation",
+    "SceneCluster",
     "ViewCandidates",
     "assign_view",
     "associate_target",
+    "cluster_views",
     "fuse_scene_clouds",
     "fuse_target_cloud",
 ]
@@ -400,3 +402,157 @@ def fuse_scene_clouds(
                 parts.append(cloud)
         fused.append(np.vstack(parts))
     return tuple(fused), associations
+
+
+# --------------------------------------------------------------------------------------------------
+# Every camera equal: grouping without a privileged view.
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SceneCluster:
+    """One physical object, and every blob any camera saw of it.
+
+    ``members`` are ``(view_index, blob_index)`` pairs into the sequence of views this was built
+    from, in view order and then blob order, so the result is deterministic and a caller can name
+    which camera contributed what.
+
+    A cluster of one member is an object exactly one camera saw. That is not a failure: it is what a
+    part behind another part looks like from every angle but one, and it is the case the whole
+    symmetric pass exists to keep.
+    """
+
+    members: tuple[tuple[int, int], ...]
+    #: The mean of the scores between every pair inside the cluster, or 1.0 for a cluster of one.
+    #: Not the minimum: the minimum is already known to clear the threshold, and the mean is what
+    #: says whether the cameras merely agreed or agreed strongly.
+    agreement: float
+
+    @property
+    def views(self) -> tuple[int, ...]:
+        return tuple(dict.fromkeys(view for view, _ in self.members))
+
+
+def cluster_views(
+    views: Sequence[ViewCandidates],
+    *,
+    metric: AssociationMetric = AssociationMetric.OVERLAP,
+    min_score: float = DEFAULT_MIN_SCORE,
+    neighbour_mm: float = DEFAULT_NEIGHBOUR_MM,
+    max_centroid_mm: float = 150.0,
+    score_voxel_mm: float = 0.0,
+) -> tuple[SceneCluster, ...]:
+    """Group every camera's blobs into objects, with no camera privileged over the others.
+
+    Complete linkage, and the choice is the whole point of this function. A blob joins a group only
+    if it clears ``min_score`` against every blob already in it, never merely against one of them.
+
+    The case that separates the two rules is three blobs where A matches B and B matches C and A does
+    not match C, which a threshold produces routinely on objects that touch. Single linkage, which is
+    what a union-find over the same edges computes, puts all three in one group: one false edge welds
+    three objects and the grasp is then planned on a surface that does not exist, with the closing
+    axis running through the gap between two parts. Complete linkage refuses, B goes with whichever
+    of A or C it scores higher against, and the third stays its own object.
+
+    That leaves a duplicate rather than a phantom, and the two failures are not equally priced: a
+    duplicate costs one attempt that finds nothing, a phantom drives a jaw into the space between two
+    objects. The owner chose splitting over welding for that reason and this implements it.
+
+    Blobs are never matched within one camera. Two blobs in one view are two detections that camera
+    made, and the segmenter, not this function, is what decides whether they are one object.
+
+    ``score_voxel_mm`` decimates the clouds for scoring only, exactly as :func:`assign_view` does,
+    and only for the overlap metric, which is the only one whose cost is quadratic in the points.
+    """
+
+    clouds: list[list[np.ndarray]] = [
+        [np.asarray(cloud, dtype=np.float64).reshape(-1, 3) for cloud in view.clouds_base_mm]
+        for view in views
+    ]
+    if score_voxel_mm > 0.0 and metric is AssociationMetric.OVERLAP:
+        scored = [[_voxel_decimate(cloud, score_voxel_mm) for cloud in view] for view in clouds]
+    else:
+        scored = clouds
+
+    #: Every blob in the whole rig, as (view, blob). One flat list so a cluster can hold blobs from
+    #: any camera without the structure implying an order between cameras.
+    blobs: list[tuple[int, int]] = [
+        (view_index, blob_index)
+        for view_index, view in enumerate(scored)
+        for blob_index, cloud in enumerate(view)
+        if cloud.size
+    ]
+
+    # Pairwise scores, across cameras only. Symmetric by construction: the pair is stored once, under
+    # the lower blob first, and read through `_pair_score` from either side.
+    pair: dict[tuple[int, int], float] = {}
+    for left in range(len(blobs)):
+        for right in range(left + 1, len(blobs)):
+            if blobs[left][0] == blobs[right][0]:
+                continue  # one camera's own two detections are two objects, by that camera's word
+            a = scored[blobs[left][0]][blobs[left][1]]
+            b = scored[blobs[right][0]][blobs[right][1]]
+            score = _score(a, b, metric=metric, max_centroid_mm=max_centroid_mm,
+                           neighbour_mm=neighbour_mm)
+            if score >= min_score:
+                pair[(left, right)] = score
+
+    # Greedy from the strongest edge outward. Deterministic: ties break on the pair's own indices,
+    # which are the input order, so the same rig produces the same clusters every time.
+    order = sorted(pair.items(), key=lambda item: (-item[1], item[0]))
+    group_of: dict[int, int] = {}
+    groups: list[list[int]] = []
+    for (left, right), _score_value in order:
+        left_group, right_group = group_of.get(left), group_of.get(right)
+        if left_group is not None and left_group == right_group:
+            continue
+        if left_group is None and right_group is None:
+            group_of[left] = group_of[right] = len(groups)
+            groups.append([left, right])
+            continue
+        if left_group is None or right_group is None:
+            joiner, group_index = (left, right_group) if left_group is None else (right, left_group)
+            assert group_index is not None
+            if _clears_every_member(joiner, groups[group_index], pair):
+                group_of[joiner] = group_index
+                groups[group_index].append(joiner)
+            continue
+        # Both already grouped. Merging two groups is admissible only when every cross pair clears,
+        # which is the same rule applied to a whole group rather than to one blob.
+        if all(_pair_score(a, b, pair) is not None
+               for a in groups[left_group] for b in groups[right_group]):
+            groups[left_group].extend(groups[right_group])
+            for member in groups[right_group]:
+                group_of[member] = left_group
+            groups[right_group] = []
+
+    clustered = {index for group in groups for index in group}
+    singles = [[index] for index in range(len(blobs)) if index not in clustered]
+
+    result: list[SceneCluster] = []
+    for group in [g for g in groups if g] + singles:
+        members = tuple(sorted(blobs[index] for index in group))
+        result.append(SceneCluster(members=members, agreement=_mean_pair_score(group, pair)))
+    result.sort(key=lambda cluster: cluster.members)
+    return tuple(result)
+
+
+def _pair_score(a: int, b: int, pair: "dict[tuple[int, int], float]") -> "float | None":
+    return pair.get((a, b), pair.get((b, a)))
+
+
+def _clears_every_member(
+    joiner: int, group: "Sequence[int]", pair: "dict[tuple[int, int], float]"
+) -> bool:
+    """Complete linkage, stated as the one predicate the whole rule reduces to."""
+    return all(_pair_score(joiner, member, pair) is not None for member in group)
+
+
+def _mean_pair_score(group: "Sequence[int]", pair: "dict[tuple[int, int], float]") -> float:
+    scores = [
+        score
+        for i, a in enumerate(group)
+        for b in group[i + 1:]
+        if (score := _pair_score(a, b, pair)) is not None
+    ]
+    return float(sum(scores) / len(scores)) if scores else 1.0

@@ -90,6 +90,22 @@ class TheProtocolCoversWhatTheRuntimeActuallyReadsTests(unittest.TestCase):
                     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute):
                         if node.value.attr.endswith("calculator"):
                             found.setdefault(node.attr, where)
+                    # `x.calculator_for(...).attr`, the accessor a multi-camera cell reads through.
+                    #
+                    # ⛔ THE SWEEP WENT BLIND WITHOUT THIS, AND SILENTLY. The pick loop's call used to
+                    # be `self.calculator.compute_result(...)`, which the branch above sees. It is
+                    # `self.calculator_for(obj.camera_id).compute_result(...)` now, because a cell
+                    # with several cameras holds one calculator per camera, and the value of that
+                    # attribute access is a CALL rather than an attribute. So the guard's main
+                    # subject disappeared from its own sweep while every assertion kept passing, and
+                    # the companion test below is the only reason anybody noticed.
+                    if (
+                        isinstance(node, ast.Attribute)
+                        and isinstance(node.value, ast.Call)
+                        and isinstance(node.value.func, ast.Attribute)
+                        and node.value.func.attr.endswith("calculator_for")
+                    ):
+                        found.setdefault(node.attr, where)
                     # `getattr(<expr ending in .calculator | name 'calculator'>, "attr", ...)`
                     if (
                         isinstance(node, ast.Call)

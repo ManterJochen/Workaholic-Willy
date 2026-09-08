@@ -101,7 +101,7 @@ def _the_primary_key_is_the_one_that_counts(run: Example, robot: Any) -> None:
 
     probe = _with_fusion(robot, extrinsics_artifact_path=None)
     try:
-        calculator, perception, _resolver, _cameras = build_rehearsal_components(probe)
+        calculator, perception, _resolver, _cameras, _lenses = build_rehearsal_components(probe)
     except Exception as error:                                  # noqa: BLE001  (report, not raise)
         # `build_calculator` is fail-closed under `grasping.calculator: deep` with no readable
         # artifact, and that refusal arrives before the one under test. Saying so beats reporting a

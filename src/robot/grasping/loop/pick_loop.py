@@ -634,7 +634,18 @@ class BinPickingOrchestrator:
     #: Empty means "nothing was configured", not "nothing arrived", and the two are different
     #: answers. A cell with no fusion block configured is single-view by design and must not be
     #: refused; a cell that named three cameras and got two must be.
+    #: One calculator per camera, for a cell whose cameras may each introduce an object. Empty is
+    #: the normal case and means every object is computed by `calculator`, which is what happened
+    #: before this existed. A calculator is bound to one camera's intrinsics at construction, so
+    #: this map is what keeps a promoted object out of the wrong lens.
+    camera_calculators: "dict[str, Any] | None" = None
     configured_camera_ids: "tuple[str, ...]" = ()
+    #: The camera `perception` streams from, as the rest of the rig names it. Only a label: nothing
+    #: is looked up by it, and an empty string is the honest value for a cell whose camera has no id
+    #: in `camera.cameras.rigs` (a simulator runner building its own source, mostly). It exists so
+    #: that a scene object can say which camera it was seen by without that being inferred from a
+    #: position in a list, which is the coupling this change removes.
+    primary_camera_id: str = ""
     fusion_geometry_config: "FusionGeometryConfig | None" = None
 
     # What the gripper is, and what the parts stand on. Both are inputs ``compute()`` accepts and
@@ -738,6 +749,9 @@ class BinPickingOrchestrator:
     # height is not worth opening it; the log line at the resolution site is what an operator
     # needs, and a later change can join this.
     _support_telemetry: dict = field(default_factory=dict, init=False, repr=False)
+    #: The other cameras' views from this pick's `_fused_scene`, so the scene object list is built
+    #: from the same observation rather than from a second one taken moments later.
+    _last_other_views: tuple = field(default=(), init=False, repr=False)
     # (config key, BASE points). The walls are fixed geometry; rebuilding them every attempt would
     # be waste in the one path that runs on every pick.
     _container_wall_cache: "tuple[tuple, np.ndarray] | None" = field(
@@ -1962,11 +1976,18 @@ class BinPickingOrchestrator:
                     observation.camera_id,
                 )
                 continue
-            masks = tuple(
-                mask
-                for mask in (getattr(seg, "mask", None) for seg in observation.frame.segmentations)
+            # The segmentation, not just its mask. A mask is enough to fuse a surface onto an
+            # object the primary already found, and not enough to grasp from: the calculator takes a
+            # segmentation, this camera's depth and this camera's intrinsics, and a bare mask is one
+            # of the three. Carrying the pair keeps them in step, so an object promoted from this
+            # camera cannot end up with one camera's mask and another's depth.
+            segmented = tuple(
+                (seg, mask)
+                for seg, mask in ((s, getattr(s, "mask", None))
+                                  for s in observation.frame.segmentations)
                 if mask is not None
             )
+            masks = tuple(mask for _seg, mask in segmented)
             if not masks:
                 # A camera that delivered a frame and grounded nothing on it. That is a legitimate
                 # answer, not a fault: a camera looking at an empty stretch of bin has done its job,
@@ -1984,6 +2005,7 @@ class BinPickingOrchestrator:
                 ObservedView(
                     name=observation.camera_id,
                     masks=masks,
+                    segmentations=tuple(seg for seg, _mask in segmented),
                     depth_map=observation.frame.depth_map,
                     intrinsics=observation.frame.intrinsics,
                     camera_to_base=np.asarray(other_to_base.to_matrix(), dtype=np.float64),
@@ -2018,6 +2040,11 @@ class BinPickingOrchestrator:
                 "cameras_absent": len(missing),
             }
             return None
+
+        # Kept for the scene builder, which needs the same views and must not re-acquire them: a
+        # second `acquire_all` would be a second detect and segment pass per camera, and worse, a
+        # second moment, so the objects would be grouped across frames taken at different times.
+        self._last_other_views = tuple(views)
 
         with_neighbours = bool(getattr(config, "neighbour_scene_enabled", False))
         fused = fuse_scene_geometry(
@@ -2057,6 +2084,113 @@ class BinPickingOrchestrator:
         if with_neighbours:
             self._fusion_geometry_telemetry["fused_neighbour_points"] = fused.neighbour_points
         return fused
+
+    def calculator_for(self, camera_id: str):  # noqa: ANN201
+        """The calculator bound to ``camera_id``'s intrinsics, or the cell's own.
+
+        The fallback is not a convenience: a cell with one camera has one calculator and no map, and
+        every object it ever sees is the primary's, so the lookup must answer without a map existing.
+        A miss with a map present is also the cell's own calculator rather than a refusal, because
+        that combination means promotion produced an object from a camera nobody built a calculator
+        for, and refusing the pick over it would be a larger failure than computing it in the primary
+        lens and saying so.
+        """
+        table = self.camera_calculators
+        if not table:
+            return self.calculator
+        found = table.get(camera_id)
+        if found is None:
+            _LOG.warning(
+                "no calculator built for camera %r; computing its object in the primary camera's "
+                "lens, which places the grasp with the wrong intrinsics", camera_id)
+            return self.calculator
+        return found
+
+    def _scene_objects(self, frame, camera_to_base, fused_scene):  # noqa: ANN001, ANN202
+        """The objects this pick may attempt, and the camera each one is grasped from.
+
+        Default-off means the same list, not a similar one. With `promote_unmatched` false this
+        returns exactly one entry per segmentation of the primary frame, in the primary's own order,
+        carrying the primary's depth and intrinsics. Position for position it is the list the loop
+        iterated before this method existed, so nothing measured against that loop moves.
+
+        With it on, an object no primary segmentation corresponds to survives instead of being
+        dropped. Detection and segmentation already ran on that camera and cost a full pass; what was
+        missing was anywhere for the result to go.
+        """
+        from src.robot.grasping.multiview.scene_geometry import (  # noqa: PLC0415
+            ObservedView,
+            build_scene_objects,
+        )
+
+        segmented = tuple(
+            (seg, mask)
+            for seg, mask in ((s, getattr(s, "mask", None)) for s in frame.segmentations)
+            if mask is not None
+        )
+        primary = ObservedView(
+            name=self.primary_camera_id,
+            masks=tuple(mask for _s, mask in segmented),
+            depth_map=frame.depth_map,
+            intrinsics=frame.intrinsics,
+            camera_to_base=(np.asarray(camera_to_base.to_matrix(), dtype=np.float64)
+                            if camera_to_base is not None else np.eye(4)),
+            segmentations=tuple(seg for seg, _m in segmented),
+        )
+        clouds = tuple(
+            fused_scene.cloud_for(index) for index in range(len(primary.masks))
+        ) if fused_scene is not None else None
+
+        config = self.fusion_geometry_config
+        if config is None or not bool(getattr(config, "promote_unmatched", False)):
+            return build_scene_objects([primary], (), fused_clouds=clouds)
+
+        from src.robot.grasping.multiview.association import (  # noqa: PLC0415
+            AssociationMetric,
+            ViewCandidates,
+            cluster_views,
+        )
+        from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
+
+        views = [primary, *self._last_other_views]
+        candidates = [
+            ViewCandidates(
+                name=view.name,
+                clouds_base_mm=tuple(
+                    to_base_mm(mask, view.depth_map, view.intrinsics, view.camera_to_base)
+                    for mask in view.masks
+                ),
+            )
+            for view in views
+        ]
+        clusters = cluster_views(
+            candidates,
+            metric=AssociationMetric(str(config.metric)),
+            min_score=float(config.min_score),
+            neighbour_mm=float(config.neighbour_mm),
+            max_centroid_mm=float(config.max_centroid_mm),
+            score_voxel_mm=float(getattr(config, "score_voxel_mm", 0.0)),
+        )
+        objects = build_scene_objects(
+            views, clusters, fused_clouds=clouds,
+            # The same clouds the clustering scored, so a promoted object seen by two cameras
+            # is grasped from both. Reused rather than rebuilt: back-projecting them a second
+            # time would be the same arithmetic on the same frames for the same answer.
+            view_clouds=[view.clouds_base_mm for view in candidates],
+        )
+        promoted = sum(1 for obj in objects if obj.promoted)
+        if promoted:
+            # Said once per pick, because an object appearing that the primary camera cannot see is
+            # the whole point of the feature and also the thing an operator will want to check first
+            # when a cell reaches for something they did not expect it to know about.
+            _LOG.info(
+                "grasping.fusion.geometry: %d object(s) promoted from a camera other than %r; "
+                "%d object(s) in the scene",
+                promoted, self.primary_camera_id, len(objects),
+            )
+        self._fusion_geometry_telemetry["objects_promoted"] = promoted
+        self._fusion_geometry_telemetry["objects_in_scene"] = len(objects)
+        return objects
 
     def _offer_masks_to_planner_world(
         self, frame: "PerceptionFrame", target_index: "int | None"
@@ -2159,6 +2293,15 @@ class BinPickingOrchestrator:
             _LOG.warning(
                 "container walls are configured but no CAMERA->BASE transform is available; the "
                 "wall-collision check is not running for this attempt")
+        # The objects this pick may attempt. With `promote_unmatched` off this is one entry per
+        # segmentation of the primary frame, in the primary's order, so the loop below runs on
+        # exactly the list it ran on before scene objects existed.
+        scene = self._scene_objects(frame, camera_to_base, fused_scene)
+        # Neighbour masks stay the primary frame's, deliberately. They are the clutter around a
+        # target in the frame the grasp is synthesised in, and a mask from another camera is in
+        # another camera's pixels: handing it to the dense sampler would place clutter by index into
+        # an image it does not belong to. A promoted object's neighbours are a separate question and
+        # this change does not answer it.
         other_masks = [getattr(seg, "mask", None) for seg in frame.segmentations]
         best_success: GraspResult | None = None
         best_index: int | None = None
@@ -2177,7 +2320,13 @@ class BinPickingOrchestrator:
         # How many segmentations the hard label gate below let through. Zero of them, with a label
         # set, is a nameable failure rather than an empty reason tuple.
         label_matches = 0
-        for idx, seg in enumerate(frame.segmentations):
+        for idx, obj in enumerate(scene):
+            seg = obj.segmentation
+            if seg is None:
+                # A view that carried masks and no segmentations. It can contribute surface to
+                # another object and it cannot be grasped from, and saying so beats failing three
+                # calls later inside the calculator with a `None` nobody expected.
+                continue
             # When a hard label-target is set, only the matching segmentation is an executable
             # target. The non-target segs are skipped here but remain in ``other_masks`` above, so they
             # still feed ``neighbours`` of the chosen target (the dense sampler + corridor-risk +
@@ -2187,7 +2336,13 @@ class BinPickingOrchestrator:
             ):
                 continue
             label_matches += 1
-            neighbours = [m for j, m in enumerate(other_masks) if j != idx and m is not None]
+            # A promoted object is not in `other_masks` at all, so `j != idx` would exclude an
+            # unrelated primary object instead of itself. Excluding nothing is right for it: every
+            # primary mask genuinely is clutter around it.
+            neighbours = [
+                m for j, m in enumerate(other_masks)
+                if m is not None and not (not obj.promoted and j == idx)
+            ]
             extra_kwargs: dict = {}
             if camera_to_base is not None:
                 extra_kwargs["camera_to_base"] = camera_to_base
@@ -2210,7 +2365,7 @@ class BinPickingOrchestrator:
             # explicit external cloud still wins, so enabling fusion cannot change a runner that
             # supplies one.
             elif fused_scene is not None and camera_to_base is not None:
-                neighbour_base = fused_scene.neighbour_for(idx)
+                neighbour_base = (None if obj.promoted else fused_scene.neighbour_for(idx))
                 if neighbour_base is not None and neighbour_base.size:
                     neighbour_cam = self._base_points_to_camera(neighbour_base, camera_to_base)
                     if neighbour_cam is not None:
@@ -2234,7 +2389,7 @@ class BinPickingOrchestrator:
             # runner's ground-truth path) still wins, so enabling fusion cannot change a runner that
             # already supplies one.
             elif fused_scene is not None:
-                object_cloud = fused_scene.cloud_for(idx)
+                object_cloud = obj.fused_cloud_base_mm
                 if object_cloud is not None and object_cloud.size:
                     extra_kwargs["geometry_points_base_mm"] = object_cloud
             if self.gripper_model is not None:
@@ -2277,9 +2432,15 @@ class BinPickingOrchestrator:
                 _LOG.warning(
                     "support plane configured but no CAMERA->BASE transform is available; "
                     "the table-clearance check is not running for this attempt")
-            result = self.calculator.compute_result(
+            # The calculator for the camera this object was seen by, and its depth. A calculator
+            # is bound to one camera's intrinsics at construction, so computing a promoted object
+            # with the primary's calculator would synthesise a grasp using the wrong focal length
+            # and the wrong principal point on the right pixels: plausible numbers, wrong place.
+            # `calculator_for` returns the cell's own calculator for every object the primary saw,
+            # which is every object unless promotion is on, so this line is the line it replaced.
+            result = self.calculator_for(obj.camera_id).compute_result(
                 seg,
-                frame.depth_map,
+                obj.depth_map,
                 pixel_to_mm=None,
                 dense_sampling=self.dense_sampling,
                 grasp_sampling_mode=self._resolved_sampling_mode,

@@ -146,7 +146,7 @@ def _a_wrist_only_cell_is_refused(run: Example, robot: Any, rig_id: str, artifac
     probe = robot.model_copy(
         update={"grasping": robot.grasping.model_copy(update={"fusion": fusion})})
     try:
-        calculator, perception, _resolver, _cameras = build_rehearsal_components(probe)
+        calculator, perception, _resolver, _cameras, _lenses = build_rehearsal_components(probe)
     except Exception as error:                                  # noqa: BLE001  (report, not raise)
         # `build_calculator` is fail-closed on `grasping.calculator: deep` with no readable
         # artifact, and that refusal arrives before the one under test here. Saying so is better

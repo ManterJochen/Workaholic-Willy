@@ -193,7 +193,8 @@ class TheSelectorReachesTheCellTests(unittest.TestCase):
     def test_geometric_builds_the_analytic_generator(self) -> None:
         from src.robot.execution.autonomous_grasp.cells import build_rehearsal_components
 
-        calculator, _perception, _resolver, _cams = build_rehearsal_components(self._cfg("geometric"))
+        calculator, _perception, _resolver, _cams, _lenses = build_rehearsal_components(
+            self._cfg("geometric"))
         self.assertEqual(type(calculator).__name__, "GraspCalculator")
 
     def test_deep_without_an_artifact_REFUSES_rather_than_falling_back(self) -> None:

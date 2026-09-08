@@ -1269,6 +1269,31 @@ class FusionGeometryConfig(StrictModel):
             "density rather than letting the fused half dominate purely by point count."
         ),
     )
+    promote_unmatched: bool = Field(
+        default=False,
+        description=(
+            "Let a camera introduce an object, instead of only confirming one the primary already "
+            "found. Requires `enabled`. False, the default, is the behaviour every measured number "
+            "in this repository was taken under.\n\n"
+            "What it fixes. Detection and segmentation already run on every camera in a fused cell: "
+            "each one costs a full detect and segment pass per pick. But the object list comes from "
+            "the primary camera alone, and the other cameras' blobs are matched against it, so a "
+            "part that only the second camera can see matches nothing, because there is nothing for "
+            "it to match. It is found, segmented, back-projected, and then dropped. If it is the "
+            "last part in a bin, the cell reports the bin empty while holding a positive detection "
+            "of it in memory.\n\n"
+            "What it costs. Grouping becomes symmetric over every camera pair rather than "
+            "primary-against-each, and an object no primary segmentation corresponds to is computed "
+            "in the camera that saw it, with that camera's mask, depth and intrinsics. So a cell "
+            "holds one calculator per camera. The grouping uses complete linkage: a blob joins a "
+            "group only when it clears `min_score` against every blob already in it, never merely "
+            "against one. That splits where a chain would weld, which costs a duplicate object and "
+            "one wasted attempt, rather than welding two parts into a cloud with a closing axis "
+            "running through the gap between them.\n\n"
+            "Not measured. How often a bin holds a part the primary cannot see is not known: no "
+            "number in this repository answers it. That is why this ships off."
+        ),
+    )
 
 
 class RobotGraspingFusionConfig(StrictModel):

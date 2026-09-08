@@ -125,7 +125,7 @@ class TheRigIsBuiltTests(unittest.TestCase):
         """⭐ THE ITEM ITSELF. Two calibrated cameras in config, two devices opened, and the cell
         carries a rig the pick loop can observe."""
         box: list = []
-        (_calc, _perc, _res, multi), _build_calls = _build(
+        (_calc, _perc, _res, multi, _lenses), _build_calls = _build(
             _robot_cfg(geometry=True, cameras={"overhead": True, "oblique": True}),
             _app_cfg("overhead", "oblique"), box)
 
@@ -143,7 +143,7 @@ class TheRigIsBuiltTests(unittest.TestCase):
         measurement to justify the move.
         """
         box: list = []
-        (_c, _p, _r, multi), _build_calls = _build(
+        (_c, _p, _r, multi, _lenses), _build_calls = _build(
             _robot_cfg(geometry=True, cameras={"overhead": True, "oblique": True}),
             _app_cfg("overhead", "oblique"), box)
 
@@ -163,7 +163,7 @@ class TheRigIsBuiltTests(unittest.TestCase):
     def test_every_camera_shares_the_SAME_model_objects(self) -> None:
         """The control on the count above: one build call could still have been copied per camera."""
         box: list = []
-        (_c, primary, _r, multi), _build_calls = _build(
+        (_c, primary, _r, multi, _lenses), _build_calls = _build(
             _robot_cfg(geometry=True, cameras={"overhead": True, "oblique": True}),
             _app_cfg("overhead", "oblique"), box)
 
@@ -183,7 +183,7 @@ class ItStaysOffByDefaultTests(unittest.TestCase):
     def test_no_fusion_geometry_opens_ONE_camera_exactly_as_before(self) -> None:
         """⚠ THE BYTE-IDENTICAL CASE, which is every cell that exists today."""
         box: list = []
-        (_c, _p, _r, multi), _build_calls = _build(
+        (_c, _p, _r, multi, _lenses), _build_calls = _build(
             _robot_cfg(geometry=False, cameras={"overhead": True, "oblique": True}),
             _app_cfg("overhead", "oblique"), box)
 
@@ -194,7 +194,7 @@ class ItStaysOffByDefaultTests(unittest.TestCase):
         """One camera is not a multi-camera rig, and an empty rig would make the pick loop expect
         observations nobody produces."""
         box: list = []
-        (_c, _p, _r, multi), _build_calls = _build(
+        (_c, _p, _r, multi, _lenses), _build_calls = _build(
             _robot_cfg(geometry=True, cameras={"overhead": True}),
             _app_cfg("overhead"), box)
 
@@ -202,7 +202,7 @@ class ItStaysOffByDefaultTests(unittest.TestCase):
 
     def test_a_DISABLED_camera_is_not_opened(self) -> None:
         box: list = []
-        (_c, _p, _r, multi), _build_calls = _build(
+        (_c, _p, _r, multi, _lenses), _build_calls = _build(
             _robot_cfg(geometry=True, cameras={"overhead": True, "oblique": False}),
             _app_cfg("overhead", "oblique"), box)
 

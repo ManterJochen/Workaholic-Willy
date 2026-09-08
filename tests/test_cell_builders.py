@@ -56,7 +56,7 @@ class OneCallEqualsTheOldTwoTests(unittest.TestCase):
         equivalence being pinned here is against the explicit path ON THE SWAPPED CONFIG -- everything
         except the arm is identical, and the arm is the fix."""
         cfg = _cfg().model_copy(update={"vendor": "dummy"})
-        calculator, perception, resolver, _cams = build_rehearsal_components(cfg)
+        calculator, perception, resolver, _cams, _lenses = build_rehearsal_components(cfg)
         explicit = AutonomousGraspService.from_robot_config(
             cfg, calculator=calculator, perception=perception, frame_resolver=resolver)
         helper = build_rehearsal_cell(_cfg())
@@ -101,7 +101,7 @@ class TheRootKeepsItsContractTests(unittest.TestCase):
         """The sim runners, `datagen`'s probes and every test go through here. The helpers are a
         convenience for the config-driven case, never a replacement."""
         cfg = _cfg()
-        calculator, perception, resolver, _cams = build_rehearsal_components(cfg)
+        calculator, perception, resolver, _cams, _lenses = build_rehearsal_components(cfg)
         service = AutonomousGraspService.from_robot_config(
             cfg, calculator=calculator, perception=perception, frame_resolver=resolver)
         self.assertIsInstance(service, AutonomousGraspService)

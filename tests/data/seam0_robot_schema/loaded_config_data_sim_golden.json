@@ -985,7 +985,8 @@
           "max_centroid_mm": 150.0,
           "on_camera_unavailable": "degrade",
           "neighbour_scene_enabled": false,
-          "neighbour_voxel_mm": 8.0
+          "neighbour_voxel_mm": 8.0,
+          "promote_unmatched": false
         }
       },
       "approach_validation": {

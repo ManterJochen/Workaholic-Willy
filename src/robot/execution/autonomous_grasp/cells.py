@@ -55,8 +55,8 @@ class CellBuildRefused(RuntimeError):
     """
 
 
-def build_rehearsal_components(robot_cfg: "RobotConfig") -> tuple[Any, Any, Any, Any]:
-    """``(calculator, perception, frame_resolver, multi_camera=None)`` for a desk rehearsal.
+def build_rehearsal_components(robot_cfg: "RobotConfig") -> tuple[Any, Any, Any, Any, Any]:
+    """``(calculator, perception, frame_resolver, multi_camera, camera_calculators)`` for a desk.
 
     Kept as its own function beside the cell builder so a caller that wants the pieces, to swap
     one or to inspect one, does not have to take the whole service to get them.
@@ -95,14 +95,14 @@ def build_rehearsal_components(robot_cfg: "RobotConfig") -> tuple[Any, Any, Any,
         quaternion_xyzw=np.array([1.0, 0.0, 0.0, 0.0]),
         from_frame=Frame.CAMERA, to_frame=Frame.BASE,
     ))
-    # A desk has no cameras at all, so it has no other cameras either. The fourth slot is here so
-    # the two component builders keep the same shape and a reader is not left wondering which one is
-    # missing something.
-    return calculator, perception, resolver, None
+    # A desk has no cameras at all, so it has no other cameras and no per-camera calculators. The
+    # last two slots are here so the two component builders keep the same shape and a reader is not
+    # left wondering which one is missing something.
+    return calculator, perception, resolver, None, None
 
 
-def build_real_components(robot_cfg: "RobotConfig", prompt: str) -> tuple[Any, Any, Any, Any]:
-    """``(calculator, perception, frame_resolver=None, multi_camera)`` for a physical cell.
+def build_real_components(robot_cfg: "RobotConfig", prompt: str) -> tuple[Any, Any, Any, Any, Any]:
+    """``(calculator, perception, frame_resolver=None, multi_camera, camera_calculators)``.
 
     The resolver stays ``None`` on purpose: ``from_robot_config`` builds it from the calibration
     artifact named in config, and refuses if there is none. Passing one here would paper over exactly
@@ -219,7 +219,68 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str) -> tuple[Any, A
     _preload = getattr(calculator, "preload", None)
     if callable(_preload):
         _preload()
-    return calculator, perception, None, multi_camera
+    calculators = _build_camera_calculators(
+        robot_cfg, app_cfg, provider=provider, primary_rig_id=rig_id, primary=calculator,
+        multi_camera=multi_camera,
+    )
+    return calculator, perception, None, multi_camera, calculators
+
+
+def _build_camera_calculators(
+    robot_cfg: "RobotConfig", app_cfg: Any, *, provider: Any, primary_rig_id: str,
+    primary: Any, multi_camera: Any,
+) -> "dict[str, Any] | None":
+    """One calculator per camera, or None when one is enough.
+
+    A GraspCalculator is bound to one camera's intrinsics at construction: it back-projects the mask
+    with them, and every candidate position it returns is in that camera's frame. So an object seen
+    only by a second camera cannot be computed with the primary's calculator. It would not fail. It
+    would produce a plausible grasp at the wrong place, using the right pixels with the wrong focal
+    length and the wrong principal point, and nothing downstream can tell that pose from a good one.
+
+    Returns None unless the cell can actually promote an object, which keeps every existing cell on
+    exactly the object it built before. The gripper limits are read once and shared: a gripper is a
+    fact about the cell and not about a camera, so K calculators differ in their lens and in nothing
+    else.
+    """
+    geometry_cfg = getattr(getattr(getattr(robot_cfg, "grasping", None), "fusion", None),
+                           "geometry", None)
+    if multi_camera is None or geometry_cfg is None:
+        return None
+    if not bool(getattr(geometry_cfg, "promote_unmatched", False)):
+        # Fusion without promotion never needs a second calculator: every object it computes was
+        # seen by the primary, because an object the primary did not see is not in the list.
+        return None
+
+    import numpy as np  # noqa: PLC0415
+
+    from src.robot.grasping.calculator_factory import build_calculator  # noqa: PLC0415
+
+    calculators: dict[str, Any] = {primary_rig_id: primary}
+    for cam_id in getattr(multi_camera, "sources", {}):
+        handle = provider.rig(cam_id)
+        matrix = handle.get_intrinsics()
+        if matrix is None:
+            # Refused rather than defaulted. A camera whose intrinsics are unknown can still fuse a
+            # surface onto somebody else's object, and it cannot own one: the pick loop would fall
+            # back to the primary's lens and say so, once, in a warning nobody reads at 3 a.m.
+            raise CellBuildRefused(
+                f"camera {cam_id!r} can promote an object (grasping.fusion.geometry."
+                "promote_unmatched is true) and its intrinsics are unavailable, so a grasp "
+                "synthesised from it would be placed with the primary camera's lens. Calibrate it, "
+                "or set promote_unmatched: false and let it confirm objects rather than introduce "
+                "them."
+            )
+        calculators[cam_id] = build_calculator(
+            robot_cfg,
+            camera_matrix=np.asarray(matrix, dtype=np.float64),
+            max_grip_width_mm=robot_cfg.gripper.max_width_mm,
+            min_grip_width_mm=robot_cfg.gripper.min_width_mm,
+            support_footprint_geometry=(
+                robot_cfg.grasping.geometry.stage == "support_footprint"),
+            support_footprint_inflate_mm=robot_cfg.grasping.geometry.inflate_mm,
+        )
+    return calculators
 
 
 def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, provider: Any,
@@ -301,14 +362,15 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
 
     from .service import AutonomousGraspService
 
-    calculator, perception, resolver, multi_camera = build_real_components(robot_cfg, prompt)
-    # The same loader `build_real_components` used, and it caches, so this is the same object rather
-    # than a second read of the tree. Named here because the components tuple is a contract several
-    # callers unpack and a fifth element would move all of them.
+    calculator, perception, resolver, multi_camera, calculators = build_real_components(
+        robot_cfg, prompt)
+    # The same loader `build_real_components` used, and it caches, so this is the same object
+    # rather than a second read of the tree.
     rig_id = load_config().camera.cameras.primary_rig_id
     service = AutonomousGraspService.from_robot_config(
         robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
         multi_camera_perception=multi_camera,
+        camera_calculators=calculators,
         # Which camera is the primary, told to the root rather than inferred there. It cannot read
         # it: the key lives in the camera section and the root is handed a `RobotConfig`. Without it
         # the primary is expected among the cameras a fused pick waits for, and it delivers through
@@ -389,7 +451,8 @@ def build_rehearsal_cell(robot_cfg: "RobotConfig",
     from .service import AutonomousGraspService
 
     robot_cfg = robot_cfg.model_copy(update={"vendor": "dummy"})
-    calculator, perception, resolver, _no_cameras = build_rehearsal_components(robot_cfg)
+    calculator, perception, resolver, _no_cameras, _one_lens = (
+        build_rehearsal_components(robot_cfg))
     return AutonomousGraspService.from_robot_config(
         robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
         **overrides,

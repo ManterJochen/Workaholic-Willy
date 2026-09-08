@@ -542,6 +542,12 @@ class AutonomousGraspService:
         #: there is permanently missing. `None` expects every camera the map names, which is what
         #: every caller got before.
         primary_camera_id: str | None = None,
+        #: One calculator per camera id, for a cell that may promote an object from a camera
+        #: other than the primary. A calculator is bound to one camera's intrinsics at
+        #: construction, so an object seen only by a second camera cannot be computed with the
+        #: primary's: it would not fail, it would place a plausible grasp in the wrong lens.
+        #: `None` is every cell that cannot promote, which is every cell by default.
+        camera_calculators: "dict[str, Any] | None" = None,
     ) -> "AutonomousGraspService":
         """Build the service from a validated ``RobotConfig`` tree.
 
@@ -759,6 +765,14 @@ class AutonomousGraspService:
                     "hold it; the cameras would be opened and never observed."
                 )
             runtime.orchestrator.multi_camera_perception = multi_camera_perception
+
+        if runtime.orchestrator is not None:
+            # Both of these are labels the orchestrator cannot derive: which camera `perception`
+            # streams from lives in the camera section of the config, and this class is handed a
+            # `RobotConfig`. Set unconditionally so a caller that passes neither gets the empty
+            # string and an absent map, which is what every caller got before they existed.
+            runtime.orchestrator.primary_camera_id = primary_camera_id or ""
+            runtime.orchestrator.camera_calculators = camera_calculators
 
         service = cls(
             runtime=runtime,

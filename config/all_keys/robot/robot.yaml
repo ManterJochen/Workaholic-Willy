@@ -1728,6 +1728,14 @@ robot:
         # [default: 8.0]
         neighbour_voxel_mm: 8.0
 
+        # Let a camera introduce an object, instead of only confirming one the primary already found.
+        # Requires `enabled`. The object list otherwise comes from the primary camera alone, so a part
+        # only a second camera can see is detected, segmented, back-projected and then dropped. Costs a
+        # calculator per camera, because a grasp is synthesised in the lens of the camera that saw it.
+        # Not measured: how often a bin holds a part the primary cannot see is unknown here.
+        # [default: false]
+        promote_unmatched: false
+
     # Dense-mode swept-volume approach/retreat validation.
     approach_validation:
 
