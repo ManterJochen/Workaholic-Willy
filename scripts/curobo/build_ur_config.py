@@ -88,6 +88,15 @@ for _i, _arg in enumerate(sys.argv):
     if _arg == "--gripper" and _i + 1 < len(sys.argv):
         GRIPPER = sys.argv[_i + 1]
 
+# How far the hand sits in front of the flange, along the approach, because of whatever plate
+# is bolted between them. Only consulted when the sphere map says its numbers start at the
+# hand's own mounting face; see the refusal below. It is the same bench measurement
+# `robot.gripper.tool_frame.offset_mm` needs, taken once.
+COUPLING_MM = None
+for _i, _arg in enumerate(sys.argv):
+    if _arg == "--coupling-mm" and _i + 1 < len(sys.argv):
+        COUPLING_MM = float(sys.argv[_i + 1])
+
 #: Relative to an Isaac install root: where the per-model Lula descriptions live. Stable across Isaac
 #: versions; the *install root* is what differs from box to box, so only that is searched for.
 _ISAAC_MP_SUFFIX = (
@@ -224,9 +233,37 @@ if not _SPHERE_MAP.is_file():
         "or, for a gripper with no baked bundle, fit it from the vendor mesh with --mesh."
     )
 _gripper_cfg = yaml.safe_load(_SPHERE_MAP.read_text(encoding="utf-8"))
-sphere_map["tool0"] = _gripper_cfg["collision_spheres"]["tool0"]
-print(f"tool0 spheres: {len(sphere_map['tool0'])} from {_SPHERE_MAP.name} "
-      f"({_gripper_cfg.get('_provenance', {}).get('gripper', GRIPPER)})")
+_gripper_prov = _gripper_cfg.get("_provenance", {})
+_gripper_name = _gripper_prov.get("gripper", GRIPPER)
+_origin = _gripper_prov.get("origin", "flange")
+
+# --- the coupling -----------------------------------------------------------------------
+# A map fitted from a composed arm asset was already placed by the arm: its numbers start at
+# the flange and go in as they are. A map fitted from a standalone vendor asset starts at the
+# hand's own mounting face, and the plate between that face and the flange is not in it.
+#
+# The arithmetic lives in `_gripper_placement.py` beside this script rather than inline, so a
+# test can prove the plate is added where it is supplied. A refusal only proves the path is
+# not taken silently. It is a separate file rather than a repo import because this runs under
+# the cuRobo sidecar interpreter, where `src.robot...` is un-importable.
+#
+# Maps written before the origin field existed carry none, and every one of those came from a
+# composed arm asset, so the absent case reads as "flange" as a statement about those files.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _gripper_placement import PlacementError, place_tool0_spheres  # noqa: E402
+
+try:
+    _placed = place_tool0_spheres(
+        _gripper_cfg["collision_spheres"]["tool0"], origin=_origin, coupling_mm=COUPLING_MM
+    )
+except PlacementError as exc:
+    raise SystemExit(f"{_SPHERE_MAP.name}: {exc}") from None
+if COUPLING_MM:
+    print(f"coupling: every tool0 sphere moved {COUPLING_MM:.1f} mm along the approach, "
+          f"because {_SPHERE_MAP.name} starts at the hand's own mounting face")
+
+sphere_map["tool0"] = _placed
+print(f"tool0 spheres: {len(sphere_map['tool0'])} from {_SPHERE_MAP.name} ({_gripper_name})")
 
 # --- 2b) ARM-link surface augmentation: ur5e only ---------------------------------------------------------
 # The bundle's arm meshes and the DH chain used to place them are ur5e-specific. Applying them to
@@ -358,9 +395,28 @@ if "default_joint_position" in cs:
     print(f"  default_joint_position {cs['default_joint_position']} becomes {default_q}")
     cs["default_joint_position"] = default_q
 
+# --- provenance: which arm, which hand, and how the hand was placed ------------------------
+# Until this existed the descriptor carried the spheres and dropped every statement about
+# where they came from, so nothing on the box and no probe in this repository could answer
+# "which gripper is this modelling". A cell that swaps hands and does not re-run this script
+# plans with the old one indefinitely, and the file looks correct either way. cuRobo ignores
+# unknown top-level keys, so this costs the planner nothing.
+cfg["_provenance"] = {
+    "arm": MODEL,
+    "gripper": _gripper_name,
+    "gripper_key": GRIPPER,
+    "gripper_spheres": _SPHERE_MAP.name,
+    "gripper_origin": _origin,
+    "coupling_mm": COUPLING_MM,
+    "arm_spheres": "lula + ur5e surface augmentation" if MODEL == "ur5e" else "lula",
+    "generated_by": "scripts/curobo/build_ur_config.py",
+}
+
 YML_OUT.parent.mkdir(parents=True, exist_ok=True)
 YML_OUT.write_text(yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False), encoding="utf-8")
 print(f"wrote {YML_OUT}")
+print(f"  provenance: {MODEL} + {_gripper_name} from {_SPHERE_MAP.name}"
+      + (f", coupling {COUPLING_MM:.1f} mm" if COUPLING_MM is not None else ""))
 print(f"  joint order check: cspace.joint_names={cs.get('joint_names')}")
 print(f"\nNext: point the planner at it with WILLY_CUROBO_ROBOT={MODEL}.yml, or set robot_model: {MODEL} "
       f"in the sim config, which derives the name automatically.")

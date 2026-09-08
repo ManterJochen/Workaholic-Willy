@@ -1,6 +1,7 @@
 _provenance:
   gripper: Schunk EGU-50
   frame: tool0 (Y=approach, X=closing, Z=depth), metres
+  origin: flange
   source: schunk_egu50_collision_meshes.npz
   generated_by: src/robot/safety/planning/robot/build_gripper_spheres.py
   note: tool0 gripper spheres only, frame-correct and directly cuRobo-usable. The

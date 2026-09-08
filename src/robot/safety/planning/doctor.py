@@ -447,17 +447,90 @@ def _probe_curobo(blocks: tuple[str, ...], robot_config: str) -> tuple[Probe, ..
     return tuple(probes)
 
 
-def run_doctor(*, model: str = "ur5e", robot_config: str | None = None) -> DoctorReport:
+def _probe_gripper(model: str, variant: str | None) -> tuple[Probe, ...]:
+    """Whether the planner and the guard have geometry for the hand this cell runs.
+
+    Until this existed the doctor probed only the arm bundle, so it reported ok on a cell whose
+    gripper bundle was never baked and whose sphere map was never written. That is the failure
+    the live world work is most exposed to: the scene is registered faithfully before every
+    plan, and the plan is made against the wrong end effector. A correct mechanism serving a
+    wrong model is worse than the defect that work fixed, and "the planner sees the cell it is
+    in" is true of the arm and not of the hand.
+
+    A cell that declares no variant runs the hand its arm bundle carries, which is the Robotiq
+    2F-85 in every bundle shipped here. That is reported rather than passed over: a cell with a
+    different hand and no variant is exactly the misconfiguration this is for.
+    """
+    from .robot.gripper_spheres import MOUNTING_FACE, SphereFitError, bundle_origin
+
+    if not variant:
+        return (Probe(
+            "gripper geometry",
+            ProbeStatus.WARN,
+            f"safety.self_collision.collision_mesh_variant is unset, so this cell plans and "
+            f"refuses against whatever hand {model}_collision_meshes.npz carries, which is the "
+            f"Robotiq 2F-85 in every bundle shipped here",
+            "if the cell runs a different hand, name it: collision_mesh_variant: <gripper>",
+        ),)
+
+    probes: list[Probe] = []
+    bundle = collision_mesh_bundle(model, variant)
+    if not bundle.is_file():
+        return (Probe(
+            f"gripper bundle ({variant} on {model})",
+            ProbeStatus.MISSING,
+            f"absent: {bundle}",
+            f"a variant bundle is an arm plus a hand, so it is one file per arm. Bake it: "
+            f"python scripts/grippers/bake_gripper_variant.py {variant} --arm {model} --write",
+        ),)
+    probes.append(Probe(f"gripper bundle ({variant} on {model})", ProbeStatus.OK, str(bundle)))
+
+    spheres = Path(__file__).resolve().parent / "robot" / f"{variant}_gripper_spheres.yml"
+    if not spheres.is_file():
+        probes.append(Probe(
+            f"gripper sphere map ({variant})",
+            ProbeStatus.MISSING,
+            f"absent: {spheres}",
+            "the on-box descriptor builder reads this file, so this hand cannot be planned "
+            "with. Write it: python -m src.robot.safety.planning.robot.build_gripper_spheres "
+            f"--variant {variant}_{model}",
+        ))
+        return tuple(probes)
+
+    try:
+        origin = bundle_origin(bundle)
+    except SphereFitError as exc:  # pragma: no cover - an unreadable bundle is the probe above
+        origin = f"unreadable ({exc})"
+    if origin == MOUNTING_FACE:
+        probes.append(Probe(
+            f"gripper sphere map ({variant})",
+            ProbeStatus.WARN,
+            f"{spheres.name} holds the hand from its own mounting face, so the descriptor is "
+            f"only right if it was built with the coupling thickness",
+            "check the descriptor was built with --coupling-mm, and that the number is the "
+            "plate on this cell. It is the same measurement "
+            "robot.gripper.tool_frame.offset_mm needs.",
+        ))
+    else:
+        probes.append(Probe(f"gripper sphere map ({variant})", ProbeStatus.OK, str(spheres)))
+    return tuple(probes)
+
+
+def run_doctor(
+    *, model: str = "ur5e", robot_config: str | None = None, gripper: str | None = None
+) -> DoctorReport:
     """Load every external engine and report what this box can do.
 
     The event log is read once, before the probes, so a block that happens during a
     probe is still in the window when the probes classify their own failures.
     """
     blocks = code_integrity_blocks()
-    logger.info("motion-stack doctor starting for model %r (robot config %s)", model, robot_config or "<default>")
+    logger.info("motion-stack doctor starting for model %r, gripper %r (robot config %s)",
+                model, gripper or "<the arm bundle's own>", robot_config or "<default>")
     probes = (
         _probe_coal(blocks),
         _probe_mesh_bundle(model),
+        *_probe_gripper(model, gripper),
         *_probe_curobo(blocks, robot_config or curobo_robot_config()),
     )
     # The levels follow what the operator has to do. A BLOCKED or BROKEN engine is a

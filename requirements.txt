@@ -80,6 +80,12 @@ ruff==0.15.15
 mypy==2.1.0
 pytest==9.0.3
 pytest-cov==7.1.0
+
+# Reading a vendor gripper USD to bake its collision bundle. Standalone USD, no simulator and no
+# GPU: scripts/grippers/bake_gripper_variant.py opens a stage and reads meshes, which needs
+# neither. Isaac's own interpreter has pxr too, so this is a convenience for the project venv
+# rather than a second source of truth.
+usd-core==26.8
 pip-audit==2.10.0
 
 # For safe downloading of model weights and other assets.

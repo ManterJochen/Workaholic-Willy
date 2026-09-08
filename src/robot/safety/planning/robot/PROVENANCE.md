@@ -121,12 +121,72 @@ A gripper nobody has baked a bundle for is fitted from its own mesh, which is th
 with a vendor STL takes:
 
 ```
-.venv/Scripts/python.exe -m src.robot.safety.planning.robot.build_gripper_spheres     --mesh vendor/eoat.stl --gripper eoat --scale-to-mm 1000 --out eoat_gripper_spheres.yml
+.venv/Scripts/python.exe -m src.robot.safety.planning.robot.build_gripper_spheres     --mesh vendor/eoat.stl --gripper eoat --scale-to-mm 1000 --cell-mm 34 --rmax-mm 17     --origin mounting_face --out eoat_gripper_spheres.yml
 ```
 
-Two things that file cannot check and a person has to: the mesh must already be in the `tool0` frame,
-and `--scale-to-mm` must be right. Metres read as millimetres is a hand a thousand times too small,
-and it plans happily straight through everything it should have hit.
+Nothing on that path has a default any more, and that is deliberate. `--cell-mm` and `--rmax-mm` used
+to default to 34.0 and 24.0, which is this repository's 2F-85 finger cell size paired with its palm
+radius cap: a combination describing no part of any gripper, including the one both halves were
+measured from. A default that looks calibrated is worse than one that looks arbitrary. The shipped
+bundles use 44 mm cells capped at 24 mm for a palm and 34 mm capped at 17 mm for a finger blade.
+
+Three things the file cannot check and a person has to: the mesh must be in the `tool0` axes,
+`--scale-to-mm` must be right, and `--origin` must say where the numbers start. Metres read as
+millimetres is a hand a thousand times too small, and it plans happily straight through everything it
+should have hit.
+
+## Gripper: Robotiq Hand-E (the cell's gripper from 2026-09-08)
+
+- **Collision geometry:** [`../../data/robotiq_hande_ur5e_collision_meshes.npz`](../../data/robotiq_hande_ur5e_collision_meshes.npz)
+  and [`../../data/robotiq_hande_ur3e_collision_meshes.npz`](../../data/robotiq_hande_ur3e_collision_meshes.npz),
+  baked by [`scripts/grippers/bake_gripper_variant.py`](../../../../../scripts/grippers/bake_gripper_variant.py)
+  from Isaac's `Robotiq/Hand-E/Robotiq_Hand_E_edit.usd`. The arm arrays are copied byte for byte from
+  the committed `{arm}_collision_meshes.npz`, so a difference in behaviour between a cell with this
+  hand and one without can only come from the hand.
+- **Committed sphere map:** [`robotiq_hande_gripper_spheres.yml`](robotiq_hande_gripper_spheres.yml),
+  38 spheres against the Robotiq 2F-85's 36 and the Schunk EGU-50's 46.
+- **Measured, off the bundle:** stroke `width_mm = 49.99 - 2q` with `q` in `[0, 25]` mm per finger,
+  housing 99.20 mm long and 75.00 mm across, contact patch 20.91 mm with 10.45 mm of it ahead of the
+  grasp centre, grasp centre 135.75 mm from the gripper's own mounting face.
+
+### One bundle per gripper per arm
+
+A variant bundle is an arm plus a hand, not a hand. It carries the arm meshes of the robot it was
+baked from and swaps only `gripper__v` / `lfinger__v` / `rfinger__v`. `_variant_is_for_another_model`
+compares one arm link against the model's own bundle, and a mismatch drops the whole cell to the
+capsule proxy, so the arm loses exact-mesh checking as well as the hand. Measured: `schunk_egu50` on
+a ur3e does exactly that today, because only a ur5e bundle was ever baked for it.
+
+`collision_mesh_variant` therefore names the hand, and `collision_mesh_bundle` composes the arm in:
+`robotiq_hande` finds the ur3e file on a UR3e and the ur5e file on a UR5e. Writing the arm into the
+config key is how a cell that changes arms keeps the bundle for the old one.
+
+### The coupling, and why a map says where it starts
+
+The 2F-85's geometry came out of a composed UR asset, so the arm had already placed it: its numbers
+start at the flange. Measured, reading the standalone 2F-85 asset in its own root frame reproduces
+the committed bundle to 0.00 mm on all six corners of the palm, which is what says that asset's root
+is the flange.
+
+The Hand-E asset is a standalone vendor model with no coupling part in it at all, and its housing
+measures 99.20 mm, the published body length. Its numbers therefore start at the gripper's own
+mounting face, and whatever plate sits between that face and the flange is not in them. Every sphere
+map carries `_provenance.origin`, one of `flange` or `mounting_face`, and `build_ur_config.py`
+refuses to place a `mounting_face` map without `--coupling-mm` rather than assuming zero. Assuming
+zero puts every sphere one plate too close to the flange, which is optimistic in the one direction a
+planner must not be, and the file looks entirely reasonable either way.
+
+It is the same bench measurement `robot.gripper.tool_frame.offset_mm` needs. Take it once.
+
+### The frame check that a size assertion cannot make
+
+The bake script's `--check` reads the standalone 2F-85, places it by the same reasoning as a new
+hand, and diffs it against the committed bundle. It runs before every write and a failure stops the
+write. That gate exists because the first attempt at the Hand-E frame was an axis swap, which is a
+reflection with determinant -1: it mirrors the hand, and a mirrored symmetric gripper has identical
+extents. Every assertion anyone would naturally write about a gripper bundle, widths, lengths,
+bounding boxes, corner distances, passes on a hand built inside out. Only the determinant and a diff
+against a known-good bundle see it.
 
 The fit itself lives in [`gripper_spheres.py`](gripper_spheres.py), in one place, and
 `tests/test_gripper_spheres.py` compares every committed map against it so the file and the generator

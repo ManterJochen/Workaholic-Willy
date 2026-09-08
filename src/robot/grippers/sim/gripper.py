@@ -59,6 +59,18 @@ class GripperProfile:
     name: str
     driven_joint: str
     angle_width_table: tuple[tuple[float, float], ...]
+    #: Joints that must be commanded to the same value as ``driven_joint``, for a hand whose
+    #: asset does not couple them itself.
+    #:
+    #: Measured, and it is why this exists: the Robotiq Hand-E asset carries two independent
+    #: prismatic sliders, no PhysxMimicJoint and no drive API at all, so commanding one closes
+    #: one jaw and leaves the other where it is. That is a grip which looks like a grip in
+    #: every width reading and holds nothing. Both Schunk entries below get away with a single
+    #: joint because their assets do carry the mimic, which is a property of those files
+    #: rather than of parallel grippers.
+    #:
+    #: Empty for every profile that had no second joint, so they command exactly what they did.
+    mirrored_joints: tuple[str, ...] = ()
 
     @property
     def _angles(self) -> np.ndarray:
@@ -171,6 +183,38 @@ SCHUNK_EZU35_PROFILE = GripperProfile(
 )
 
 
+# Robotiq Hand-E, the cell gripper from 2026-09-08. Measured off
+# `Robotiq/Hand-E/Robotiq_Hand_E_edit.usd`, in millimetres, with the stroke read from the jaw
+# faces rather than from a datasheet: they stand 49.99 mm apart at the authored pose and the
+# joint range is 25 mm per finger, so the stroke closes to exactly 0.00 mm and the table is
+# linear, width_mm = 49.99 - 2000 * q with q the slider position in metres.
+#
+# The direction is bucket 3. The asset says `Slider_1` carries a 180 degree rotation about X, so
+# its local +Z is the body -Z and a rising joint value would drive the left jaw away from the
+# centre. The geometry forbids that: the faces are already 49.99 mm apart and the range is 25 mm
+# a side, so a rising value must close them or the gripper opens to 100 mm, which no Hand-E does.
+# The geometry is right and the joint frames disagree with it. This table follows the geometry;
+# the sign has to be confirmed on-box before anything drives this asset, and if it turns out
+# inverted the fix is to reverse this table and nothing else.
+#
+# Two joints, because the asset has no PhysxMimicJoint and no drive API. Commanding `Slider_1`
+# alone closes one jaw and leaves the other where it is, which is a grip that looks like a grip
+# in every width reading and holds nothing.
+ROBOTIQ_HANDE_PROFILE = GripperProfile(
+    name="robotiq_hande",
+    driven_joint="Slider_1",
+    mirrored_joints=("Slider_2",),
+    angle_width_table=(
+        (0.000, 49.99),
+        (0.005, 39.99),
+        (0.010, 29.99),
+        (0.015, 19.99),
+        (0.020, 9.99),
+        (0.025, 0.0),
+    ),
+)
+
+
 class IsaacGripper:
     """Isaac-backed parallel-jaw :class:`Gripper`, driving one articulation through a profile.
 
@@ -201,6 +245,7 @@ class IsaacGripper:
         self._session = session
         self._prim_path = gripper_prim_path
         self._profile = profile
+        self._joint_indices: list[int] = []
         self._mock_mode = mock_mode
         self._settle_timeout_s = settle_timeout_s
         self._connected = False
@@ -243,17 +288,24 @@ class IsaacGripper:
         articulation = SingleArticulation(prim_path=self._prim_path)
         articulation.initialize()
         names = list(articulation.dof_names)
-        if self._profile.driven_joint not in names:
+        wanted = (self._profile.driven_joint, *self._profile.mirrored_joints)
+        missing = [joint for joint in wanted if joint not in names]
+        if missing:
             raise IsaacNotAvailableError(
-                f"driven joint {self._profile.driven_joint!r} not in gripper dof_names {names}."
+                f"joint(s) {missing} named by profile {self._profile.name!r} are not in "
+                f"gripper dof_names {names}."
             )
         self._articulation = articulation
-        self._joint_index = names.index(self._profile.driven_joint)
+        # Every jaw this profile drives, the driven one first. A hand whose asset couples its
+        # own jaws contributes one entry, which is what every profile did before this existed.
+        self._joint_indices = [names.index(joint) for joint in wanted]
+        self._joint_index = self._joint_indices[0]
         self._connected = True
 
     def disconnect(self) -> None:
         self._articulation = None
         self._joint_index = None
+        self._joint_indices = []
         self._connected = False
 
     def activate(self) -> None:
@@ -283,10 +335,13 @@ class IsaacGripper:
         from isaacsim.core.utils.types import ArticulationAction  # type: ignore[import-not-found]
 
         angle = self._profile.width_to_angle(target)
+        # One value, every jaw this profile drives. For a hand whose asset couples its own jaws
+        # that is a single index and the action is byte-identical to what it was.
+        indices = self._joint_indices or [self._joint_index]
         self._articulation.apply_action(
             ArticulationAction(
-                joint_positions=np.array([angle], dtype=np.float64),
-                joint_indices=np.array([self._joint_index]),
+                joint_positions=np.array([angle] * len(indices), dtype=np.float64),
+                joint_indices=np.array(indices),
             )
         )
         self._settle()

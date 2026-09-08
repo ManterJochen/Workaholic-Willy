@@ -10,6 +10,12 @@
   ],
   "runbooks": [
     {
+      "id": "hande_gripper_bringup",
+      "path": "docs/runbooks/hande_gripper_bringup.md",
+      "summary": "Fit a Robotiq Hand-E so the planner, the guard, the calculator and the driver all model the hand that is bolted on.",
+      "owner_role": "commissioning"
+    },
+    {
       "id": "real_cell_first_pick",
       "path": "docs/runbooks/real_cell_first_pick.md",
       "summary": "The ordered bring-up from a validated config to a first verified pick on a physical cell.",

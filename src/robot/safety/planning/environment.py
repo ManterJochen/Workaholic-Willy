@@ -139,8 +139,29 @@ COLLISION_MESH_DIR = Path(__file__).resolve().parents[1] / "data"
 
 
 def collision_mesh_bundle(model: str = "ur5e", variant: str | None = None) -> Path:
-    """Path to the ``{variant or model}_collision_meshes.npz`` mesh bundle in :data:`COLLISION_MESH_DIR`."""
-    return COLLISION_MESH_DIR / f"{(variant or model).lower()}_collision_meshes.npz"
+    """Path to the mesh bundle for ``model``, or for ``variant`` mounted on ``model``.
+
+    A variant bundle is an arm plus a hand, not a hand. It carries the arm meshes of the robot it
+    was baked from and swaps only the three gripper arrays, which is why
+    ``_variant_is_for_another_model`` exists and why a mismatch drops the whole cell to the capsule
+    proxy rather than only the hand: the arm loses exact-mesh checking too.
+
+    So ``variant`` names the hand and the arm is composed in here. ``robotiq_hande`` finds
+    ``robotiq_hande_ur3e_collision_meshes.npz`` on a UR3e and the ur5e file on a UR5e. Without
+    that the arm has to be written into the config key, and a cell that changes arms then keeps a
+    bundle for the old one. Measured: ``schunk_egu50`` on a ur3e does exactly that today.
+
+    The flat ``{variant}_collision_meshes.npz`` is still found when no per-arm file exists, which
+    is what ``schunk_egu50`` is: baked before this, and implicitly a UR5e.
+    """
+    model = model.lower()
+    if not variant:
+        return COLLISION_MESH_DIR / f"{model}_collision_meshes.npz"
+    variant = variant.lower()
+    per_arm = COLLISION_MESH_DIR / f"{variant}_{model}_collision_meshes.npz"
+    if per_arm.is_file():
+        return per_arm
+    return COLLISION_MESH_DIR / f"{variant}_collision_meshes.npz"
 
 
 def inject_coal_prefix() -> None:

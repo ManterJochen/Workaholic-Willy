@@ -34,10 +34,17 @@ from ..constants import GRIPPER_LOG_FILE, create_robot_logger
 # Native Robotiq position counts.
 _POS_OPEN = 0          # fully open
 _POS_CLOSED = 255      # fully closed
-#: Physical finger gap at _POS_CLOSED. The 2F-85 fingers meet, so the closed gap is
-#: 0 mm. That is a property of the hardware and not of the `min_width_mm` policy floor
-#: in the config, and anchoring the count map here rather than on min_width_mm is what
-#: keeps a commanded 40 mm landing at 40 mm.
+#: Physical finger gap at _POS_CLOSED, when a config does not say. The 2F-85 fingers meet, so
+#: the closed gap is 0 mm. That is a property of the hardware and not of the `min_width_mm`
+#: policy floor in the config, and anchoring the count map on the physical gap rather than on
+#: the floor is what keeps a commanded 40 mm landing at 40 mm.
+#:
+#: It is a fallback now rather than the anchor. `closed_width_mm` is a config key, is
+#: documented as the physical closed width, and was read by the grasp verifier while this
+#: constant answered the same question for the count map. Two anchors for one fact, agreeing
+#: on exactly the gripper the constant was written for. A Robotiq Hand-E with custom
+#: fingertips is where they part: setting `closed_width_mm: 8.0` fixed the verifier and left
+#: every commanded width 5.6 mm out on a 50 mm tool, because this number went on saying 0.
 _WIDTH_CLOSED_MM = 0.0
 #: The Robotiq dashboard port on the UR controller.
 _DEFAULT_PORT = 63352
@@ -283,28 +290,39 @@ class GripperController:
             return hi
         return float(width_mm)
 
+    @property
+    def _closed_gap_mm(self) -> float:
+        """The finger gap at ``_POS_CLOSED``, from the config that declares it.
+
+        One anchor. This used to be a module constant while ``closed_width_mm`` sat in the
+        config being read by the grasp verifier alone, so the two answered the same question
+        and agreed only about the 2F-85. The constant remains as the schema default, which is
+        one statement rather than two.
+        """
+        return float(getattr(self.config, "closed_width_mm", _WIDTH_CLOSED_MM))
+
     def _mm_to_count(self, width_mm: float) -> int:
         """Map a finger gap in mm to Robotiq driver counts, 255 closed to 0 open.
 
-        The map is anchored on the physical travel: ``_WIDTH_CLOSED_MM``, 0 mm with
-        the fingers touching, maps to 255, and ``max_width_mm`` maps to 0. It
-        deliberately does not use ``min_width_mm``, which is a smallest-meaningful-grip
-        policy floor; tying the hardware mapping to it made a commanded 40 mm land at
-        37.3 mm on a 2F-85. The floor is applied separately in :meth:`_clamp_width_mm`.
+        The map is anchored on the physical travel: :attr:`_closed_gap_mm` maps to 255 and
+        ``max_width_mm`` maps to 0. It deliberately does not use ``min_width_mm``, which is a
+        smallest-meaningful-grip policy floor; tying the hardware mapping to it made a
+        commanded 40 mm land at 37.3 mm on a 2F-85. The floor is applied separately in
+        :meth:`_clamp_width_mm`.
         """
-        hi = self.config.max_width_mm
-        span = hi - _WIDTH_CLOSED_MM
-        frac = (width_mm - _WIDTH_CLOSED_MM) / span if span > 0 else 0.0  # 0..1
+        lo, hi = self._closed_gap_mm, self.config.max_width_mm
+        span = hi - lo
+        frac = (width_mm - lo) / span if span > 0 else 0.0  # 0..1
         frac = min(1.0, max(0.0, frac))
         count = _POS_CLOSED + (_POS_OPEN - _POS_CLOSED) * frac
         return int(round(count))
 
     def _count_to_mm(self, count: int) -> float:
         """Inverse of :meth:`_mm_to_count`: driver counts to a physical finger gap in mm."""
-        hi = self.config.max_width_mm
+        lo, hi = self._closed_gap_mm, self.config.max_width_mm
         count = min(_POS_CLOSED, max(_POS_OPEN, count))
         frac = (count - _POS_CLOSED) / (_POS_OPEN - _POS_CLOSED)
-        return _WIDTH_CLOSED_MM + (hi - _WIDTH_CLOSED_MM) * frac
+        return lo + (hi - lo) * frac
 
     @staticmethod
     def _normalise_to_count(value: float) -> int:

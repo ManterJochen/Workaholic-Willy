@@ -1,0 +1,124 @@
+# GRIPPER PROFILE (WILLY_PROFILE=hande) -- deep-merged onto robot.yaml.
+#
+# The Robotiq Hand-E, as THE gripper of a cell. It is a gripper layer rather than a cell layer, so it
+# chains: `WILLY_PROFILE=ur3e,hande` puts this hand on the UR3e cell and `WILLY_PROFILE=hande` puts
+# it on the UR5e one. Nothing here names an arm, deliberately, and `collision_mesh_variant` below is
+# the reason that works.
+#
+# THE HAND IS DESCRIBED THREE TIMES IN THIS TREE AND NOTHING CROSS-CHECKS THE THREE. They answer
+# three different questions about one piece of hardware, which is defensible; that no validator names
+# more than one of them is not. The Hand-E is the first input that makes them disagree, because until
+# now every shipped cell was a 2F-85 and the defaults happened to describe it:
+#
+#   robot.gripper.*                      ACTUATION: what the driver may command
+#   robot.grasping.gripper_geometry      ENVELOPE: what shape the calculator sweeps
+#   robot.safety.self_collision          THE PLANNER'S MODEL: what cuRobo and Coal refuse against
+#
+# Reachable before this file existed: set `max_width_mm: 50` and leave the rest, and the cell commands
+# a 50 mm stroke while the collision filter sweeps a 2F-85's fingers and the planner refuses against a
+# 2F-85's spheres. Every one of the three is individually valid. All three are set here, from one
+# measurement session, and `assets/../robotiq_hande_gripper_spheres.yml` is fitted from the same
+# bundle the guard reads, so the third cannot drift from the other two.
+#
+# EVERY NUMBER BELOW IS MEASURED off `robotiq_hande_ur5e_collision_meshes.npz`, which is the Isaac
+# Hand-E asset placed into the tool0 frame by `scripts/grippers/bake_gripper_variant.py`. That script
+# reproduces the committed 2F-85 to 0.05 mm before it will write anything, which is what makes these
+# numbers evidence rather than a datasheet transcription.
+robot:
+  gripper:
+    vendor: "robotiq"
+
+    # Same URCap socket, same 0..255 counts, same port. The transport does not know which Robotiq is
+    # on the flange and does not need to: the count map is anchored on the two numbers below.
+    #
+    # MEASURED: the jaw faces stand 49.99 mm apart at the authored pose and the joint range is 25 mm
+    # per finger, so the stroke closes to exactly 0.00 mm. 49.99 rather than 50.0 because it is what
+    # the asset holds, and rounding a measurement to the number it nearly is, is how a measurement
+    # becomes a datasheet quote.
+    max_width_mm: 49.99
+
+    # A policy floor, not a physical limit, and it stays 5.0. It says "a grip narrower than this is
+    # not a grip", which is a statement about the OBJECT and not about the tool: 5 mm of part is 5 mm
+    # of part on either gripper. Worth saying because 5.0 is 10 % of this stroke against 5.9 % of a
+    # 2F-85's, so it LOOKS like it should scale, and it should not.
+    min_width_mm: 5.0
+
+    # The PHYSICAL closed width, and the anchor of the driver's count map since 2026-09-08.
+    #
+    # ⚠ 0.0 IS THE BARE GRIPPER. The Hand-E's carriages meet, measured, so with the fingertips the
+    # asset carries this is right. Custom fingertips are the normal case on a Hand-E and they do not
+    # meet: a cell with 8 mm tips sets 8.0 here, and until 2026-09-08 that fixed the grasp verifier
+    # and left every commanded width 5.6 mm out, because the count map read a module constant that
+    # went on saying 0.
+    closed_width_mm: 0.0
+
+    # NOT declared here, and that is the whole point. Flange to grasp centre depends on the coupling
+    # plate, which is a per-cell bench measurement, and the real UR driver REFUSES to connect while
+    # this says `undeclared`. A plausible default is how the next cell inherits a wrong frame in
+    # silence, and the rotational half of that error is invisible: a cell 90 degrees out logs 10/10
+    # successes while closing the jaws along the wrong object axis, and hand-eye calibration reports
+    # an excellent RMSE either way because it solves for whatever frame `get_tcp_pose()` reports.
+    #
+    # MEASURED, as the half of the answer that does not depend on your cell: the gripper's own
+    # mounting face to its grasp centre is 135.75 mm, along the approach. Add the coupling plate to
+    # get `offset_mm`. The same plate thickness is what `build_ur_config.py --coupling-mm` wants, so
+    # take it once.
+    tool_frame:
+      source: "undeclared"
+
+  safety:
+    self_collision:
+      # Names the HAND. The arm is composed in by `collision_mesh_bundle`, so this one line is right
+      # on a UR5e and on a UR3e and finds a different file in each case.
+      #
+      # A VARIANT BUNDLE IS AN ARM PLUS A HAND. It carries the arm meshes of the robot it was baked
+      # from, so naming an arm here is how a cell that changes arms keeps a bundle for the old one,
+      # trips `variant_model_mismatch`, and loses exact-mesh checking on the ARM as well as the hand.
+      # Measured: `schunk_egu50` on a ur3e does exactly that today.
+      collision_mesh_variant: "robotiq_hande"
+
+  grasping:
+    gripper_geometry:
+      kind: parallel_jaw
+      parallel_jaw:
+        # The local grasp frame: X closes between the contacts, Y is the binormal, Z is the approach,
+        # and z = 0 is the grasp centre. `finger_length_mm` is the extent BEHIND that centre and
+        # `fingertip_depth_mm` the extent PAST it, toward the table.
+        #
+        # Everything here is the finger material OUTSIDE the housing. The rest is inside it and is
+        # covered by the palm box.
+        #
+        # THE WHOLE MOVING BODY WOULD BE WRONG HERE. Each Hand-E finger reaches 8.69 mm PAST the
+        # centre line at full open, inside the housing, riding on a carriage. The finger box has its
+        # inner face pinned at the gap, so putting the carriage in it would model a solid block
+        # exactly where the object goes. The 2F-85 never showed this: its fingers are a linkage on
+        # the outside.
+        finger_length_mm: 36.53       # 2F-85: 39.98
+        finger_thickness_mm: 10.80    # 2F-85: 31.35, a much slimmer jaw
+        finger_width_mm: 29.24        # 2F-85: 27.00
+        fingertip_depth_mm: 10.45     # 2F-85: 28.72
+
+        # ⚠ A KNOWN UNDER-MODEL, stated rather than hidden. Between 24.6 and 34.7 mm behind the grasp
+        # centre the carriage shoulder narrows the passage to 36.7 mm, and a box model cannot say
+        # "thicker at the back". Raising this to 6.65 would cover it and would also declare the gap
+        # 13.3 mm narrower everywhere, refusing every object over 36.7 mm even for a shallow grasp,
+        # which is a quarter of the tool. It stays at the modelling margin the 2F-85 uses.
+        #
+        # It is not a safety hole: this box is a candidate FILTER. Coal and cuRobo refuse against the
+        # vertex-exact bundle, which has the shoulder in it. The cost of the under-model is a plan
+        # rejected later, not a collision.
+        finger_pad_overlap_mm: 2.0
+
+        # The contact patch: the part that actually touches. MEASURED as the points on the closing
+        # plane, 20.91 mm of it, with 10.45 mm ahead of the grasp centre. The 2F-85's is 38.00 with
+        # 23.61 ahead, so a Hand-E contacts a little over half as much and reaches far less forward.
+        # A grasp computed for a 2F-85 pad and executed on this hand does not contact slightly worse,
+        # it contacts a different part of the object.
+        pad_length_mm: 20.91
+        pad_ahead_mm: 10.45
+
+        # The housing, and MEASURED rather than guessed: the 2F-85's 35.0 x 70.0 are marked in the
+        # schema as never probed. The palm box starts where the finger box ends, so these two put its
+        # back face at the housing's back face exactly.
+        palm_depth_mm: 104.12
+        palm_width_mm: 75.00

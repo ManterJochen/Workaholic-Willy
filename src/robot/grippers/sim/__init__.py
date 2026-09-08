@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from .gripper import (
     ROBOTIQ_2F85_PROFILE,
+    ROBOTIQ_HANDE_PROFILE,
     SCHUNK_EGU50_PROFILE,
     SCHUNK_EZU35_PROFILE,
     GripperProfile,
@@ -34,6 +35,7 @@ from .suction_gripper import (
 
 __all__ = [
     "ROBOTIQ_2F85_PROFILE",
+    "ROBOTIQ_HANDE_PROFILE",
     "SCHUNK_EGU50_PROFILE",
     "SCHUNK_EZU35_PROFILE",
     "GripperProfile",

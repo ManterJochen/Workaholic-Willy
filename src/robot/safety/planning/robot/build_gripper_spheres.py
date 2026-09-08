@@ -53,6 +53,11 @@ def build(spheres: GripperSpheres, *, note: str = "") -> dict:
         "_provenance": {
             "gripper": spheres.gripper,
             "frame": "tool0 (Y=approach, X=closing, Z=depth), metres",
+            # Where these numbers start. `flange` means they already sit where the hand is
+            # bolted; `mounting_face` means a coupling plate still has to be added, and the
+            # on-box builder refuses rather than assuming zero. It is here because it is the one
+            # fact about a sphere set a reader cannot recover by looking at it.
+            "origin": spheres.origin,
             "source": spheres.source,
             "generated_by": (
                 "src/robot/safety/planning/robot/build_gripper_spheres.py"
@@ -88,8 +93,15 @@ def main(argv: "list[str] | None" = None) -> int:
         default=1.0,
         help="multiply mesh coordinates by this to get millimetres (1000 for a mesh in metres)",
     )
-    parser.add_argument("--cell-mm", type=float, default=34.0, help="voxel size of the fit, mesh only")
-    parser.add_argument("--rmax-mm", type=float, default=24.0, help="largest sphere radius, mesh only")
+    # No defaults. They used to be 34.0 and 24.0, which is the 2F-85 finger cell size paired with
+    # its palm radius cap, a combination describing no part of any gripper. A default that looks
+    # calibrated is worse than one that looks arbitrary.
+    parser.add_argument("--cell-mm", type=float, default=None,
+                        help="voxel size of the fit, millimetres, mesh only (required with --mesh)")
+    parser.add_argument("--rmax-mm", type=float, default=None,
+                        help="largest sphere radius, millimetres, mesh only (required with --mesh)")
+    parser.add_argument("--origin", default=None, choices=("flange", "mounting_face"),
+                        help="where the mesh starts, mesh only (required with --mesh)")
     parser.add_argument(
         "--out", default=None, help="output file (default {variant}_gripper_spheres.yml beside this)"
     )
@@ -99,12 +111,27 @@ def main(argv: "list[str] | None" = None) -> int:
         if args.mesh:
             if not args.gripper:
                 parser.error("--mesh needs --gripper: the provenance has to say what this is")
+            missing = [
+                name for name, value in (
+                    ("--cell-mm", args.cell_mm),
+                    ("--rmax-mm", args.rmax_mm),
+                    ("--origin", args.origin),
+                ) if value is None
+            ]
+            if missing:
+                parser.error(
+                    f"--mesh needs {', '.join(missing)}. None of them can be read off a mesh "
+                    "file, and a wrong answer produces a fit that is plausible rather than one "
+                    "that fails. For a two-finger hand the shipped bundles use 44 mm cells "
+                    "capped at 24 mm for the palm and 34 mm capped at 17 mm for a finger blade."
+                )
             fitted = fit_spheres_from_mesh(
                 Path(args.mesh),
                 gripper=args.gripper,
                 cell_mm=args.cell_mm,
                 rmax_mm=args.rmax_mm,
                 scale_to_mm=args.scale_to_mm,
+                origin=args.origin,
             )
         else:
             variant = args.variant or _DEFAULT_VARIANT

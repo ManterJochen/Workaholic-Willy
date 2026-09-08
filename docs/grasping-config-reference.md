@@ -158,6 +158,11 @@ The always-on tunings are a separate family and are not gated by mode:
 * `support` says where the world's floor is, and the bin or tray is `support.container`, not
   `grasping.container`.
 * `fusion.geometry` is per-object multi-camera geometry fusion, a different thing from `fusion`.
+  Its `promote_unmatched` decides whether another camera may introduce an object or only confirm
+  one the primary already found. Off, the pick sees exactly the primary's segmentation list, in
+  its order. On, a part only a second camera can see becomes an object and is computed in that
+  camera's lens, which is why the cell then builds one calculator per camera. Nothing measures
+  how often that happens, so it ships off.
 * `gripper_geometry` is the collision envelope the planner checks, parallel jaw or suction cup.
 * `watchdog` has a `mode` rather than an `enabled`, and it ships `shadow`.
 * `isotropic_radial_closing`, `max_attempts` and `record_log_path` sit at the top of the block.

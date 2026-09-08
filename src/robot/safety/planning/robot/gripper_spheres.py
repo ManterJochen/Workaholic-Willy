@@ -33,13 +33,30 @@ from typing import Any, Sequence
 import numpy as np
 
 __all__ = [
+    "FLANGE",
     "GripperSpheres",
+    "MOUNTING_FACE",
     "SphereFitError",
     "bundle_gripper_arrays",
+    "bundle_origin",
     "fit_gripper_spheres",
     "fit_spheres_from_mesh",
     "grid_fit_spheres",
 ]
+
+#: The sphere set already sits where the hand will be bolted, so nothing is added on the box.
+#: True of a bundle baked out of a COMPOSED arm asset: the arm placed the gripper.
+FLANGE = "flange"
+
+#: The sphere set starts at the hand's own mounting face, and whatever plate sits between that
+#: face and the flange has to be added before the planner sees it. True of a bundle read from a
+#: standalone vendor asset, which has no idea what it will be bolted to. The plate's thickness is
+#: a bench measurement, the same one `robot.gripper.tool_frame.offset_mm` needs.
+MOUNTING_FACE = "mounting_face"
+
+#: The npz key carrying one of the two. Absent in every bundle baked before this existed, and
+#: those are all bundles from composed arm assets, so the absent case reads as :data:`FLANGE`.
+_ORIGIN_KEY = "gripper__origin"
 
 #: The arrays a baked bundle carries for the end effector, in the order they are fitted.
 #:
@@ -76,6 +93,10 @@ class GripperSpheres:
     source: str
     #: The gripper this describes, as an operator would name it.
     gripper: str
+    #: Where these numbers start: :data:`FLANGE` or :data:`MOUNTING_FACE`. It decides whether the
+    #: on-box builder may use them as they are, and it is carried rather than inferred because a
+    #: sphere set placed one coupling plate too close to the flange looks entirely reasonable.
+    origin: str = FLANGE
 
     @property
     def count(self) -> int:
@@ -86,9 +107,13 @@ class GripperSpheres:
         radii = [float(s["radius"]) * 1000.0 for s in self.spheres]
         if not radii:
             return f"{self.gripper}: no spheres fitted from {self.source}"
+        origin = (
+            "at the flange" if self.origin == FLANGE
+            else "from the mounting face, so a coupling has still to be added"
+        )
         return (
             f"{self.gripper}: {self.count} sphere(s) from {self.source}, "
-            f"radius {min(radii):.1f} to {max(radii):.1f} mm"
+            f"radius {min(radii):.1f} to {max(radii):.1f} mm, {origin}"
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -155,6 +180,28 @@ def bundle_gripper_arrays(bundle: Path) -> dict[str, np.ndarray]:
         return {name: np.asarray(data[name], dtype=np.float64) for name, _, _ in _BUNDLE_PARTS}
 
 
+def bundle_origin(bundle: Path) -> str:
+    """Whether a bundle's gripper arrays start at the flange or at the hand's mounting face.
+
+    Bundles baked before this key existed all came out of composed arm assets, where the arm had
+    already placed the hand, so their absent case is :data:`FLANGE` and reading it that way is a
+    statement about those files rather than a lenient default.
+    """
+    if not bundle.is_file():
+        raise SphereFitError(f"no collision-mesh bundle at {bundle}")
+    with np.load(bundle, allow_pickle=True) as data:
+        if _ORIGIN_KEY not in data:
+            return FLANGE
+        value = str(np.asarray(data[_ORIGIN_KEY]).reshape(-1)[0])
+    if value not in (FLANGE, MOUNTING_FACE):
+        raise SphereFitError(
+            f"{bundle.name} declares origin {value!r}, which is neither {FLANGE!r} nor "
+            f"{MOUNTING_FACE!r}. The on-box builder decides whether to add a coupling from this, "
+            "so an unknown value is not something to guess past."
+        )
+    return value
+
+
 def fit_gripper_spheres(
     bundle: Path, *, gripper: str = "", parts: Sequence[tuple[str, float, float]] = _BUNDLE_PARTS
 ) -> GripperSpheres:
@@ -172,6 +219,7 @@ def fit_gripper_spheres(
         spheres=tuple(spheres),
         source=bundle.name,
         gripper=gripper or bundle.name.replace("_collision_meshes.npz", ""),
+        origin=bundle_origin(bundle),
     )
 
 
@@ -179,19 +227,37 @@ def fit_spheres_from_mesh(
     mesh_path: Path,
     *,
     gripper: str,
-    cell_mm: float = 34.0,
-    rmax_mm: float = 24.0,
-    scale_to_mm: float = 1.0,
+    cell_mm: float,
+    rmax_mm: float,
+    scale_to_mm: float,
+    origin: str = MOUNTING_FACE,
 ) -> GripperSpheres:
     """Fit an end effector from a mesh file, for a gripper nobody has baked.
 
-    ``scale_to_mm`` is asked for rather than guessed. A mesh file does not say what its numbers mean,
-    the two common cases are metres and millimetres, and the wrong one produces a gripper a thousand
-    times too big or too small. Too big refuses everything, which is survivable. Too small models a
-    hand the size of a grain of rice, which plans straight through the bin it is reaching into.
+    ⚠ **NOTHING HERE HAS A DEFAULT, AND THAT IS THE POINT.** This is the path a customer with a
+    new hand takes, from the one-liner in the module docstring, and every one of these is a fact
+    the loader cannot recover from the file.
 
-    The mesh must already be in the ``tool0`` frame: its origin where the flange is, and its axes the
-    tool's. Nothing here can check that, and nothing downstream can either, so it is stated in the
+    ``scale_to_mm``: a mesh does not say what its numbers mean, the two common cases are metres
+    and millimetres, and the wrong one produces a gripper a thousand times too big or too small.
+    Too big refuses everything, which is survivable. Too small models a hand the size of a grain
+    of rice, which plans straight through the bin it is reaching into.
+
+    ``cell_mm`` and ``rmax_mm``: the voxel a sphere is fitted per, and the cap on its radius. They
+    had defaults of 34.0 and 24.0, which are the 2F-85's FINGER cell size paired with its PALM
+    radius cap: a combination describing no part of any gripper, including the one both halves
+    were measured from. A palm is one large solid and a finger is a thin blade, and one setting
+    for both either buries the fingers inside a sphere the size of the palm or covers the palm in
+    dozens of tiny ones. :data:`_BUNDLE_PARTS` is what those numbers look like when they are
+    stated per part; a single mesh has to be told.
+
+    ``origin``: whether the mesh already sits at the flange or starts at the hand's own mounting
+    face. It defaults to :data:`MOUNTING_FACE` because that is what a vendor mesh is, and getting
+    it wrong puts every sphere one coupling plate too close to the flange, which is optimistic and
+    looks entirely reasonable.
+
+    The mesh must already be in the ``tool0`` AXES: closing on x, approach on y, binormal on z.
+    Nothing here can check that, and nothing downstream can either, so it is stated in the
     provenance the caller writes beside the result.
     """
     try:
@@ -213,5 +279,12 @@ def fit_spheres_from_mesh(
     if vertices.ndim != 2 or vertices.shape[0] == 0:
         raise SphereFitError(f"{mesh_path.name} has no vertices this could fit")
 
+    if origin not in (FLANGE, MOUNTING_FACE):
+        raise SphereFitError(
+            f"origin must be {FLANGE!r} or {MOUNTING_FACE!r}, got {origin!r}"
+        )
+
     spheres = grid_fit_spheres(vertices * float(scale_to_mm), cell_mm=cell_mm, rmax_mm=rmax_mm)
-    return GripperSpheres(spheres=tuple(spheres), source=mesh_path.name, gripper=gripper)
+    return GripperSpheres(
+        spheres=tuple(spheres), source=mesh_path.name, gripper=gripper, origin=origin
+    )

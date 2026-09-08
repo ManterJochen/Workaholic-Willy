@@ -83,7 +83,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.doctor:
         from .doctor import run_doctor
 
-        report = run_doctor(model=model, robot_config=f"{model}.yml")
+        # The hand comes from the same key the guard selects its bundle with, so the doctor and
+        # the guard cannot be asked about different grippers.
+        gripper = None
+        try:
+            from src.config.loader import load_config
+
+            robot = load_config().robot
+            if robot is not None:
+                gripper = robot.safety.self_collision.collision_mesh_variant
+        except Exception:  # noqa: BLE001 - a doctor that cannot read config still reports engines
+            pass
+        report = run_doctor(model=model, robot_config=f"{model}.yml", gripper=gripper)
         if args.json:
             print(json.dumps(
                 {
