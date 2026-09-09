@@ -155,12 +155,26 @@ def collision_mesh_bundle(model: str = "ur5e", variant: str | None = None) -> Pa
     is what ``schunk_egu50`` is: baked before this, and implicitly a UR5e.
     """
     model = model.lower()
+    own = COLLISION_MESH_DIR / f"{model}_collision_meshes.npz"
     if not variant:
-        return COLLISION_MESH_DIR / f"{model}_collision_meshes.npz"
+        return own
     variant = variant.lower()
     per_arm = COLLISION_MESH_DIR / f"{variant}_{model}_collision_meshes.npz"
     if per_arm.is_file():
         return per_arm
+    # The flat name is offered only where its arm can be checked. A flat bundle carries the arm
+    # meshes of whatever robot it was baked from, and ``_variant_is_for_another_model`` catches
+    # that by comparing one arm link against the own bundle of this model. With no own bundle
+    # there is nothing to compare, so that check returns False, and a cell would run the geometry
+    # of a different arm under a status of ``ok``.
+    #
+    # Measured before this line existed: ur10e with ``collision_mesh_variant: schunk_egu50``
+    # reported ``ok`` and checked a UR10e against UR5e arm meshes, while the same variant on a
+    # ur3e correctly reported ``variant_model_mismatch``. The difference was only that ur3e has a
+    # bundle to be compared with. The question is unanswerable exactly when an arm is new, which
+    # is when the guard should be least willing to guess.
+    if not own.is_file():
+        return per_arm  # absent, so the caller reports no_bundle rather than a foreign arm
     return COLLISION_MESH_DIR / f"{variant}_collision_meshes.npz"
 
 

@@ -92,9 +92,13 @@ class SelfCollisionGuard:
         # means not yet built, or unavailable.
         self._fcl_backend: object | None = None
         self._fcl_backend_built = False
-        #: Why the exact-mesh backend is available or not once built: "ok",
-        #: "unknown_model", "no_bundle", "no_engine", or ``None`` while it is not built.
-        #: It is surfaced so a degraded cell is inspectable rather than silent.
+        #: Why the exact-mesh backend is available or not once built. The tokens are defined
+        #: by ``_fcl_self_collision.mesh_backend_status``, and ``None`` means it is not built
+        #: yet. It is surfaced so a degraded cell is inspectable rather than silent.
+        #:
+        #: Deliberately not re-listed here. This comment named four of the tokens and the
+        #: function could return five, having grown two since the sentence was written. A list
+        #: beside something that already knows the answer only stays true for a while.
         self._fcl_status: str | None = None
         # Tool and base capsule geometry, from config, defaulting to the constants above.
         self._tool_length_mm = float(getattr(config, "tool_length_mm", _DEFAULT_TOOL_LENGTH_MM))

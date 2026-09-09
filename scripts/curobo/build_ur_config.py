@@ -22,7 +22,7 @@ Ingredients, all of them already installed on a cell that can plan:
   * everything else: cuRobo's own ``ur10e.yml``, which carries the joint names, link names and
     end-effector link that every UR e-series model shares.
 
-The arm-link surface augmentation is ur5e only. For ``ur5e`` each Lula arm link gains cuRobo
+The arm-link surface augmentation runs for every model with a baked bundle. Each Lula arm link gains cuRobo
 ``SphereFitType.SURFACE`` spheres fitted to ``ur5e_collision_meshes.npz`` and placed through the UR5e
 DH chain. Those meshes and that chain are ur5e-specific: a UR3e has different link lengths, so
 applying them to another model would author collision geometry in the wrong place. Every other model
@@ -265,26 +265,46 @@ if COUPLING_MM:
 sphere_map["tool0"] = _placed
 print(f"tool0 spheres: {len(sphere_map['tool0'])} from {_SPHERE_MAP.name} ({_gripper_name})")
 
-# --- 2b) ARM-link surface augmentation: ur5e only ---------------------------------------------------------
-# The bundle's arm meshes and the DH chain used to place them are ur5e-specific. Applying them to
-# another model would author arm geometry in the wrong place, so every other model keeps its own
-# model-tuned Lula arm spheres.
-if MODEL == "ur5e":
+# --- 2b) ARM-link surface augmentation: every model with a baked bundle ------------------------------------
+# cuRobo surface spheres fitted to this arm own collision meshes, placed through this arm own DH
+# chain. Worth having: measured false-CLEAR 8.4% to 5.3% on the ur5e, against the Lula spheres alone.
+#
+# THE GATE IS THE DIRECTORY, NOT A MODEL NAME. This branch read `if MODEL == "ur5e"` and said the
+# bundle and the DH placement were ur5e-specific. That was true while ur5e was the only arm with a
+# baked bundle; five arms have one as of 2026-09-09 and the sentence had no edge to the bake that
+# turned it over. Both halves are per-model and always were, and what was missing was the geometry.
+#
+# A model with no bundle keeps its own Lula arm spheres, which are model-tuned and correct, just
+# coarser. ur10 is permanently in that state: its asset collides the whole arm with primitives.
+_ARM_NPZ = REPO / f"src/robot/safety/data/{MODEL}_collision_meshes.npz"
+if _ARM_NPZ.is_file():
     try:
-        # The arm bundle, which is a different thing from the gripper map read above: these
-        # are the ur5e's own link meshes, and this branch is ur5e only for exactly that reason.
-        _ARM_NPZ = REPO / "src/robot/safety/data/ur5e_collision_meshes.npz"
+        # The arm bundle, which is a different thing from the gripper map read above: these are
+        # this model own link meshes, baked from its own Isaac asset and gated against the ur5e.
         _MESH = np.load(_ARM_NPZ, allow_pickle=True)
         import trimesh  # type: ignore[import-not-found]
         from curobo.sphere_fit import SphereFitType, fit_spheres_to_mesh  # type: ignore[import-not-found]
 
-        # UR5e DH (a, d, alpha), inlined rather than imported: this branch only runs in the cuRobo
+        # DH (a, d, alpha), inlined rather than imported: this branch only runs in the cuRobo
         # sidecar environment, where the repository package cannot be imported. The values match
-        # ``src/robot/safety/_ur_kinematics`` ur5e row for row, and a change to one is a change to both.
-        _DH: list[tuple[float, float, float]] = [
-            (0.0, 0.1625, 1.570796327), (-0.425, 0.0, 0.0), (-0.3922, 0.0, 0.0),
-            (0.0, 0.1333, 1.570796327), (0.0, 0.0997, -1.570796327), (0.0, 0.0996, 0.0),
-        ]
+        # ``src/robot/safety/_ur_kinematics`` row for row, and ``tests/test_inlined_dh_tables.py``
+        # compares all three copies, because three copies of a safety-critical table with nothing
+        # between them is how one of them ends up quietly wrong.
+        _DH_TABLES = {
+            "ur3": [(0.0, 0.1519, 1.570796327), (-0.24365, 0.0, 0.0), (-0.21325, 0.0, 0.0),
+                    (0.0, 0.11235, 1.570796327), (0.0, 0.08535, -1.570796327), (0.0, 0.0819, 0.0)],
+            "ur3e": [(0.0, 0.15185, 1.570796327), (-0.24355, 0.0, 0.0), (-0.2132, 0.0, 0.0),
+                     (0.0, 0.13105, 1.570796327), (0.0, 0.08535, -1.570796327), (0.0, 0.0921, 0.0)],
+            "ur5": [(0.0, 0.089159, 1.570796327), (-0.425, 0.0, 0.0), (-0.39225, 0.0, 0.0),
+                    (0.0, 0.10915, 1.570796327), (0.0, 0.09465, -1.570796327), (0.0, 0.0823, 0.0)],
+            "ur5e": [(0.0, 0.1625, 1.570796327), (-0.425, 0.0, 0.0), (-0.3922, 0.0, 0.0),
+                     (0.0, 0.1333, 1.570796327), (0.0, 0.0997, -1.570796327), (0.0, 0.0996, 0.0)],
+            "ur10": [(0.0, 0.1273, 1.570796327), (-0.612, 0.0, 0.0), (-0.5723, 0.0, 0.0),
+                     (0.0, 0.163941, 1.570796327), (0.0, 0.1157, -1.570796327), (0.0, 0.0922, 0.0)],
+            "ur10e": [(0.0, 0.1807, 1.570796327), (-0.6127, 0.0, 0.0), (-0.57155, 0.0, 0.0),
+                      (0.0, 0.17415, 1.570796327), (0.0, 0.11985, -1.570796327), (0.0, 0.11655, 0.0)],
+        }
+        _DH: list[tuple[float, float, float]] = _DH_TABLES[MODEL]
 
         def _dh_T(row: tuple[float, float, float]) -> np.ndarray:
             a, d, al = row
@@ -356,19 +376,23 @@ if MODEL == "ur5e":
                 _cl = _X[:3, :3] @ _ci + _X[:3, 3]
                 sphere_map[_L].append({"center": [round(float(x), 4) for x in _cl], "radius": round(float(_ri), 4)})
                 _added += 1
-        print(f"arm-link surface augmentation: +{_added} cuRobo surface spheres (ur5e only)")
+        print(f"arm-link surface augmentation: +{_added} cuRobo surface spheres from "
+              f"{_ARM_NPZ.name} placed through the {MODEL} DH chain")
     except Exception as exc:  # noqa: BLE001 (no cuRobo or trimesh here: Lula-only arm spheres, still valid)
         # This prints and keeps going, so the run still writes a yml. The banner is the whole
         # enforcement: nothing downstream can tell an augmented ur5e.yml from a Lula-only one.
         print("\n" + "!" * 100)
-        print(f"!! ur5e arm-link surface augmentation SKIPPED ({type(exc).__name__}: {exc})")
+        print(f"!! {MODEL} arm-link surface augmentation SKIPPED ({type(exc).__name__}: {exc})")
         print("!! The emitted ur5e.yml is Lula-only. The augmentation adds surface spheres the Lula map")
         print("!! does not have, so a Lula-only ur5e.yml clears arm poses the augmented one refuses.")
         print("!! Re-run under the cuRobo env python (needs curobo.sphere_fit + trimesh) before shipping it.")
         print("!" * 100 + "\n")
 else:
-    print(f"arm-link surface augmentation SKIPPED for {MODEL}: the mesh bundle and DH placement are "
-          f"ur5e-specific; {MODEL} keeps its own model-tuned Lula arm spheres, correct for its link lengths.")
+    print(f"arm-link surface augmentation SKIPPED for {MODEL}: no {_ARM_NPZ.name} to fit. "
+          f"{MODEL} keeps its own model-tuned Lula arm spheres, which are correct for its link "
+          f"lengths and coarser. Bake one with scripts/isaac/bake_ur_collision_meshes.py, unless "
+          f"that refuses: a model whose asset collides with primitives has no exact geometry to "
+          f"fit and never will.")
 
 print(f"converted spheres for {len(sphere_map)} links: {list(sphere_map)}  default_q={default_q}")
 
@@ -428,7 +452,7 @@ cfg["_provenance"] = {
     "gripper_spheres": _SPHERE_MAP.name,
     "gripper_origin": _origin,
     "coupling_mm": COUPLING_MM,
-    "arm_spheres": "lula + ur5e surface augmentation" if MODEL == "ur5e" else "lula",
+    "arm_spheres": f"lula + {MODEL} surface augmentation" if _ARM_NPZ.is_file() else "lula",
     "generated_by": "scripts/curobo/build_ur_config.py",
 }
 

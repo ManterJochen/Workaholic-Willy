@@ -1,0 +1,53 @@
+# UR10E arm profile. Load it with WILLY_PROFILE=ur10e (or load_config(profile="ur10e")).
+#
+# WHAT THIS IS. The base tree is a UR5e, so a cell that only sets ur.model would keep a UR5e payload
+# cap and a UR5e motion box. On a UR10E that is a a 5.0 kg cap on an arm rated 12.5 kg, and a box whose far corner sits
+# 822 mm from the shoulder on an arm that reaches 1300 mm. Nothing refuses that; the
+# poses fail IK later, one at a time, with nothing naming the cause.
+#
+# ⚠ THE WORKSPACE BOX IS A REACH BOUND, NOT A MEASUREMENT OF YOUR CELL. Only two UR cells exist in
+# this repository (ur5e and ur3e) and a workspace describes a ROOM: a table height, a wall, a
+# fixture. That cannot come from a datasheet. What is written below is the largest box this ARM can
+# serve, with its far corner at the same fraction of reach the one standing UR3e cell actually uses
+# (95.6% -- calibrated on that cell, not on a rule of thumb):
+#
+#     reach 1300 mm, shoulder 180.7 mm, usable radius 1242.2 mm
+#     far corner (760.7, 760.7, 801.8) is 1242.2 mm from the shoulder
+#
+# The box is SYMMETRIC about the base because a preferred direction is not derivable. Your cell will
+# not be: the measured ur3e cell runs x from 100 to 400 with a table in front of it, and nothing
+# behind. MEASURE YOUR CELL AND SHRINK THIS, in the directions your room actually has.
+#
+# ⛔ WHAT IS DELIBERATELY ABSENT. home_joint_positions, park_joint_positions, the camera poses and the
+# scene layout are NOT set here, because every one of them is a fact about a cell that does not exist
+# yet. They inherit the base tree, which was authored for a UR5e -- see the note on
+# home_joint_positions in robot_schema.py, which measured that default putting a UR3e grasp centre at
+# 93.4 % of its reach. Set them from your own cell before running a real pick.
+
+robot:
+  ur:
+    model: "ur10e"
+
+  sim:
+    robot_model: "ur10e"
+
+  workspace_limits:
+    x_min: -760.7
+    x_max: 760.7
+    y_min: -760.7
+    y_max: 760.7
+    z_min: 100.0             # table clearance, carried from the base tree: a fact about a room
+    z_max: 801.8
+
+  # Inside the box above by construction: 60 % of the way out and up. Replace it with a pose you have
+  # actually retreated to.
+  safe_pose:
+    x: 0.0
+    y: -456.4
+    z: 521.1
+
+  safety:
+    self_collision:
+      kinematics_model: "ur10e"
+    payload:
+      max_mass_kg: 12.5      # UR10E datasheet

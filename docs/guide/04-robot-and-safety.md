@@ -404,7 +404,12 @@ UR3e cell. Three ship in [`safety/data/`](../../src/robot/safety/data/): `ur5e`,
 as soon as its bundle lands beside them, with no code change.
 
 Call `mesh_backend_status(model)` from `src.robot.safety._fcl_self_collision` for each model that
-matters. The tokens are `ok`, `unknown_model`, `no_bundle`, `variant_model_mismatch` and `no_engine`.
+matters. The tokens are `ok`, `unknown_model`, `no_bundle`, `primitive_colliders`,
+`variant_model_mismatch` and `no_engine`, and `tests/test_status_tokens_are_documented.py`
+fails if this sentence falls behind the code. `primitive_colliders` is `no_bundle` for an arm
+whose asset carries no collision mesh to bake, which is a property of the robot rather than a
+task for an operator. Only `ur10` is in that state; `docs/runbooks/ur_family_bringup.md`
+explains why substituting its visual meshes would be worse than having none.
 `unknown_model` means there is no bundled DH row for that key, so anything that is not a UR has no
 exact-mesh authority, ever. `no_bundle` is recoverable by baking one with
 [`scripts/isaac/bake_ur_collision_meshes.py`](../../scripts/isaac/bake_ur_collision_meshes.py) under
