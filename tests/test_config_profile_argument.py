@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import ast
 import os
+import pathlib
 import unittest
 from pathlib import Path
 
@@ -39,6 +40,10 @@ from src.config.loader import (
 from src.contracts import UNSET
 
 _REPO = Path(__file__).resolve().parent.parent
+
+
+#: Where the profile overlays live, so an absent name can be proved absent.
+_DATA_DIR = pathlib.Path(__file__).resolve().parents[1] / "config"
 
 
 class _NoProfileInEnvironment:
@@ -81,7 +86,14 @@ class TheParameterTests(unittest.TestCase):
         """⛔ FAIL-CLOSED PER LAYER, WHICHEVER DOOR. A layer with no file would otherwise merge as a
         silent no-op and bring the cell up with another robot's geometry. Both routes go through one
         validator rather than the new one going around it."""
-        for bad in ("ur3", "sim,ur3", "nonsense"):
+        # ⚠ DERIVED, because a hand-picked example of "not a profile" only stays wrong until
+        # somebody adds it. This test said `ur3` until 2026-09-09, when a `robot.ur3.yaml` landed
+        # and the negative control quietly became a positive case. The name below is built from
+        # the profile directory and asserted absent from it, so no future arm can repeat that.
+        absent = "no_such_profile_" + "x" * 3
+        available = {p.stem.split(".", 1)[1] for p in _DATA_DIR.glob("*/*.*.yaml")}
+        self.assertNotIn(absent, available, "pick a name that is not a shipped profile")
+        for bad in (absent, f"sim,{absent}", "nonsense"):
             with self.subTest(bad), self.assertRaises(ConfigError) as caught:
                 load_config(profile=bad)
             self.assertIn(bad.split(",")[-1], str(caught.exception))

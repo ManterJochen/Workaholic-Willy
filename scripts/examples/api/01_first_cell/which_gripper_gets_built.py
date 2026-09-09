@@ -21,9 +21,11 @@ from src.robot.execution.autonomous_grasp import AutonomousGraspService  # noqa:
 from src.robot.execution.autonomous_grasp import build_rehearsal_components  # noqa: E402
 from src.robot.grippers import available_gripper_vendors  # noqa: E402
 
-# 1. The two keys that decide this together: the end-effector, and the arm it hangs on. The Robotiq
-#    branch reads `robot.vendor` off the config, because a Robotiq lives on a UR controller; the
-#    vacuum and jaw branches ask the arm object whether it advertises digital I/O.
+# 1. The two keys that decide this together: the end-effector, and the arm it hangs on. Every
+#    branch now asks the ARM IN HAND rather than only the config, because a supplied handle and a
+#    config vendor used to be able to disagree in silence: a dummy arm under `vendor: ur` built a
+#    real Robotiq driver aimed at `robot.ur.ip`. The Robotiq branch still reads the config too,
+#    because `robot.ur.ip` is the only address a Robotiq has.
 robot = load_robot_config()
 print(f"gripper.vendor {robot.gripper.vendor} on a {robot.vendor} arm")
 

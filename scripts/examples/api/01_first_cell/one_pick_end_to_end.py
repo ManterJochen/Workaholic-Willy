@@ -4,6 +4,13 @@ A rehearsal and a live run differ by one factory. ``Cell.rehearsal`` changes onl
 operator's own config, so the profile chain, the gripper branch and the grasping block are the ones
 this cell actually runs. Every advanced ``robot.grasping.*`` block ships disabled, so the default
 attempt is open-loop and the report's own layers line says so rather than a comment claiming it.
+
+That one changed field is why this loads the ``console_dummy`` profile. The base tree asks
+for ``gripper.vendor: robotiq``, which lives on the UR controller's tool I/O and cannot be built on
+the dummy arm a rehearsal swaps in, so the build substitutes a ``NullGripper``. Since 2026-09-09 a
+cell whose end-effector could not be built is refused at the connect (``NoRealGripper``) instead of
+coming up and reporting a success it did not have -- which is exactly what this file printed before
+that date. ``console_dummy`` names a gripper a dummy arm can carry.
 """
 
 import sys
@@ -19,7 +26,7 @@ from src.robot.execution.pick_run import PickRun, Recording  # noqa: E402
 
 # 1. The cell this config describes, with a dummy arm and a synthetic scene.
 #    Live, on real hardware:  Cell.from_robot_config(robot, prompt="a red cube")
-robot = load_robot_config()
+robot = load_robot_config(profile="console_dummy")
 cell = Cell.rehearsal(robot)
 
 # 2. Everything decidable at a desk, before anything is constructed. Preflight comes first for

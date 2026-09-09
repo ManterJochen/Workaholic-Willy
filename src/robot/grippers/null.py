@@ -29,8 +29,9 @@ class SubstitutionReason(StrEnum):
 
     #: ``gripper.vendor`` is not a name this stack knows.
     UNKNOWN_VENDOR = "unknown_vendor"
-    #: Robotiq requested on an arm that is not a UR. The gripper lives on the UR
-    #: controller's tool I/O.
+    #: Robotiq requested and no UR controller to reach it on. Two causes, one member:
+    #: the arm in hand is not a UR, or it is one and exposes no address. The detail
+    #: says which.
     ROBOTIQ_NEEDS_UR = "robotiq_needs_ur"
     #: Vacuum requested, but the arm does not advertise ``SupportsDigitalIO``.
     VACUUM_NEEDS_DIGITAL_IO = "vacuum_needs_digital_io"
@@ -77,6 +78,24 @@ class NullGripper:
         return self._connected
 
     @property
+    def holds_nothing(self) -> bool:
+        """``True`` on every NullGripper, substituted or configured: there are no jaws.
+
+        The flag a caller that must not treat this object's width as evidence reads, and it is a
+        flag rather than a class check on purpose: the one consumer that has to know
+        (:class:`~src.robot.grasping.closed_loop.verification.WidthDeltaGripperVerifier`) sits
+        several layers above the gripper package and must not import down into it. Any future no-op
+        end-effector opts in by growing the same attribute.
+
+        Distinct from :attr:`substitution`, which answers a different question. ``substitution``
+        says whether a real gripper was asked for and could not be built; this says whether anything
+        can be gripped at all. A cell configured ``gripper.vendor: none`` has ``substitution=None``
+        and still holds nothing, and as decided on 2026-09-09 that is refused too.
+        """
+
+        return True
+
+    @property
     def min_width_mm(self) -> float:
         return self._min
 
@@ -103,6 +122,19 @@ class NullGripper:
         del width_mm, speed, force
 
     def get_width_mm(self) -> float:
+        """The configured maximum, always. This is a constant and not a measurement.
+
+        There are no jaws here and no encoder, so every answer this method can give is invented.
+        Measured: ``set_width_mm(5.0)`` then ``get_width_mm()`` answers 85.0 on the shipped
+        ``robot.yaml`` widths. Do not "repair" that into echoing the commanded width. The close this
+        stack commands is the object's predicted cross-section minus a millimetre, so an echo reads
+        as a plausible held part, varies with the scene, and is a more convincing lie than the
+        constant. The refusal lives where a width becomes a verdict instead:
+        :class:`~src.robot.grasping.closed_loop.verification.WidthDeltaGripperVerifier`
+        rejects any gripper answering :attr:`holds_nothing`, and names the two cases apart by
+        whether a :class:`GripperSubstitution` is attached. Its docstring carries the reasoning.
+        """
+
         return self._max
 
 

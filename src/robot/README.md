@@ -130,7 +130,9 @@ This package is a library. The command-line entry points live under `execution/`
 `safety/planning/`, `drivers/ur/` and `perception/`:
 
 ```bash
-python -m src.robot.execution.real_cell --rehearse --runs 3   # config, preflight, build, connect, pick
+# config, preflight, build, connect, pick. `console_dummy` is the desk profile whose gripper a
+# dummy arm can carry; without it the base tree's Robotiq substitutes and the connect is refused.
+python -m src.robot.execution.real_cell --rehearse --runs 3 --profile console_dummy
 python -m src.robot.safety.planning --check                   # are the external motion engines wired
 python -m src.robot.grasping.replay --records run.jsonl       # roll up KPIs from a record log
 python -m src.robot.grasping.replay --soak-report             # the soak gate, exit 0 iff it passes

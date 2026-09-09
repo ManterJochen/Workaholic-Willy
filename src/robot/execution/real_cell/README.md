@@ -5,7 +5,7 @@ that makes a bring-up survivable, and the per-camera hand-eye calibration multi-
 
 ```bash
 python -m src.robot.execution.real_cell --check              # the checklist, touches nothing
-python -m src.robot.execution.real_cell --rehearse --runs 3  # the whole path, no camera, no robot
+python -m src.robot.execution.real_cell --rehearse --runs 3 --profile console_dummy  # whole path, no hardware
 python -m src.robot.execution.real_cell --dry-run            # real config, build only, no motion
 python -m src.robot.execution.real_cell --runs 10 --profile ur3e
 ```
@@ -41,7 +41,9 @@ The verdict rule is unanimity: every pick must succeed. That is stricter than th
 gate, which configures `pass_fraction: 0.8` and additionally refuses to accept the service's own
 `SUCCEEDED` as evidence. This runner has the strictest rule and no independent confirmation, and a
 cell that built a `NullGripper` reports `SUCCEEDED` every time, so the rule is printed alongside the
-verdict. From Python it is an argument:
+verdict. Since 2026-09-09 a substituted one cannot get that far, because the connect refuses it; a
+cell that declares `gripper.vendor: none` still connects, and still reports `SUCCEEDED` on every
+run. From Python it is an argument:
 `PickRun.from_cell(cell, runs=10, rule=PassRule(fraction=0.8, confirm=...))`.
 
 ## Why the preflight exists
@@ -87,6 +89,16 @@ command. It exists so the same wiring can be driven end to end at a desk, in mil
 A rehearsal continues past a blocking checklist on purpose: a desk is where blocking items are the
 expected state. That is a policy the runner applies on top of the preflight's verdict, which is why
 `--rehearse --check` and `--check` can exit differently on the same tree.
+
+A rehearsal can manufacture the one cell that is now refused, and on the shipped tree it does. The
+swap is `robot.vendor` to `dummy` and nothing else, so `gripper.vendor: robotiq` is still asked for
+and can no longer be built, because a Robotiq lives on the UR controller's tool I/O. The build
+substitutes a working `NullGripper`, and until 2026-09-09 that cell connected and reported
+`3/3 succeeded` while closing on nothing. `connect_cell` refuses it now (`NoRealGripper`, before the
+arm is commanded), which is the same answer the operator console has always given
+(`403 no_real_gripper`) and now the same sentence. Measured 2026-09-09: 3/3 with
+`--profile console_dummy`, whose `gripper.vendor: dummy` a dummy arm can carry, and exit 1 without
+it. What that no longer exercises is your own gripper branch, and nothing at a desk can.
 
 ## Bring-up order
 

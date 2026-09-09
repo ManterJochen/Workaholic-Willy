@@ -280,7 +280,7 @@ combination rather than silently honouring one flag and dropping the other.
 
 | Symptom | Most likely |
 |---|---|
-| Everything connects, every pick reports success, nothing is ever held | A **substituted `NullGripper`**. Read `gripper.substitution` or the build warning. This is the single most dangerous silent state in the stack. |
+| The connect is refused with `NoRealGripper` | A **substituted `NullGripper`**: the end-effector you named could not be built. The refusal carries what was asked for and the fix. Until 2026-09-09 this cell connected instead and every pick reported success while holding nothing. |
 | Robotiq: connect works, every read times out | The URCap daemon is up and its RS-485 link to the gripper is dead. |
 | Robotiq: the connection dies on the first byte | Nothing is listening behind a forwarded port: the URCap is not installed or not running. |
 | OnRobot: silence | Silence is the documented symptom of *every* misconfiguration: wrong unit id, Modbus not served by this firmware, or no tool on that Quick Changer side. |
@@ -289,13 +289,35 @@ combination rather than silently honouring one flag and dropping the other.
 
 > **The first symptom deserves its own paragraph.** `from_robot_config` answers a misconfigured
 > end-effector with a working `NullGripper` rather than crashing, so the cell comes up, every pick
-> reports success, and the jaws close on nothing. Five config combinations trigger it, one per
-> substitution reason: an unrecognised vendor name; `robotiq` on an arm that is not a UR; `vacuum` on
-> an arm with no digital I/O; `jaw_io` on an arm with no digital I/O; and a recognised name with no
-> driver. `onrobot` has no such precondition, because the Compute Box does not depend on the arm at
-> all. The substitution object carries the reason, what was requested, a sentence an operator can act
-> on, and the fix. A `NullGripper` whose `substitution` is `None` is a cell that has no end-effector on
-> purpose.
+> reports success, and the jaws close on nothing. Five substitution reasons trigger it: an
+> unrecognised vendor name; `robotiq` on an arm that is not a UR, or on a UR arm carrying no
+> controller address; `vacuum` on an arm with no digital I/O; `jaw_io` on an arm with no digital
+> I/O; and a recognised name with no driver. `onrobot` has no such precondition, because the Compute
+> Box does not depend on the arm at all. The substitution object carries the reason, what was
+> requested, a sentence an operator can act on, and the fix. A `NullGripper` whose `substitution` is
+> `None` is a cell that has no end-effector on purpose.
+>
+> **Since 2026-09-09 the cell does not come up at all.** `connect_cell` reads the substitution
+> record before it commands the arm and raises `NoRealGripper`, so the CLI prints
+> `[connect] FAILED: NoRealGripper: ...` and exits 1, and `Cell.connected()` raises. The operator
+> console refused this connect already (`403 no_real_gripper`) and reaches the hardware through that
+> same function, so the two now give one answer to one question, in one place, with one sentence.
+>
+> That is the repair the two earlier ones did not make, and the second of them is the verifier.
+> With `robot.grasping.verification` enabled,
+> `WidthDeltaGripperVerifier` refuses the attempt by name: a substituted gripper answers
+> `get_width_mm() -> 85.0` (its configured maximum, whatever it was commanded), which used to read
+> as jaws holding 85 mm of something, and the verifier returns `FAILED` / `no_end_effector_built`
+> instead. Since 2026-09-09 the same verifier also refuses `gripper.vendor: none`, a cell configured
+> with no end-effector at all, under its own reason `no_end_effector_configured`. No jaws means
+> nothing was held, whether or not anybody wanted a gripper. But verification is **off** in the
+> shipped tree, so on the default open-loop pick nothing reads a width, which is why the refusal had
+> to move to the connect.
+>
+> **The connect guard is keyed on the substitution, not on the absence of jaws.**
+> `gripper.vendor: none` carries no substitution record: the operator said this cell has no
+> end-effector, and a calibration rig or a camera-only bring-up is a legitimate cell. It still
+> connects, and the verifier above is what judges its picks.
 
 ---
 

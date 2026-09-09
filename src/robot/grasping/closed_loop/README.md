@@ -91,6 +91,24 @@ The width verifier is why `closed_width_mm` is a config key of its own rather th
 the physical 0.0 mm puts the empty-jaw threshold at 7 mm, where a genuinely held 6 mm part reports
 as an empty grasp.
 
+A jawless gripper is refused by name, before any width arithmetic. `from_robot_config` answers
+four impossible gripper configurations with a working `NullGripper`, and that object takes
+`set_width_mm(5.0)` and answers `get_width_mm() -> 85.0`, the configured maximum, forever. 85 mm
+clears every threshold here, so the width verifier used to read it as jaws holding 85 mm of
+something and the pick reported `SUCCEEDED` with nothing on the flange. `WidthDeltaGripperVerifier`
+reads `gripper.substitution`, the record the build path already attaches and the same one the
+operator console refuses to connect on, and returns `FAILED` with reason `no_end_effector_built`,
+carrying the `SubstitutionReason` in its telemetry. `FAILED` and not `INCONCLUSIVE` on purpose: an
+empty flange is knowledge, not missing evidence, so `fail_closed: false` cannot turn it back into a
+success.
+
+`gripper.vendor: none` is refused too, decided 2026-09-09. A cell configured with no end-effector is
+the same jawless object carrying no substitution record, and it is caught by the object's
+`holds_nothing` flag with its own reason, `no_end_effector_configured`. There are no jaws, so nothing
+was held, whether or not anybody wanted a gripper. The reasons stay two strings because the repairs
+differ: one operator fixes the arm/gripper pairing, the other fits a gripper or turns verification
+off.
+
 ### Where to look next
 
 `ScoringViewpointPlanner` generates a small fixed candidate set around the current TCP: four lateral

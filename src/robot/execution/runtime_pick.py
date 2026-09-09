@@ -378,8 +378,17 @@ class RuntimePickService:
         hand-wired stack while a real cell ran the config-driven one.
 
         A supplied handle replaces only its own construction step; nothing else is skipped. The
-        arm-vendor SDK readiness gate is skipped for a supplied arm, because a caller holding a
-        constructed arm has already proved the SDK is there.
+        arm-vendor readiness gate is skipped only when the handle advertises a different vendor than
+        the config names, because such an arm is a stand-in that drives no device of the configured
+        vendor. A handle that advertises the configured vendor is that vendor's driver and still
+        faces the gate, since constructing one proves nothing about the SDK (see the comment at the
+        gate).
+
+        A Robotiq is the one end-effector whose construction reads the arm rather than only the tree:
+        it lives on the UR controller's tool I/O, so it is built only when the arm in hand reports
+        vendor ``ur``, and against the controller address that arm was built with
+        (``arm.config.ur.ip``) rather than against ``robot.ur.ip`` of the tree being picked with.
+        Whenever this method built the arm the two are the same object. See the comment on the branch.
 
         The vendor block in the schema is the single
         source of truth: this method reads ``robot_cfg.vendor`` and
@@ -431,9 +440,31 @@ class RuntimePickService:
         from src.robot.drivers.doctor import require_arm_vendor_ready
 
         sim_mock = vendor is RobotVendor.SIM and bool(robot_cfg.sim.mock_mode)
+        # `arm is not None` used to count as mock mode, and the reason given for it is refuted.
+        # The claim was that a caller holding a constructed arm has already proved the SDK is there.
+        # Measured: `URRobotArm` constructs with no `ur_rtde` on the box, because the SDK import sits
+        # inside `connect()`, which is exactly what lets
+        # `tests/test_gripper_branch_reads_the_arm_in_hand.py` build a real UR arm in CI. So a handle
+        # proves only that `create_arm` will not run here; whether a real device gets driven is
+        # decided by what the arm is. An arm advertising another vendor is a stand-in and drives
+        # nothing of this one; an arm advertising this vendor is the driver, and its connect() still
+        # needs the SDK the gate is asking about.
+        #
+        # `RobotCapabilities.vendor`, not `isinstance` against a driver class: reading the class
+        # would import the vendor module (`isaacsim` for the sim) into the composition root, and
+        # `core/capabilities.py` says in as many words that pipeline code branches on these flags
+        # instead. Every driver already declares it (sim/arm.py `vendor="sim"`, ur/arm.py
+        # `vendor="ur"`), and the dataclass enforces the lower-case form the enum values use. Read
+        # through `getattr` the way `_capabilities` below already does: a partial double that
+        # implements no capabilities is not any vendor's driver, so it counts as a stand-in.
+        supplied_caps = getattr(arm, "capabilities", None)
+        supplied_arm_vendor = (
+            supplied_caps.vendor if isinstance(supplied_caps, RobotCapabilities) else None
+        )
+        stand_in_arm = arm is not None and supplied_arm_vendor != vendor.value
         require_arm_vendor_ready(
             vendor,
-            mock_mode=sim_mock or vendor is RobotVendor.DUMMY or arm is not None,
+            mock_mode=sim_mock or vendor is RobotVendor.DUMMY or stand_in_arm,
         )
 
         # --- Arm construction --------------------------------------------------
@@ -512,27 +543,72 @@ class RuntimePickService:
                 max_width_mm=gripper_cfg.max_width_mm,
             )
         elif gripper_vendor is GripperVendor.ROBOTIQ:
-            # Robotiq lives on the UR controller's tool I/O. If the
-            # selected arm vendor is not UR, the operator likely
-            # mis-configured the YAML; fall back to no-gripper rather
-            # than crashing at connect time.
-            if vendor is RobotVendor.UR:
-                gripper = create_gripper(
-                    GripperVendor.ROBOTIQ,
-                    config=gripper_cfg,
-                    ip=robot_cfg.ur.ip,
-                )
-            else:
+            # Robotiq lives on the UR controller's tool I/O, reached over a socket the URCap opens at
+            # that controller's address. Two separate facts have to hold, and until 2026-09-09 only
+            # the second was checked.
+            #
+            # Measured: this branch asked `robot_cfg.vendor` while an unrelated arm was in use. A
+            # supplied handle replaces the arm construction step, so from that point the config no
+            # longer describes the arm the cell runs on. A `DummyRobotArm` handed to the shipped
+            # `vendor: ur` tree produced arm=DummyRobotArm beside gripper=GripperController with
+            # substitution=None: a real Robotiq driver aimed at a real controller address, next to an
+            # arm holding no controller connection, and nothing on the built cell said so. The two
+            # I/O branches below never had that hole because they ask the handle
+            # (`isinstance(arm, SupportsDigitalIO)`), so this one now asks the handle too.
+            #
+            # The address comes off the arm as well, and that took no new config field.
+            # `URRobotArm.__init__` keeps the tree it was built from (`self.config = config`), so
+            # `arm.config.ur.ip` is the controller this arm talks to. The config half used to answer
+            # that question and answered it badly for a supplied arm: a tree naming another vendor
+            # leaves `robot.ur.ip` at the schema default 192.168.1.100, a plausible address on a real
+            # subnet that nobody chose, so a caller holding a genuine UR arm was refused instead of
+            # served. Read through `getattr` rather than by importing the UR driver: the execution
+            # layer has no import edge to a vendor driver today and this must not add one.
+            #
+            # When this method built the arm itself the two sources are the same object
+            # (`create_arm(RobotVendor.UR, config=robot_cfg)` hands `robot_cfg` straight to
+            # `URRobotArm`), so the shipped no-handle UR cell reads the address it always read.
+            arm_caps = getattr(arm, "capabilities", None)
+            arm_vendor = (
+                arm_caps.vendor if isinstance(arm_caps, RobotCapabilities) else "unknown"
+            )
+            arm_ip = getattr(getattr(getattr(arm, "config", None), "ur", None), "ip", None)
+            if arm_vendor != RobotVendor.UR.value:
                 # A config requesting Robotiq on a non-UR arm (notably the Isaac sim, whose `sim`
                 # profile sets gripper.vendor=robotiq + arm vendor=sim) cannot build a real gripper
                 # through from_robot_config. Warn instead of silently booting gripper-less; the sim
                 # builds its IsaacGripper via AutonomousGraspService.from_components (shared session).
                 gripper = _substitute(
                     SubstitutionReason.ROBOTIQ_NEEDS_UR,
-                    f"gripper.vendor='robotiq' but the arm vendor is {vendor.value!r}, not UR; a "
-                    f"Robotiq lives on the UR controller's tool I/O and cannot be reached from here.",
+                    f"gripper.vendor='robotiq' but the arm in hand reports vendor {arm_vendor!r}, "
+                    f"which is not a UR. A Robotiq lives on the UR controller's tool I/O, so an arm "
+                    f"that is not on such a controller cannot reach one.",
                     "For the Isaac sim use AutonomousGraspService.from_components (the IsaacGripper "
-                    "needs the shared session). On a real cell, set robot.vendor: ur.",
+                    "needs the shared session). On a real cell, set robot.vendor: ur and either let "
+                    "this build the arm or hand in the UR arm you built yourself.",
+                )
+            elif not arm_ip:
+                # The other half of the same refusal, and it is stated separately because an operator
+                # cannot act on the two the same way. Falling back to `robot_cfg.ur.ip` here is the
+                # thing that must not happen: on a tree that names no UR that value is the schema
+                # default, and pointing a real driver at an address nobody chose is exactly what the
+                # config half was kept to prevent.
+                gripper = _substitute(
+                    SubstitutionReason.ROBOTIQ_NEEDS_UR,
+                    f"gripper.vendor='robotiq' and the arm in hand does report vendor "
+                    f"{RobotVendor.UR.value!r}, but it exposes no controller address: reading "
+                    f"arm.config.ur.ip off it found nothing. The Robotiq is reached over a socket on "
+                    f"that arm's controller, and robot.ur.ip in this tree ({robot_cfg.ur.ip!r}) "
+                    f"describes whatever the config names, not the arm that was handed in.",
+                    "Hand in an arm built from a config tree (URRobotArm keeps the one it was "
+                    "constructed with), or supply no arm at all and set robot.vendor: ur so this "
+                    "builds the arm from this tree and both halves come from the same place.",
+                )
+            else:
+                gripper = create_gripper(
+                    GripperVendor.ROBOTIQ,
+                    config=gripper_cfg,
+                    ip=str(arm_ip),
                 )
         elif gripper_vendor is GripperVendor.VACUUM:
             # Suction over the arm's digital I/O: no SDK, so it builds from config (the driver, its

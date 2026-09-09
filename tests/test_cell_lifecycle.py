@@ -36,6 +36,7 @@ from src.robot.execution.lifecycle import (
     disconnect_cell,
     release_perception,
 )
+from src.robot.grippers.null import GripperSubstitution, SubstitutionReason
 
 _REPO = Path(__file__).resolve().parent.parent
 
@@ -200,6 +201,79 @@ class TheContextManagerTests(unittest.TestCase):
             "gripper.connect",                             # ...and only THEN do the fingers move
             f"<{ConnectStage.GRIPPER_CONNECTED.value}>",
         ])
+
+
+class ASubstitutedGripperIsNotACellTests(unittest.TestCase):
+    """⛔⛔ **A CELL WITH NO END-EFFECTOR CAME UP AND REPORTED SUCCESS.** MEASURED on this tree,
+    before this guard existed: `python -m src.robot.execution.real_cell --rehearse --runs 3` on the
+    shipped `robot.yaml` printed `gripper  NullGripper` at BUILD and `RESULT: 3/3 succeeded` at the
+    end, exit 0. `gripper.vendor: robotiq` cannot be reached from a non-UR arm, so the build
+    substitutes a working `NullGripper`, every commanded width is accepted, `get_width_mm()` answers
+    the configured 85.0 mm maximum forever, and nothing downstream disagrees.
+
+    ⚠ **THE VERIFIER REPAIR DOES NOT REACH THE DEFAULT PICK.** `WidthDeltaGripperVerifier` refuses a
+    substituted gripper by name, but `grasping.verification.enabled` is `false` in the shipped tree,
+    so on the default open-loop attempt NOBODY READS A WIDTH. The fact is knowable before any motion
+    at all, so it is answered before any motion at all.
+
+    ⭐ **AND IT IS ANSWERED HERE SO THERE IS ONE ANSWER.** `api/lifecycle.py` already refuses this
+    connect (`ConnectRefused.NO_REAL_GRIPPER`) and reaches the hardware through this function, so
+    the console's typed refusal is now a rendering of this rule rather than a second copy of it.
+    """
+
+    @staticmethod
+    def _substituted(log: "list[str]") -> object:
+        """What the shipped `robot.yaml` builds on a dummy arm, with the real widths and reason."""
+        gripper = _Recorder(log, "gripper")
+        gripper.substitution = GripperSubstitution(
+            reason=SubstitutionReason.ROBOTIQ_NEEDS_UR,
+            requested="robotiq",
+            detail=("gripper.vendor='robotiq' but the arm in hand reports vendor 'dummy'. A "
+                    "Robotiq lives on the UR controller's tool I/O and cannot be reached from here."),
+            fix="On a real cell, set robot.vendor: ur.",
+        )
+        return gripper
+
+    def test_a_substituted_gripper_refuses_the_connect(self) -> None:
+        """⛔ AND NOTHING IS COMMANDED, not even the arm. The arm connect is the first motion of the
+        run and this fact was decidable before it."""
+        log: list[str] = []
+        with self.assertRaises(RuntimeError):
+            connect_cell(_Recorder(log, "arm"), self._substituted(log))
+        self.assertEqual(log, [], "a cell with no end-effector must command nothing at all")
+
+    def test_the_refusal_says_what_was_asked_for_and_what_to_do(self) -> None:
+        """⚠ THE OPERATOR IS THE READER. "no gripper" sends them to the wiring; the substitution
+        record already knows it is a config line."""
+        with self.assertRaises(RuntimeError) as caught:
+            connect_cell(_Recorder([], "arm"), self._substituted([]))
+        message = str(caught.exception)
+        self.assertIn("robotiq", message, "the refusal must name what was asked for")
+        self.assertIn("robot.vendor: ur", message, "the refusal must carry the fix")
+
+    def test_a_cell_that_declares_no_end_effector_still_connects(self) -> None:
+        """⛔ THE GUARD IS KEYED ON THE SUBSTITUTION, NOT ON THE ABSENCE OF JAWS. `gripper.vendor:
+        none` is the same jawless object with `substitution=None` and is a legitimate cell: a
+        calibration rig, a camera-only bring-up. Refusing it would be a different rule."""
+        log: list[str] = []
+        gripper = _Recorder(log, "gripper")
+        gripper.substitution = None
+        connect_cell(_Recorder(log, "arm"), gripper)
+        self.assertEqual(log, ["arm.connect", "gripper.connect"])
+
+    def test_the_context_manager_refuses_and_gives_the_lock_back(self) -> None:
+        """⛔ OTHERWISE THE REFUSAL HOLDS THE CELL. The lock is cross-process, so a leaked one
+        outlives the function that leaked it."""
+        released: list[str] = []
+        lock = type("L", (), {"acquire": lambda self: None,
+                              "release": lambda self: released.append("released")})()
+        log: list[str] = []
+        cell = ConnectedCell(_service(_Recorder(log, "arm"), self._substituted(log)), lock=lock)
+        with self.assertRaises(RuntimeError):
+            cell.__enter__()
+        self.assertEqual(released, ["released"])
+        self.assertEqual(log, [])
+        self.assertIsNone(cell.teardown, "nothing came up, so nothing came down")
 
 
 class TheReportContractTests(unittest.TestCase):

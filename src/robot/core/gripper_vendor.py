@@ -6,7 +6,9 @@ Pipelines do not read this enum; they go through the
 :class:`~src.robot.core.Gripper` Protocol.
 
 Adding a gripper is a two-line change here plus a driver module or subpackage under
-``src/robot/grippers/<name>.py``.
+``src/robot/grippers/<name>.py``. A member added without that driver belongs in
+``_RESERVED_VENDORS`` at the bottom of this file, or the refusal in
+:meth:`GripperVendor.from_string` will offer a name that builds no end-effector.
 """
 
 from __future__ import annotations
@@ -27,9 +29,10 @@ class GripperVendor(StrEnum):
     ROBOTIQ
         Robotiq HE and HE-X over the SDU ``robotiq_gripper`` driver.
     FRANKA_HAND
-        Franka Hand over libfranka. No driver exists yet.
+        Franka Hand over libfranka. A reserved slot: no driver in this repo, and
+        listed in ``_RESERVED_VENDORS`` so the refusal below says so.
     SCHUNK
-        Schunk EGK and EGN. No driver exists yet.
+        Schunk EGK and EGN. A reserved slot, same as :attr:`FRANKA_HAND`.
     VACUUM
         A suction end-effector actuated over the controller's digital I/O.
         Deliberately not manufacturer-specific: an ejector on an output pin, with an
@@ -78,8 +81,9 @@ class GripperVendor(StrEnum):
     def from_string(cls, value: str) -> GripperVendor:
         """Coerce a free-form, case-insensitive string into a member.
 
-        Raises :class:`ValueError` for an unknown vendor, listing the valid options
-        in the message.
+        Raises :class:`ValueError` for an unknown vendor. The message separates the
+        vendors this checkout can build from the reserved slots, because those are
+        different mistakes with different fixes (see ``_RESERVED_VENDORS`` below).
         """
         if isinstance(value, cls):
             return value
@@ -91,7 +95,33 @@ class GripperVendor(StrEnum):
         try:
             return cls(normalised)
         except ValueError as exc:
-            valid = ", ".join(v.value for v in cls)
-            raise ValueError(
-                f"unknown gripper vendor {value!r}; valid: {valid}"
-            ) from exc
+            buildable = ", ".join(v.value for v in cls if v.value not in _RESERVED_VENDORS)
+            message = f"unknown gripper vendor {value!r}; buildable: {buildable}"
+            if _RESERVED_VENDORS:
+                reserved = ", ".join(v.value for v in cls if v.value in _RESERVED_VENDORS)
+                message += (
+                    f"; reserved (no driver here): {reserved}. A cell configured for a reserved "
+                    "name comes up with a NullGripper and no end-effector."
+                )
+            raise ValueError(message) from exc
+
+
+#: Members that exist so a config can be written against a driver this repo does not have. They
+#: are deliberate slots, the same way ``franka`` and ``ros2`` are slots in :class:`RobotVendor`.
+#:
+#: Measured 2026-09-09: the refusal above built its list from the enum and so advertised both of
+#: these as valid. The enum carried eight members, ``available_gripper_vendors()`` six. A typo was
+#: answered with ``robotiq, franka_hand, schunk, vacuum, jaw_io, onrobot, dummy, none``; a config
+#: copying one of the two reserved names passes schema validation (they are real members, and that
+#: is correct) and then falls through to the ``SubstitutionReason.NO_DRIVER`` substitution in
+#: ``execution/runtime_pick.py``. The cell connects, reports every pick a success, and holds
+#: nothing. Splitting the refusal in two is what ``drivers/host.py`` (``Host.require``) already
+#: does on the arm side: "not a name" and "a name with no driver here" are different mistakes.
+#:
+#: Hand-kept, because this is the bottom of the stack. The registry that owns the fact lives two
+#: layers up (``grippers/registry.py``), and ``core`` imports nothing above itself. The same kind
+#: of hand-kept membership test in ``doctor.py`` reported first ``vacuum`` and then ``jaw_io`` as
+#: having no driver while both had one, so this one is pinned against the registry in both
+#: directions by ``tests/test_gripper_vendor_refusal_names_what_can_be_built.py``: a driver that
+#: lands without leaving this set, or a member added without entering it, goes red.
+_RESERVED_VENDORS: frozenset[str] = frozenset({"franka_hand", "schunk"})

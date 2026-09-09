@@ -126,7 +126,25 @@ class RunnerEndToEndTests(unittest.TestCase):
     """The CLI, in-process. Same path a real cell takes, minus the hardware."""
 
     def test_rehearsal_completes_the_whole_pick_path(self) -> None:
-        self.assertEqual(main(["--rehearse", "--runs", "3"]), 0)
+        """The base profile is no longer the one that can do it, and that is the repair.
+
+        This asserted ``main(["--rehearse", "--runs", "3"]) == 0`` on the base tree until
+        2026-09-09 and passed because the build handed back a ``NullGripper``: ``gripper.vendor:
+        robotiq`` cannot be reached from the dummy arm a rehearsal swaps in, so all three picks
+        reported SUCCEEDED with nothing on the flange. ``connect_cell`` refuses that cell now (the
+        test below), and the free desk rung survives one flag over: ``console_dummy`` is the profile
+        whose gripper a dummy arm can carry (``gripper.vendor: dummy`` builds a real
+        ``DummyGripper`` that clamps and echoes a width), so connect, three picks and teardown all
+        still run here.
+        """
+        self.assertEqual(main(["--rehearse", "--runs", "3", "--profile", "console_dummy"]), 0)
+
+    def test_a_rehearsal_of_the_shipped_tree_is_refused_at_the_connect(self) -> None:
+        """MEASURED: ``--rehearse --runs 3`` printed ``RESULT: 3/3 succeeded`` and exited 0 on a
+        build that logged ``Built a NullGripper (no real end-effector)`` one screen earlier. It
+        exits 1 at the connect now, before the arm is commanded, and the config-class exit code is
+        the honest one: the fix for this cell is a YAML line, not a trip to a bench."""
+        self.assertEqual(main(["--rehearse", "--runs", "3"]), 1)
 
     def test_check_alone_refuses_the_shipped_real_config(self) -> None:
         """--check touches nothing and still tells the operator the cell is not runnable."""
@@ -144,13 +162,16 @@ class RunnerEndToEndTests(unittest.TestCase):
         already commanded."""
         order: list[str] = []
         from src.robot.drivers.dummy.arm import DummyRobotArm
-        from src.robot.grippers.null import NullGripper
+        from src.robot.grippers.dummy import DummyGripper
 
+        # And the profile moved with the gripper class. The base tree rehearsal is refused at the
+        # connect now (its Robotiq substitutes on a dummy arm), so an order this test can watch
+        # needs a cell that is allowed to come up at all. console_dummy is that cell.
         with patch.object(DummyRobotArm, "connect", autospec=True,
                           side_effect=lambda self: order.append("arm")), \
-             patch.object(NullGripper, "connect", autospec=True,
+             patch.object(DummyGripper, "connect", autospec=True,
                           side_effect=lambda self: order.append("gripper")):
-            main(["--rehearse", "--runs", "1"])
+            main(["--rehearse", "--runs", "1", "--profile", "console_dummy"])
         self.assertEqual(order[:2], ["arm", "gripper"])
 
     def test_a_gripper_that_refuses_does_not_leave_the_arm_connected(self) -> None:
@@ -162,16 +183,16 @@ class RunnerEndToEndTests(unittest.TestCase):
         this code path and cannot, so the rollback lives here where both get it.
         """
         from src.robot.drivers.dummy.arm import DummyRobotArm
-        from src.robot.grippers.null import NullGripper
+        from src.robot.grippers.dummy import DummyGripper
 
         order: list[str] = []
         with patch.object(DummyRobotArm, "connect", autospec=True,
                           side_effect=lambda self: order.append("arm.connect")), \
              patch.object(DummyRobotArm, "disconnect", autospec=True,
                           side_effect=lambda self: order.append("arm.disconnect")), \
-             patch.object(NullGripper, "connect", autospec=True,
+             patch.object(DummyGripper, "connect", autospec=True,
                           side_effect=RuntimeError("URCap socket 63352 refused")):
-            code = main(["--rehearse", "--runs", "1"])
+            code = main(["--rehearse", "--runs", "1", "--profile", "console_dummy"])
 
         self.assertEqual(code, 1, "a refused gripper is a config-class failure, not a pick failure")
         self.assertEqual(order, ["arm.connect", "arm.disconnect"])

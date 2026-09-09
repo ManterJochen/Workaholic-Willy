@@ -38,8 +38,11 @@ class URModelRegistryTests(unittest.TestCase):
 
     def test_unknown_model_raises_with_known_keys(self) -> None:
         with self.assertRaises(ValueError) as ctx:
-            ur_model_spec("ur3")  # a real UR model, but not one this sim cell supports
-        self.assertIn("ur3", str(ctx.exception))
+            # A real UR model with a bundled DH row that UR_MODEL_KEYS deliberately does not
+            # admit, so this stays a negative control. It said "ur3" until 2026-09-09, when
+            # the CB-series arms were added and it silently became a supported model.
+            ur_model_spec("ur16e")
+        self.assertIn("ur16e", str(ctx.exception))
         self.assertIn("ur5e", str(ctx.exception))  # the message lists what IS supported
 
     def test_curobo_robot_yml_round_trip(self) -> None:
@@ -69,7 +72,7 @@ class RobotModelConfigValidatorTests(unittest.TestCase):
         self.assertEqual(SimConfig(robot_model="ur3e").robot_model, "ur3e")
 
     def test_typo_rejected_at_config_load(self) -> None:
-        for bad in ("ur3", "UR3E ", "ur-3e", ""):
+        for bad in ("ur16e", "UR3E ", "ur-3e", ""):
             with self.assertRaises(ValidationError, msg=f"{bad!r} should be rejected"):
                 SimConfig(robot_model=bad)
 
@@ -210,7 +213,7 @@ class RealUrSelfCollisionModelCouplingTests(unittest.TestCase):
         from src.config.schema.robot.ur_schema import URConfig
 
         with self.assertRaises(ValidationError) as ctx:
-            URConfig.model_validate({"model": "ur3"})
+            URConfig.model_validate({"model": "ur16e"})
         self.assertIn("unknown UR model", str(ctx.exception))
 
     def test_the_default_keeps_existing_configs_unchanged(self) -> None:

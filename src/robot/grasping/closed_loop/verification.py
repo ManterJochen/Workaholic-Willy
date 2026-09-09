@@ -361,6 +361,51 @@ class WidthDeltaGripperVerifier:
 
     Either of those missing yields
     :attr:`VerificationOutcome.INCONCLUSIVE`.
+
+    A jawless gripper is refused before any of that arithmetic runs, and it is refused by name.
+    Measured on this tree: ``from_robot_config`` answers four impossible gripper configurations with
+    a working ``NullGripper`` (``gripper.vendor: robotiq`` on a non-UR arm is one, and it is what
+    ``Cell.rehearsal`` boots). That object takes ``set_width_mm(5.0)`` and answers
+    ``get_width_mm() -> 85.0``, the configured maximum, forever. 85 mm sits far above
+    ``closed + width_delta_min_mm``, so this verifier read it as jaws holding 85 mm of something and
+    the pick reported SUCCEEDED with nothing on the flange.
+
+    Three repairs were weighed and two were rejected:
+
+    (a) Have the substituted gripper echo the command back. Physically it is the closest model of a
+        position-controlled jaw travelling on air, and it is still a lie here, a better-dressed one.
+        The close width this stack commands is ``grip_width_mm - close_squeeze_mm``
+        (``execution_policy.py`` ``_resolve_close_width``), which is the predicted cross-section of
+        the object minus about a millimetre. An echo therefore answers "39 mm, exactly as asked",
+        clears the collapse threshold, clears the optional upper bound, and now varies with the
+        object, so the fabricated evidence tracks the scene and reads more convincingly than the
+        constant it replaced. It is also already built: ``DummyGripper`` is exactly a gripper that
+        clamps and echoes, and it exists to be a plausible one. A ``NullGripper`` exists to be
+        distinguishable from a gripper, and (a) would delete that difference.
+
+    (b) Report the physically closed width after a close. It reaches the right verdict and it
+        reaches it by coincidence. A ``NullGripper`` carries no ``closed_width_mm``, so the only
+        closed-ish value it could report is ``min_width_mm``, which is the very number this verifier
+        falls back to as its threshold base; give the class a ``closed_width_mm`` one day and the
+        coincidence moves. It also still hands a number to anything that measures jaw travel (85 mm
+        to 5 mm, an 80 mm sweep that no motor made), and it names nothing: the operator is sent to
+        the width thresholds to explain a cell that has no gripper.
+
+    (c) Refuse on what the object says about itself, which is what runs. There are no jaws, so
+        nothing was held, and that is true regardless of whether anybody wanted a gripper: it is
+        positive evidence of failure rather than absent evidence, hence FAILED and not INCONCLUSIVE,
+        and an operator's ``fail_closed: false`` cannot turn it back into a success.
+
+    Two attributes are read, in that order, and both by ``getattr`` so this module keeps knowing
+    nothing about the gripper package. ``substitution`` (a ``GripperSubstitution``, already attached
+    by the build path, already read by the operator console which refuses to connect and by the sim
+    runners which warn) means a gripper was asked for and could not be built, giving reason
+    ``no_end_effector_built``, carrying what was requested. ``holds_nothing`` means the object grips
+    nothing whatever the config wanted, giving reason ``no_end_effector_configured``, which is what
+    ``gripper.vendor: none`` reaches. Decided 2026-09-09, inverting a pinned test: a deliberately
+    gripper-less cell must not verify a grasp either. The reasons stay two strings because the two
+    repairs are different, and a rehearsal that wants motion without a grasp verdict turns
+    verification off rather than collecting a fabricated pass.
     """
 
     def verify(
@@ -372,6 +417,40 @@ class WidthDeltaGripperVerifier:
                 outcome=VerificationOutcome.INCONCLUSIVE,
                 reason="no_gripper",
                 telemetry={"verifier": "width_delta"},
+            )
+        # Before the width sample is even looked for: an empty flange is knowable without a
+        # readback, and a verifier that waited for one would degrade to INCONCLUSIVE on the gripper
+        # that most needs a verdict. ``getattr`` rather than an isinstance check on ``NullGripper``,
+        # so this reads attributes and not the class: any driver that grows the same fields
+        # participates, and this module keeps knowing nothing about the gripper package.
+        substitution = getattr(gripper, "substitution", None)
+        if substitution is not None:
+            return GraspVerificationReport(
+                outcome=VerificationOutcome.FAILED,
+                reason="no_end_effector_built",
+                telemetry={
+                    "verifier": "width_delta",
+                    "substitution_reason": str(getattr(substitution, "reason", "")),
+                    "requested_gripper": str(getattr(substitution, "requested", "")),
+                    "substitution_detail": str(getattr(substitution, "detail", "")),
+                    "substitution_fix": str(getattr(substitution, "fix", "")),
+                    # Kept so the record still shows what the absent gripper claimed. On the
+                    # shipped config that is 85.0 mm after a commanded 5.0 mm close.
+                    "post_close_width_mm": context.post_close_width_mm,
+                },
+            )
+        # The same verdict for a cell that was never given an end-effector, and a second reason
+        # string rather than a shared one: an operator whose Robotiq could not be built edits the
+        # arm/gripper pairing, an operator on ``gripper.vendor: none`` fits a gripper or stops
+        # verifying, and a records rollup has to be able to count those two populations apart.
+        if bool(getattr(gripper, "holds_nothing", False)):
+            return GraspVerificationReport(
+                outcome=VerificationOutcome.FAILED,
+                reason="no_end_effector_configured",
+                telemetry={
+                    "verifier": "width_delta",
+                    "post_close_width_mm": context.post_close_width_mm,
+                },
             )
         if context.post_close_width_mm is None:
             return GraspVerificationReport(

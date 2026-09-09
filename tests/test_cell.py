@@ -25,13 +25,28 @@ import unittest
 from src.config import load_robot_config
 from src.contracts import Rendered
 from src.robot.execution.cell import Cell, CellNotBuilt
-from src.robot.execution.lifecycle import ConnectedCell
+from src.robot.execution.lifecycle import ConnectedCell, NoRealGripper
 from src.robot.safety import SafetyPosture
 
 
 def _config():
     """The repo's own base tree, with no profile, so a shell variable cannot change the answer."""
     return load_robot_config(profile=None)
+
+
+def _declares_no_end_effector():
+    """The same tree with `gripper.vendor: none`, which is what a cell that CAN be rehearsed says.
+
+    ⛔⛔ **AND THE SHIPPED TREE IS NOT ONE, WHICH IS THE MEASUREMENT THIS FILE USED TO MISS.** The
+    base tree says `gripper.vendor: robotiq`, a rehearsal moves `robot.vendor` to `dummy`, and a
+    Robotiq lives on the UR controller's tool I/O, so the rehearsal's own swap makes the gripper
+    unbuildable and the build substitutes a `NullGripper`. Until 2026-09-09 that cell connected and
+    picked, and `--rehearse --runs 3` reported `3/3 succeeded` with nothing on the flange.
+    `connect_cell` refuses it now, so the sequence tests below need a cell that declares it has no
+    end-effector on purpose: `substitution` is `None`, the operator said so, and it connects.
+    """
+    base = _config()
+    return base.model_copy(update={"gripper": base.gripper.model_copy(update={"vendor": "none"})})
 
 
 class TheOrderIsEnforcedTests(unittest.TestCase):
@@ -93,7 +108,7 @@ class TheStepsTests(unittest.TestCase):
         self.assertEqual(cell.safety().arm, type(cell.arm).__name__)
 
     def test_connected_yields_a_session_that_tears_down(self) -> None:
-        cell = Cell.rehearsal(_config())
+        cell = Cell.rehearsal(_declares_no_end_effector())
         cell.build()
         with cell.connected() as live:
             self.assertIsInstance(live, ConnectedCell)
@@ -108,13 +123,27 @@ class TheStepsTests(unittest.TestCase):
         cell.build()
         self.assertIsNone(cell.connected().lock)
 
+    def test_a_rehearsal_of_the_shipped_tree_cannot_connect(self) -> None:
+        """⛔⛔ **THE GAP THIS FILE DOCUMENTED AS A FEATURE.** `test_a_pick_runs_end_to_end_from
+        _python` ran this exact cell and asserted `succeeded`, and the CLI above it printed
+        `3/3 succeeded`, on a build whose own log line says `Built a NullGripper (no real
+        end-effector)`. The rehearsal manufactures that substitution itself, by moving the arm
+        vendor under an unchanged `gripper.vendor: robotiq`; the refusal cannot tell a manufactured
+        one from an operator's, and it must not, because the cell in front of it has no jaws either
+        way."""
+        cell = Cell.rehearsal(_config())
+        cell.build()
+        with self.assertRaises(NoRealGripper) as caught:
+            cell.connected().__enter__()
+        self.assertIn("close on nothing", str(caught.exception))
+
 
 class TheWholeSequenceTests(unittest.TestCase):
     """⭐ THE FOUR STEPS, IN THE ORDER, AS A CUSTOMER WOULD WRITE THEM. If this reads badly the class
     is wrong, whatever the unit tests say."""
 
     def test_a_pick_runs_end_to_end_from_python(self) -> None:
-        cell = Cell.rehearsal(_config())
+        cell = Cell.rehearsal(_declares_no_end_effector())
 
         self.assertTrue(cell.preflight().render())          # 1. no hardware
         cell.build()                                        # 2. drivers + grasp stack

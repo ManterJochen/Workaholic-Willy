@@ -27,14 +27,37 @@ from src.robot.constants import ROBOT_LOG_FILE, create_robot_logger
 __all__ = [
     "ConnectedCell",
     "ConnectStage",
+    "NoRealGripper",
     "StepOutcome",
     "TeardownReport",
     "connect_cell",
     "disconnect_cell",
+    "no_real_gripper_reason",
     "release_perception",
 ]
 
 logger = create_robot_logger("ConnectedCell", ROBOT_LOG_FILE)
+
+
+class NoRealGripper(RuntimeError):
+    """This cell has no end-effector and one was asked for. Raised instead of connecting.
+
+    Measured before this existed: ``real_cell --rehearse --runs 3`` on the shipped ``robot.yaml``
+    printed ``gripper  NullGripper`` and then ``RESULT: 3/3 succeeded``. Five configuration
+    combinations cannot produce the end-effector they name, one per ``SubstitutionReason`` member,
+    and none of them raises: the build hands back a working ``NullGripper``, which accepts every
+    commanded width and answers ``get_width_mm()`` with the configured maximum forever.
+
+    The repair that already landed does not reach the default pick. ``WidthDeltaGripperVerifier``
+    refuses a substituted gripper by name, but ``grasping.verification.enabled`` is ``false`` in the
+    shipped tree, so on the default open-loop attempt nothing reads a width and the pick still
+    reports ``SUCCEEDED``. The verifier helps a cell that opted in; this helps the cell that ships.
+
+    An ``Exception``, for the reason ``CellBuildRefused`` is one: both callers of this module catch
+    ``Exception`` and turn it into an operator-facing refusal (``api/routers/cell.py`` answers the
+    console, ``real_cell/__main__.py`` returns its configuration exit code). A ``BaseException``
+    would walk past both and arrive as a 500 with no message and a bare traceback at a bench.
+    """
 
 
 class StepOutcome(StrEnum):
@@ -130,6 +153,22 @@ def release_perception(service: Any) -> StepOutcome:
     return outcome
 
 
+def no_real_gripper_reason(substitution: Any) -> str:
+    """The one sentence both refusals say, built from the record the build attached.
+
+    One sentence, two doors. ``api/lifecycle.py`` refuses this connect with its own typed
+    ``ConnectRefused.NO_REAL_GRIPPER`` (it has a preview and a token to invalidate, which this
+    module knows nothing about) and ``connect_cell`` refuses it underneath. Those are two renderings
+    of one rule, and the prose was the part most likely to drift into being two rules: the console's
+    copy already carried the "close on nothing" clause that makes the refusal arguable with, and a
+    second hand-written copy here would have been the version the command line printed.
+    """
+    detail = str(getattr(substitution, "detail", "") or "")
+    fix = str(getattr(substitution, "fix", "") or "")
+    return (f"{detail} Connecting would look like it worked: the cell would come up, every pick "
+            f"would report success, and the gripper would close on nothing. {fix}")
+
+
 class ConnectStage(StrEnum):
     """Where a connect has got to, for a caller that narrates it.
 
@@ -162,6 +201,15 @@ def connect_cell(
     A gripper that refuses rolls the arm back. Leaving a half-connected cell means a UR controller's
     single control script is held by a process that has already reported a failure.
 
+    A cell whose end-effector could not be built does not come up at all. Measured on this tree:
+    ``real_cell --rehearse --runs 3`` on the shipped ``robot.yaml`` printed ``gripper  NullGripper``
+    at build and ``RESULT: 3/3 succeeded`` at the end. The substituted gripper accepts every
+    commanded width and answers ``get_width_mm()`` with the configured 85.0 mm maximum forever, so
+    nothing downstream disagrees: ``WidthDeltaGripperVerifier`` does refuse it by name, but
+    ``grasping.verification.enabled`` is ``false`` in the shipped tree and the default open-loop
+    attempt reads no width at all. The fact is decidable before the arm is commanded, so it is
+    decided there.
+
     Connecting is motion. Robotiq activation is a calibration sweep of the full finger travel; a
     vacuum cup's connect asserts the ejector pin immediately and drops whatever it is holding. This
     function does not ask whether that is allowed. Its callers do: the console with an
@@ -171,6 +219,17 @@ def connect_cell(
     # third line from this module would appear in the console's log twice. Failures are logged here,
     # because a rollback that did not take must not depend on a caller remembering to write it.
     say = announce or (lambda _stage: None)
+    # Before the first motion of the run, and read off the record rather than off a class, so any
+    # driver that grows the same field participates and this module keeps knowing nothing about the
+    # gripper package. `gripper.vendor: none` is the same jawless object with `substitution=None`
+    # and is a legitimate cell (a calibration rig, a camera-only bring-up); it still connects.
+    substitution = getattr(gripper, "substitution", None)
+    if substitution is not None:
+        # The refusal an operator is most likely to argue with, so the log keeps the reason rather
+        # than the verdict: a substituted cell connects fine and picks nothing.
+        logger.error("Connect refused: no real gripper (%s). %s",
+                     getattr(substitution, "reason", ""), getattr(substitution, "detail", ""))
+        raise NoRealGripper(no_real_gripper_reason(substitution))
     arm.connect()
     say(ConnectStage.ARM_CONNECTED)
     if gripper is None:

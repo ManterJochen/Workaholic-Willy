@@ -8,7 +8,11 @@
 set -euo pipefail
 
 # 1. Rehearse: the whole call path on a dummy arm, commanding nothing.
-python -m src.robot.execution.real_cell --rehearse --runs 1
+#    The profile is load-bearing. A rehearsal runs this config with the arm vendor moved to `dummy`,
+#    and the base tree's `gripper.vendor: robotiq` lives on the UR controller's tool I/O, so that one
+#    swap makes it unbuildable and the build substitutes a NullGripper. Since 2026-09-09 such a cell
+#    is refused at the connect (exit 1) instead of connecting and reporting a success it did not have.
+python -m src.robot.execution.real_cell --rehearse --runs 1 --profile console_dummy
 
 # 2. Everything decidable at a desk, without building anything.
 python -m src.robot.execution.real_cell --check

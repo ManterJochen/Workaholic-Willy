@@ -57,12 +57,56 @@ rather than left in a log:
    and plans against the capsule proxy permanently. That is not a missing file and no bake will
    produce one. Do not substitute the visual meshes: they are 31k to 65k vertices and are render
    assets, and a file named `*_collision_meshes.npz` promises exact geometry.
-4. **Its Lula sphere description is not in the frame of its own URDF.** This is the one that stops
-   it. Measured: the forearm spheres run along +z from 0 to 0.570 m where the asset's collision
-   cylinders run along -x from 0 to -0.572 m. Same link, same length, rotated frame. A cuRobo
-   descriptor pairing that URDF with those spheres would guard geometry that is not where the arm is,
-   and would load and plan without complaint. So `build_ur_config.py` refuses to write one, and says
-   all of this when it does.
+4. **Isaac ships ur10 in TWO incompatible link-frame families, and the obvious pairing is the wrong
+   one.** This is what stops it, and it is a defect in Isaac's shipped files rather than in this
+   repository. The ur10 Lula sphere map belongs to the **+z family**. `ur10_robot.urdf`, which sits
+   in the same directory, and cuRobo's own shipped `ur_description/ur10.urdf` are both **-x family**.
+   Every other UR on the box is -x on both sides, so ur10 is the single model where pairing the
+   nearest sphere map with the nearest URDF is silently wrong.
+
+   Measured 2026-09-09 through the full FK chain, as the signed distance of each sphere centre to the
+   arm body, with two pairings that work today as calibration:
+
+   | pairing | centres outside the arm | worst |
+   |---|---|---|
+   | sphere map + cuRobo's `ur10.urdf` (**the obvious one**) | 23 of 30 | **+341.5 mm** |
+   | sphere map + the importer `ur10.urdf` | 6 of 30 | +38.3 mm |
+   | *ur10e, which works today* | 5 of 33 | +45.3 mm |
+   | *ur5e, which works today* | 4 of 39 | +51.0 mm |
+
+   ⛔ **Read the calibration rows first.** 4 of 39 on a ur5e and 5 of 33 on a ur10e are what a
+   CORRECT pairing looks like, so 23 of 30 is not a worse fit, it is a different arm. That is
+   FAIL-OPEN by a third of a metre: a planner on the obvious pairing models the arm where it is
+   not and leaves unguarded the space where it is, and nothing raises. `build_ur_config.py`
+   refuses to write a ur10 descriptor and prints all of this when it does.
+
+### What a real ur10 fix would have to author
+
+The right frame family exists, so this is not hopeless, but it is four pieces of work rather than a
+switch. All four were verified by seventeen independent agents on 2026-09-09, and the three "cheap"
+claims among them were each measured and refuted:
+
+1. **A loadable URDF.** The importer URDF
+   (`isaacsim.asset.importer.urdf/data/urdf/robots/ur10/urdf/ur10.urdf`) is the correct frame family
+   and carries real collision cylinders, but cuRobo's parser (`yourdfpy`) refuses to load it. The
+   frame-identical `ur10_robot_suction.urdf` loads and carries `tool0`, and all 14 of its mesh
+   references are missing from disk. So the URDF has to be composed: frames from one, geometry from
+   the other.
+2. **A `tool0`.** The importer URDF has none, and the transcription gate in `build_ur_config.py`
+   **correctly refuses** to graft a sibling's chain onto it (its `wrist_3` rotation differs from the
+   donor by 1.0 against a 1e-6 tolerance). The correct transform is measurable rather than
+   remembered: relative to the importer URDF's `wrist_3_link` it is `xyz [0, 0.0922, 0]`,
+   `rpy (-pi/2, 0, 0)`, constant over 300 random configurations.
+3. **`shoulder_link` spheres.** Neither Lula file has any. `spheres_from_primitive_colliders.py`
+   reads the USD and not a URDF, so it does not do this job as written. Naive spheres of the
+   cylinder's own radius under-cover: 12151 of 20000 sampled surface points fall outside, worst gap
+   5.2 mm, which is a thin false-CLEAR shell no current test would catch.
+4. **A collision-mesh bundle**, baked from the importer URDF's frames, so the repository's own guard
+   geometry and the cuRobo descriptor cannot drift apart.
+
+⚠ **And none of that is proof.** Every measurement above is a static-file frame proof. The
+load-bearing check is a cuRobo self-collision run on the assembled descriptor, which nothing here
+has done.
 
 **A `ur10` cell is therefore usable for config, kinematics, joint limits, workspace and the sim
 asset, and is not cuRobo-plannable.** If you need a 1300 mm arm that plans, use the `ur10e`.

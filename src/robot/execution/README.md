@@ -30,7 +30,7 @@ seam refuses a query that is not in `Frame.BASE`.
 | `__init__.py` | The lazy re-export surface. Exactly 22 top-level names, listed below. |
 | `cell.py` | `Cell`: a cell as one noun, with four steps in the order that makes them safe. `preflight()` needs no hardware, `build()` is idempotent, `safety()` needs a build but commands nothing, `connected()` is the only step that touches a cell. Narration is the caller's: the steps are separate methods. |
 | `pick_run.py` | `PickRun`, `PickRunReport`, `PassRule`, `Recording`, `PickAttempt`, `PickOutcome`: N picks under one connect, one verdict over them, one frozen report. |
-| `lifecycle.py` | `connect_cell` / `disconnect_cell` / `ConnectedCell` / `TeardownReport`. Bringing a cell up is a transaction: a gripper that refuses rolls the arm back. Teardown reports, never raises, and is never silent. |
+| `lifecycle.py` | `connect_cell` / `disconnect_cell` / `ConnectedCell` / `TeardownReport` / `NoRealGripper`. Bringing a cell up is a transaction: a gripper that refuses rolls the arm back, and a cell whose end-effector could not be built is refused before the arm is commanded. Teardown reports, never raises, and is never silent. |
 | `calibration.py` | `CalibrationRoutine`, `CalibrationResult`, `MarkerPoseProvider`: move, settle, read FK, capture the marker, add the sample, solve `AX=XB`, for eye-to-hand and eye-in-hand alike. One pluggable perception seam (`marker_source`); entry points `run_from_json`, `run_auto`, `run_with_poses`. |
 | `pose_provider.py` | `PoseProvider`: load or generate workspace-validated and diversity-validated TCP target poses. |
 | `ik_service.py` | `RobotArmIKService` (the only place grasping reaches a controller for reachability), `CachedIKService` (an LRU quantiser), `URAnalyticIKService` (optional offline analytic IK). |
@@ -88,8 +88,11 @@ for a caller that has already connected and owns the teardown itself.
   printed with the verdict.
 - **`from_robot_config` substitutes a `NullGripper` rather than crashing.** Five configuration
   combinations cannot produce a real end-effector, one per `SubstitutionReason` member. Each logs a
-  warning, records the typed reason on the gripper object, and lets the cell connect. The cell then
-  reports every pick a success while holding nothing.
+  warning and records the typed reason on the gripper object. Since 2026-09-09 such a cell cannot be
+  connected at all: `connect_cell` raises `NoRealGripper` before the arm is commanded, so
+  `Cell.connected()` and the operator console give one answer. Until then it connected and reported
+  every pick a success while holding nothing. A cell that declares `gripper.vendor: none` carries no
+  substitution record and still connects.
 - **Two ways to build the service are not equivalent.** `from_robot_config` reads the whole
   configuration tree and populates `effective_config`; `from_components`, which a caller uses when
   it holds live device handles config cannot describe, leaves it `None` and thereby silences the
@@ -113,7 +116,9 @@ mock mode and on an Isaac workstation. `CalibrationRoutine` solves both the eye-
 (`T_cam_to_base`) and the eye-in-hand transform (`T_cam_to_tool`) against a real marker source.
 
 `from_robot_config` has a live caller in [`real_cell`](real_cell/README.md) and in
-`scripts/examples/api/01_first_cell/one_pick_end_to_end.py`, and both rehearse the whole path on a dummy arm. Beyond that
+`scripts/examples/api/01_first_cell/one_pick_end_to_end.py`, and both rehearse the whole path on a dummy arm under the
+`console_dummy` profile, whose gripper a dummy arm can carry. A rehearsal of the base tree is
+refused at the connect instead, because the vendor swap substitutes its Robotiq. Beyond that
 rehearsal, nothing in this layer has executed against a physical controller.
 
 The operator console in [`api/`](../../../api/README.md) consumes this layer over HTTP. The

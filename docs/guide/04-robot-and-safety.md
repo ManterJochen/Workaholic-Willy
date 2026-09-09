@@ -136,9 +136,16 @@ never be reported as a reserved slot. Note the import path when checking by hand
 The same readiness gate is wired into the config-driven boot path. `RuntimePickService`, which
 `AutonomousGraspService.from_robot_config` builds, is the only caller of `require_arm_vendor_ready`,
 so a misconfigured host fails there rather than deep inside `connect()`. Mock mode and the dummy
-vendor are exempt so the offline test suite is never gated. The simulator cell comes up through
-`from_components` and `bootstrap_sim_cell`, which never touch that gate, so on the simulation path run
-the doctor by hand.
+vendor are exempt so the offline test suite is never gated. Most of the simulator cell comes up
+through `from_components` and `bootstrap_sim_cell`, which never touch that gate, so on the simulation
+path run the doctor by hand; the config boot, `run_multiview_pick --boot config`, is the one
+simulator path that does reach it.
+
+A caller-supplied `arm` handle is exempt only when it advertises a **different** vendor than the
+config names, because such a stand-in drives no device of that vendor. A handle that advertises the
+configured vendor is that vendor's driver and still faces the gate: a `URRobotArm` constructs on a
+box that has no `ur_rtde`, because that import is guarded and the missing SDK only surfaces inside
+`connect()`, so holding one is no evidence that the host is ready.
 
 ### 2.3 Selecting a driver, and what construction does
 

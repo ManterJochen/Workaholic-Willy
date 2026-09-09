@@ -48,7 +48,13 @@ is inert by construction, which is the intended behaviour rather than a silent f
 
 `RobotVendor` holds `UR`, `KUKA`, `FRANKA`, `ROS2`, `SIM` and `DUMMY`. `GripperVendor` holds
 `ROBOTIQ`, `FRANKA_HAND`, `SCHUNK`, `VACUUM`, `JAW_IO`, `ONROBOT`, `DUMMY` and `NONE`. Both have a
-case-insensitive `from_string()` that raises with the full valid set in the message.
+case-insensitive `from_string()` that raises on an unknown name. Both refusals name the vendors
+that can actually be built here and list the reserved slots separately, each out of its own
+hand-kept `_RESERVED_VENDORS` (arms: `franka`, `ros2`; grippers: `franka_hand`, `schunk`), because
+a config that copies a reserved name out of an error message still validates. What happens after
+that differs, and the two messages say so: a reserved gripper name comes up with a `NullGripper`
+and no end-effector, while a reserved arm name fails loudly at `create_arm` and `Host.require` and
+never substitutes.
 
 `MotionResult` is frozen: `(status, command, target_pose=None, target_joints=None, message="",
 exception=None)`, with an `ok` property, truthiness through `__bool__`, and the constructors

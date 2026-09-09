@@ -1,7 +1,7 @@
 """Run a config-driven pick on a real cell: the live caller of ``from_robot_config``.
 
     python -m src.robot.execution.real_cell --check              # config checklist, nothing else
-    python -m src.robot.execution.real_cell --rehearse --runs 3  # full path, dummy arm, no camera
+    python -m src.robot.execution.real_cell --rehearse --runs 3 --profile console_dummy
     python -m src.robot.execution.real_cell --dry-run            # real config, build only, no motion
     python -m src.robot.execution.real_cell --runs 10            # the real cell
 
@@ -26,6 +26,14 @@ refused; 2 the cell connected but at least one pick did not succeed; 3 an unexpe
 
 Nothing below the rehearsal path has run against a physical controller. ``--rehearse`` is the same
 wiring with a dummy arm and a synthetic scene.
+
+A rehearsal can manufacture a cell that is refused. It swaps ``robot.vendor`` to ``dummy`` and
+changes nothing else, so a ``gripper.vendor`` that needs the real arm (``robotiq`` on the UR
+controller's tool I/O, ``vacuum`` and ``jaw_io`` on its digital I/O) can no longer be built and the
+build substitutes a ``NullGripper``. Since 2026-09-09 such a cell is refused at stage 3 with
+``NoRealGripper`` and this runner exits 1, where before it connected and printed
+``RESULT: 3/3 succeeded`` with nothing on the flange. ``--profile console_dummy`` names a gripper a
+dummy arm can carry, and is how the whole path is exercised at a desk.
 """
 
 from __future__ import annotations
