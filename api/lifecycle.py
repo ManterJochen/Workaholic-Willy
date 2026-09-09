@@ -18,6 +18,13 @@ or a reloaded tab cannot produce one.
 A substituted gripper blocks the connect. ``from_robot_config`` answers a misconfigured end-effector
 with a working ``NullGripper``, so the cell would come up, every pick would report success, and the
 jaws would close on nothing. The typed reason travels on the gripper, and this refuses on it.
+
+The library refuses it too, in the function this one calls. ``connect_cell`` raises
+``NoRealGripper`` on the same record, so a Python caller using ``Cell.connected()`` gets the same
+answer this console gives, which it did not before 2026-09-09, when ``real_cell --rehearse``
+reported ``3/3 succeeded`` on a cell this console refused to connect at all. What stays here is what
+a server has and a library does not: a typed code for the UI, a preview whose token must be
+invalidated, and a lock that was already taken. The sentence both print now has one author.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from src.robot.execution.lifecycle import (
     ConnectStage,
     connect_cell,
     disconnect_cell,
+    no_real_gripper_reason,
     release_perception,
 )
 from src.utility.log_cfg import create_logger
@@ -349,11 +357,13 @@ class CellSession:
                     "Connect refused: no real gripper (%s). %s",
                     substitution.reason, substitution.detail,
                 )
+                # The sentence is the library's, and so is the rule. `connect_cell` refuses this
+                # same gripper underneath (`NoRealGripper`), so this branch is what the console has
+                # that the library does not: a typed code for the UI, a preview to invalidate and a
+                # lock it never took, rather than a second answer to the same question. The wording
+                # came from here; keeping a copy of it here is how the two would drift.
                 raise CellTransitionError(
-                    ConnectRefused.NO_REAL_GRIPPER,
-                    f"{substitution.detail} Connecting would look like it worked: the cell would come "
-                    f"up, every pick would report success, and the gripper would close on nothing. "
-                    f"{substitution.fix}",
+                    ConnectRefused.NO_REAL_GRIPPER, no_real_gripper_reason(substitution),
                 )
 
             self.state = CellState.CONNECTING
