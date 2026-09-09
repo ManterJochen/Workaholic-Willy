@@ -80,7 +80,40 @@ _STATUS_HINTS = {
         "it is not. Bake the variant for this model, or drop the variant and lose only the gripper "
         "geometry."
     ),
+    "primitive_colliders": (
+        "Nothing to do: this arm has no exact geometry to bake, so the capsule proxy is the final "
+        "answer for it rather than a stopgap. Do not substitute the visual meshes; they are render "
+        "assets at 31k to 65k vertices per link, and putting one behind a collision-geometry filename "
+        "would make the guard report a comparison it is not making."
+    ),
 }
+
+#: Models whose Isaac asset collides the arm with primitives and ships no collision mesh at all,
+#: mapped to what it ships instead. A model listed here can never get an exact-mesh bundle out of
+#: its asset, so the absence of one is a fact about the asset and not a task for an operator.
+#:
+#: Measured across all six UR assets on 2026-09-09, and
+#: ``scripts/isaac/bake_ur_collision_meshes.py`` refuses with the same finding. Five ship
+#: ``collisions/<part>/mesh`` as a triangulated UsdGeom.Mesh with PhysicsMeshCollisionAPI at 2.0k
+#: to 3.5k vertices per link. ur10 ships cylinders. Its visual meshes are triangulated, which is
+#: the trap: they run 31k to 65k vertices and are render assets, so baking those would put a
+#: visual behind a name that promises a collider.
+#:
+#: This changes only the explanation for an absent bundle, never the behaviour: such a cell plans
+#: against the capsule proxy exactly as ``no_bundle`` does. If a bundle for one of these models is
+#: ever supplied out of band it is loaded and used, because the entry forbids nothing.
+PRIMITIVE_COLLIDER_MODELS: dict[str, str] = {
+    "ur10": "thirteen UsdGeom.Cylinder prims across its six links",
+}
+
+
+def primitive_collider_reason(model: str) -> str | None:
+    """What ``model`` collides with instead of meshes, or None when a bundle is merely absent.
+
+    The one source both the status token and the doctor probe read, so the two cannot come to
+    different conclusions about the same arm.
+    """
+    return PRIMITIVE_COLLIDER_MODELS.get(model.lower())
 
 
 def _yaw_matrix(yaw_deg: float) -> np.ndarray:
@@ -228,10 +261,16 @@ def mesh_backend_status(
 
     It returns ``"ok"``; ``"unknown_model"``, where there is no bundled DH chain and the
     link meshes cannot be placed; ``"no_bundle"``, where there is no
-    ``{model}_collision_meshes.npz``; ``"variant_model_mismatch"``, where the named
-    gripper variant was baked from a different robot so its arm meshes belong to
+    ``{model}_collision_meshes.npz`` and one could be baked; ``"primitive_colliders"``,
+    where there is no bundle and none can exist because the asset collides that arm with
+    primitives (see ``PRIMITIVE_COLLIDER_MODELS``); ``"variant_model_mismatch"``, where the
+    named gripper variant was baked from a different robot so its arm meshes belong to
     another arm; or ``"no_engine"``, where neither Coal nor python-fcl imports, which
     is the accepted condition on a host without either.
+
+    ``primitive_colliders`` and ``no_bundle`` degrade identically, to the capsule proxy. They
+    are two tokens because they ask opposite things of a reader: one is a task, the other is a
+    property of the robot.
 
     The model and bundle checks come first and need no collision engine, which makes
     the answer deterministic and lets the caller tell a host that simply has no engine,
@@ -243,7 +282,7 @@ def mesh_backend_status(
     default = collision_mesh_bundle(model, mesh_name)
     path = (Path(mesh_dir) / default.name) if mesh_dir else default
     if not path.exists():
-        return "no_bundle"
+        return "primitive_colliders" if primitive_collider_reason(model) else "no_bundle"
     if mesh_name and _variant_is_for_another_model(model, path, mesh_dir):
         return "variant_model_mismatch"
     mod, kind = import_collision_engine()

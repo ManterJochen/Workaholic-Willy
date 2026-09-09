@@ -12,7 +12,9 @@ that the pick path actually completes, and (c) the ordering contract that only b
 
 from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from src.config.schema.robot import RobotConfig
@@ -22,6 +24,8 @@ from src.robot.execution.autonomous_grasp.rehearsal import (
     RehearsalPerceptionSource,
     rehearsal_intrinsics,
 )
+
+_ROOT = Path(__file__).resolve().parents[1]
 
 _GOOD_TOOL = {
     "source": "willy", "offset_mm": (0.0, 132.0, 0.0),
@@ -287,77 +291,83 @@ class GraspVerificationTests(unittest.TestCase):
         self.assertTrue(hasattr(VacuumGripper, "is_object_detected"))
 
 
-class WalkthroughExampleTests(unittest.TestCase):
-    """The teaching examples must keep RUNNING, or they decay into prose that used to be true.
+class CellChecksTests(unittest.TestCase):
+    """The checks under `scripts/checks/` must keep RUNNING, and their verdict is data.
 
-    They are the artifacts that read the real config, build the real objects and print real numbers,
-    so a schema rename or a moved accessor breaks them silently the moment nobody runs them. These
-    tests are cheap insurance against exactly that.
+    ⛔ THESE REPLACE A CLASS THAT IMPORTED EXAMPLES AND CALLED `main([])`. That worked while the
+    examples were tools with an argument surface. They are not any more: an example is straight-line
+    code with no `main`, no flags and no exit code worth reading, and the file that had a verdict
+    moved to `scripts/checks/cell_bringup.py` and kept it. Every example is executed instead by
+    `tests/test_examples_run.py`, which runs the whole directory rather than four files by name.
 
-    ⛔ AND THE INSURANCE WAS WORTH BUYING. `examples/` carried no lint, no type check and no test but
-    these two, and an inventory found its `01_hello_pick` claiming the run "clears all six safety
-    guards" while NO GUARD RAN, and explaining a frame-contract refusal as "the Dummy arm has no
-    kinematics". `examples/real_hardware/first_pick_walkthrough.py`, which these two tests used to
-    exercise, read `robot.fixtures` — an attribute `RobotConfig` does not have.
+    ⚠ AND THE OLD LOADER IS WHY THIS WAS RED FOR AN HOUR. It built its path as
+    `"scripts" / "examples" / f"{name}.py"`, so the literal path existed nowhere in the source and a
+    sweep for dead references after the move could not see it. A path assembled at runtime has no
+    edge to a grep, which is the argument for running the files rather than searching for them.
 
-    They now point at `scripts/examples/`, which IS in ruff and mypy in CI.
+    Run as a subprocess rather than imported. A check reads `sys.argv` and returns an exit code, and
+    importing it to call `main` would test a function while the operator runs a program.
     """
 
-    @staticmethod
-    def _examples_dir():
-        from pathlib import Path
+    _CHECKS = _ROOT / "scripts" / "checks"
 
-        return Path(__file__).resolve().parents[1] / "scripts" / "examples"
+    def _run(self, name: str, *args: str, profile: str | None = None):
+        import os
+        import subprocess
 
-    @staticmethod
-    def _example(name: str):
-        """Import an example by its path under `scripts/examples`. They are scripts, not a package."""
-        import importlib.util
+        env = dict(os.environ)
+        if profile is not None:
+            # The caller sets the profile, which is the whole point: no check may write to its own
+            # environment, and `tests/test_examples_run.py` asserts that none does.
+            env["WILLY_PROFILE"] = profile
+        return subprocess.run(
+            [sys.executable, str(self._CHECKS / f"{name}.py"), *args],
+            cwd=_ROOT, capture_output=True, text=True, timeout=300, env=env,
+        )
 
-        import sys
+    def test_the_bringup_check_refuses_to_connect_unasked(self) -> None:
+        """A check that opens a socket because somebody typed its name is a hazard.
 
-        path = WalkthroughExampleTests._examples_dir() / f"{name}.py"
-        assert path.is_file(), f"no example at {path}"
-        spec = importlib.util.spec_from_file_location(path.stem, path)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        # Registered before it executes, which is the documented recipe and not a detail: a module
-        # that defines a dataclass has that class look its own module up in `sys.modules` while it
-        # is being built, and an unregistered module makes that lookup return `None`.
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        return module
-
-    def test_the_rehearsal_pick_runs_end_to_end(self) -> None:
-        self.assertEqual(self._example("cell/03_first_pick").main([]), 0)
-
-    def test_robot_setup_reads_the_real_config(self) -> None:
-        """It reports the config preflight's verdict. A non-zero exit here means a CHECK came out
-        wrong, which is a finding about the config -- not about the example."""
-        self.assertIn(self._example("cell/01_robot_setup").main([]), (0, 1))
-
-    def test_it_runs_under_a_profile_chain(self) -> None:
-        """Profile layering is one of the things these teach, so it has to survive being layered."""
-        self.assertIn(self._example("cell/01_robot_setup").main(["--profile", "ur3e"]), (0, 1))
-
-    def test_every_example_answers_help(self) -> None:
-        """A `--help` that raises is an example nobody can start.
-
-        Every example in the tree, found rather than listed. A hand-written list is how this test
-        came to name seven files that no longer exist: the examples moved into topic folders and the
-        list stayed where it was, so it tested nothing until it tested the wrong thing.
+        Exit 2 is "nothing to check here", which is the honest answer for a connection nobody
+        authorised, and it is distinct from exit 1, which would claim the cell is wrong.
         """
-        import contextlib
-        import io
+        result = self._run("cell_bringup")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("--live", result.stdout)
 
-        found = sorted(self._examples_dir().glob("*/[0-9]*.py"))
-        self.assertGreater(len(found), 20, "the example tree is smaller than it should be")
-        for path in found:
-            name = f"{path.parent.name}/{path.stem}"
-            with self.subTest(example=name), contextlib.redirect_stdout(io.StringIO()):
-                with self.assertRaises(SystemExit) as caught:
-                    self._example(name).main(["--help"])
-                self.assertEqual(caught.exception.code, 0)
+    def test_the_safety_check_reads_this_cell_and_returns_a_verdict(self) -> None:
+        """Its exit code is a finding about the config, never about the check.
+
+        0 means every wired guard refused a violation of its own family, 1 means one accepted or
+        refused for the wrong reason, 2 means this cell has no guard pipeline to interrogate (a
+        dummy or sim arm states outright that nothing gates its motion). All three are legitimate
+        answers about a tree, which is why this asserts the set and not a value.
+        """
+        result = self._run("safety_guards")
+        self.assertIn(result.returncode, (0, 1, 2), result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stdout + result.stderr)
+
+    def test_a_check_honours_a_profile_it_did_not_set(self) -> None:
+        """Profile layering has to survive being layered, and the layering is the caller's.
+
+        The previous generation took `--profile` and set `WILLY_PROFILE` itself without restoring
+        it, and one run leaked into a safety test three files away that then failed in the suite
+        while passing alone. No check takes that flag now.
+        """
+        for name in ("safety_guards", "camera_artifacts"):
+            with self.subTest(check=name):
+                result = self._run(name, profile="ur3e")
+                self.assertIn(result.returncode, (0, 1, 2), result.stdout + result.stderr)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+
+    def test_a_check_refuses_a_flag_it_does_not_have(self) -> None:
+        """No argparse means no `--help`, so an unknown flag has to be answered by hand.
+
+        Silently ignoring it would be worse than the argparse it replaced: an operator who mistypes
+        a flag would get a run that looks like the one they asked for and is not.
+        """
+        result = self._run("cell_bringup", "--nonsense")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
     def test_the_two_frames_describe_the_same_physical_point(self) -> None:
         """Station 4's whole lesson. If this stops holding, the example is teaching a falsehood."""
@@ -421,56 +431,3 @@ class CuroboProbeHonestyTests(unittest.TestCase):
         text = _P("docs/runbooks/real_cell_first_pick.md").read_text(encoding="utf-8")
         self.assertIn("get_content_root", text)
         self.assertIn("build_ur_config.py", text)
-
-
-class ExampleEnvironmentTests(unittest.TestCase):
-    """`--profile` must not survive the example that used it.
-
-    ⛔ REGRESSION TEST FOR A REAL, MEASURED LEAK. The examples used to do
-    `os.environ["WILLY_PROFILE"] = args.profile` and never put it back. Harmless as a script -- the
-    process exits -- but these examples are also CALLED: by `06_full_pipeline`, and by the tests
-    above. One `--profile ur3e` run left the variable set, and
-    `test_safety_guard_conformance.py::test_workspace_guard_accepts_in_box_and_rejects_out_of_box`
-    then failed in the suite while passing in isolation, because it was reading a different cell's
-    workspace box. The symptom appeared three files away from the cause.
-
-    A function that mutates the process environment and does not restore it is wrong in BOTH
-    contexts, so the fix lives in the examples' shared `Example` manager, not in a test fixture.
-    """
-
-    @staticmethod
-    def _example(name: str):
-        return WalkthroughExampleTests._example(name)
-
-    def test_the_profile_does_not_outlive_the_example(self) -> None:
-        import contextlib
-        import io
-        import os
-
-        before = os.environ.get("WILLY_PROFILE")
-        with contextlib.redirect_stdout(io.StringIO()):
-            self._example("cell/01_robot_setup").main(["--profile", "ur3e"])
-        self.assertEqual(os.environ.get("WILLY_PROFILE"), before,
-                         "the example leaked WILLY_PROFILE into the process")
-
-    def test_it_is_restored_even_when_a_step_raises(self) -> None:
-        """The restoration is in `__exit__`, so it has to survive the exception path too."""
-        import contextlib
-        import importlib.util
-        import io
-        import os
-        from pathlib import Path
-
-        path = Path(__file__).resolve().parents[1] / "scripts" / "examples" / "_common.py"
-        spec = importlib.util.spec_from_file_location("_common", path)
-        assert spec is not None and spec.loader is not None
-        common = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(common)
-
-        before = os.environ.get("WILLY_PROFILE")
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
-            with common.Example("t", "raises", profile="ur3e") as run:
-                self.assertEqual(os.environ["WILLY_PROFILE"], "ur3e")
-                with run.step("boom"):
-                    raise RuntimeError("boom")
-        self.assertEqual(os.environ.get("WILLY_PROFILE"), before)

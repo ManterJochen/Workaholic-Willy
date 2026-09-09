@@ -164,8 +164,8 @@ python -m src.robot.execution.real_cell --rehearse --runs 3
 Two rehearsals that need nothing but the clone, and print what they actually did:
 
 ```bash
-python scripts/examples/cell/01_robot_setup.py     # is this cell described coherently?
-python scripts/examples/cell/03_first_pick.py            # one grasp on a dummy arm, and which layers ran
+python scripts/checks/cell_bringup.py     # is this cell described coherently?
+python scripts/examples/api/01_first_cell/one_pick_end_to_end.py            # one grasp on a dummy arm, and which layers ran
 ```
 
 The same pick from Python, which is what those examples call:
@@ -265,22 +265,34 @@ shelling out, so every one is also a worked example of the API.
 > rehearsal: it loads the configuration, builds the real components, runs every check that needs no
 > motion, and commands nothing.
 
-The numbering runs across the folders, so reading in numeric order is a path from an unopened box to
-a trained model. The folders let you go straight to the question you have.
+Every subject appears twice: as Python under [`api/`](scripts/examples/api/) and as the same subject
+on a command line under [`cli/`](scripts/examples/cli/), one `.ps1` and one `.sh` each. That is not a
+convention this directory invented. It is the calling convention the library is built on, whose first
+sentence is that the two callers have to be the same answer in two costumes. The folders are numbered
+by the order a cell needs them, so reading in order is a path from an unopened box to a trained model.
 
 | Folder | The decisions in it |
 |---|---|
-| [`cell/`](scripts/examples/cell/) | which vendor, which gripper, one grasp end to end, and whether the arm plans or drives a straight line |
-| [`calibration/`](scripts/examples/calibration/) | a fixed camera, a wrist camera, and the two places a two-camera cell is wired wrong |
-| [`perception/`](scripts/examples/perception/) | which detector, what to do when it is confidently wrong, and where depth comes from |
-| [`safety/`](scripts/examples/safety/) | the six guards refusing on purpose, the exact meshes against the proxy, and declaring your bench |
-| [`grasping/`](scripts/examples/grasping/) | a jaw or a cup, the analytic ranker or the learned one, and the thirteen switches that ship off |
-| [`datagen/`](scripts/examples/datagen/) | your parts or public ones, what a scene decides, which engine, geometry against physics, and the corpus |
-| [`train/`](scripts/examples/train/) | the whole chain on your own parts, the public-corpus road, the two knobs, the report, and the limits |
-| [`sim/`](scripts/examples/sim/) | the same pick where a wrong answer is free |
-| [`pipeline/`](scripts/examples/pipeline/) | all of it, stopping at the first blocking stage |
+| [`01_first_cell/`](scripts/examples/api/01_first_cell/) | which gripper really gets built, one grasp end to end, and whether the arm plans or drives a straight line |
+| [`02_calibration/`](scripts/examples/api/02_calibration/) | a fixed camera and a wrist camera, and which field each mode puts its answer in |
+| [`03_perception/`](scripts/examples/api/03_perception/) | which detector, what to do when it is confidently wrong, and where depth comes from |
+| [`04_safety/`](scripts/examples/api/04_safety/) | the exact meshes against the capsule proxy, and gating the whole path |
+| [`05_grasping/`](scripts/examples/api/05_grasping/) | a jaw or a cup, and the analytic generator or the learned one |
+| [`06_datagen/`](scripts/examples/api/06_datagen/) | your parts or public ones, what a scene decides, which engine, and the corpus |
+| [`07_training/`](scripts/examples/api/07_training/) | the whole chain on your own parts, the public-corpus road, the two knobs, the report, and the limits |
+| [`08_sim/`](scripts/examples/api/08_sim/) | the same pick where a wrong answer is free, and recording one |
 
-Start with [`scripts/examples/cell/01_robot_setup.py`](scripts/examples/cell/01_robot_setup.py). Full index:
+**Checks are the other half**, in [`scripts/checks/`](scripts/checks/). An example teaches and has no
+exit code worth reading; a check holds this cell against its own configuration and exits non-zero when
+the two disagree, which is what puts it in a bring-up list.
+[`cell_bringup.py`](scripts/checks/cell_bringup.py) connects and asks whether the arm stands inside the
+box it will be held to, [`safety_guards.py`](scripts/checks/safety_guards.py) makes every wired guard
+refuse a violation of its own family, [`camera_artifacts.py`](scripts/checks/camera_artifacts.py) opens
+every calibration artifact the config names, and
+[`grasping_switches.py`](scripts/checks/grasping_switches.py) reports which grasping block is reachable
+in which mode.
+
+Start with [`scripts/checks/cell_bringup.py`](scripts/checks/cell_bringup.py). Full index:
 [`scripts/examples/README.md`](scripts/examples/README.md).
 
 ---

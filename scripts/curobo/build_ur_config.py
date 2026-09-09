@@ -380,6 +380,26 @@ cfg = yaml.safe_load(_tpl.read_text(encoding="utf-8"))
 kin = cfg["robot_cfg"]["kinematics"]
 kin["urdf_path"] = f"robot/ur_description/{MODEL}.urdf"
 kin["collision_spheres"] = sphere_map
+
+# ⛔ EVERY LINK THE TEMPLATE GUARDS MUST HAVE SPHERES, CHECKED HERE RATHER THAN AT THE FIRST PLAN.
+# MEASURED 2026-09-09: the template declares seven collision links and the ur10 Lula description
+# covers six. Isaac ships no shoulder_link spheres for that model and for no other. cuRobo then
+# raises KeyError: shoulder_link the first time anything loads the file, with every step before it
+# reporting success -- a descriptor probe reads the path, finds a file, and says ok all the way to
+# the first motion.
+#
+# The near miss is the worse half. Had the template not happened to name the link, this would have
+# written a ur10 with NO collision spheres on its shoulder and planned against it in silence.
+_guarded = set(kin.get("collision_link_names") or [])
+_unarmed = sorted(_guarded - set(sphere_map))
+if _unarmed:
+    raise SystemExit(
+        f"{MODEL}: the template guards {sorted(_guarded)} and this build has spheres for "
+        f"{sorted(sphere_map)}. Missing: {_unarmed}.\n"
+        f"  cuRobo raises KeyError on the first load, so no file is written rather than one that\n"
+        f"  fails later. A link with no spheres would not be checked for collision at all.\n"
+        f"  Isaac ships no Lula spheres for {MODEL}/{_unarmed}; the other UR models all have them."
+    )
 kin.pop("usd_path", None)  # the ur10e usd is wrong for this model
 if "dynamics" in cfg["robot_cfg"]:
     cfg["robot_cfg"]["dynamics"].pop("neural_inverse_dynamics_state_dict", None)

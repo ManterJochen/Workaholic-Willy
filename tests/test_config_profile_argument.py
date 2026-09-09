@@ -3,9 +3,12 @@
 ⛔⛔ **THE DANCE THIS REPLACES.** Choosing an overlay chain used to be possible only by writing
 ``os.environ["WILLY_PROFILE"]``, so a caller who wanted one tree had to save the old value, set the
 new one, load, and restore in a ``finally``. That was written out by hand at nine production sites,
-no two quite alike, and `scripts/examples/_common.py:85-91` records what one leak cost: an example
-invoked with ``--profile ur3e`` left the variable set, and an unrelated safety-guard test three files
-later began failing while passing in isolation.
+no two quite alike, and one leak cost a whole afternoon: an example invoked with ``--profile ur3e``
+left the variable set, and an unrelated safety-guard test three files later began failing while
+passing in isolation. That example generation has since been retired, and the rule that replaced
+it is asserted in `tests/test_examples_run.py`: nothing under `scripts/examples/` or
+`scripts/checks/` may write to `os.environ` at all, because a flag that mutates the environment
+is a second way to say what the environment already says.
 
 ⭐ **AND ONE OF THEM CLEARED THE WHOLE PROCESS CACHE, TWICE, TO READ ONE VALUE.**
 `safety/planning/__main__.py` called ``reload_config()`` before and after its load, so a diagnostic

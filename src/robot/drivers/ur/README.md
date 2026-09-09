@@ -196,7 +196,7 @@ Ordered so each step de-risks the next. Nothing here moves the arm.
    refuses without either. See the four refusals above for what to set.
 4. **Is Remote Control on?** External control requires it. Every URSim container start comes up in
    Local; expect the same discipline on a real pendant.
-5. **Network and connection.** `python scripts/examples/cell/01_robot_setup.py --live` connects, reads
+5. **Network and connection.** `python scripts/checks/cell_bringup.py --live` connects, reads
    the TCP pose back in millimetres and the controller's own robot and safety mode, then
    disconnects. No motion. The same script without `--live` runs the config preflight alone, which
    is the check `python -m src.robot.execution.real_cell --check` runs.

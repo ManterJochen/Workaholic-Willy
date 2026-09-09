@@ -31,13 +31,13 @@ from pathlib import Path
 from typing import Any
 
 # Running this as a file puts only `scripts/ursim/` on sys.path, so `import src...` fails without
-# the repository root. `scripts/examples/_common.py` does the same insert for the examples.
+# the repository root. Every file under `scripts/examples/api/` does the same insert inline, for the same reason.
 _REPO_ROOT = str(Path(__file__).resolve().parents[2])
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 # And this directory, so the singular-height table is read from the probe that explains it rather
 # than declared a second time here. Two declarations of one height is how the two files came to
-# disagree by 10 mm. `scripts/examples/pipeline/80_full_pipeline.py` imports its siblings the same way.
+# disagree by 10 mm. `scripts/examples/api/01_first_cell/one_pick_end_to_end.py` imports its siblings the same way.
 _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)

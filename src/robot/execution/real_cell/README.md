@@ -18,7 +18,7 @@ This package does not know how to build a cell. It is a thin shim over
 same builders without importing a command-line runner. What lives here is the bench wording, the
 banners, and the two things nothing else owns: `run_config_preflight` and `calibrate`.
 
-`scripts/examples/cell/03_first_pick.py` runs the same composition from Python and does not go through this
+`scripts/examples/api/01_first_cell/one_pick_end_to_end.py` runs the same composition from Python and does not go through this
 runner, which is the check that the shim carries no logic of its own.
 
 ## The stages, and what each proves
@@ -143,4 +143,4 @@ exercised in simulation only, and the marker source has never seen a physical RG
 - [drivers/ur](../../drivers/ur/README.md), the UR driver and its bring-up checklist
 - [robot/perception](../../perception/README.md), the live-camera source this runner consumes
 - [camera](../../../camera/README.md), `FrameProvider` and the `rig(rig_id)` handle both runners take
-- `scripts/examples/cell/03_first_pick.py`, the same composition driven from Python
+- `scripts/examples/api/01_first_cell/one_pick_end_to_end.py`, the same composition driven from Python

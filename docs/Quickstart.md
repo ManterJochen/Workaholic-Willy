@@ -2,9 +2,9 @@
 
 From a fresh clone to a pick you can watch, on a desk with no robot and no camera attached.
 
-Two example scripts carry the whole of it. `scripts/examples/cell/01_robot_setup.py` reports what your
+Two example scripts carry the whole of it. `scripts/checks/cell_bringup.py` reports what your
 configuration claims the cell is and runs the desk-side preflight over it.
-`scripts/examples/cell/03_first_pick.py` builds a cell on a dummy arm and drives one pick through the real
+`scripts/examples/api/01_first_cell/one_pick_end_to_end.py` builds a cell on a dummy arm and drives one pick through the real
 grasp stack. Neither needs hardware, and no example commands a motion unless you pass `--live`.
 
 ## What you are installing
@@ -51,7 +51,7 @@ Everything below runs from the repository root.
 
 ```bash
 python -m src.config                       # validate the YAML tree
-python scripts/examples/cell/01_robot_setup.py  # then read it back as a cell
+python scripts/checks/cell_bringup.py  # then read it back as a cell
 ```
 
 Against the shipped tree, the second command reports a UR cell and three blocking preflight items:
@@ -78,7 +78,7 @@ explains what each item looks like at the cell if you skip it.
 ## 3. Run one pick, with no robot
 
 ```bash
-python scripts/examples/cell/03_first_pick.py
+python scripts/examples/api/01_first_cell/one_pick_end_to_end.py
 ```
 
 This builds a cell on a dummy arm against a synthetic scene and runs the real pick path: config
@@ -122,7 +122,7 @@ chain, applied left to right:
 | `eth2` | the fusion half of a cell with two fixed RGB-D cameras. Use it as `ur5e,eth2` |
 
 ```bash
-WILLY_PROFILE=ur5e python scripts/examples/cell/01_robot_setup.py
+WILLY_PROFILE=ur5e python scripts/checks/cell_bringup.py
 python -m src.config --profile ur5e,eth2 --print
 ```
 
@@ -144,7 +144,7 @@ A cell with no `CAMERA->BASE` transform builds, connects, and then refuses every
 `INVALID_TARGET`, which at the bench looks like a broken robot. Calibration is what removes that
 third blocking item, and it is a bench procedure rather than a command you can rehearse away:
 [calibration setup](calibration-setup.md) is the page to work from, and
-`scripts/examples/calibration/10_eye_to_hand.py` is the guided walkthrough that runs the same routine.
+`scripts/examples/api/02_calibration/calibrate_fixed_camera.py` is the guided walkthrough that runs the same routine.
 
 ## 6. Grasp presets
 
@@ -252,7 +252,7 @@ cell refuses to boot without. [Make Isaac ready](isaac-ready.md) is the setup, a
 [`src/willy_sim/`](../src/willy_sim/README.md) is the runner catalogue.
 
 ```bash
-python scripts/examples/sim/70_sim_pick.py                                # checks this box, runs nothing
+python scripts/examples/api/08_sim/sim_pick_rate.py                                # checks this box, runs nothing
 <isaac-sim>\python.bat -m src.willy_sim.run_m1_pick --runs 10    # known-pose pick
 ```
 

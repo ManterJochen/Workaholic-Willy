@@ -476,7 +476,7 @@ Several classes carry a factory of that name, so read the results rather than co
 `datagen/rl/occupancy.py`. `Cell.from_robot_config` wraps those builders as the four ordered steps a
 bench needs, and it is what
 [`python -m src.robot.execution.real_cell`](../../src/robot/execution/real_cell/README.md),
-`src/robot/execution/pick_run.py` and `scripts/examples/cell/03_first_pick.py` drive: config, preflight, build, connect
+`src/robot/execution/pick_run.py` and `scripts/examples/api/01_first_cell/one_pick_end_to_end.py` drive: config, preflight, build, connect
 (arm before gripper), then pick. `--rehearse` runs the whole path on a dummy arm. **None of it has
 run against a physical controller**, so everything past the rehearsal is unvalidated on hardware.
 Procedure: [`docs/runbooks/real_cell_first_pick.md`](../runbooks/real_cell_first_pick.md).

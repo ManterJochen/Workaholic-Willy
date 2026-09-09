@@ -32,6 +32,7 @@ from src.robot.core import (
 )
 from src.robot.grippers import GripperController
 from src.robot.safety import SafetyPreflight
+from src.robot.safety._ur_kinematics import ur_series_twin
 from src.robot.safety.planning import CuroboPlanClient, CuroboUnavailableError
 from src.robot.safety.workspace import WorkspaceGuard
 
@@ -277,10 +278,25 @@ class URRobotArm(RobotArm):
             )
             return
         if declared == reported:
-            self.logger.info(
-                "controller model verified: config %r matches the controller's %r",
-                self._capabilities.model, reported_raw,
-            )
+            # ⚠ SAY WHAT WAS NOT CHECKED. A size class is not a model: a UR3 and a UR3e are both
+            # "UR3" to this comparison, on purpose, because the controller reports the same
+            # string for both. Logging a bare "verified" for a pair this check cannot separate
+            # reads as an all-clear it did not earn, and the separation is done further down by
+            # _verify_tool_frame, relatively rather than by a threshold.
+            twin = ur_series_twin(self._capabilities.model)
+            if twin is None:
+                self.logger.info(
+                    "controller model verified: config %r matches the controller's %r",
+                    self._capabilities.model, reported_raw,
+                )
+            else:
+                self.logger.info(
+                    "controller SIZE verified: config %r and the controller's %r are both a "
+                    "UR%s. The series was NOT checked here and cannot be from this string, "
+                    "because a %s controller reports %r too. The tool-frame check next tells "
+                    "the two apart by asking which of them explains the controller better.",
+                    self._capabilities.model, reported_raw, declared, twin, reported_raw,
+                )
             return
         raise RobotConnectionError(
             f"ur.model is {self._capabilities.model!r}, but this controller reports "
@@ -328,10 +344,8 @@ class URRobotArm(RobotArm):
                 "instant. Let the arm come to rest and connect again."
             )
         joints = list(self._conn.get_joint_positions())
-        observed = derive_active_tool_frame(
-            self._capabilities.model, joints,
-            URPose.from_ur_list(self._conn.fk_current()).to_T(),
-        )
+        controller_tcp = URPose.from_ur_list(self._conn.fk_current()).to_T()
+        observed = derive_active_tool_frame(self._capabilities.model, joints, controller_tcp)
         if observed is None:
             raise RobotConnectionError(
                 f"cannot verify the tool frame: no bundled DH table for ur.model "
@@ -340,6 +354,7 @@ class URRobotArm(RobotArm):
                 f"this cell is being built (which refuses to connect for a different, louder reason)."
             )
         d_t, d_r = compare_tool_frames(observed, expected)
+        self._refuse_if_the_series_twin_fits_better(joints, controller_tcp, expected, d_t)
         if d_t > tf.verify_tolerance_mm or d_r > 5.0:
             # No disconnect here, because connect() rolls the connection back for any
             # failure of this check.
@@ -358,6 +373,60 @@ class URRobotArm(RobotArm):
         self.logger.info(
             "tool frame verified: source=%s, controller matches within %.2f mm / %.2f deg",
             tf.source, d_t, d_r,
+        )
+
+    #: How much better the twin has to explain the controller before this refuses, in mm. Small
+    #: on purpose: the two hypotheses are not close. A correct cell reads about 0 mm for its own
+    #: model and 8.5 mm or more for the twin (the measured ur3/ur3e minimum over 20000 poses),
+    #: so anything above sensor noise separates them. This is NOT a tolerance on being right; it
+    #: is the margin by which the wrong answer has to win before the cell is refused.
+    _TWIN_MARGIN_MM = 1.0
+
+    def _refuse_if_the_series_twin_fits_better(
+        self, joints: list[float], controller_tcp, expected, own_d_t: float
+    ) -> None:
+        """Refuse when the OTHER series of this size explains the controller better than we do.
+
+        ⛔ **THE CHECK THE TOLERANCE CANNOT DO.** ``_verify_controller_model`` compares size
+        classes, because a controller reports ``UR3`` for a UR3e. ``_verify_tool_frame`` compares
+        a distance against a tolerance, and MEASURED over 20000 random joint vectors on
+        2026-09-09, a ur3/ur3e swap lands under the default 10 mm tolerance in 12.2 % of poses
+        (minimum separation 8.50 mm). So the two arms this cell is most likely to confuse are
+        the two arms neither check can separate.
+
+        This one is RELATIVE and therefore immune to the tolerance: the flange -> TCP transform
+        is one physical thing, and deriving it through the wrong DH table moves it. Whichever
+        model puts it closer to what this cell expects is the arm on the other end. A correct
+        cell reads about 0 mm for itself and 8.5 mm or more for the twin; a swapped one reverses
+        that, and the margin between the two is the evidence rather than either distance.
+
+        Silent when the model has no twin (ur16e), when the twin has no DH table, or when the
+        two hypotheses are within ``_TWIN_MARGIN_MM`` of each other, which is the honest reading
+        of two explanations that fit equally well.
+        """
+        from .tool_frame import compare_tool_frames, derive_active_tool_frame
+
+        twin = ur_series_twin(self._capabilities.model)
+        if twin is None:
+            return
+        twin_observed = derive_active_tool_frame(twin, joints, controller_tcp)
+        if twin_observed is None:
+            return
+        twin_d_t, _ = compare_tool_frames(twin_observed, expected)
+        if twin_d_t + self._TWIN_MARGIN_MM >= own_d_t:
+            return
+        raise RobotConnectionError(
+            f"ur.model is {self._capabilities.model!r}, and this controller is better "
+            f"explained by a {twin!r}: deriving the active tool frame through the "
+            f"{self._capabilities.model} DH table lands {own_d_t:.1f} mm from what this cell "
+            f"expects, and through the {twin} table only {twin_d_t:.1f} mm. Those two arms "
+            f"report the SAME model string to a controller dashboard, so nothing upstream can "
+            f"tell them apart, and their flanges can sit as little as 8.5 mm apart, which fits "
+            f"inside the tool-frame tolerance. ur.model keys the safety DH chain, the collision "
+            f"mesh bundle and the cuRobo robot config, so a cell running the wrong one of this "
+            f"pair plans every pose against another robot. Point ur.model at the arm that is "
+            f"actually plugged in, or, if it really is a {self._capabilities.model}, check the "
+            f"pendant TCP first, because a wrong tool frame can also produce this."
         )
 
     def connect(self) -> None:

@@ -257,10 +257,26 @@ def _probe_coal(blocks: tuple[str, ...]) -> Probe:
 
 
 def _probe_mesh_bundle(model: str) -> Probe:
-    """The per-link collision meshes the guard and the cuRobo sphere fit both key on this robot's name."""
+    """The per-link collision meshes the guard and the cuRobo sphere fit both key on this robot name.
+
+    THREE ANSWERS, NOT TWO. Present; absent and bakeable; absent and unbakeable. The third is real:
+    the ur10 asset collides its whole arm with primitives, so MISSING would send an operator hunting
+    a file nobody can produce. It reads as a WARN naming the asset instead, and carries no remedy,
+    because there is no action to take -- the capsule proxy is the final answer for that arm.
+    """
+    from .._fcl_self_collision import primitive_collider_reason
+
     bundle = collision_mesh_bundle(model)
     if bundle.is_file():
         return Probe(f"collision mesh bundle ({model})", ProbeStatus.OK, str(bundle))
+    carries = primitive_collider_reason(model)
+    if carries:
+        return Probe(
+            f"collision mesh bundle ({model})", ProbeStatus.WARN,
+            f"not applicable: the {model} asset collides its arm with {carries} and ships no "
+            f"collision mesh, so no exact bundle can be baked from it. This cell plans against the "
+            f"capsule proxy, permanently and by construction.",
+        )
     return Probe(
         f"collision mesh bundle ({model})", ProbeStatus.MISSING, f"absent: {bundle}",
         f"the guard falls back to capsules for {model}; build or commit the bundle",
