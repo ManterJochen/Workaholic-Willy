@@ -21,6 +21,8 @@ that the function believes the failure rather than the finder.
 from __future__ import annotations
 
 import builtins
+import sys
+import types
 import unittest
 from contextlib import contextmanager
 
@@ -37,11 +39,22 @@ def _import_of(name: str, raises: BaseException):
             raise raises
         return real(module, *args, **kwargs)
 
+    # ⛔ THE CACHE IS THE OTHER HALF OF "however it is imported". `importlib.import_module` returns
+    # a module already in `sys.modules` without consulting the import machinery at all, so patching
+    # `__import__` alone makes a failure that a loaded module silently satisfies. MEASURED: with
+    # `mujoco` pre-imported, three assertions in this file invert, and the file still passes when it
+    # is run alone. That was invisible while this box refused the plugin DLLs, because nothing could
+    # fill the cache; it appeared the morning the policy let them through.
+    cached = {k: v for k, v in sys.modules.items() if k == name or k.startswith(f"{name}.")}
+    for key in cached:
+        del sys.modules[key]
+
     builtins.__import__ = fake
     try:
         yield
     finally:
         builtins.__import__ = real
+        sys.modules.update(cached)
 
 
 class AnUnimportableEngineIsUnavailableTests(unittest.TestCase):
@@ -66,6 +79,36 @@ class AnUnimportableEngineIsUnavailableTests(unittest.TestCase):
             _available, why_not = engine_is_available("mujoco")
         self.assertNotIn("pip install", why_not)
         self.assertIn("blocked by policy", why_not)
+
+    def test_a_loaded_module_does_not_satisfy_the_refusal(self) -> None:
+        """⛔ THE ORDERING CONTROL, and it is the defect this file shipped with.
+
+        Every assertion above asks the engine a question through a fake import. A module already in
+        `sys.modules` answers it first, and then what is measured is the cache rather than the
+        function. The three tests around this one passed alone and failed in the suite for exactly
+        that reason, on the day this workstation stopped refusing MuJoCo.
+
+        Pinned on the HELPER and on a sentinel module, so it means the same thing on a box that can
+        import MuJoCo and on one that cannot, which is what the module docstring promises.
+        """
+        before = sys.modules.get("mujoco")
+        sys.modules["mujoco"] = types.ModuleType("mujoco")
+        try:
+            with _import_of("mujoco", OSError("blocked by policy")):
+                # assertFalse, not assertNotIn: the latter prints the whole of sys.modules,
+                # and a quarter of a megabyte of dictionary is not a diagnosis.
+                self.assertFalse("mujoco" in sys.modules,
+                                 "a loaded module shadows the fake, so the refusal is never asked")
+                available, why_not = engine_is_available("mujoco")
+            self.assertFalse(available)
+            self.assertIn("blocked by policy", why_not)
+            self.assertIsInstance(sys.modules.get("mujoco"), types.ModuleType,
+                                  "the helper did not put the cache back")
+        finally:
+            if before is None:
+                sys.modules.pop("mujoco", None)
+            else:
+                sys.modules["mujoco"] = before
 
     def test_a_missing_package_still_says_pip_install(self) -> None:
         """The byte-identical half: an absent package keeps the instruction that fits it."""

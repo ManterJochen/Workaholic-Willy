@@ -530,13 +530,10 @@ class MeshBackendModelGateTests(unittest.TestCase):
         Read off the tree rather than written down, because baking a bundle for one of these
         is a normal thing to do and must move this example rather than break the test.
         """
-        from src.robot.safety._fcl_self_collision import PRIMITIVE_COLLIDER_MODELS
         from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
         from src.robot.safety.planning.environment import collision_mesh_bundle
 
         for model in sorted(UR_DH_TABLES_M):
-            if model in PRIMITIVE_COLLIDER_MODELS:
-                continue  # absent for a different reason, and it reports a different token
             if not collision_mesh_bundle(model, None).exists():
                 return model
         raise AssertionError("every model with a DH chain now ships geometry; this test needs "
@@ -550,25 +547,6 @@ class MeshBackendModelGateTests(unittest.TestCase):
         # this one IS a known model (DH bundled) and has no committed mesh bundle. Proving the
         # token is "no_bundle" and not "unknown_model" is what proves the ur5e hardcode is gone.
         self.assertEqual(mesh_backend_status(self._known_model_without_geometry()), "no_bundle")
-
-    def test_an_arm_that_can_never_have_a_bundle_says_so_instead(self) -> None:
-        """The third answer. ur10 collides its whole arm with thirteen cylinder prims and ships
-        no collision mesh, so ``no_bundle`` would read as a task and send an operator after a
-        file nobody can produce. Both tokens degrade to the same capsule proxy; they differ in
-        what they ask of the reader."""
-        from src.robot.safety import _fcl_self_collision as fcl
-
-        for model in sorted(fcl.PRIMITIVE_COLLIDER_MODELS):
-            with self.subTest(model=model):
-                self.assertEqual(fcl.mesh_backend_status(model), "primitive_colliders")
-
-    def test_the_two_absences_are_told_apart(self) -> None:
-        """The control. Without it, ``primitive_colliders`` could be returned for every absent
-        bundle and the test above would still pass."""
-        from src.robot.safety._fcl_self_collision import mesh_backend_status
-
-        self.assertEqual(mesh_backend_status(self._known_model_without_geometry()),
-                         "no_bundle")
 
     def test_bundled_models_are_known_and_have_geometry(self) -> None:
         """A model with a committed bundle must never report unknown_model or no_bundle.

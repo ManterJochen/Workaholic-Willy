@@ -192,13 +192,17 @@ class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
     def _models_without_a_bundle() -> list[str]:
         """Every configurable model carrying no bundle of its own, whatever the reason.
 
-        DERIVED. This test named ur3, ur5, ur10 and ur10e, which was true for the few hours
-        between the fallback hole being closed and those arms being baked. Three of the four
-        have bundles now, and nothing linked the sentence to the bake that turned it over.
+        DERIVED, and widened TWICE by its own failures. It first named ur3, ur5, ur10 and
+        ur10e, true for the few hours between the fallback hole being closed and those arms
+        being baked. It then read UR_MODEL_KEYS, which held until ur10 was baked on
+        2026-09-10 and every configurable model had one, leaving the loop empty. It reads the
+        DH table now, which is wider than the config gate on purpose: ur16e has kinematics
+        and no bundle, and a model in that state is what keeps this test able to fail.
         """
+        from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
         from src.robot.safety.planning.environment import collision_mesh_bundle
 
-        return [m for m in UR_MODEL_KEYS if not collision_mesh_bundle(m).is_file()]
+        return [m for m in sorted(UR_DH_TABLES_M) if not collision_mesh_bundle(m).is_file()]
 
     def test_a_model_with_no_bundle_is_told_so_rather_than_given_another_arms(self) -> None:
         without = self._models_without_a_bundle()
@@ -208,10 +212,11 @@ class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
             with self.subTest(model=model):
                 self.assertIn(
                     self._status(model, "schunk_egu50"),
-                    {"no_bundle", "primitive_colliders"},
+                    {"no_bundle"},
                     f"{model} has no bundle of its own, so `ok` here would mean the guard is "
-                    f"checking this arm's joint angles against ANOTHER arm's link meshes. Which of "
-                    f"the two honest tokens it gets says whether a bake would fix it.",
+                    f"checking this arm's joint angles against ANOTHER arm's link meshes. "
+                    f"`no_bundle` is the whole answer: a bundle can be baked for any arm this "
+                    f"stack knows, from its USD or from its URDF package.",
                 )
 
     def test_the_two_cases_that_were_already_right_still_are(self) -> None:

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 import unittest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -36,6 +37,15 @@ _GUIDE = _ROOT / "docs" / "guide" / "04-robot-and-safety.md"
 #: onto the next line. Reading one line would have made this a rule about where sentences may break,
 #: which is not what anyone here cares about.
 _GUIDE_ANCHOR = "okens are "
+
+#: Backticked, underscored words in that paragraph that are not status tokens. Kept short and
+#: reasoned: every entry is a hole in the check above, so a new one has to be worth more than
+#: the hole it opens.
+_NOT_A_TOKEN = frozenset({
+    "collision_meshes",     # part of the {model}_collision_meshes.npz filename
+    "mesh_backend_status",  # the function the tokens come out of
+    "self_collision",       # a config section
+})
 
 
 def _returned_tokens() -> set[str]:
@@ -85,10 +95,42 @@ class TheTokensAreDiscoverableTests(unittest.TestCase):
             f"sees one in a log has nowhere to look it up:\n  {paragraph.strip()}",
         )
 
+    def test_the_guide_names_no_token_the_guard_cannot_RETURN(self) -> None:
+        """⛔ THE OTHER DIRECTION, and it was missing for a day.
+
+        A token was retracted from the code on 2026-09-10 and this paragraph went on explaining what
+        it meant, in a sentence that reads perfectly well and sends an operator looking up a state
+        nothing can produce. The test above cannot see that: it only asks that every token the guard
+        RETURNS appears here, and a paragraph naming one extra satisfies it completely.
+
+        The same asymmetry had already been closed for the hint table below
+        (``test_no_hint_describes_a_token_that_cannot_happen``) and not here, which is the whole
+        reason it slipped: the shape was known and only half applied.
+        """
+        named = set(re.findall(r"`([a-z][a-z0-9_]+)`", _guide_paragraph()))
+        # Only words shaped like a status token are candidates. The paragraph also backticks file
+        # names and dotted module paths, and those carry a dot or a slash, which this already excludes.
+        suspects = sorted(t for t in named
+                          if t not in _returned_tokens() and t.count("_") >= 1
+                          and t not in _NOT_A_TOKEN)
+        self.assertEqual(
+            suspects, [],
+            f"this paragraph names these as if the guard could return them, and it cannot: "
+            f"{suspects}. Either the code lost a state and the prose kept it, or these words are "
+            f"not tokens and belong in _NOT_A_TOKEN with a reason beside them.",
+        )
+
     def test_the_check_can_fail(self) -> None:
         """⚠ THE SELF-FAILURE CONTROL. A token the code cannot return must NOT be in the paragraph.
         Without this, a guide paragraph listing every plausible word would pass forever."""
         self.assertNotIn("`no_such_token`", _guide_paragraph())
+
+    def test_the_other_direction_can_fail_too(self) -> None:
+        """The same control for the check above: it has to REJECT an invented token."""
+        named = {"ok", "no_bundle", "invented_token"}
+        self.assertEqual(sorted(t for t in named if t not in _returned_tokens()
+                                and t.count("_") >= 1 and t not in _NOT_A_TOKEN),
+                         ["invented_token"])
 
 
 class EveryFailingTokenCarriesAdviceTests(unittest.TestCase):

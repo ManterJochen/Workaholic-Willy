@@ -6,16 +6,25 @@ base map, and surface spheres fitted to ``{model}_collision_meshes.npz`` and pla
 descriptor guards two sets of geometry sitting in different places, and nothing reports it: the file
 loads, the planner runs, the spheres are simply somewhere they are not.
 
-⚠ **AND IT IS NOT HYPOTHETICAL.** Measured 2026-09-09: ``ur10``'s Lula description disagrees with
-``ur10``'s own URDF. Its forearm spheres run along +z from 0 to 0.570 m where the asset's collision
-cylinders run along -x from 0 to -0.572 m. Same link, same length, rotated frame. That is why ur10
-gets no cuRobo descriptor at all, and it is the reason this file exists: the augmentation was turned
-on for three more arms the same day, and "it looked right on ur5e" is not evidence about ur3.
+⚠ **AND IT IS NOT HYPOTHETICAL. THIS ASSERTION FOUND THE DEFECT IT WAS WRITTEN FOR.** Measured
+2026-09-10: Isaac's ``ur10`` map places the spheres of all three WRIST links about 61 mm from where
+that link's geometry actually is. The bundle is not the wrong half -- through the DH chain the baked
+ur10 arm is CONNECTED, every gap between consecutive links under 3.3 mm against 0.2 to 0.8 mm on
+ur10e -- so the vendor's wrist spheres are simply somewhere the wrist is not.
 
-MEASURED for the five models that have a bundle, as the worst distance a Lula sphere CENTRE sits
-outside the mesh bounding box for its own link::
+Keeping both sets made each wrist a body twice its size spanning two positions. cuRobo found every
+configuration in collision and returned None from plan_pose AND plan_cspace, for every start pose
+including a plan from a pose to itself. The descriptor loaded perfectly and planned nothing, which
+is the most expensive shape of failure: everything upstream reports healthy.
 
-    ur3   0.0 mm     ur3e  0.0 mm     ur5   0.0 mm     ur5e  0.0 mm     ur10e  13.0 mm
+``build_ur_config.py`` now drops a sphere whose centre lies further outside its own link mesh than
+its own RADIUS, which is the point where a sphere and a body stop intersecting rather than a tuned
+number. So this file checks the spheres the BUILDER KEEPS, because those are what plans.
+
+MEASURED across the six models, as the worst distance a KEPT sphere centre sits outside the mesh
+bounding box for its own link::
+
+    ur3 0.0    ur3e 0.0    ur5 0.0    ur5e 0.0    ur10 0.0    ur10e 13.0 mm
 
 The 13 mm on ur10e is expected and small: Lula spheres are fitted to the VISUAL hull, the bundle
 holds the COLLISION meshes, and the collision hull of that arm is slightly the tighter of the two.
@@ -139,12 +148,29 @@ class TheTwoGeometriesLandInOneFrameTests(unittest.TestCase):
                     v = (X[:3, :3] @ v.T).T + X[:3, 3]
                     lo, hi = v.min(0), v.max(0)
                     c = np.asarray([s["center"] for s in lula[link]], dtype=np.float64)
-                    gap = float(np.max(np.maximum(np.maximum(lo - c, c - hi), 0.0).sum(axis=1)))
+                    # THE SPHERES AS THE BUILDER LEAVES THEM, not as Isaac ships them.
+                    # MEASURED 2026-09-10, by this very assertion: Isaac's ur10 map puts all three
+                    # WRIST links' spheres about 61 mm from where that link's geometry is. Keeping
+                    # both sets made each wrist a body twice its size spanning two positions, and
+                    # cuRobo then returned None from every plan, including one from a pose to
+                    # itself. The builder now drops a sphere whose centre lies further outside its
+                    # own link mesh than its own radius, so what is checked here is what plans.
+                    keep = [sp for sp, ctr in zip(lula[link], c)
+                            if float(np.linalg.norm(
+                                np.maximum(np.maximum(lo - ctr, ctr - hi), 0.0))) <= float(sp["radius"])]
+                    self.assertTrue(
+                        keep,
+                        f"{model}/{link}: not one of the {len(lula[link])} vendor spheres touches "
+                        f"the mesh this repository baked for the same link, so the two halves "
+                        f"describe different robots and the builder has nothing to keep.",
+                    )
+                    kept = np.asarray([sp["center"] for sp in keep], dtype=np.float64)
+                    gap = float(np.max(np.maximum(np.maximum(lo - kept, kept - hi), 0.0).sum(axis=1)))
                     self.assertLess(
                         gap * 1000.0, _TOLERANCE_MM,
-                        f"{model}/{link}: an Isaac sphere sits {gap * 1000.0:.1f} mm outside the "
-                        f"mesh this repository baked for the same link. The descriptor would guard "
-                        f"two geometries in two places and report nothing.",
+                        f"{model}/{link}: a sphere the builder KEEPS sits {gap * 1000.0:.1f} mm "
+                        f"outside the mesh baked for the same link. The descriptor would guard two "
+                        f"geometries in two places and report nothing.",
                     )
 
 

@@ -21,8 +21,8 @@ Any of:
 - a cell is being built on a UR that is not the UR5e the base tree describes;
 - an existing cell is being swapped between arms, including between a CB-series arm and its
   e-series namesake, which is the swap nothing upstream can see;
-- `python -m src.robot.safety.planning --doctor` reports `no_bundle`, `primitive_colliders`
-  or `variant_model_mismatch`;
+- `python -m src.robot.safety.planning --doctor` reports `no_bundle` or
+  `variant_model_mismatch`;
 - cuRobo refuses to start, or raises `Link tool0 not found in parent map` at the first plan.
 
 ## Diagnose
@@ -35,81 +35,58 @@ Any of:
 | `ur3e`  | yes | yes | yes | `robot.ur3e.yaml` (**measured cell**) |
 | `ur5`   | yes | yes | yes | `robot.ur5.yaml` (derived) |
 | `ur5e`  | yes | yes | yes | the base tree (**measured cell**) |
-| `ur10`  | **no, and never** | no | **no** | `robot.ur10.yaml` (derived) |
+| `ur10`  | yes (from its URDF) | yes | yes | `robot.ur10.yaml` (derived) |
 | `ur10e` | yes | yes | yes | `robot.ur10e.yaml` (derived) |
 
 Every "yes" was measured by loading it, not by finding the file:
 `ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py` builds a planner for each
-descriptor and plans a real motion with it. Five of five plan, 21 waypoints each.
+descriptor and plans a real motion with it. **Six of six plan, 21 waypoints each**, 2.7 s to 4.6 s.
 
-### ⛔ ur10 is different in four ways, and three of them are its asset
+### ⚠ ur10 needed four repairs the other five did not
 
-An operator who reaches for a UR10 should know this before ordering one, so it is stated plainly
-rather than left in a log:
+It works now, and everything below is what it took. An operator who reaches for a UR10 should know
+this, because every one of these presented as a property of the arm and was not.
 
-1. **It ships as `ur10_robot.urdf`**, where all five siblings ship `{model}.urdf`. Handled.
-2. **Its description has no `tool0`** — it is the older `ur_description` generation, with `world` and
-   `ee_link` and no `flange`. cuRobo names `tool0` as its end effector, so a ur10 built without this
-   loads fine and dies at the first plan. Handled: the fixed `wrist_3 -> flange -> tool0` chain is
-   transcribed from a sibling, gated on the two `wrist_3` frames agreeing (measured 1.0e-07).
-3. **Its Isaac asset collides the whole arm with thirteen cylinders**, with no collision mesh
-   anywhere. So it gets no exact-mesh bundle, reports `primitive_colliders` rather than `no_bundle`,
-   and plans against the capsule proxy permanently. That is not a missing file and no bake will
-   produce one. Do not substitute the visual meshes: they are 31k to 65k vertices and are render
-   assets, and a file named `*_collision_meshes.npz` promises exact geometry.
-4. **Isaac ships ur10 in TWO incompatible link-frame families, and the obvious pairing is the wrong
-   one.** This is what stops it, and it is a defect in Isaac's shipped files rather than in this
-   repository. The ur10 Lula sphere map belongs to the **+z family**. `ur10_robot.urdf`, which sits
-   in the same directory, and cuRobo's own shipped `ur_description/ur10.urdf` are both **-x family**.
-   Every other UR on the box is -x on both sides, so ur10 is the single model where pairing the
-   nearest sphere map with the nearest URDF is silently wrong.
+1. **It ships as `ur10_robot.urdf`**, where all five siblings ship `{model}.urdf`.
+2. **That file has NO GEOMETRY AT ALL** — 74 lines, 0 `<collision>`, 0 `<visual>`, 0 mesh
+   references — and it belongs to a different link-frame family than Isaac's own sphere map for the
+   same robot. Pairing them puts 23 of 30 sphere centres off the arm, worst 341.5 mm, fail-open and
+   silent. The builder now picks by a rule instead: *a description with no geometry describes no
+   body*, which excludes it without naming ur10 and changes nothing for the other five.
+3. **Its USD collides the whole arm with thirteen cylinders**, so the Isaac bake cannot read it. But
+   Isaac's URDF-importer package ships seven `.obj` link meshes for the same robot, and
+   `scripts/isaac/bake_ur_meshes_from_urdf.py` bakes from those with no simulator at all. It gates
+   itself by baking ur10e through the same path and diffing against the bundle Isaac produced:
+   **0.000 mm**, two different readers, one answer.
+4. **Its Lula sphere map is wrong about all three wrists.** Measured: their spheres sit about 61 mm
+   from where the geometry is. Keeping them alongside the correct ones made each wrist a body twice
+   its size spanning two positions, and cuRobo returned None from every plan — including a plan from
+   a pose to itself — while loading perfectly. The builder drops a sphere whose centre lies further
+   outside its own link mesh than its own radius, which is where a sphere and a body stop
+   intersecting rather than a tuned threshold.
 
-   Measured 2026-09-09 through the full FK chain, as the signed distance of each sphere centre to the
-   arm body, with two pairings that work today as calibration:
+⛔ **AND ONE THAT WAS NEVER TRUE.** From 2026-09-09 to 2026-09-10 this runbook said cuRobo could not
+load the importer description. It could not, because of **one stray `)` in an `xyz` attribute** on
+line 28 of Isaac's file. A one-character parse failure had been written down as a capability of the
+robot. That is worse than a check that stays silent: it says something plausible and wrong, and the
+plausible thing gets believed. The builder repairs the character in its own copy and says so, and
+never touches Isaac's tree.
 
-   | pairing | centres outside the arm | worst |
-   |---|---|---|
-   | sphere map + cuRobo's `ur10.urdf` (**the obvious one**) | 23 of 30 | **+341.5 mm** |
-   | sphere map + the importer `ur10.urdf` | 6 of 30 | +38.3 mm |
-   | *ur10e, which works today* | 5 of 33 | +45.3 mm |
-   | *ur5e, which works today* | 4 of 39 | +51.0 mm |
+### What the ur10 still does differently
 
-   ⛔ **Read the calibration rows first.** 4 of 39 on a ur5e and 5 of 33 on a ur10e are what a
-   CORRECT pairing looks like, so 23 of 30 is not a worse fit, it is a different arm. That is
-   FAIL-OPEN by a third of a metre: a planner on the obvious pairing models the arm where it is
-   not and leaves unguarded the space where it is, and nothing raises. `build_ur_config.py`
-   refuses to write a ur10 descriptor and prints all of this when it does.
+Its collision bundle is baked from CONVEX HULLS of its visual meshes, because it declares no
+collision mesh anywhere. That is not a compromise, and the reason is a control on an arm where both
+halves exist: ur10e ships visual *and* collision geometry, its own collision meshes are **1.259x**
+the volume of its visuals and every one of them is **exactly convex**. The ur10 hulls come out at
+1.357x with the same per-link pattern — eight percentage points more conservative than what the
+vendor ships, which is the correct direction for a fail-closed guard.
 
-### What a real ur10 fix would have to author
+Its `shoulder_link` spheres are AUTHORED, because Isaac's map has none for that link. They come from
+the two collision cylinders the description declares, and they cover **47.8 %** of that link's
+surface against **31.4 %** for ur10e's own shoulder and 10.2 % for the vendor's weakest link.
 
-The right frame family exists, so this is not hopeless, but it is four pieces of work rather than a
-switch. All four were verified by seventeen independent agents on 2026-09-09, and the three "cheap"
-claims among them were each measured and refuted:
-
-1. **A loadable URDF.** The importer URDF
-   (`isaacsim.asset.importer.urdf/data/urdf/robots/ur10/urdf/ur10.urdf`) is the correct frame family
-   and carries real collision cylinders, but cuRobo's parser (`yourdfpy`) refuses to load it. The
-   frame-identical `ur10_robot_suction.urdf` loads and carries `tool0`, and all 14 of its mesh
-   references are missing from disk. So the URDF has to be composed: frames from one, geometry from
-   the other.
-2. **A `tool0`.** The importer URDF has none, and the transcription gate in `build_ur_config.py`
-   **correctly refuses** to graft a sibling's chain onto it (its `wrist_3` rotation differs from the
-   donor by 1.0 against a 1e-6 tolerance). The correct transform is measurable rather than
-   remembered: relative to the importer URDF's `wrist_3_link` it is `xyz [0, 0.0922, 0]`,
-   `rpy (-pi/2, 0, 0)`, constant over 300 random configurations.
-3. **`shoulder_link` spheres.** Neither Lula file has any. `spheres_from_primitive_colliders.py`
-   reads the USD and not a URDF, so it does not do this job as written. Naive spheres of the
-   cylinder's own radius under-cover: 12151 of 20000 sampled surface points fall outside, worst gap
-   5.2 mm, which is a thin false-CLEAR shell no current test would catch.
-4. **A collision-mesh bundle**, baked from the importer URDF's frames, so the repository's own guard
-   geometry and the cuRobo descriptor cannot drift apart.
-
-⚠ **And none of that is proof.** Every measurement above is a static-file frame proof. The
-load-bearing check is a cuRobo self-collision run on the assembled descriptor, which nothing here
-has done.
-
-**A `ur10` cell is therefore usable for config, kinematics, joint limits, workspace and the sim
-asset, and is not cuRobo-plannable.** If you need a 1300 mm arm that plans, use the `ur10e`.
+**A `ur10` cell plans like any other now**, with exact mesh geometry, its own Hand-E variant and
+a descriptor proved by planning rather than by existing.
 
 ---
 
@@ -124,8 +101,8 @@ WILLY_PROFILE=ur5 python -m backend.config --print          # validates the tree
 python -m src.robot.safety.planning --doctor        # bundle, gripper, descriptor
 ```
 
-The doctor prints three separate probes, and they mean three different things. `collision mesh
-bundle` reads `ok`, `missing` (bake one) or a `warn` naming the asset (nothing to bake, ever).
+The doctor prints three separate probes and they mean three different things: the arm bundle,
+the gripper geometry and the cuRobo descriptor. All three read `ok` on all six models today.
 
 ### Adding an arm that does not exist yet
 
@@ -142,8 +119,15 @@ The order matters, because each step is gated on the one before it.
    ```
    It re-reads `ur5e` and diffs it against the committed bundle FIRST, every time, and stops before
    writing if that drifts past 0.15 mm. Measured on the day the four new arms were baked: 0.000653 mm.
-   If it refuses with "carries N collision prims and not one of them is a mesh", that arm has no
-   exact geometry and never will.
+
+   If it refuses with "carries N collision prims and not one of them is a mesh", that arm's USD has
+   no mesh to read. That is not the end: try the URDF path instead, which needs no simulator at all
+   and gates itself the same way.
+   ```bash
+   python scripts/isaac/bake_ur_meshes_from_urdf.py <model> --write
+   ```
+   It bakes `ur10e` from its own collision files through the same code first and diffs against the
+   bundle Isaac produced; measured 0.000 mm. That is how `ur10` got its geometry.
 
 3. **Bake the gripper variant** (no Isaac, no GPU):
    ```bash

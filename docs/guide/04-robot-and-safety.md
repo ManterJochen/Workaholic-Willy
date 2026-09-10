@@ -406,23 +406,26 @@ against a move.
 ### 5.2 Does this robot actually have exact-mesh authority?
 
 Bundles are per robot, `{model}_collision_meshes.npz`, and a present ur5e bundle says nothing about a
-UR3e cell. Three ship in [`safety/data/`](../../src/robot/safety/data/): `ur5e`, `ur3e`, and a
-`schunk_egu50` variant, which is the ur5e arm with a different gripper. A new model gets exact meshes
+UR3e cell. They ship in [`src/robot/safety/data/`](../../src/robot/safety/data/), one per
+arm plus one per arm-and-gripper pair, and that directory is the list. A new model gets exact meshes
 as soon as its bundle lands beside them, with no code change.
 
 Call `mesh_backend_status(model)` from `src.robot.safety._fcl_self_collision` for each model that
-matters. The tokens are `ok`, `unknown_model`, `no_bundle`, `primitive_colliders`,
+matters. The tokens are `ok`, `unknown_model`, `no_bundle`,
 `variant_model_mismatch` and `no_engine`, and `tests/test_status_tokens_are_documented.py`
-fails if this sentence falls behind the code. `primitive_colliders` is `no_bundle` for an arm
-whose asset carries no collision mesh to bake, which is a property of the robot rather than a
-task for an operator. Only `ur10` is in that state; `docs/runbooks/ur_family_bringup.md`
-explains why substituting its visual meshes would be worse than having none.
-`unknown_model` means there is no bundled DH row for that key, so anything that is not a UR has no
+fails if this sentence falls behind the code, in both directions: a token the guard can
+return that this sentence omits, and a token this sentence names that the guard cannot
+return. `unknown_model` means there is no bundled DH row for that key, so anything that is not a UR has no
 exact-mesh authority, ever. `no_bundle` is recoverable by baking one with
 [`scripts/isaac/bake_ur_collision_meshes.py`](../../scripts/isaac/bake_ur_collision_meshes.py) under
 the simulator's interpreter; it is self-validating, and that is the gate, so run it for a model whose
 bundle already ships, without writing, and only trust a new model if that reproduces the committed
 bundle.
+An arm whose USD carries no collision mesh is baked from its URDF package instead, with
+[scripts/isaac/bake_ur_meshes_from_urdf.py](../../scripts/isaac/bake_ur_meshes_from_urdf.py),
+which needs no simulator and proves itself on a known-good arm before every write. That is how
+`ur10` got its bundle. A sixth token asserting that this absence was permanent lived here for
+one day and was retracted, which is why the check above now runs both ways.
 
 ### 5.3 Asking for `fcl` does not guarantee getting it
 

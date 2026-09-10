@@ -55,7 +55,3 @@ elif not curobo_env_available():
 else:
     print("planner environment present; confirm the descriptor inside it with "
           "`python -m src.robot.safety.planning --doctor`")
-# 5. Three answers, not two. A missing bundle is a task; `primitive_colliders` is a property of the
-#    robot, and reporting it as missing would send an operator hunting a file nobody can produce.
-#    The ur10 asset collides its whole arm with cylinder prims and ships no collision mesh, so it
-#    plans against the capsule proxy permanently and by construction. Both degrade identically.
