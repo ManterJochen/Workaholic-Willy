@@ -2,9 +2,11 @@
 so the shared ``rl/_linucb.score_linucb_action`` (the V6-lean form now used by both families) cannot drift even a
 ULP from the original per-module forms.
 
-The committed-artifact-SHA determinism tests are platform-locked (they skip in default mode + fail with
-WILLY_DETERMINISM_NATIVE=1 off the canonical origin), so this exact-float assertion is the LOCAL gate for the
-LinUCB merge. ``assertEqual`` on the float tuples is exact (no tolerance). If this fails, the merge is ABANDONED
+The committed-artifact-SHA determinism tests skipped in EVERY run that had ever happened (an allow-list
+waiting on an environment variable nothing in the tree set), so this exact-float assertion was not the local
+gate for the LinUCB merge. It was the only one. MEASURED 2026-09-10, with the allow-list retired: 25 of those
+27 run and pass here and 2 stand down on a measured drift. This stays, because it is exact and costs nothing.
+``assertEqual`` on the float tuples is exact (no tolerance). If this fails, the merge is ABANDONED
 (revert to per-module ``_score_action``). The baseline was captured from the ORIGINAL per-module V5/V6 forms on
 the same fixed one-hot contexts before the extraction.
 """

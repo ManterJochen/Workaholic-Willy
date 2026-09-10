@@ -14,7 +14,7 @@ from pathlib import Path
 # Four parents up: 03_perception, api, examples, scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from src.config import load_config  # noqa: E402
+from src.config import ConfigError, load_config  # noqa: E402
 from src.config.schema.models.models_schema import (  # noqa: E402
     PipelineConfig, PromptRouterConfig, ZeroShotPipelineConfig)
 from src.models.perception_spec import PerceptionSpec  # noqa: E402
@@ -30,7 +30,14 @@ for prompt in PANEL:
     print(f"{prompt!r:38} {route(prompt).describe()}")
 
 # 2. The route a prompt wants and the route this cell HAS are two different facts.
-models = load_config().models
+try:
+    models = load_config().models
+except ConfigError as broken:
+    # A tree that does not parse is the state an operator is in five seconds after a bad edit,
+    # and the four files under scripts/checks/ answer it with a sentence and exit 2. An example
+    # that raises instead teaches a reader nothing about the thing it was written to show.
+    print(f"this config tree does not load: {broken}")
+    raise SystemExit
 spec = PerceptionSpec.from_config(models)
 here = spec.resolve()
 print(here.render())

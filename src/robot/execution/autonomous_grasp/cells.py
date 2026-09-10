@@ -29,7 +29,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from src.contracts import UNSET, Maybe, chosen
+
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.config.schema import AppConfig
     from src.config.schema.robot import RobotConfig
 
     from .service import AutonomousGraspService
@@ -101,7 +104,9 @@ def build_rehearsal_components(robot_cfg: "RobotConfig") -> tuple[Any, Any, Any,
     return calculator, perception, resolver, None, None
 
 
-def build_real_components(robot_cfg: "RobotConfig", prompt: str) -> tuple[Any, Any, Any, Any, Any]:
+def build_real_components(robot_cfg: "RobotConfig", prompt: str, *,
+                          app_config: "Maybe[AppConfig]" = UNSET,
+                          ) -> tuple[Any, Any, Any, Any, Any]:
     """``(calculator, perception, frame_resolver=None, multi_camera, camera_calculators)``.
 
     The resolver stays ``None`` on purpose: ``from_robot_config`` builds it from the calibration
@@ -112,6 +117,21 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str) -> tuple[Any, A
     cannot come from ``from_robot_config``: the composition root is deliberately unable to open a
     device, so the cameras are opened here and handed in, exactly as ``perception`` is. See
     :func:`_build_multi_camera_rig` for what it does and does not include.
+
+    The ``app_config`` argument is which tree, and it used not to be askable. Measured 2026-09-10: a
+    caller resolves the robot half itself, through ``load_robot_config(data_dir, profile=...)``,
+    because ``real_cell`` has a ``--profile`` and a ``--data-dir``. This function then read the
+    camera half with a bare ``load_config()``, and a no-argument load takes ``profile=UNSET``, which
+    falls back to ``WILLY_PROFILE``, and ``data_dir=None``, which falls back to the checkout's own
+    tree. So one command built an arm from the flag and cameras from the environment. Reproduced
+    three ways: the same chain through ``--profile`` and through ``WILLY_PROFILE`` produced two
+    different refusals, a scratch tree that could build was refused quoting this repository's rigs,
+    and ``--data-dir`` had no environment equivalent at all, so a console pointed at a deployment
+    tree got that tree's arm and this checkout's cameras.
+
+    ``UNSET`` means the caller did not choose a tree, and then the default load is the honest
+    answer, which is what every caller did before and still does. The defect was never that a
+    default existed; it was that a caller who had chosen could not say so.
     """
     import numpy as np
 
@@ -121,7 +141,7 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str) -> tuple[Any, A
     from src.robot.grasping.calculator_factory import build_calculator
     from src.robot.perception import RealSenseVisionPerceptionSource
 
-    app_cfg = load_config()
+    app_cfg = app_config if chosen(app_config) else load_config()
     # The cell's camera is named, not inferred. This took the first rig with `source: rgbd` by list
     # position and did not consult `enabled`, while the schema's own two-camera serial check used
     # `source == "rgbd" and enabled` and this file's fusion guard used a third rule. Three predicates
@@ -172,6 +192,33 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str) -> tuple[Any, A
     # the primary moves every measured number this cell has.
     provider = FrameProvider(rigs)
     provider.open_rig(rig_id)
+    try:
+        return _build_on_open_cameras(
+            robot_cfg, app_cfg, prompt=prompt, provider=provider, rig_id=rig_id, np=np,
+            perception_spec=PerceptionSpec, build_calculator=build_calculator,
+            vision_source=RealSenseVisionPerceptionSource,
+        )
+    except BaseException:
+        # A refused build gives the camera back. Everything below the open can raise, and one of
+        # those raises is deliberate: `_preload()` exists so a corrupt artifact is refused at build
+        # time rather than at 3 a.m. Without this, the refusal it was added to produce left the
+        # RealSense claimed by a dead process, and the operator who fixed the artifact and ran again
+        # met "device busy", which names neither the cause nor the first failure. `release` never
+        # raises and is idempotent, so it cannot replace the exception being reported.
+        provider.release()
+        raise
+
+
+def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: str, provider: Any,
+                           rig_id: str, np: Any, perception_spec: Any, build_calculator: Any,
+                           vision_source: Any) -> tuple[Any, Any, Any, Any, Any]:
+    """The half of :func:`build_real_components` that runs with a device already held.
+
+    Split out for the `try` above rather than for its own sake: wrapping the tail in place would
+    have indented sixty lines of load-bearing commentary, and a diff that moves every line is a diff
+    whose one real change nobody can see. The imports are passed in because they are function-local
+    by design, so that a rehearsal, a test or a sim runner never pays for torch.
+    """
     handle = provider.rig(rig_id)
     # The stack is built once and shared by every camera. It is the expensive part of a cell (two
     # models on the GPU) and it is stateless per call, so a four-camera rig costs four inference
@@ -182,9 +229,9 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str) -> tuple[Any, A
     # refusals are reachable from here. Reading only `models.detector` and
     # `models.segmenter_backend` would build GroundingDINO plus SAM2 whatever the pipeline block
     # says, with no error and no log line. On the shipped values the two resolve to the same pair.
-    spec = PerceptionSpec.from_config(app_cfg.models)
+    spec = perception_spec.from_config(app_cfg.models)
     backend = spec.build()
-    perception = RealSenseVisionPerceptionSource(
+    perception = vision_source(
         streamer=handle,
         backend=backend,
         prompt=prompt,
@@ -348,6 +395,7 @@ def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, provider:
 
 
 def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
+                    app_config: "Maybe[AppConfig]" = UNSET,
                     **overrides: Any) -> "AutonomousGraspService":
     """A complete cell for physical hardware, from config, in one call.
 
@@ -357,16 +405,22 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
 
     ``overrides`` are forwarded to :meth:`AutonomousGraspService.from_robot_config`, so a caller
     that needs a mode, a policy or a live device handle still has one.
+
+    ``app_config`` is the camera half's tree, and it must be the tree ``robot_cfg`` came from. See
+    :func:`build_real_components` for what happened while the two could disagree.
     """
     from src.config import load_config
 
     from .service import AutonomousGraspService
 
+    # Resolved once, here, and handed to both readers below. It used to be read here a second time
+    # with a comment explaining that the loader caches, so the two reads return the same object.
+    # That comment was true and it was not about the right thing: two calls agreeing with each
+    # other says nothing about whether either is the tree the caller asked for, and they were not.
+    app_cfg = app_config if chosen(app_config) else load_config()
     calculator, perception, resolver, multi_camera, calculators = build_real_components(
-        robot_cfg, prompt)
-    # The same loader `build_real_components` used, and it caches, so this is the same object
-    # rather than a second read of the tree.
-    rig_id = load_config().camera.cameras.primary_rig_id
+        robot_cfg, prompt, app_config=app_cfg)
+    rig_id = app_cfg.camera.cameras.primary_rig_id
     service = AutonomousGraspService.from_robot_config(
         robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
         multi_camera_perception=multi_camera,

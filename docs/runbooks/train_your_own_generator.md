@@ -20,7 +20,20 @@ for the same reason this runbook carries none.
 
 ---
 
-## What you need
+## Trigger
+
+Any of:
+
+1. A cell should run `robot.grasping.calculator: deep`, and this repository ships no weights,
+   by decision rather than by omission.
+2. The parts changed: a new product, a new fixture, a gripper the current artifact never saw.
+3. `calculator: deep` refuses to build the cell because `deep_generator.artifact_path` names
+   nothing.
+4. A trained artifact proposes grasps that a physics referee does not hold.
+
+## Diagnose
+
+### What you need
 
 | | |
 |---|---|
@@ -29,9 +42,14 @@ for the same reason this runbook carries none.
 | disk | the corpus dominates. Price it with `python -m datagen cost` before you start |
 | time | the render is the long pole, hours per shard |
 
+Confirm all four before Step 0. Each is an input to a step below, and three of them are only
+discovered to be missing hours into a run.
+
 ---
 
-## Step 0. The configuration, from the recipe
+## Mitigate
+
+### Step 0. The configuration, from the recipe
 
 ```bash
 python -m datagen init-config --recipe v1 --out my_config.json
@@ -58,7 +76,7 @@ recipe is the named bundle that says which of them a new corpus should not keep,
 once it ships, so `v1` will always mean what it means today. The command refuses to overwrite a
 configuration file you have already edited.
 
-## Step 1. Your parts into the mesh library
+### Step 1. Your parts into the mesh library
 
 The parts have to be imported with a licence before anything can screen them:
 
@@ -102,7 +120,7 @@ differs sharply by collection, and `--want-graspable N` stops once N of them hav
 reports how many had to be looked at. A screen stopped that way is stamped partial, because a
 stopped screen and a complete one are different statements about a library.
 
-## Step 2. Scenes, and their grasp labels
+### Step 2. Scenes, and their grasp labels
 
 ```bash
 python -m datagen build --config my_config.json --name mine_s0
@@ -120,7 +138,7 @@ count means nothing without it.
 cross-section rather than the first family. Scene directories sort by family, so a plain prefix
 would hand you every bin scene and no sparse one.
 
-## Step 3. The point clouds the model trains on
+### Step 3. The point clouds the model trains on
 
 ```bash
 python -m datagen build-cloud-corpus --name mine_s0 --corpus-out logs/dl/clouds/mine/s0 --kinds both
@@ -133,7 +151,7 @@ every suction label Step 2 wrote. Suction labels do not train the pose heads, si
 closing axis and no opening, but they do train the stage that decides where to grasp, and they
 sharply cut the share of training units that have nothing to learn from.
 
-## Step 4. Train
+### Step 4. Train
 
 ```bash
 # prove the chain closes on YOUR corpus and YOUR box first. Minutes, not hours.
@@ -201,7 +219,7 @@ python -m src.robot.grasping.deep report --run logs/dl/models/mine --no-curve
 `epochs.json` is rewritten after every epoch, so this works on a live run. It prints the lift over
 the run's own held-out floor and declines to give a verdict it does not have the epochs for.
 
-## Step 5. Judge it with physics, not with its own loss
+### Step 5. Judge it with physics, not with its own loss
 
 ```bash
 python -m src.robot.grasping.deep propose \
@@ -236,7 +254,7 @@ with a training run.
 The join between a proposal and its verdict is by scene and rank, never by pose, because a pose join
 is ambiguous wherever a label and the row describing it carry identical poses.
 
-## Step 6. Point a cell at it
+### Step 6. Point a cell at it
 
 ```yaml
 robot:
@@ -265,6 +283,38 @@ rather than a wrong wiring. Analytic-only knobs such as `isotropic_radial_closin
 ignored, because the learned generator decodes its own closing axis.
 
 ---
+
+## Verify
+
+Three readings, in this order, and none of them is the training loss.
+
+1. The run's own card. `deep report --run logs/dl/models/mine --no-curve` prints the lift over
+   the run's held-out floor and declines a verdict it does not have the epochs for.
+   `epochs.json` is rewritten after every epoch, so this works on a live run.
+2. The physics referee with its label control beside it, which is Step 5. A zero from the model
+   means nothing until the control says the harness grips at all, and the control is also the
+   model's ceiling: the referee is nowhere near 100 %, so a model reproducing the labels
+   perfectly would not score 100 either. Read the control first, every time.
+3. The cell builds. With `calculator: deep` and `deep_generator.artifact_path` set, the cell
+   comes up or refuses; there is no third outcome, because a fallback to the analytic stack
+   would file the analytic stack's numbers under the learned one's name.
+
+Held-out stops being held-out when the assets repeat. Split your own parts by asset rather than
+by scene, or the number describes recall of objects the model has already seen.
+
+## Rollback
+
+* Back the cell out: `robot.grasping.calculator: geometric`. The analytic stack needs no
+  artifact and the switch is one configuration key, so a cell can always return to the shipped
+  generator.
+* A bad artifact: point `deep_generator.artifact_path` at the previous file. Artifacts are
+  written per run directory, so a new run never overwrites an older one's weights.
+* A bad corpus: delete the shard's `--corpus-out` directory and rebuild it. Nothing in Steps 2
+  or 3 writes outside `logs/dl` and the mesh library.
+* An import you regret: the meshes and the `LICENSE.txt` the library writes beside them sit
+  under the destination you named, so removing that directory removes the whole import.
+* A run you want to continue rather than undo: see the next section. `--resume` and
+  `--init-from` are not the same recovery, and the difference is deliberate.
 
 ## Continuing a run, and adapting to your own parts
 

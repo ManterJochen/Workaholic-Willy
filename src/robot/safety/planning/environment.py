@@ -53,6 +53,8 @@ __all__ = [
     "collision_mesh_bundle",
     "inject_coal_prefix",
     "import_collision_engine",
+    "resolve_collision_engine",
+    "CollisionEngineResolution",
     "CuroboStatus",
     "CollisionEngineStatus",
     "PlanningEnvironment",
@@ -210,32 +212,76 @@ def inject_coal_prefix() -> None:
         logger.info("injected the Coal prefix %s onto sys.path", prefix)
 
 
-def import_collision_engine() -> tuple[Any, str] | tuple[None, None]:
-    """Import the exact-mesh engine, preferring ``(module, "coal")`` over ``(module, "fcl")``.
+@dataclass(frozen=True, slots=True)
+class CollisionEngineResolution:
+    """Which exact-mesh engine answered, and what the engines ahead of it said when they did not.
 
-    It returns ``(None, None)`` where neither imports, and the caller then falls back to
-    the capsule proxy. Coal is tried first; on one failure the conda-environment prefix
-    is injected and Coal retried, then python-fcl. This is the single place the
-    self-collision guard and the continuous monitor both resolve their engine through.
+    The reasons are kept because throwing them away produced a false green. Measured
+    2026-09-10: with an application-control policy refusing this repository's own
+    ``ext_deps/coal_env/Library/bin/coal.dll``,
+    ``python -m src.robot.safety.planning --doctor`` exited 0 with ``policy_blocked=false``
+    and reported ``[ok] exact-mesh collision engine: fcl 0.7.0.11``. The resolution below
+    caught Coal's exception and returned python-fcl, so the doctor's blocked branch could
+    never see a refusal and was unreachable from the command line.
+
+    The guard wants that substitution and does not care why, and
+    :func:`import_collision_engine` still hands it exactly what it always did. The doctor
+    is asked the opposite question, which is what refused and what the operator does about
+    it, and it cannot answer from a value discarded one frame down.
     """
+
+    module: Any | None
+    backend: str | None
+    #: Why Coal, the preferred engine, is not the one in ``backend``. Empty when it is.
+    coal_error: str = ""
+    #: Why python-fcl did not carry it either. Empty unless the fallback was reached and failed.
+    fcl_error: str = ""
+
+
+def resolve_collision_engine() -> CollisionEngineResolution:
+    """Resolve the exact-mesh engine, keeping what each candidate said when it refused.
+
+    Coal is tried first; on one failure the conda-environment prefix is injected and Coal
+    retried, then python-fcl. This is the single place the self-collision guard and the
+    continuous monitor both resolve their engine through, and the doctor probes through it
+    too, so what an operator is told about the engine and what the guard actually loaded
+    cannot part.
+    """
+    coal_error = ""
     for _attempt in (0, 1):
         try:
             import coal  # type: ignore[import-not-found]
             logger.debug("exact-mesh collision engine resolved: coal")
-            return coal, "coal"
-        except Exception:  # noqa: BLE001 (optional; inject the prefix once, then try python-fcl)
+            return CollisionEngineResolution(coal, "coal")
+        except Exception as exc:  # noqa: BLE001 (optional; inject the prefix once, then try python-fcl)
+            coal_error = f"{type(exc).__name__}: {exc}"
             if _attempt == 0:
                 inject_coal_prefix()
     try:
         import fcl  # type: ignore[import-not-found]
         logger.debug("exact-mesh collision engine resolved: python-fcl (Coal was not importable)")
-        return fcl, "fcl"
-    except Exception:  # noqa: BLE001 (neither engine present -> capsule fallback)
+        return CollisionEngineResolution(fcl, "fcl", coal_error=coal_error)
+    except Exception as exc:  # noqa: BLE001 (neither engine present -> capsule fallback)
         # Debug rather than warning, because ``_fcl_self_collision.make_backend``
         # already warns about the capsule fallback with its status token, and this
         # helper is called several times per build.
         logger.debug("no exact-mesh collision engine importable (neither coal nor fcl)")
+        return CollisionEngineResolution(
+            None, None, coal_error=coal_error, fcl_error=f"{type(exc).__name__}: {exc}"
+        )
+
+
+def import_collision_engine() -> tuple[Any, str] | tuple[None, None]:
+    """Import the exact-mesh engine, preferring ``(module, "coal")`` over ``(module, "fcl")``.
+
+    It returns ``(None, None)`` where neither imports, and the caller then falls back to
+    the capsule proxy. A view over :func:`resolve_collision_engine` for the callers that
+    need only the pair.
+    """
+    resolution = resolve_collision_engine()
+    if resolution.module is None or resolution.backend is None:
         return None, None
+    return resolution.module, resolution.backend
 
 
 # --- Typed status snapshots (what the --check CLI reports) ----------------------------------------

@@ -8,6 +8,11 @@ has to hold on CI, on macOS, and on a box with no GPU. The engine-loading paths 
 
 from __future__ import annotations
 
+import contextlib
+import importlib
+import pathlib
+import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -162,6 +167,112 @@ class CodeIntegrityBlocksTests(unittest.TestCase):
         with mock.patch.object(doc.sys, "platform", "win32"), \
              mock.patch.object(doc.subprocess, "run", return_value=completed):
             self.assertEqual(doc.code_integrity_blocks(), ("a.dll", "b.pyd"))
+
+
+class CoalPolicyRefusalTests(unittest.TestCase):
+    r"""⛔ THE MEASURED FALSE GREEN. On 2026-09-10 the CodeIntegrity log of this workstation
+    recorded event 3033 for this repository's own
+    ``ext_deps\coal_env\Library\bin\coal.dll``: the OS refused a build we ship.
+    ``--doctor`` exited 0 with ``policy_blocked=false``, because `import_collision_engine()`
+    swallows Coal's exception and returns python-fcl, so the BLOCKED branch of `_probe_coal` can
+    never see a refusal and is unreachable from the command line.
+
+    The refusal is reproduced here by a `coal` module that raises the exact OSError Windows raises,
+    placed ahead of the real one on `sys.path`: no mock of the unit under test, the same exception on
+    the same import.
+    """
+
+    #: The message Windows produced on this box, verbatim (German locale, WinError 4551).
+    BLOCK = ("[WinError 4551] Eine Anwendungssteuerungsrichtlinie hat diese Datei blockiert: "
+             r"'ext_deps\coal_env\Library\bin\coal.dll'")
+
+    @contextlib.contextmanager
+    def _coal_refused_by_the_os(self):
+        """Make ``import coal`` raise what the OS raised, for the duration of the block."""
+        with tempfile.TemporaryDirectory() as tmp:
+            (pathlib.Path(tmp) / "coal.py").write_text(
+                f"raise OSError({self.BLOCK!r})\n", encoding="utf-8"
+            )
+            saved_path, saved_module = list(sys.path), sys.modules.pop("coal", None)
+            sys.path.insert(0, tmp)
+            importlib.invalidate_caches()
+            try:
+                yield
+            finally:
+                sys.path[:] = saved_path
+                sys.modules.pop("coal", None)
+                if saved_module is not None:
+                    sys.modules["coal"] = saved_module
+                importlib.invalidate_caches()
+
+    def test_the_refusal_reaches_the_probe_instead_of_being_swallowed(self) -> None:
+        with self._coal_refused_by_the_os():
+            probe = doc._probe_coal(())
+        self.assertIs(probe.status, doc.ProbeStatus.BLOCKED,
+                      f"an OS refusal of coal.dll reported as {probe.status}: {probe.detail}")
+        self.assertIn("code-integrity", probe.remedy)
+
+    def test_the_exit_code_is_two_so_the_install_script_can_branch(self) -> None:
+        """0 all green, 1 degraded, 2 an OS policy is blocking a binary. It answered 0."""
+        curobo_ok = (doc.Probe("cuRobo planner sidecar", doc.ProbeStatus.OK, "faked"),)
+        with self._coal_refused_by_the_os(), \
+             mock.patch.object(doc, "_probe_curobo", return_value=curobo_ok), \
+             mock.patch.object(doc, "code_integrity_blocks", return_value=()):
+            report = doc.run_doctor(model="ur5e")
+        self.assertTrue(report.blocked, report.render())
+        self.assertEqual(report.exit_code, 2)
+
+    def test_the_detail_names_what_carried_the_guard(self) -> None:
+        """BLOCKED must not read as "no exact-mesh checking": python-fcl is still holding the guard,
+        and an operator who cannot see that will go looking for a second failure."""
+        with self._coal_refused_by_the_os():
+            probe = doc._probe_coal(())
+        self.assertIn("fcl", probe.detail)
+        self.assertIn("4551", probe.detail, "the detail must quote what the OS actually said")
+
+
+class EveryBlockedSiteIsReachableTests(unittest.TestCase):
+    """⛔ THE COAL SITE WAS DEAD CODE, SO THE OTHER THREE ARE WORTH PROVING RATHER THAN ASSUMING.
+
+    ``looks_policy_blocked`` is consulted at four places, and one of them could not fire at all (the
+    class above). That is the reason this class exists: a branch nobody can reach and a branch nobody
+    has tested look identical from the outside. The kernel-backend site is covered by
+    `KernelBackendProbeTests`; these are the two in `_probe_curobo`, driven through a faked sidecar,
+    since what is under test is the classification and not the subprocess.
+    """
+
+    #: What the sidecar reports when the OS refuses one of cuRobo's DLLs. Same family as the live
+    #: case on this box: CodeIntegrity event 3033 for
+    #: ``ext_deps/curobo_env/Lib/site-packages/warp/bin/warp-clang.dll``, recorded 2026-09-10.
+    REFUSAL = ("ImportError: DLL load failed while importing warp-clang: "
+               "Eine Anwendungssteuerungsrichtlinie hat diese Datei blockiert.")
+
+    def _sidecar(self, *, stdout: str = "", stderr: str = "") -> doc.DoctorReport:
+        """The probe against an interpreter that exists and answers with exactly this."""
+        completed = mock.Mock(stdout=stdout, stderr=stderr)
+        with mock.patch.object(doc, "curobo_python_path", return_value=sys.executable), \
+             mock.patch.object(doc.subprocess, "run", return_value=completed):
+            probes = doc._probe_curobo((), "ur5e.yml")
+        return doc.DoctorReport(probes=probes, blocked_files=())
+
+    def test_a_sidecar_that_prints_nothing_but_a_refusal_is_blocked(self) -> None:
+        report = self._sidecar(stderr=self.REFUSAL)
+        self.assertIs(report.probes[0].status, doc.ProbeStatus.BLOCKED)
+        self.assertEqual(report.exit_code, 2)
+
+    def test_a_refusal_reported_inside_the_payload_is_blocked(self) -> None:
+        """The sidecar catches its own import errors and prints them as JSON, so this is the shape
+        the live path actually produces."""
+        report = self._sidecar(stdout='{"python": "x", "error": "curobo: %s"}' % self.REFUSAL)
+        self.assertIs(report.probes[0].status, doc.ProbeStatus.BLOCKED)
+        self.assertIn("code-integrity", report.probes[0].remedy)
+
+    def test_an_ordinary_import_failure_is_broken_not_blocked(self) -> None:
+        """The control: without the refusal the same shape must NOT claim a policy block, or exit 2
+        stops meaning anything."""
+        report = self._sidecar(stdout='{"python": "x", "error": "torch: ModuleNotFoundError: torch"}')
+        self.assertIs(report.probes[0].status, doc.ProbeStatus.BROKEN)
+        self.assertEqual(report.exit_code, 1)
 
 
 if __name__ == "__main__":

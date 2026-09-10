@@ -156,7 +156,9 @@ class Console:
         )
 
         with self._lock:
-            robot = self.robot()
+            # One read for both halves (see `resolved`). `config()` sets and restores the process
+            # profile around each call, so reading twice was also two dances where one is correct.
+            app_cfg, robot = self.resolved()
             # The one line that says what the pause before the next entry was spent on. `rehearse`
             # is on it because the two paths cost wildly differently, and a log that does not say
             # which one ran cannot explain either duration.
@@ -181,7 +183,7 @@ class Console:
             # side here and then calling `from_robot_config` separately is how a browser and a
             # terminal come to disagree about what "the cell" is.
             service = (build_rehearsal_cell(robot) if rehearse
-                       else build_real_cell(robot, prompt=self.prompt))
+                       else build_real_cell(robot, prompt=self.prompt, app_config=app_cfg))
             # Record logging is off in the shipped config (`grasping.record_log_path: null`), so a
             # console-driven cell would keep no history at all and a bring-up that goes wrong would
             # leave nothing to diagnose from afterwards. The console therefore turns it on itself,
@@ -264,10 +266,23 @@ class Console:
         all, so every consumer here would otherwise fail with an ``AttributeError`` on ``None`` at
         request time. Saying which directory configures no robot turns that into an answer.
         """
+        return self.resolved()[1]
+
+    def resolved(self) -> "tuple[AppConfig, RobotConfig]":
+        """The tree and its robot section, from one read, for a caller that needs both.
+
+        A cell has two halves and they came from different trees. :meth:`build` used to take the
+        robot half from here and let `build_real_components` read the camera half itself, with a
+        bare `load_config()` that consults neither :attr:`root` nor :attr:`profile`. A console
+        pointed at a deployment tree therefore ran that tree's arm and this checkout's cameras, and
+        the profile dance :meth:`config` performs was undone one call later. Reading once and
+        handing both halves down is what makes the two agree by construction rather than by
+        coincidence.
+        """
         config = self.config()
         if config.robot is None:
             raise NoRobotConfigured(self.root, self.profile)
-        return config.robot
+        return config, config.robot
 
     def preflight(self) -> "PreflightReport":
         """The same checklist the CLI prints, from the same function. Not a second opinion."""

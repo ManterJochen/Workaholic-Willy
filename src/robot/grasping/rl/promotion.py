@@ -611,15 +611,20 @@ def build_promotion_report_artifact(report: PromotionReport) -> dict[str, Any]:
 def write_promotion_report(report: PromotionReport, path: Path) -> str:
     """Write ``report`` to ``path`` and return the sha256 of the canonical LF blob.
 
-    ``write_text`` translates LF to CRLF on Windows, so the returned digest does not
-    describe the file on disk. Use :meth:`evaluation.PromotionGateReport.write` when
-    the digest must be the file's identity.
+    The digest describes the file on disk, because the blob is written as bytes.
     """
 
     artifact = build_promotion_report_artifact(report)
     blob = json.dumps(artifact, sort_keys=True, indent=2) + "\n"
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(blob, encoding="utf-8")
+    # The returned digest did not describe the file on Windows. MEASURED 2026-09-10, one
+    # call over a small report blob: returned 0bdfe8b5d2224246, on disk 0ddfd87410123469,
+    # because the blob is built with a bare line feed, hashed before writing, and write_text
+    # then translated it to a carriage-return pair. A promotion report sha256 is its identity,
+    # so anyone verifying an artifact against the number this function handed back got a
+    # mismatch on every Windows write. PromotionGateReport.write was already repaired this
+    # way; this path had not.
+    Path(path).write_bytes(blob.encode("utf-8"))
     digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
     logger.info(
         "Wrote %s promotion report for %s to %s (%d bytes, sha256 %s)",

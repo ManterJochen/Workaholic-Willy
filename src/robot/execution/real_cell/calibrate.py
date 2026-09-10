@@ -70,12 +70,24 @@ def _pick_rig(camera_cfg: Any, rig_id: str) -> Any:
     Refuses a non-RGB-D rig by name. A stereo pair calibrates through the routine's own
     stereo-rectified path, not through this one, and letting a webcam rig through here would
     fail much later with an error about ArUco rather than about the rig.
+
+    It now reads `enabled`. Measured 2026-09-10: nothing on this path did. `--check` printed
+    "the config and the rig are usable" for a rig the cell does not run, and the only thing
+    between that sentence and 22 commanded poses in front of a camera nobody switched on was
+    the operator reading `enabled: false` out of their own YAML. `CameraSystemConfig`
+    deliberately does not refuse a disabled rig at load time, because a profile that is not
+    ready to run is not a malformed file, and it says in that comment that the refusal belongs
+    where the cell is built. This is that place.
+
+    The "rigs is empty" refusal was deleted rather than moved. `CameraSystemConfig._validate_rigs`
+    raises "at least one camera rig must be configured" during `load_config`, and `main` is the
+    only caller, passing `cfg.camera` from exactly that loader. So the branch could fire for a
+    hand-built object and nothing else, and its only witness was the test written to cover it.
+    An empty list still refuses here, one line down, naming the rig it could not find.
     """
     from src.config.schema.camera import RGBDDeviceRigConfig
 
     rigs = list(getattr(getattr(camera_cfg, "cameras", None), "rigs", []) or [])
-    if not rigs:
-        raise SystemExit("camera.cameras.rigs is empty; there is no camera to calibrate.")
     by_id = {r.rig_id: r for r in rigs}
     if rig_id not in by_id:
         raise SystemExit(
@@ -86,6 +98,11 @@ def _pick_rig(camera_cfg: Any, rig_id: str) -> Any:
             f"rig {rig_id!r} is {getattr(rig, 'source', '?')!r}, not an RGB-D device. This runner "
             f"calibrates an RGB-D camera against the robot with an ArUco board; a stereo pair goes "
             f"through the routine's own stereo path.")
+    if not rig.enabled:
+        raise SystemExit(
+            f"rig {rig_id!r} is configured with `enabled: false`, so this cell does not run it. "
+            f"Set camera.cameras.rigs[{rig_id!r}].enabled: true before calibrating it. A sweep "
+            f"against a camera the cell will not open produces an artifact nothing consumes.")
     return rig
 
 

@@ -14,8 +14,12 @@ set -euo pipefail
 #    is refused at the connect (exit 1) instead of connecting and reporting a success it did not have.
 python -m src.robot.execution.real_cell --rehearse --runs 1 --profile console_dummy
 
-# 2. Everything decidable at a desk, without building anything.
-python -m src.robot.execution.real_cell --check
+# 2. Everything decidable at a desk, without building anything. It exits non-zero while
+#    anything is still blocking, which on the shipped tree is three items (tool frame,
+#    payload, CAMERA->BASE). That refusal is the answer this step exists to get, so it is
+#    reported here rather than inherited: an example has no verdict to give, a check does.
+python -m src.robot.execution.real_cell --check ||
+    echo "--check refused: the items above are what a first pick needs, and every one of them is a YAML edit."
 
 # 3. Live, on a cell whose controller answers. This one moves a real arm.
 #    python -m src.robot.execution.real_cell --runs 1 --prompt "a red cube"

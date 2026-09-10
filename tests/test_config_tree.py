@@ -86,6 +86,38 @@ class VerdictTests(unittest.TestCase):
         self.assertIn("profile='nosuch'", loaded.error)
         self.assertNotIn("WILLY_PROFILE", loaded.error)
 
+    def test_the_refusal_names_the_ENVIRONMENT_when_the_environment_chose(self) -> None:
+        """⛔ THE OTHER HALF, AND FIXING THE FIRST ONE BROKE IT. `from_directory` resolves an UNSET
+        profile from `WILLY_PROFILE` and then hands the resulting chain to `load_config(profile=...)`,
+        which is the door whose refusal says `profile=`. Measured 2026-09-10:
+
+            WILLY_PROFILE=nosuch python -m src.config
+              ->  profile='nosuch' selects profile layer 'nosuch', but no '*.nosuch.yaml' ...
+
+        Byte for byte the message an operator gets when they DID type `--profile nosuch`, so the one
+        who exported the variable goes looking for a flag they never passed. `source` exists on
+        `_validated_chain` for exactly one purpose, and collapsing the two origins into one string
+        threw away the only fact it needs.
+        """
+        import os
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"WILLY_PROFILE": "nosuch"}):
+            loaded = ConfigTree.from_directory().load()
+        self.assertFalse(loaded.ok)
+        self.assertIn("WILLY_PROFILE='nosuch'", loaded.error)
+        self.assertNotIn("profile='nosuch'", loaded.error)
+
+    def test_an_explicit_profile_still_outranks_the_variable_in_the_refusal(self) -> None:
+        """The control. Naming the environment must not start blaming it for a typed flag."""
+        import os
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"WILLY_PROFILE": "sim"}):
+            loaded = ConfigTree.from_directory(profile="nosuch").load()
+        self.assertIn("profile='nosuch'", loaded.error)
+        self.assertNotIn("WILLY_PROFILE", loaded.error)
+
     def test_render_reports_the_chain_that_was_loaded(self) -> None:
         """⚠ Not the one that was asked for. The banner used to print "(no profile)" while
         WILLY_PROFILE=sim was in force and its overlays had already been applied.

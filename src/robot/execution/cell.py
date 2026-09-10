@@ -30,6 +30,7 @@ from src.robot.execution.real_cell.preflight import (
 from src.robot.safety import SafetyAttestation
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.config.schema import AppConfig
     from src.config.schema.robot import RobotConfig
 
 __all__ = ["Cell", "CellNotBuilt"]
@@ -73,6 +74,15 @@ class Cell:
     #: looks for, and `build_real_cell` already declares it. `UNSET` forwards nothing, so that one
     #: declaration stays the only one.
     prompt: "Maybe[str]" = UNSET
+    #: The tree ``robot_config`` came out of, for the half of a cell that is not the robot.
+    #:
+    #: A cell has two halves and they used to come from different trees. `robot_config` is resolved
+    #: by the caller, who has a `--profile` and a `--data-dir`; the camera half was then read
+    #: downstream with a bare `load_config()`, which falls back to `WILLY_PROFILE` and to the
+    #: checkout's own tree. Measured 2026-09-10: the same chain through the flag and through the
+    #: environment produced two different refusals. `UNSET` forwards nothing and the downstream
+    #: default stands, so a caller who says nothing is unchanged.
+    app_config: "Maybe[AppConfig]" = UNSET
     #: A dummy arm and a synthetic scene: the whole path at a desk, no camera, no robot.
     is_rehearsal: bool = False
     _service: Any = field(default=None, repr=False)
@@ -81,14 +91,18 @@ class Cell:
 
     @classmethod
     def from_robot_config(
-        cls, robot_config: "RobotConfig", *, prompt: "Maybe[str]" = UNSET
+        cls, robot_config: "RobotConfig", *, prompt: "Maybe[str]" = UNSET,
+        app_config: "Maybe[AppConfig]" = UNSET,
     ) -> "Cell":
         """The cell the configuration describes, as configured.
 
         Omitting ``prompt`` lets `build_real_cell` supply its own, which is the only declaration
         of it. The CLI passes its argparse default explicitly.
+
+        ``app_config`` is the tree ``robot_config`` came from, and a caller who resolved one should
+        pass it: see the field for what happened while it could not be said.
         """
-        return cls(robot_config=robot_config, prompt=prompt)
+        return cls(robot_config=robot_config, prompt=prompt, app_config=app_config)
 
     @classmethod
     def rehearsal(cls, robot_config: "RobotConfig") -> "Cell":
@@ -134,7 +148,12 @@ class Cell:
             else:
                 # Forwarded only when chosen, so an unspecified prompt reaches the callee's own
                 # default rather than a copy of it made here.
-                extra = {"prompt": self.prompt} if chosen(self.prompt) else {}
+                #
+                # Annotated because the two keys hold different types, and an inferred
+                # `dict[str, str]` from the first one makes the second an error rather than a value.
+                extra: dict[str, Any] = {"prompt": self.prompt} if chosen(self.prompt) else {}
+                if chosen(self.app_config):
+                    extra["app_config"] = self.app_config
                 self._service = build_real_cell(self.robot_config, **extra)
         return self._service
 

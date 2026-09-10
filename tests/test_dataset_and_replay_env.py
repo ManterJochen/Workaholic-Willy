@@ -141,6 +141,67 @@ class OutcomeClassDerivationTests(unittest.TestCase):
         self.assertEqual(derive_outcome_class(rec), "unclassified")
 
 
+class TheTwoReadersOfOneRecordAgreeTests(unittest.TestCase):
+    """⛔ THE DATASET AND THE TAXONOMY KEYED ON DISJOINT FIELDS. `derive_outcome_class` reads
+    `extra.failure_taxonomy_class` (written by the sim runners) and `extra.expected_root_cause`
+    (a label on the committed test pack). `replay.failure_taxonomy.classify_record` reads
+    `extra.*_evidence` + `final_outcome` (written by the PRODUCTION serializer,
+    `record_logging._stamp_taxonomy_evidence`). Neither set overlapped the other, so MEASURED
+    2026-09-10 the same record was `collision_rejection` to the taxonomy report and `unclassified`
+    to the dataset that stratifies on it, and the RL side's whole failure axis collapses into one
+    bucket exactly for records produced by a real cell."""
+
+    def _both(self, final_outcome: str, extra: dict) -> tuple[str, str]:
+        from src.robot.grasping.replay.failure_taxonomy import classify_record
+        from src.robot.grasping.telemetry.outcome_logging import GraspAttemptRecord
+
+        record = GraspAttemptRecord.new(
+            attempt_id="agree-1", mode="auto", final_outcome=final_outcome, extra=extra)
+        return derive_outcome_class(record.to_dict()), classify_record(record).primary.value
+
+    def test_a_production_collision_record_is_the_same_class_to_both(self) -> None:
+        dataset_class, taxonomy_class = self._both(
+            "execution_failed", {"collision_evidence": True})
+        self.assertEqual(taxonomy_class, "collision_rejection")
+        self.assertEqual(dataset_class, taxonomy_class)
+
+    def test_the_precedence_the_classifier_uses_survives_the_handover(self) -> None:
+        """Two flags on one record resolve by enum precedence, and a second reader that resolved
+        them differently would be a second taxonomy."""
+        dataset_class, taxonomy_class = self._both(
+            "verification_failed", {"slip_evidence": True, "empty_air_evidence": True})
+        self.assertEqual(taxonomy_class, "slip_after_grasp")
+        self.assertEqual(dataset_class, taxonomy_class)
+
+    def test_an_outcome_the_classifier_will_not_name_stays_unclassified(self) -> None:
+        """The classifier refuses to force-classify, and borrowing it must not smuggle in a guess."""
+        dataset_class, taxonomy_class = self._both("execution_failed", {})
+        self.assertEqual(taxonomy_class, "unclassified")
+        self.assertEqual(dataset_class, "unclassified")
+
+    def test_a_stray_flag_on_a_SUCCEEDED_record_is_still_a_success(self) -> None:
+        """`_FAILURE_GATING_OUTCOMES` is what keeps a stray flag from relabelling a success. The
+        dataset's own `succeeded` rule must stay in front of the borrowed classifier."""
+        dataset_class, _ = self._both("succeeded", {"slip_evidence": True})
+        self.assertEqual(dataset_class, "success")
+
+    def test_the_committed_bootstrap_histogram_is_UNCHANGED(self) -> None:
+        """⚠ THE BYTE-IDENTICAL GUARD. The three canonical sources carry no `*_evidence` flag at
+        all, so borrowing the classifier must move no row of the committed manifest. Measured
+        before the change and pinned here after it."""
+        from collections import Counter
+
+        repo = Path(__file__).resolve().parents[1]
+        counts: Counter = Counter()
+        for rel in CANONICAL_BOOTSTRAP_SOURCES:
+            for line in (repo / rel).read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    counts[derive_outcome_class(json.loads(line))] += 1
+        manifest = json.loads(
+            (repo / "docs/baselines/rl_datasets/v1_bootstrap.json").read_text(encoding="utf-8"))
+        self.assertEqual(dict(counts), manifest["class_counts"])
+
+
 # ---------------------------------------------------------------------------
 # Split determinism + stratification
 # ---------------------------------------------------------------------------

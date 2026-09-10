@@ -15,11 +15,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 import numpy as np  # noqa: E402
-from src.config import load_config  # noqa: E402
+from src.config import ConfigError, load_config  # noqa: E402
 from src.models.perception_spec import PerceptionSpec  # noqa: E402
 
 # 1. The config tree, projected onto the seven fields that decide a perception stack.
-models = load_config().models
+try:
+    models = load_config().models
+except ConfigError as broken:
+    # A tree that does not parse is the state an operator is in five seconds after a bad edit,
+    # and the four files under scripts/checks/ answer it with a sentence and exit 2. An example
+    # that raises instead teaches a reader nothing about the thing it was written to show.
+    print(f"this config tree does not load: {broken}")
+    raise SystemExit
 spec = PerceptionSpec.from_config(models)
 
 # 2. What this tree would build, and why. Nothing is loaded: resolve() reads the config and quotes

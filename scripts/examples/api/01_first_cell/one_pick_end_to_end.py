@@ -20,13 +20,19 @@ from pathlib import Path
 # Four parents up: 01_first_cell, api, examples, scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from src.config import load_robot_config  # noqa: E402
+from src.config import ConfigError, load_robot_config  # noqa: E402
 from src.robot.execution.cell import Cell  # noqa: E402
 from src.robot.execution.pick_run import PickRun, Recording  # noqa: E402
 
 # 1. The cell this config describes, with a dummy arm and a synthetic scene.
 #    Live, on real hardware:  Cell.from_robot_config(robot, prompt="a red cube")
-robot = load_robot_config(profile="console_dummy")
+try:
+    robot = load_robot_config(profile="console_dummy")
+except ConfigError as no_cell:
+    # Two refusals arrive as this one class: a tree with no `robot` block at all, and a tree
+    # that has one but carries no `console_dummy` overlay for the desk cell asked for here.
+    print(f"no console_dummy cell in this config tree ({no_cell})")
+    raise SystemExit
 cell = Cell.rehearsal(robot)
 
 # 2. Everything decidable at a desk, before anything is constructed. Preflight comes first for

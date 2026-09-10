@@ -57,6 +57,7 @@ __all__ = [
     "normalise_meshes",
     "prepare_assets",
     "screen_meshes",
+    "screen_rows",
 ]
 
 _LOG = create_logger("datagen.assets.prepare", "assets_prepare.log", log_dir=DATAGEN_LOG_DIR)
@@ -423,6 +424,25 @@ def screen_meshes(sources: list[str] | None = None, *, library: Path | None = No
                f"jaw {len(jaw_rows):>4}   suction {len(suction_rows):>4}   "
                f"the box proxy would have missed {len(missed):>4}")
     return rows
+
+
+def screen_rows(parsed: Any) -> list[dict[str, Any]]:
+    """The rows out of a parsed screen file, in either shape one has been written in.
+
+    Measured 2026-09-10 against this repository's own committed
+    `datagen/assets/screens/screen.json`: :func:`screen_meshes` wraps the rows in a dict that also
+    carries the density and the partial stamp, and `why-no-jaw --from-screen` walked the parsed JSON
+    as a bare list. On a dict that iterates the keys, so the reader called `.get` on the string
+    "density", and the form the README documents could not run at all.
+
+    A bare list is a screen written before the wrapper existed. It is still read, because refusing it
+    would turn a file somebody measured last month into a lost measurement; it simply cannot say
+    which density it was taken at. `scenes/layout.load_jaw_screen` carries the same rule for the
+    other reader of this file.
+    """
+    if isinstance(parsed, dict):
+        return list(parsed.get("rows", []))
+    return list(parsed)
 
 
 def asset_ids_from_screen(rows: list[dict[str, Any]]) -> dict[str, list[str]]:

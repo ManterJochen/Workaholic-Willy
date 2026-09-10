@@ -1,22 +1,44 @@
 """Top-level pytest configuration for the Workaholic-Willy suite.
 
-Platform-gates the **byte-exact determinism / artifact-SHA tests**. These assert that
-regenerated canonical replay packs, trained model artifacts, and promotion reports
-reproduce the *committed* bytes (or their SHA-256) exactly. That identity is
-**floating-point- and platform-sensitive**: the committed goldens are rendered on one
-origin platform (the macOS dev laptop / the canonical determinism CI job), and on a
-different BLAS/libm (e.g. the Windows RTX workstation) the values drift in the last ULP,
-so the serialized bytes differ even though the computation is correct.
+⛔ **THIS FILE USED TO SKIP 27 TESTS IN EVERY RUN THAT HAS EVER HAPPENED.** It held an allow-list
+of node ids that skipped unless ``WILLY_DETERMINISM_NATIVE`` was set, and it described that
+variable as belonging to "the canonical determinism CI job". MEASURED 2026-09-10: no such job
+exists. ``.github/workflows/ci.yml`` never sets the variable, no script or runbook sets it, and
+nothing in the tree ever has. Twenty-seven byte-identity claims were therefore never once checked.
+All 27 did at least resolve here: file, class and method were confirmed one by one on 2026-09-10,
+so this tree did not also carry the stale-entry hole that a 2026-09-05 pass had already closed.
+Resolving and being checked are different things, and only the first was ever true of them.
 
-They are therefore **skipped by default** and run only when ``WILLY_DETERMINISM_NATIVE=1``
-is set — do that on the artifact-origin platform / the canonical determinism job (where the
-goldens are (re)generated and committed), NOT on developer or cross-platform boxes. This
-keeps ``pytest tests`` honestly green everywhere while preserving the byte-identity gate
-where it is meaningful.
+Opening the gate by hand turned 27 skips into 19 failures, in three groups:
 
-Scope is an **explicit allow-list of node IDs** (below) so nothing else is ever skipped.
-If you add a new byte-identity / SHA artifact test, add its node ID here. (The integration
-``isaac`` marker is gated separately in ``tests/integration/conftest.py``.)
+* CRLF. ``core.autocrlf=true`` checked ``tests/data/replay/**`` out with carriage returns while
+  the committed blob is LF, so every guard hashing FILE BYTES compared a different file than the
+  one the manifest describes. sha256 of the working-tree bytes and sha256 of the same bytes with
+  CRLF folded to LF were computed against the manifest: the LF form matched all four packs, the
+  CRLF form matched none. Pinning the paths ``-text`` cleared 5 of the 19 and none of them was
+  float drift. It also EXPOSED one more, which had been passing only because two stale goldens
+  agreed with each other about a CRLF reading; that is the shape of the whole problem.
+* Stale goldens. Nine committed artifacts could not be produced by their own generators. Six
+  under ``docs/baselines/`` carried provenance hashes taken from a CRLF reading of the packs, so
+  they disagreed with ``tests/data/replay/MANIFEST.json`` about the sha256 of the same four
+  files; one also recorded a ``config_hash`` from an older recovery action space; two
+  ``coverage_warning`` strings in the OPE report had lost a phase prefix their generator no
+  longer emits; five artifacts still spelled a connector the sources had stopped writing; the
+  replay manifest had five prose fields its generator could not produce; and both replay
+  manifests still named the ``backend.src`` import path this tree does not use. All regenerated
+  with this tree's own commands.
+* Real float drift: 42 lines of 1240 across the canonical packs differ in the last ULP of a
+  ``random.gauss`` draw. libm, per-platform, unfixable without re-blessing the packs.
+
+Only the third group survives, and only for assertions that compare bytes rather than values.
+Those are named in :data:`tests._determinism.PLATFORM_FLOAT_LOCKED_NODEIDS` and they are skipped
+only when a regeneration on THIS box is measured to drift in float formatting alone. A box that
+reproduces the packs runs them; a box where anything structural moved runs them and fails.
+MEASURED here afterwards: 25 of the 27 run and pass, 2 stand down.
+``WILLY_DETERMINISM_NATIVE=1`` forces them to run regardless, which is what to set when
+re-blessing.
+
+(The integration ``isaac`` marker is gated separately in ``tests/integration/conftest.py``.)
 """
 
 from __future__ import annotations
@@ -25,67 +47,56 @@ import os
 
 import pytest
 
-# Exact byte-identity / artifact-SHA tests — locked to the artifact-origin platform.
-# Empirically the set that fails purely on cross-platform float drift (verified on the
-# Windows RTX 5080 box, 2026-06-04). NOT included on purpose: the two
-# ``test_dataset_and_replay_env …_subprocess`` tests (they fail on a *missing generated dataset*, a separate
-# fixture gap, not determinism) and ``test_log_cfg_threadsafe`` (Windows file-lock teardown).
-# ⛔ FIVE OF THESE NAMED FILES THAT DO NOT EXIST, AND THE GUARD WAS THEREFORE INERT FOR THEM.
-# MEASURED 2026-09-05: `tests/test_u1_success_probability_model.py` and
-# `tests/test_u3_model_promotion_gate.py` were renamed to `test_success_probability_model.py` and
-# `test_model_promotion_gate.py`; `pytest_collection_modifyitems` matches on the EXACT nodeid, so the
-# committed-promotion drift test and the three verify/canary goldens ran unguarded on every box --
-# the precise cross-platform ULP exposure this file exists to prevent. They were green here only
-# because this box happens to agree. Fixed by renaming the prefixes; every class::test name below
-# still resolves, checked one by one.
-#
-# ⚠ A stale entry is silent in BOTH directions, which is why `test_every_locked_nodeid_exists`
-# in tests/test_determinism_lock.py now fails on one rather than leaving it to be noticed.
-_DETERMINISM_NATIVE_NODEIDS = frozenset(
-    {
-        "tests/test_canonical_determinism.py::CanonicalPackDeterminismTests::test_each_pack_regenerates_to_committed_bytes",
-        "tests/test_canonical_determinism.py::CanonicalPackDeterminismTests::test_manifest_matches_on_disk_packs",
-        "tests/test_canonical_determinism.py::CanonicalPackDeterminismTests::test_manifest_sha256_matches_pack_bytes",
-        "tests/test_u0_telemetry_contract.py::BaselineReportTests::test_report_committed_on_disk",
-        "tests/test_u0_telemetry_contract.py::CanonicalPacksTests::test_manifest_matches_packs_on_disk",
-        "tests/test_u0_telemetry_contract.py::CanonicalPacksTests::test_pack_bytes_match_spec_render",
-        "tests/test_u0_telemetry_contract.py::RegenerateIdempotenceTests::test_regenerate_all_is_byte_idempotent",
-        "tests/test_success_probability_model.py::TrainerByteDeterminismTests::test_committed_artifact_matches_fresh_train",
-        "tests/test_model_promotion_gate.py::CommittedPromotionDriftTests::test_metrics_match_recorded",
-        "tests/test_model_promotion_gate.py::LoaderEnforcementTests::test_canary_loads_with_valid_promotion",
-        "tests/test_model_promotion_gate.py::PromotionCLITests::test_verify_subcommand_returns_zero_on_committed",
-        "tests/test_model_promotion_gate.py::VerifyPromotionTests::test_passes_on_committed_artifact",
-        "tests/test_u7_failure_taxonomy.py::LabeledPackTests::test_manifest_sha_matches_disk",
-        "tests/test_dataset_and_replay_env.py::CommittedManifestTests::test_committed_manifest_matches_rebuild",
-        "tests/test_shadow_router_and_candidate_policy.py::TrainCandidatePolicyCLITests::test_cli_reproduces_committed_artifact",
-        "tests/test_ranking_shadow_and_pairwise_logistic.py::CommittedArtifactSha256Tests::test_cli_regenerates_byte_identical_artifact",
-        "tests/test_ranking_shadow_and_pairwise_logistic.py::CommittedArtifactSha256Tests::test_committed_sha256_locked",
-        "tests/test_sequencing_shadow_and_lookup.py::CommittedArtifactSha256Tests::test_committed_artifact_byte_identity_via_cli",
-        "tests/test_ope_harness.py::CommittedArtifactTests::test_committed_report_byte_identity",
-        "tests/test_perception_budget_policy.py::CommittedArtifactSha256Tests::test_committed_artifact_matches",
-        "tests/test_recovery_policy.py::CommittedArtifactTests::test_committed_artifact_reproduces_from_packs",
-        "tests/test_recovery_policy.py::CommittedArtifactTests::test_committed_artifact_sha256",
-        "tests/test_promotion_pipeline.py::CommittedPromotionReportTests::test_committed_report_is_reproducible",
-        "tests/test_promotion_pipeline.py::CommittedPromotionReportTests::test_committed_report_sha256_matches",
-        "tests/test_promotion_pipeline.py::CommittedSequencingPromotionReportTests::test_committed_report_is_reproducible",
-        "tests/test_promotion_pipeline.py::CommittedSequencingPromotionReportTests::test_committed_report_sha256_matches",
-        "tests/test_u12_docs_and_soak_gate.py::SoakReportCLITests::test_committed_report_is_regen_stable",
-    }
+from tests._determinism import (
+    DRIFT_PROBES,
+    PLATFORM_FLOAT_LOCKED_NODEIDS,
+    snapshot_lf_locked_goldens,
 )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Fingerprint the committed replay goldens before a single test has run.
+
+    ``TreeCleanlinessTests`` compares against this, so it detects a test rewriting a golden DURING
+    the run and stays quiet about an edit someone made before it.
+    """
+
+    del config
+    snapshot_lf_locked_goldens()
 
 
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Skip the platform-locked byte-identity tests unless explicitly opted in."""
+    """Stand a locked byte-comparison test down, and only for a drift measured in this run.
+
+    Three node ids are locked; how many actually stand down is decided here, per run, per probe.
+    """
 
     if os.environ.get("WILLY_DETERMINISM_NATIVE"):
         return
-    skip_determinism = pytest.mark.skip(
-        reason="byte-exact determinism gate is platform-locked (float/BLAS-sensitive); "
-        "set WILLY_DETERMINISM_NATIVE=1 on the artifact-origin platform / canonical CI "
-        "job to run it. See tests/conftest.py."
-    )
-    for item in items:
-        if item.nodeid.replace("\\", "/") in _DETERMINISM_NATIVE_NODEIDS:
-            item.add_marker(skip_determinism)
+    locked = [
+        (item, PLATFORM_FLOAT_LOCKED_NODEIDS[nodeid])
+        for item in items
+        if (nodeid := item.nodeid.replace("\\", "/")) in PLATFORM_FLOAT_LOCKED_NODEIDS
+    ]
+    if not locked:
+        return
+    # Probes are measured lazily and cached, and only for the tests actually collected: rendering
+    # the packs or retraining the ranker costs seconds and every other run should not pay it.
+    for item, probe_name in locked:
+        verdict = DRIFT_PROBES[probe_name]()
+        if verdict.kind != "float_only":
+            # identical -> the test can hold here, so run it. structural -> something real moved
+            # and it MUST run, so it can say what.
+            continue
+        item.add_marker(
+            pytest.mark.skip(
+                reason=(
+                    f"byte-identity stood down: {verdict.render()}. The values are right and the "
+                    "decimal spelling is not, which no assertion on bytes can survive. Set "
+                    "WILLY_DETERMINISM_NATIVE=1 to run it anyway (do that when re-blessing). "
+                    "See tests/_determinism.py."
+                )
+            )
+        )

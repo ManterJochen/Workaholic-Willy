@@ -34,9 +34,15 @@ print(MeshPreparation.from_sources(["thingi10k"]).fetch(library=MESH_LIBRARY_DIR
 # 4. Your own parts. A tetrahedron stands in for the CAD you would point this at. `license=` is
 #    required and refused rather than defaulted: nobody but you knows what your parts are under.
 parts = Path("logs/examples/my_cad")
-parts.mkdir(parents=True, exist_ok=True)
-(parts / "bracket.obj").write_text("v 0 0 0\nv 40 0 0\nv 0 40 0\nv 0 0 40\n"
-                                   "f 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n", encoding="utf-8")
+try:
+    parts.mkdir(parents=True, exist_ok=True)
+    (parts / "bracket.obj").write_text("v 0 0 0\nv 40 0 0\nv 0 40 0\nv 0 0 40\n"
+                                       "f 1 3 2\nf 1 2 4\nf 1 4 3\nf 2 3 4\n", encoding="utf-8")
+except OSError as unwritable:
+    # Everything above this line reads; from here on the example writes, and a reader whose
+    # working directory refuses that learns nothing from a stack trace out of os.mkdir.
+    print(f"cannot write {parts} ({unwritable}); steps 4 and 5 need a writable directory")
+    raise SystemExit
 entries = import_from_directory("custom", parts, destination="logs/examples/meshes",
                                 license="own", attribution="ACME GmbH")
 

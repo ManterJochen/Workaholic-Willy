@@ -26,6 +26,7 @@ from src.robot.grasping.uncertainty import UncertaintySnapshot
 from .config import EffectiveGraspingConfig, GraspBehaviorProfile, GraspMode
 
 if TYPE_CHECKING:
+    from src.robot.grasping.closed_loop.refinement import RefinementReport
     from src.robot.grasping.loop.pick_loop import CommitDecision
 
 
@@ -213,6 +214,19 @@ class AutonomousGraspReport:
     # ``hybrid_ml`` modes. Carrier-only by construction: the
     # orchestrator never reads it.
     shadow_router_telemetry: Optional[ShadowRouterTelemetry] = None
+    # The two-scan refiner own verdict, and until it was carried here the record contract
+    # ``refinement`` block had no production writer at all. ``GraspAttemptRecord.refinement`` is
+    # declared, serialised, deserialised, fabricated by the synthetic soak generator, and required by
+    # the telemetry catalog for ``refinement_failed`` / ``target_lost_during_refine`` /
+    # ``refinement_diverged``, so those three outcomes could never produce a complete record,
+    # whatever the cell did.
+    #
+    # ``None`` on every default attempt, and that is not a gap: the refine path runs only when the
+    # active profile requires refinement and a refiner is wired, which no shipped config does. It is
+    # also ``None`` on the one refine-stage leg that fails before the refiner runs (the second scan
+    # returns no segmentations); that record honestly has no refiner verdict to carry, and a
+    # fabricated one would be the defect this field exists to remove.
+    refinement: Optional["RefinementReport"] = None
     # Per-step recovery trail
     # (``{action, outcome, step_result, executed, failure_reason, plan_reason}`` per step). Empty ``()`` on
     # the default path; populated by ``_attach_recovery_trail`` only when the opt-in recovery loop ran. The

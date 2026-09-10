@@ -131,7 +131,7 @@ Everything is mounted under `/v1`.
 | **History** | |
 | `GET /v1/history/kpis` | rolled up with the same function the offline gate uses |
 | `GET /v1/history/records` | logged grasp attempts, newest first |
-| `GET /v1/history/runs` | this session's runs, in memory and perishable |
+| `GET /v1/history/runs` | this session's last 200 runs, in memory and perishable |
 | `GET /v1/history/runs.csv` | one row per run, the report view |
 | `GET /v1/history/records.csv` | one row per attempt, the analysis view |
 
@@ -179,6 +179,15 @@ browser records WAV, so that second path is the everyday one. The two failures a
 differently on purpose: a container this host cannot decode is `501 audio_format_unsupported` and names
 the dependency, while bytes that are not usable audio are `422 audio_undecodable`. An operator sent to
 their microphone settings for something that is an install has been told the wrong thing.
+
+**A truncated upload is one of those 422s, and it used to be a crash.** A connection dropped
+mid-upload delivers a few bytes, and `wave.open()` answers a short read with a bare `EOFError`, which
+is not a `wave.Error` and not an `AudioDecodeError`. Measured on a WAV truncated to every length from
+0 to 59: lengths 1-7 and 20-35 raised it, and the odd lengths from 45 raised `ValueError` out of
+`np.frombuffer` instead. The endpoint reported all of them from its last-resort handler as
+`transcription_failed` with the message `EOFError:` and no cause in it. They are now
+`audio_undecodable`, and bytes too short to be any container at all (under RIFF's 12-byte header) are
+refused as a bad request rather than as a missing decoder.
 
 ## The viewfinder: three pictures, never blurred
 
@@ -290,8 +299,8 @@ OpenAPI document and a generated client can type the failure path as well as the
 | `lifecycle.py` | the state machine (build, preview, token, connect, disconnect), the rollback, and closing the camera a rebuild replaces |
 | `telemetry.py` | what one panel tick may read, and what each read actually costs |
 | `schemas.py` | wire types: serialisation only, no judgement of their own |
-| `events.py` | the event stream: per-run sequence numbers, a bounded history, catch-up by sequence |
-| `runs.py` | a run on its own thread, and the sentences the operator reads |
+| `events.py` | the event stream: per-run sequence numbers, a bounded history, catch-up by sequence, and `forget()` for a run that has left the console |
+| `runs.py` | a run on its own thread, the sentences the operator reads, and the 200-run retention window |
 | `history.py` | reading the record log, the KPI roll-up, and the CSV writers |
 | `viewfinder.py` | resolving the honest picture: camera against synthetic against overlay, and the four refusals |
 | `audio.py` | decoding an uploaded recording, and the two ways it can refuse |
@@ -303,7 +312,7 @@ OpenAPI document and a generated client can type the failure path as well as the
 | `routers/pick.py` | start, stop, list runs, and the events socket |
 | `routers/media.py` | `GET /v1/camera`, the overlay socket and speech to text |
 | `routers/history.py` | the history routes |
-| `__main__.py` | `python -m api`, bound to 127.0.0.1 and not configurable off it |
+| `__main__.py` | `python -m api`, bound to 127.0.0.1 and not configurable off it; the port is checked and claimed before the banner claims to serve |
 
 **Each module that does something logs to its own file** under `logs/api/`. Modules that only hold data
 or delegate have no logger, because an empty rotating file makes a log directory harder to read, not

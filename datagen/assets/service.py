@@ -379,11 +379,15 @@ class MeshPreparation:
         work. With it, only the rows the screen scored at zero are asked about.
         """
         from datagen.assets.diagnose import why_no_jaw as diagnose  # noqa: PLC0415
+        from datagen.assets.prepare import screen_rows  # noqa: PLC0415
         from datagen.grasps.labels import DENSITIES  # noqa: PLC0415
 
         available = self.entries()
         if from_screen is not None:
-            rows = json.loads(Path(from_screen).read_text(encoding="utf-8"))
+            # The rows come out of the writer's own shape. This read the parsed JSON as a bare
+            # list, which on the wrapper dict `screen_meshes` writes iterates the keys: measured
+            # 2026-09-10 against the committed screen.json as `'str' object has no attribute 'get'`.
+            rows = screen_rows(json.loads(Path(from_screen).read_text(encoding="utf-8")))
             zero = {str(row.get("asset_id")) for row in rows
                     if row.get("status") == "ok" and not row.get("jaw", 0)}
             if not zero:

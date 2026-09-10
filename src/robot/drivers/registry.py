@@ -151,6 +151,12 @@ def create_arm(vendor: RobotVendor | str, **kwargs) -> RobotArm:
     RobotConnectionError
         If the vendor is recognised and no factory is registered, meaning the driver
         package is missing or its SDK failed to import.
+    JointLimitTableMissing
+        If the built arm enforces the joint-limit guard and no per-axis table resolves for
+        its own vendor and model. Measured on the shipped ``web`` profile: such a cell used
+        to build and then refuse every motion as ``controller_rejected``, naming the
+        controller for a missing config key. See
+        :func:`src.robot.safety.joint_limits.assert_joint_limit_table_available`.
     """
     key = _coerce(vendor)
     with _LOCK:
@@ -174,4 +180,15 @@ def create_arm(vendor: RobotVendor | str, **kwargs) -> RobotArm:
             f"factory for vendor {key.value!r} returned "
             f"{type(arm).__name__}, which does not satisfy the RobotArm Protocol."
         )
+    # A guard with nothing to enforce refuses every motion and blames the controller.
+    # Measured 2026-09-10 on the shipped `web` profile: the joint-limit guard resolved no
+    # table for `vendor: kuka`, answered UNAVAILABLE for an all-zeros joint target, and the
+    # preflight mapped that to `controller_rejected`. Safe, and unusable, and the operator
+    # goes to look at the KRC. It is asked here rather than in each driver because the
+    # defect is that the next vendor lands the same way and nobody notices, and this is the
+    # one line every cell boot passes through. It is imported inside the function so the
+    # registry keeps its import discipline, with no safety at module scope.
+    from src.robot.safety.joint_limits import assert_joint_limit_table_available
+
+    assert_joint_limit_table_available(arm)
     return arm

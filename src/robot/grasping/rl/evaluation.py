@@ -127,14 +127,12 @@ class PromotionGateReport:
     def write(self, path: "str | Path") -> str:
         """Write the artifact and return the sha256 of the file.
 
-        `write_promotion_report` returns a digest that does not describe the file it wrote: it
-        builds the blob with LF, writes it with `write_text` (which translates to CRLF on
-        Windows), and hashes the pre-translation bytes. A promotion report's sha is its identity,
-        so a verifier comparing an artifact against that digest sees a mismatch on every Windows
-        write.
-
-        Writing bytes here makes the digest true and makes the file match what every other
-        machine produces.
+        Writing bytes makes the digest true and makes the file match what every other machine
+        produces. `write_promotion_report` used to build the blob with LF, write it with
+        `write_text` (which translates to CRLF on Windows), and hash the pre-translation bytes, so
+        a verifier comparing an artifact against that digest saw a mismatch on every Windows write.
+        It was repaired the same way on 2026-09-10; this docstring described that defect in the
+        present tense for as long as it stood.
         """
         import json  # noqa: PLC0415
 

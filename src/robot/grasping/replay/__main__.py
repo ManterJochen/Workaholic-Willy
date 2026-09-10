@@ -69,6 +69,7 @@ from src.robot.grasping.replay.soak_cli import (
     _SIM_SOAK_REPORT_RELATIVE_PATH,
     _records_gate_mode,
     _records_mode,
+    _refuse_missing_input,
     _sim_soak_report_mode,
     _soak_mode,
     _soak_report_mode,
@@ -258,10 +259,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         default=None,
         help=(
-            "override the output path for --baseline-report "
-            f"(default: {DEFAULT_REPORT_RELATIVE_PATH}) or "
-            "--soak-report (default: "
-            f"{DEFAULT_SOAK_REPORT_RELATIVE_PATH})"
+            "the older spelling of --out, and exactly the same thing: the output path for "
+            f"--baseline-report (default: {DEFAULT_REPORT_RELATIVE_PATH}), --soak-report "
+            f"(default: {DEFAULT_SOAK_REPORT_RELATIVE_PATH}) or --sim-soak-report. Passing both "
+            "names with different paths is an error, not a preference."
         ),
     )
     parser.add_argument(
@@ -269,8 +270,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         default=None,
         help=(
-            "output path for the --failure-taxonomy JSON report "
-            "(required when --failure-taxonomy is set)"
+            "output path for whichever report mode is selected: --failure-taxonomy (where it is "
+            "required), --baseline-report, --soak-report or --sim-soak-report. Every writing mode "
+            "honours it; none of them falls back to the committed default once it is given."
         ),
     )
     parser.add_argument(
@@ -351,6 +353,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # One output path, two spellings, and one of them used to be silently discarded.
+    # `--baseline-report --out mine.json` read `args.baseline_out`, found `None`, and rewrote the
+    # git-tracked `docs/baselines/u_plus_baseline_v1.json` instead: an operator who named their own
+    # file overwrote a committed one and was told the report had been written. Resolving both names
+    # here, once, is what makes an ignored argument impossible rather than merely unlikely.
+    if (
+        args.out is not None
+        and args.baseline_out is not None
+        and args.out != args.baseline_out
+    ):
+        parser.error(
+            "--out and --baseline-out name the same thing and disagree "
+            f"({args.out} vs {args.baseline_out}); pass one"
+        )
+    report_out = args.out if args.out is not None else args.baseline_out
+
     if args.records is not None:
         return _records_mode(args.records)
     if args.records_gate is not None:
@@ -360,17 +378,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.regenerate_canonical:
         return _regenerate_canonical_mode()
     if args.baseline_report:
-        return _baseline_report_mode(args.baseline_out)
+        return _baseline_report_mode(report_out)
     if args.soak_report:
-        return _soak_report_mode(args.baseline_out)
+        return _soak_report_mode(report_out)
     if args.sim_soak_report is not None:
         return _sim_soak_report_mode(
-            args.sim_soak_report, args.baseline_out, min_attempts=args.sim_min_attempts
+            args.sim_soak_report, report_out, min_attempts=args.sim_min_attempts
         )
     if args.failure_taxonomy is not None:
-        if args.out is None:
+        if report_out is None:
             parser.error("--failure-taxonomy requires --out")
-        return _failure_taxonomy_mode(args.failure_taxonomy, args.out)
+        return _failure_taxonomy_mode(args.failure_taxonomy, report_out)
     if args.watchdog_eval:
         return _watchdog_eval_mode()
     if args.slo_gate:
@@ -461,8 +479,13 @@ def _failure_taxonomy_mode(
     records: list = []
     pack_strs: list[str] = []
     for path in pack_paths:
-        if not path.exists():
-            raise FileNotFoundError(f"replay pack not found: {path}")
+        if not path.is_file():
+            # Was `raise FileNotFoundError`, meaning a stack trace for a mistyped path. Every
+            # adaptation mode in this same CLI answers the identical mistake with one sentence and
+            # exit 2, and an operator cannot tell a traceback from a broken installation.
+            return _refuse_missing_input(
+                "failure-taxonomy", f"replay pack not found: {path}", log=logger
+            )
         records.extend(iter_jsonl(path))
         pack_strs.append(str(path))
     report = build_taxonomy_report(records, pack_paths=tuple(pack_strs))

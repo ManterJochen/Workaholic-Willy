@@ -11,7 +11,7 @@ from pathlib import Path
 # Four parents up: 02_calibration, api, examples, scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from src.config import load_config  # noqa: E402
+from src.config import ConfigError, load_config  # noqa: E402
 from src.calibration import MountingMode, load_cam_to_tool, save_cam_to_tool  # noqa: E402
 from src.calibration.rgbd_marker_source import RGBDArucoMarkerSource  # noqa: E402
 from src.camera.orchestration.frame_provider import FrameProvider  # noqa: E402
@@ -20,7 +20,14 @@ from src.robot.execution.calibration import CalibrationRoutine  # noqa: E402
 
 # 1. Name the wrist rig. On this path the thresholds and the marker size come from
 #    camera.hand_eye.EYE_TO_HAND; camera.hand_eye.eye_in_hand is read by the sim runner only.
-app = load_config()
+try:
+    app = load_config()
+except ConfigError as broken:
+    # A tree that does not parse is the state an operator is in five seconds after a bad edit,
+    # and the four files under scripts/checks/ answer it with a sentence and exit 2. An example
+    # that raises instead teaches a reader nothing about the thing it was written to show.
+    print(f"this config tree does not load: {broken}")
+    raise SystemExit
 settings = app.camera.hand_eye.eye_to_hand
 rig_id = "wrist"  # whatever rig_id names the camera on the flange
 rig = next((r for r in app.camera.cameras.rigs if r.rig_id == rig_id), None)

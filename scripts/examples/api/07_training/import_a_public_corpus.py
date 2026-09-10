@@ -37,7 +37,13 @@ else:
 
     # 4. Import a few scenes. The full index is read once and cached beside them, about 460 MB: a
     #    sliced index drops the masks, and a scene without masks collapses to ONE training unit.
-    written = grasp_anything.import_scenes(OUT, limit=4, gripper=gripper)
+    try:
+        written = grasp_anything.import_scenes(OUT, limit=4, gripper=gripper)
+    except OSError as stopped:
+        # One class covers both halves of this call: the host can stop answering mid-import,
+        # and the destination can refuse to be created. Say both rather than guess.
+        print(f"the import stopped ({stopped}); it needs the network and a writable {OUT}")
+        raise SystemExit
     print(f"{written['written']} written and {written['skipped_present']} already present in {OUT},"
           f" {written['training_units']} training unit(s), {written['refused_too_wide']} label(s) "
           f"refused as wider than that jaw")

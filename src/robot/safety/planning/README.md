@@ -157,7 +157,10 @@ robot's geometry has no visible symptom.
 
 Coal and python-fcl resolve through one seam. Both the exact-mesh self-collision backend and the
 continuous monitor call `environment.import_collision_engine()`, which prefers Coal and falls back to
-python-fcl. The swap is behaviour-identical: same meshes, same pairs, same thresholds, same distance
+python-fcl. The doctor resolves through the same seam's `resolve_collision_engine()`, which
+additionally keeps what each engine said when it refused. Without that, an OS policy refusing
+`coal.dll` was invisible behind the substitution: `--doctor` reported `[ok] fcl` and exited 0,
+measured 2026-09-10. The swap is behaviour-identical: same meshes, same pairs, same thresholds, same distance
 query. If neither engine nor the mesh bundle is importable, the guard falls back to the capsule
 proxy and logs the reason. Selecting the exact-mesh backend never silently disables the guard, but it
 does not refuse the motion either; see [`../README.md`](../README.md) for what that fallback costs.

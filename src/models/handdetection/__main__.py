@@ -176,6 +176,36 @@ def _load_transform(path: Optional[str], rig_id: str) -> dict[str, np.ndarray]:
     return {rig_id: matrix.astype(np.float64)}
 
 
+def _pick_rig(camera_cfg: Any, rig_id: str) -> Any:
+    """The named rig, or a `ValueError` (exit 2) that says what is wrong with the id.
+
+    Neither check existed, and both failures wore the costume of "no hand in the workspace".
+    `HandFinder` walks the `rig_ids` it is handed and grabs from each, so an id that names
+    nothing simply never matches: `--rig ovrhead` reached the end of the loop and this command
+    exited 1, the code that means the workspace is clear, on a path whose whole job is to say
+    whether a person is standing in it. `enabled: false` was never read at all, so a rig an
+    operator switched off, and the shipped base profile switches its only RGB-D rig off, was
+    opened and grabbed from.
+
+    A `ValueError` rather than a `SystemExit` because `main` already routes the three setup
+    failures to exit 2 through one handler, and raising `SystemExit` here would leave that
+    handler unused.
+    """
+    rigs = list(camera_cfg.cameras.rigs)
+    by_id = {rig.rig_id: rig for rig in rigs}
+    rig = by_id.get(rig_id)
+    if rig is None:
+        raise ValueError(
+            f"no rig {rig_id!r} in camera.cameras.rigs. Configured: {', '.join(sorted(by_id))}"
+        )
+    if not getattr(rig, "enabled", True):
+        raise ValueError(
+            f"rig {rig_id!r} is configured with `enabled: false`, so this cell does not run it. "
+            f"Set camera.cameras.rigs[{rig_id!r}].enabled: true, or name a rig that is on."
+        )
+    return rig
+
+
 def _locate_on_rig(config: Any, args: argparse.Namespace) -> int:
     from src.camera.orchestration.frame_provider import FrameProvider
     from src.camera.setup.image_taking.intrinsics import load_intrinsics
@@ -183,6 +213,8 @@ def _locate_on_rig(config: Any, args: argparse.Namespace) -> int:
         build_gesture_recognizer,
         build_hand_finder,
     )
+
+    rig = _pick_rig(config.camera, args.rig)
 
     transforms = _load_transform(args.transform, args.rig)
     if not transforms:
@@ -207,17 +239,30 @@ def _locate_on_rig(config: Any, args: argparse.Namespace) -> int:
     # `except (FileNotFoundError, ImportError, ValueError)` handler in `main` does not catch, and
     # the command exits 1 with a traceback that reads like "no hand was found". The other
     # `FrameProvider` call sites spell it the same way: `cells.py:139`,
-    # `real_cell/calibrate.py:193` and `perception/__main__.py:73`.
-    with FrameProvider(list(config.camera.cameras.rigs)) as provider:
+    # `real_cell/calibrate.py:193` and `perception/__main__.py:73`. Nothing imported this
+    # module then, which is why four correct siblings did not make the fifth correct.
+    # `tests/test_hand_detection_cli.py` now does.
+    #
+    # One rig, not the cell. `FrameProvider.open()`, which `with` calls, claims every
+    # configured streamer, so asking one camera whether a hand is in the way took three
+    # cameras away from the console. Constructing the provider touches no device, because
+    # every streamer `__init__` only stores config, so it may know every rig while holding
+    # the one it was asked for. `real_cell/calibrate.py` has used this pair since it was
+    # written, and this command had not.
+    provider = FrameProvider(list(config.camera.cameras.rigs))
+    provider.open_rig(rig.rig_id)
+    try:
         finder = build_hand_finder(
             config.models.handdetect,
             provider=provider,
             transforms=transforms,
             observer=observer,
             camera_matrices=camera_matrices,
-            rig_ids=[args.rig],
+            rig_ids=[rig.rig_id],
         )
         located, _annotated = finder.find_hand()
+    finally:
+        provider.release_rig(rig.rig_id)
 
     if located is None:
         if not args.json:

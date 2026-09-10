@@ -85,8 +85,13 @@ class KpiRollup:
     verdict: TelemetryVerdict
     source: str
     records: int
-    #: The `KpiSummary`'s own mapping, verbatim. Empty when the log could not be read.
+    #: The `KpiSummary`'s own mapping, minus every rate these records cannot measure. Empty when
+    #: the log could not be read.
     kpi: Mapping[str, Any] = field(default_factory=dict)
+    #: Maps a KPI name to why these records cannot measure it, from `kpi.unmeasurable_kpis`. Every
+    #: name here is absent from `kpi` above, and that pairing is the point: a rate whose denominator
+    #: is empty computes to a structural 0.0 and reads as a measurement of zero.
+    unmeasurable: Mapping[str, str] = field(default_factory=dict)
     #: Records missing a telemetry field, in record order, exactly as `audit_records` returned them.
     missing_telemetry: tuple[TelemetryOffender, ...] = ()
     #: Records carrying a field of the wrong type, in record order, exactly as `audit_extra_records`
@@ -133,6 +138,10 @@ class KpiRollup:
             return f"  UNREADABLE: {self.source}{f': {self.detail}' if self.detail else ''}"
         lines = [f"  {self.verdict.value.upper()}: {self.records} record(s) from {self.source}"]
         lines.extend(f"    {key:<34}{value}" for key, value in sorted(dict(self.kpi).items()))
+        # Printed, never omitted. An absent line reads as an oversight; a named rate reads as a fact
+        # about these records. The reason itself belongs in the payload, not the terminal.
+        for key in sorted(self.unmeasurable):
+            lines.append(f"    {key:<34}not measurable from these records")
         if self.offenders:
             # The caveat prints with the numbers: a KPI over incomplete records is unfounded
             # rather than wrong, and the rate alone does not say which of those it is.
@@ -154,6 +163,7 @@ class KpiRollup:
             "exit_code": self.exit_code,
             "detail": self.detail,
             "kpi": dict(self.kpi),
+            "unmeasurable": dict(self.unmeasurable),
             "missing_telemetry": [o.to_dict() for o in self.missing_telemetry],
             "wrong_types": [o.to_dict() for o in self.wrong_types],
         }
@@ -197,7 +207,10 @@ class RecordLog:
         records behind them are missing fields, which is the difference between a rate that is
         wrong and one that is unfounded.
         """
-        from src.robot.grasping.replay.kpi import compute_kpis  # noqa: PLC0415
+        from src.robot.grasping.replay.kpi import (  # noqa: PLC0415
+            compute_kpis,
+            unmeasurable_kpis,
+        )
         from src.robot.grasping.replay.telemetry_catalog import (  # noqa: PLC0415
             audit_extra_records,
             audit_records,
@@ -234,13 +247,21 @@ class RecordLog:
             TelemetryOffender(attempt_id=aid, bad_types=tuple(fields))
             for aid, fields in audit_extra_records(rows)
         )
+        # The withheld rates come out of `kpi`, they are not merely annotated beside it. A payload
+        # that carried both `false_positive_grasp_rate: 0.0` and a note saying it cannot be measured
+        # would still be read by whichever half the reader saw first, and the number wins that.
+        withheld = unmeasurable_kpis(rows, summary)
+        published = {
+            key: value for key, value in summary.to_dict().items() if key not in withheld
+        }
         return KpiRollup(
             verdict=(
                 TelemetryVerdict.INCOMPLETE if (missing or wrong) else TelemetryVerdict.SOUND
             ),
             source=source,
             records=len(rows),
-            kpi=summary.to_dict(),
+            kpi=published,
+            unmeasurable=withheld,
             missing_telemetry=missing,
             wrong_types=wrong,
         )
@@ -287,13 +308,18 @@ class GateKeyStatus(StrEnum):
     NOT_APPLICABLE = "not_applicable"
 
 
-#: The four keys that need the on-disk canonical packs. Both record-facing CLI modes overwrite
-#: exactly these with ``"not_applicable"`` after the gate has run, and the doors here read this
-#: same tuple.
+#: The five keys that are judged against something other than the records in front of the door.
+#: Both record-facing CLI modes overwrite exactly these with ``"not_applicable"`` after the gate has
+#: run, and the doors here read this same tuple.
+#:
+#: `failure_taxonomy_classifier_pass` joined them on 2026-09-10. It grades the classifier against the
+#: committed labeled pack, so like the other four it says nothing about the log a record door was
+#: handed; reporting it as passed there would credit a real log with a check run on other data.
 PACK_DEPENDENT_GATE_KEYS: tuple[str, ...] = (
     "slo_packs_pass",
     "drift_gate_pass",
     "ood_gate_pass",
+    "failure_taxonomy_classifier_pass",
     "easy_attempt_wall_time_within_budget",
 )
 
@@ -336,6 +362,13 @@ class SoakVerdict:
     #: The door's own full machine payload, where it has one beyond the fields above. The canonical
     #: door carries the whole soak report here; the others carry nothing.
     report: Mapping[str, Any] = field(default_factory=dict)
+    #: Why the input could not be read at all, empty when it could. Not the same as a failed gate,
+    #: and that is the whole reason it is a separate field: a gate that ran and refused judged
+    #: something, a gate handed a path that does not exist judged nothing. Measured: both record
+    #: doors died with a raw `FileNotFoundError` traceback on a mistyped path while `RecordLog`, one
+    #: class up this file, has answered the same mistake with `TelemetryVerdict.UNREADABLE` and exit
+    #: 2 since it was written.
+    unreadable: str = ""
 
     @property
     def measures(self) -> str:
@@ -344,14 +377,20 @@ class SoakVerdict:
 
     @property
     def passes(self) -> bool:
-        return not self.violations
+        return not self.violations and not self.unreadable
 
     @property
     def exit_code(self) -> int:
         """Derived from the violations, never stored beside them: ``0 if not violations else 1``,
         which is what all four CLI modes return. A stored copy could disagree with the list it
         summarises.
+
+        An unreadable input exits 2, not 1, matching `KpiRollup.exit_code` for that same condition:
+        1 means this gate judged the records and refused them, and a caller that cannot tell those
+        apart will hunt for a quality problem in a file it never opened.
         """
+        if self.unreadable:
+            return 2
         return 0 if self.passes else 1
 
     @property
@@ -380,6 +419,8 @@ class SoakVerdict:
 
     def render(self) -> str:
         """The verdict, what it measures, and every violation. ASCII, no trailing newline."""
+        if self.unreadable:
+            return f"  UNREADABLE: {self.origin}: {self.unreadable}"
         head = "PASS" if self.passes else "FAIL"
         lines = [
             f"  {head}: {self.attempts} attempt(s) from {self.origin}",
@@ -412,6 +453,7 @@ class SoakVerdict:
             "violations": list(self.violations),
             "baseline_pick_rate": self.baseline_pick_rate,
             "kpi": dict(self.kpi),
+            "unreadable": self.unreadable,
         }
 
 
@@ -506,7 +548,27 @@ class SoakGate:
         )
 
         assert self.records_path is not None  # both record doors set it
-        records = tuple(iter_jsonl(self.records_path))
+        # The read is the part that fails, and it failed as a traceback. `RecordLog.kpis` has always
+        # turned a missing log into a verdict; this door raised `FileNotFoundError` straight through
+        # both CLI modes that call it, so a mistyped path printed a stack trace instead of the
+        # sentence every neighbouring mode prints.
+        if not self.records_path.is_file():
+            return SoakVerdict(
+                source=self.source,
+                origin=str(self.records_path),
+                violations=("record log unreadable",),
+                unreadable="no such record log",
+            )
+        try:
+            records = tuple(iter_jsonl(self.records_path))
+        except (OSError, ValueError) as exc:
+            # A log that exists and cannot be parsed is the same kind of answer: nothing was judged.
+            return SoakVerdict(
+                source=self.source,
+                origin=str(self.records_path),
+                violations=("record log unreadable",),
+                unreadable=f"{type(exc).__name__}: {exc}",
+            )
         baseline = (
             committed_baseline_pick_rate()
             if self.source is SoakSource.REAL_RECORDS
@@ -521,9 +583,9 @@ class SoakGate:
             records, baseline_pick_rate=baseline, **extra
         )
         # The pack-dependent keys are added here, not filtered out of the result:
-        # `evaluate_soak_gate` returns the seven record-intrinsic keys only, and the four
+        # `evaluate_soak_gate` returns the seven record-intrinsic keys only, and the
         # pack-dependent ones never appear in `gate`. Adding them is what makes this door report
-        # the eleven keys the CLI reports.
+        # the twelve keys the CLI reports.
         keys = {
             name: (GateKeyStatus.PASSED if value else GateKeyStatus.FAILED)
             for name, value in gate.items()
@@ -651,8 +713,15 @@ class BaselineMeasurement:
 
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
+        # newline="" so the rendered line feed reaches the file as a line feed. MEASURED
+        # 2026-09-10: this is the writer --baseline-report actually reaches, and without it
+        # the command wrote 25074 CRLF bytes where it renders 24375 LF bytes, so the operator
+        # command named in CLAUDE.md could not reproduce its own committed golden off Windows.
+        # write_baseline_report, the library twin, had the same defect and was repaired with it.
         out.write_text(
-            json.dumps(dict(self.report), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            json.dumps(dict(self.report), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="",
         )
         return out
 

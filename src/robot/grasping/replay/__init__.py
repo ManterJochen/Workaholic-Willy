@@ -7,7 +7,12 @@ design contract. The CLI entry point is
 ``python -m src.robot.grasping.replay``.
 """
 
-from .kpi import KpiSummary, compute_kpis
+from .kpi import (
+    UNMEASURABLE_KPIS,
+    KpiSummary,
+    compute_kpis,
+    unmeasurable_kpis,
+)
 from .presets import apply_preset, list_presets, load_preset
 from .runs import (
     Baseline,
@@ -34,6 +39,7 @@ __all__ = [
     "GateKeyStatus",
     "KpiRollup",
     "KpiSummary",
+    "UNMEASURABLE_KPIS",
     "RecordLog",
     "SoakGate",
     "SoakSource",
@@ -46,6 +52,7 @@ __all__ = [
     "audit_record",
     "audit_records",
     "compute_kpis",
+    "unmeasurable_kpis",
     "generate_soak_records",
     "list_presets",
     "load_preset",

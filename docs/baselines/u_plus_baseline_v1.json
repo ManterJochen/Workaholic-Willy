@@ -94,7 +94,7 @@
         "name": "replay_easy_canonical_v1",
         "path": "tests/data/replay/replay_easy_canonical_v1.jsonl",
         "record_count": 400,
-        "sha256": "a861f57b11abfd481988cab5ea0ca185be82676d514e0241056630e998c2a3e7"
+        "sha256": "21b801f40ac1d218e3747f77eb0f1d35eaeeda24d1cf0fa04aae57d53a31f463"
       },
       {
         "capability_group": "baseline",
@@ -140,7 +140,7 @@
         "name": "replay_dense_canonical_v1",
         "path": "tests/data/replay/replay_dense_canonical_v1.jsonl",
         "record_count": 600,
-        "sha256": "be1084f17c03b7941bf9f9cb36e94d297e56754b7208c176fcb1113b7982ddc1"
+        "sha256": "0d423d57567eba7daa63b5424d9cd55213e170af1429b0d90dc6b4a583796c1e"
       },
       {
         "capability_group": "baseline",
@@ -169,7 +169,7 @@
         "name": "replay_drift_synthetic_v1",
         "path": "tests/data/replay/replay_drift_synthetic_v1.jsonl",
         "record_count": 120,
-        "sha256": "8b95bf17581fd211677ce2c18ee56a84911015f058774486aa0f02f2fd0f24d1"
+        "sha256": "a56c89dec8a8717a7516e6ca577c68a30b593db3c0785a9394d62e809a4721b3"
       },
       {
         "capability_group": "baseline",
@@ -198,7 +198,7 @@
         "name": "replay_ood_synthetic_v1",
         "path": "tests/data/replay/replay_ood_synthetic_v1.jsonl",
         "record_count": 120,
-        "sha256": "4a7beeaf9d8b367e87aa369d54411337e04bb86a1005a2ffa2b33a7e2806c93e"
+        "sha256": "27613edf0b681a3573f588c211f34cbcc4c216225160266d530170605aa442b4"
       }
     ]
   },
@@ -647,7 +647,7 @@
       "closed_loop": null,
       "dense_autonomous": 0.1859524029575411,
       "dense_clutter": 0.18228879646749555,
-      "easy": 0.07865091638396661
+      "easy": 0.07865091638396658
     },
     "p95_decision_latency_ms": 29.929243832637038,
     "p95_decision_latency_ms_gate": 60.0,

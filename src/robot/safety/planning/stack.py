@@ -96,7 +96,12 @@ class MotionStackReport:
 
     @property
     def fully_anchored(self) -> bool:
-        """True iff both the cuRobo env and an exact-mesh engine with its bundle are present."""
+        """True iff both the cuRobo env and an exact-mesh engine with its bundle are present.
+
+        It reads what is installed for :attr:`model` and nothing about the cell, which is
+        why the verdict an operator acts on is :attr:`exit_code` and not this: where the
+        config did not load, both engines can be present for a robot nobody configured.
+        """
         return self.environment.fully_anchored
 
     @property
@@ -106,7 +111,18 @@ class MotionStackReport:
         A caller that re-derives ``0 if fully_anchored else 1`` is a second derivation,
         and a second derivation is how a terminal and a service start disagreeing about
         whether the same box is ready.
+
+        It answered 0 for a cell nothing was known about. Measured 2026-09-10:
+        ``--check --data <a directory with no config in it>`` printed "=> fully anchored"
+        and exited 0, because `for_this_box` had fallen back to ur5e and this rule read
+        only the engine probe. The fallback is correct and deliberate, and reporting
+        success about it is not, because the exit code is what a bring-up script branches
+        on and it said "this cell is anchored" about a config that never loaded. A tree
+        that did not load is a partially anchored answer at best, which is exactly what 1
+        means here.
         """
+        if self.stack.config_error:
+            return 1
         return 0 if self.fully_anchored else 1
 
     def render(self) -> str:
@@ -115,8 +131,20 @@ class MotionStackReport:
         The model line is part of it, because a caller that appends the model itself
         leaves `PlanningEnvironment.render()` a fragment claiming to be a whole object,
         with the one fact that makes the reading actionable outside it.
+
+        The retraction is the last line, where a terminal leaves it. The environment's own
+        "=> fully anchored" is a true statement about the engines and stays. What it must
+        not be allowed to be is the last word where the reading is not about the operator's
+        cell.
         """
-        return f"{self.environment.render()}\n  (model: {self.model}, from {self.model_source})"
+        lines = [self.environment.render(), f"  (model: {self.model}, from {self.model_source})"]
+        if self.stack.config_error:
+            lines.append(
+                f"  !! not a reading about this cell: {self.stack.config_error}. The engines above "
+                f"were probed for the {self.model} fallback, so the verdict says nothing about the "
+                f"robot you are bringing up. Fix the config tree and run this again."
+            )
+        return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
         """Plain data, safe for `json.dumps`. It is a view: nothing here is computed twice."""
@@ -126,6 +154,9 @@ class MotionStackReport:
             "model": self.model,
             "model_source": self.model_source,
             "fully_anchored": self.fully_anchored,
+            # A consumer reading `fully_anchored` alone is reading about the fallback robot
+            # where this is non-empty. Empty is the normal case and means the tree loaded.
+            "config_error": self.stack.config_error,
             "curobo": {
                 "available": curobo.available,
                 "python_path": curobo.python_path,
@@ -164,6 +195,12 @@ class MotionStack:
     #: `FALLBACK` too, because `api/routers/diagnostics.py` says a bare "default" and its
     #: wire field is public.
     detail: str = ""
+    #: The refusal, in full, where the config tree this box would load did not load. Empty
+    #: otherwise, including for a tree that loads and declares no robot: that is a config
+    #: answer, this is a config fault, and only the fault means the reading is about a robot
+    #: nobody chose. It is what makes `MotionStackReport.exit_code` fail closed, while
+    #: `detail` stays the short provenance parenthesis a person reads at the end of the line.
+    config_error: str = ""
 
     @property
     def model_source(self) -> str:
@@ -181,7 +218,8 @@ class MotionStack:
 
     @classmethod
     def from_model(
-        cls, *, model: str, source: ModelSource = ModelSource.CALLER, detail: str = ""
+        cls, *, model: str, source: ModelSource = ModelSource.CALLER, detail: str = "",
+        config_error: str = "",
     ) -> "MotionStack":
         """A named robot. The plain-Python door, and the only one that constructs.
 
@@ -189,7 +227,7 @@ class MotionStack:
         reading taken from config and a reading taken from an argument cannot be
         assembled differently.
         """
-        return cls(model=model, source=source, detail=detail)
+        return cls(model=model, source=source, detail=detail, config_error=config_error)
 
     @classmethod
     def from_robot_config(
@@ -247,10 +285,15 @@ class MotionStack:
                 **({"profile": profile} if chosen(profile) else {}),
             )
         except (ConfigError, OSError, ValueError) as exc:
+            # The refusal is kept rather than summarised. Reduced to a `detail` parenthesis
+            # it was printed after a green verdict and dropped from the exit code entirely,
+            # so a script pointed at a broken tree was told the cell was anchored. Kept, it
+            # is the one field that makes this reading fail closed.
             return cls.from_model(
                 model=FALLBACK_MODEL,
                 source=ModelSource.FALLBACK,
                 detail=f"the config did not load: {type(exc).__name__}",
+                config_error=f"{type(exc).__name__}: {exc}",
             )
         robot = getattr(config, "robot", None)
         if robot is None:

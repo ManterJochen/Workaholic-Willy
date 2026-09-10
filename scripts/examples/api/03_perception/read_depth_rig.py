@@ -14,13 +14,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 import numpy as np  # noqa: E402
-from src.config import load_config  # noqa: E402
+from src.config import ConfigError, load_config  # noqa: E402
 from src.camera.orchestration.frame_provider import FrameProvider  # noqa: E402
 from src.camera.setup.image_taking.frames import RGBDFrame  # noqa: E402
 
 # 1. The camera tree, and the one rig a cell would open. Named, not inferred: three predicates over
 #    one rig list used to disagree, and on the shipped profile they disagreed about this very rig.
-cameras = load_config().camera.cameras
+try:
+    cameras = load_config().camera.cameras
+except ConfigError as broken:
+    # A tree that does not parse is the state an operator is in five seconds after a bad edit,
+    # and the four files under scripts/checks/ answer it with a sentence and exit 2. An example
+    # that raises instead teaches a reader nothing about the thing it was written to show.
+    print(f"this config tree does not load: {broken}")
+    raise SystemExit
 rigs = list(cameras.rigs)
 primary = next(r for r in rigs if r.rig_id == cameras.primary_rig_id)
 

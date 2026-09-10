@@ -12,7 +12,10 @@ planner sidecar and the Coal or python-fcl exact-mesh collision engine, and exit
   exact-mesh engine and the reference mesh bundle are importable.
 * ``1`` for partially anchored: at least one engine is missing, so a degraded fallback
   is in force, meaning blind IK instead of cuRobo, the capsule proxy instead of exact
-  meshes, or both.
+  meshes, or both. It is also the answer where the config tree this box would load did
+  not load at all: the reading is then about the ``ur5e`` fallback and says so on its
+  last line. That case exited ``0`` until 2026-09-10, which is a green light for a robot
+  nobody configured.
 
 A development box without the GPU environment reports ``1`` by design. The check is
 meant to run on the target cell to confirm the anchoring.

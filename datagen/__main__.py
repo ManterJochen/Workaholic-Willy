@@ -16,11 +16,13 @@ origin). A missing mesh library and a mistyped flag must not look alike to a scr
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import sys
 import time
 from collections import Counter
 from dataclasses import asdict
+from pathlib import Path
 
 from src.utility.log_cfg import create_logger
 
@@ -49,6 +51,13 @@ def _config(args: argparse.Namespace) -> DatagenConfig:
 
     base, _ = merged_settings(args.config, scenes=args.scenes, seed=args.seed,
                               domain=args.domain, engine=getattr(args, "engine", None))
+    if not isinstance(base, dict):
+        # Measured: a config file holding a JSON array reached `DatagenConfig(**base)` and left
+        # `TypeError: ... argument after ** must be a mapping, not list` as a traceback, past the
+        # guard in `main` whose whole subject is that a wrong request is not a crash. The type of
+        # the top-level value is the one fact the operator needs, so it is in the sentence.
+        raise TypeError(f"a config file holds a JSON object, {args.config} holds a "
+                        f"{type(base).__name__}")
     return DatagenConfig(**base)
 
 def _first_problem(exc: Exception) -> str:
@@ -699,6 +708,18 @@ def _cmd_physics_compare(config: DatagenConfig, *, name: str, out_root: str | No
 REST_LABELS = [name for name, _ in __import__(
     "datagen.assets.diagnose", fromlist=["REST_ROTATIONS"]).REST_ROTATIONS]
 
+#: How many meshes `why-no-jaw` probes when the caller names none, read from the library twin for
+#: the same reason the rest poses are: a second copy of a default is a second answer.
+#:
+#: Measured 2026-09-10: `--limit` is declared once and shared with `camera-probe` and `eval-grasps`,
+#: where `default=None` correctly means "the whole dataset". Forwarding that `None` here overrode
+#: the twin's `limit: int = 40` and reached `even_sample` as `None <= 0`, so the bare
+#: `python -m datagen why-no-jaw` ended in a TypeError and the command had no working invocation
+#: that did not pass `--limit`.
+WHY_NO_JAW_LIMIT: int = inspect.signature(__import__(
+    "datagen.assets.service", fromlist=["MeshPreparation"],
+).MeshPreparation.why_no_jaw).parameters["limit"].default
+
 
 def _cmd_why_no_jaw(config: DatagenConfig, *, collections_: list[str] | None, limit: int,
                     from_screen: str | None = None,
@@ -1080,9 +1101,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--limit", type=int, default=None,
-        help="camera-probe / eval-grasps: stop after this many scenes (default: the whole dataset). "
-             "WARNING: scenes are walked in sorted order and scene ids sort by FAMILY, so a limit smaller "
-             "than one family returns only that family; the run warns when it does.",
+        help=f"camera-probe / eval-grasps: stop after this many scenes (default: the whole dataset). "
+             f"why-no-jaw: how many meshes to probe, drawn evenly across the chosen collections "
+             f"(default: {WHY_NO_JAW_LIMIT}). One flag, three commands, two units, so the command "
+             f"is named beside each. "
+             f"WARNING: scenes are walked in sorted order and scene ids sort by FAMILY, so a limit smaller "
+             f"than one family returns only that family; the run warns when it does.",
     )
     parser.add_argument(
         "--depth", type=str, default="noisy", choices=["noisy", "clean"],
@@ -1275,10 +1299,14 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = _config(args)
-    except (ValidationError, OSError, json.JSONDecodeError) as exc:
+    except (ValidationError, OSError, TypeError, json.JSONDecodeError) as exc:
         # A mistyped flag and a crash must not look alike. Raw pydantic output reaches the operator
         # as a stack trace with a documentation link in it, on every subcommand, and a stack trace
         # reads as "the tool is broken" when the tool is fine and the request was wrong.
+        #
+        # Measured 2026-09-10: `TypeError` was missing from this tuple, so a config file that parses
+        # as JSON but is not an object went past the guard as a raw traceback. It is a wrong request
+        # like the others.
         print(f"config: {_first_problem(exc)}", file=sys.stderr)
         return _EXIT_USAGE
     # The run header. Every command below writes into its own file (see datagen/constants.py), and
@@ -1289,11 +1317,53 @@ def main(argv: list[str] | None = None) -> int:
                 config.seed, config.domain, args.masks or "default", args.jobs,
                 args.config or "defaults")
     started = time.perf_counter()
-    code = _dispatch(args, config)
+    try:
+        code = _dispatch(args, config)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        # The same property as the guard one screen up, one line further down the run: a request for
+        # something that is not there is not a crash. Measured 2026-09-10 on a tree with no dataset
+        # written, which is what a fresh clone is: `prompts`, `label-grasps`, `eval-grasps` and
+        # `grasp-gate` all ended in a raw FileNotFoundError, and the traceback took the exit-code
+        # footer below with it, so the run's own log had no line saying how it ended. `camera-probe`
+        # and `heldout` already refuse the same situation in one line; this makes the rest agree.
+        print(f"{args.command}: {_missing_input(args, config, exc)}", file=sys.stderr)
+        code = _EXIT_USAGE
+    except Exception:
+        # A defect stays a traceback, deliberately: that is the information. What it must not do is
+        # leave the run with no record of how it ended, which is what the footer below is for.
+        logger.exception("%s crashed after %.1f s", args.command, time.perf_counter() - started)
+        raise
     # The exit code is the whole verdict of a CLI and it otherwise reaches only the shell that ran it:
     # an overnight `grasp-gate` that returned 1 leaves per-module files that look exactly like a pass.
     logger.info("%s finished in %.1f s: exit %d", args.command, time.perf_counter() - started, code)
     return code
+
+
+def _missing_input(args: argparse.Namespace, config: DatagenConfig, exc: OSError) -> str:
+    """One line for an input that is not on disk, carrying the step that would write it.
+
+    A path that does not exist is not an instruction. When the missing file is inside the dataset
+    this run was pointed at, the instruction is the build that creates it, and `--name` defaults to
+    `v1`, which is the README's own example: the documented first command names a dataset nobody has
+    built yet. Anything outside that directory is named as-is rather than blamed on a missing build.
+    """
+    named = getattr(exc, "filename", None)
+    if not named:
+        # Raised by our own code with an explanation instead of a path (the model-directory refusal
+        # in `predict-masks` is one). It already says what is missing; a second sentence guessing at
+        # a dataset would be a false instruction.
+        return str(exc)
+    root = args.out or config.output.root
+    dataset = Path(root) / args.name
+    try:
+        inside = Path(named).resolve().is_relative_to(dataset.resolve())
+    except OSError:  # pragma: no cover - a path the OS refuses to resolve is simply "outside"
+        inside = False
+    if not inside:
+        return f"{named} does not exist"
+    return (f"{named} does not exist, so there is no dataset {args.name} to work on. Build one "
+            f"with `python -m datagen build --name {args.name} --out {root}`, or point "
+            f"--name/--out at one that is already written")
 
 
 def _dispatch(args: argparse.Namespace, config: DatagenConfig) -> int:
@@ -1373,7 +1443,11 @@ def _dispatch(args: argparse.Namespace, config: DatagenConfig) -> int:
     if args.command == "side-approach":
         return _cmd_side_approach(args, config)
     if args.command == "why-no-jaw":
-        return _cmd_why_no_jaw(config, collections_=args.collection, limit=args.limit,
+        # `args.limit is None` means the caller named no limit, and this command's default is the
+        # twin's own rather than "everything": probing a whole library to answer "why does this mesh
+        # earn no jaw label" costs hours and answers a question nobody asked.
+        return _cmd_why_no_jaw(config, collections_=args.collection,
+                               limit=WHY_NO_JAW_LIMIT if args.limit is None else args.limit,
                                from_screen=args.from_screen,
                                density=args.density or "default", out=args.out)
     if args.command == "physics-compare":

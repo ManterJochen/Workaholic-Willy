@@ -11,7 +11,7 @@ from pathlib import Path
 # Four parents up: 02_calibration, api, examples, scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from src.config import load_config  # noqa: E402
+from src.config import ConfigError, load_config  # noqa: E402
 from src.calibration import MountingMode, classify_rmse, save_extrinsics  # noqa: E402
 from src.calibration.rgbd_marker_source import RGBDArucoMarkerSource  # noqa: E402
 from src.camera.orchestration.frame_provider import FrameProvider  # noqa: E402
@@ -21,7 +21,14 @@ from src.robot.execution.calibration import CalibrationRoutine  # noqa: E402
 # 1. Calibrate the camera a cell grasps from: `camera.cameras.primary_rig_id`, the key the cell
 #    itself reads. A marker pose needs live colour plus that camera's intrinsics, so the rig has to
 #    be an RGB-D device that is switched on, and this says which rigs qualify when it is not.
-app = load_config()
+try:
+    app = load_config()
+except ConfigError as broken:
+    # A tree that does not parse is the state an operator is in five seconds after a bad edit,
+    # and the four files under scripts/checks/ answer it with a sentence and exit 2. An example
+    # that raises instead teaches a reader nothing about the thing it was written to show.
+    print(f"this config tree does not load: {broken}")
+    raise SystemExit
 settings = app.camera.hand_eye.eye_to_hand
 rig = next(r for r in app.camera.cameras.rigs if r.rig_id == app.camera.cameras.primary_rig_id)
 if rig.source != "rgbd" or not rig.enabled:

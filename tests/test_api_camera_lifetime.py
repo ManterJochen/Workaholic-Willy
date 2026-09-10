@@ -23,6 +23,11 @@ green because this file's fake counted `open()` calls instead of modelling a dev
 only once. `_CountingStreamer` now raises `DeviceBusy`, and `Console.build()` releases before it
 acquires. Three rules, in order: check the state, release the old device, then open the new one.
 
+AND THE FAKE CAN REFUSE. Everything after the open in `build_real_components` can raise, and on the
+SHIPPED tree something does: the primary rig is opened and `from_robot_config` then refuses a 'ur'
+cell that has no CAMERA->BASE resolver (measured 2026-09-10). The fake used to succeed always, so
+the one shape an operator meets on an uncalibrated cell was the one shape this suite never built.
+
 Honesty bucket ②: a real `Console`, the real build path, a fake streamer. No physical camera has been
 on this path — a fake is what makes the counting exact, and it is now shaped to fail the way the real
 device fails, which is the only property that made this test worth having.
@@ -92,18 +97,41 @@ class CameraLifetimeTests(unittest.TestCase):
         self.releases: list[str] = []
         #: The one physical device. Non-empty means somebody is holding it.
         self.held: list[str] = []
+        #: What the next build raises AFTER it has opened its camera, or None to succeed. Measured
+        #: on the SHIPPED tree (2026-09-10): `build_real_components` opens the primary rig and
+        #: `from_robot_config` then refuses with "no CAMERA->BASE frame resolver for a 'ur' cell",
+        #: so a refusal on a device already held is what the default config actually produces. The
+        #: dummy substitution below is what keeps the other tests here away from it.
+        self.refusal: BaseException | None = None
         self._n = 0
 
         from src.robot.grasping.generation.calculator import GraspCalculator
         from src.robot.perception import RealSenseVisionPerceptionSource
 
-        def _fake_build_real(robot_cfg, prompt):  # noqa: ANN001, ANN202
+        # `app_config` is accepted and ignored: this double stands in for the whole camera half, so
+        # it never reads a tree, and refusing the keyword would only make the fake disagree with the
+        # signature its caller now uses.
+        def _fake_build_real(robot_cfg, prompt, *, app_config=None):  # noqa: ANN001, ANN202
             self._n += 1
             streamer = _CountingStreamer(f"cam{self._n}", self.opens, self.releases, self.held)
             source = RealSenseVisionPerceptionSource(
                 streamer=streamer, backend=object(), prompt=prompt
             )
             streamer.open()          # exactly where build_real_components does it
+            if self.refusal is not None:
+                # ⛔ AND IT CAN REFUSE, WHICH IT COULD NOT BEFORE. The real builder opens the camera
+                # and then keeps going: `PerceptionSpec.build()`, the multi-camera rig, `preload()`
+                # and `from_robot_config` all run with the device already held, and every one of
+                # them can raise. A fake that only ever succeeded left the whole shape untested, so
+                # this suite could not tell a builder that hands the device back from one that does
+                # not: the same blindness that let the open/release ORDERING ship green.
+                #
+                # It releases first because that is the contract the real one keeps (`cells.py`
+                # releases the provider on any exception below the open). One-shot, so the retry
+                # after a refusal is the ordinary path again.
+                refusal, self.refusal = self.refusal, None
+                streamer.release()
+                raise refusal
             calculator = GraspCalculator(
                 camera_matrix=np.eye(3),
                 max_grip_width_mm=robot_cfg.gripper.max_width_mm,
@@ -173,6 +201,30 @@ class CameraLifetimeTests(unittest.TestCase):
             self.cell.build(rehearse=False)
         self.assertEqual(str(caught.exception.reason), "wrong_state")
         self.assertEqual(len(self.opens), opened_before, "a refused build opened a camera")
+
+    def test_a_build_REFUSED_after_the_camera_opened_leaves_a_rebuildable_console(self) -> None:
+        """The other refusal: not the console declining, but the builder failing mid-way.
+
+        `test_a_refused_rebuild_claims_NOTHING` covers the console's own refusal, which happens
+        before anything is acquired. This is the case an operator meets on the shipped tree: the
+        build gets far enough to open the camera and is then refused for a missing calibration
+        artifact. What the console owes afterwards is a cell that is UNBUILT rather than
+        half-adopted, and a retry that works once the artifact is there. A console that recorded
+        the failed build as state would answer the second attempt with `wrong_state`.
+        """
+        from src.robot.execution.autonomous_grasp import CellBuildRefused
+
+        self.refusal = CellBuildRefused("no CAMERA->BASE frame resolver for a 'ur' cell.")
+        with self.assertRaises(CellBuildRefused):
+            self.cell.build(rehearse=False)
+
+        self.assertEqual(self.held, [], "a refused build left the device claimed")
+        self.assertIsNone(self.cell.session.service, "half a cell was adopted")
+        self.assertIs(self.cell.session.state, CellState.DISCONNECTED)
+
+        self.cell.build(rehearse=False)
+        self.assertEqual(self.opens, ["cam1", "cam2"], "the retry did not reach the camera")
+        self.assertEqual(self.held, ["cam2"], "exactly one device is held at a time")
 
     def test_releasing_the_session_balances_every_open(self) -> None:
         """What the server's lifespan calls on the way out."""

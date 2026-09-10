@@ -521,6 +521,87 @@ def _base_stem_for_overlay(path: Path, profile: str) -> str:
 # Internal: YAML I/O with env-var substitution and file-scoped errors
 # ---------------------------------------------------------------------------
 
+# Byte-order marks, longest first, each carrying its own sentence.
+#
+# Longest first because the UTF-32 marks begin with the UTF-16 ones (`\xff\xfe` opens both the
+# UTF-16-LE and the UTF-32-LE mark); testing the short ones first names the wrong encoding and sends
+# the operator to the wrong menu entry.
+#
+# A sentence per mark rather than a name slotted into one shared template, because the templated
+# version was written first and was measured to garble exactly one row: the UTF-8 mark is valid
+# UTF-8, so reaching this table with it means the bad byte is somewhere later in the file, a
+# different fault (something appended text in another encoding) with a different cure, and the
+# shared template would have told that operator to re-save a file whose encoding is already right.
+_BOM_DIAGNOSES: tuple[tuple[bytes, str], ...] = (
+    (b"\x00\x00\xfe\xff",
+     "It begins with a UTF-32 (big-endian) byte-order mark, so it was saved as UTF-32."),
+    (b"\xff\xfe\x00\x00",
+     "It begins with a UTF-32 (little-endian) byte-order mark, so it was saved as UTF-32."),
+    (b"\xfe\xff",
+     "It begins with a UTF-16 (big-endian) byte-order mark, so it was saved as UTF-16. "
+     "Notepad calls that 'Unicode big endian'."),
+    (b"\xff\xfe",
+     "It begins with a UTF-16 (little-endian) byte-order mark, so it was saved as UTF-16. "
+     "Notepad calls that 'Unicode' and PowerShell '-Encoding Unicode'."),
+    (b"\xef\xbb\xbf",
+     "It begins with a UTF-8 byte-order mark, so the file starts as UTF-8 and the byte named above "
+     "is further into it: something appended or pasted text in another encoding into a UTF-8 file. "
+     "Fix that one line rather than the whole file's encoding."),
+)
+
+
+def _not_utf8_refusal(path: Path, exc: UnicodeDecodeError) -> str:
+    """Say which file is not UTF-8, what identifies it, and what to do about it.
+
+    The guard below used to be ``except OSError`` alone, and could never fire.
+    ``UnicodeDecodeError.__mro__`` is ``(UnicodeDecodeError, UnicodeError, ValueError, Exception,
+    BaseException, object)``: no ``OSError`` anywhere in it. Measured cost: an operator who edits a
+    YAML in Notepad and saves it as ANSI (one umlaut in a comment is enough) got a raw traceback
+    naming a byte offset and no file, out of every tool in the stack, including
+    ``python -m src.config``, whose entire job is to validate the tree and print a refusal. The
+    same tree broken the ordinary way (bad indentation, still UTF-8) named the file correctly, so
+    the machinery existed and was being walked past.
+
+    It names the encoding, it does not use it. Retrying the read in cp1252 would make the tree load,
+    and would make it load differently depending on the machine's code page: a cell coming up with
+    silently different values on the operator's laptop than on the controller box. Refusing is the
+    cheaper failure.
+    """
+    try:
+        head = path.read_bytes()[:4]
+    except OSError:  # the read that just succeeded cannot normally fail twice; say less, not more
+        head = b""
+    diagnosis = (
+        "There is no byte-order mark, so the file does not identify its own encoding. A lone byte "
+        "above 0x7f like this one is usually a Windows ANSI code page (cp1252), which is what "
+        "Notepad's 'ANSI' and PowerShell's '-Encoding Default' write."
+    )
+    if b"\x00" in head:
+        # Measured: a UTF-16-LE file saved without a mark reaches here (its umlaut is `\xf6\x00`,
+        # and `\xf6` is an invalid UTF-8 start byte), and the cp1252 sentence above would have been
+        # a confident wrong answer: it would send the operator to the one menu entry that cannot
+        # help. A NUL inside the first four bytes of a YAML file is never text in any single-byte
+        # encoding, so it identifies the wide encodings even with no mark to read.
+        diagnosis = (
+            "The first bytes contain a NUL, which no single-byte encoding produces, so this is "
+            "UTF-16 or UTF-32 saved without a byte-order mark."
+        )
+    for bom, sentence in _BOM_DIAGNOSES:
+        if head.startswith(bom):
+            diagnosis = sentence
+            break
+    offending = f"0x{exc.object[exc.start]:02x}" if exc.start < len(exc.object) else "?"
+    return (
+        f"{path} is not valid UTF-8: byte {offending} at offset {exc.start} could not be decoded "
+        f"({exc.reason}). Config files must be UTF-8.\n"
+        f"{diagnosis}\n"
+        f"Re-save the file as UTF-8 and run this again (Notepad: Save As, then set Encoding to "
+        f"UTF-8; VS Code: click the encoding in the status bar, then 'Save with Encoding').\n"
+        f"The loader will not retry in another encoding: a tree that loads differently depending on "
+        f"the machine's code page is worse than one that refuses."
+    )
+
+
 def _load_yaml(path: Path) -> Any:
     if not path.exists():
         raise ConfigError(f"required config file not found: {path}")
@@ -528,6 +609,13 @@ def _load_yaml(path: Path) -> Any:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ConfigError(f"could not read {path}: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        # A second clause, not a wider one. `except (OSError, UnicodeDecodeError)` would have made
+        # the guard fire, and would have printed "could not read <path>: 'utf-8' codec can't decode
+        # byte 0xf6 in position 9": true, and still not an instruction. The two failures have
+        # different cures (a permission or disk problem against a text editor's encoding menu), so
+        # they get different sentences.
+        raise ConfigError(_not_utf8_refusal(path, exc)) from exc
 
     try:
         text = _substitute_env_vars(text, path)

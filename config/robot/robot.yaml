@@ -162,7 +162,10 @@ robot:
     # limit. The static lists below are read first and override everything else. With them null a
     # UR falls back to the built-in factory table in safety/joint_limits.py, plus or minus 360 deg
     # on every axis, and no other vendor has one: no driver reads joint limits from RTDE telemetry.
-    # With neither source the guard fails closed while enforce is true. The two lists are set
+    # With neither source the guard fails closed while enforce is true, and since 2026-09-10 that
+    # cell is refused at build by create_arm rather than one move at a time: measured on the web
+    # profile, a kuka cell came up and answered controller_rejected to every motion, naming the
+    # controller for a missing key here. The two lists are set
     # together or not at all, one entry per axis, with min_deg below max_deg on every axis.
     joint_limits:
       enforce: true

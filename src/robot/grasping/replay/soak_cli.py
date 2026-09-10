@@ -33,6 +33,20 @@ logger = create_grasping_logger("SoakCLI", REPLAY_SOAK_CLI_LOG_FILE)
 _SIM_SOAK_REPORT_RELATIVE_PATH = "logs/u12/sim_soak_report.json"
 
 
+def _refuse_missing_input(mode: str, message: str, *, log: Any = None) -> int:
+    """Refuse a mode whose input file is not there: one sentence on stdout, exit 2, no traceback.
+
+    Measured: ``--records-gate``, ``--sim-soak-report`` and ``--failure-taxonomy`` each answered a
+    mistyped path with a raw ``FileNotFoundError`` stack trace, while ``--records`` answered exit 2
+    with a reason and every adaptation mode printed ``{"mode": ..., "error": ...}``. Three legs of one
+    CLI behaving as if a typo were an internal error is what this exists to stop; the payload shape
+    and the exit code are copied from the adaptation modes rather than invented here.
+    """
+    (log or logger).error("%s refused: %s", mode, message)
+    print(json.dumps({"mode": mode, "error": message}, sort_keys=True))
+    return 2
+
+
 def _records_mode(records_path: Path) -> int:
     """A shim over :class:`RecordLog`. The roll-up, the two audits and the exit code live there."""
     rollup = RecordLog.from_jsonl(records_path).kpis()
@@ -40,6 +54,11 @@ def _records_mode(records_path: Path) -> int:
         "mode": "records",
         "records_path": str(records_path),
         "kpi": dict(rollup.kpi),
+        # The rates this log cannot measure, named. They used to print as numbers here: an empty
+        # denominator returns 0.0, so `false_positive_grasp_rate: 0.0` read as "no false positives"
+        # rather than "nothing on this stack writes the field that rate divides by". The operator
+        # console said so for months while this CLI, over the same records, did not.
+        "unmeasurable": dict(rollup.unmeasurable),
         "telemetry_offenders": [
             {"attempt_id": o.attempt_id, "missing": list(o.missing)}
             for o in rollup.missing_telemetry
@@ -72,6 +91,10 @@ def _records_gate_mode(records_path: Path) -> int:
     """
 
     verdict = SoakGate.over_records(records_path).evaluate()
+    if verdict.unreadable:
+        return _refuse_missing_input(
+            "records-gate", f"{verdict.unreadable}: {records_path}"
+        )
     violations = list(verdict.violations)
     baseline_pick = verdict.baseline_pick_rate
     gate = verdict.gate_wire()
@@ -113,6 +136,12 @@ def _sim_soak_report_mode(
     verdict = SoakGate.over_sim_records(
         records_path, min_attempts=min_attempts
     ).evaluate()
+    if verdict.unreadable:
+        # Before the write, deliberately. A report file for a log nobody could open is a document
+        # asserting a gate ran, and it would outlive the terminal that said otherwise.
+        return _refuse_missing_input(
+            "sim-soak-report", f"{verdict.unreadable}: {records_path}"
+        )
     violations = list(verdict.violations)
     gate = verdict.gate_wire()
     payload = {

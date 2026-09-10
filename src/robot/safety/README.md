@@ -48,7 +48,7 @@ reclassifying anything.
 | `decision.py` | `SafetyDecision`, `SafetyReason`, and the reason to `MotionStatus` table |
 | `guard.py` | the `SafetyGuard` Protocol and `SafetyContext` |
 | `workspace.py` | `WorkspaceGuard`, the box plus pose diversity, and the only stateful guard |
-| `joint_limits.py` | `JointLimitGuard`, `resolve_joint_limits_deg`, and the `UR_JOINT_LIMITS_DEG` table |
+| `joint_limits.py` | `JointLimitGuard`, `resolve_joint_limits_deg`, the `UR_JOINT_LIMITS_DEG` table, and `assert_joint_limit_table_available` with `JointLimitTableMissing` |
 | `ik_quality.py` | `IKQualityGuard` |
 | `self_collision.py` | `SelfCollisionGuard`, with the capsule and exact-mesh backends |
 | `payload.py` | `PayloadGuard` |
@@ -138,7 +138,14 @@ Joint limits. The envelope resolves in this order: explicit `min_deg` and `max_d
 the built-in `UR_JOINT_LIMITS_DEG` table, which is the manufacturer envelope of plus or minus 360
 degrees per axis for `ur3`, `ur3e`, `ur5`, `ur5e`, `ur10`, `ur10e`, `ur16e` and `ur20`; otherwise
 `UNAVAILABLE`. `margin_deg` comes off both ends. KUKA and the sim have no built-in table, so a cell
-either supplies limits in YAML or the guard fails closed.
+either supplies limits in YAML or the guard fails closed. Since 2026-09-10 that last case is refused
+at build instead: `create_arm` calls `assert_joint_limit_table_available(arm)`, and an arm that wires
+this guard with no table to enforce raises `JointLimitTableMissing` naming
+`robot.safety.joint_limits.min_deg` and `max_deg`. Measured on the shipped `web` profile, which is
+`vendor: kuka` with both keys `null`, the cell used to build and then answer `controller_rejected` to
+every move, naming the controller for a missing config key. An arm whose `safety_preflight` is `None`,
+as the dummy has it, or whose operator set `joint_limits.enforce: false`, is silent there: those are
+stated decisions and `SafetyAttestation` is what reports them.
 
 IK quality. On a pre-resolved `target_joints`: non-finite rejects; a wrong DoF rejects and needs
 `arm`; a per-axis jump over `max_jump_rad` rejects; proximity closer than `limit_proximity_deg` to a

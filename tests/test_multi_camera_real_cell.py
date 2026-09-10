@@ -49,6 +49,7 @@ class _Provider:
         self.known = [r.rig_id for r in rigs]
         self.opened: list[str] = []
         self.handles: dict[str, _Handle] = {}
+        self.released = 0
 
     def open_rig(self, rig_id: str) -> None:
         if rig_id not in self.opened:
@@ -56,6 +57,18 @@ class _Provider:
 
     def rig(self, rig_id: str) -> _Handle:
         return self.handles.setdefault(rig_id, _Handle(rig_id))
+
+    def release(self) -> None:
+        """⛔ ADDED BECAUSE THE REAL ONE ALWAYS HAD IT AND THIS DOUBLE DID NOT.
+
+        A build that refuses after the primary camera is open now gives the device back, and this
+        fake answered that call with `AttributeError`, so the double was a narrower object than the
+        class it stands in for, and every assertion made through it was made against the narrower
+        one. Counting rather than passing, because the refusal tests below can then say the device
+        was returned instead of only that a refusal was raised.
+        """
+        self.released += 1
+        self.opened.clear()
 
 
 def _rig(rig_id: str, source: str = "rgbd"):
@@ -225,6 +238,50 @@ class ItFailsClosedTests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("ghost", message)
         self.assertIn("camera.cameras.rigs", message, "the refusal must name where to fix it")
+
+
+class ARefusedBuildGivesTheCameraBackTests(unittest.TestCase):
+    """⛔ MEASURED 2026-09-10. The primary camera was opened and then never released on any path
+    that refuses afterwards, and several such paths exist by design: the multi-camera rig refuses an
+    unmatched id, and `_preload()` was added precisely so a corrupt artifact refuses AT BUILD TIME
+    rather than as an empty candidate list at 3 a.m.
+
+    The consequence is worse than a warning. A RealSense held by a process that has exited stays
+    claimed, so the operator who reads the refusal, fixes the config and runs again meets "device
+    busy", a second failure that names neither the cause nor the first message. The refusal that
+    was added to help became the thing that hid itself.
+
+    ⭐ THIS LIVES IN THIS FILE BECAUSE THE HARNESS IS HERE, not because the property is about
+    multiple cameras. The multi-camera refusal is simply the post-open refusal that is cheapest to
+    provoke without a device.
+    """
+
+    def test_a_refusal_after_the_open_returns_the_device(self) -> None:
+        box: list = []
+        with self.assertRaises(CellBuildRefused):
+            _build(_robot_cfg(geometry=True, cameras={"overhead": True, "ghost": True}),
+                   _app_cfg("overhead", "oblique"), box)
+
+        self.assertTrue(box, "the harness never reached the provider, so this proves nothing")
+        provider = box[0]
+        self.assertEqual(provider.released, 1,
+                         "the build refused with the primary camera still open")
+        self.assertEqual(provider.opened, [],
+                         "release must give back every rig this build claimed, not only count")
+
+    def test_a_build_that_succeeds_keeps_its_camera(self) -> None:
+        """The other half, and the one that makes the test above mean something.
+
+        `release()` on every exit would satisfy the assertion above and hand back a device the cell
+        is about to stream from. What is pinned is the ASYMMETRY: refused builds release, successful
+        ones hold.
+        """
+        box: list = []
+        _build(_robot_cfg(geometry=False, cameras={}), _app_cfg("overhead"), box)
+
+        provider = box[0]
+        self.assertEqual(provider.released, 0, "a cell that came up must still hold its camera")
+        self.assertEqual(provider.opened, ["overhead"])
 
 
 class TheRootForwardsItTests(unittest.TestCase):

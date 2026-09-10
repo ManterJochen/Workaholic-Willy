@@ -57,6 +57,11 @@ python -m src.models.handdetection --rig overhead \
 Exit codes: `0` found, `1` nothing detected, `2` a setup problem. A missing hand and a missing model
 file must not look alike to a script. `--json` prints the same answer machine-readably.
 
+`--rig` names one rig and opens one camera. An id that is not in `camera.cameras.rigs`, or one whose
+rig is `enabled: false`, is exit `2` and lists the rigs there are. Measured 2026-09-10, before that
+check existed: a mistyped rig id opened every configured camera, matched none of them, and exited
+`1`, the code that tells a caller the workspace is clear.
+
 The `--frame` mode exists because "it does not work" with a camera, a calibration and a robot in
 the loop gives an operator no way to tell which of the four is wrong. Without `--transform`, `--rig`
 reports the hand in the camera frame only and says so.

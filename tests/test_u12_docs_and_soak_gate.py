@@ -8,7 +8,7 @@ This module locks the Phase U12 deliverables:
    sections (``Trigger`` / ``Diagnose`` / ``Mitigate`` / ``Verify`` /
    ``Rollback``).
 3. :func:`build_soak_report` produces ``\u2265 2000`` attempts, a
-   12-key gate dict, ``passes=True``, and a populated
+   13-key gate dict, ``passes=True``, and a populated
    ``easy_attempt_wall_time`` block on the current baseline.
 4. Two back-to-back builds yield byte-identical KPI + scenarios + gate
    sections (determinism).
@@ -64,6 +64,7 @@ _EXPECTED_GATE_KEYS = (
     "slo_packs_pass",
     "drift_gate_pass",
     "ood_gate_pass",
+    "failure_taxonomy_classifier_pass",
     "easy_attempt_wall_time_within_budget",
     "passes",
 )
@@ -71,6 +72,23 @@ _EXPECTED_GATE_KEYS = (
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _runbooks_on_disk() -> tuple[Path, ...]:
+    """Every runbook the directory actually holds, in a stable order.
+
+    ⛔ MEASURED 2026-09-10: the manifest listed three files while `docs/runbooks/` held six.
+    `corpus_v5_build.md`, `train_your_own_generator.md` and `ur_family_bringup.md` were never
+    on the list, so the five-section check below never looked at them, and two of the three
+    carried none of the five sections while the gate stayed green. A gate that iterates a list
+    can only ever confirm the list; what escapes a list is exactly what is not on it, so the
+    loop starts at the directory now and the manifest is checked against it.
+    """
+    return tuple(sorted(_RUNBOOKS_DIR.glob("*.md")))
+
+
+def _manifest_relative_path(path: Path) -> str:
+    return "docs/runbooks/" + path.name
 
 
 class RunbookManifestTests(unittest.TestCase):
@@ -110,11 +128,38 @@ class RunbookManifestTests(unittest.TestCase):
             self.assertTrue(entry["path"].startswith("docs/runbooks/"))
             self.assertTrue(entry["path"].endswith(".md"))
 
+    def test_the_manifest_and_the_directory_cover_each_other(self) -> None:
+        """Both directions, because each one catches a different rot.
+
+        ⛔ THE DIRECTION THAT WAS MISSING. Every check in this class iterated
+        ``manifest["runbooks"]``, so a runbook added to ``docs/runbooks/`` and not to the
+        manifest was invisible to all of them: it could carry none of the five sections and the
+        gate stayed green. Measured on 2026-09-10, three files were in exactly that state.
+
+        The other direction (a manifest entry whose file is gone) was already covered by the
+        section check, which opened each listed path; it is asserted here explicitly so the two
+        failures read as two different sentences instead of one ``missing <path>``.
+        """
+        listed = {entry["path"] for entry in self.manifest["runbooks"]}
+        on_disk = {_manifest_relative_path(path) for path in _runbooks_on_disk()}
+        self.assertEqual(
+            sorted(on_disk - listed),
+            [],
+            "runbooks that exist but are not in runbooks_index.json, so no gate looks at them",
+        )
+        self.assertEqual(
+            sorted(listed - on_disk),
+            [],
+            "runbooks_index.json lists files that docs/runbooks/ does not have",
+        )
+
     def test_each_runbook_file_exists_and_has_required_sections(
         self,
     ) -> None:
-        for entry in self.manifest["runbooks"]:
-            path = _REPO_ROOT / entry["path"]
+        # ⭐ DRIVEN BY THE DIRECTORY, NOT BY THE MANIFEST. The manifest is the thing under test
+        # one method up; using it as the loop source here is what let three files out.
+        for path in _runbooks_on_disk():
+            entry = {"id": path.stem, "path": _manifest_relative_path(path)}
             self.assertTrue(path.is_file(), f"missing {path}")
             body = _read(path)
             headings = set(re.findall(r"^##\s+(.+?)\s*$", body, re.MULTILINE))
@@ -210,6 +255,52 @@ class BuildU12SoakReportTests(unittest.TestCase):
         seeds = [int(s["seed"]) for s in scenarios]
         self.assertEqual(len(seeds), len(set(seeds)))
 
+    def test_the_taxonomy_leg_FAILS_when_the_classifier_stops_classifying(self) -> None:
+        """⛔ THE LEG WAS INERT, AND A DEAD CLASSIFIER PASSED IT. MEASURED 2026-09-10: the synthetic
+        soak stream stamps no ``extra.*_evidence`` flag anywhere, so all 168 of its failures already
+        classify as ``unclassified`` (coverage 0.0). A classifier that names nothing produces the
+        same 168 and the same 0.0, the ``failure_taxonomy`` block comes out byte-identical, and the
+        gate still says ``passes``. The soak carried a taxonomy section that could not tell a working
+        classifier from a deleted one.
+
+        So the leg is judged against the LABELED pack instead, whose rows carry
+        ``extra.expected_root_cause``. This test kills the classifier and requires the gate to
+        notice."""
+        from unittest import mock
+
+        from src.robot.grasping.replay import failure_taxonomy
+
+        def _names_nothing(final_outcome, extra, *, attempt_id="<unnamed>"):  # noqa: ANN001
+            return failure_taxonomy.TaxonomyVerdict(
+                primary=failure_taxonomy.FailureRootCause.UNCLASSIFIED,
+                also_matched=(),
+                evidence={"final_outcome": final_outcome, "rules_fired": {}},
+            )
+
+        with mock.patch.object(failure_taxonomy, "classify_symptoms", _names_nothing):
+            dead_payload, dead_violations = build_soak_report(_REPO_ROOT)
+
+        self.assertEqual(
+            dead_payload["failure_taxonomy"],
+            self.payload["failure_taxonomy"],
+            "the synthetic taxonomy block CHANGED under a dead classifier. If this ever fails, "
+            "the stream grew evidence flags and this test's premise needs re-measuring",
+        )
+        self.assertFalse(
+            bool(dead_payload["gate"]["passes"]),
+            "a classifier that names nothing still passed the soak gate",
+        )
+        self.assertIn("failure_taxonomy_classifier_failed", dead_violations)
+
+    def test_the_classifier_leg_reports_what_it_judged(self) -> None:
+        """A gate key with no numbers behind it cannot be argued with."""
+        block = self.payload["failure_taxonomy_classifier"]
+        self.assertEqual(block["mismatches"], [])
+        self.assertGreaterEqual(int(block["judged_failures"]), 60)
+        self.assertAlmostEqual(float(block["label_agreement"]), 1.0, places=6)
+        self.assertGreaterEqual(float(block["coverage_fraction"]), 0.95)
+        self.assertTrue(bool(block["passes_gate"]))
+
     def test_determinism_two_builds_match(self) -> None:
         payload_a, _ = build_soak_report(_REPO_ROOT)
         payload_b, _ = build_soak_report(_REPO_ROOT)
@@ -260,9 +351,11 @@ class SoakReportCLITests(unittest.TestCase):
     def test_committed_report_is_regen_stable(self) -> None:
         # K4: the committed soak report must stay byte-in-sync with a fresh regen, or the golden silently
         # rots (it had drifted on Windows via a backslash baseline_path). Object-equality (like the U+
-        # baseline guard) catches value + path-separator drift. Platform-locked — registered in
-        # conftest._DETERMINISM_NATIVE_NODEIDS (the soak KPIs are float/BLAS-sensitive), so it runs only
-        # under WILLY_DETERMINISM_NATIVE on the artifact-origin platform / canonical CI.
+        # baseline guard) catches value + path-separator drift. The three lines that used to sit here
+        # called this test platform-locked and named a conftest allow-list. MEASURED 2026-09-10: that
+        # list gated on an environment variable nothing in the tree ever set, so this ran on no box at
+        # all; opened by hand it passes here first try, which is the evidence the
+        # "float/BLAS-sensitive" reason never had.
         committed = json.loads(
             (_REPO_ROOT / "logs" / "u12" / "soak_report.json").read_text(encoding="utf-8")
         )

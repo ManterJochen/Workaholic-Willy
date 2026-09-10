@@ -20,7 +20,8 @@ not something a check may do because someone typed its name. That is the only fl
 
 Exit codes: 0 the arm answered and stands inside the box it will be held to, 1 it answered and
 disagrees with its own config, 2 there is nothing to connect to (no cell in the config, no driver on
-this host, no `--live`, or a controller that did not answer).
+this host, no `--live`, a config the driver refuses before it opens a socket, or a controller that
+did not answer). The second-to-last of those used to be reported as the last of them.
 """
 
 from __future__ import annotations
@@ -39,8 +40,14 @@ from src.robot.core import (  # noqa: E402
 )
 from src.robot.drivers import create_arm  # noqa: E402
 from src.robot.drivers.host import Host  # noqa: E402
+from src.robot.execution.real_cell.preflight import run_config_preflight  # noqa: E402
 
 EXIT_OK, EXIT_FAILED, EXIT_NOT_READY = 0, 1, 2
+
+#: The two preflight families whose BLOCK verdicts are exactly the three configurations
+#: `URRobotArm.connect()` refuses before it opens a socket. Read off the report rather than restated
+#: here, so this list cannot drift from the conditions the driver actually applies.
+_REFUSED_BEFORE_THE_SOCKET = ("tool frame", "payload")
 
 
 def _not_ready(what: str, fix: str) -> int:
@@ -84,6 +91,22 @@ def main() -> int:
         return _not_ready(
             f"the {config.vendor!r} arm could not be built ({type(error).__name__}: {error})",
             "`python -m src.robot.execution.real_cell --check` reads the same config")
+
+    # Three of the refusals below never reach the controller, and this check blamed it anyway.
+    # Measured on the shipped tree 2026-09-10: `connect()` raised `RobotConnectionError` for
+    # `safety.payload.enforce` with `mass_kg: 0.0` and the handler printed "the controller did not
+    # answer ... is the controller reachable, is the robot in REMOTE control", sending an operator
+    # to the cabinet for a value in their own YAML. The UR driver refuses on three configurations
+    # (an unweighed payload, a declared mass still carrying the [0, 0, 0] CoG marker, and an
+    # undeclared tool frame) before `self._conn.connect()` is called at all, and all three arrive as
+    # the same exception class, so the exception cannot be asked which kind it is. Ask the config.
+    refused = [check for check in run_config_preflight(config).blocking
+               if check.name in _REFUSED_BEFORE_THE_SOCKET]
+    if refused:
+        return _not_ready(
+            "this cell's own config is refused before any socket opens, so the controller was "
+            "never asked: " + "; ".join(f"{check.name} ({check.detail})" for check in refused),
+            " / ".join(check.fix for check in refused if check.fix))
 
     try:
         # `connect()` does more than open a socket on the UR path: it pushes the declared payload

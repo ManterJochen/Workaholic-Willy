@@ -516,7 +516,11 @@ COMMITTED_OPE_REPORT_SHA256 = (
     # estimate). Sequencing stays ``estimable: true``. Estimator values are unchanged; only the marker is added.
     # Re-generated to add reward_model / reward_interpretation / dataset_provenance honesty stamps
     # (schema_version 1 -> 2). Estimator values unchanged (surgical additive stamp on the committed report).
-    "ce75d79040c549aeea2a8b15e39a9020014e185a82e20223b742f570d189ec4a"
+    # Re-blessed 2026-09-10: `rl ope --dataset-id v5_ope_canonical` could not reproduce the
+    # committed report. Two `coverage_warning` strings still carried a `U0 ` prefix the source
+    # no longer emits, and `reward_interpretation` still carried a dash the source no longer
+    # writes. The estimator values are unchanged.
+    "efbb0ac8fc877f6f69a5748dc334ec7b8517a12c4e2432d44ef393e85ccc2158"
 )
 
 
@@ -548,6 +552,60 @@ class CommittedArtifactTests(unittest.TestCase):
                 "`python -m backend.src.robot.grasping.rl ope "
                 "--dataset-id v5_ope_canonical` and update the expected "
                 "sha256 if the drift is intentional."
+            ),
+        )
+
+    def test_the_documented_regenerator_reproduces_the_committed_file(self) -> None:
+        """⛔ IT COULD NOT, FOR MONTHS, AND THE TEST ABOVE COULD NOT SEE IT.
+
+        ``test_committed_report_byte_identity`` hashes the file against a constant. That catches a
+        hand-edit and nothing else: it passes just as happily when the generator can no longer
+        produce the file at all, which is the state this golden was in. MEASURED 2026-09-10, the
+        committed report hashed ``ce75d790`` and the documented re-run produced ``efbb0ac8``, with
+        exactly three fields apart: two ``coverage_warning`` strings that had lost a ``U0 `` prefix
+        when the phase tags were stripped from the source, and one ``reward_interpretation`` still
+        spelling a connector the source no longer writes. The message on the guard above says
+        "re-run and update the sha256 if the drift is intentional", which presumes a
+        reproducibility nothing checked.
+
+        A second cause lived underneath: the handler wrote the report with ``write_text``, which on
+        Windows translated the rendered line feed and produced a file that could never equal the
+        committed LF bytes whatever the content said. Both are fixed; this is the test that keeps
+        them fixed. It runs everywhere, because the whole report reproduced bit for bit here.
+        """
+
+        import hashlib
+        import subprocess
+        import sys
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "ope.json"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "src.robot.grasping.rl",
+                    "ope",
+                    "--dataset-id",
+                    "v5_ope_canonical",
+                    "--output",
+                    str(out_path),
+                ],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr[-2000:])
+            regenerated = out_path.read_bytes()
+        self.assertEqual(
+            hashlib.sha256(regenerated).hexdigest(),
+            COMMITTED_OPE_REPORT_SHA256,
+            msg=(
+                "`rl ope --dataset-id v5_ope_canonical` no longer produces the committed report. "
+                "A golden its own generator cannot produce is a golden that drifts silently: "
+                "regenerate it deliberately and move the sha256 with it."
             ),
         )
 

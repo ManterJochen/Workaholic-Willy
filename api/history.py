@@ -5,9 +5,11 @@ Two sources, and the console never blurs them:
 * Runs live in memory (``api.runs``). They are rich, carrying candidate counts, scores and the motion
   status chain, and they die when the server does.
 * Records live in a JSONL file. They survive restarts and they include what the CLI runner wrote, so
-  one history covers both tools. They are also thinner than they look: the production serializer
-  fills ``profile``, ``initial_telemetry``, ``execution``, ``verification``, ``recovery_actions`` and
-  ``extra``, and leaves the other six of the twelve blocks, ``selected_grasp`` among them, empty.
+  one history covers both tools. They are also thinner than they look: on a default attempt the
+  production serializer fills ``profile``, ``initial_telemetry``, ``execution``, ``selected_grasp``,
+  ``recovery_actions`` and ``extra``. ``verification`` and ``refinement`` gained writers on
+  2026-09-10 and fill only on an attempt where those layers actually ran, which no shipped config
+  turns on. ``frame``, ``target``, ``initial_grasp`` and ``refined_grasp`` have no writer at all.
 
 Anything a UI shows therefore says which of the two it came from, because "the chosen grasp was at
 x=312" and "the run succeeded" are claims of very different strength and only one of them survives a
@@ -16,7 +18,9 @@ restart.
 Some KPIs have no honest source, and they are named rather than zeroed. That is the load-bearing idea
 here: ``_ratio(x, 0)`` returns ``0.0``, so a rate computed over an empty denominator arrives looking
 like a measurement of zero. On a dashboard that reads as perfect or as broken, and both are claims
-nobody made. Four cases, three of them decided per record set rather than once:
+nobody made. Four cases, three of them decided per record set rather than once. The reasons and the
+denominator tests live in ``replay/kpi.py``, so the offline CLI over the same log says the same
+thing; this console consumes them:
 
 * ``false_positive_grasp_rate`` is always withheld. It counts grasps that reported success and were
   actually empty, and observing one needs an independent post-grasp re-check this stack does not have,
@@ -46,6 +50,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from api.constants import API_LOG_DIR, HISTORY_LOG_FILE
+from src.robot.grasping.replay.kpi import (
+    UNMEASURABLE_KPIS,
+    unmeasurable_kpis,
+)
 from src.utility.log_cfg import create_logger
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -68,40 +76,13 @@ logger = create_logger("ConsoleHistory", HISTORY_LOG_FILE, log_dir=API_LOG_DIR)
 #: extra line and changes no answer.
 _LAST_ROLLUP_LOGGED: tuple[str, int] | None = None
 
-#: Maps a KPI name to why no number can be shown for it, whatever the records say. Not a display
-#: nicety: the value this computes to is not "unknown", it is a confident zero derived from a field
-#: nothing writes.
-UNMEASURABLE_KPIS: dict[str, str] = {
-    "false_positive_grasp_rate": (
-        "No number can be given. This rate counts grasps that reported success and were actually "
-        "empty, and observing one requires an independent post-grasp re-check that this stack does not "
-        "have, so the field it is computed from is never set and the arithmetic returns a structural "
-        "0.0. A 0.0% false-positive rate on a screen is a claim nobody made."
-    ),
-}
-
-#: The same idea, decided per record set: these three can be measured on records that carry what they
-#: need. On a set that does not, the arithmetic still returns a number, and that number is an empty
-#: denominator wearing the clothes of a measurement.
-_CONDITIONALLY_UNMEASURABLE: dict[str, str] = {
-    "dense_recovery_success_rate": (
-        "Not measurable from these records: none of them both ran in a dense mode and recorded a "
-        "recovery action, which is what this rate divides by. The denominator is empty, so the rate "
-        "computes to a structural 0.0, reading as 'recovery never works' rather than 'recovery was "
-        "never asked to'. The shipped default mode is 'auto'."
-    ),
-    "first_attempt_success_rate": (
-        "Not measurable from these records: none of them recorded a recovery action. This rate differs "
-        "from the pick success rate only by excluding attempts that needed one, so with none it is the "
-        "same number printed twice, implying a measured cost of recovery that was never measured."
-    ),
-    "median_cycle_time_s": (
-        "Not measurable from these records: no record carries a cycle time. No writer on the production "
-        "pick path sets extra['cycle_time_s']: it is not in the frozen telemetry catalog, and the "
-        "writers that do exist are synthetic or sim-side. The honest duration for these records is "
-        "median_attempt_seconds."
-    ),
-}
+#: ``UNMEASURABLE_KPIS`` and the per-record-set reasons are imported, not declared here, and it used
+#: to be the other way round. They were written for this console and lived only in it, so
+#: ``python -m src.robot.grasping.replay --records`` printed ``false_positive_grasp_rate: 0.0`` as a
+#: measurement over the exact records this console refused to put a number on: two answers about one
+#: log. The definitions now sit beside the arithmetic they qualify (``replay/kpi.py``) and both
+#: readers quote the same sentence. This name stays exported from here because the schema and the
+#: screens read it.
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,12 +157,9 @@ def rollup(records: list["GraspAttemptRecord"], *, source: str) -> Rollup:
     if median_attempt is not None:
         kpis["median_attempt_seconds"] = round(median_attempt, 3)
 
-    unmeasurable = dict(UNMEASURABLE_KPIS)
-    for name, reason in _CONDITIONALLY_UNMEASURABLE.items():
-        if _has_support(name, records, summary):
-            continue
+    unmeasurable = unmeasurable_kpis(records, summary)
+    for name in unmeasurable:
         kpis.pop(name, None)
-        unmeasurable[name] = reason
 
     outcomes: dict[str, int] = {}
     for record in records:
@@ -210,41 +188,6 @@ def rollup(records: list["GraspAttemptRecord"], *, source: str) -> Rollup:
         outcomes=dict(sorted(outcomes.items(), key=lambda kv: -kv[1])),
         source=source,
     )
-
-
-def _has_support(name: str, records: list["GraspAttemptRecord"], summary: Any) -> bool:
-    """Does this record set actually contain what the named KPI divides by?
-
-    Deliberately checks the denominator, not the result. A recovery rate of 0.0 over dense attempts
-    that all needed recovery is a real and alarming measurement; the same 0.0 over none of them is not
-    a measurement at all, and only looking at the input can tell the two apart.
-
-    Each branch mirrors its counter in ``kpi.py`` exactly, and that is the whole correctness condition
-    here. ``compute_kpis`` counts a record into the ``dense_recovery_success_rate`` denominator only
-    when it is both ``mode in _DENSE_MODES`` and ``bool(recovery_actions)``. A guard on the mode half
-    alone admits an all-dense log that never recovered and publishes ``_ratio(0, 0) = 0.0``, and it
-    contradicts itself inside one response: that same set has ``first_attempt_success_rate`` withheld
-    for having no recovery actions while this rate is published over the identical empty input. A
-    guard that checks half a conjunction is not a guard.
-
-    ``_DENSE_MODES`` is imported rather than re-spelled for the same reason: a third copy of "what
-    counts as dense" would drift from the two that already exist (``kpi.py`` and ``replay/soak.py``),
-    and a prefix test such as ``startswith("dense")`` is not the same predicate. It admits the
-    ``dense`` alias ``resolve_grasp_mode`` accepts, and any future ``dense_*`` mode, neither of which
-    ``compute_kpis`` would count.
-    """
-    if name == "dense_recovery_success_rate":
-        from src.robot.grasping.replay.kpi import _DENSE_MODES
-
-        return any(
-            str(record.mode) in _DENSE_MODES and bool(record.recovery_actions)
-            for record in records
-        )
-    if name == "first_attempt_success_rate":
-        return any(record.recovery_actions for record in records)
-    if name == "median_cycle_time_s":
-        return getattr(summary, "median_cycle_time_s", None) is not None
-    return True
 
 
 def _median(values: list[float]) -> float | None:

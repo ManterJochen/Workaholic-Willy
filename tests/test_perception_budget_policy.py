@@ -72,10 +72,12 @@ ARTIFACT_REL = "docs/baselines/rl_policies/v5_perception_budget_baseline_v1.json
 ARTIFACT_PATH = REPO_ROOT / ARTIFACT_REL
 # C: the committed v5 baseline is DEGENERATE (600 continue / 0 stop -> one cell, one action). It now
 # carries the honest ``degeneracy_note`` (build_perception_honesty flags a single-action perception fit),
-# so a reader cannot mistake the fallback-table wrapper for a trained STOP/CONTINUE policy. The origin
-# dataset_hash is preserved; only the note was added.
+# so a reader cannot mistake the fallback-table wrapper for a trained STOP/CONTINUE policy.
+# ⚠ Re-blessed 2026-09-10, and the sentence that used to end this note ("the origin dataset_hash
+# is preserved") no longer holds. That hash was taken over a CRLF checkout of the replay packs;
+# the packs are pinned `-text` now and the hash is the LF reading. The fitted policy is unchanged.
 EXPECTED_ARTIFACT_SHA256 = (
-    "7543e999dc3b83194940c4a1fd5f28be96cac5b3cfb0c49fd68b61a331d46181"
+    "4abdcfc7518cba351492a3dfa87e36e10dcdc6c4ea0bc7fb23864ed2974a58f6"
 )
 
 

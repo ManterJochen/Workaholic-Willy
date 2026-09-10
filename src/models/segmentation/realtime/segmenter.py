@@ -14,6 +14,7 @@ from src.models._inference import (
     autocast_ctx,
     build_load_kwargs,
     finalize_model,
+    weight_load_errors,
 )
 from src.models.constants import MODELS_LOG_DIR, SEGMENTER_LOG_FILE
 from src.models.detection.types import Detection
@@ -62,7 +63,12 @@ class Sam2Segmenter:
         try:
             self.processor = Sam2Processor.from_pretrained(source, **proc_kwargs)  # type: ignore[arg-type]  # transformers stub mistypes from_pretrained **kwargs
             self.model = Sam2Model.from_pretrained(source, **model_kwargs).to(self.device)
-        except RuntimeError:
+        # RuntimeError caught none of the three ways weights are actually unusable.
+        # Measured 2026-09-10 against SAM2 specifically: a README-only directory and a
+        # half-downloaded snapshot both raise OSError ("Error no file named
+        # model.safetensors, or pytorch_model.bin"), a corrupted file
+        # safetensors.SafetensorError. See weight_load_errors().
+        except weight_load_errors():
             self.logger.error("Failed to load SAM2 model '%s'", source)
             raise
 

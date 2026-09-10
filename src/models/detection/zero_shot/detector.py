@@ -14,6 +14,7 @@ from src.models._inference import (
     autocast_ctx,
     build_load_kwargs,
     finalize_model,
+    weight_load_errors,
 )
 from src.models.constants import DETECTOR_LOG_FILE, MODELS_LOG_DIR
 from src.models.detection.types import Detection
@@ -81,7 +82,12 @@ class GroundingDinoObjectDetector:
                 .from_pretrained(source, **model_kwargs)
                 .to(self.device)
             )
-        except RuntimeError:
+        # Measured 2026-09-10: a README-only directory raises ValueError here, a
+        # half-downloaded snapshot OSError, a corrupted model.safetensors
+        # safetensors.SafetensorError. The clause caught RuntimeError, so this line, the
+        # only one naming the model, was dead in all three. See weight_load_errors() for
+        # why the set is named and not `Exception`.
+        except weight_load_errors():
             self.logger.error(f"Failed to load model '{source}'")
             raise
 

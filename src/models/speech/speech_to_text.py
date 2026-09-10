@@ -11,6 +11,7 @@ from src.models._inference import (
     autocast_ctx,
     build_load_kwargs,
     finalize_model,
+    weight_load_errors,
 )
 from src.models.constants import MODELS_LOG_DIR, WHISPER_LOG_FILE
 from src.models.speech._poll import poll_until_text
@@ -55,7 +56,10 @@ class WhisperSpeechToText:
             self.model = WhisperForConditionalGeneration.from_pretrained(
                 source, **model_kwargs
             ).to(self.device)  # type: ignore[arg-type]  # _Wrapped decorator mistypes the chained .to()
-        except RuntimeError:
+        # RuntimeError caught none of the three ways weights are actually unusable
+        # (ValueError, OSError, safetensors.SafetensorError; measured 2026-09-10). See
+        # weight_load_errors().
+        except weight_load_errors():
             self.logger.error("Failed to load Whisper model '%s'", source)
             raise
 

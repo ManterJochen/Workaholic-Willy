@@ -45,7 +45,12 @@ follow_imports = "normal"
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q -p no:cacheprovider"
+# `-rs` prints why each skip happened. MEASURED 2026-09-10: without it the byte-identity family
+# reported "3 skipped" and nothing else, which reads the same as three claims nobody wrote a test
+# for, and for years it WAS that: an allow-list waiting on an environment variable nothing set.
+# The three that remain stand down on a drift measured in the run; the reason names the measurement,
+# and it costs one line per skipped test.
+addopts = "-q -p no:cacheprovider -rs"
 markers = [
     "isaac: needs a real Isaac Sim install (Windows workstation only, skipped where isaacsim is not importable). See docs/isaac-ready.md.",
     "inference: runs a real model against real weights on a real GPU. Skipped without CUDA or without the weights in the HuggingFace cache; fetch them with scripts/model_weights/fetch.py. Not part of the CI gate: multi gigabyte downloads and minutes of GPU time.",

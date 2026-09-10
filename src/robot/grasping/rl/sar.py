@@ -113,6 +113,21 @@ def _stable_grasp_token(grasp: Any) -> str:
 
 
 def _project_action(record: Mapping[str, Any]) -> str:
+    """The action token. ``selected_grasp`` first, because that is the grasp the outcome graded.
+
+    This branch had no producer until 2026-09-10, and the repair was a writer rather than a
+    deletion. ``record_logging.to_attempt_record`` is the only thing in ``src`` that turns a real
+    pick into a record, and it set none of the three grasp fields, so every production record fell
+    through to ``ACTION_NOOP``: one constant, on every row, in the column an RL dataset exists to
+    vary. Deleting the branches would have made that permanent and would have changed how existing
+    artifacts extract, since the replay fixtures carry ``selected_grasp``, which this extractor
+    promises not to do. ``to_attempt_record`` now stamps the executed grasp into ``selected_grasp``.
+
+    ``refined_grasp`` and ``initial_grasp`` still have no producer. They are reachable from an
+    artifact written outside this repository and from the closed-loop path own report, which no
+    record writer reads yet; they are kept because removing a branch an old artifact can still reach
+    would silently change how that artifact replays.
+    """
     selected = record.get("selected_grasp")
     if isinstance(selected, Mapping):
         return _stable_grasp_token(selected)

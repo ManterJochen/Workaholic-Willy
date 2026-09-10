@@ -19,6 +19,7 @@ import re
 import shutil
 import tempfile
 import time
+import types
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -265,6 +266,92 @@ class EventHubTests(unittest.TestCase):
         hub.publish("r", "x")
         waiter.join(timeout=5.0)
         self.assertEqual(received, [1])
+
+
+class RunRetentionTests(unittest.TestCase):
+    """What a console left running for a week is still holding.
+
+    ⛔ THE DEFECT. ``EventHub.forget`` existed for exactly this and had no caller anywhere in the
+    tree, so every finished run's event history stayed in the hub for the life of the process, and
+    the registry kept its ``Run`` record, its sequence counter and its dead ``Thread`` object beside
+    it. MEASURED in this tree: 1000 runs started, 1000 kept, nothing ever dropped; one 35-event run
+    replays as about 14 kB of JSON (~402 bytes per envelope) and its sequence-counter entry costs 91
+    bytes, and the ring lets a single run hold 2048 envelopes. A console is a long-lived process
+    standing next to a robot; nothing here ever ended.
+
+    No fastapi and no cell: the registry and the hub are the two things under test, and neither
+    needs the optional extra.
+    """
+
+    #: More runs than a console is expected to keep, and fewer than a bring-up day produces.
+    _A_LONG_SESSION = 250
+
+    def setUp(self) -> None:
+        from api.events import EventHub
+        from api.runs import RunRegistry
+
+        self.hub = EventHub()
+        self.registry = RunRegistry(self.hub)
+        service = types.SimpleNamespace(
+            attach_progress_listener=lambda _listener: None,
+            set_cancel_check=lambda _check: None,
+            set_target_label=lambda _label: None,
+        )
+        self.console = types.SimpleNamespace(
+            active_run_id=None, session=types.SimpleNamespace(service=service)
+        )
+
+    def _finished_run(self) -> str:
+        """One run of zero picks: it starts, publishes, finishes. No arm, no attempt, real threads."""
+        run = self.registry.start(self.console, prompt="", picks=0)
+        # Waiting on `run_finished` rather than on `active()`: the state flips to FINISHED before
+        # the thread publishes its last envelope, so a helper that watched the state would race the
+        # publish and the NEXT run would start mid-teardown.
+        deadline = time.monotonic() + 10.0
+        while not any(e.type == "run_finished" for e in self.hub.since(run.id, 0)[0]):
+            if time.monotonic() > deadline:  # pragma: no cover - a hung run is a different failure
+                self.fail(f"run {run.id} never finished")
+            time.sleep(0.001)
+        return run.id
+
+    def test_a_console_that_has_run_all_week_lets_go_of_its_oldest_runs(self) -> None:
+        ids = [self._finished_run() for _ in range(self._A_LONG_SESSION)]
+        oldest = ids[0]
+
+        self.assertLess(
+            len(self.registry.recent(limit=100_000)), self._A_LONG_SESSION,
+            "every run ever started is still in the registry",
+        )
+        self.assertIsNone(self.registry.get(oldest), "the oldest run's record was never dropped")
+        self.assertEqual(
+            self.hub.since(oldest, 0), ([], 0), "the oldest run's history was never dropped"
+        )
+        self.assertEqual(self.hub.latest_seq(oldest), 0, "its sequence counter outlived it")
+
+    def test_what_it_keeps_is_WHOLE_so_a_reconnect_still_replays(self) -> None:
+        """The bound must not cost the property the sequence numbers exist for: a browser that comes
+        back after the run finished still gets every event of a run the console still names."""
+        from api.runs import RETAINED_RUNS
+
+        ids = [self._finished_run() for _ in range(self._A_LONG_SESSION)]
+
+        events, dropped = self.hub.since(ids[-1], 0)
+        self.assertEqual(dropped, 0)
+        self.assertEqual(
+            [e.type for e in events], ["run_started", "run_finished"], "a kept run lost events"
+        )
+        kept = [run.id for run in self.registry.recent(limit=100_000)]
+        self.assertEqual(kept, list(reversed(ids[-RETAINED_RUNS:])), "the window is not the last N")
+
+    def test_a_finished_run_does_not_leave_its_thread_behind(self) -> None:
+        """A ``Thread`` object per run, in a dict nothing reads again. Bounding it is not the answer:
+        the object is useless the moment the run ends, so it goes then."""
+        for _ in range(5):
+            self._finished_run()
+        # Private on purpose: this dict has no reader, which is exactly why it could grow unnoticed.
+        self.assertEqual(
+            dict(self.registry._threads), {}, "finished runs are still holding their threads"
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -30,7 +30,22 @@ from src.utility.log_cfg import create_logger
 if TYPE_CHECKING:  # pragma: no cover
     from src.robot.grasping.loop.progress import PickProgress
 
-__all__ = ["Run", "RunRegistry", "RunState"]
+__all__ = ["RETAINED_RUNS", "Run", "RunRegistry", "RunState"]
+
+#: How many runs the console remembers. Beyond this the oldest is forgotten whole (record, event
+#: history, sequence counter, thread), so that ``/v1/runs/<id>`` and the event stream agree about
+#: what exists rather than one of them answering an empty replay for a run the other still names.
+#:
+#: 200 because of what a run costs and what the console is for. Measured in this tree: 35 events
+#: (one pick of five attempts) replay as about 14 kB of JSON, so 200 runs is roughly 2.8 MB; the
+#: per-run ring caps a pathological run (2048 events, about 290 attempts in one run) at under 1 MB.
+#: Before this, nothing was ever dropped: a console next to a robot is started on Monday and asked
+#: about on Friday.
+#:
+#: ``/v1/history/runs.csv`` defaults to ``limit=500`` and therefore now returns at most 200 rows.
+#: That export was always the perishable in-memory view; the durable one is the grasp record log
+#: (``/v1/history/records.csv``), which this does not touch.
+RETAINED_RUNS = 200
 
 logger = create_logger("RunRegistry", RUNS_LOG_FILE, log_dir=API_LOG_DIR)
 
@@ -164,6 +179,7 @@ class RunRegistry:
             return self._runs.get(run_id)
 
     def recent(self, limit: int = 50) -> list[Run]:
+        """The newest runs first, at most ``limit`` and never more than :data:`RETAINED_RUNS`."""
         with self._lock:
             return [self._runs[i] for i in reversed(self._order[-limit:])]
 
@@ -196,11 +212,29 @@ class RunRegistry:
                 target=self._drive, args=(console, run), name=f"willy-{run.id}", daemon=True
             )
             self._threads[run.id] = thread
+            self._forget_runs_beyond_the_window()
         logger.info(
             "Run %s starting: %d pick(s), prompt %r.", run.id, run.requested_picks, run.prompt
         )
         thread.start()
         return run
+
+    def _forget_runs_beyond_the_window(self) -> None:
+        """Drop the runs that have fallen out of :data:`RETAINED_RUNS`. Caller holds the lock.
+
+        Whole, and in one place: the record, the thread handle and the hub's history for that id go
+        together. Dropping the history alone would leave ``since()`` answering "no events, none
+        dropped" for a run ``/v1/runs/<id>`` still returns: a silently short replay, which is the
+        one thing the sequence numbers exist to prevent.
+
+        Only finished runs can be reached: one arm means one active run, and it is always the
+        newest.
+        """
+        while len(self._order) > RETAINED_RUNS:
+            forgotten = self._order.pop(0)
+            self._runs.pop(forgotten, None)
+            self._threads.pop(forgotten, None)
+            self.hub.forget(forgotten)
 
     def stop(self, run_id: str) -> bool:
         """Ask a run to stop between attempts. Returns False if it was not running.
@@ -305,6 +339,11 @@ class RunRegistry:
                 )
             with self._lock:
                 console.active_run_id = None
+                # The Thread object is useless the moment its run ends and nothing reads this dict
+                # again, so it goes now rather than at the retention boundary. It was never popped
+                # at all, which is how a dict with no reader grew one entry per run for the life of
+                # the process.
+                self._threads.pop(run.id, None)
             logger.info(
                 "Run %s %s: %d/%d succeeded in %.1f s.",
                 run.id, run.state, run.succeeded, run.attempted,

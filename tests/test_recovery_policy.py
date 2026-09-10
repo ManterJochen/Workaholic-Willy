@@ -79,7 +79,11 @@ DENSE_PACK = REPO_ROOT / "tests" / "data" / "replay" / "replay_dense_canonical_v
 EASY_PACK = REPO_ROOT / "tests" / "data" / "replay" / "replay_easy_canonical_v1.jsonl"
 
 COMMITTED_ARTIFACT_SHA256 = (
-    "cd0452bba96cf0729159ea9d2142ba5a7593e61d4be9db574755fac2ce987321"
+    # Re-blessed 2026-09-10 with the tree's own regenerator, after the replay packs stopped
+    # being checked out with CRLF (.gitattributes now pins tests/data/replay/** -text). Every
+    # provenance hash over those packs moved from a CRLF reading to the LF bytes the committed
+    # blob has always held.
+    "8ae243fb1d438175b201c5972532caf939862c596a87f5b8316c7dd6d3495701"
 )
 
 

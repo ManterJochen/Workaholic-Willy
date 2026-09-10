@@ -123,7 +123,12 @@ and the per-vendor READMEs beside it.
 ### 2.2 Probe the host with the driver doctor
 
 `python -m src.robot.drivers.doctor` prints one row per arm and gripper vendor: registered, SDK
-importable, ready. It uses `importlib.util.find_spec` only and never imports an SDK. The plain table
+importable, ready. It imports each SDK, because `find_spec` answers yes for a package whose native
+extension the operating system refuses to load, and the row then read `arm ur yes ready` for a host
+that cannot open a UR session (measured 2026-09-10, the same defect MuJoCo had in datagen).
+`isaacsim` is the one exception and is still resolved by spec: importing it costs tens of seconds and
+starts a renderer. A row that is not ready now names the reason per module, so "installed and will
+not import" is distinguishable from "not installed". The plain table
 exits 0, `--require <vendor>` exits 1 when that vendor is not ready and 2 on an unknown vendor string,
 and `--json` emits the same records machine-readably. Run it and read your own machine rather than
 trusting a pasted transcript.
@@ -296,11 +301,16 @@ your installation limits, because no driver here reads joint limits from control
 guard will pass a configuration the controller protective-stops on. The controller is the tighter
 backstop.
 
-Any cell whose vendor is not `ur` must supply `min_deg` and `max_deg` in YAML, or every motion is
-refused. That includes the simulator, whose capability vendor is `sim`, and every KUKA cell. The `sim`
+Any cell whose vendor is not `ur` must supply `min_deg` and `max_deg` in YAML, or the cell will not
+build. That includes the simulator, whose capability vendor is `sim`, and every KUKA cell. The `sim`
 layer supplies the UR factory envelope. Do not paste those numbers onto a KRC cell: they are far wider
 than any KR axis and would re-create the hole this guard closes. KUKA per-axis limits come from the
 controller or the datasheet, and `config/robot/templates/kuka_eki.yaml` ships no `joint_limits` block.
+The shipped `robot.yaml` leaves both keys null, and until 2026-09-10 `joint_limits.py` claimed the YAML
+filled them per model, which was not true, so a KUKA cell came up and then answered
+`controller_rejected` to an all-zeros joint move. `create_arm` now raises `JointLimitTableMissing` at
+build for any arm that enforces this guard and resolves no table, naming both keys. The runtime
+`UNAVAILABLE` path is untouched: a hand-built arm that skips the factory still fails closed.
 
 **IK quality** runs five checks: non-finite joints, DoF mismatch, joint jump from `current_joints`,
 limit proximity and near-singularity. The singularity test needs an arm advertising `has_native_fk`,

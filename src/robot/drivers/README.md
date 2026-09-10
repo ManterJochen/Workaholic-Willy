@@ -51,13 +51,20 @@ surface and `RobotVendor` are exported from `src.robot.drivers`.
 | --- | --- | --- |
 | `DUMMY` | optional `dof`, optional `initial_pose`; a forwarded `config` is discarded | Pure Python, no SDK. |
 | `UR` | `config=RobotConfig`, required | Builds `URRobotArm`. `ur_rtde` is deferred to `connect()`. |
-| `KUKA` | `config=RobotConfig`, required | Builds `KukaRobotArm`. No vendor SDK on this side. |
+| `KUKA` | `config=RobotConfig`, required | Builds `KukaRobotArm`. No vendor SDK on this side. Measured 2026-09-10 on the shipped `web` profile: with `safety.joint_limits.min_deg` and `max_deg` unset, as base `robot.yaml` ships them, `create_arm` now raises `JointLimitTableMissing` here rather than handing back a cell that answers `controller_rejected` to every move. |
 | `SIM` | `config=SimRobotConfig`, required and type-checked | Builds `IsaacRobotArm`. Isaac is deferred to `connect()`. |
 | `FRANKA`, `ROS2` | none | Declared in the enum and not registered. `create_arm` raises `RobotConnectionError`. |
 
 Every factory rejects unexpected kwargs with `TypeError` rather than dropping them. The
 application-layer factory forwards `config=` for every vendor, so an operator switches arms by
 editing config alone; the dummy factory is the one that discards it.
+
+`create_arm` asks one safety question of every arm it hands back: an arm that wires the joint-limit
+guard but resolves no per-axis table for its own `capabilities` is refused with
+`JointLimitTableMissing`, naming `robot.safety.joint_limits.min_deg` and `max_deg`. Only the UR
+models carry a built-in table, so this is the check a new vendor meets first. An arm that reports
+`safety_preflight is None`, as the dummy does, or whose operator set `joint_limits.enforce: false`,
+is silent here, because those are stated decisions and `SafetyAttestation` is what reports them.
 
 ## Usage
 

@@ -8,10 +8,11 @@ policies fire + populate the `_vX` slots), and drives attach_shadow_router (the 
 sub-block fold) — asserting the seam STRUCTURE (the 5 policies load, the slots populate, the 4 carrier sub-blocks
 fold non-None, the rl_* extras emit).
 
-It is a STRUCTURAL contract test, NOT a value snapshot: the trained-artifact floats are platform-specific (the
-committed-SHA tests are WILLY_DETERMINISM_NATIVE-locked to the canonical origin and skip/fail off-origin), so a
-value golden would be Windows-locked + brittle. The R3 byte-identical proof for the artifacts is the separate
-same-box WILLY_DETERMINISM_NATIVE=1 pre/post regeneration check. This net catches an R3 refactor that breaks the
+It is a STRUCTURAL contract test, NOT a value snapshot: the trained-artifact floats are platform-specific, so a
+value golden would be Windows-locked + brittle. (The parenthetical here used to say the committed-SHA tests are
+locked to a canonical origin and skip off it. MEASURED 2026-09-10: they skipped on every box, because nothing
+set the variable; 2 of the 27 stand down now, on a drift measured per run, see tests/_determinism.py.) The
+R3 byte-identical proof for the artifacts is the separate same-box pre/post regeneration check. This net catches an R3 refactor that breaks the
 real-policy-through-seam wiring (load drift, slot-name drift, fold drift, a dropped sub-block).
 """
 

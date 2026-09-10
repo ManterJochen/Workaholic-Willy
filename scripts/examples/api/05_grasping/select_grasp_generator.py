@@ -12,7 +12,7 @@ from pathlib import Path
 # Four parents up: 05_grasping, api, examples, scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from src.config import load_robot_config  # noqa: E402
+from src.config import ConfigError, load_robot_config  # noqa: E402
 from src.robot.execution.autonomous_grasp.rehearsal import RehearsalPerceptionSource  # noqa: E402
 from src.robot.grasping.calculator_factory import (  # noqa: E402
     build_calculator,
@@ -21,7 +21,14 @@ from src.robot.grasping.calculator_factory import (  # noqa: E402
 
 # 1. The cell, and one synthetic box for whichever generator gets built. What is exercised is the
 #    selector and its wiring, never grasp quality, which is measured in simulation and on a bench.
-robot = load_robot_config()
+try:
+    robot = load_robot_config()
+except ConfigError as no_cell:
+    # `robot` is optional on AppConfig, so a tree without one is a configuration answer rather
+    # than a crash, and the four files under scripts/checks/ answer it the same way.
+    print(f"no cell in this config tree ({no_cell}). Write a `robot` block, or select a "
+          f"profile that carries one: WILLY_PROFILE=ur5e")
+    raise SystemExit
 frame = RehearsalPerceptionSource().acquire()
 
 # 2. Check the selector, then build what it chose. `preflight_calculator` answers without

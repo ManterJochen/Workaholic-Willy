@@ -14,7 +14,7 @@ from pathlib import Path
 # Four parents up: 07_training, api, examples, scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from src.config import load_robot_config  # noqa: E402
+from src.config import ConfigError, load_robot_config  # noqa: E402
 from src.robot.grasping.calculator_factory import preflight_calculator  # noqa: E402
 from src.robot.grasping.deep.net.gripper import (  # noqa: E402
     GRIPPER_VECTOR_DIM,
@@ -24,7 +24,14 @@ from src.robot.grasping.deep.net.set_loss import GraspSetPrediction  # noqa: E40
 from src.robot.grasping.deep.train.trainer import SetTrainingPlan  # noqa: E402
 
 # 1. What this config selects, read through the same selector `build_calculator` uses.
-robot = load_robot_config()
+try:
+    robot = load_robot_config()
+except ConfigError as no_cell:
+    # `robot` is optional on AppConfig, so a tree without one is a configuration answer rather
+    # than a crash, and the four files under scripts/checks/ answer it the same way.
+    print(f"no cell in this config tree ({no_cell}). Write a `robot` block, or select a "
+          f"profile that carries one: WILLY_PROFILE=ur5e")
+    raise SystemExit
 print(f"grasping.calculator {robot.grasping.calculator!r} resolves to "
       f"{preflight_calculator(robot)!r}, artifact_path "
       f"{robot.grasping.deep_generator.artifact_path!r}")

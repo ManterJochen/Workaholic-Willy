@@ -248,13 +248,21 @@ class TheDeterminismLockIsNotInertTests(unittest.TestCase):
     test and three verify/canary goldens ran UNGUARDED on every box -- the cross-platform ULP
     exposure `tests/conftest.py` exists to prevent, on the very artifact this commit touches. A stale
     entry is silent in both directions; this makes it loud.
+
+    ⚠ MEASURED 2026-09-10 and this class was right about something worse. The list it scans had
+    never gated anything on any box, because the environment variable it waited for is set nowhere
+    in the tree: this class was checking that a list of 27 dead entries was spelled correctly. The
+    list is now 3 entries, each paired with the measurement that has to agree before it stands down,
+    and the tests below moved to `tests._determinism` with it. The lower bound went from 20 to 1 for
+    that reason; `tests/test_determinism_lock.py` owns the UPPER bound, which is the direction that
+    now needs watching.
     """
 
     def test_every_locked_nodeid_names_a_file_that_exists(self) -> None:
-        from tests.conftest import _DETERMINISM_NATIVE_NODEIDS
+        from tests._determinism import PLATFORM_FLOAT_LOCKED_NODEIDS
 
         missing = sorted(
-            n for n in _DETERMINISM_NATIVE_NODEIDS if not (_REPO / n.split("::")[0]).is_file()
+            n for n in PLATFORM_FLOAT_LOCKED_NODEIDS if not (_REPO / n.split("::")[0]).is_file()
         )
         self.assertEqual(missing, [], "a locked node ID names a file that does not exist")
 
@@ -262,10 +270,10 @@ class TheDeterminismLockIsNotInertTests(unittest.TestCase):
         """The other half: a renamed CLASS is just as silent as a renamed file."""
         import ast
 
-        from tests.conftest import _DETERMINISM_NATIVE_NODEIDS
+        from tests._determinism import PLATFORM_FLOAT_LOCKED_NODEIDS
 
         missing: list[str] = []
-        for node in sorted(_DETERMINISM_NATIVE_NODEIDS):
+        for node in sorted(PLATFORM_FLOAT_LOCKED_NODEIDS):
             rel, cls, func = node.split("::")
             tree = ast.parse((_REPO / rel).read_text(encoding="utf-8"))
             klass = next((n for n in ast.walk(tree)
@@ -277,9 +285,25 @@ class TheDeterminismLockIsNotInertTests(unittest.TestCase):
         self.assertEqual(missing, [], "a locked node ID names a test that does not exist")
 
     def test_the_scan_is_not_over_an_empty_set(self) -> None:
-        from tests.conftest import _DETERMINISM_NATIVE_NODEIDS
+        from tests._determinism import PLATFORM_FLOAT_LOCKED_NODEIDS
 
-        self.assertGreaterEqual(len(_DETERMINISM_NATIVE_NODEIDS), 20)
+        self.assertGreaterEqual(len(PLATFORM_FLOAT_LOCKED_NODEIDS), 1)
+
+    def test_every_locked_nodeid_names_a_probe_that_exists(self) -> None:
+        """The lock's new failure mode: an entry pointing at a measurement nobody registered.
+
+        A missing probe would raise a KeyError deep inside collection, which reads as a broken
+        conftest rather than as a stale lock. Naming it here keeps the diagnosis where it belongs.
+        """
+
+        from tests._determinism import DRIFT_PROBES, PLATFORM_FLOAT_LOCKED_NODEIDS
+
+        unknown = sorted(
+            f"{node} -> {probe}"
+            for node, probe in PLATFORM_FLOAT_LOCKED_NODEIDS.items()
+            if probe not in DRIFT_PROBES
+        )
+        self.assertEqual(unknown, [], "a locked node ID names an unregistered drift probe")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -461,7 +461,11 @@ def write_pack(pack: CanonicalPackSpec, repo_root: Path) -> Path:
     payload = render_pack_jsonl(pack)
     out_path = (repo_root / pack.relative_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(payload, encoding="utf-8")
+    # newline="" so the line feed this module renders reaches the file as a line feed.
+    # MEASURED 2026-09-10: write_text defaults to os.linesep translation, so a regeneration on
+    # Windows wrote CRLF while the manifest below hashed the LF bytes it had just rendered. The
+    # file and its own sha256 disagreed the moment they were written.
+    out_path.write_text(payload, encoding="utf-8", newline="")
     # These packs carry production sign-off authority and are checked in, so the
     # sha of what was written is logged at the moment of writing; that is the
     # number the manifest contract is later compared against.
@@ -531,7 +535,9 @@ def write_manifest(
     out_path = (repo_root / relative_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-    out_path.write_text(body, encoding="utf-8")
+    # LF on every platform: this file records the sha256 of its siblings, so it is read back
+    # as bytes and must not pick up the host line ending.
+    out_path.write_text(body, encoding="utf-8", newline="")
     logger.info(
         "Wrote pack manifest v%d for %d pack(s) to %s (%d bytes)",
         int(MANIFEST_VERSION),

@@ -123,7 +123,10 @@ loop reading that map, the versioned extrinsics artifact keyed by `rig_id`, and 
 itself. The preflight can only check for an artifact and refuse without one. This command makes one.
 
 Run it once per rig. Each run holds exactly that camera through `FrameProvider.rig(rig_id)` and
-gives it back, so it does not fight the console for devices it does not need. The artifact is keyed
+gives it back, so it does not fight the console for devices it does not need. `--check` refuses a rig
+that is `enabled: false` and names the key: measured 2026-09-10 it called such a rig usable, and the
+next command in the sequence moves the arm to 22 poses in front of a camera the cell will not open.
+The artifact is keyed
 by `rig_id`, which is also its key in `fusion.cameras`, and that alignment is what lets
 `build_config_frame_resolvers` find the file.
 

@@ -94,7 +94,11 @@ COMMITTED_SEQUENCING_PROMOTION_ARTIFACT_SHA256 = (
     # same pattern as recovery. Uses the RICH OPE reward; means/CIs are platform-locked.
     # re-generated to add reward_model / reward_interpretation / dataset_provenance / verdict_meaning
     # honesty stamps (schema_version 1 -> 2). WIS/DM values unchanged (surgical additive stamp).
-    "2766c795608efab9418a46bc6b80bae3954f9da787f200bb279b618713916476"
+    # Re-blessed 2026-09-10 with the tree's own regenerator, after the replay packs stopped
+    # being checked out with CRLF (.gitattributes now pins tests/data/replay/** -text). Every
+    # provenance hash over those packs moved from a CRLF reading to the LF bytes the committed
+    # blob has always held.
+    "6a7cd0e213b4ce63aad1cf89622c3c944f72572978ff23b27446f77688715076"
 )
 DENSE_PACK_PATH = (
     REPO_ROOT / "tests" / "data" / "replay" / "replay_dense_canonical_v1.jsonl"
@@ -114,7 +118,13 @@ COMMITTED_PROMOTION_ARTIFACT_SHA256 = (
     # (Prior SHA: 107d1ff4...; the degenerate policy is ABSTAIN + the 0.01 lift floor is set.)
     # re-generated to add reward_model / reward_interpretation / dataset_provenance / verdict_meaning
     # honesty stamps (schema_version 1 -> 2). WIS/DM values unchanged (surgical additive stamp).
-    "bdc10982886a1b5b16b9e9480e82239ddcdd4eeb6025a2a61e11d302da92ab21"
+    # Re-blessed 2026-09-10 with the tree's own regenerator, after the replay packs stopped
+    # being checked out with CRLF (.gitattributes now pins tests/data/replay/** -text). Every
+    # provenance hash over those packs moved from a CRLF reading to the LF bytes the committed
+    # blob has always held.
+    # This report also carried a `config_hash` from when the recovery action space was smaller
+    # than today's, and its WIS estimates moved in the last few ULPs with the pack bytes.
+    "ecada334eebd2f8da96b79cfc32108ee0406a9f4bf941a0c07a9732fb1d0a0c5"
 )
 
 

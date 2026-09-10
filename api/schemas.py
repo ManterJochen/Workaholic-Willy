@@ -153,7 +153,9 @@ class SdkOut(BaseModel):
     """One vendor SDK module, as ``doctor`` found it."""
 
     module: str
-    #: A ``find_spec`` result, not an import and not a version match against the pin.
+    #: A real import, not a `find_spec`, which says yes for a package the OS refuses to load.
+    #: Still not a version match against the pin. `VendorReadinessOut.note` carries the reason
+    #: it failed.
     importable: bool
     version: str | None = None
 

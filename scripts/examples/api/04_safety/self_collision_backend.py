@@ -14,7 +14,7 @@ from pathlib import Path
 # Four parents up: 04_safety, api, examples, scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from src.config import load_robot_config  # noqa: E402
+from src.config import ConfigError, load_robot_config  # noqa: E402
 from src.robot.core import JointPositions, MotionCommand, RobotVendor  # noqa: E402
 from src.robot.drivers import create_arm  # noqa: E402
 from src.robot.safety import SafetyContext, SelfCollisionGuard  # noqa: E402
@@ -25,7 +25,14 @@ from src.robot.safety.planning.stack import MotionStack  # noqa: E402
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
 # 2. The cell, and the one block this file is about.
-config = load_robot_config()
+try:
+    config = load_robot_config()
+except ConfigError as no_cell:
+    # `robot` is optional on AppConfig, so a tree without one is a configuration answer rather
+    # than a crash, and the four files under scripts/checks/ answer it the same way.
+    print(f"no cell in this config tree ({no_cell}). Write a `robot` block, or select a "
+          f"profile that carries one: WILLY_PROFILE=ur5e")
+    raise SystemExit
 block = config.safety.self_collision
 print(f"backend {block.backend}, enforce {block.enforce}, "
       f"min_distance {block.min_distance_mm:.1f} mm, {len(block.fixtures)} fixture(s)")

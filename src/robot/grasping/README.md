@@ -105,8 +105,8 @@ A full pick is driven through `src.robot.execution.autonomous_grasp.AutonomousGr
 builds the orchestrator, the execution policy, the frame resolver and the arm together. Worked
 examples live in `scripts/examples/`.
 
-This package has no `python -m src.robot.grasping` entry of its own. The runnable command lines
-belong to the subpackages:
+This package has no module entry point of its own, so `src.robot.grasping` is not a
+`python -m` target. The runnable command lines belong to the subpackages:
 
 ```bash
 python -m src.robot.grasping.replay --records run.jsonl        # roll up KPIs from a record log

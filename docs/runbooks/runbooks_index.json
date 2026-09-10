@@ -10,6 +10,12 @@
   ],
   "runbooks": [
     {
+      "id": "corpus_v5_build",
+      "path": "docs/runbooks/corpus_v5_build.md",
+      "summary": "Rebuild the v5 point-cloud corpus from the screened mesh bank, with the measured cost and the resume behaviour of every step.",
+      "owner_role": "data"
+    },
+    {
       "id": "hande_gripper_bringup",
       "path": "docs/runbooks/hande_gripper_bringup.md",
       "summary": "Fit a Robotiq Hand-E so the planner, the guard, the calculator and the driver all model the hand that is bolted on.",
@@ -22,9 +28,21 @@
       "owner_role": "commissioning"
     },
     {
+      "id": "train_your_own_generator",
+      "path": "docs/runbooks/train_your_own_generator.md",
+      "summary": "Train the deep grasp generator on a customer's own parts, from a CAD export to a model a cell can select. No weights ship in this repository.",
+      "owner_role": "data"
+    },
+    {
       "id": "ur3e_cell_bringup",
       "path": "docs/runbooks/ur3e_cell_bringup.md",
       "summary": "Bring a cell up on a UR model the stack has not run before, including URSim in Docker.",
+      "owner_role": "commissioning"
+    },
+    {
+      "id": "ur_family_bringup",
+      "path": "docs/runbooks/ur_family_bringup.md",
+      "summary": "Stand up any UR from a UR3 to a UR10, including what a ur10 cannot do and the CB-series swap nothing upstream can see.",
       "owner_role": "commissioning"
     }
   ]

@@ -242,7 +242,12 @@ def _cmd_ope(args: argparse.Namespace) -> int:
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(report, sort_keys=True, indent=2) + "\n"
-    out_path.write_text(body)
+    # Bytes, not write_text. MEASURED 2026-09-10: write_text translated the rendered line
+    # feed to a carriage-return pair on Windows, so this handler could not reproduce the
+    # committed LF golden it tells the operator to re-run, the same defect
+    # PromotionGateReport.write already fixed for promotion reports. It also had no
+    # encoding= and inherited the locale.
+    out_path.write_bytes(body.encode("utf-8"))
     logger.info(
         "Wrote OPE report to %s (%d bytes)", out_path, len(body.encode("utf-8"))
     )

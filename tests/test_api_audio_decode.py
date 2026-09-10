@@ -82,6 +82,11 @@ def _wav_bytes(samples: np.ndarray, *, rate: int = _RATE, channels: int = 1,
     return buffer.getvalue()
 
 
+#: A complete, ordinary recording, to be sliced. Truncation is what a dropped connection produces,
+#: and every interesting failure of the WAV reader is a length rather than a corruption.
+_TRUNCATABLE_WAV: bytes = _wav_bytes(_tone())
+
+
 def _dominant_hz(samples: np.ndarray, rate: int) -> float:
     """The strongest frequency present. The one number that survives every legal re-encoding."""
     spectrum = np.abs(np.fft.rfft(samples - samples.mean()))
@@ -126,6 +131,50 @@ class WavPathTests(unittest.TestCase):
         with self.assertRaises(AudioDecodeError) as caught:
             decode_audio(b"")
         self.assertIn("empty", str(caught.exception))
+
+    def test_a_TRUNCATED_upload_is_A_TYPED_REFUSAL_and_not_a_bare_EOFError(self) -> None:
+        """A dropped connection mid-upload, which is an ordinary event and was an undocumented crash.
+
+        MEASURED on a 8044-byte mono 16-bit WAV, truncated to every length from 0 to 59: lengths
+        1-7 and 20-35 escaped as a bare `EOFError` (`wave.open` reads the RIFF header with
+        `struct.unpack`, which raises `EOFError`, not `wave.Error`, so the fall-through to the
+        second decoder never ran), and the odd lengths from 45 up escaped as a bare `ValueError`
+        from `np.frombuffer` ("buffer size must be a multiple of element size"). Neither is
+        `AudioDecodeError`, so `POST /v1/voice/transcribe` answered them from its last-resort
+        handler as `transcription_failed` with the message "EOFError: " (the empty message this
+        module's header exists to prevent) instead of the typed `audio_undecodable`.
+        """
+        for size in range(0, 60):
+            with self.subTest(bytes=size):
+                try:
+                    decode_audio(_TRUNCATABLE_WAV[:size])
+                except AudioDecodeError:
+                    # The typed answer. A prefix that still holds whole frames (46, 48, ... bytes
+                    # is one, two, ... frames after the 44-byte header) decodes instead, and that
+                    # is correct: the claim here is about the EXCEPTION, not about refusing.
+                    pass
+
+    def test_a_HANDFUL_OF_BYTES_is_a_bad_request_and_not_a_missing_decoder(self) -> None:
+        """⚠ THE DISTINCTION, ON A HOST WITH NO `av`. Anything shorter than the shortest container
+        header there is (RIFF's 12 bytes) cannot be decoded by any decoder, so answering it with
+        501 "install requirements.txt" would send an operator to `pip` for bytes no install can
+        rescue. This is the one short-upload case that must not fall through to the optional extra,
+        whether or not the extra is present.
+        """
+        for size in range(1, 12):
+            with self.subTest(bytes=size):
+                with self.assertRaises(AudioDecodeError) as caught:
+                    decode_audio(_TRUNCATABLE_WAV[:size])
+                self.assertNotIsInstance(caught.exception, AudioFormatUnsupported)
+
+    def test_a_header_with_no_audio_after_it_says_so(self) -> None:
+        """A 44-byte WAV is a complete header and zero frames. It decoded to an empty array and
+        reported success, so Whisper received nothing and the operator read "transcription failed".
+        The `av` path has always said "the recording decoded to zero samples"; this one now does too.
+        """
+        with self.assertRaises(AudioDecodeError) as caught:
+            decode_audio(_TRUNCATABLE_WAV[:44])
+        self.assertIn("zero samples", str(caught.exception))
 
 
 class BrowserFormatTests(unittest.TestCase):

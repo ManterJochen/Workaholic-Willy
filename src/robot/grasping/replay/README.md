@@ -30,14 +30,14 @@ command line can never disagree.
 | Module | Role |
 | --- | --- |
 | `runs.py` | The three nouns a Python caller reaches for: `RecordLog`, `SoakGate` and `Baseline`, plus `SoakSource`, `GateKeyStatus`, `KpiRollup`, `SoakVerdict`. The CLI modes are shims over these |
-| `kpi.py` | `compute_kpis` and `KpiSummary`: success, first-attempt, dead-loop, safety-rejection, dense-recovery and false-positive rates, plus the median cycle time |
+| `kpi.py` | `compute_kpis` and `KpiSummary`: success, first-attempt, dead-loop, safety-rejection, dense-recovery and false-positive rates, plus the median cycle time. `UNMEASURABLE_KPIS` and `unmeasurable_kpis` name the rates a given record set cannot measure |
 | `telemetry_catalog.py` | The per-outcome required-field catalog, the additive extra-field type contract, the presence and type audits, and the `rl_*` telemetry contract |
-| `soak.py` | The deterministic seed-locked synthetic soak generator and the consolidated twelve-key gate (`build_soak_report`, `SOAK_DEFAULT_ATTEMPTS = 2400`) |
+| `soak.py` | The deterministic seed-locked synthetic soak generator and the consolidated thirteen-key gate (`build_soak_report`, `SOAK_DEFAULT_ATTEMPTS = 2400`) |
 | `baseline_report.py` | Per-pack KPI, SLO and telemetry blocks, the runtime-SLO aggregate, per-mode wall-time p95, the adaptation block, and `compare_kpi_deltas` |
 | `canonical_datasets.py` | Deterministic on-disk JSONL fixtures and a SHA-256 manifest |
 | `slo_eval.py` | Per-stage decision, ranking and fusion p50/p95/p99 against the locked 60 / 80 / 220 ms budgets |
 | `watchdog_eval.py` | Drift and out-of-distribution precision and recall, gated at drift 0.90 / 0.85 and OOD 0.90 / 0.80 |
-| `failure_taxonomy.py` | Root-cause classification: six causes plus `unclassified`, with a coverage report |
+| `failure_taxonomy.py` | Root-cause classification: six causes plus `unclassified`, with a coverage report, plus `evaluate_labeled_pack`, the classifier graded against the committed labeled pack (agreement 1.0, coverage 0.968) |
 | `adaptation.py`, `adaptation_io.py`, `adaptation_cli.py` | Guarded adaptation: plan, verify, apply as an overlay sidecar plus an audit JSONL, roll back |
 | `presets.py` | The operator-safe mode-preset overlay loader and its schema re-validation |
 | `soak_cli.py`, `__main__.py` | The argparse dispatcher: one mutually exclusive mode per run, meaningful exit codes |
@@ -86,16 +86,28 @@ Modes are mutually exclusive and every one prints JSON to stdout.
 | Flag | Purpose | Exit |
 | --- | --- | --- |
 | `--records <path.jsonl>` | Roll up KPIs and audit telemetry over a real log | 0, or 2 if there are offenders |
-| `--records-gate <path.jsonl>` | Record-intrinsic soak thresholds over a real log. This one can fail | 0 or 1 |
+| `--records-gate <path.jsonl>` | Record-intrinsic soak thresholds over a real log. This one can fail | 0 or 1, or 2 if the log is unreadable |
 | `--soak` | Cheap synthetic soak against `config/robot/kpi_thresholds.yaml` | 0 or 1 |
-| `--soak-report` | The locked twelve-key synthetic gate, written to `logs/u12/soak_report.json` | 0 or 1 |
-| `--sim-soak-report <path.jsonl>` | Simulation-records quality gate plus a persistent report | 0 or 1 |
+| `--soak-report` | The locked thirteen-key synthetic gate, written to `logs/u12/soak_report.json` | 0 or 1 |
+| `--sim-soak-report <path.jsonl>` | Simulation-records quality gate plus a persistent report | 0 or 1, or 2 if the log is unreadable |
 | `--baseline-report` | Build `docs/baselines/u_plus_baseline_v1.json` | 0, or 2 if there are offenders |
 | `--regenerate-canonical` | Rewrite the canonical packs and manifest under `tests/data/replay/` | 0 |
-| `--failure-taxonomy <pack...> --out <p>` | Classify failures and write a JSON report | 0 |
+| `--failure-taxonomy <pack...> --out <p>` | Classify failures and write a JSON report | 0, or 2 if a pack is missing |
 | `--watchdog-eval` | Drift and OOD precision and recall gate | 0 or 2 |
 | `--slo-gate` | Per-stage decision, ranking and fusion p95 gate | 0 or 2 |
 | `--adaptation-plan` / `-verify` / `-apply` / `-rollback` | The guarded adaptation flow | 0 or 2 |
+
+`--out` names the output file for every mode that writes one: `--failure-taxonomy`, where it is
+required, plus `--baseline-report`, `--soak-report` and `--sim-soak-report`. `--baseline-out` is the
+older spelling of the same thing, and passing both with different paths is an error rather than a
+preference. `--baseline-report --out mine.json` used to write `docs/baselines/u_plus_baseline_v1.json`
+and report success, so an operator who named their own file overwrote a committed one.
+
+`--records` prints an `unmeasurable` block beside `kpi`, naming every rate these records cannot
+measure and why. `false_positive_grasp_rate` is always there, because nothing on this stack writes the
+field it divides by; `first_attempt_success_rate`, `dense_recovery_success_rate` and
+`median_cycle_time_s` join it whenever the log carries no recovery action or no cycle time. A named
+rate is withheld from `kpi` rather than printed as the `0.0` an empty denominator computes to.
 
 ```bash
 # First run in a fresh clone: neither the packs nor the baseline are shipped.
@@ -123,6 +135,12 @@ python -m src.robot.grasping.replay --records-gate logs/backend/run.jsonl
   not a file that is already there.
 - **`--soak` and `--soak-report` are different gates.** They use different scenario compositions and
   different thresholds. `--soak-report` is the locked one.
+- **The taxonomy section of the soak report and the taxonomy gate key are two different things.** The
+  synthetic soak stream stamps no `extra.*_evidence` flag anywhere, so all 168 of its failures come
+  back `unclassified` and `failure_taxonomy.coverage_fraction` reads 0.0. A classifier deleted down to
+  `return UNCLASSIFIED` produces that block byte for byte, which is why the gate key
+  `failure_taxonomy_classifier_pass` is graded against the committed labeled pack instead, whose rows
+  carry the cause they were authored to have.
 - **The auto-rollback guardrail needs a re-measurement to have anything to compare.**
   `--adaptation-apply` snapshots the baseline report before the apply and compares it with
   `compare_kpi_deltas`. Without `--post-apply-report PATH`, a baseline-report JSON re-measured under

@@ -165,6 +165,15 @@ class ConfigTree:
     #: The root as the caller named it, or `None` when they named none. Only for `render()`, which
     #: echoes the operator's own words rather than the resolved path.
     named_root: str | None = field(default=None, compare=False)
+    #: What to call `profile` in a refusal: `"profile"` when the caller chose it, `"WILLY_PROFILE"`
+    #: when this class read it out of the environment. Wording only, so it is out of `compare`.
+    #:
+    #: Without it the refusal blamed a flag nobody typed. Resolving an unchosen profile here and
+    #: then passing the result as `load_config(profile=...)` makes an environment chain arrive
+    #: through the argument door, and the argument door's refusal says `profile=`. Measured
+    #: 2026-09-10: `WILLY_PROFILE=nosuch python -m src.config` and `python -m src.config
+    #: --profile nosuch` printed the same sentence.
+    profile_source: str = field(default="profile", compare=False)
 
     @classmethod
     def from_directory(
@@ -180,16 +189,20 @@ class ConfigTree:
         is that chain. Collapsing the first two silently disables an exported variable for an
         operator who set it deliberately.
         """
-        from .loader import active_profile, profile_layers  # noqa: PLC0415
+        from .loader import _PROFILE_ENV_VAR, active_profile, profile_layers  # noqa: PLC0415
 
         named = None if not chosen(root) or root is None else str(root)
         resolved_root = Path(named).resolve() if named is not None else default_data_dir()
+        # The origin is recorded where it is still known. One line down the chain it is just a
+        # string and the two origins are indistinguishable, which is how the refusal came to name a
+        # flag the operator had not passed.
         chain = profile if chosen(profile) else active_profile()
         return cls(
             root=resolved_root,
             profile=chain,
             layers=profile_layers(chain),
             named_root=named,
+            profile_source="profile" if chosen(profile) else _PROFILE_ENV_VAR,
         )
 
     def load(self) -> LoadedTree:
@@ -198,10 +211,24 @@ class ConfigTree:
         The profile travels as an argument rather than through the environment, which keeps the
         `source` that `_validated_chain` carries pointing at what the operator typed: a bad
         `--profile` is reported against the flag, not against `WILLY_PROFILE`.
+
+        And then it blamed the flag instead, because this class resolves the variable itself. Every
+        chain leaves here through the argument door, whoever chose it, and that door's refusal says
+        `profile=`. Measured 2026-09-10, `WILLY_PROFILE=nosuch python -m src.config` printed the
+        same sentence as `--profile nosuch`, so the operator was sent looking for a flag they had
+        not passed. `profile_source` carries the origin the rest of the way.
         """
-        from .loader import ConfigError, load_config  # noqa: PLC0415
+        from .loader import ConfigError, _validated_chain, load_config  # noqa: PLC0415
 
         try:
+            # The same validator, called first, only so the refusal is worded honestly.
+            # `load_config` runs it with `source="profile"` because that is the door it owns, and it
+            # cannot know that the chain reaching it came out of the environment. Calling it here
+            # with the origin this object recorded means a mistyped layer is refused naming what the
+            # operator actually did. On a good chain this is one `rglob` per layer and the load then
+            # validates identically; on a bad one it raises before `load_config` is reached, so
+            # there is exactly one refusal either way.
+            _validated_chain(self.root, self.profile, source=self.profile_source)
             config = load_config(self.named_root, profile=self.profile)
         except ConfigError as exc:
             return LoadedTree(tree=self, error=str(exc))

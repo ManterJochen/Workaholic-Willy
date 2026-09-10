@@ -14,8 +14,20 @@ box plus `safety.limits.workspace_margin_mm`, the resolved joint-limit table plu
 `payload.max_mass_kg` plus 2.5 kg. So a cell that widens a limit is checked against its own new
 limit, and the check cannot go stale against a config it has never seen.
 
+The coverage is derived as well, and it was not always. Measured on this tree 2026-09-10: the
+attestation printed "6 guard(s)" and named six families, and the verdict under it read "OK: every
+wired guard refused its own violation (5 checked)". `self_collision` was absent from the case table
+and nothing compared that table against the pipeline, so the omission could not surface. The count
+beside the verdict was correct; nobody reads a count against a sentence.
+
+A hand-kept list beside a derivation is the defect rather than the missing entry, so the cases are
+now checked against `preflight.guards` and a wired family with no case fails this check instead of
+being skipped. That costs whoever wires the next guard family one case here, which is the point: a
+safety check that silently covers less than it claims is worse than one that refuses.
+
 Exit codes: 0 every wired guard refused for its own reason, 1 a guard accepted a violation of its
-own family or refused with the wrong reason, 2 this cell has no guard pipeline to interrogate.
+own family, refused with the wrong reason, or is wired with no case here, 2 this cell has no guard
+pipeline to interrogate.
 """
 
 from __future__ import annotations
@@ -108,6 +120,19 @@ def main() -> int:
     overweight = PayloadGuard(config.safety.payload.model_copy(
         update={"mass_kg": float(config.safety.payload.max_mass_kg) + 2.5}))
 
+    # A pose folded back on itself, searched rather than written down. Which fold self-collides is
+    # a property of one arm's link lengths, so a single hardcoded pose would quietly stop provoking
+    # anything the day a cell declares a different `kinematics_model`. The first that this cell's
+    # own guard refuses is the one used, and an arm for which none of them collides is reported as
+    # not exercised rather than counted as passed. Measured on this tree 2026-09-10 (a UR5e): all
+    # four are refused, so the search costs one evaluation here and earns its keep on the next arm.
+    folds = [
+        [0.0, -math.pi / 2, 2.9, -2.9, 0.0, 0.0],
+        [math.pi] * dof,
+        [0.0, 0.0, 3.0, 0.0, 0.0, 0.0],
+        [0.0, -0.1, 2.8, 2.8, 1.5, 0.0],
+    ]
+
     #: (name, expected reason, context, guard to ask or None for "the one in the pipeline").
     cases: list[tuple[str, SafetyReason, SafetyContext, SafetyGuard | None]] = [
         ("workspace", SafetyReason.WORKSPACE,
@@ -132,6 +157,22 @@ def main() -> int:
         cases.insert(1, ("joint_limit", SafetyReason.JOINT_LIMIT,
                          joints(JointPositions(values)), None))
 
+    self_collision = guards.get("self_collision")
+    if self_collision is not None:
+        folded = next(
+            (f[:dof] for f in folds
+             if not self_collision.evaluate(joints(JointPositions(f[:dof]))).accepted),
+            None,
+        )
+        if folded is not None:
+            cases.append(("self_collision", SafetyReason.SELF_COLLISION,
+                          joints(JointPositions(folded)), None))
+
+    # Every family the pipeline carries must be spoken about. A wired guard this check cannot
+    # exercise is named and fails it: the alternative is the sentence this file shipped with, which
+    # said "every wired guard" over a pipeline it had asked five sixths of.
+    uncovered = sorted(set(guards) - {name for name, _r, _c, _g in cases})
+
     wrong: list[str] = []
     for name, expected, context, own in cases:
         guard = own if own is not None else guards.get(name)
@@ -150,12 +191,20 @@ def main() -> int:
         else:
             print(f"  {name:20s} {decision.reason.value:11s} -> {decision.motion_status}")
 
-    if wrong:
-        print(f"\nFAILED: {len(wrong)} guard(s) did not behave as their own family requires")
+    for name in uncovered:
+        print(f"  {name:20s} NOT EXERCISED  this check has no case for it")
+
+    if wrong or uncovered:
+        print(f"\nFAILED: {len(wrong)} guard(s) misbehaved, "
+              f"{len(uncovered)} wired guard(s) not exercised")
         for line in wrong:
             print(f"  {line}")
+        for name in uncovered:
+            print(f"  {name} is in the pipeline and this check cannot provoke it; "
+                  f"add a case to `cases` rather than trusting the count")
         return EXIT_FAILED
-    print(f"\nOK: every wired guard refused its own violation ({len(cases)} checked)")
+    print(f"\nOK: every wired guard refused its own violation "
+          f"({len(cases)} of {len(guards)} checked)")
     return EXIT_OK
 
 

@@ -2,11 +2,11 @@
   "label_policy": "extra.expected_root_cause carries ground truth; classifier reads only extra.*_evidence flags and final_outcome. Successes excluded from coverage denominator.",
   "manifest_version": 1,
   "pack": {
+    "capability_group": "failure_taxonomy",
     "generator": {
       "callable": "generate_labeled_records",
-      "module": "backend.src.robot.grasping.replay.failure_taxonomy"
+      "module": "src.robot.grasping.replay.failure_taxonomy"
     },
-    "capability_group": "failure_taxonomy",
     "name": "replay_failure_taxonomy_v1",
     "path": "tests/data/replay/replay_failure_taxonomy_v1.jsonl",
     "record_count": 68,

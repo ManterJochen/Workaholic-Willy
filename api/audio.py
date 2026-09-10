@@ -37,6 +37,11 @@ describe_upload: Final[str] = (
 )
 
 
+#: The shortest header any container this module decodes can have: RIFF's ``"RIFF" + size + "WAVE"``.
+#: Below it there is nothing to identify, which is why it is a refusal rather than a fall-through.
+_SHORTEST_HEADER: Final[int] = 12
+
+
 class AudioDecodeError(ValueError):
     """The bytes open as audio and are not usable: empty, or a stream that cannot be read."""
 
@@ -54,15 +59,36 @@ def decode_audio(raw: bytes) -> tuple["np.ndarray", int]:
     """``(mono float32 samples in [-1, 1], sample rate)`` from an uploaded recording.
 
     Raises `AudioFormatUnsupported` when the container needs PyAV and PyAV is absent, and
-    `AudioDecodeError` when the bytes are empty or the stream carries no audio.
+    `AudioDecodeError` when the bytes are empty, truncated, or carry no audio. Nothing else: a
+    caller that catches those two has caught everything this function answers with.
     """
     if not raw:
         raise AudioDecodeError("the upload was empty.")
+    if len(raw) < _SHORTEST_HEADER:
+        # A bad request, not a missing decoder, and the difference decides where the operator is
+        # sent. Below this many bytes there is no container at all, so falling through to the
+        # optional extra would answer a handful of bytes with 501 "pip install -r requirements.txt"
+        # on a host without `av`, an install that cannot help. Measured: a connection dropped after
+        # the first packet delivers 1 to 7 bytes.
+        raise AudioDecodeError(
+            f"the upload is {len(raw)} byte(s); the shortest header of any container this decodes "
+            f"is {_SHORTEST_HEADER} (RIFF), so these bytes are a truncated upload rather than a "
+            f"recording. Record again."
+        )
     try:
         return _decode_wav(raw)
-    except wave.Error:
-        # Not a WAV. That is the ordinary case for a browser upload, so it is a fall-through and not
-        # a failure: the error only matters if the second decoder is also unavailable.
+    except (wave.Error, EOFError):
+        # Not a WAV, or not enough of one to read. That is the ordinary case for a browser upload,
+        # so it is a fall-through and not a failure: the error only matters if the second decoder
+        # is also unavailable.
+        #
+        # `EOFError` is the half that was missing, and it is not a subclass of `wave.Error`.
+        # `wave.open` parses the RIFF header with `struct.unpack` and answers a short read with a
+        # bare `EOFError`. Measured on an 8044-byte WAV truncated to every length from 0 to 59:
+        # lengths 1 to 7 and 20 to 35 raised it, so a truncated upload left this function as an
+        # exception no caller catches, and `POST /v1/voice/transcribe` reported it from its
+        # last-resort handler as `transcription_failed` with the message "EOFError: ". No cause,
+        # no fix.
         pass
     return _decode_with_av(raw)
 
@@ -82,7 +108,18 @@ def _decode_wav(raw: bytes) -> tuple["np.ndarray", int]:
         # anything but 16-bit.
         raise AudioDecodeError(
             f"the WAV is {width * 8}-bit; only 16-bit PCM is decoded without the `av` extra.")
-    samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    # A trailing half-sample is dropped, not raised on. `np.frombuffer` refuses a buffer whose size
+    # is not a multiple of the element size ("buffer size must be a multiple of element size"), and
+    # that ValueError is not an `AudioDecodeError`, so it escaped this module untyped. Measured on a
+    # truncated WAV: every odd length from 45 up raised it. A recording cut mid-sample is an
+    # ordinary dropped connection, and one abandoned sample is 1/16000 s.
+    whole = frames[: len(frames) - len(frames) % 2]
+    samples = np.frombuffer(whole, dtype=np.int16).astype(np.float32) / 32768.0
+    if samples.size == 0:
+        # A 44-byte upload is a complete header and no frames. It used to return an empty array and
+        # report success, so Whisper was handed nothing and the operator read "transcription
+        # failed". The `av` path has always said this; the WAV path now says the same sentence.
+        raise AudioDecodeError("the recording decoded to zero samples.")
     return _to_mono(samples, channels), rate
 
 

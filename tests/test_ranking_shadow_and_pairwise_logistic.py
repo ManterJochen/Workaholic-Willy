@@ -26,6 +26,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from src.robot.grasping.rl.candidate_policy import (
     CANDIDATE_FEATURE_KEYS,
@@ -275,9 +276,44 @@ class RankingArtifactLoaderTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+def _assert_same_numbers(
+    case: unittest.TestCase, fresh: Any, committed: Any, path: str
+) -> None:
+    """Structural comparison: exact for everything but floats, ~1e-9 relative for those."""
+
+    if isinstance(committed, dict):
+        case.assertIsInstance(fresh, dict, f"{path}: shape changed")
+        case.assertEqual(sorted(fresh), sorted(committed), f"{path}: keys changed")
+        for key in committed:
+            _assert_same_numbers(case, fresh[key], committed[key], f"{path}.{key}")
+        return
+    if isinstance(committed, list):
+        case.assertIsInstance(fresh, list, f"{path}: shape changed")
+        case.assertEqual(len(fresh), len(committed), f"{path}: length changed")
+        for index, value in enumerate(committed):
+            _assert_same_numbers(case, fresh[index], value, f"{path}[{index}]")
+        return
+    if isinstance(committed, float) and isinstance(fresh, (int, float)):
+        case.assertAlmostEqual(
+            float(fresh),
+            committed,
+            delta=max(1e-9 * abs(committed), 1e-12),
+            msg=f"{path}: {fresh!r} is not the same number as {committed!r}",
+        )
+        return
+    case.assertEqual(fresh, committed, f"{path}: changed")
+
+
 class CommittedArtifactSha256Tests(unittest.TestCase):
     EXPECTED_SHA = (
-        "3aaf9d509e2128953a912de6056be9bcdaefab108409d40cfa3bce3dc12e07b8"
+        # ⚠ Re-blessed 2026-09-10 on this box, with `train-ranking-policy` itself. The committed
+        # file could not be produced by its own generator: two prose fields (`performance_note`,
+        # `reward_interpretation`) still spelled a connector the source had stopped writing, and
+        # only the sha256 was ever compared, which prose does not reach. Three of the 63 fitted
+        # weights also differ in the last ULP from box to box, so re-blessing here means this
+        # file's bytes are now this box's; elsewhere the drift probe in tests/_determinism.py
+        # measures that and stands the byte comparison down.
+        "be0f6ba34a743f0d4e62763d5c4d29db4535d85cf7eecc6d5fafbeb8d11faa2d"
     )
 
     def test_committed_sha256_locked(self) -> None:
@@ -286,6 +322,16 @@ class CommittedArtifactSha256Tests(unittest.TestCase):
         )
 
     def test_cli_regenerates_byte_identical_artifact(self) -> None:
+        """Byte-identity of a regeneration. Platform-locked, and the lock measures itself.
+
+        MEASURED 2026-09-10 here: 3 of the 63 leaves differ from box to box, all of them weights
+        and all in the last ULP (``-2.3114748262842606e-05`` against
+        ``-2.3114748262843775e-05``), which is the logistic fit landing on a different libm. The
+        committed file was re-blessed on this box in the same pass, so this comparison holds here
+        and the drift probe in tests/_determinism.py stands it down where it cannot. The sibling
+        test above still runs on every box: it proves the committed file has not been hand-edited.
+        """
+
         with tempfile.TemporaryDirectory() as tmp:
             out_path = Path(tmp) / "ranking.json"
             res = subprocess.run(
@@ -307,6 +353,38 @@ class CommittedArtifactSha256Tests(unittest.TestCase):
             self.assertEqual(res.returncode, 0)
             rebuilt = hashlib.sha256(out_path.read_bytes()).hexdigest()
             self.assertEqual(rebuilt, self.EXPECTED_SHA)
+
+    def test_cli_regenerates_the_same_numbers(self) -> None:
+        """The half of the claim above that holds on every box, so it runs on every box.
+
+        Byte-identity is unreachable off the box that blessed the file; producing the same
+        *numbers* is not. This compares the regenerated artifact leaf by leaf: exact for
+        everything discrete, and to a relative 1e-9 for the fitted weights. A retrained model, a
+        changed feature order or a dropped field fails here on the machine that used to print
+        "1 skipped".
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "ranking.json"
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "src.robot.grasping.rl",
+                    "train-ranking-policy",
+                    "--dataset-id",
+                    "v1_bootstrap",
+                    "--output",
+                    str(out_path),
+                ],
+                cwd=str(REPO_ROOT),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            rebuilt = json.loads(out_path.read_text(encoding="utf-8"))
+        committed = json.loads(COMMITTED_ARTIFACT.read_text(encoding="utf-8"))
+        _assert_same_numbers(self, rebuilt, committed, "artifact")
 
 
 # ---------------------------------------------------------------------------

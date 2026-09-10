@@ -32,7 +32,7 @@
   "policy_name": "v2_candidate_baseline_v1",
   "policy_version": 1,
   "prune_threshold": 0.0,
-  "reward_interpretation": "off-policy L2 logistic over LOGGED grasp-success labels; it reorders/prunes candidates. The committed baseline trains on the synthetic canonical v1_bootstrap dataset (see dataset_provenance + the dataset manifest's leakage audit). Off-policy / shadow-only -- NOT validated for real live-loop lift.",
+  "reward_interpretation": "off-policy L2 logistic over LOGGED grasp-success labels; it reorders/prunes candidates. The committed baseline trains on the synthetic canonical v1_bootstrap dataset (see dataset_provenance + the dataset manifest's leakage audit). Off-policy / shadow-only; NOT validated for real live-loop lift.",
   "reward_model": "logged_success_labels",
   "schema_version": 2,
   "seed": 1,

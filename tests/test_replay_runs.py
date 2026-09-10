@@ -86,9 +86,13 @@ class TestSoakGate(unittest.TestCase):
 
     def test_the_pack_dependent_keys_are_present_and_not_applicable(self) -> None:
         """⛔ THE OTHER DEFECT THIS CAUGHT. `evaluate_soak_gate` returns the seven record-intrinsic
-        keys ONLY; both CLI modes then write the four pack-dependent ones in. My first version
+        keys ONLY; both CLI modes then write the pack-dependent ones in. My first version
         filtered them out of the result instead of adding them, so the filter could never fire and
-        the gate reported seven keys where the CLI reports eleven.
+        the gate reported seven keys where the CLI reports twelve.
+
+        ⚠ THE COUNT MOVES WHEN A LEG IS ADDED, and it is asserted against the tuple rather than a
+        literal for that reason: `failure_taxonomy_classifier_pass` became the fifth pack-dependent
+        key on 2026-09-10 and a hard-coded 11 would have failed here for being right.
         """
         with TemporaryDirectory() as tmp:
             log = Path(tmp) / "r.jsonl"
@@ -100,7 +104,7 @@ class TestSoakGate(unittest.TestCase):
         for key in PACK_DEPENDENT_GATE_KEYS:
             self.assertIn(key, verdict.keys)
             self.assertIs(verdict.keys[key], GateKeyStatus.NOT_APPLICABLE)
-        self.assertEqual(len(verdict.keys), 11)
+        self.assertEqual(len(verdict.keys), 7 + len(PACK_DEPENDENT_GATE_KEYS))
         # ⚠ A gate whose keys are all not_applicable passes loudest. This is the number that says so.
         self.assertEqual(verdict.judged, 7)
 

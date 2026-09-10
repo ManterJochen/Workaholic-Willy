@@ -39,9 +39,10 @@ from src.robot.grasping.replay.telemetry_catalog import (
     audit_extra_records,
 )
 
-#: Records what the gate was judged over. Four of the eleven gate keys depend on
-#: canonical packs being present on disk, and a missing pack turns its key into
-#: a silent failure that reads exactly like a real one.
+#: Records what the gate was judged over. Five of the thirteen gate keys are judged against
+#: something other than the record stream, four of them against canonical packs on disk and the
+#: fifth against the labeled taxonomy pack, and a missing pack turns its key into a silent failure
+#: that reads exactly like a real one.
 logger = create_grasping_logger("ReplaySoak", REPLAY_SOAK_LOG_FILE)
 
 
@@ -501,6 +502,7 @@ def build_soak_report(
     )
     from src.robot.grasping.replay.failure_taxonomy import (
         build_taxonomy_report,
+        evaluate_labeled_pack,
     )
     from src.robot.grasping.replay.slo_eval import (
         evaluate_slo_pack_path,
@@ -533,6 +535,13 @@ def build_soak_report(
     ]
 
     taxonomy = build_taxonomy_report(records).to_dict()
+    # The taxonomy leg judged nothing until 2026-09-10. The block above is the classifier run over
+    # the synthetic stream, which stamps no `extra.*_evidence` flag anywhere: all 168 of its failures
+    # come back unclassified and the block reads `coverage_fraction: 0.0`. A classifier deleted down
+    # to `return UNCLASSIFIED` produces that block byte for byte and the gate still said `passes`. So
+    # the section stays, being the honest picture of the synthetic stream, and the gate now rests on
+    # the labeled pack, whose rows carry the cause they were authored to have.
+    taxonomy_classifier = evaluate_labeled_pack(repo_root)
 
     # SLO + watchdog evaluators consume canonical packs on disk
     # (they require latency/severity enrichment which the synthetic
@@ -662,7 +671,12 @@ def build_soak_report(
     gate["slo_packs_pass"] = bool(slo_pack_pass) and all(slo_pack_pass)
     gate["drift_gate_pass"] = drift_pass
     gate["ood_gate_pass"] = ood_pass
+    gate["failure_taxonomy_classifier_pass"] = bool(
+        taxonomy_classifier["passes_gate"]
+    )
     gate["easy_attempt_wall_time_within_budget"] = bool(easy_within_budget)
+    if not gate["failure_taxonomy_classifier_pass"]:
+        violations.append("failure_taxonomy_classifier_failed")
     if not gate["slo_packs_pass"]:
         violations.append("slo_packs_not_passing")
     if not gate["drift_gate_pass"]:
@@ -708,6 +722,7 @@ def build_soak_report(
                 "telemetry_contract_consistency",
                 "on_disk_pack_slo_latency",
                 "watchdog_precision_recall_on_synthetic_packs",
+                "failure_taxonomy_classifier_against_labeled_pack",
             ],
             "does_not_measure": ["real_grasp_success_quality"],
             "note": (
@@ -731,6 +746,9 @@ def build_soak_report(
         "telemetry_offenders": len(telemetry_offenders),
         "extra_type_offenders": len(extra_offenders),
         "failure_taxonomy": taxonomy,
+        # The classifier own grade, kept beside the aggregate rather than inside it: one is what the
+        # stream contained, the other is whether the code that reads a stream still works.
+        "failure_taxonomy_classifier": taxonomy_classifier,
         "slo": slo_block,
         "watchdog": {
             "drift": drift_report,

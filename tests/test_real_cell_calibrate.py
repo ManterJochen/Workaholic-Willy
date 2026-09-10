@@ -54,11 +54,6 @@ def _real_rgbd(rig_id: str = "overhead"):
 class RefusalTests(unittest.TestCase):
     """Everything that can be wrong is refused BY NAME, before anything is powered."""
 
-    def test_an_empty_rig_list_says_so(self) -> None:
-        with self.assertRaises(SystemExit) as caught:
-            calibrate._pick_rig(_CameraCfg([]), "overhead")
-        self.assertIn("no camera to calibrate", str(caught.exception))
-
     def test_an_unknown_rig_LISTS_the_configured_ones(self) -> None:
         """An operator at a cell needs the answer, not the question."""
         cfg = _CameraCfg([_real_rgbd("overhead"), _real_rgbd("wrist")])
@@ -80,6 +75,28 @@ class RefusalTests(unittest.TestCase):
     def test_a_real_rgbd_rig_is_accepted(self) -> None:
         rig = _real_rgbd("overhead")
         self.assertIs(calibrate._pick_rig(_CameraCfg([rig]), "overhead"), rig)
+
+    def test_a_DISABLED_rig_is_refused_by_name(self) -> None:
+        """MEASURED 2026-09-10: nothing on this path read `enabled`. `--check` answered "the config
+        and the rig are usable" for a rig the cell does not run, and the sweep that follows would
+        have moved the arm to 22 poses in front of a camera nobody switched on."""
+        rig = _real_rgbd("overhead").model_copy(update={"enabled": False})
+        with self.assertRaises(SystemExit) as caught:
+            calibrate._pick_rig(_CameraCfg([rig]), "overhead")
+        self.assertIn("enabled", str(caught.exception))
+
+    def test_an_empty_rig_list_cannot_reach_this_runner(self) -> None:
+        """⛔ REPLACES A TEST OF A BRANCH NOTHING COULD REACH. `_pick_rig` carried its own
+        "camera.cameras.rigs is empty" refusal, and the only caller passes `cfg.camera` out of
+        `load_config`, which validates `CameraSystemConfig` first. The guarantee lives THERE, so
+        that is where it is pinned: a hand-built object was the only witness the branch ever had."""
+        from pydantic import ValidationError
+
+        from src.config.schema.camera import CameraSystemConfig
+
+        with self.assertRaises(ValidationError) as caught:
+            CameraSystemConfig(primary_rig_id="overhead", rigs=[])
+        self.assertIn("at least one camera rig", str(caught.exception))
 
 
 class CheckTouchesNothingTests(unittest.TestCase):
@@ -118,6 +135,18 @@ class CheckTouchesNothingTests(unittest.TestCase):
         patched_arm = mock.patch("src.robot.drivers.create_arm", side_effect=explode)
         with patched_load, patched_arm:
             code = calibrate.main(["--rig", "overhead", "--dry-run"])
+        self.assertEqual(code, calibrate._EXIT_CONFIG)
+
+    def test_check_REFUSES_a_disabled_rig_instead_of_calling_it_usable(self) -> None:
+        """The sentence `--check` prints is what an operator acts on. Calling a switched-off rig
+        "usable" sends them to the fence for a sweep that cannot see anything."""
+        cfg = mock.Mock()
+        cfg.robot.vendor = "ur"
+        cfg.camera = _CameraCfg([_real_rgbd("overhead").model_copy(update={"enabled": False})])
+        cfg.camera.hand_eye = mock.Mock()
+        cfg.camera.hand_eye.eye_to_hand.marker_length_mm = 50.0
+        with mock.patch.object(calibrate, "_load", return_value=cfg):
+            code = calibrate.main(["--rig", "overhead", "--check"])
         self.assertEqual(code, calibrate._EXIT_CONFIG)
 
     def test_an_unknown_rig_exits_CONFIG_not_ERROR(self) -> None:

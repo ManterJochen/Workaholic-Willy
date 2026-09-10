@@ -11,6 +11,13 @@ The buffer is bounded and says when it dropped. A ring buffer per run, and a rec
 console that renders "events 12-40 are gone" is annoying; one that renders 41 onwards as if nothing
 were missing is wrong.
 
+And the number of runs is bounded too, by the registry rather than here. The ring bounds one run; it
+says nothing about how many runs a console accumulates, and for a long time nothing did: ``forget()``
+existed and had no caller, so a console started on Monday still held Monday's events on Friday.
+``RunRegistry`` now calls it for a run leaving its own retention window, which is why this method
+drops the sequence counter as well: a run the console can no longer name is a run nothing can ask
+about.
+
 Two audiences, one envelope. ``human`` is a plain sentence for the operator; ``data`` is the machine
 payload. Both, always: the person watching a demo reads one, the person diagnosing a failure reads the
 other, and an envelope that carries only one of them forces the other to guess.
@@ -28,8 +35,10 @@ from typing import Any
 __all__ = ["EventEnvelope", "EventHub", "Severity"]
 
 #: Events kept per run. At five stage events per attempt and five attempts per pick, this holds dozens
-#: of picks: more than a browser needs to catch up after a sleep, and small enough that a forgotten
-#: long-running server does not grow without bound.
+#: of picks: more than a browser needs to catch up after a sleep. It bounds one run and nothing else.
+#: The sentence that used to stand here said it also kept a forgotten long-running server from growing
+#: without bound, which was never true, because nothing bounded the number of runs. That is
+#: ``runs.RETAINED_RUNS``, and until it existed a console grew by one run's history forever.
 _RING = 2048
 
 
@@ -161,6 +170,18 @@ class EventHub:
                 self._published.wait(remaining)
 
     def forget(self, run_id: str) -> None:
-        """Drop a run's history. Sequence numbers are not reset: a re-used id would replay stale seqs."""
+        """Drop everything this hub holds for one run: its events and its sequence counter.
+
+        The counter goes too, which it did not before. The reason it was kept was that a re-used run
+        id would otherwise replay stale seqs. That was true while a forgotten run could still be
+        asked about, and the caller this method finally has makes sure it cannot be: `RunRegistry`
+        calls this only for a run it is dropping from its own table in the same breath, so
+        ``/v1/runs/<id>`` no longer names it either. Keeping the entry was the last thing in the
+        console that grew once per run forever (measured in this tree: 91 bytes per id, against
+        about 14 kB of replayable JSON for a 35-event run).
+
+        Idempotent, and safe for a run that never existed.
+        """
         with self._lock:
             self._history.pop(run_id, None)
+            self._next_seq.pop(run_id, None)

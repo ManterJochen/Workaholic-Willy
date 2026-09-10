@@ -28,15 +28,24 @@ What each vendor exposes
   the controller as a protective stop. This guard therefore catches the
   manufacturer-specified envelope, and the controller-side envelope is the more
   restrictive backstop.
-* KUKA EKI does not expose joint limits either. The shipped ``robot.yaml`` populates
-  ``min_deg`` and ``max_deg`` per model, so the guard never fails closed on a clean
-  install.
+* KUKA EKI does not expose joint limits either, and the shipped ``robot.yaml`` does not
+  fill the gap: ``safety.joint_limits.min_deg`` and ``max_deg`` both ship as ``null`` in
+  ``config/robot/robot.yaml``. Measured 2026-09-10 on the ``web`` profile, the only
+  ``vendor: kuka`` config in the tree, ``resolve_joint_limits_deg`` returned ``None``, the
+  guard answered UNAVAILABLE for an all-zeros joint target, and the preflight turned that
+  into ``controller_rejected``. A KUKA cell refused every motion and named the controller
+  for a missing config key. These three lines said the opposite until then, which is why
+  nobody looked. That refusal now happens at build instead, see
+  :func:`assert_joint_limit_table_available`, called from
+  :func:`src.robot.drivers.create_arm`.
 """
 
 from __future__ import annotations
 
 import math
 from typing import TYPE_CHECKING
+
+from src.robot.core import RobotError
 
 from .decision import SafetyDecision, SafetyReason
 from .guard import SafetyContext
@@ -46,9 +55,22 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 
 __all__ = [
     "JointLimitGuard",
+    "JointLimitTableMissing",
     "UR_JOINT_LIMITS_DEG",
+    "assert_joint_limit_table_available",
     "resolve_joint_limits_deg",
 ]
+
+
+class JointLimitTableMissing(RobotError):
+    """This cell wired an enforcing joint-limit guard that has no table to enforce.
+
+    It is raised at build rather than at the first move. The runtime alternative was
+    measured on the shipped ``web`` profile and it is worse in the one way that matters:
+    the guard answers UNAVAILABLE, the preflight fails closed as ``controller_rejected``,
+    and the operator reads a controller fault for a missing key in their own YAML. Same
+    refusal, wrong address, once per commanded move.
+    """
 
 
 # The Universal Robots factory joint-position envelope, from the user manual under
@@ -110,6 +132,17 @@ class JointLimitGuard:
         self._config = config
         self._margin_deg = float(config.margin_deg)
 
+    def limits_for(
+        self, *, vendor: str | None, model: str | None,
+    ) -> tuple[list[float], list[float]] | None:
+        """The table this guard would enforce for that vendor and model, or ``None`` for none.
+
+        It is public so a caller can ask the question before a move rather than discovering
+        the answer as a refusal. :meth:`evaluate` asks it here too, so what the build check
+        reads and what the runtime enforces cannot drift apart.
+        """
+        return resolve_joint_limits_deg(self._config, vendor=vendor, model=model)
+
     def evaluate(self, ctx: SafetyContext) -> SafetyDecision:
         joints = ctx.target_joints
         if joints is None:
@@ -128,9 +161,7 @@ class JointLimitGuard:
             caps = ctx.arm.capabilities
             vendor = caps.vendor
             model = caps.model
-        limits = resolve_joint_limits_deg(
-            self._config, vendor=vendor, model=model,
-        )
+        limits = self.limits_for(vendor=vendor, model=model)
         if limits is None:
             return SafetyDecision.unavailable(
                 self.name,
@@ -199,3 +230,56 @@ class JointLimitGuard:
                 )
 
         return SafetyDecision.accept(self.name)
+
+
+def assert_joint_limit_table_available(arm: object) -> None:
+    """Refuse an arm whose enforcing joint-limit guard has no table, at build.
+
+    A cell that refuses every motion is indistinguishable from a cell with a broken
+    controller. Measured 2026-09-10 on the shipped ``web`` profile:
+    ``resolve_joint_limits_deg`` returned ``None`` for ``vendor: kuka``, so
+    ``JointLimitGuard`` answered UNAVAILABLE for an all-zeros joint target, legal and
+    absurd and it made no difference, and ``SafetyPreflight`` mapped that to
+    ``controller_rejected``. Fail-closed, therefore safe, and unusable, and pointing at
+    the wrong box. The cost of leaving it at runtime is one wrong diagnosis per operator.
+
+    It is asked of the arm rather than of the config, so it costs a new vendor nothing:
+    the driver states its own ``capabilities`` and its own pipeline, and both already
+    exist. A vendor with no built-in table here and no static lists in YAML cannot boot.
+    UR resolves from :data:`UR_JOINT_LIMITS_DEG`, and ``sim`` resolves from the explicit
+    lists in ``robot.sim.yaml``.
+
+    It is silent for an arm that gates nothing, where ``safety_preflight`` is ``None``, as
+    the dummy has it, and for one whose operator set ``joint_limits.enforce: false``,
+    because ``from_safety_config`` then leaves the guard out of the pipeline entirely and
+    there is no guard here to starve. Those are stated decisions, and
+    ``SafetyAttestation`` is what reports them.
+
+    Raises
+    ------
+    JointLimitTableMissing
+        The arm carries a :class:`JointLimitGuard` that resolves no table for the arm's
+        own vendor and model. The message names ``min_deg`` and ``max_deg``, which is the
+        fix.
+    """
+    preflight = getattr(arm, "safety_preflight", None)
+    if preflight is None:
+        return
+    caps = getattr(arm, "capabilities", None)
+    vendor = getattr(caps, "vendor", None)
+    model = getattr(caps, "model", None)
+    for guard in getattr(preflight, "guards", ()):
+        if not isinstance(guard, JointLimitGuard):
+            continue
+        if guard.limits_for(vendor=vendor, model=model) is not None:
+            continue
+        raise JointLimitTableMissing(
+            f"vendor {vendor!r} (model {model!r}) enforces the joint-limit guard but no table "
+            f"resolves for it: set robot.safety.joint_limits.min_deg and "
+            f"robot.safety.joint_limits.max_deg (one entry per axis, degrees) in your robot "
+            f"config, or set robot.safety.joint_limits.enforce to false and accept an ungated "
+            f"axis envelope. Only these models carry a built-in table: "
+            f"{', '.join(sorted(UR_JOINT_LIMITS_DEG))}. Refused here rather than at the first "
+            f"move, where the guard would have answered UNAVAILABLE and every motion would have "
+            f"come back as controller_rejected."
+        )

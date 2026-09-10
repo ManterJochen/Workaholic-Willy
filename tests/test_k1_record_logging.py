@@ -151,6 +151,67 @@ class SerializerTests(unittest.TestCase):
         self.assertEqual(tuple(rec.recovery_actions), ())
 
 
+def _executed(position: tuple[float, float, float]) -> SimpleNamespace:
+    """A GraspPoint-shaped stand-in. `grasp_metadata_from` prefers `to_dict()` and falls back to
+    these attributes, which is the path a duck-typed report takes."""
+    return SimpleNamespace(
+        position=position, approach=(0.0, 0.0, -1.0), axis=(1.0, 0.0, 0.0),
+        grip_width_mm=42.0, score=0.9, frame="base", label="best", metadata={},
+    )
+
+
+def _executed_report(position: tuple[float, float, float]) -> SimpleNamespace:
+    return SimpleNamespace(
+        outcome=AutonomousGraspOutcome.SUCCEEDED, mode=SimpleNamespace(value="auto"),
+        profile=SimpleNamespace(), telemetry={}, recovery_actions=(), verification=None,
+        pick_report=SimpleNamespace(
+            outcome=SimpleNamespace(value="executed"), executed_grasp=_executed(position),
+            attempts=(), calculator_telemetry={},
+        ),
+    )
+
+
+class TheGraspTheAttemptActuallyMadeTests(unittest.TestCase):
+    """⛔ THE RECORD NEVER SAID WHICH GRASP IT WAS. `selected_grasp` is in the contract, in the
+    serialiser, in the reader, in the console's history columns and in the RL extractor. No
+    writer in this repository set it. MEASURED 2026-09-10: `BaselineSARExtractor` projects an action
+    from `selected_grasp` / `refined_grasp` / `initial_grasp`, so every record a real pick produced
+    fell through all three to the literal token `"noop"`. An RL dataset whose action column is one
+    constant cannot express a preference between two grasps, which is the only thing it is for."""
+
+    def test_the_executed_grasp_is_recorded_as_the_selected_one(self) -> None:
+        rec = to_attempt_record(_executed_report((10.0, 20.0, 30.0)), attempt_id="g1")
+        self.assertIsNotNone(rec.selected_grasp)
+        self.assertEqual(rec.selected_grasp["position"], [10.0, 20.0, 30.0])
+
+    def test_the_SAR_action_is_the_grasp_not_a_noop(self) -> None:
+        from src.robot.grasping.rl.sar import ACTION_NOOP, BaselineSARExtractor
+
+        sar = BaselineSARExtractor().extract(
+            to_attempt_record(_executed_report((10.0, 20.0, 30.0)), attempt_id="g2").to_dict()
+        )
+        self.assertNotEqual(sar.action, ACTION_NOOP)
+        self.assertTrue(sar.action.startswith("grasp:"), sar.action)
+
+    def test_two_different_grasps_are_two_different_actions(self) -> None:
+        """A constant action column is indistinguishable from no action column at all."""
+        from src.robot.grasping.rl.sar import BaselineSARExtractor
+
+        extract = BaselineSARExtractor().extract
+        first = extract(to_attempt_record(_executed_report((10.0, 20.0, 30.0)), attempt_id="g3").to_dict())
+        second = extract(to_attempt_record(_executed_report((99.0, 20.0, 30.0)), attempt_id="g4").to_dict())
+        self.assertNotEqual(first.action, second.action)
+
+    def test_an_attempt_that_executed_NOTHING_stays_byte_identical(self) -> None:
+        """An attempt that never reached a grasp must log exactly what it logged before: no block,
+        and the token the extractor already gave that outcome."""
+        from src.robot.grasping.rl.sar import ACTION_REJECT, BaselineSARExtractor
+
+        rec = to_attempt_record(_report(AutonomousGraspOutcome.NO_VALID_GRASP), attempt_id="g5")
+        self.assertIsNone(rec.selected_grasp)
+        self.assertEqual(BaselineSARExtractor().extract(rec.to_dict()).action, ACTION_REJECT)
+
+
 class KpiSourcingTests(unittest.TestCase):
     def test_safety_rejection_rate_now_sourced(self) -> None:
         # The whole point of K1: a real record built from a fail-closed report makes the previously-dead

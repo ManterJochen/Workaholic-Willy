@@ -22,8 +22,12 @@ and read as unregistered, while `available_gripper_vendors()` sat one import awa
 `registered` comes from the registries now, so the next vendor cannot repeat it.
 
 It is the cheapest question in the stack and it stays that way: no `connect`, no
-`build`, no network, just `find_spec` and two registry lookups. Its value is that an
-operator can ask it before anything is powered.
+`build`, no network, just one import of each thin client library and two registry
+lookups. Its value is that an operator can ask it before anything is powered. It imports
+rather than looks up since 2026-09-10, because `find_spec` answers yes for a package
+whose native extension the OS refuses, and this table then read `arm ur yes ready` for a
+host that cannot open a UR session. Isaac is the one module still resolved by spec,
+because importing it costs tens of seconds and starts a renderer.
 """
 
 from __future__ import annotations
@@ -107,11 +111,19 @@ class ReadinessReport:
                 f"reserved slot in the vendor enum, not an implemented driver. "
                 f"Run `python -m src.robot.drivers.doctor` for the full table."
             )
-        missing = [s.module for s in (row.sdks if row else ()) if not s.importable]
+        # The reason per module, rather than a list of names. Since the probe imports for
+        # real, a module can fail here while being installed, an application-control policy
+        # refusing its DLL being the live case on the development box, and "install the
+        # vendor extra" is then the one instruction that cannot help. An operator sent to
+        # reinstall what they already have learns to distrust the message.
+        broken = [s for s in (row.sdks if row else ()) if not s.importable]
+        why = "; ".join(f"{s.module}: {s.detail or 'not installed'}" for s in broken)
         raise RobotConnectionError(
-            f"host not ready for arm vendor {name!r}: missing SDK module(s) {missing}. "
+            f"host not ready for arm vendor {name!r}: {why}. "
             "Install the vendor extra (e.g. `pip install ur_rtde`, or the Isaac bundled python for "
-            "the sim) and re-run, or `python -m src.robot.drivers.doctor` for the full table."
+            "the sim) and re-run, or `python -m src.robot.drivers.doctor` for the full table. "
+            "A module that is installed and will not import is a different repair: see "
+            "docs/code-integrity.md."
         )
 
     # --- the report halves ---------------------------------------------------------------------
@@ -174,7 +186,7 @@ class Host:
         return cls(arm_sdks=dict(arm_sdks), gripper_sdks=dict(gripper_sdks))
 
     def readiness(self) -> ReadinessReport:
-        """Probe the host: `find_spec` per SDK module and two registry lookups, importing nothing."""
+        """Probe the host: one import per SDK module and two registry lookups. Isaac is spec-only."""
         from src.robot.core.gripper_vendor import GripperVendor  # noqa: PLC0415
         from src.robot.core.vendor import RobotVendor  # noqa: PLC0415
         from src.robot.drivers import doctor  # noqa: PLC0415

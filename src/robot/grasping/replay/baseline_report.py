@@ -347,7 +347,12 @@ def write_baseline_report(
     out_path = (repo_root / out_relative_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    out_path.write_text(body, encoding="utf-8")
+    # newline="" so the rendered line feed reaches the file as a line feed. MEASURED
+    # 2026-09-10: without it write_text translated on Windows and the committed golden stood
+    # at 25074 CRLF bytes against the 24375 LF bytes rendered here (699 carriage returns and
+    # no content between them), so this regenerator reproduced its own output on one platform
+    # only. The packs, the manifest and the promotion/OPE reports were repaired the same way.
+    out_path.write_text(body, encoding="utf-8", newline="")
     logger.info(
         "Wrote baseline report to %s (%d bytes)", out_path, len(body.encode("utf-8"))
     )

@@ -5,11 +5,18 @@ authentication in front of these endpoints, and the machine running them is next
 Making the bind address a flag would turn "expose the cell to the network" into a typo. Remote access
 means a reverse proxy with real authentication in front of this server, decided deliberately rather
 than through a convenience flag.
+
+The port is checked, then claimed, and only then announced. ``--port 99999`` used to print
+"serving http://127.0.0.1:99999" and die eleven asyncio frames later in
+``OverflowError: bind(): port must be 0-65535``, and a port another console already held printed the
+same "serving" line before uvicorn found out. The banner is the operator's evidence that the thing
+they started is the thing in their browser, so it is printed last of the three.
 """
 
 from __future__ import annotations
 
 import argparse
+import socket
 import sys
 from pathlib import Path
 
@@ -17,6 +24,10 @@ from api.cell import Console, set_console
 from src.config.loader import active_profile, set_active_profile
 
 _HOST = "127.0.0.1"
+
+#: What a TCP port is. 0 is excluded although the kernel accepts it: it means "any free port", and a
+#: console whose URL the operator cannot predict is not a console they can open.
+_PORT_RANGE = (1, 65535)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -35,6 +46,18 @@ def main(argv: list[str] | None = None) -> int:
         "--reload", action="store_true", help="restart on source changes (development only)"
     )
     args = parser.parse_args(argv)
+
+    low, high = _PORT_RANGE
+    if not low <= args.port <= high:
+        # Measured: `python -m api --port 99999` printed "serving http://127.0.0.1:99999" and then
+        # died eleven asyncio frames deep in `OverflowError: bind(): port must be 0-65535`. Not an
+        # `OSError`, so uvicorn's own bind-failure handler (the thing that turns a bad port into
+        # one readable line) never saw it either. A typo in a number deserves a sentence.
+        print(
+            f"--port {args.port} is not a port: a TCP port is {low}-{high}.",
+            file=sys.stderr,
+        )
+        return 2
 
     try:
         import uvicorn
@@ -75,6 +98,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  config    {cell.root}   profile: {chain}")
     print(f"  preflight {'0 blocking' if not blocking else f'{blocking} BLOCKING'}"
           f"  ({len(report.checks)} checks)")
+    # The port is claimed before it is announced. This line used to print several frames before
+    # anything bound, so starting a second console on the port the first one holds still printed
+    # "serving", and the operator's evidence that the thing they started is the thing in their
+    # browser was printed whether or not it was true.
+    if (why_not := _why_the_port_will_not_bind(args.port)) is not None:
+        print(
+            f"cannot serve on {_HOST}:{args.port}: {why_not}\n"
+            f"Another console is probably already running here. Stop it, or start this one on a "
+            f"different port with --port.",
+            file=sys.stderr,
+        )
+        return 1
     print(f"  serving   http://{_HOST}:{args.port}   (localhost only, no authentication)")
     # Flushed explicitly: uvicorn logs through the logging module to stderr, which is unbuffered,
     # while these go to a block-buffered stdout. Without this the banner is written into a buffer
@@ -89,6 +124,27 @@ def main(argv: list[str] | None = None) -> int:
 
         uvicorn.run(app, host=_HOST, port=args.port, log_level="info")
     return 0
+
+
+def _why_the_port_will_not_bind(port: int) -> str | None:
+    """The reason this port cannot be served, or None. Binds it briefly and hands it straight back.
+
+    SO_REUSEADDR is deliberately not set. On Windows it lets a second socket take a port another
+    process is already listening on, which would turn this check into the opposite of an answer.
+
+    And there is a window between this bind and uvicorn's, in which something else could take the
+    port. It is microseconds wide and it costs a wrong banner, not a wrong server: uvicorn refuses
+    the bind itself, logs the `OSError` and exits 1. What this removes is the ordinary case, a
+    console already running, which was reported as success.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((_HOST, port))
+    except OSError as error:
+        return str(error)
+    finally:
+        probe.close()
+    return None
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -14,6 +14,7 @@ from src.models._inference import (
     autocast_ctx,
     build_load_kwargs,
     finalize_model,
+    weight_load_errors,
 )
 from src.models.constants import MODELS_LOG_DIR, RTDETR_LOG_FILE
 from src.models.detection.types import Detection
@@ -69,7 +70,10 @@ class RtDetrObjectDetector:
             self.model = (
                 AutoModelForObjectDetection.from_pretrained(source, **model_kwargs).to(self.device)
             )
-        except RuntimeError:
+        # RuntimeError caught none of the three ways weights are actually unusable
+        # (ValueError, OSError, safetensors.SafetensorError; measured 2026-09-10). See
+        # weight_load_errors().
+        except weight_load_errors():
             self.logger.error("Failed to load model '%s'", source)
             raise
         self.model = finalize_model(self.model, self.device, self.optim, vision=True)

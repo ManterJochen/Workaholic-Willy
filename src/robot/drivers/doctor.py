@@ -8,9 +8,11 @@ front and reports a per-vendor readiness table. It also exposes
 calls, so a misconfigured host fails with a message naming the vendor rather than deep
 inside ``connect()``.
 
-It is import-safe: it never imports a vendor SDK at module top level and probes through
-``importlib.util`` instead, which keeps the import discipline and keeps heavy
-dependencies out of a host that has none.
+It is import-safe: it never imports a vendor SDK at module top level, which keeps the
+import discipline and keeps heavy dependencies out of a host that has none. The probe
+itself does import, inside the function, when someone asks, because that is the only way
+to learn whether a present SDK actually loads. See :func:`probe_module`. Isaac is the one
+exception and is still resolved by spec.
 """
 
 from __future__ import annotations
@@ -76,14 +78,19 @@ logger = create_robot_logger("DriverDoctor", DRIVER_DOCTOR_LOG_FILE)
 
 @dataclass(frozen=True, slots=True)
 class SdkStatus:
-    """Whether one SDK module is importable, with its version where that is discoverable."""
+    """Whether one SDK module imports, with its version where discoverable and why it did not."""
 
     module: str
     importable: bool
     version: str | None
+    #: Why it is not importable. Empty means it is not installed, the ordinary and expected
+    #: absence. Non-empty means the module is there and refused, and the text is whatever
+    #: refused, quoted.
+    detail: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"module": self.module, "importable": self.importable, "version": self.version}
+        return {"module": self.module, "importable": self.importable, "version": self.version,
+                "detail": self.detail}
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,13 +123,30 @@ class VendorReadiness:
         }
 
 
+#: Probed by spec only, because importing these is not a probe. ``isaacsim`` is a multi-GB
+#: install whose import takes tens of seconds and starts a renderer, and a readiness table
+#: that did that is a table nobody would run before powering a cell. Everything else here is
+#: a thin client library that imports in milliseconds, measured 2026-09-10 on this box at
+#: 0.00 s each for ``rtde_control`` and ``rtde_receive``, so the honest probe costs nothing
+#: worth saving.
+_PROBE_BY_SPEC_ONLY: frozenset[str] = frozenset({"isaacsim"})
+
+
 def probe_module(module: str) -> SdkStatus:
-    """Is ``module`` importable? Best-effort, and free of import side effects: it uses find_spec."""
-    importable = False
-    try:
-        importable = importlib.util.find_spec(module) is not None
-    except (ImportError, ValueError, ModuleNotFoundError):
-        importable = False
+    """Does ``module`` actually import on this host?
+
+    It is imported rather than looked up, and that is the defect this closes. ``find_spec``
+    builds a spec without executing anything, so a package whose native extension the OS
+    refuses answers yes. Measured 2026-09-10 on this box: ``find_spec("mujoco")`` said yes
+    while ``import mujoco`` raised ``OSError: [WinError 4551] Eine
+    Anwendungssteuerungsrichtlinie hat diese Datei blockiert``. In this table that reads
+    ``arm ur yes ready`` for a host that cannot open a UR session, and
+    :func:`require_arm_vendor_ready`, the last cheap gate before a bring-up, cannot fire on
+    it. The identical repair landed in ``datagen/render/engine.py``'s ``engine_is_available``
+    first, and the asymmetry travelled with it, see :data:`_PROBE_BY_SPEC_ONLY`: a cheap probe
+    is right exactly where the import is expensive.
+    """
+    importable, detail = _import_probe(module)
     version: str | None = None
     if importable:
         try:
@@ -134,7 +158,33 @@ def probe_module(module: str) -> SdkStatus:
                 version = None
         except Exception:  # noqa: BLE001 (version detection is best-effort only)
             version = None
-    return SdkStatus(module=module, importable=importable, version=version)
+    return SdkStatus(module=module, importable=importable, version=version, detail=detail)
+
+
+def _import_probe(module: str) -> tuple[bool, str]:
+    """``(importable, why not)``. An empty reason means the ordinary "it is not installed"."""
+    if module in _PROBE_BY_SPEC_ONLY:
+        try:
+            found = importlib.util.find_spec(module) is not None
+        except (ImportError, ValueError, ModuleNotFoundError):
+            found = False
+        return found, ""
+    try:
+        importlib.import_module(module)
+    except ModuleNotFoundError as exc:
+        # ``exc.name`` separates two opposite answers that both arrive as
+        # ModuleNotFoundError. The SDK itself being absent is "not installed", while the SDK
+        # being present and failing on a dependency it imports is an installed, broken
+        # package, and telling that operator to pip install what they already have teaches
+        # them not to trust the message.
+        if exc.name in (module, None):
+            return False, ""
+        return False, f"installed and will not import: {type(exc).__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001 (report whatever refused, do not classify it)
+        # A blocked DLL, a broken build, an ABI mismatch against numpy. The cause is quoted
+        # rather than named, because the remedy differs for every one of them.
+        return False, f"installed and will not import: {type(exc).__name__}: {exc}"
+    return True, ""
 
 
 def _is_arm_registered(vendor: RobotVendor) -> bool:
@@ -150,8 +200,13 @@ def _readiness(vendor_value: str, kind: str, sdk_modules: tuple[str, ...], regis
     if not registered:
         note = "no driver registered (reserved slot / not implemented)"
     elif not sdks_ok:
-        missing = ", ".join(s.module for s in sdks if not s.importable)
-        note = f"SDK not installed: {missing}"
+        # "SDK not installed" was the only sentence this could say, and it is the wrong one
+        # for a present SDK the OS refuses. The per-module reason is carried through instead,
+        # so the row that fails a bring-up also names what to do about it.
+        note = "SDK not usable: " + "; ".join(
+            f"{s.module} ({s.detail})" if s.detail else f"{s.module} not installed"
+            for s in sdks if not s.importable
+        )
     else:
         note = "ready"
     return VendorReadiness(

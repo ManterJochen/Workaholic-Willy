@@ -223,10 +223,14 @@ Read what it proves narrowly. The outcome distribution it replays is authored, s
 telemetry, KPIs, the failure taxonomy, the latency packs and the watchdogs are internally
 consistent. It is not a measurement of grasp quality, and its own report says so.
 
-The twelve gate keys are `min_attempts_met`, `untyped_outcomes_zero`, `unbounded_retry_loops_zero`,
-`telemetry_offenders_zero`, `extra_type_offenders_zero`, `dead_loop_rate_within_gate`,
-`pick_success_rate_non_regression`, `slo_packs_pass`, `drift_gate_pass`, `ood_gate_pass`,
-`easy_attempt_wall_time_within_budget`, and `passes`, which is the conjunction of the other eleven.
+The thirteen gate keys are `min_attempts_met`, `untyped_outcomes_zero`,
+`unbounded_retry_loops_zero`, `telemetry_offenders_zero`, `extra_type_offenders_zero`,
+`dead_loop_rate_within_gate`, `pick_success_rate_non_regression`, `slo_packs_pass`,
+`drift_gate_pass`, `ood_gate_pass`, `failure_taxonomy_classifier_pass`,
+`easy_attempt_wall_time_within_budget`, and `passes`, which is the conjunction of the other twelve.
+`failure_taxonomy_classifier_pass` grades the failure classifier against the committed labeled pack
+rather than against the synthetic stream, which stamps no evidence flags and therefore cannot tell a
+working classifier from a deleted one.
 Their thresholds are constants in `src/robot/grasping/replay/soak.py`: 2000 attempts minimum, a
 recovery-action count above 8 counts as an unbounded retry loop, the dead-loop rate ceiling is
 0.005, and the easy-mode wall-time budget is 1.05 times the baseline.

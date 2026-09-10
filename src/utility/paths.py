@@ -50,6 +50,13 @@ def _log() -> Logger:
     return utility_logger("UtilityPaths", PATHS_LOG_FILE)
 
 
+#: True while :func:`project_root` is inside its own fallback branch. Read the comment
+#: there: the warning that branch emits is built by machinery that asks for the root again,
+#: so without this the one situation the warning exists for is the one where it recurses to
+#: death instead of printing.
+_GUESSING_THE_ROOT = False
+
+
 def _from_env(var: str) -> Path | None:
     raw = os.environ.get(var)
     if not raw:
@@ -86,12 +93,34 @@ def project_root() -> Path:
     # installed elsewhere, where every caller building a path off the root
     # inherits the mistake silently. The warning below names the fix.
     fallback = here.parents[2]
-    _log().warning(
-        "project_root: no ancestor of %s holds src/ plus requirements.txt or "
-        "pyproject.toml; guessing %s from path depth. Set WILLY_PROJECT_ROOT to be sure.",
-        here,
-        fallback,
-    )
+
+    # The warning below needed the root it is warning about, and it took the process
+    # down. Measured 2026-09-10 on a copy of this package under a directory holding
+    # `src/` and no `pyproject.toml`, which is what a vendored or site-packages install
+    # looks like: building the line runs `_log` to `utility_logger` to `create_logger`
+    # to `resolve_log_dir` to `logs_dir` to `project_root`, which lands back here, and
+    # the operator got `RecursionError: maximum recursion depth exceeded` instead of the
+    # one sentence naming WILLY_PROJECT_ROOT. The diagnostic could not run in exactly the
+    # situation it was written for.
+    #
+    # A re-entry flag rather than a plain `print`: the loop is not a property of the
+    # logger, it is the property that anything reached while this branch is open may ask
+    # for the root again. Whatever `logs_dir` comes to depend on later, the second entry
+    # answers from the same guess instead of recursing, and the sentence still reaches the
+    # log file it belongs in.
+    global _GUESSING_THE_ROOT
+    if _GUESSING_THE_ROOT:
+        return fallback
+    _GUESSING_THE_ROOT = True
+    try:
+        _log().warning(
+            "project_root: no ancestor of %s holds src/ plus requirements.txt or "
+            "pyproject.toml; guessing %s from path depth. Set WILLY_PROJECT_ROOT to be sure.",
+            here,
+            fallback,
+        )
+    finally:
+        _GUESSING_THE_ROOT = False
     return fallback
 
 

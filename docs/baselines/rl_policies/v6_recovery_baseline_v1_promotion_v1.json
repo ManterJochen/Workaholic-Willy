@@ -1,14 +1,14 @@
 {
-  "code_commit": "37e8a95a9ae2d5c65042966b0111fde80649e2db",
-  "config_hash": "c30e3d8d840c63fbb2c3925bbe41efd3fe83788c2fdb4bb96779801a70f9e733",
-  "dataset_hash": "358229925177b4b3010c60a99e1bab611c60f86419a839f6856829fc7d40b90e",
+  "code_commit": "4623570a9e8fbc19e9ce65a8f4e6fce08321e86a",
+  "config_hash": "5f37b30e0e140f258ff3611a624bc1605a9025f35d2db42f71fb9ca3a61e19b5",
+  "dataset_hash": "7989e21dc600dff1945bc38da7c35546625a72f1dbc5772c66f19e73caf929b5",
   "dataset_id": "v7_promotion_canonical",
   "dataset_paths": [
     "tests/data/replay/replay_easy_canonical_v1.jsonl",
     "tests/data/replay/replay_dense_canonical_v1.jsonl"
   ],
   "dataset_provenance": {
-    "dataset_hash": "358229925177b4b3010c60a99e1bab611c60f86419a839f6856829fc7d40b90e",
+    "dataset_hash": "7989e21dc600dff1945bc38da7c35546625a72f1dbc5772c66f19e73caf929b5",
     "dataset_id": "v7_promotion_canonical",
     "fit_for": "offline promotion-gate decision over canonical packs",
     "input_source": "synthetic_deterministic",
@@ -43,28 +43,28 @@
     "wis": {
       "baseline_value": 0.5598086124401914,
       "bootstrap_n": 1000,
-      "effective_sample_size": 418.0000000000012,
+      "effective_sample_size": 417.9999999999972,
       "epsilon": 0.05,
       "estimator": "WIS_self_normalized_epsilon_smoothed",
       "importance_weight_clip": 100.0,
-      "lift": -4.9960036108132044e-15,
+      "lift": 3.3306690738754696e-16,
       "lift_ci_bootstrap": {
-        "lower": -5.329070518200751e-15,
+        "lower": 2.220446049250313e-16,
         "method": "bootstrap",
         "n": 418,
-        "upper": -4.218847493575595e-15
+        "upper": 4.440892098500626e-16
       },
       "num_clipped": 0,
       "num_records": 418,
       "num_records_with_weight": 418,
       "target_ci_bootstrap": {
-        "lower": 0.5119617224880341,
+        "lower": 0.5119617224880386,
         "method": "bootstrap",
         "n": 418,
-        "upper": 0.6028708133971241
+        "upper": 0.6028708133971294
       },
-      "target_value": 0.5598086124401864,
-      "weight_concentration_index": 0.002392344497607643
+      "target_value": 0.5598086124401918,
+      "weight_concentration_index": 0.0023923444976076623
     }
   },
   "extraction": {
@@ -74,7 +74,7 @@
     "num_triples": 418
   },
   "generated_at_iso": "1970-01-01T00:00:00+00:00",
-  "policy_artifact_sha256": "cd0452bba96cf0729159ea9d2142ba5a7593e61d4be9db574755fac2ce987321",
+  "policy_artifact_sha256": "8ae243fb1d438175b201c5972532caf939862c596a87f5b8316c7dd6d3495701",
   "policy_family": "v6_recovery",
   "policy_id": "v6_recovery_baseline_v1@1",
   "policy_version": 1,
@@ -95,7 +95,7 @@
   "training_scope": "dense",
   "verdict": "abstain",
   "verdict_meaning": {
-    "abstain": "the policy could NOT be graded (too few effective samples, or a degenerate single-action policy) -- no improvement claim either way.",
+    "abstain": "the policy could NOT be graded (too few effective samples, or a degenerate single-action policy); no improvement claim either way.",
     "fail": "the off-policy WIS lift did not clear the thresholds (regression or below the positive floor).",
     "pass": "the off-policy WIS lift over the synthetic packs cleared the thresholds (positive floor + CI lower bound + min effective sample size). NOT a real-hardware lift."
   }

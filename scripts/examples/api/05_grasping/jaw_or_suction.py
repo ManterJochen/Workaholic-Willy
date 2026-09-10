@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
 import numpy as np  # noqa: E402
 
-from src.config import load_robot_config  # noqa: E402
+from src.config import ConfigError, load_robot_config  # noqa: E402
 from src.geometry import Frame, Transform  # noqa: E402
 from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry  # noqa: E402
 from src.robot.execution.autonomous_grasp.rehearsal import RehearsalPerceptionSource  # noqa: E402
@@ -23,7 +23,14 @@ from src.robot.grasping.suction import SuctionConfig, synthesize_suction_grasps 
 
 # 1. The gripper this cell declares: the driver that actuates it, and the envelope jaw candidates
 #    are filtered against. `gripper_geometry.kind` chooses that envelope, never the modality.
-robot = load_robot_config()
+try:
+    robot = load_robot_config()
+except ConfigError as no_cell:
+    # `robot` is optional on AppConfig, so a tree without one is a configuration answer rather
+    # than a crash, and the four files under scripts/checks/ answer it the same way.
+    print(f"no cell in this config tree ({no_cell}). Write a `robot` block, or select a "
+          f"profile that carries one: WILLY_PROFILE=ur5e")
+    raise SystemExit
 jaw_model = build_gripper_geometry(robot.grasping.gripper_geometry)
 support = SupportPlane(normal=np.array([0.0, 0.0, 1.0]), offset_mm=0.0, frame=Frame.BASE)
 print(f"gripper {robot.gripper.vendor}, {robot.gripper.min_width_mm:.0f} to "

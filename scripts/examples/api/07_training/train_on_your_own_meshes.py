@@ -41,7 +41,14 @@ build = DatasetBuild.from_file(None, name="my_parts", scenes=plan.requested_scen
 print(build.describe())
 
 # 4. Render, label and extract the corpus, stopping at the first stage that produces nothing.
-print(build.run(CORPUS).render())
+try:
+    print(build.run(CORPUS).render())
+except OSError as unwritable:
+    # Render, label and extract all write under logs/examples/training, and so does the fit
+    # below, so there is nothing left to show once this refuses.
+    print(f"cannot write under logs/examples/training ({unwritable}); every stage from here "
+          f"on writes there")
+    raise SystemExit
 
 # 5. Fit the generator. The smoke tier is minutes and says nothing about grasp quality.
 training = GeneratorTraining.from_recipe(corpus=CORPUS, recipe="v1", tier="smoke",

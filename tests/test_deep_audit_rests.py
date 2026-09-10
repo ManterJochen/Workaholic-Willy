@@ -149,6 +149,39 @@ class TheInertKeyIsNamedTests(unittest.TestCase):
                          "minimum_score was wired into the set decoder after all")
 
 
+def _constants_reachable_from(tree: ast.Module, entry: str) -> list[str]:
+    """Every constant in `entry` and in the module functions it can reach, transitively.
+
+    ⛔ **THIS USED TO READ ONE FUNCTION BODY, AND A REFACTOR MOVED THE LINE IT LOOKED FOR.**
+    `build_real_components` grew a `try/except` that gives a refused build its camera back, and the
+    tail was lifted into a helper so the diff would not re-indent sixty lines of commentary. The
+    preload call went with it, and this test failed while the behaviour it guards was untouched.
+
+    ⭐ **AND THE ABSENCE CLAIM BELOW NEEDED IT MORE THAN THE PRESENCE CLAIM DID.** A test that says
+    "the rehearsal path does NOT preload" and looks at one function stops meaning anything the day
+    the rehearsal path grows a helper, and it stops meaning it SILENTLY, because absence is what a
+    narrowed search returns. The presence claim fails loudly when it narrows; the absence claim does
+    not. Both walk the graph now, so neither can be defeated by the same move.
+    """
+    functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+    seen: set[str] = set()
+    pending = [entry]
+    constants: list[str] = []
+    while pending:
+        name = pending.pop()
+        if name in seen or name not in functions:
+            continue
+        seen.add(name)
+        body = functions[name]
+        constants += [ast.unparse(n) for n in ast.walk(body) if isinstance(n, ast.Constant)]
+        # Plain-name calls only: a method call belongs to whatever object it was handed, which this
+        # module cannot see, and following attribute names would walk into unrelated functions that
+        # happen to share a name.
+        pending += [n.func.id for n in ast.walk(body)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    return constants
+
+
 class PreloadHasACallerTests(unittest.TestCase):
 
     def test_the_physical_cell_builder_preloads(self) -> None:
@@ -156,11 +189,8 @@ class PreloadHasACallerTests(unittest.TestCase):
         catches everything, because the protocol forbids raising, so a mismatched artifact reached
         the operator as an empty candidate list at 3 a.m. instead of a refusal at build time."""
         tree = ast.parse(_CELLS.read_text(encoding="utf-8"))
-        function = next(node for node in ast.walk(tree)
-                        if isinstance(node, ast.FunctionDef)
-                        and node.name == "build_real_components")
+        names = _constants_reachable_from(tree, "build_real_components")
 
-        names = [ast.unparse(node) for node in ast.walk(function) if isinstance(node, ast.Constant)]
         self.assertIn("'preload'", names, "the physical cell builder never asks for preload")
 
     def test_it_is_DUCK_TYPED_so_the_analytic_calculator_still_builds(self) -> None:
@@ -175,11 +205,7 @@ class PreloadHasACallerTests(unittest.TestCase):
         """⚠ A desk rehearsal builds a calculator it may never call, and a rehearsal that refuses
         because a weights file is missing would stop testing the wiring it exists to test."""
         tree = ast.parse(_CELLS.read_text(encoding="utf-8"))
-        function = next(node for node in ast.walk(tree)
-                        if isinstance(node, ast.FunctionDef)
-                        and node.name == "build_rehearsal_components")
-
-        names = [ast.unparse(node) for node in ast.walk(function) if isinstance(node, ast.Constant)]
+        names = _constants_reachable_from(tree, "build_rehearsal_components")
         self.assertNotIn("'preload'", names)
 
 

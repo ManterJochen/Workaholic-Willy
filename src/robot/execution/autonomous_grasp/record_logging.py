@@ -34,8 +34,10 @@ from src.robot.constants import GRASP_RECORD_LOG_FILE, create_robot_logger
 from src.robot.grasping.telemetry.outcome_logging import (
     GraspAttemptRecord,
     execution_metadata_from,
+    grasp_metadata_from,
+    json_safe,
     profile_metadata_from,
-    verification_metadata_from,
+    refinement_metadata_from,
 )
 
 from .report import AutonomousGraspOutcome
@@ -150,6 +152,37 @@ def _collect_child_reasons(telemetry: object, into: "list[str]") -> None:
         _collect_child_reasons(child.get("telemetry"), into)
 
 
+def _verification_from_telemetry(
+    record_extra: Mapping[str, Any],
+) -> Optional[dict[str, Any]]:
+    """The verification block, read from the three keys the service actually stamps.
+
+    The lookup this replaces could neither fail nor succeed. The serializer read
+    ``getattr(report, "verification", None)``, and ``AutonomousGraspReport`` has never had a
+    ``verification`` field: not in the dataclass, not in any construction site, not under any other
+    name. So the expression evaluated to ``None`` on every report ever passed here, the block was
+    filled only by the sim ground-truth fallback below, and a real cell that ran a verifier and
+    failed a grasp logged a ``verification_failed`` record with no verification block in it. The
+    telemetry audit then flagged that record as incomplete, which is true and says nothing about why.
+
+    Where the result actually lives: ``AutonomousGraspService._run_verification`` writes
+    ``verification_outcome``, ``verification_reason`` and ``verification_telemetry`` into the executed
+    attempt telemetry bag, and that bag is what ``extra`` is built from a few lines above. The three
+    keys are the whole record of the verifier having run, so they are what this reads. ``None`` when
+    the verifier did not run, which keeps a non-verified attempt byte-identical.
+
+    The shape matches :func:`verification_metadata_from` exactly, because a consumer must not have to
+    know which of the two paths produced the block it is reading.
+    """
+    if "verification_outcome" not in record_extra:
+        return None
+    return {
+        "outcome": json_safe(record_extra.get("verification_outcome")),
+        "reason": str(record_extra.get("verification_reason", "")),
+        "telemetry": json_safe(record_extra.get("verification_telemetry") or {}),
+    }
+
+
 def to_attempt_record(
     report: Any,
     *,
@@ -197,14 +230,27 @@ def to_attempt_record(
     recovery_actions = tuple(getattr(report, "recovery_actions", ()) or ())
     # Populate the execution and verification telemetry blocks the GraspAttemptRecord contract requires
     # for succeeded/execution_failed/verification_failed outcomes (the soak telemetry audit checks them),
-    # from the report itself. execution is the executed-grasp outcome. ``AutonomousGraspReport`` carries
-    # no ``verification`` field and its slots forbid one, so the duck-typed lookup is a seam for a future
-    # report that does carry one and never fires today; verification is the sim ground-truth lift,
-    # explicitly labelled, when the runner stamped it in extra (sim_lifted/sim_lift_mm measured from the
-    # object's world pose, the physical truth, not a hardware verifier). None when neither exists, so the
-    # audit flags an incomplete record.
+    # from the report itself. execution is the executed-grasp outcome. The verification block comes from
+    # the telemetry the service stamps, and falls back to the sim ground-truth lift, explicitly
+    # labelled, when the runner stamped it in extra (sim_lifted/sim_lift_mm measured from the object's
+    # world pose, the physical truth, not a hardware verifier). None when neither exists, so the audit
+    # flags an incomplete record.
     execution = execution_metadata_from(report)
-    verification = verification_metadata_from(getattr(report, "verification", None))
+    # The field that cost the RL layer its action column. `BaselineSARExtractor` projects an action
+    # from `selected_grasp`, then `refined_grasp`, then `initial_grasp`, and no writer in this
+    # repository set any of the three, so every record a real pick produced fell through all three to
+    # the literal token "noop". Measured 2026-09-10: two attempts on two different grasps extracted
+    # to the same action, which is an action space of size one, a dataset that cannot express a
+    # preference between two grasps, which is the only thing it is for.
+    #
+    # The executed grasp, not the ranked-best. The question a record must answer is which grasp this
+    # outcome graded, and only the one the arm actually went to has that standing. It is the same
+    # object `execution_metadata_from` summarises one line up, so the two blocks cannot disagree.
+    # `None` when nothing executed, which is byte-identical to what this wrote before, and that is
+    # every attempt that never reached a grasp.
+    selected_grasp = grasp_metadata_from(
+        getattr(getattr(report, "pick_report", None), "executed_grasp", None))
+    verification = _verification_from_telemetry(record_extra)
     if verification is None and "sim_lifted" in record_extra:
         verification = {
             "source": "sim_ground_truth_lift",
@@ -220,7 +266,16 @@ def to_attempt_record(
         profile=profile_metadata_from(getattr(report, "profile", None)),
         recovery_actions=recovery_actions,
         execution=execution,
+        selected_grasp=selected_grasp,
         verification=verification,
+        # The other block nobody wrote. The telemetry catalog requires `refinement` for all three
+        # refine-stage outcomes (`refinement_failed`, `target_lost_during_refine`,
+        # `refinement_diverged`), the synthetic soak generator fabricates one so the U12 gate passes,
+        # and no production writer existed: a real refine-stage failure could not produce a complete
+        # record however the cell was configured. The refiner own `RefinementReport` now rides on the
+        # service report and this reads it. `None` when the refiner did not run, which is every
+        # attempt on the default open-loop path.
+        refinement=refinement_metadata_from(getattr(report, "refinement", None)),
         # Kept out of `extra`: it is an existing top-level field, and moving calculator telemetry
         # into the extra bag would change what the frozen extra/catalog policy covers.
         initial_telemetry=initial_telemetry,

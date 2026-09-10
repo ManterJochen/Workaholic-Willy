@@ -16,7 +16,10 @@ What a build emits:
   gitignored, so only the manifest pins truth.
 
 This module is build-time only. It imports no runtime robot/grasping
-code path and never mutates configuration.
+code path and never mutates configuration. The one import it does make
+into the grasping tree is ``replay.failure_taxonomy`` (offline, never
+imported back into the pick path), so the dataset failure axis and the
+taxonomy report cannot disagree about the same record.
 """
 
 from __future__ import annotations
@@ -81,8 +84,10 @@ OUTCOME_CLASSES: tuple[str, ...] = (
     OUTCOME_CLASS_UNCLASSIFIED,
 )
 
-#: Failure-taxonomy tokens. They validate
-#: ``extra.expected_root_cause`` / ``extra.failure_taxonomy_class``.
+#: Failure-taxonomy tokens. They validate ``extra.expected_root_cause``
+#: and ``extra.failure_taxonomy_class``, and they keep a cause the
+#: classifier names but this histogram has no column for out of the
+#: class balance.
 _FAILURE_TOKENS: frozenset[str] = frozenset(
     {
         OUTCOME_CLASS_SLIP,
@@ -118,10 +123,35 @@ def derive_outcome_class(record: Mapping[str, Any]) -> str:
     """Classify one record into an outcome class.
 
     Precedence: ``extra.failure_taxonomy_class`` when it holds a known failure token, else
-    ``success`` when ``final_outcome`` is ``succeeded``, else ``extra.expected_root_cause`` when
-    it holds a known failure token, else ``unclassified``. The order is fixed, so the class is
-    deterministic.
+    ``success`` when ``final_outcome`` is ``succeeded``, else ``extra.expected_root_cause`` when it
+    holds a known failure token, else whatever the replay taxonomy classifier makes of the record
+    symptom flags, else ``unclassified``. The order is fixed, so the class is deterministic.
+
+    The last step was missing and the two readers keyed on disjoint fields. The first three rules
+    read ``extra.failure_taxonomy_class`` (stamped by the sim runners from ground truth) and
+    ``extra.expected_root_cause`` (a label on the committed test pack). ``replay.failure_taxonomy``
+    reads ``extra.*_evidence`` and ``final_outcome``, which is what the production serializer writes
+    (``record_logging._stamp_taxonomy_evidence``). Neither set overlapped the other, so measured
+    2026-09-10 the same record was ``collision_rejection`` in the taxonomy report and
+    ``unclassified`` here: the failure axis of an RL dataset built from a real cell log collapsed
+    into one bucket, and the stratified split had nothing to stratify.
+
+    Borrowed, not reimplemented. A second copy of the rule table is exactly what produced this
+    divergence, so the classifier is called. It is a pure function of the two fields, so nothing
+    about this module build-time-only promise changes.
+
+    The other direction stays open, deliberately. The classifier does not read
+    ``failure_taxonomy_class``, so a sim-runner record is still ``unclassified`` to the taxonomy
+    report while being classified here. That is not an oversight: that field is the producer own
+    label, and a classifier scored on rows where the producer handed it the answer would be
+    measuring the producer. The dataset may believe a label; the classifier may not.
+
+    Order matters. ``succeeded`` is decided before the classifier is consulted. The classifier would
+    also answer ``unclassified`` for a success, but only because of its own gating set; a dataset
+    that let a stray flag relabel a success would be reading a symptom as an outcome.
     """
+
+    from src.robot.grasping.replay.failure_taxonomy import classify_symptoms
 
     extra = record.get("extra") or {}
     if not isinstance(extra, Mapping):
@@ -134,6 +164,9 @@ def derive_outcome_class(record: Mapping[str, Any]) -> str:
     expected = extra.get("expected_root_cause")
     if isinstance(expected, str) and expected in _FAILURE_TOKENS:
         return expected
+    classified = classify_symptoms(str(record.get("final_outcome") or ""), extra).primary.value
+    if classified in _FAILURE_TOKENS:
+        return classified
     return OUTCOME_CLASS_UNCLASSIFIED
 
 

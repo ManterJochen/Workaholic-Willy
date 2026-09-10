@@ -80,10 +80,10 @@
       0.0
     ]
   },
-  "dataset_hash": "459f1550bc5a31378392a66abc18f786a76555c15471d74e50292e112d5eddcf",
+  "dataset_hash": "9371ba71893f3effbda8864e77a988884cd2881edc6206c5a0e4b33b559e4aa1",
   "dataset_id": "replay_dense_canonical_v1.jsonl+replay_easy_canonical_v1.jsonl",
   "dataset_provenance": {
-    "dataset_hash": "459f1550bc5a31378392a66abc18f786a76555c15471d74e50292e112d5eddcf",
+    "dataset_hash": "9371ba71893f3effbda8864e77a988884cd2881edc6206c5a0e4b33b559e4aa1",
     "dataset_id": "replay_dense_canonical_v1.jsonl+replay_easy_canonical_v1.jsonl",
     "fit_for": "perception-budget STOP/CONTINUE in SHADOW (off-policy)",
     "input_source": "synthetic_deterministic",
@@ -169,7 +169,7 @@
   "policy_kind": "perception_budget",
   "policy_name": "v5_perception_budget_baseline_v1",
   "policy_version": 1,
-  "reward_interpretation": "LinUCB over the OPE V1 reward coefficients applied to LOGGED perception/cycle-time signals; proposes STOP/CONTINUE per perception budget. Synthetic canonical data. Off-policy / offline estimate -- NOT real-hardware lift.",
+  "reward_interpretation": "LinUCB over the OPE V1 reward coefficients applied to LOGGED perception/cycle-time signals; proposes STOP/CONTINUE per perception budget. Synthetic canonical data. Off-policy / offline estimate; NOT real-hardware lift.",
   "reward_model": "logged_metric_coefficients",
   "ridge_lambda": 1.0,
   "schema_version": 2,

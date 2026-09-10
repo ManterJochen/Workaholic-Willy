@@ -34,7 +34,7 @@
     "perception_cost": -0.2,
     "success": 1.0
   },
-  "reward_interpretation": "reward = the LOCKED OPE V1 coefficients applied to LOGGED record outcomes/metrics (real-records-derived, NOT a synthetic outcome model). The WIS/DM section values are OFF-POLICY ESTIMATES with documented bias (importance-weight clip + epsilon-smoothing) -- NOT a guaranteed or real live-loop lift; the candidate and ranking sections may be non-estimable.",
+  "reward_interpretation": "reward = the LOCKED OPE V1 coefficients applied to LOGGED record outcomes/metrics (real-records-derived, NOT a synthetic outcome model). The WIS/DM section values are OFF-POLICY ESTIMATES with documented bias (importance-weight clip + epsilon-smoothing); NOT a guaranteed or real live-loop lift; the candidate and ranking sections may be non-estimable.",
   "reward_model": "logged_records_derived",
   "rng_seed": 1,
   "schema_version": 2,
@@ -54,7 +54,7 @@
             "n": 1000,
             "upper": 0.10667247864793572
           },
-          "coverage_warning": "behaviour_action_unknown_in_logs: U0 replay packs do not store per-candidate-id; WIS collapses to mean per-attempt reward.",
+          "coverage_warning": "behaviour_action_unknown_in_logs: replay packs do not store per-candidate-id; WIS collapses to mean per-attempt reward.",
           "effective_sample_size": 1000.0,
           "estimable": false,
           "estimator": "WIS",
@@ -81,7 +81,7 @@
             "n": 1000,
             "upper": 0.10667247864793572
           },
-          "coverage_warning": "behaviour_action_unknown_in_logs: U0 replay packs do not store per-candidate ranks; WIS collapses to mean per-attempt reward.",
+          "coverage_warning": "behaviour_action_unknown_in_logs: replay packs do not store per-candidate ranks; WIS collapses to mean per-attempt reward.",
           "effective_sample_size": 1000.0,
           "estimable": false,
           "estimator": "WIS",

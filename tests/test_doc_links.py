@@ -104,3 +104,98 @@ def test_canon_source_links_point_at_real_files(doc: Path) -> None:
             continue
         dead.append(target)
     assert not dead, f"{doc.relative_to(_ROOT)} links at files that do not exist (moved/deleted?): {dead}"
+
+
+# ---------------------------------------------------------------------------
+# `python -m ...` commands, which rot the same way a link does and were unguarded
+# ---------------------------------------------------------------------------
+
+#: `python -m a.b.c`, as an operator would copy it out of a fenced block.
+#:
+#: ⛔ MEASURED 2026-09-10 in the sibling tree: six commands across four operator documents named
+#: modules the interpreter cannot find, because the old top-level `examples/` package had been
+#: deleted and replaced by `scripts/examples/` while the documents kept naming it. Nothing resolved
+#: a command the way `test_relative_markdown_links_resolve` resolves a link. A dead link is visibly
+#: dead in a browser; a dead command looks like a broken install to the operator who runs it, which
+#: is the more expensive failure.
+_RUN_MODULE = re.compile(r"python\s+-m\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)")
+
+#: Modules that come from the interpreter or from the pinned requirements, not from this checkout.
+_NOT_OURS = frozenset({
+    "pytest", "unittest", "venv", "pip", "mypy", "ruff", "coverage", "build", "twine",
+    "http", "json", "compileall", "site", "ensurepip", "IPython", "jupyter", "torch",
+})
+
+
+def _repo_packages() -> frozenset[str]:
+    """Top-level importable directories of this checkout, measured rather than listed.
+
+    A hard-coded list would stop seeing a package the day one is added, which is the same defect
+    this whole module exists to catch one level up.
+    """
+    return frozenset(
+        entry.name
+        for entry in _ROOT.iterdir()
+        if entry.is_dir()
+        and not entry.name.startswith((".", "_"))
+        and entry.name not in _SKIP_DIRS
+    )
+
+
+def _module_is_runnable(dotted: str) -> bool:
+    """What `python -m dotted` needs on disk: a module file, or a package with a `__main__`."""
+    parts = dotted.split(".")
+    as_module = _ROOT.joinpath(*parts).with_suffix(".py")
+    as_package_main = _ROOT.joinpath(*parts) / "__main__.py"
+    return as_module.is_file() or as_package_main.is_file()
+
+
+@pytest.mark.parametrize("doc", _docs(), ids=lambda f: str(f.relative_to(_ROOT)).replace("\\", "/"))
+def test_documented_run_module_commands_name_real_modules(doc: Path) -> None:
+    """Every `python -m <ours>` an operator can copy out of these docs must exist on disk.
+
+    Scoped to modules whose first segment is a directory of this checkout, so `python -m pytest` and
+    `python -m venv` are not asserted about. The raw text is scanned rather than the code-stripped
+    text the link tests use, because a command lives inside a fenced block by definition.
+    """
+    text = doc.read_text(encoding="utf-8")
+    packages = _repo_packages()
+    missing: list[str] = []
+    for match in _RUN_MODULE.finditer(text):
+        dotted = match.group(1)
+        head = dotted.split(".", 1)[0]
+        if head in _NOT_OURS or head not in packages:
+            continue
+        if not _module_is_runnable(dotted):
+            missing.append(dotted)
+    assert not missing, (
+        f"{doc.relative_to(_ROOT)} documents `python -m` commands that exit 1 with "
+        f"'No module named': {sorted(set(missing))}"
+    )
+
+
+#: `python some/path/to/file.py`, the other half of the same rot.
+#:
+#: The dead `python -m examples.*` commands were repointed at `scripts/examples/` and
+#: `scripts/checks/`, which are run by PATH rather than by module name. Guarding only the `-m` form
+#: would have moved the rot rather than caught it.
+_RUN_SCRIPT = re.compile(r"python(?:\.bat)?\s+((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.py)\b")
+
+
+@pytest.mark.parametrize("doc", _docs(), ids=lambda f: str(f.relative_to(_ROOT)).replace("\\", "/"))
+def test_documented_script_paths_exist(doc: Path) -> None:
+    """`python scripts/checks/cell_bringup.py` must name a file, resolved from the repo root.
+
+    Every such command in these docs is written for an operator standing in the checkout root, which
+    is the only place the repository is importable from, so that is the one resolution asserted.
+    """
+    text = doc.read_text(encoding="utf-8")
+    missing = [
+        script
+        for script in (m.group(1) for m in _RUN_SCRIPT.finditer(text))
+        if not (_ROOT / script).is_file()
+    ]
+    assert not missing, (
+        f"{doc.relative_to(_ROOT)} documents `python <path>` commands whose file is gone: "
+        f"{sorted(set(missing))}"
+    )

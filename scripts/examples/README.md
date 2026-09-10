@@ -55,6 +55,14 @@ sentence naming the file that is absent. That is what lets
 [`tests/test_examples_run.py`](../../tests/test_examples_run.py) execute all of them in CI, which is
 the only place a rot guard is any use.
 
+That test runs each api example four ways: on this checkout, on a config tree with no `robot`
+block in it, on a tree whose YAML does not parse, and in a working directory it cannot write.
+It also runs the cli halves, both costumes of each, minus the subjects that need a corpus, the
+network, an optional engine or a simulator, which are named one by one with the measurement
+behind each reason. Where a cli step calls a check, the step reports what the check said rather
+than inheriting its exit code: an example has no verdict to give, so a refusal it triggers is a
+thing to print and not a thing to become.
+
 **Nothing here shares a spine.** Each file stands alone. The previous generation shared a 232-line
 `_common.py` that all twenty-nine imported, and the cost was that reading one example meant reading
 a framework first. Twenty-nine files that read as one tool is a good property for a tool and a bad
@@ -67,7 +75,10 @@ per example, 1,563 of them lines of pure output. One file was 375 lines wrapped 
 calls. They were good tools and they were not examples.
 
 ⛔ **And nothing ran them.** Their own shared spine said it was kept honest by "the tests that keep
-them from decaying into prose", and no test imported an example. Four files mentioned the directory
+them from decaying into prose", and no test imported an example. The replacement inherited half
+of that hole and kept it until 2026-09-10: the api files were executed from the day they were
+written, while the forty-eight cli files were only checked for existing, which is how three of them
+came to exit 1 on a bare box with nobody noticing. Four files mentioned the directory
 and every mention was prose in a docstring. Two defects had been sitting in one of them unnoticed:
 it caught `SystemExit` where the library had started raising `CellBuildRefused`, and its headline
 lesson had been reversed in the library and never in the file. Both were found by reading, which is

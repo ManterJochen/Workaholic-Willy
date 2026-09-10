@@ -5,6 +5,8 @@ Every assertion here corresponds to a measured defect, not to a shape I liked.
 
 from __future__ import annotations
 
+import contextlib
+import tempfile
 import unittest
 from unittest import mock
 
@@ -139,6 +141,60 @@ class OneLadderTests(unittest.TestCase):
                 body,
                 f"{rel} resolves the model itself again; MotionStack owns that ladder",
             )
+
+
+class ConfigThatDidNotLoadTests(unittest.TestCase):
+    """⛔⛔ "FULLY ANCHORED", EXIT 0, ABOUT A CELL NOTHING IS KNOWN ABOUT.
+
+    `for_this_box` tolerates a config tree that does not load, deliberately: "the config does not
+    load" is one of the things an operator is standing there to diagnose. What it hands back is the
+    ur5e FALLBACK, and `exit_code` reads only `fully_anchored`, which on any box with the engines
+    installed is True for ur5e. So `--check --data <a tree that does not load>` prints
+    "=> fully anchored" and exits 0, and the one line that says otherwise is a parenthesis at the
+    end of the last line.
+    """
+
+    @contextlib.contextmanager
+    def _reading_for_an_unreadable_tree(self):
+        """The reading `--check --data <tree>` takes when that tree does not load."""
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(stack_mod, "probe_planning_environment", return_value=ANCHORED):
+            # An empty directory: `load_config` raises `ConfigError` on it, which is the same door a
+            # syntactically broken YAML tree comes through.
+            yield MotionStack.for_this_box(data_dir=tmp)
+
+    def test_a_tree_that_does_not_load_is_not_an_anchored_cell(self) -> None:
+        with self._reading_for_an_unreadable_tree() as stack:
+            self.assertIs(stack.source, ModelSource.FALLBACK)
+            report = stack.probe()
+            self.assertEqual(report.exit_code, 1,
+                             f"exit 0 for a cell nothing is known about: {report.render()}")
+
+    def test_the_reading_says_out_loud_that_it_is_about_the_fallback(self) -> None:
+        """The LAST line is what an operator is left with, and it was `=> fully anchored` plus a
+        parenthesis. The engines line stays true (they ARE present, for ur5e); what it may not be is
+        the last word, so the retraction has to come after it and name the fallback."""
+        with self._reading_for_an_unreadable_tree() as stack:
+            text = stack.probe().render()
+        last = text.splitlines()[-1]
+        self.assertIn("not a reading about this cell", last)
+        self.assertIn("ConfigError", last)
+        self.assertIn("ur5e", last)
+        self.assertLess(text.index("=> fully anchored"), text.index("not a reading"))
+
+    def test_the_payload_carries_the_refusal_for_the_console(self) -> None:
+        with self._reading_for_an_unreadable_tree() as stack:
+            payload = stack.probe().to_dict()
+        self.assertTrue(payload["config_error"])
+
+    def test_a_tree_that_loads_is_untouched_by_any_of_this(self) -> None:
+        """The shipped tree loads and declares a robot; that reading stays exactly what it was."""
+        s = MotionStack.for_this_box()
+        with mock.patch.object(stack_mod, "probe_planning_environment", return_value=ANCHORED):
+            report = s.probe()
+        self.assertEqual(report.exit_code, 0)
+        self.assertIn("=> fully anchored", report.render())
+        self.assertEqual(report.to_dict()["config_error"], "")
 
 
 if __name__ == "__main__":  # pragma: no cover

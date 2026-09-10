@@ -18,6 +18,7 @@ generator. It is intentionally hostile to silent drift:
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -376,6 +377,29 @@ class BaselineReportTests(unittest.TestCase):
         rebuilt = build_baseline_report(REPO_ROOT)
         self.assertEqual(on_disk, rebuilt, msg="committed baseline is stale")
 
+    def test_the_documented_regenerator_reproduces_the_committed_bytes(self) -> None:
+        """The test above decodes the file, so it cannot see how the file is SPELLED.
+
+        ⛔ MEASURED 2026-09-10: the committed report was 25074 bytes of CRLF against the 24375
+        bytes of LF this renders: 699 lines, one carriage return each, and not one character of
+        content between them. Both writers that produce this file used ``write_text`` without
+        ``newline``, so ``--baseline-report`` (a command CLAUDE.md hands an operator) reproduced
+        its own golden only on Windows and only by accident of the host's line separator. Same
+        defect as the replay packs and the OPE report, on the one golden of the three nothing
+        was comparing bytes of.
+        """
+
+        report_path = (REPO_ROOT / DEFAULT_REPORT_RELATIVE_PATH).resolve()
+        rendered = json.dumps(build_baseline_report(REPO_ROOT), indent=2, sort_keys=True) + "\n"
+        self.assertEqual(
+            report_path.read_bytes(),
+            rendered.encode("utf-8"),
+            msg=(
+                "the committed baseline report is not the bytes `--baseline-report` writes. If the "
+                "content matches and only the line ending differs, the writer is translating."
+            ),
+        )
+
     def test_report_contains_all_packs(self) -> None:
         report = build_baseline_report(REPO_ROOT)
         names = {p["name"] for p in report["packs"]}  # type: ignore[index]
@@ -546,23 +570,82 @@ class BaselineWriterSmokeTests(unittest.TestCase):
 
 
 class RegenerateIdempotenceTests(unittest.TestCase):
-    def test_regenerate_all_is_byte_idempotent(self) -> None:
-        # Snapshot the canonical files, regenerate, and assert no drift.
-        snapshots: dict[str, str] = {}
-        manifest_path = (
-            REPO_ROOT / "tests" / "data" / "replay" / "MANIFEST.json"
-        ).resolve()
-        for pack in CANONICAL_PACKS:
-            p = (REPO_ROOT / pack.relative_path).resolve()
-            snapshots[str(p)] = p.read_text(encoding="utf-8")
-        snapshots[str(manifest_path)] = manifest_path.read_text(encoding="utf-8")
+    """``regenerate_all`` writes the same bytes every time it is asked.
 
-        regenerate_all(REPO_ROOT)
-        for path_str, before in snapshots.items():
-            after = Path(path_str).read_text(encoding="utf-8")
-            self.assertEqual(
-                before, after, msg=f"regenerate drifted: {path_str}"
+    ⛔ THIS TEST USED TO RUN ``regenerate_all(REPO_ROOT)``. MEASURED 2026-09-10: it rewrote the four
+    committed packs and their manifest in the working tree and left the drift behind, and because
+    pytest keeps going, the tests that ran after it compared against the files this one had just
+    written rather than the committed ones. Four failures in that run were the rewrite, not the
+    code. It also duplicated ``test_each_pack_regenerates_to_committed_bytes``, which is the test
+    that actually owns the "matches what is committed" claim.
+
+    Idempotence is a property of the generator, so it is measured where a generator may write: a
+    temporary directory, twice. That also makes it platform-free, because both sides of the
+    comparison are produced by the same libm.
+    """
+
+    def test_regenerate_all_is_byte_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch_root = Path(tmp)
+            first = regenerate_all(scratch_root)
+            first_bytes = {
+                name: path.read_bytes() for name, path in first.items()
+            }
+            second = regenerate_all(scratch_root)
+            self.assertEqual(sorted(first), sorted(second))
+            for name, path in second.items():
+                self.assertEqual(
+                    first_bytes[name],
+                    path.read_bytes(),
+                    msg=f"regenerate_all is not idempotent for {name}",
+                )
+
+    def test_regenerate_all_writes_lf_on_every_platform(self) -> None:
+        """A regeneration must not pick up the host's line ending.
+
+        MEASURED: ``write_text`` translated the rendered line feed to a carriage-return pair on
+        Windows, so a regenerated pack disagreed with the sha256 the manifest had just computed for
+        it, and a Windows re-bless would have committed a file no Linux checkout reproduces.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, path in regenerate_all(Path(tmp)).items():
+                self.assertNotIn(
+                    b"\r\n",
+                    path.read_bytes(),
+                    msg=f"{name} was written with CRLF",
+                )
+
+    def test_regenerated_manifest_matches_the_committed_one(self) -> None:
+        """The generator can still produce the committed manifest, prose included.
+
+        ⛔ MEASURED 2026-09-10: it could not. Five prose fields (the global label policy and one
+        per pack) had been hand-edited out of step with the generator by a de-phasing commit, and
+        every pack's ``generator.module`` still named the ``backend.src`` import path this tree
+        stopped using, so ``tests/data/replay/MANIFEST.json`` was a golden its own generator no
+        longer emitted. Only the sha256 fields were ever compared, and prose is not hashed.
+        """
+
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch_root = Path(tmp)
+            for pack in CANONICAL_PACKS:
+                dest = scratch_root / pack.relative_path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes((REPO_ROOT / pack.relative_path).read_bytes())
+            fresh = build_manifest(scratch_root)
+        committed = json.loads(
+            (REPO_ROOT / "tests" / "data" / "replay" / "MANIFEST.json").read_text(
+                encoding="utf-8"
             )
+        )
+        self.assertEqual(
+            committed,
+            fresh,
+            msg=(
+                "tests/data/replay/MANIFEST.json is not what build_manifest produces from the "
+                "committed packs. Regenerate it rather than editing it by hand."
+            ),
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

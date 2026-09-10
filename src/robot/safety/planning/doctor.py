@@ -47,7 +47,7 @@ from .environment import (
     collision_mesh_bundle,
     curobo_python_path,
     curobo_robot_config,
-    import_collision_engine,
+    resolve_collision_engine,
 )
 
 __all__ = [
@@ -206,6 +206,11 @@ class DoctorReport:
 
 
 # --------------------------------------------------------------------------- individual probes
+#: What the operator does about a refused binary, wherever the refusal is found. One string,
+#: because a remedy quoted differently at two sites is a remedy a reader has to compare.
+_PIN_THE_BUILD = "pin the Coal env to a build with reputation (docs/code-integrity.md)"
+
+
 def _probe_coal(blocks: tuple[str, ...]) -> Probe:
     """Import the exact-mesh engine the way production does, then run one real distance query.
 
@@ -213,20 +218,46 @@ def _probe_coal(blocks: tuple[str, ...]) -> Probe:
     directory, so a half-working install imports and then fails on first use. One
     box-against-sphere query at a known separation costs microseconds and proves the
     whole path.
+
+    The refusal is read from the resolution rather than from an exception this frame
+    catches. Measured 2026-09-10: with ``coal.dll`` refused by an application-control
+    policy, this probe reported ``[ok] fcl 0.7.0.11, box<->sphere = 2.000000`` and
+    ``--doctor`` exited 0 with ``policy_blocked=false``. ``import_collision_engine``
+    swallows Coal's exception and substitutes python-fcl, so nothing ever raised here and
+    the blocked verdict below was unreachable from the command line. The substitution is
+    right for the guard and wrong for the doctor, which exists to say what this box
+    refused.
+
+    The verdict is blocked even where python-fcl carries the guard, and that differs from
+    the kernel-backend probe on purpose. There, two backends are installed as a redundancy
+    pair and losing one costs the spare, so it warns. Here the exit code is the whole
+    message: 2 means an OS policy is blocking a binary and sends the operator to pin a
+    build, which is the true and only remedy whether or not a fallback is holding. The
+    detail names what carried it, so a blocked verdict is not read as no exact-mesh
+    checking at all.
     """
     prefix = os.environ.get(ENV_COAL_PREFIX) or "ext_deps/coal_env (default)"
     try:
-        engine, backend = import_collision_engine()
+        resolution = resolve_collision_engine()
     except Exception as exc:  # noqa: BLE001 (a probe reports failures, it does not raise them)
         text = f"{type(exc).__name__}: {exc}"
         if looks_policy_blocked(text, blocks=blocks):
-            return Probe("exact-mesh collision engine", ProbeStatus.BLOCKED, text[:200],
-                         "pin the Coal env to a build with reputation (docs/code-integrity.md)")
+            return Probe("exact-mesh collision engine", ProbeStatus.BLOCKED, text[:200], _PIN_THE_BUILD)
         return Probe("exact-mesh collision engine", ProbeStatus.BROKEN, text[:200], "see ext_deps/README.md")
+    engine, backend = resolution.module, resolution.backend
+    if resolution.coal_error and looks_policy_blocked(resolution.coal_error, blocks=blocks):
+        carrying = ("python-fcl is carrying the guard" if backend == "fcl"
+                    else "and python-fcl is not importable either, so the guard is on its capsule proxy")
+        return Probe(
+            "exact-mesh collision engine", ProbeStatus.BLOCKED,
+            f"an OS application-control policy refused Coal ({resolution.coal_error[:160]}); {carrying}",
+            _PIN_THE_BUILD,
+        )
     if engine is None:
         return Probe(
             "exact-mesh collision engine", ProbeStatus.MISSING,
-            f"neither Coal nor python-fcl importable (prefix: {prefix})",
+            f"neither Coal nor python-fcl importable (prefix: {prefix}); "
+            f"coal: {resolution.coal_error or 'no detail'}; fcl: {resolution.fcl_error or 'no detail'}"[:300],
             "install Coal; ext_deps/README.md. Until then the guard uses its capsule proxy.",
         )
     try:
@@ -252,8 +283,15 @@ def _probe_coal(blocks: tuple[str, ...]) -> Probe:
                      f"{backend} imported but a distance query failed: {type(exc).__name__}: {exc}"[:200],
                      "see ext_deps/README.md")
     version = getattr(engine, "__version__", "?")
-    return Probe("exact-mesh collision engine", ProbeStatus.OK,
-                 f"{backend} {version} (prefix: {prefix}); box<->sphere = {distance:.6f}")
+    detail = f"{backend} {version} (prefix: {prefix}); box<->sphere = {distance:.6f}"
+    if resolution.coal_error:
+        # The preferred engine did not answer and this was not a policy refusal: not
+        # installed, a broken build, an ABI mismatch. Still ok, because python-fcl computes
+        # the same distances, and still said out loud, because which engine is actually
+        # loaded is the question this probe was written to answer and a silent substitution
+        # is how it stopped answering it once already.
+        detail += f"; Coal did not answer: {resolution.coal_error[:120]}"
+    return Probe("exact-mesh collision engine", ProbeStatus.OK, detail)
 
 
 def _probe_mesh_bundle(model: str) -> Probe:

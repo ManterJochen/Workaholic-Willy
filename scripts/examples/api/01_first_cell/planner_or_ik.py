@@ -14,7 +14,7 @@ from pathlib import Path
 # Four parents up: 01_first_cell, api, examples, scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from src.config import load_robot_config  # noqa: E402
+from src.config import ConfigError, load_robot_config  # noqa: E402
 from src.robot.safety.planning.curobo_client import (  # noqa: E402
     CuroboPlanClient, CuroboUnavailableError, curobo_env_available)
 from src.robot.safety.planning.stack import MotionStack  # noqa: E402
@@ -23,7 +23,14 @@ from src.robot.safety.planning.stack import MotionStack  # noqa: E402
 #    name, {model}_collision_meshes.npz; a gripper variant is {gripper}_{arm}_..., and the sphere
 #    map is per hand with no model in it at all. So a present ur5e bundle says nothing about a UR3e,
 #    and an arm bundle says nothing about the hand on it.
-robot = load_robot_config()
+try:
+    robot = load_robot_config()
+except ConfigError as no_cell:
+    # `robot` is optional on AppConfig, so a tree without one is a configuration answer rather
+    # than a crash, and the four files under scripts/checks/ answer it the same way.
+    print(f"no cell in this config tree ({no_cell}). Write a `robot` block, or select a "
+          f"profile that carries one: WILLY_PROFILE=ur5e")
+    raise SystemExit
 stack = MotionStack.from_robot_config(robot)
 print(f"planner {robot.ur.motion_planner}, robot {stack.model} (from {stack.model_source})")
 

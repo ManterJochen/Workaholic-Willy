@@ -7,14 +7,17 @@ logic of its own model.
 ``torch_dtype`` and ``attn_implementation`` as the optim config asks.
 ``finalize_model`` applies the post-load steps, ``.eval()``,
 channels-last and optional ``torch.compile``, and returns the possibly
-wrapped model. ``autocast_ctx`` is a no-op context on CPU and
-``torch.autocast`` on CUDA.
+wrapped model. ``weight_load_errors`` names the exception types an
+unusable set of weights actually arrives as, for the ``except`` clause
+that says which model failed. ``autocast_ctx`` is a no-op context on CPU
+and ``torch.autocast`` on CUDA.
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
+from functools import cache
 from typing import Any
 
 import torch
@@ -87,6 +90,47 @@ def finalize_model(
     return model
 
 
+@cache
+def weight_load_errors() -> tuple[type[BaseException], ...]:
+    """The exception types an unusable set of weights actually arrives as.
+
+    It is for the ``except`` clause around a ``from_pretrained`` pair whose only job is to
+    name which model failed before re-raising. That clause caught ``RuntimeError``, and
+    measured 2026-09-10 on this box, with transformers 5.5.4, torch 2.7.1+cu128 and
+    safetensors 0.8.0, driving the real loaders against three throwaway model directories,
+    not one of the three ways weights are unusable is a RuntimeError:
+
+        a directory holding only a README   ValueError (GroundingDINO), OSError (SAM2)
+        a half-downloaded snapshot          OSError, both
+        a corrupted model.safetensors       safetensors.SafetensorError,
+                                            "Error while deserializing header: header too large"
+
+    So the one log line connecting a transformers traceback to the config key that pointed
+    there was dead in exactly the situations it was written for. ``RuntimeError`` stays in
+    the set anyway, because a CUDA OOM on the trailing ``.to(device)`` is a load failure
+    worth naming too.
+
+    The set is named rather than ``Exception`` on purpose. ``except Exception`` would also
+    catch a defect in our own code and report it to the operator as unusable weights, which
+    is a worse lie than the silence it replaces, and a defect has to come through
+    unlabelled.
+
+    ``SafetensorError`` lives in a compiled extension, ``safetensors_rust``, and is imported
+    here rather than at module scope, the way this repository treats heavy vendor libraries.
+    It costs nothing at the moment it matters: an ``except`` clause is evaluated only while
+    an exception is already propagating out of ``from_pretrained``, by which point
+    transformers has imported safetensors itself and this is a ``sys.modules`` lookup. The
+    result is cached, so a load that never fails never pays for it either.
+    """
+    errors: tuple[type[BaseException], ...] = (OSError, ValueError, RuntimeError)
+    try:
+        import safetensors
+    except ImportError:  # pragma: no cover (safetensors ships with transformers)
+        # A missing safetensors cannot produce a SafetensorError, so the shorter set is complete.
+        return errors
+    return (*errors, safetensors.SafetensorError)
+
+
 def autocast_ctx(device: torch.device, dtype: torch.dtype | None = None):
     """Return an autocast context, or a no-op context on non-CUDA devices."""
     if device.type != "cuda":
@@ -98,4 +142,5 @@ __all__ = [
     "autocast_ctx",
     "build_load_kwargs",
     "finalize_model",
+    "weight_load_errors",
 ]

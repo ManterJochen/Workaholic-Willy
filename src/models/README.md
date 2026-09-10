@@ -70,7 +70,7 @@ a kind whose model block is missing, before any weight loads.
 | [`segmentation/research/segmenter.py`](segmentation/research/segmenter.py) | `OneFormerSegmenter`: one universal-segmentation pass, then the instance matching the box. |
 | [`handdetection/`](handdetection/README.md) | `PalmDetector` / `ThumbGestureRecognizer` / `HandFinder`. Optional and standalone; nothing on the grasp path builds them. |
 | [`speech/speech_to_text.py`](speech/speech_to_text.py) | `WhisperSpeechToText`. Optional and standalone; the operator console reaches it over `POST /v1/voice/transcribe`. |
-| [`_inference.py`](_inference.py) | `build_load_kwargs` / `finalize_model` / `autocast_ctx`, the shared torch load and optimise helpers. |
+| [`_inference.py`](_inference.py) | `build_load_kwargs` / `finalize_model` / `autocast_ctx` / `weight_load_errors`, the shared torch load and optimise helpers. |
 
 ## Usage
 

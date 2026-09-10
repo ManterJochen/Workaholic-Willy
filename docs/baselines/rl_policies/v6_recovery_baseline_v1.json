@@ -398,10 +398,10 @@
       0.0
     ]
   },
-  "dataset_hash": "ee8a20d9d0df62361909bfb78fcda5b5fafd390cb17b6adb30ae3e734c434785",
+  "dataset_hash": "141422f448b26cd9ebaf6c5d47b78408c06f2a7125a1caa4e241cae892cb8f90",
   "dataset_id": "v6_recovery_canonical",
   "dataset_provenance": {
-    "dataset_hash": "ee8a20d9d0df62361909bfb78fcda5b5fafd390cb17b6adb30ae3e734c434785",
+    "dataset_hash": "141422f448b26cd9ebaf6c5d47b78408c06f2a7125a1caa4e241cae892cb8f90",
     "dataset_id": "v6_recovery_canonical",
     "fit_for": "recovery-action selection in SHADOW (off-policy)",
     "input_source": "synthetic_deterministic",
@@ -709,7 +709,7 @@
   "policy_kind": "recovery",
   "policy_name": "v6_recovery_baseline_v1",
   "policy_version": 1,
-  "reward_interpretation": "off-policy LinUCB over the LOGGED binary recovery outcome (recovered_success), NOT a synthetic outcome model; it ranks which recovery action to try. The committed baseline trains on the SYNTHETIC canonical recovery packs (see dataset_provenance.input_source), so the coefficients characterise mechanics only -- NOT real-hardware lift. Real lift needs captured replay data + a passing offline promotion gate.",
+  "reward_interpretation": "off-policy LinUCB over the LOGGED binary recovery outcome (recovered_success), NOT a synthetic outcome model; it ranks which recovery action to try. The committed baseline trains on the SYNTHETIC canonical recovery packs (see dataset_provenance.input_source), so the coefficients characterise mechanics only; NOT real-hardware lift. Real lift needs captured replay data + a passing offline promotion gate.",
   "reward_model": "logged_recovery_outcomes",
   "ridge_lambda": 1.0,
   "schema_version": 2,

@@ -1,14 +1,14 @@
 {
-  "code_commit": "590212ef6dcab0fbf5fa3279cfe9476fb6872dc3",
+  "code_commit": "4623570a9e8fbc19e9ce65a8f4e6fce08321e86a",
   "config_hash": "9eaa5f1ca819181f12cad06492bb0ffbf611af4d74c6867c051775093e083ed1",
-  "dataset_hash": "358229925177b4b3010c60a99e1bab611c60f86419a839f6856829fc7d40b90e",
+  "dataset_hash": "7989e21dc600dff1945bc38da7c35546625a72f1dbc5772c66f19e73caf929b5",
   "dataset_id": "v7_promotion_canonical",
   "dataset_paths": [
     "tests/data/replay/replay_easy_canonical_v1.jsonl",
     "tests/data/replay/replay_dense_canonical_v1.jsonl"
   ],
   "dataset_provenance": {
-    "dataset_hash": "358229925177b4b3010c60a99e1bab611c60f86419a839f6856829fc7d40b90e",
+    "dataset_hash": "7989e21dc600dff1945bc38da7c35546625a72f1dbc5772c66f19e73caf929b5",
     "dataset_id": "v7_promotion_canonical",
     "fit_for": "offline promotion-gate decision over canonical packs",
     "input_source": "synthetic_deterministic",
@@ -74,7 +74,7 @@
     "num_triples": 63
   },
   "generated_at_iso": "1970-01-01T00:00:00+00:00",
-  "policy_artifact_sha256": "51142bea31214456728faadcbedd2072e175eefa4be2b12325bf2c8d96900d8a",
+  "policy_artifact_sha256": "8c17dd062e12373d5e57699c0d8cac7dcd92305229177c5c308bddd0cb75b78a",
   "policy_family": "v4_sequencing",
   "policy_id": "v4_sequencing_baseline_v1@1",
   "policy_version": 1,
@@ -95,7 +95,7 @@
   "training_scope": "dense",
   "verdict": "abstain",
   "verdict_meaning": {
-    "abstain": "the policy could NOT be graded (too few effective samples, or a degenerate single-action policy) -- no improvement claim either way.",
+    "abstain": "the policy could NOT be graded (too few effective samples, or a degenerate single-action policy); no improvement claim either way.",
     "fail": "the off-policy WIS lift did not clear the thresholds (regression or below the positive floor).",
     "pass": "the off-policy WIS lift over the synthetic packs cleared the thresholds (positive floor + CI lower bound + min effective sample size). NOT a real-hardware lift."
   }

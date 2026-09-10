@@ -1,14 +1,14 @@
 {
-  "code_commit": "12f4e1da17f303dabfdf40769107bd89511e4c43",
+  "code_commit": "4623570a9e8fbc19e9ce65a8f4e6fce08321e86a",
   "config_hash": "6df3092906bb214fa213d9424dd1d44e3925db523f712a4ca4d9e717872e37fa",
-  "dataset_hash": "358229925177b4b3010c60a99e1bab611c60f86419a839f6856829fc7d40b90e",
+  "dataset_hash": "7989e21dc600dff1945bc38da7c35546625a72f1dbc5772c66f19e73caf929b5",
   "dataset_id": "v7_promotion_canonical",
   "dataset_paths": [
     "tests/data/replay/replay_easy_canonical_v1.jsonl",
     "tests/data/replay/replay_dense_canonical_v1.jsonl"
   ],
   "dataset_provenance": {
-    "dataset_hash": "358229925177b4b3010c60a99e1bab611c60f86419a839f6856829fc7d40b90e",
+    "dataset_hash": "7989e21dc600dff1945bc38da7c35546625a72f1dbc5772c66f19e73caf929b5",
     "dataset_id": "v7_promotion_canonical",
     "fit_for": "offline promotion-gate decision over canonical packs",
     "input_source": "synthetic_deterministic",
@@ -74,7 +74,7 @@
     "num_triples": 600
   },
   "generated_at_iso": "1970-01-01T00:00:00+00:00",
-  "policy_artifact_sha256": "7543e999dc3b83194940c4a1fd5f28be96cac5b3cfb0c49fd68b61a331d46181",
+  "policy_artifact_sha256": "4abdcfc7518cba351492a3dfa87e36e10dcdc6c4ea0bc7fb23864ed2974a58f6",
   "policy_family": "v5_perception_budget",
   "policy_id": "v5_perception_budget_baseline_v1@1",
   "policy_version": 1,
@@ -95,7 +95,7 @@
   "training_scope": "dense",
   "verdict": "abstain",
   "verdict_meaning": {
-    "abstain": "the policy could NOT be graded (too few effective samples, or a degenerate single-action policy) -- no improvement claim either way.",
+    "abstain": "the policy could NOT be graded (too few effective samples, or a degenerate single-action policy); no improvement claim either way.",
     "fail": "the off-policy WIS lift did not clear the thresholds (regression or below the positive floor).",
     "pass": "the off-policy WIS lift over the synthetic packs cleared the thresholds (positive floor + CI lower bound + min effective sample size). NOT a real-hardware lift."
   }

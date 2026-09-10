@@ -43,6 +43,7 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.config.schema import AppConfig
     from src.config.schema.robot import RobotConfig
 
 from src.contracts import UNSET
@@ -55,10 +56,17 @@ from ..pick_run import PickOutcome, PickRun, Recording
 _EXIT_OK, _EXIT_CONFIG, _EXIT_PICK, _EXIT_ERROR = 0, 1, 2, 3
 
 
-def _load_robot_config(profile: str | None, data_dir: str | None) -> "RobotConfig":
-    """Load the config tree, honouring an explicit profile chain.
+def _load_cell_config(profile: str | None, data_dir: str | None) -> "tuple[AppConfig, RobotConfig]":
+    """Load the config tree once, and hand back both halves of the cell it describes.
 
-    The translation line is the whole function. argparse hands back ``None`` for a flag nobody
+    Both, because one was not enough and nobody could see it. This returned the robot section
+    alone, and the camera section was then read downstream by `build_real_components` with a bare
+    `load_config()`, which ignores both flags this function honours. So `--profile ur3e` built a
+    UR3e arm and whatever cameras `WILLY_PROFILE` named, and `--data-dir` had no downstream
+    equivalent at all. Measured 2026-09-10: two different refusals from the same chain through the
+    two doors.
+
+    The translation line below is load-bearing. argparse hands back ``None`` for a flag nobody
     typed, while ``load_robot_config(profile=None)`` means "the base tree, ignore
     ``WILLY_PROFILE``". Passing one straight into the other silently disables the environment
     variable for every operator who exports it and does not also pass ``--profile``. ``UNSET`` is
@@ -69,9 +77,38 @@ def _load_robot_config(profile: str | None, data_dir: str | None) -> "RobotConfi
     survives an exception. `drivers/ur/__main__.py` and `real_cell/calibrate.py` translate the same
     way.
     """
-    from src.config.loader import load_robot_config
+    from src.config.loader import ConfigError, load_config
 
-    return load_robot_config(data_dir, profile=UNSET if profile is None else profile)
+    cfg = load_config(data_dir, profile=UNSET if profile is None else profile)
+    # The same check and the same sentence `load_robot_config` raises, because `robot` is genuinely
+    # optional on a tree: one may configure cameras and models and no arm at all.
+    robot = getattr(cfg, "robot", None)
+    if robot is None:
+        raise ConfigError("the loaded config has no `robot` block")
+    return cfg, robot
+
+
+def _profile_banner(flag: str | None) -> str:
+    """The overlay chain this run actually loaded, and which of the two doors it came through.
+
+    The banner said `profile=<none>` with a chain loaded and applied. It printed ``args.profile``,
+    which is `None` for the operator who exported ``WILLY_PROFILE`` once and runs every tool in this
+    repo without repeating the flag, the documented way to select a cell. The load one function up
+    honours that variable, which is what its ``UNSET`` translation is for, so the one line of a
+    bring-up that says which cell is about to be driven denied the overlays the cell was built from.
+    Measured 2026-09-10: ``WILLY_PROFILE=console_dummy`` with ``--rehearse --runs 1`` exits 0, which
+    only the console_dummy gripper can do, under a banner reading ``profile=<none>``.
+
+    The source is printed with it. An unexpected profile is only actionable if the operator knows
+    which lever to reach for, and the two levers are in different places: one is in the command they
+    just typed, the other is in a shell they set up days ago.
+    """
+    from src.config.loader import active_profile
+
+    if flag is not None:
+        return f"{flag} (--profile)" if flag else "<none> (--profile)"
+    chain = active_profile()
+    return f"{chain} (WILLY_PROFILE)" if chain else "<none>"
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -95,7 +132,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # ---- 1. Config ---------------------------------------------------------------------------
     try:
-        robot_cfg = _load_robot_config(args.profile, args.data_dir)
+        app_cfg, robot_cfg = _load_cell_config(args.profile, args.data_dir)
     except Exception as exc:  # noqa: BLE001 (a config fault must read as a config fault)
         print(f"[config] FAILED to load: {type(exc).__name__}: {exc}", flush=True)
         return _EXIT_CONFIG
@@ -103,10 +140,12 @@ def main(argv: "list[str] | None" = None) -> int:
     # file's: preflight before build, attestation before motion, and the lock before the connect.
     # The banners stay here, because narration belongs to whoever is being narrated to, and this
     # one is a bench.
+    # `app_cfg` goes only to the real branch: a rehearsal opens no camera, so the camera half of the
+    # tree is not consulted at all there and passing it would suggest otherwise.
     cell = (Cell.rehearsal(robot_cfg) if args.rehearse
-            else Cell.from_robot_config(robot_cfg, prompt=args.prompt))
+            else Cell.from_robot_config(robot_cfg, prompt=args.prompt, app_config=app_cfg))
     vendor = "dummy (rehearsal)" if args.rehearse else cell.vendor
-    print(f"\n=== 1. CONFIG === vendor={vendor} profile={args.profile or '<none>'}", flush=True)
+    print(f"\n=== 1. CONFIG === vendor={vendor} profile={_profile_banner(args.profile)}", flush=True)
 
     report = cell.preflight()
     print(report.render(), flush=True)

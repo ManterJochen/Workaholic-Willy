@@ -185,57 +185,55 @@ class TaxonomyVerdict:
             last_index = idx
 
 
-def _extra_flag(record: GraspAttemptRecord, key: str) -> bool:
-    extra = record.extra or {}
-    value = extra.get(key)
-    return value is True
+def _extra_flag(extra: Mapping[str, Any], key: str) -> bool:
+    return extra.get(key) is True
 
 
-def _is_failure(record: GraspAttemptRecord) -> bool:
+def _is_failure(final_outcome: str) -> bool:
     return (
-        record.final_outcome != _SUCCESS_OUTCOME
-        and record.final_outcome in _FAILURE_GATING_OUTCOMES
+        final_outcome != _SUCCESS_OUTCOME
+        and final_outcome in _FAILURE_GATING_OUTCOMES
     )
 
 
-def _check_collision(record: GraspAttemptRecord) -> bool:
-    if not _is_failure(record):
+def _check_collision(final_outcome: str, extra: Mapping[str, Any]) -> bool:
+    if not _is_failure(final_outcome):
         return False
-    if _extra_flag(record, "collision_evidence"):
+    if _extra_flag(extra, "collision_evidence"):
         return True
-    if record.final_outcome == "unsafe_recovery_refused":
+    if final_outcome == "unsafe_recovery_refused":
         return True
     return False
 
 
-def _check_calibration_drift(record: GraspAttemptRecord) -> bool:
-    if not _is_failure(record):
+def _check_calibration_drift(final_outcome: str, extra: Mapping[str, Any]) -> bool:
+    if not _is_failure(final_outcome):
         return False
-    return _extra_flag(record, "calibration_drift_evidence")
+    return _extra_flag(extra, "calibration_drift_evidence")
 
 
-def _check_slip(record: GraspAttemptRecord) -> bool:
-    if record.final_outcome != "verification_failed":
+def _check_slip(final_outcome: str, extra: Mapping[str, Any]) -> bool:
+    if final_outcome != "verification_failed":
         return False
-    return _extra_flag(record, "slip_evidence")
+    return _extra_flag(extra, "slip_evidence")
 
 
-def _check_empty_air(record: GraspAttemptRecord) -> bool:
-    if record.final_outcome != "verification_failed":
+def _check_empty_air(final_outcome: str, extra: Mapping[str, Any]) -> bool:
+    if final_outcome != "verification_failed":
         return False
-    return _extra_flag(record, "empty_air_evidence")
+    return _extra_flag(extra, "empty_air_evidence")
 
 
-def _check_deformable(record: GraspAttemptRecord) -> bool:
-    if not _is_failure(record):
+def _check_deformable(final_outcome: str, extra: Mapping[str, Any]) -> bool:
+    if not _is_failure(final_outcome):
         return False
-    return _extra_flag(record, "deformable_misclass_evidence")
+    return _extra_flag(extra, "deformable_misclass_evidence")
 
 
-def _check_occlusion(record: GraspAttemptRecord) -> bool:
-    if not _is_failure(record):
+def _check_occlusion(final_outcome: str, extra: Mapping[str, Any]) -> bool:
+    if not _is_failure(final_outcome):
         return False
-    return _extra_flag(record, "occlusion_misread_evidence")
+    return _extra_flag(extra, "occlusion_misread_evidence")
 
 
 #: Rule table: each entry pairs a FailureRootCause with its predicate,
@@ -250,24 +248,36 @@ _RULES: tuple[tuple[FailureRootCause, Any], ...] = (
 )
 
 
-def classify_record(record: GraspAttemptRecord) -> TaxonomyVerdict:
-    """Classify a single record deterministically (successes classify as ``UNCLASSIFIED``, excluded from the coverage denominator)."""
+def classify_symptoms(
+    final_outcome: str,
+    extra: Mapping[str, Any],
+    *,
+    attempt_id: str = "<unnamed>",
+) -> TaxonomyVerdict:
+    """The rule table applied to the two things it reads, without a record around them.
 
-    if not isinstance(record, GraspAttemptRecord):
-        raise TypeError(
-            f"record must be GraspAttemptRecord; got "
-            f"{type(record).__name__}"
-        )
+    Why this exists as a seam: ``rl.dataset.derive_outcome_class`` stratifies on the same failure
+    axis and, until 2026-09-10, decided it from a disjoint set of fields
+    (``extra.failure_taxonomy_class`` and ``extra.expected_root_cause``). Neither reader could see
+    what the other keyed on, so one record was ``collision_rejection`` here and ``unclassified``
+    there. The alternative to this seam was a second copy of the rule table, which is the shape that
+    produced the divergence in the first place.
+
+    The flow is one-way on purpose. This classifier still does not read
+    ``extra.failure_taxonomy_class``: that field is the producer's own label (the sim runners stamp
+    it from ground truth), and a classifier whose coverage number counts rows where the producer
+    handed it the answer is measuring the producer, not itself.
+    """
 
     matches: list[FailureRootCause] = []
     fired_evidence: dict[str, bool] = {}
     for cause, predicate in _RULES:
         try:
-            fired = bool(predicate(record))
+            fired = bool(predicate(final_outcome, extra))
         except Exception as exc:  # pragma: no cover (defensive)
             raise RuntimeError(
                 f"taxonomy rule {cause.value!r} raised on attempt "
-                f"{record.attempt_id!r}: {exc!r}"
+                f"{attempt_id!r}: {exc!r}"
             ) from exc
         fired_evidence[cause.value] = fired
         if fired:
@@ -278,7 +288,7 @@ def classify_record(record: GraspAttemptRecord) -> TaxonomyVerdict:
             primary=FailureRootCause.UNCLASSIFIED,
             also_matched=(),
             evidence={
-                "final_outcome": record.final_outcome,
+                "final_outcome": final_outcome,
                 "rules_fired": fired_evidence,
             },
         )
@@ -289,9 +299,25 @@ def classify_record(record: GraspAttemptRecord) -> TaxonomyVerdict:
         primary=primary,
         also_matched=also_matched,
         evidence={
-            "final_outcome": record.final_outcome,
+            "final_outcome": final_outcome,
             "rules_fired": fired_evidence,
         },
+    )
+
+
+def classify_record(record: GraspAttemptRecord) -> TaxonomyVerdict:
+    """Classify a single record deterministically (successes classify as ``UNCLASSIFIED``, excluded from the coverage denominator)."""
+
+    if not isinstance(record, GraspAttemptRecord):
+        raise TypeError(
+            f"record must be GraspAttemptRecord; got "
+            f"{type(record).__name__}"
+        )
+
+    return classify_symptoms(
+        record.final_outcome,
+        record.extra or {},
+        attempt_id=record.attempt_id,
     )
 
 
@@ -468,6 +494,7 @@ __all__ = [
     "TaxonomyVerdict",
     "TaxonomyReport",
     "classify_record",
+    "classify_symptoms",
     "build_taxonomy_report",
     "render_report_json",
     "write_report",
@@ -479,6 +506,9 @@ __all__ = [
     "build_labeled_pack_manifest",
     "write_labeled_pack_manifest",
     "load_labeled_pack",
+    "evaluate_labeled_pack",
+    "LABEL_AGREEMENT_GATE",
+    "LABEL_COVERAGE_GATE",
 ]
 
 
@@ -666,7 +696,11 @@ def write_labeled_pack(repo_root: Path) -> Path:
     payload = render_labeled_pack_jsonl()
     out_path = (repo_root / LABELED_PACK_RELATIVE_PATH).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(payload, encoding="utf-8")
+    # newline="" keeps the rendered line feeds out of os.linesep translation. The sidecar
+    # manifest hashes these bytes, so a CRLF write makes a pack disagree with the sha256
+    # stored beside it. MEASURED 2026-09-10: that is how the committed pack and its manifest
+    # drifted apart on this box.
+    out_path.write_text(payload, encoding="utf-8", newline="")
     # The sha is the contract the sidecar manifest is checked against later.
     logger.info(
         "Wrote labeled taxonomy pack to %s (%d bytes, sha256 %s)",
@@ -717,7 +751,8 @@ def write_labeled_pack_manifest(repo_root: Path) -> Path:
     out_path = (repo_root / LABELED_PACK_MANIFEST_RELATIVE_PATH).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-    out_path.write_text(body, encoding="utf-8")
+    # LF on every platform, for the same reason the pack itself is written LF.
+    out_path.write_text(body, encoding="utf-8", newline="")
     logger.info(
         "Wrote labeled-pack manifest to %s (%d bytes)",
         out_path,
@@ -735,3 +770,109 @@ def load_labeled_pack(repo_root: Path) -> tuple[GraspAttemptRecord, ...]:
             f"labeled taxonomy pack missing on disk: {abs_path}"
         )
     return tuple(iter_jsonl(abs_path))
+
+
+#: What the classifier must reproduce on the labeled pack. 1.0, not 0.99: every row of that pack was
+#: authored so exactly one cause is correct, and the pack is 68 rows, so a single wrong answer is 1.5
+#: percentage points and is a rule that changed meaning, not noise.
+LABEL_AGREEMENT_GATE: float = 1.0
+#: Classified over failures on the labeled pack. The recipe that generates it targets 0.95 and
+#: includes two deliberately unclassifiable failures, so the measurable ceiling is 61/63 = 0.968.
+LABEL_COVERAGE_GATE: float = 0.95
+
+
+def evaluate_labeled_pack(repo_root: Path) -> dict[str, Any]:
+    """Grade the classifier against the labeled pack own ``extra.expected_root_cause``.
+
+    Why this exists: the soak gate carried a failure-taxonomy section that could not fail. Measured
+    2026-09-10: the synthetic soak stream stamps no ``extra.*_evidence`` flag anywhere, so all 168 of
+    its failures classify as UNCLASSIFIED and the block reads ``coverage_fraction: 0.0``. A
+    classifier deleted down to ``return UNCLASSIFIED`` produces that same block byte for byte, and
+    the gate still passed. A leg that reports the same number whether the code under it works or not
+    is not evidence.
+
+    The labeled pack is the input that can answer: 68 deterministic rows, each carrying the root
+    cause it was authored to have, including three multi-flag rows whose answer is a question about
+    precedence rather than about one rule. ``expected_root_cause`` is a label the classifier never
+    reads, which is what makes agreeing with it a result.
+
+    Returns a report dict; ``passes_gate`` is the gate leg. A missing pack gives ``passes_gate``
+    False with a reason, never a silent skip: a gate whose evidence vanished has not been passed.
+    """
+
+    abs_path = (repo_root / LABELED_PACK_RELATIVE_PATH).resolve()
+    if not abs_path.is_file():
+        logger.warning(
+            "Taxonomy classifier gate FAILED for lack of a pack at %s", abs_path
+        )
+        return {
+            "capability_group": "failure_taxonomy",
+            "pack_path": LABELED_PACK_RELATIVE_PATH,
+            "records": 0,
+            "judged_failures": 0,
+            "classified": 0,
+            "coverage_fraction": 0.0,
+            "label_agreement": 0.0,
+            "mismatches": [],
+            "unreadable": f"labeled taxonomy pack missing on disk: {abs_path}",
+            "passes_gate": False,
+        }
+
+    records = tuple(iter_jsonl(abs_path))
+    judged = 0
+    agreed = 0
+    classified = 0
+    mismatches: list[dict[str, str]] = []
+    for record in records:
+        expected = (record.extra or {}).get("expected_root_cause")
+        if not isinstance(expected, str):
+            continue
+        got = classify_record(record).primary.value
+        # Successes are labeled UNCLASSIFIED and sit outside the coverage denominator, exactly as
+        # they do in the aggregate report; they still have to come back UNCLASSIFIED.
+        is_failure = record.final_outcome != _SUCCESS_OUTCOME
+        if is_failure:
+            judged += 1
+            if got != FailureRootCause.UNCLASSIFIED.value:
+                classified += 1
+        if got == expected:
+            agreed += 1
+        else:
+            mismatches.append(
+                {"attempt_id": record.attempt_id, "expected": expected, "got": got}
+            )
+
+    labeled = judged + sum(
+        1
+        for r in records
+        if isinstance((r.extra or {}).get("expected_root_cause"), str)
+        and r.final_outcome == _SUCCESS_OUTCOME
+    )
+    agreement = (agreed / labeled) if labeled else 0.0
+    coverage = (classified / judged) if judged else 0.0
+    passes = (
+        labeled > 0
+        and agreement >= LABEL_AGREEMENT_GATE
+        and coverage >= LABEL_COVERAGE_GATE
+    )
+    logger.info(
+        "Taxonomy classifier over %d labeled row(s): agreement %.4f, coverage %.4f, "
+        "%d mismatch(es): %s",
+        labeled, agreement, coverage, len(mismatches), "PASS" if passes else "FAIL",
+    )
+    return {
+        "capability_group": "failure_taxonomy",
+        "pack_path": LABELED_PACK_RELATIVE_PATH,
+        "records": len(records),
+        "judged_failures": judged,
+        "classified": classified,
+        "coverage_fraction": round(coverage, 6),
+        "label_agreement": round(agreement, 6),
+        "agreement_gate": LABEL_AGREEMENT_GATE,
+        "coverage_gate": LABEL_COVERAGE_GATE,
+        # The rows themselves, not a count: a gate that says "3 wrong" and not which three sends the
+        # next reader back to re-run what this already knew.
+        "mismatches": mismatches,
+        "unreadable": "",
+        "passes_gate": passes,
+    }

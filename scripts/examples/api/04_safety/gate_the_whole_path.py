@@ -14,7 +14,7 @@ import numpy as np
 # Four parents up: 04_safety, api, examples, scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from src.config import load_robot_config  # noqa: E402
+from src.config import ConfigError, load_robot_config  # noqa: E402
 from src.config.schema.robot import FixtureBoxConfig, TrajectoryCheckConfig  # noqa: E402
 from src.robot.constants import home_joints_default  # noqa: E402
 from src.robot.core import JointPositions, RobotVendor  # noqa: E402
@@ -22,7 +22,14 @@ from src.robot.drivers import create_arm  # noqa: E402
 from src.robot.safety import SafetyPreflight  # noqa: E402
 
 # 1. No profile in this tree declares a fixture, so the bench is declared here. Measure your own.
-config = load_robot_config()
+try:
+    config = load_robot_config()
+except ConfigError as no_cell:
+    # `robot` is optional on AppConfig, so a tree without one is a configuration answer rather
+    # than a crash, and the four files under scripts/checks/ answer it the same way.
+    print(f"no cell in this config tree ({no_cell}). Write a `robot` block, or select a "
+          f"profile that carries one: WILLY_PROFILE=ur5e")
+    raise SystemExit
 declared = config.safety.self_collision.model_copy(update={"fixtures": [FixtureBoxConfig(
     name="bench", center_mm=(500.0, 0.0, -75.0), half_extents_mm=(300.0, 300.0, 50.0))]})
 

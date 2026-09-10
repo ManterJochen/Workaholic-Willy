@@ -36,7 +36,14 @@ build = DatasetBuild.from_file(None, name="example_corpus", engine="none", out_r
 print(build.describe())
 
 # 4. Render. `refused_family` among the status counts is the yield arriving as data, not an error.
-rendered = build.render()
+try:
+    rendered = build.render()
+except OSError as unwritable:
+    # The first line here that touches the disk: the writer creates logs/examples/<name>/
+    # scenes before the engine seats anything.
+    print(f"cannot write under logs/examples ({unwritable}); a render needs a writable "
+          f"working directory")
+    raise SystemExit
 print(rendered.ok, dict(rendered.summary.get("by_status", {})), rendered.reason)
 
 # 5. The engine is stamped into the dataset. Two engines never settle a scene identically, and the

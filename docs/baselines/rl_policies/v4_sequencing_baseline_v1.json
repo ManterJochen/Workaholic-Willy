@@ -71,7 +71,7 @@
   "policy_kind": "sequencing",
   "policy_name": "v4_sequencing_baseline_v1",
   "policy_version": 1,
-  "reward_interpretation": "deterministic empirical action-FREQUENCY lookup over LOGGED sequencing outcomes; a cell's action is the most-frequent observed action, NOT a live success probability. Cells below min_support fall back to the hand-authored DEFAULT table (see fallback_honesty). Synthetic canonical data; off-policy -- NOT real lift.",
+  "reward_interpretation": "deterministic empirical action-FREQUENCY lookup over LOGGED sequencing outcomes; a cell's action is the most-frequent observed action, NOT a live success probability. Cells below min_support fall back to the hand-authored DEFAULT table (see fallback_honesty). Synthetic canonical data; off-policy; NOT real lift.",
   "reward_model": "offline_empirical_frequency",
   "schema_version": 2,
   "seed": 1,

@@ -12,7 +12,19 @@ The two long steps are the render and the labelling, and they are separate comma
 different label density costs no render time, so a question about density is settled on a finished
 corpus rather than guessed at before one exists.
 
-## What ships, and what you can read off it
+## Trigger
+
+Any of:
+
+1. `logs/dl/clouds/v5` is missing or partial and a training run needs it.
+2. The asset bank changed: new meshes fetched, or a collection re-screened.
+3. A different gripper needs its own labels, which is Step 4's second half rather than a
+   rebuild.
+4. A shard died and you need to know which steps resume and which do not.
+
+## Diagnose
+
+### What ships, and what you can read off it
 
 | | |
 |---|---|
@@ -25,7 +37,12 @@ suction one; the remaining 164 are reported `unclosable` rather than passed. Tho
 shipped file, so recount them rather than trusting this table. The meshes themselves are not in the
 repository: `python -m datagen.assets --check` reports what is present per source.
 
-## Step 0. The supermarket meshes, if they are still raw
+Read every row before starting. Each one is an input to a step below, and the expensive way to
+find a missing row is hours into the labelling.
+
+## Mitigate
+
+### Step 0. The supermarket meshes, if they are still raw
 
 Skip this if `assets/meshes/asos` is already normalised.
 
@@ -44,7 +61,7 @@ honest default, and `--scale` is how you override it. Decimation is quadric only
 is much faster and it shatters the surface, and a mesh in pieces cannot be closed into a solid, so
 it can be neither labelled nor collided. No cleanup step recovers that, because it is structural.
 
-## Step 1. Warm the convex decomposition
+### Step 1. Warm the convex decomposition
 
 ```bash
 python -m datagen decompose --config datagen/assets/screens/v5_config.json --jobs 10
@@ -55,7 +72,7 @@ it, but it then pays the decomposition inside its own render loop, one mesh at a
 all of that time is the decomposition itself. Across several processes the same work is minutes and
 the build finds every entry warm.
 
-## Step 2. Render
+### Step 2. Render
 
 ```bash
 python -m datagen build --config datagen/assets/screens/v5_config.json \
@@ -81,7 +98,7 @@ interrupted run costs only what it had not written.
 
 Measure progress by the `ok` count, never by the exit code. `build` returns 0 when it gives up.
 
-## Step 3. Label
+### Step 3. Label
 
 ```bash
 python -m datagen label-grasps --name v5_s0 --out logs/dl --density grid
@@ -108,7 +125,7 @@ loaded its bank.
 rejected as below the table is far higher in a scene than on the same meshes screened alone, because
 in a scene the object sits among others on a surface.
 
-## Step 4. The corpus the trainer reads
+### Step 4. The corpus the trainer reads
 
 ```bash
 python -m datagen build-cloud-corpus --name v5_s0 --out logs/dl --corpus-out logs/dl/clouds/v5/s0
@@ -125,7 +142,7 @@ stopping it, rather than what you assume about it.
 
 Each process loads the full mesh bank first, and the shards each do it separately.
 
-### Labelling for a different gripper
+#### Labelling for a different gripper
 
 ```bash
 python -m datagen label-grasps --name v5_s0 --out logs/dl --density grid --jaw wide_140
@@ -144,7 +161,7 @@ Without that stamp a jaw-varied corpus is indistinguishable from the default gri
 time, and a wrong gripper vector is worse than a constant one: it teaches a relationship that is not
 there.
 
-### If one shard is left running alone, split it
+#### If one shard is left running alone, split it
 
 The step is single-process per dataset, and `--scenes` cannot divide it: that flag is an even
 stride, so two calls with it walk the same subset rather than complementary ones. Hand each process
@@ -161,7 +178,7 @@ before anything runs. Give every part its own `--corpus-out`. And note that spli
 what the running builder had already produced, since the extraction step does not resume, so
 splitting a shard that is nearly finished costs more than it saves.
 
-## Step 5. Train
+### Step 5. Train
 
 The training half is [`train_your_own_generator.md`](train_your_own_generator.md) from Step 4
 onward, run against `logs/dl/clouds/v5` instead of your own corpus:
@@ -174,6 +191,38 @@ python -m src.robot.grasping.deep train-set --recipe v1 --tier full \
 Keep `--epochs` where the tier puts it even when you intend to stop early, because
 `CosineAnnealingLR` takes its `T_max` from it: asking for fewer epochs changes the learning-rate
 trajectory, which breaks the pairing against any run you are comparing to.
+
+## Verify
+
+Per step, and each one has a way of looking finished while it is not.
+
+| after | what to read | what a wrong reading means |
+|---|---|---|
+| Step 2 render | the `ok` count in the build's own output, never the exit code | `build` returns 0 when it gives up, so a zero exit says only that it stopped |
+| Step 3 label | the jaw labels written, and the share of objects earning at least one | a much lower share means the density or the screen changed, not that the corpus is smaller |
+| Step 4 clouds | one `.npz` per scene under each shard's own `--corpus-out` | shards sharing one directory overwrite each other, which is what the refusal on a shared path prevents |
+| Step 4, other gripper | the file is `grasps_jaw_<name>.jsonl`, and every cloud records which jaw its labels came from | an unstamped jaw-varied corpus is indistinguishable from the default gripper's at training time |
+| Step 5 train | the run's own report, and whether `--epochs` still sits where the tier put it | lowering `--epochs` to stop early moves the learning-rate trajectory, so the run is no longer comparable with the one you are pairing it against |
+
+`python -m datagen cost` is not a verification. It is a lower bound taken against a much smaller
+asset bank, and on the labelling step it answers about `default` density rather than `grid`.
+
+## Rollback
+
+Nothing here writes outside `logs/dl` and the mesh library, so backing a step out is deleting a
+shard's directory and running its command again. What differs per step is what a kill costs.
+
+* Step 2 render resumes. Re-running the identical command skips scenes already written, so an
+  interrupted render costs only what it had not written.
+* Step 3 label is cheap to redo per shard, and writing `grasps_jaw_<name>.jsonl` never touches
+  `grasps.jsonl`, so a non-default jaw cannot damage the default corpus.
+* Step 4 does not resume. It does not skip a scene it already wrote, so killing a builder costs
+  its whole run. Read what a process has produced before stopping it.
+* Splitting a shard that is already running throws away what its builder had produced, so split
+  before a long run rather than during one.
+* `python -m datagen split-dataset --name <shard> --out logs/dl --clean` undoes a split. The
+  scene directories are junctioned rather than copied, so nothing is duplicated on disk to
+  clean up.
 
 ## Two levers that are measured but not applied
 

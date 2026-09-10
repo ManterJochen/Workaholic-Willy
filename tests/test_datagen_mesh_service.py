@@ -142,17 +142,32 @@ class TheScreenWritesBOTHFilesTests(unittest.TestCase):
 
 
 class TheDiagnosisAsksAboutTheRightMeshesTests(unittest.TestCase):
+    """⛔ THE SHAPE THESE TESTS WRITE IS THE SHAPE THE WRITER WRITES, and it was not.
+
+    Both screen tests here hand-wrote a bare list of rows, which `screen_meshes` stopped writing when
+    the density and the partial stamp moved INTO the file (`assets/prepare.py:400-408`). They were
+    green against a format nothing produces any more, while `why-no-jaw --from-screen` on this
+    repository's own committed `datagen/assets/screens/screen.json` ended in
+    `AttributeError: 'str' object has no attribute 'get'`: the reader walked the wrapper dict's
+    KEYS. A test can only fence a defect it is shaped like.
+    """
 
     ENTRIES = [(f"gso_{i}", f"g{i}.obj") for i in range(10)]
+
+    @staticmethod
+    def _written(rows: list[dict]) -> dict:
+        """A screen file in the shape `screen_meshes` writes today: the rows, plus what they mean."""
+        return {"density": "grid", "rest_poses": ["upright", "x-down", "y-down"],
+                "partial": False, "screened": len(rows), "of": len(rows),
+                "want_graspable": None, "rows": rows}
 
     def _prepared(self) -> MeshPreparation:
         preparation = MeshPreparation.from_sources(["gso"])
         preparation.entries = lambda: list(self.ENTRIES)          # type: ignore[method-assign]
         return preparation
 
-    def test_from_screen_narrows_to_the_meshes_that_earned_nothing(self) -> None:
-        """⭐ THE SHARPER QUESTION. Without it the probe samples EVERYTHING, and meshes that earn no
-        jaw label are a minority, so most of the budget goes on objects that already work."""
+    def _asked_about(self, payload: object) -> set[str]:
+        """Which meshes the probe was handed, for a screen file holding `payload`."""
         asked: list = []
 
         def capture(meshes, **kwargs):                 # type: ignore[no-untyped-def]
@@ -162,20 +177,45 @@ class TheDiagnosisAsksAboutTheRightMeshesTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as name:
             screen = Path(name) / "s.json"
-            screen.write_text(json.dumps([
-                {"asset_id": "gso_3", "status": "ok", "jaw": 0},
-                {"asset_id": "gso_7", "status": "ok", "jaw": 0},
-                {"asset_id": "gso_1", "status": "ok", "jaw": 44}]), encoding="utf-8")
+            screen.write_text(json.dumps(payload), encoding="utf-8")
             with mock.patch("datagen.assets.diagnose.why_no_jaw", side_effect=capture):
                 self._prepared().why_no_jaw(from_screen=screen)
-        self.assertEqual({"gso_3", "gso_7"}, {asset_id for asset_id, _ in asked})
+        return {asset_id for asset_id, _ in asked}
+
+    ROWS = [{"asset_id": "gso_3", "status": "ok", "jaw": 0},
+            {"asset_id": "gso_7", "status": "ok", "jaw": 0},
+            {"asset_id": "gso_1", "status": "ok", "jaw": 44}]
+
+    def test_from_screen_narrows_to_the_meshes_that_earned_nothing(self) -> None:
+        """⭐ THE SHARPER QUESTION. Without it the probe samples EVERYTHING, and meshes that earn no
+        jaw label are a minority, so most of the budget goes on objects that already work."""
+        self.assertEqual({"gso_3", "gso_7"}, self._asked_about(self._written(self.ROWS)))
+
+    def test_a_screen_written_before_the_wrapper_is_STILL_read(self) -> None:
+        """A bare list is what `screen_meshes` wrote until the density moved into the file. Refusing
+        it would strand every screen already on somebody's disk, so both shapes are read."""
+        self.assertEqual({"gso_3", "gso_7"}, self._asked_about(self.ROWS))
+
+    def test_the_screen_THIS_REPOSITORY_SHIPS_can_be_read(self) -> None:
+        """The measurement that started this: the committed screen is the file the README tells a
+        reader to pass, and it is the wrapper shape."""
+        from datagen.assets.prepare import screen_rows
+
+        shipped = Path(__file__).resolve().parents[1] / "datagen/assets/screens/screen.json"
+        rows = screen_rows(json.loads(shipped.read_text(encoding="utf-8")))
+        self.assertTrue(rows, f"no rows read out of {shipped}")
+        self.assertTrue(all(isinstance(row, dict) for row in rows),
+                        "the reader walked the wrapper's keys instead of its rows")
+        self.assertTrue([row for row in rows if row.get("status") == "ok" and not row.get("jaw", 0)],
+                        "the shipped screen has no zero-jaw row, so it cannot exercise --from-screen")
 
     def test_a_screen_with_no_zero_rows_refuses_rather_than_probing_everything(self) -> None:
         """Falling back to the whole library would answer a question nobody asked, expensively."""
         with tempfile.TemporaryDirectory() as name:
             screen = Path(name) / "s.json"
-            screen.write_text(json.dumps([{"asset_id": "gso_1", "status": "ok", "jaw": 4}]),
-                              encoding="utf-8")
+            screen.write_text(
+                json.dumps(self._written([{"asset_id": "gso_1", "status": "ok", "jaw": 4}])),
+                encoding="utf-8")
             with self.assertRaises(ValueError) as caught:
                 self._prepared().why_no_jaw(from_screen=screen)
         self.assertIn("nothing to ask about", str(caught.exception))
