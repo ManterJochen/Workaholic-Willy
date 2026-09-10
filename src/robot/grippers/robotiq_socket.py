@@ -93,6 +93,36 @@ _NOTHING_LISTENING = (
 )
 
 
+#: `gFLT` values from the 2-finger register map. ⚠ Robotiq numbers these differently on the
+#: 3-Finger and the EPick, so :meth:`RobotiqSocket.fault_text` reports an unlisted code by number
+#: rather than inventing a meaning for it.
+_FAULTS = {
+    5: "action delayed, activation must be completed first",
+    7: "activation bit not set",
+    9: "communication chip not ready",
+    10: "changing mode fault, the automatic release is still in progress",
+    11: "automatic release completed",
+    13: "activation fault, check for a mechanical obstruction",
+    14: "changing mode fault, check for an obstruction",
+    15: "automatic release fault, review the emergency-release procedure",
+}
+
+
+#: `gFLT` values from the 2-finger register map. ⚠ Robotiq numbers these differently on the
+#: 3-Finger and the EPick, so :meth:`RobotiqSocket.fault_text` reports an unlisted code by number
+#: rather than inventing a meaning for it.
+_FAULTS = {
+    5: "action delayed, activation must be completed first",
+    7: "activation bit not set",
+    9: "communication chip not ready",
+    10: "changing mode fault, the automatic release is still in progress",
+    11: "automatic release completed",
+    13: "activation fault, check for a mechanical obstruction",
+    14: "changing mode fault, check for an obstruction",
+    15: "automatic release fault, review the emergency-release procedure",
+}
+
+
 class ActivationStatus(IntEnum):
     """`STA` (gSTA): where the activation routine is. 2 is documented as not used."""
 
@@ -365,11 +395,27 @@ class RobotiqSocket:
         time.sleep(0.5)
         self.set(ACT=1)
         time.sleep(1.0)
-        self._wait_for(
-            lambda: (self.get(str(_Var.ACT)) == 1
-                     and self.get(str(_Var.STA)) == int(ActivationStatus.ACTIVE)),
-            timeout_s=timeout_s, what="activation to complete",
-        )
+        try:
+            self._wait_for(
+                lambda: (self.get(str(_Var.ACT)) == 1
+                         and self.get(str(_Var.STA)) == int(ActivationStatus.ACTIVE)),
+                timeout_s=timeout_s, what="activation to complete",
+            )
+        except RobotiqSocketError as exc:
+            # ⛔ THE REGISTER THAT EXPLAINS IT IS ONE ROUND TRIP AWAY. A bare "timed out after 10s
+            # waiting for activation to complete" sends an operator to the network; `gFLT 13` sends
+            # them to the obstruction that is actually holding the fingers.
+            try:
+                fault = self.fault_text()
+            except RobotiqSocketError:
+                fault = ""
+            sta = self._quiet_get(_Var.STA)
+            raise RobotiqSocketError(
+                f"{exc} (gSTA {sta}"
+                + (f", {fault}" if fault else ", no fault reported")
+                + "). Activation sweeps the fingers through their full travel, so an obstruction "
+                  "between the jaws is the usual cause."
+            ) from exc
 
     def move(self, position: int, speed: int, force: int) -> None:
         """Command a position in counts. 0 is open, 255 is closed. No millimetres here.
@@ -416,7 +462,72 @@ class RobotiqSocket:
         """
         return ObjectStatus(self.get(str(_Var.OBJ)))
 
+    def fault_code(self) -> int:
+        """`FLT` (`gFLT`): 0 when healthy. ⛔ READ IT ON THE OPERATING PATH, NOT ONLY IN `probe`.
+
+        Until 2026-09-10 this register was read by :meth:`probe` alone, and nothing calls `probe`
+        during a pick. A gripper that is faulted or has been deactivated by a controller-side event
+        still answers `ack` to every `SET`, because `ack` means the DAEMON accepted the line. So the
+        fingers stayed where they were, every close was reported as done, and the one register that
+        would have said why was never asked.
+        """
+        return self.get(str(_Var.FLT))
+
+    def fault_text(self) -> str:
+        """The fault as a sentence, or `""` when healthy. Vendor semantics, quoted not classified.
+
+        ⚠ The codes are the 2-finger map; a 3-Finger or an EPick numbers them differently. Anything
+        unlisted is reported by number rather than guessed at, because a wrong explanation costs more
+        than a bare code.
+        """
+        code = self.fault_code()
+        if not code:
+            return ""
+        return f"gFLT {code}" + (f": {_FAULTS[code]}" if code in _FAULTS else " (not in the 2-finger table)")
+
+    def wait_for_motion(self, *, timeout_s: float = 5.0) -> ObjectStatus:
+        """Block until the fingers stop, and say WHY they stopped. ⭐ THE EVIDENCE A CLOSE NEEDS.
+
+        `move()` returns when the daemon has accepted the line. This returns when `gOBJ` has left
+        `MOVING`, which is the gripper's own statement that the motion is over, together with the
+        distinction that matters:
+
+            STOPPED_CLOSING   the fingers stalled on something      -> a part is held
+            AT_POSITION       the fingers reached the target        -> holding NOTHING
+
+        ⛔ A FAULT IS CHECKED FIRST AND EVERY POLL. A faulted gripper never leaves `MOVING`, so
+        without this the caller would wait out the whole deadline and then be told about a timeout
+        instead of about the fault.
+
+        Raises :class:`RobotiqSocketError` on a fault or on the deadline. Both are honest failures:
+        a caller that cannot learn why the fingers stopped has no grasp evidence at all.
+        """
+        deadline = time.monotonic() + float(timeout_s)
+        last = ObjectStatus.MOVING
+        while time.monotonic() < deadline:
+            fault = self.fault_text()
+            if fault:
+                raise RobotiqSocketError(f"the gripper reports a fault while moving: {fault}")
+            last = self.object_status()
+            if last is not ObjectStatus.MOVING:
+                return last
+            time.sleep(0.02)
+        raise RobotiqSocketError(
+            f"the fingers were still moving {timeout_s}s after the command (gOBJ {int(last)}). The "
+            f"gripper is powered and answering, so this is a jaw that cannot reach its target: check "
+            f"for an obstruction, and that the commanded speed is not below what the load needs."
+        )
+
+    # -- internals -----------------------------------------------------------------------------
+
     # --- internals -----------------------------------------------------------------------------
+
+    def _quiet_get(self, name: "_Var") -> "int | str":
+        """A read for an ERROR MESSAGE. Never raises: a diagnostic that fails is not a diagnostic."""
+        try:
+            return self.get(str(name))
+        except RobotiqSocketError:
+            return "unreadable"
 
     def _wait_for(self, predicate: "Any", *, timeout_s: float, what: str) -> None:
         deadline = time.monotonic() + timeout_s

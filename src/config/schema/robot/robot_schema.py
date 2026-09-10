@@ -399,6 +399,21 @@ class GripperConfig(StrictModel):
                 f"min_width_mm ({self.min_width_mm}) must be < "
                 f"max_width_mm ({self.max_width_mm})"
             )
+        # ⛔ THE THIRD WIDTH JOINED THE MODEL AND NEVER JOINED THIS RULE. `closed_width_mm` anchors
+        # the driver's count map: `_mm_to_count` spans `max_width_mm - closed_width_mm` and guards a
+        # non-positive span with `else 0.0`, which does not raise -- it collapses the entire map onto
+        # the closed end. MEASURED 2026-09-10 with closed 60.0 against max 50.0: 50 mm, 25 mm, 5 mm
+        # and `open()` all came out as count 255, a full close at full speed, and the config loaded
+        # clean. It is refused here rather than in the driver because a cell that cannot open its
+        # hand is not a cell, and the earliest honest refusal is the cheapest one.
+        if self.closed_width_mm >= self.max_width_mm:
+            raise ValueError(
+                f"closed_width_mm ({self.closed_width_mm}) must be < max_width_mm "
+                f"({self.max_width_mm}): it is the PHYSICAL gap with the jaws shut, so a value at or "
+                f"above the stroke leaves no travel to map. The driver's count map spans "
+                f"max_width_mm - closed_width_mm and would collapse, turning every commanded width, "
+                f"open() included, into a full close."
+            )
         return self
 
 

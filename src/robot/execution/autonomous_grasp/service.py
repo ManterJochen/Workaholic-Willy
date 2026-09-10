@@ -468,6 +468,25 @@ class AutonomousGraspService:
                 standoff_mm=standoff_mm,
                 retreat_mm=retreat_mm,
                 require_base_frame_grasp=True,
+                # ⛔ WITHOUT THIS THE JAWS ARE NEVER OPENED ON THE REAL PATH. MEASURED 2026-09-10:
+                # `pre_open_width_mm` defaults to None, only the willy_sim runners ever set it, and
+                # nothing on this path releases either. So the arm descended with the jaws wherever
+                # the previous close left them, and the next close to a WIDER target arrived at the
+                # gripper as an opening: it dropped the held part onto the new grasp point and
+                # gripped nothing, while the attempt was recorded as EXECUTED.
+                #
+                # ⚠ This does not make the service place parts, and it is not meant to. It moves the
+                # unavoidable opening from the grasp point to the cell's own start pose, before the
+                # approach, where it is expected. A caller that needs the part kept must place it
+                # between picks, which was always the contract and was simply never reachable.
+                #
+                # Derived from the hand rather than a constant: the 2F-85 opens 85 mm and the Hand-E
+                # 49.99, and a number written here would be right for one of them.
+                pre_open_width_mm=(
+                    float(gripper.max_width_mm)
+                    if gripper is not None and getattr(gripper, "max_width_mm", None) is not None
+                    else None
+                ),
             )
         runtime = RuntimePickService.from_components(
             arm=arm,
@@ -2140,6 +2159,11 @@ class AutonomousGraspService:
         # because they pass straight through into the typed report fields.
         refine_blend_tel: Any = None
         refine_rerank_tel: Any = None
+        # The writer the `refinement` record block never had. Set once the refiner has returned, read
+        # by the `_report` closure below on every subsequent return, so the refiner verdict reaches
+        # `GraspAttemptRecord.refinement` instead of stopping inside this function. It stays `None`
+        # on the early returns above the refiner, where there is genuinely no verdict yet.
+        refinement_verdict: Optional[RefinementReport] = None
 
         def _report(
             outcome: AutonomousGraspOutcome,
@@ -2169,6 +2193,7 @@ class AutonomousGraspService:
                 pick_report=pick_report,
                 telemetry=base_telemetry,
                 effective_config=self.effective_config,
+                refinement=refinement_verdict,
                 shadow_success_telemetry=(
                     pick_report.shadow_success_telemetry
                     if pick_report is not None
@@ -2328,6 +2353,10 @@ class AutonomousGraspService:
             calculator=orch.calculator,
             camera_to_base=camera_to_base,
         )
+        # From here on every report carries the verdict, including the accepted path: an attempt that
+        # refined and then failed in execution refined all the same, and a record that says so is the
+        # only way to tell the two failures apart offline.
+        refinement_verdict = refinement
 
         if refinement.outcome is RefinementOutcome.TARGET_LOST:
             return _report(

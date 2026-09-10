@@ -30,7 +30,11 @@ robot:
 
   sim:
     robot_model: "ur3"
-    gripper_mount: "robotiq_hande"   # this asset offers no Robotiq variant, so a cell must mount one
+    gripper_mount: "robotiq_2f85"    # this asset bakes no gripper, so a cell mounts a standalone one.
+    # ⚠ NOT "robotiq_hande": that name is a GripperProfile (how to drive the joints), not a mountable
+    # spec, and MOUNTED_GRIPPERS has no entry for it. Written here on 2026-09-09 against a registry
+    # that never had the key; config validation passed and the cell failed after the Isaac boot.
+    # A Hand-E mount needs its USD asset, mount rotation and a MEASURED tcp_offset_mm first.
 
   workspace_limits:
     x_min: -292.6

@@ -704,6 +704,19 @@ robot:
       # [default: null]
       collision_mesh_variant: null
 
+      # Thickness in mm of the coupling plate between the arm flange and the gripper's own mounting
+      # face. A bundle read from a standalone vendor asset starts at that mounting face rather than at
+      # the flange and stamps `gripper__origin: mounting_face`; the plate has to be added before the
+      # meshes are where the hand actually is. All six `robotiq_hande_*` bundles are stamped that way
+      # and the 2F-85 bundle is not. Leaving this at 0.0 does not make the guard permissive: it models
+      # the hand one plate CLOSER to the flange than it is, the conservative direction for
+      # arm-versus-hand, but it disagrees with the cuRobo descriptor, which DOES add the plate via
+      # `build_ur_config.py --coupling-mm`. Same bench measurement as the plate term in
+      # `robot.gripper.tool_frame.offset_mm`: measure once, write it in all three. The guard logs a
+      # one-time WARNING when it loads a mounting-face bundle with this at 0.0.
+      # [default: 0.0]
+      coupling_mm: 0.0
+
       # Rotation in degrees about +Z that reconciles the bundled UR DH base frame with the base frame your
       # poses and fixtures are expressed in.
       # [default: 0.0]

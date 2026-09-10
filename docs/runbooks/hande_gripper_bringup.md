@@ -116,6 +116,46 @@ out loud is the point.
 declares `mass_kg: 0.0`, which makes the payload guard's envelope check vacuous rather than wrong,
 and a heavier hand eats the arm's rated payload with nothing noticing.
 
+### 5. Declare the coupling plate, once, in three places
+
+The plate between the arm flange and the gripper's own mounting face is a bench measurement, and it
+is the same number every time:
+
+```
+robot.gripper.tool_frame.offset_mm            plate + 135.75 mm along the approach
+robot.safety.self_collision.coupling_mm       plate
+scripts/curobo/build_ur_config.py --coupling-mm   plate
+```
+
+⛔ **The third and second used to be the only two, and the guard was the one left out.** All six
+`robotiq_hande_ur*_collision_meshes.npz` are stamped `gripper__origin = "mounting_face"`, which the
+bake module defines as "whatever plate sits between that face and the flange has to be added before
+the planner sees it". The sphere fit read that stamp; the exact-mesh guard never did and had no key
+that could carry the number. A Hand-E cell therefore ran two collision models of the same hand
+differing by one plate: the planner's with it, the guard's without.
+
+⚠ The guard's hand sat NEARER the arm than the real one, which is the conservative direction for
+arm-versus-hand, so this was a disagreement rather than a hole. Leaving `coupling_mm` at its default
+`0.0` reproduces the old behaviour exactly and the guard now says so out loud, once, at construction.
+
+### 6. The planner does NOT know what it is carrying, and that is a decision
+
+`robot.safety.planning_world.payload.enabled` ships `false`, so `attach_payload` returns `False` on
+every pick and every lift, transit and place is planned with an EMPTY hand. The carried part is
+absent from the planner's world model, and on a cell lifting out of a bin that part is the geometry
+most likely to meet a wall.
+
+⛔ **This is deliberate as of 2026-09-10, and the reason is worth more than the setting.** Turning it
+on requires `length_mm`, how far a part extends beyond the grasp line, and the owner's answer was
+that this cell handles SEVERAL parts, so no single length describes it. A wrong single number is
+worse than none in both directions at once: too long refuses grasps that would work, too short lets
+a part meet a wall the planner never modelled. The shipped default of 120 mm is plausible and
+measured on nothing.
+
+So the honest state is: this cell plans with an empty hand, on purpose, until the payload can be
+described per part rather than per cell. Expect the first surprise at a bin wall, not in the logs.
+
+
 ---
 
 ## Verify

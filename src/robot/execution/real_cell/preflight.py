@@ -275,8 +275,15 @@ def run_config_preflight(robot_cfg: "RobotConfig") -> PreflightReport:
         checks.append(PreflightCheck(
             "controller state", CheckStatus.BENCH,
             "powered, brakes released, Remote Control active, no program running on the pendant",
-            "ur_rtde uploads a control script; the controller refuses it in Local control or with a "
-            "pendant program owning the robot. Confirm on the pendant; no API reports this",
+            # ⛔ THE TWO CASES BEHAVE DIFFERENTLY AND THIS LINE USED TO BUNDLE THEM UNDER "refuses".
+            # Local control: the upload IS refused (measured against URSim 5.26.0, see
+            # drivers/ur/connection.py). A pendant program in Remote: ur_rtde does NOT get refused,
+            # it STOPS that program and takes the robot, which the UR driver README states in this
+            # same tree ("A running program also stops the moment another is sent"). An operator
+            # told to expect a refusal waits for one that never comes.
+            "ur_rtde uploads a control script. In LOCAL control the controller refuses it. In REMOTE "
+            "with a pendant program running it is NOT refused: the upload STOPS that program and "
+            "takes the robot. Confirm on the pendant; no API reports this",
         ))
         checks.append(PreflightCheck(
             "end-effector wiring", CheckStatus.BENCH,

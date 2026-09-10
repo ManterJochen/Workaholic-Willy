@@ -286,9 +286,12 @@ def bootstrap_sim_cell(
         # mount also overrides the flange-to-TCP translation with the spec's own
         # ``flange_to_tcp_offset_mm``. The rotation is shared: every mounted spec's
         # ``mount_rotation_matrix`` puts its approach on wrist +Y, so only the translation differs.
-        from src.willy_sim.grippers import MOUNTED_GRIPPERS
+        from src.willy_sim.grippers import resolve_mounted_gripper
 
-        _spec = MOUNTED_GRIPPERS.get(gripper_mount)
+        # ⛔ WAS `.get()`, WHICH MEANT AN UNKNOWN MOUNT SKIPPED THIS CORRECTION IN SILENCE and the
+        # cell went on composing the 2F-85's 132 mm flange->TCP for whatever was actually bolted on.
+        # Resolving refuses the name here instead, before any geometry is derived from it.
+        _spec = resolve_mounted_gripper(gripper_mount)
         if _spec is not None:
             robot = robot.model_copy(update={"gripper": robot.gripper.model_copy(
                 update={"tool_frame": robot.gripper.tool_frame.model_copy(
@@ -354,9 +357,9 @@ def bootstrap_sim_cell(
     # A mounted standalone gripper drives its own GripperProfile, with its driven joint merged into
     # the arm's articulation. Without ``gripper_mount`` the baked Robotiq 2F-85 is used instead.
     if sim.gripper_mount:
-        from src.willy_sim.grippers import MOUNTED_GRIPPERS
+        from src.willy_sim.grippers import resolve_mounted_gripper
 
-        gripper_profile = MOUNTED_GRIPPERS[sim.gripper_mount].profile
+        gripper_profile = resolve_mounted_gripper(sim.gripper_mount).profile
     else:
         gripper_profile = ROBOTIQ_2F85_PROFILE
     gripper = IsaacGripper(

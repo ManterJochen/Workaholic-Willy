@@ -289,8 +289,24 @@ def _variant_is_for_another_model(model: str, variant_path: "Path", mesh_dir: st
         return False
 
 
+#: The bundle arrays that belong to the HAND rather than the arm. `wrist_3` shares their frame and
+#: is arm, which is why this is a list of names and not "everything at frame 6".
+_HAND_PARTS = ("gripper", "lfinger", "rfinger")
+
+#: The npz key a standalone-asset bake stamps, and the value that obliges a reader to add a plate.
+_ORIGIN_KEY = "gripper__origin"
+_MOUNTING_FACE = "mounting_face"
+
+#: The tool approach axis in the wrist_3 frame, along which the coupling plate stacks. Measured off
+#: the committed bundles: the fingers sit at y in [84.3, 146.2] and the palm at y in [-4.9, 99.2].
+_APPROACH_AXIS = 1
+
+
 def make_backend(
-    model: str, mesh_dir: str | None = None, mesh_name: str | None = None
+    model: str,
+    mesh_dir: str | None = None,
+    mesh_name: str | None = None,
+    coupling_mm: float = 0.0,
 ) -> MeshSelfCollisionBackend | None:
     """Build the mesh backend for ``model``, Coal where available and python-fcl otherwise, or ``None``.
 
@@ -325,10 +341,32 @@ def make_backend(
     fname = default.name
     path = (Path(mesh_dir) / fname) if mesh_dir else default
     data = np.load(path)
-    names = sorted({k.split("__")[0] for k in data.files})
+    names = sorted({k.split("__")[0] for k in data.files if not k.endswith("__origin")})
+    # ⛔ A MOUNTING-FACE BUNDLE IS NOT WHERE THE HAND IS. It starts at the gripper's own mounting
+    # face, so the coupling plate between that face and the flange has to be added here; the bake
+    # module says exactly that. Until 2026-09-10 this loader never read the stamp, so a Hand-E cell
+    # ran the planner against a hand with the plate and the guard against one without it.
+    origin = ""
+    if _ORIGIN_KEY in data.files:
+        origin = str(np.asarray(data[_ORIGIN_KEY]).reshape(-1)[0])
+    shift = float(coupling_mm) if origin == _MOUNTING_FACE else 0.0
+    if origin == _MOUNTING_FACE and shift == 0.0:
+        _LOGGER.warning(
+            "%s is stamped origin=%r, so its gripper meshes start at the hand's MOUNTING FACE and a "
+            "coupling plate has to be added before they are where the hand is. "
+            "safety.self_collision.coupling_mm is 0.0, so nothing was added and this guard models "
+            "the hand one plate closer to the flange than it is. That is the conservative direction "
+            "for arm-versus-hand, but it disagrees with the cuRobo descriptor, which DOES add the "
+            "plate (build_ur_config.py --coupling-mm). Measure the plate once and set all three.",
+            path.name, origin,
+        )
     meshes: dict[str, tuple[np.ndarray, np.ndarray, int]] = {}
     for n in names:
-        meshes[n] = (data[f"{n}__v"], data[f"{n}__f"], int(data[f"{n}__frame"][0]))
+        verts = data[f"{n}__v"]
+        if shift and n in _HAND_PARTS:
+            verts = verts.copy()
+            verts[:, _APPROACH_AXIS] += shift
+        meshes[n] = (verts, data[f"{n}__f"], int(data[f"{n}__frame"][0]))
     try:
         return MeshSelfCollisionBackend(_EngineAdapter(mod, kind), meshes)
     except Exception:  # noqa: BLE001 (any engine construction failure falls back to capsules)

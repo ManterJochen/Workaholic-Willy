@@ -35,6 +35,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 __all__ = [
     "MountedGripperSpec",
     "MOUNTED_GRIPPERS",
+    "resolve_mounted_gripper",
     "ROBOTIQ_2F85_MOUNT",
     "SCHUNK_EGU50_MOUNT",
     "SCHUNK_EZU35_MOUNT",
@@ -178,6 +179,31 @@ MOUNTED_GRIPPERS: dict[str, MountedGripperSpec] = {
     SCHUNK_EZU35_MOUNT.name: SCHUNK_EZU35_MOUNT,
     ROBOTIQ_2F85_MOUNT.name: ROBOTIQ_2F85_MOUNT,
 }
+
+
+def resolve_mounted_gripper(name: str) -> MountedGripperSpec:
+    """The one place ``sim.gripper_mount`` becomes a spec. ⛔ REFUSES A NAME IT DOES NOT KNOW.
+
+    MEASURED 2026-09-10: the two call sites disagreed about an unknown name. One used ``.get()`` and
+    carried on, which SKIPS the flange->TCP correction and leaves the cell composing the 2F-85's
+    132 mm for whatever is actually mounted; the other subscripted the dict and raised a bare
+    ``KeyError`` several steps later, naming nothing. Three shipped robot profiles named
+    ``robotiq_hande``, which is a real :class:`GripperProfile` and not a mountable spec, so both
+    behaviours were reachable from the config tree.
+
+    ⚠ A profile is not a mount. ``ROBOTIQ_HANDE_PROFILE`` describes how to DRIVE the joints of a
+    Hand-E; a :class:`MountedGripperSpec` additionally needs the USD asset, the mount rotation and a
+    MEASURED ``tcp_offset_mm``. Until somebody measures those on the asset, the Hand-E cannot be
+    mounted in the sim, and saying so here is cheaper than a wrong offset that looks like a grip.
+    """
+    spec = MOUNTED_GRIPPERS.get(name)
+    if spec is None:
+        raise KeyError(
+            f"sim.gripper_mount={name!r} is not a mountable gripper. Available: "
+            f"{sorted(MOUNTED_GRIPPERS)}. A GripperProfile (how to drive the joints) is not enough: "
+            f"a mount also needs the USD asset, the mount rotation and a measured tcp_offset_mm."
+        )
+    return spec
 
 
 # Suction cups (keyed by ``SimConfig.suction_cup``). The cup mounts directly on the dynamic

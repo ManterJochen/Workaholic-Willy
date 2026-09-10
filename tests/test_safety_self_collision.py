@@ -620,3 +620,82 @@ class UR3eCollisionBundleTests(unittest.TestCase):
             # within 25% of the DH length ratio (the mesh also covers the joint housing beyond the link)
             self.assertAlmostEqual(span_a / span_b, dh_ratio, delta=0.25 * dh_ratio,
                                    msg=f"{link}: {span_a:.1f}/{span_b:.1f} mm vs DH ratio {dh_ratio:.3f}")
+
+
+class TheCouplingPlateReachesTheGuardTests(unittest.TestCase):
+    """A bundle stamped ``mounting_face`` starts at the hand's own face, not at the flange.
+
+    ⛔ **THE GUARD READ NEITHER THE STAMP NOR A PLATE UNTIL 2026-09-10.** The bake module states the
+    obligation in its own words: MOUNTING_FACE means "whatever plate sits between that face and the
+    flange has to be added before the planner sees it". ``gripper_spheres.py`` reads the stamp and
+    carries it to the on-box cuRobo builder, which adds the plate via ``--coupling-mm``.
+    ``_fcl_self_collision.py`` had no parameter that could carry the number, so a Hand-E cell ran two
+    collision models of the same hand differing by one plate thickness: the planner's with it, the
+    guard's without.
+
+    ⚠ The direction is the CONSERVATIVE one for arm-versus-hand (the guard's hand sits nearer the
+    arm than the real one), so this is a disagreement rather than a hole. The defect is that a plan
+    produced against one geometry was judged against another and nothing compared them.
+    """
+
+    @staticmethod
+    def _backend(coupling_mm: float):
+        from src.robot.safety._fcl_self_collision import make_backend
+
+        return make_backend("ur5e", None, "robotiq_hande", coupling_mm=coupling_mm)
+
+    def test_the_hande_bundles_are_all_stamped_mounting_face(self) -> None:
+        """The premise, derived from the files rather than asserted. If a re-bake ever stamps these
+        FLANGE, the coupling key stops applying and this says so before anything else drifts."""
+        import pathlib
+
+        data = pathlib.Path(__file__).resolve().parents[1] / "src/robot/safety/data"
+        found = sorted(data.glob("robotiq_hande_*_collision_meshes.npz"))
+        self.assertTrue(found, "no Hand-E bundles, so this whole class proves nothing")
+        for path in found:
+            with self.subTest(bundle=path.name):
+                z = np.load(path, allow_pickle=True)
+                self.assertIn("gripper__origin", z.files)
+                self.assertEqual(str(np.asarray(z["gripper__origin"]).reshape(-1)[0]),
+                                 "mounting_face")
+
+    def test_the_2f85_bundle_carries_no_origin_and_is_therefore_flange(self) -> None:
+        """The control. A bundle baked from a composed arm asset already sits where the hand is
+        bolted, so it must NOT be shifted and the absent key is what says so."""
+        import pathlib
+
+        data = pathlib.Path(__file__).resolve().parents[1] / "src/robot/safety/data"
+        z = np.load(data / "ur5e_collision_meshes.npz", allow_pickle=True)
+        self.assertNotIn("gripper__origin", z.files)
+
+    def test_a_declared_coupling_moves_the_hand_and_only_the_hand(self) -> None:
+        """⭐ THE ONE THAT MATTERS. ``wrist_3`` shares frame 6 with the hand, so a shift applied by
+        FRAME rather than by NAME would carry an arm link along with it."""
+        a, b = self._backend(0.0), self._backend(12.0)
+        if a is None or b is None:
+            self.skipTest("no collision engine on this host")
+        for hand in ("gripper", "lfinger", "rfinger"):
+            with self.subTest(part=hand):
+                delta = float(np.asarray(b._sph_c[hand]).reshape(-1)[1]
+                              - np.asarray(a._sph_c[hand]).reshape(-1)[1])
+                self.assertAlmostEqual(delta, 12.0, places=6)
+        for arm in ("wrist_3", "wrist_2", "forearm", "upper_arm", "shoulder"):
+            with self.subTest(part=arm):
+                delta = float(np.asarray(b._sph_c[arm]).reshape(-1)[1]
+                              - np.asarray(a._sph_c[arm]).reshape(-1)[1])
+                self.assertAlmostEqual(delta, 0.0, places=6,
+                                       msg=f"{arm} is an ARM link and must not move with the hand")
+
+    def test_a_flange_bundle_ignores_the_coupling_entirely(self) -> None:
+        """The other control: declaring a plate must do nothing to a bundle that already includes it,
+        or a cell that sets the key once would silently move its 2F-85 as well."""
+        from src.robot.safety._fcl_self_collision import make_backend
+
+        a = make_backend("ur5e", None, None, coupling_mm=0.0)
+        b = make_backend("ur5e", None, None, coupling_mm=12.0)
+        if a is None or b is None:
+            self.skipTest("no collision engine on this host")
+        for part in ("gripper", "lfinger", "wrist_3"):
+            with self.subTest(part=part):
+                np.testing.assert_allclose(np.asarray(a._sph_c[part]),
+                                           np.asarray(b._sph_c[part]))

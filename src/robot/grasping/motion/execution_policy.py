@@ -308,7 +308,11 @@ class GraspExecutionPolicy:
         # part out of a bin that part is the geometry most likely to meet a wall.
         attach = getattr(self.arm, "attach_payload", None)
         if callable(attach):
-            attach(self._resolve_close_width(grasp))
+            # ⛔ THE COMMANDED WIDTH IS NOT THE WIDTH OF THE PART. On the adaptive branch the command
+            # is `grip_width - close_squeeze_mm`, a number the jaws deliberately never reach, so the
+            # planner was carrying the size of something that was never measured. Reading the jaws is
+            # a real measurement and, since a close now waits for the fingers, a settled one.
+            attach(self._measured_or_commanded_width(grasp))
 
         # Retreat: command each interpolated lift waypoint, one per retreat_step; the default of 1 is
         # the single full lift.
@@ -389,6 +393,24 @@ class GraspExecutionPolicy:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _measured_or_commanded_width(self, grasp: GraspPoint) -> float:
+        """What the jaws actually hold, falling back to what they were told.
+
+        The fallback is not a nicety: a gripper that cannot report a width, or one whose read fails
+        mid-cell, must still attach SOMETHING or the planner goes back to lifting the part as if the
+        hand were empty. A commanded width is a worse number than a measured one and a much better
+        number than none.
+        """
+        read = getattr(self.gripper, "get_width_mm", None)
+        if callable(read):
+            try:
+                measured = float(read())
+            except Exception:  # noqa: BLE001 - a failed read is not a failed pick
+                measured = float("nan")
+            if measured == measured and measured > 0.0:  # not NaN
+                return measured
+        return self._resolve_close_width(grasp)
 
     def _resolve_close_width(self, grasp: GraspPoint) -> float:
         """Pick the jaw width to command at the grasp point."""

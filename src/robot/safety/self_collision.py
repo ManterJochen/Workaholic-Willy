@@ -361,7 +361,10 @@ class SelfCollisionGuard:
         if not self._fcl_backend_built:  # build the BVH models once, caching None too
             from ._fcl_self_collision import make_backend, mesh_backend_status
             variant = getattr(self._config, "collision_mesh_variant", None)
-            self._fcl_backend = make_backend(model, self._config.mesh_dir, variant)
+            self._fcl_backend = make_backend(
+                model, self._config.mesh_dir, variant,
+                coupling_mm=float(getattr(self._config, "coupling_mm", 0.0) or 0.0),
+            )
             self._fcl_backend_built = True
             # The config asked for the exact-mesh backend. Falling back to the coarser
             # capsule proxy in silence would look like a robot that cannot grasp

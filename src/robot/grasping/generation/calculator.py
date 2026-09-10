@@ -1110,6 +1110,16 @@ class GraspCalculator:
                         gripper_model if isinstance(gripper_model, ParallelJawGripperModel)
                         else (self._gripper_model
                               if isinstance(self._gripper_model, ParallelJawGripperModel) else None),
+                        # ⛔ THE STROKE, WHICH THIS CALL OMITTED UNTIL 2026-09-10. Without these two
+                        # the jaw took `from_model`'s keyword defaults, 85.0 and 5.0, which are a
+                        # 2F-85's numbers. MEASURED on the `hande` profile: the pick path planned a
+                        # 49.99 mm hand as though it opened 85.0, proposed grasps up to 83 mm wide,
+                        # and the driver then clamped the close to max_width_mm, which maps to count
+                        # 0 = FULLY OPEN. The close command opened the hand at the grasp point.
+                        # `scene.py` passed the configured aperture; this path did not, and every
+                        # OTHER dimension of the jaw came out correct, which is what hid it.
+                        aperture_mm=float(self.max_grip_mm),
+                        min_width_mm=float(self.min_grip_mm),
                         table_clearance_mm=float(min_table_clearance_mm),
                     ),
                     obstacle_points_base_mm=obstacles_base,

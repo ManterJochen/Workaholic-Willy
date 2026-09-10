@@ -3052,6 +3052,12 @@
           "default": null,
           "title": "Collision Mesh Variant"
         },
+        "coupling_mm": {
+          "default": 0.0,
+          "minimum": 0.0,
+          "title": "Coupling Mm",
+          "type": "number"
+        },
         "enforce": {
           "default": true,
           "title": "Enforce",

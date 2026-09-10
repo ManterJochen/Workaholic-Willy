@@ -111,6 +111,9 @@ class GripperController:
 
         self._driver: Any | None = None
         self._activated: bool = False
+        #: Warn ONCE per controller about a seam that cannot confirm motion. A per-command warning
+        #: would be noise, and no warning at all is the silence this whole file was audited for.
+        self._warned_no_wait: bool = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -252,12 +255,103 @@ class GripperController:
             clamped_mm, target_count, speed, force,
         )
         drv.move(target_count, speed_count, force_count)
+        self._wait_for_the_fingers(drv)
+
+    def _wait_for_the_fingers(self, drv: Any) -> None:
+        """Block until the gripper says the motion is over. ⛔ `ack` IS NOT MOTION.
+
+        MEASURED 2026-09-10: :meth:`set_width_mm` returned as soon as the URCap daemon answered
+        ``ack``, which means the daemon accepted the line and nothing more. The next statement in the
+        pick path is the retreat lift, so the arm left while the fingers were still travelling.
+
+        A driver seam without ``wait_for_motion`` keeps the old fire-and-forget behaviour and says so
+        once per connection, because a silent absence here is indistinguishable from a wait that
+        happened.
+        """
+        wait = getattr(drv, "wait_for_motion", None)
+        if wait is not None:
+            try:
+                wait()
+            except Exception:
+                # ⛔ A WAIT THAT FAILED LEAVES THE FINGERS TRAVELLING. `GTO` is still set, so the
+                # jaws go on closing while the caller unwinds: a fault, or a deadline reached while
+                # a protective stop holds the cell, both end here. This is the one place that knows
+                # the motion did not finish AND holds the connection that can end it.
+                self.stop()
+                raise
+            return
+        if wait is None:
+            if not self._warned_no_wait:
+                self._warned_no_wait = True
+                self.logger.warning(
+                    "the gripper driver %s cannot report motion completion, so commands are "
+                    "fire-and-forget and the caller may move the arm while the fingers travel.",
+                    type(drv).__name__,
+                )
+            return
+
+    def stop(self) -> None:
+        """Halt the jaws where they are. ⚠ DOES NOT RELEASE and does not command a width.
+
+        On this protocol that means clearing ``GTO``; ``SPE 0`` is minimum speed and would not stop
+        anything. A driver seam without a halt says so rather than pretending, because "the gripper
+        was stopped" is exactly the belief that must not be free.
+        """
+        drv = self._driver
+        if drv is None:
+            return
+        halt = getattr(drv, "stop", None)
+        if halt is None:
+            self.logger.warning(
+                "the gripper driver %s has no stop(); the jaws cannot be halted and will finish "
+                "whatever motion is in flight.", type(drv).__name__,
+            )
+            return
+        try:
+            halt()
+        except Exception as exc:  # noqa: BLE001 - a failed halt must not mask the original fault
+            self.logger.error("the gripper did not stop: %s", exc)
 
     def get_width_mm(self) -> float:
         """Read the current opening width in millimetres."""
         drv = self._require_connected()
         count = int(drv.get_current_position())
         return float(self._count_to_mm(count))
+
+    def is_object_detected(self) -> bool:
+        """Whether the fingers STALLED on something rather than reaching the commanded width.
+
+        ⭐ **THIS IS THE ONLY POST-GRASP EVIDENCE THE ROBOTIQ PROTOCOL OFFERS**, and until
+        2026-09-10 this class did not implement it. MEASURED that day: ``GripperController`` was the
+        only real jaw gripper in the repo that was not an ``ObjectDetectingGripper`` (``jaw_io``,
+        ``onrobot``, ``vacuum`` and the sim gripper all were), so the fail-closed gate in
+        ``GraspExecutionPolicy`` was skipped for the one gripper this project ships and an empty
+        close was recorded as a successful pick. ``robotiq_socket.object_status()`` was implemented
+        and read by nothing.
+
+        The register distinguishes exactly the two cases that matter::
+
+            STOPPED_CLOSING   the fingers stalled while closing   -> a part is held
+            AT_POSITION       the fingers reached the target      -> holding NOTHING
+
+        ⛔ **FAILS CLOSED, AND THAT IS A DELIBERATE ASYMMETRY.** A driver behind the
+        ``driver_factory`` seam that cannot answer returns ``False`` here, because "no evidence" is
+        not "holding": claiming a grasp nobody can confirm is the exact defect this method exists to
+        end. A seam double that wants the gate to pass has to grow an ``object_status()``.
+        """
+        drv = self._require_connected()
+        status_fn = getattr(drv, "object_status", None)
+        if status_fn is None:
+            self.logger.warning(
+                "the gripper driver %s cannot report gOBJ, so a grasp cannot be confirmed and this "
+                "reports NOT holding. Implement object_status() on the driver seam to enable the "
+                "post-close check.", type(drv).__name__,
+            )
+            return False
+        status = status_fn()
+        # STOPPED_OPENING counts too: the jaws were obstructed on the way OUT, which is still contact
+        # with something. AT_POSITION and MOVING are not evidence of a hold.
+        return int(status) in (1, 2)
 
     # ------------------------------------------------------------------
     # Context manager sugar

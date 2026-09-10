@@ -165,6 +165,26 @@ class SelfCollisionSafetyConfig(StrictModel):
     # kinematics_model bundle, the 2F-85. The sim threads this from ``robot.sim.gripper_mount``.
     collision_mesh_variant: str | None = Field(default=None)
 
+    # The coupling plate between the ARM FLANGE and the gripper's own MOUNTING FACE, millimetres.
+    #
+    # ⛔ ONLY A VARIANT BUNDLE NEEDS IT, AND ONLY THE GUARD WAS NEVER TOLD. A bundle baked from a
+    # composed arm asset already sits where the hand is bolted (`gripper__origin` absent, or
+    # "flange"). A bundle read from a standalone vendor asset starts at the hand's own mounting face
+    # and stamps `gripper__origin = "mounting_face"`, which the bake module documents as "whatever
+    # plate sits between that face and the flange has to be added before the planner sees it". The
+    # sphere fit reads that stamp and the on-box cuRobo builder adds the plate via `--coupling-mm`;
+    # the exact-mesh guard read neither and had no parameter that could carry the number, so a
+    # Hand-E cell ran two collision models of the same hand that differed by one plate.
+    #
+    # ⚠ Default 0.0 is exactly the previous behaviour, byte-identical for every existing cell, and
+    # it is NOT a safe guess: it is the absence of a measurement. A cell that leaves it at 0.0 with a
+    # mounting-face bundle is told so once, loudly, at guard construction.
+    #
+    # It is the SAME bench measurement as the plate term in `robot.gripper.tool_frame.offset_mm` and
+    # `build_ur_config.py --coupling-mm`. Measure it once and write it in all three, or the three
+    # descriptions of one hand disagree, which is the family of defect this cell has already had.
+    coupling_mm: float = Field(default=0.0, ge=0.0)
+
     # Yaw (degrees) of the bundled-DH base frame relative to the robot/system base frame that poses and
     # fixtures are expressed in. The official UR DH (``_ur_kinematics.py``) base is rotated 180 deg
     # about Z from the Isaac UR5e USD ``base_link``: ``ur_link_origins_mm`` == ``[-x, -y, z]`` against

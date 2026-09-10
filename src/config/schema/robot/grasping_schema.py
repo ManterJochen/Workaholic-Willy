@@ -51,6 +51,17 @@ class GraspingVerificationConfig(StrictModel):
     width_delta_max_mm: float | None = Field(default=10.0, ge=0.0, le=50.0)
     post_lift_vision_check: bool = Field(default=False)
     vision_displacement_iou_max: float = Field(default=0.2, ge=0.0, le=1.0)
+    #: ⚠ **IT GOVERNS `INCONCLUSIVE`, NOT `FAILED`, AND ITS OLD DESCRIPTION SAID OTHERWISE.**
+    #: A `FAILED` verification is refused one clause earlier and unconditionally
+    #: (`service.py`: `outcome is FAILED or (outcome is INCONCLUSIVE and fail_closed)`), so this
+    #: flag only ever decides what an INCONCLUSIVE result does.
+    #:
+    #: ⛔ AND ON A CONFIG-BUILT CELL IT DECIDES NOTHING. The verifier `from_robot_config` builds is a
+    #: `CompositeGraspVerifier` with rule `all_must_pass`, and that branch returns only FAILED or
+    #: PASSED: an inconclusive child is resolved inside the composite by `require_all_conclusive`
+    #: below and never reaches this flag. It bites for a CALLER-SUPPLIED verifier, which is how the
+    #: sim runners and a Python caller reach the pick path. Two keys answer one question; this one is
+    #: the older and the narrower, and `require_all_conclusive` is the one a config should set.
     fail_closed: bool = Field(default=True)
     require_all_conclusive: bool = Field(
         default=False,

@@ -104,3 +104,23 @@ class ObjectDetectingGripper(Protocol):
     def is_object_detected(self) -> bool:
         """Return ``True`` if the gripper is currently holding an object."""
         ...
+
+
+@runtime_checkable
+class StoppableGripper(Protocol):
+    """Capability extension: the jaws can be HALTED where they are.
+
+    ⛔ **WHY THIS IS SEPARATE FROM `open()`.** Opening is a motion to a new target; stopping is the
+    absence of motion. On a Robotiq the two are different registers and the distinction is
+    load-bearing: ``SPE 0`` is MINIMUM SPEED, not stop, and only clearing ``GTO`` halts a travel.
+    A caller that "stops" a gripper by commanding a width has commanded another motion.
+
+    ⚠ Added 2026-09-10 because there was no halt in this surface at all. The transport had one
+    (:meth:`robotiq_socket.RobotiqSocket.stop`) and nothing above it could call it, so an aborted
+    close went on closing while the cell believed the attempt was over. Drivers without a halt simply
+    do not implement this, and callers must treat its absence as "these jaws cannot be stopped".
+    """
+
+    def stop(self) -> None:
+        """Halt the jaws where they are. Must not command a new width."""
+        ...

@@ -275,11 +275,11 @@ def build_combined_scene(
     stage = omni.usd.get_context().get_stage()
     arm_prim = stage.GetPrimAtPath(arm_prim_path)
     if sim_cfg.gripper_mount:
-        from src.willy_sim.grippers import MOUNTED_GRIPPERS
+        from src.willy_sim.grippers import resolve_mounted_gripper
 
         arm_prim.GetVariantSets().GetVariantSet("Gripper").SetVariantSelection("None")
         stage.Load(Sdf.Path(arm_prim_path))
-        _mount_standalone_gripper(stage, arm_prim_path, MOUNTED_GRIPPERS[sim_cfg.gripper_mount], root)
+        _mount_standalone_gripper(stage, arm_prim_path, resolve_mounted_gripper(sim_cfg.gripper_mount), root)
     else:
         arm_prim.GetVariantSets().GetVariantSet("Gripper").SetVariantSelection(sim_cfg.gripper_variant)
         stage.Load(Sdf.Path(arm_prim_path))

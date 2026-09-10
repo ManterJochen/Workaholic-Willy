@@ -211,6 +211,46 @@ class RunnerEndToEndTests(unittest.TestCase):
             with self.subTest(vendor=vendor):
                 self.assertIsNone(cell_lock_key(RobotConfig.model_validate({"vendor": vendor})))
 
+    def test_the_banner_names_the_profile_chain_that_was_actually_applied(self) -> None:
+        """⛔ THE BANNER PRINTED `profile=<none>` WITH AN OVERLAY CHAIN ALREADY LOADED AND APPLIED.
+
+        `--profile` is one of two doors: omit it and the loader reads `WILLY_PROFILE`, which is how
+        an operator who exports the variable once runs every tool in this repo. The banner printed
+        `args.profile`, which is None for that operator, so the one line of a bring-up that says
+        WHICH cell is about to be driven said "no overlays" about a cell built from them. On a bench
+        with a UR3e profile exported and a UR5e base tree, that line is the difference between
+        catching the mistake and driving it.
+
+        The exit code is the proof that the chain was live: the SAME argv on the base tree is refused
+        at the connect and returns 1 (the test above), because only `console_dummy` names a gripper a
+        dummy arm can carry. A run that reaches 0 here has loaded the overlay the banner denies.
+        """
+        import io
+        import os
+        from contextlib import redirect_stdout
+
+        with patch.dict(os.environ, {"WILLY_PROFILE": "console_dummy"}), \
+                redirect_stdout(io.StringIO()) as out:
+            code = main(["--rehearse", "--runs", "1"])
+        text = out.getvalue()
+        self.assertEqual(code, 0, text)
+        banner = text.split("=== 2.")[0]
+        self.assertNotIn("profile=<none>", banner)
+        self.assertIn("console_dummy", banner)
+        self.assertIn("WILLY_PROFILE", banner,
+                      "an unexpected profile is only actionable if the banner says where it came from")
+
+    def test_the_banner_still_says_none_when_no_chain_is_applied(self) -> None:
+        """The other half: with neither door used, "<none>" is the true answer and stays."""
+        import io
+        import os
+        from contextlib import redirect_stdout
+
+        with patch.dict(os.environ), redirect_stdout(io.StringIO()) as out:
+            os.environ.pop("WILLY_PROFILE", None)
+            main(["--rehearse", "--check"])
+        self.assertIn("profile=<none>", out.getvalue())
+
     def test_a_real_ur_cell_locks_on_its_controller_address(self) -> None:
         """The key is the RESOURCE, not the process or the checkout -- two clients, one controller."""
         from src.config.schema.robot import RobotConfig
@@ -298,17 +338,31 @@ class GraspVerificationTests(unittest.TestCase):
         self.assertEqual(g.min_width_mm, 5.0)      # the policy floor
         self.assertNotEqual(g.closed_width_mm, g.min_width_mm)
 
-    def test_object_detection_is_not_available_on_the_jaw_cell(self) -> None:
-        """Pins WHY width_delta is the jaw cell's only option, so a future reader does not "fix" the
-        default by switching to a verifier that can only ever say INCONCLUSIVE here.
+    def test_object_detection_IS_available_on_the_jaw_cell(self) -> None:
+        """⛔ **THIS TEST PINNED THE OPPOSITE UNTIL 2026-09-10, AND IT WAS RIGHT WHEN WRITTEN.**
 
-        The physical 2F-85 does report an object-detection status; this driver does not surface it, and
-        whether the pinned SDK exposes it was unverifiable on this box until 2026-08-17 -- it is now
-        installed, and the symbol is present."""
+        It asserted ``assertFalse(hasattr(GripperController, "is_object_detected"))`` to explain why
+        ``width_delta`` was the jaw cell's only verifier. Then the capability was added and the
+        assertion inverted. That is a negative control falsified by growth: absence is the one
+        property a growing system disproves simply by growing, and the test correctly went red rather
+        than quietly meaning nothing.
+
+        What replaced it is a POSITIVE claim, which cannot rot the same way. The Robotiq protocol's
+        ``gOBJ`` says why the fingers stopped, and the distinction is the whole point::
+
+            STOPPED_CLOSING   stalled on something   -> a part is held
+            AT_POSITION       reached the target     -> holding NOTHING
+
+        ⚠ ``width_delta`` is no longer the jaw cell's only option, and it was never a working one on
+        a Robotiq: MEASURED 2026-09-10, its collapse threshold is ``closed_width_mm + 2.0`` = 2.0 mm
+        while the driver may not command below ``min_width_mm`` = 5.0 mm, so the jaws stop where they
+        were told and the comparison can never fire. The verifier a jaw cell wants is this one.
+        """
+        from src.robot.core.gripper import ObjectDetectingGripper
         from src.robot.grippers.robotiq import GripperController
         from src.robot.grippers.vacuum import VacuumGripper
 
-        self.assertFalse(hasattr(GripperController, "is_object_detected"))
+        self.assertTrue(issubclass(GripperController, ObjectDetectingGripper))
         self.assertTrue(hasattr(VacuumGripper, "is_object_detected"))
 
 

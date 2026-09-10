@@ -679,6 +679,7 @@
         "mesh_dir": null,
         "kinematics_model": "ur5e",
         "collision_mesh_variant": null,
+        "coupling_mm": 0.0,
         "kinematics_base_yaw_deg": 180.0,
         "tool_length_mm": 150.0,
         "tool_radius_mm": 70.0,

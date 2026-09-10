@@ -61,6 +61,8 @@ Public surface
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Protocol, runtime_checkable
@@ -117,6 +119,11 @@ class VerificationOutcome(StrEnum):
     INCONCLUSIVE = "inconclusive"
     SKIPPED = "skipped"
 
+
+
+#: Named so an operator can silence or raise this one voice alone; the warning below is
+#: the only thing that distinguishes "verified" from "nobody could measure".
+_LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class GraspVerificationPolicy:
@@ -485,6 +492,31 @@ class WidthDeltaGripperVerifier:
             )
         upper_bound = context.policy.width_delta_max_mm
         commanded = context.commanded_close_width_mm
+        # ⛔ **THE COLLAPSE TEST ABOVE CAN BE UNREACHABLE ARITHMETIC, AND IT USED TO REPORT A PASS.**
+        # It asks whether the jaws shut to the PHYSICAL closed width. A jaw gripper stops where it was
+        # commanded, so that can only happen when the command itself was at or below the threshold.
+        # MEASURED 2026-09-10 on the shipped Hand-E profile: the threshold is
+        # closed_width_mm (0.0) + width_delta_min_mm (2.0) = 2.0 mm, while the pick path clamps every
+        # close to min_width_mm = 5.0 mm, so an empty close lands at 5.0 and `post <= 2.0` is false by
+        # construction. The verifier then returned PASSED, which reads as "the grasp was confirmed"
+        # and meant "the question was never asked".
+        #
+        # Recorded on every attempt, so an operator reading telemetry can see which half of this
+        # verifier was live.
+        # ⚠ RECORDED, NOT ESCALATED, AND THE DIFFERENCE IS A RETRACTION. On 2026-09-10 this returned
+        # INCONCLUSIVE when the collapse half could not fire and no upper bound was configured. Two
+        # standing tests refused it, and they were right: a plausible width is documented as a pass,
+        # twice, and a new claim against a standing artifact loses first. It also bought nothing
+        # where the defect lives, because the shipped config always sets `width_delta_max_mm`, so the
+        # branch could only ever fire in policies built WITHOUT one, which is the test contexts and
+        # the sim runners rather than a real cell.
+        #
+        # The stamp stays because it is true everywhere and costs nothing: a reader can see which
+        # half of this verifier was live on a given attempt. The protection against an empty close is
+        # `ObjectDetectingGripperVerifier` reading gOBJ, which now exists on the gripper that ships.
+        telemetry["collapse_test_reachable"] = bool(
+            commanded is None or float(commanded) <= min_engaged_width
+        )
         if upper_bound is not None and commanded is not None:
             ceiling = float(commanded) + float(upper_bound)
             telemetry["upper_bound_mm"] = ceiling
@@ -649,13 +681,33 @@ class CompositeGraspVerifier:
                             "children": child_telemetry,
                         },
                     )
+            # ⛔ **"PASSED" HERE CAN MEAN "NOBODY MEASURED ANYTHING", AND IT SAID SO NOWHERE.**
+            # `require_all_conclusive` is documented as counting an inconclusive child as a pass
+            # "and logs a WARNING plus a telemetry stamp saying verification ran and learned
+            # nothing". MEASURED 2026-09-10: neither existed. In `verification_outcome`, the field a
+            # KPI roll-up and an operator both read, an attempt where every verifier shrugged was
+            # identical to one where the grasp was confirmed.
+            learned_nothing = all(
+                r.outcome is VerificationOutcome.INCONCLUSIVE for r in child_reports
+            ) and bool(child_reports)
+            if learned_nothing:
+                _LOGGER.warning(
+                    "grasp verification ran and learned nothing: every verifier returned "
+                    "INCONCLUSIVE (%s). This is reported as a PASS because "
+                    "require_all_conclusive is false; set it true once the gripper reports a real "
+                    "measurement.",
+                    ", ".join(r.reason for r in child_reports),
+                )
             return GraspVerificationReport(
                 outcome=VerificationOutcome.PASSED,
-                reason="all_children_passed_or_inconclusive",
+                reason=("no_verifier_could_measure" if learned_nothing
+                        else "all_children_passed_or_inconclusive"),
                 telemetry={
                     "verifier": "composite",
                     "rule": self.rule,
                     "children": child_telemetry,
+                    #: ⭐ THE STAMP THE SCHEMA PROMISED. False means this PASS is evidence.
+                    "measured_something": not learned_nothing,
                 },
             )
         # "any_pass"

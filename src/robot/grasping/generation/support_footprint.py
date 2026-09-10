@@ -113,6 +113,14 @@ class SupportFootprintJaw:
         ``finger_behind_mm`` takes the model's ``finger_length_mm`` (39.98) rather than the measured
         33.37 mm reach: it only lengthens the swept approach corridor, so the larger number is the
         conservative one.
+
+        ⛔ **`aperture_mm` AND `min_width_mm` ARE NOT DERIVED, AND EVERY CALLER MUST PASS THEM.**
+        The collision envelope describes the fingers, not the travel, so the stroke cannot come from
+        ``model`` and these two keywords fall back to a 2F-85's 85.0 / 5.0. That default was the one
+        dimension the sentence above does not cover: between 2026-08-14 and 2026-09-10 the pick path
+        omitted them and planned a 49.99 mm Hand-E as though it opened 85.0, while every other
+        number in the jaw came out correct. Read ``robot.gripper.max_width_mm``; do not let this
+        default stand in for a hand.
         """
         m = model or ParallelJawGripperModel()
         return cls(
