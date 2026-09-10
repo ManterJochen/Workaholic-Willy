@@ -102,9 +102,52 @@ def _stamp_taxonomy_evidence(record_extra: dict[str, Any], report: Any) -> None:
             if key is not None:
                 record_extra[key] = True
     # (2) post-grasp verification verdict reason (already stamped into telemetry, so into record_extra).
-    vkey = _VERIFICATION_REASON_TO_EVIDENCE.get(str(record_extra.get("verification_reason", "")))
-    if vkey is not None:
-        record_extra[vkey] = True
+    for reason in _verification_reasons(record_extra):
+        vkey = _VERIFICATION_REASON_TO_EVIDENCE.get(reason)
+        if vkey is not None:
+            record_extra[vkey] = True
+
+
+def _verification_reasons(record_extra: "dict[str, Any]") -> "list[str]":
+    """Every reason a verification verdict actually rests on, the composite's children included.
+
+    Measured 2026-09-09: `empty_air_evidence` had never been stamped on a record produced by the
+    shipped wiring. `CompositeGraspVerifier` returns `child_failed:{reason}` and
+    `child_inconclusive:{reason}`, which are its only two non-passing verdicts, and `builders.py`
+    wires the composite whenever verification is on and no verifier was supplied. So an exact lookup
+    on the top-level reason matched nothing, on every record, and a taxonomy counting "the jaws
+    closed on air" counted zero. A zero from a working pipeline reads exactly like a zero from a
+    broken one.
+
+    The children are read as structure rather than parsed out of the string. `service.py` copies the
+    whole verification telemetry into the record, and the composite already lists each child report
+    there with its own `reason`. Splitting the prefix off the wrapped string would work today and
+    would put the composite's private naming convention in a second file; reading the children
+    survives that convention changing, a third prefix appearing, or one composite nesting inside
+    another.
+
+    The top-level reason is still read, because a verifier used without a composite answers with its
+    own reason and that path stays byte-identical.
+    """
+    reasons = [str(record_extra.get("verification_reason", ""))]
+    _collect_child_reasons(record_extra.get("verification_telemetry"), reasons)
+    return reasons
+
+
+def _collect_child_reasons(telemetry: object, into: "list[str]") -> None:
+    """Depth-first over nested composites, because one can hold another.
+
+    Each child entry carries its own `telemetry`, so a composite inside a composite lists its own
+    children one level down. Nothing in the tree does that today; the recursion costs three lines and
+    is the difference between the docstring above being true and being aspirational.
+    """
+    if not isinstance(telemetry, dict):
+        return
+    for child in telemetry.get("children", ()) or ():
+        if not isinstance(child, dict):
+            continue
+        into.append(str(child.get("reason", "")))
+        _collect_child_reasons(child.get("telemetry"), into)
 
 
 def to_attempt_record(

@@ -91,10 +91,29 @@ def engine_is_available(name: str) -> tuple[bool, str]:
     if name not in ENGINES:
         return False, f"unknown engine {name!r}; expected one of {sorted(ENGINES)}"
     if name == "mujoco":
-        if importlib.util.find_spec("mujoco") is None:
+        # Imported, not looked up, and the asymmetry with Isaac below is deliberate. Measured
+        # 2026-09-10 on the development workstation: `find_spec("mujoco")` answered yes while
+        # `import mujoco` raised `OSError: [WinError 4551]`, a Windows application-control policy
+        # refusing the bundled plugin DLLs that MuJoCo's own `__init__` loads through `ctypes.CDLL`.
+        # The module is findable and unusable at once, and a caller that trusted the finder met the
+        # real answer several minutes later inside a run. The wheel is about 17 MB and imports in
+        # well under a second, so the honest probe costs nothing worth saving. Isaac keeps
+        # `find_spec` because importing it takes tens of seconds and starts a renderer: a probe that
+        # did that is a probe nobody would call.
+        try:
+            importlib.import_module("mujoco")
+        except ModuleNotFoundError:
             return False, ("MuJoCo is not installed. `pip install mujoco`; it ships wheels for "
                            "Windows, macOS, Linux and ARM on python 3.10-3.14 (Apache-2.0, ~17 MB), "
                            "so unlike Isaac it needs no separate installer, GPU or admin rights.")
+        except Exception as error:  # noqa: BLE001 - report whatever refused, do not guess
+            # Anything else is installed and refusing: a blocked DLL, a broken build, an ABI
+            # mismatch against numpy. The cause is quoted rather than classified, because
+            # "pip install mujoco" is the wrong instruction for every one of them, and sending an
+            # operator to reinstall a package they already have teaches them not to trust the message.
+            return False, (f"MuJoCo is installed and will not import: {type(error).__name__}: "
+                           f"{error}. On Windows this is usually an application-control policy "
+                           "refusing the bundled plugin DLLs under `mujoco/plugin`.")
         return True, ""
     if name == "none":
         # Nothing to probe: it is numpy and trimesh, both already required. That is the point: the
