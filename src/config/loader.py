@@ -10,6 +10,11 @@ Public API
 :func:`reload_config`
     Drop the cache.
 
+Section loaders
+    :func:`load_robot_section`, :func:`load_camera_section`, :func:`load_speech_section` and
+    :func:`load_perception_section` read and validate one section each, through the same profile
+    chain, so a fault in one section leaves the others loadable. They are not cached.
+
 Layout
 ------
 The loader expects (paths are relative to ``data_dir``)::
@@ -45,14 +50,15 @@ alone does not identify which of them carried the typo.
 
 from __future__ import annotations
 
+import difflib
 import os
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any, TypeVar
 
 import yaml
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 # The one import this package takes out of `src`, and it is free: `src` is a namespace package with
 # no `__init__.py` and `contracts` is stdlib-only by rule, so this pulls three modules in about
@@ -61,10 +67,9 @@ from pydantic import ValidationError
 from src.contracts import UNSET, Maybe, chosen
 
 from ._merge import _deep_merge
-from .schema.app import AppConfig
-
-if TYPE_CHECKING:  # pragma: no cover (typing only)
-    from .schema.robot import RobotConfig
+from .schema.app import AppConfig, CameraConfig, ModelsConfig, PerceptionModelsConfig
+from .schema.models import SpeechToTextConfig
+from .schema.robot import RobotConfig
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -154,15 +159,7 @@ def load_config(
     typo'd layer is refused here rather than merging as a silent no-op and bringing the cell up with
     another robot's geometry.
     """
-    root = Path(data_dir).resolve() if data_dir else _DEFAULT_DATA_DIR
-    # `chosen()` rather than `profile is UNSET`, with the positive arm the one that uses the value:
-    # `is` narrows nothing for a type checker (`_Unset` is a plain class, not a singleton it can
-    # reason about), while `chosen` is a `TypeGuard` and narrows only where it is true. Hence the
-    # order of the branches.
-    chain = (
-        _validated_chain(root, profile, source="profile") if chosen(profile)
-        else _active_profile(root)
-    )
+    root, chain = _root_and_chain(data_dir, profile)
     return _load_cached(str(root), chain)
 
 
@@ -187,6 +184,102 @@ def load_robot_config(
     if robot is None:
         raise ConfigError("the loaded config has no `robot` block")
     return robot
+
+
+def load_robot_section(
+    data_dir: str | Path | None = None,
+    *,
+    profile: "Maybe[str | None]" = UNSET,
+) -> RobotConfig:
+    """The ``robot`` section alone: ``robot/robot.yaml`` and its overlays, validated as ``RobotConfig``.
+
+    It equals ``load_config(...).robot`` on a tree that loads, and it still loads when a camera file or a
+    model file is broken, which :func:`load_robot_config` does not: that one validates the whole tree
+    first. The U11 adaptation overlay is applied here exactly as the whole-tree load applies it, or the
+    two doors would describe different cells whenever ``WILLY_ADAPTATION_OVERLAY`` is set. The
+    cross-section rule on :class:`AppConfig` (the primary camera calibrated in one place) needs the
+    camera section and does not run here; a caller that combines this section with
+    :func:`load_camera_section` runs it through
+    :func:`~src.config.schema.app.primary_camera_calibration_conflict`. A schema failure names each key
+    with its ``robot.`` prefix and the file and line it was written on, as the whole-tree load does.
+
+    Not cached. A section is cheap to read, and a cached one would outlive the file edit that
+    :func:`reload_config` is documented to cover. The other side of that: after a change and before
+    :func:`reload_config`, a section already reads the new state while :func:`load_config` still
+    returns the tree it cached. That holds for a file edit and equally for the environment the load
+    reads, a changed ``WILLY_ADAPTATION_OVERLAY`` or a ``${VAR}`` a file substitutes, because the cache
+    is keyed by the data directory and the profile chain only.
+    """
+    root, chain = _root_and_chain(data_dir, profile)
+    path = root / "robot" / "robot.yaml"
+    raw: dict[str, Any] = {}
+    robot = _load_optional_section(path, "robot", chain)
+    if robot is not None:
+        raw["robot"] = robot
+    # The whole-tree order: the file first, then the overlay, which can supply a robot block the
+    # file does not have.
+    _apply_env_adaptation_overlay(raw)
+    if raw.get("robot") is None:
+        raise ConfigError(
+            f"there is no robot section: {path} and its profile overlays are absent or leave the "
+            "top-level 'robot:' empty, and no adaptation overlay supplies one"
+        )
+    return _validate_section(RobotConfig, raw["robot"], ("robot",), root, chain)
+
+
+def load_camera_section(
+    data_dir: str | Path | None = None,
+    *,
+    profile: "Maybe[str | None]" = UNSET,
+) -> CameraConfig:
+    """The ``camera`` section alone: ``camera/cam.yaml``, ``stereomatcher.yaml`` and ``hand_eye.yaml``.
+
+    It equals ``load_config(...).camera`` on a tree that loads, and it reads neither the robot nor the
+    models. The cross-section rule on :class:`AppConfig` does not run, for the reason given on
+    :func:`load_robot_section`; a caller combining both sections runs
+    :func:`~src.config.schema.app.primary_camera_calibration_conflict`. Not cached.
+    """
+    root, chain = _root_and_chain(data_dir, profile)
+    return _validate_section(
+        CameraConfig, _load_camera_section(root, chain), ("camera",), root, chain,
+    )
+
+
+def load_speech_section(
+    data_dir: str | Path | None = None,
+    *,
+    profile: "Maybe[str | None]" = UNSET,
+) -> SpeechToTextConfig:
+    """``models.stt`` alone, so speech loads without a camera, a robot or a detector.
+
+    ``models/`` is read file by file under the rule :func:`_load_model_keys` states: a model file that
+    cannot be read is tolerated only when the ``stt`` block was found in files that could. Not cached.
+    """
+    root, chain = _root_and_chain(data_dir, profile)
+    found = _load_model_keys(root, chain, ("stt",))
+    if "stt" not in found:
+        raise ConfigError(
+            f"there is no speech section: no file under {root / 'models'} defines a top-level 'stt:' key"
+        )
+    return _validate_section(SpeechToTextConfig, found["stt"], ("models", "stt"), root, chain)
+
+
+def load_perception_section(
+    data_dir: str | Path | None = None,
+    *,
+    profile: "Maybe[str | None]" = UNSET,
+) -> PerceptionModelsConfig:
+    """The seven ``models`` keys the perception stack reads, without ``stt`` or the hand detectors.
+
+    Every field equals the same field of ``load_config(...).models`` on a tree that loads, and the
+    result carries exactly what :class:`~src.models.perception_spec.PerceptionSpec` reads. When
+    a model file cannot be read and one of the seven was found nowhere, the section refuses: the
+    unreadable file might have held it, and a schema default must not stand in for a value nobody
+    could read. Not cached.
+    """
+    root, chain = _root_and_chain(data_dir, profile)
+    found = _load_model_keys(root, chain, tuple(PerceptionModelsConfig.model_fields))
+    return _validate_section(PerceptionModelsConfig, found, ("models",), root, chain)
 
 
 def reload_config() -> None:
@@ -254,6 +347,37 @@ def available_profiles(data_dir: str | Path | None = None) -> list[str]:
 # Internal: cached loader
 # ---------------------------------------------------------------------------
 
+_Section = TypeVar("_Section", bound=BaseModel)
+
+
+def _root_and_chain(data_dir: str | Path | None, profile: "Maybe[str | None]") -> tuple[Path, str]:
+    """The data root and the validated profile chain, resolved once for every public door.
+
+    :func:`load_config` and the section loaders all come through here, so a chain is validated the same
+    way whichever of them a caller used.
+    """
+    root = Path(data_dir).resolve() if data_dir else _DEFAULT_DATA_DIR
+    # `chosen()` rather than `profile is UNSET`, with the positive arm the one that uses the value:
+    # `is` narrows nothing for a type checker (`_Unset` is a plain class, not a singleton it can
+    # reason about), while `chosen` is a `TypeGuard` and narrows only where it is true. Hence the
+    # order of the branches.
+    chain = (
+        _validated_chain(root, profile, source="profile") if chosen(profile)
+        else _active_profile(root)
+    )
+    return root, chain
+
+
+def _validate_section(
+    model: type[_Section], data: Any, prefix: tuple[str, ...], root: Path, profile: str,
+) -> _Section:
+    """Validate one section as ``model``; a failure is described with the section's place in the tree."""
+    try:
+        return model.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(_describe_validation_error(exc, root, profile, prefix=prefix)) from exc
+
+
 @lru_cache(maxsize=8)
 def _load_cached(root_str: str, profile: str) -> AppConfig:
     root = Path(root_str)
@@ -267,9 +391,7 @@ def _load_cached(root_str: str, profile: str) -> AppConfig:
     if robot is not None:
         raw["robot"] = robot
 
-    overlay_path_str = os.environ.get(_ADAPTATION_OVERLAY_ENV_VAR, "").strip()
-    if overlay_path_str:
-        _apply_adaptation_overlay(raw, Path(overlay_path_str))
+    _apply_env_adaptation_overlay(raw)
 
     runtime = _load_optional_section(root / "app" / "runtime.yaml", "runtime", profile)
     if runtime is not None:
@@ -281,7 +403,9 @@ def _load_cached(root_str: str, profile: str) -> AppConfig:
         raise ConfigError(_describe_validation_error(exc, root, profile)) from exc
 
 
-def _describe_validation_error(exc: ValidationError, root: Path, profile: str) -> str:
+def _describe_validation_error(
+    exc: ValidationError, root: Path, profile: str, *, prefix: tuple[str, ...] = (),
+) -> str:
     """Render a validation failure so the reader can go straight to the line that caused it.
 
     A profile chain merges several files into one section, so naming the data directory alone would
@@ -290,9 +414,15 @@ def _describe_validation_error(exc: ValidationError, root: Path, profile: str) -
 
     Explaining is best-effort and must never become a second failure: if the side-car index cannot be
     built, the original pydantic report is still printed in full.
+
+    ``prefix`` is where a section validated on its own sits in the whole tree (``("robot",)`` for
+    :func:`load_robot_section`), so its keys are named, and found in the side-car index, exactly as
+    the whole-tree load names them.
     """
     layers = profile_layers(profile)
     header = f"configuration failed schema validation under {root}"
+    if prefix:
+        header = f"the {'.'.join(prefix)} section failed schema validation under {root}"
     if layers:
         header += f" (profile chain: {' -> '.join(layers)})"
     lines = [header + ":"]
@@ -304,7 +434,7 @@ def _describe_validation_error(exc: ValidationError, root: Path, profile: str) -
         return f"{header}:\n{exc}"
 
     for err in exc.errors():
-        dotted = ".".join(str(part) for part in err["loc"])
+        dotted = ".".join(str(part) for part in (*prefix, *err["loc"]))
         lines.append(f"\n  {dotted}")
         origin = origins.get(dotted)
         if origin is not None:
@@ -407,6 +537,140 @@ def _load_models_section(root: Path, profile: str) -> dict[str, Any]:
     if not merged:
         raise ConfigError(f"no model configurations found under {models_dir}")
     return merged
+
+
+def _load_model_keys(root: Path, profile: str, wanted: tuple[str, ...]) -> dict[str, Any]:
+    """The ``models/`` keys one section reads, with an unreadable file tolerated where it cannot matter.
+
+    The files are walked as :func:`_load_models_section` walks them, every base file with its overlays
+    and then the profile-only files merged by stem, but each one is parsed on its own. A file that does
+    not parse, or is not a mapping, is set aside. If a key in ``wanted`` is then found nowhere, the
+    section refuses and names every file set aside: an unreadable file might have held that key, and a
+    schema default standing in for a value nobody could read is the silent fallback this loader
+    refuses everywhere else. A key in ``wanted`` defined twice is refused as the whole-tree load refuses
+    it; a duplicate among keys this section does not read is not this section's fault.
+
+    A top-level key the schema does not know is refused when it sits in a file that defines one of
+    ``wanted``, or when one of ``wanted`` is missing and the unknown key may be that key spelled
+    wrong. An unknown key anywhere else belongs to another part of ``models`` and is left to
+    :func:`load_config`, which refuses it. A refused key is named at each file that writes it, an
+    overlay or one layer of a profile-only file included, not at the file its data was merged into.
+
+    What a file that could not be read would have added is invisible here, a second definition of
+    a wanted key included. :func:`load_config` refuses such a tree, and so does any section missing
+    a key; a section whose keys were all found reads the definitions it could see.
+    """
+    models_dir = root / "models"
+    if not models_dir.is_dir():
+        raise ConfigError(f"models directory not found: {models_dir}")
+
+    # One entry per base file merged with its overlays, and per profile-only stem merged across its
+    # layers. The third item says which file wrote each top-level key: the merged data keeps no file,
+    # and a key is reported where it is written. For a base file it is worked out only when needed.
+    readable: list[tuple[Path, dict[str, Any], dict[str, list[Path]] | None]] = []
+    set_aside: list[str] = []
+    base_paths = sorted(p for p in models_dir.glob("*.yaml") if not _is_profile_overlay_file(p))
+    for path in base_paths:
+        try:
+            data = _load_yaml_with_profile(path, profile, required=True)
+        except ConfigError as exc:
+            set_aside.append(str(exc))
+            continue
+        if not isinstance(data, dict):
+            set_aside.append(f"{path}: expected mapping at top level")
+            continue
+        readable.append((path, data, None))
+
+    base_stems = {p.stem for p in base_paths}
+    extra: dict[str, tuple[Path, dict[str, Any], dict[str, list[Path]]]] = {}
+    unreadable_stems: set[str] = set()
+    for layer in profile_layers(profile):
+        for overlay_path in sorted(models_dir.glob(f"*.{layer}.yaml")):
+            stem = _base_stem_for_overlay(overlay_path, layer)
+            if stem in base_stems or stem in unreadable_stems:
+                continue
+            try:
+                data = _load_yaml(overlay_path)
+            except ConfigError as exc:
+                set_aside.append(str(exc))
+                unreadable_stems.add(stem)
+                extra.pop(stem, None)
+                continue
+            if not isinstance(data, dict):
+                set_aside.append(f"{overlay_path}: expected mapping at top level")
+                unreadable_stems.add(stem)
+                extra.pop(stem, None)
+                continue
+            previous = extra.get(stem)
+            writers: dict[str, list[Path]] = {} if previous is None else previous[2]
+            for key in data:
+                writers.setdefault(str(key), []).append(overlay_path)
+            extra[stem] = (
+                overlay_path, data if previous is None else _deep_merge(previous[1], data), writers,
+            )
+    readable.extend(extra.values())
+
+    known = set(ModelsConfig.model_fields)
+    found: dict[str, Any] = {}
+    seen_in: dict[str, Path] = {}
+    unknown: list[tuple[Path, str, bool]] = []
+    for path, data, written_by in readable:
+        defines_a_wanted_key = any(key in data for key in wanted)
+        strangers = [str(key) for key in data if key not in known]
+        if strangers and written_by is None:
+            written_by = _top_key_writers(path, profile)
+        for key in strangers:
+            unknown.extend(
+                (writer, key, defines_a_wanted_key) for writer in (written_by or {}).get(key, [path])
+            )
+        for key in wanted:
+            if key not in data:
+                continue
+            if key in found:
+                raise ConfigError(
+                    f"duplicate model key {key!r} found in {path} "
+                    f"(already defined in {seen_in[key]})"
+                )
+            found[key] = data[key]
+            seen_in[key] = path
+
+    missing = [key for key in wanted if key not in found]
+    blamed = [(path, key) for path, key, in_a_file_read in unknown if in_a_file_read or missing]
+    if blamed:
+        lines = []
+        for path, key in blamed:
+            near = difflib.get_close_matches(key, sorted(known), n=1)
+            lines.append(f"{path}: {key!r}" + (f" (did you mean {near[0]!r}?)" if near else ""))
+        raise ConfigError(
+            "a models file carries a top-level key the schema does not know, in a file this section "
+            "reads or while one of the section's own keys is missing, so it may be that key spelled "
+            "wrong. load_config refuses it too:\n  " + "\n  ".join(lines)
+        )
+    if set_aside and missing:
+        raise ConfigError(
+            f"a file under {models_dir} could not be read, and this section needs "
+            f"{', '.join(missing)}, which no readable file defines: the unreadable file may have held "
+            "it, so no default stands in.\n  " + "\n  ".join(set_aside)
+        )
+    return found
+
+
+def _top_key_writers(base: Path, profile: str) -> dict[str, list[Path]]:
+    """Which files of one base file's chain write each top-level key: the base, then each layer in order.
+
+    Called only after that chain has loaded, so every file here parses. The files are read again because
+    the merge that loaded them keeps no record of which file a key came from.
+    """
+    writers: dict[str, list[Path]] = {}
+    layers = profile_layers(profile)
+    for path in (base, *(base.with_name(f"{base.stem}.{layer}{base.suffix}") for layer in layers)):
+        if not path.exists():
+            continue
+        data = _load_yaml(path)
+        if isinstance(data, dict):
+            for key in data:
+                writers.setdefault(str(key), []).append(path)
+    return writers
 
 
 def _load_optional_section(path: Path, key: str, profile: str) -> Any | None:
@@ -661,6 +925,17 @@ def _substitute_env_vars(text: str, path: Path) -> str:
 # ---------------------------------------------------------------------------
 # Phase U11 adaptation overlay merge
 # ---------------------------------------------------------------------------
+
+def _apply_env_adaptation_overlay(raw: dict[str, Any]) -> None:
+    """Merge the overlay :data:`_ADAPTATION_OVERLAY_ENV_VAR` names, if it names one.
+
+    The whole-tree load and :func:`load_robot_section` both call this, so a set variable reaches the
+    robot section the same way through either door.
+    """
+    overlay_path_str = os.environ.get(_ADAPTATION_OVERLAY_ENV_VAR, "").strip()
+    if overlay_path_str:
+        _apply_adaptation_overlay(raw, Path(overlay_path_str))
+
 
 def _apply_adaptation_overlay(raw: dict[str, Any], overlay_path: Path) -> None:
     """Merge a U11 adaptation overlay YAML into ``raw`` in place.

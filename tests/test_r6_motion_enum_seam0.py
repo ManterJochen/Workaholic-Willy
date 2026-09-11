@@ -64,9 +64,10 @@ class MotionEnumSeam0Tests(unittest.TestCase):
         self.assertEqual(json.dumps(c), '"move_to"')
 
     def test_motion_result_repr_byte_identical(self) -> None:
-        # The dataclass repr embeds the ENUM repr (<...: 'executed'>), which is unchanged by BOTH the
-        # StrEnum swap (repr identical) and slots=True (dataclass repr generation identical). This single
-        # assertion guards R6.1a + R6.1b at once — a regression in either flips it.
+        # The repr embeds the ENUM repr (<...: 'executed'>), which the StrEnum swap left unchanged. Since
+        # the camera-world stamp, MotionResult writes its own __repr__, which reproduces the generated
+        # dataclass text byte for byte while the stamp is UNSTATED, so this assertion also guards that
+        # reproduction. A result carrying any other stamp prints it, and that is tested beside the stamp.
         self.assertEqual(
             repr(MotionResult.executed(MotionCommand.MOVE_TO, message="hi")),
             "MotionResult(status=<MotionStatus.EXECUTED: 'executed'>, "

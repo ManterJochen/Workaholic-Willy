@@ -107,6 +107,15 @@ class AllKeysReferenceTests(unittest.TestCase):
             + "\n  ".join(missing),
         )
 
+    def test_the_gripper_model_is_written_under_the_gripper_block(self) -> None:
+        # `model` is declared under robot.ur, robot.kuka and robot.gripper, so the name check above
+        # passes for robot.gripper.model as long as any one of the three is written. The gripper entry
+        # is checked in the block it belongs to.
+        import yaml
+
+        data = yaml.safe_load((_ALL_KEYS / "robot" / "robot.yaml").read_text(encoding="utf-8"))
+        self.assertIn("model", data["robot"]["gripper"])
+
 
 if __name__ == "__main__":
     unittest.main()

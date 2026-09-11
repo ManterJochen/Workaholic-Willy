@@ -15,7 +15,16 @@ from .schema import (
     RuntimeConfig,
 )
 
-_LOADER_EXPORTS = {"ConfigError", "load_config", "load_robot_config", "reload_config"}
+_LOADER_EXPORTS = {
+    "ConfigError",
+    "load_camera_section",
+    "load_config",
+    "load_perception_section",
+    "load_robot_config",
+    "load_robot_section",
+    "load_speech_section",
+    "reload_config",
+}
 
 #: The capability noun of this package. Lazy for the same reason as the loader helpers: it
 #: reaches YAML on first use, and a schema-only import must not need the optional dependency.
@@ -47,7 +56,11 @@ __all__ = [
     "RobotConfig",
     "RuntimeConfig",
     "default_data_dir",
+    "load_camera_section",
     "load_config",
+    "load_perception_section",
     "load_robot_config",
+    "load_robot_section",
+    "load_speech_section",
     "reload_config",
 ]

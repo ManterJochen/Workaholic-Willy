@@ -571,6 +571,7 @@
     },
     "gripper": {
       "vendor": "robotiq",
+      "model": null,
       "max_width_mm": 85.0,
       "min_width_mm": 5.0,
       "closed_width_mm": 0.0,

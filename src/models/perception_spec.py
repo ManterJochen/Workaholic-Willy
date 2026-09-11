@@ -29,7 +29,7 @@ from src.models.constants import MODELS_FACTORY_LOG_FILE, MODELS_LOG_DIR
 from src.utility.log_cfg import create_logger
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
-    from src.config.schema.app import ModelsConfig
+    from src.config.schema.app import ModelsConfig, PerceptionModelsConfig
     from src.config.schema.models.models_schema import (
         ObjectDetectorConfig,
         OneFormerConfig,
@@ -139,8 +139,11 @@ class PerceptionSpec:
 
     # ---------------------------------------------------------------- factories
     @classmethod
-    def from_config(cls, models: "ModelsConfig") -> "PerceptionSpec":
+    def from_config(cls, models: "ModelsConfig | PerceptionModelsConfig") -> "PerceptionSpec":
         """The YAML door: take a validated ``ModelsConfig`` and keep the seven fields it reads.
+
+        ``load_perception_section`` hands over a ``PerceptionModelsConfig`` instead, the same seven
+        fields without the Whisper block, so a perception stack is built from config without speech.
 
         A projection, not a normalisation. Folding the legacy keys into an equivalent ``pipeline``
         block would change behaviour: a missing ``models.rtdetr`` is refused with

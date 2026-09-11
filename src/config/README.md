@@ -64,13 +64,14 @@ who greps the files sees only half the configuration.
 
 | Path | Role |
 |---|---|
-| [`__init__.py`](__init__.py) | Public surface: `load_config`, `load_robot_config`, `reload_config`, `default_data_dir`, `ConfigError`, `ConfigTree`, `LoadedTree`, and the section models `AppConfig`, `CameraConfig`, `ModelsConfig`, `RobotConfig`, `RuntimeConfig`. Schema classes import eagerly; loader helpers load lazily, so a schema-only import needs no YAML dependency. |
-| [`loader.py`](loader.py) | The pipeline above. Result cached by data directory and profile chain. |
+| [`__init__.py`](__init__.py) | Public surface: `load_config`, `load_robot_config`, the section loaders `load_robot_section`, `load_camera_section`, `load_speech_section` and `load_perception_section`, `reload_config`, `default_data_dir`, `ConfigError`, `ConfigTree`, `LoadedTree`, and the section models `AppConfig`, `CameraConfig`, `ModelsConfig`, `RobotConfig`, `RuntimeConfig`. Schema classes import eagerly; loader helpers load lazily, so a schema-only import needs no YAML dependency. |
+| [`loader.py`](loader.py) | The pipeline above. `load_config` is cached by data directory and profile chain; each section loader reads and validates one section and is not cached. |
+| [`grippers.py`](grippers.py) | The gripper registry: `load_gripper` and `available_grippers` read one `config/grippers/<model>.yaml` per hand, and refuse an unknown name, a file named after another hand, or an alias two hands claim. Nothing on the pick path reads it. `robot.gripper.model` names the hand and nothing reads that key either: the hand a cell uses is decided by `robot.gripper.vendor`, the sim gripper profile and the planner bundles. A short name such as `2f85` resolves through `load_gripper(name)` and is refused by `load_gripper(name, aliases=False)`. |
 | [`tree.py`](tree.py) | `ConfigTree` and `default_data_dir()`: the one place that answers "which directory does `load_config()` read", so no caller rebuilds that walk from its own location and gets a silently wrong answer. |
 | [`_merge.py`](_merge.py) | The recursive dict merge profile overlays are built on. |
 | [`explain.py`](explain.py) | Value, type, default, tier, which layer set it, and the YAML comment above that line. Backs `explain`, `where` and `decisions`, and the console's provenance view. |
 | [`edit.py`](edit.py) | Writing a bench measurement back in: allowlisted keys only, one line rewritten in place so comments survive, the group validated as one transaction, files restored if the loader rejects the result. |
-| [`schema/`](schema/) | The `StrictModel` schemas: [`app.py`](schema/app.py), [`runtime.py`](schema/runtime.py), [`camera/`](schema/camera/), [`models/`](schema/models/), and [`robot/`](schema/robot/) split per vendor and subsystem (`ur`, `kuka`, `sim`, `dummy`, `safety`, `grasping`, `calibration`, `kpi`, `rl`, `tool_frame`). |
+| [`schema/`](schema/) | The `StrictModel` schemas: [`app.py`](schema/app.py), [`runtime.py`](schema/runtime.py), [`camera/`](schema/camera/), [`models/`](schema/models/), [`grippers/`](schema/grippers/) for one hand's description, and [`robot/`](schema/robot/) split per vendor and subsystem (`ur`, `kuka`, `sim`, `dummy`, `safety`, `grasping`, `calibration`, `kpi`, `rl`, `tool_frame`). |
 | `__main__.py` | The `python -m src.config` validator and query CLI. |
 
 ## The tree on disk
@@ -100,6 +101,7 @@ models/*.yaml              (auto-discovered; every top-level key merged, duplica
 robot/robot.yaml           (optional)   robot/kpi_thresholds.yaml   (the KPI gate)
 app/runtime.yaml           (optional; schema defaults otherwise)
 grasping_presets/{easy,dense_clutter,verification_heavy}.yaml
+grippers/<model>.yaml      (one hand per file, read by src.config.grippers)
 all_keys/                  (a reference tree, see below)
 ```
 
@@ -346,6 +348,16 @@ under `src/` imports it, and the web framework it needs is an optional extra.
 
 **Caching.** `load_config()` is cached by absolute data directory and active profile chain. Call
 `reload_config()` to invalidate it after editing files.
+
+**Section loaders.** `load_robot_section`, `load_camera_section`, `load_speech_section` and
+`load_perception_section` read and validate one section each, through the same profile chain, so a
+broken camera file does not refuse an arm and a missing speech block does not refuse a camera. A model
+file that cannot be read is tolerated only when every key the section reads was found in files that
+could, and a top-level models key the schema does not know refuses the section it may belong to. They
+are not cached, the adaptation overlay reaches the robot section as it reaches the whole tree, and the
+cross-section rule on `AppConfig` does not run: a caller that combines the camera and robot sections
+runs it through `src.config.schema.primary_camera_calibration_conflict`. `load_config()` still
+validates everything.
 
 **Validation you can rely on.** `numDisparities` must be a positive multiple of 16 and `blockSize`
 odd; `temporal_alpha` sits in `[0, 1]`; a duplicate `rig_id` is rejected; `aruco_dict_name` is checked

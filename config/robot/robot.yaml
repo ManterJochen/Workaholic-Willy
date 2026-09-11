@@ -80,6 +80,15 @@ robot:
                                # puts that threshold at 7 mm and reports a genuinely held 6 mm part
                                # as an empty grasp.
 
+    # Which hand this is, by registry name: the stem of a file in the grippers/ directory beside
+    # robot/, for example robotiq_2f85. Name the hand by its model name: 2f85 is the short name
+    # existing corpora stamp this hand with, and the registry resolves it only for a lookup that asks
+    # for aliases, which the lookup behind this key does not. Unset here. Nothing reads the key, and
+    # the schema checks only the shape of the name, so a name no registry file defines, or the short
+    # name, still passes. The hand a cell uses is decided by robot.gripper.vendor, the sim gripper
+    # profile and the planner bundles.
+    # model: robotiq_2f85
+
     # Where the grasp centre sits on the flange. Left undeclared here on purpose: this is a
     # per-cell bench measurement of the coupling plate plus the gripper, and a plausible-looking
     # default is how the next cell inherits a wrong frame in silence. A real UR driver refuses to

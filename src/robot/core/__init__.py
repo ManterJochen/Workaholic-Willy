@@ -13,6 +13,8 @@ Public exports:
 * :class:`RobotCapabilities` holds the declarative driver feature flags.
 * :class:`MotionResult`, :class:`MotionStatus`, :class:`MotionCommand` are the typed
   motion-outcome contract.
+* :class:`CameraWorldStamp`, :class:`CameraWorldUse` and :class:`CameraWorldDecline`
+  say whether a camera world stood behind a motion, carried on its result.
 * :class:`RobotError` and its subclasses are the vendor-neutral error hierarchy.
 
 The numerics contract mirrors :mod:`src.geometry`: translations in millimetres,
@@ -32,6 +34,7 @@ from .arm_capabilities import (
     SupportsRobotStatus,
     Wrench,
 )
+from .camera_world import CameraWorldDecline, CameraWorldStamp, CameraWorldUse
 from .capabilities import RobotCapabilities
 from .errors import (
     IsaacNotAvailableError,
@@ -55,6 +58,9 @@ from .robot_arm import RobotArm
 from .vendor import RobotVendor
 
 __all__ = [
+    "CameraWorldDecline",
+    "CameraWorldStamp",
+    "CameraWorldUse",
     "DigitalIOPort",
     "Gripper",
     "GripperVendor",

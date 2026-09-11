@@ -21,6 +21,7 @@ to configure and no `python -m` entry point.
 | `gripper.py` | The `Gripper` Protocol and the opt-in `ObjectDetectingGripper` extension. |
 | `arm_capabilities.py` | Opt-in arm capability Protocols `SupportsDigitalIO`, `SupportsForceTorque` and `SupportsRobotStatus`, with the value types `Wrench`, `RobotStatus`, `RobotMode`, `SafetyMode` and `DigitalIOPort`. |
 | `motion_result.py` | The typed outcome contract: `MotionStatus`, `MotionCommand`, `MotionResult`, and `NO_PLAN_FAIL_SAFE_MESSAGE`. |
+| `camera_world.py` | `CameraWorldStamp`, `CameraWorldUse` and `CameraWorldDecline`: whether a camera world stood behind a motion, carried on its `MotionResult`. |
 | `joint_positions.py` | `JointPositions`, an immutable validated vector of joint angles in radians. |
 | `capabilities.py` | `RobotCapabilities`, the descriptor a driver advertises about itself. |
 | `vendor.py`, `gripper_vendor.py` | The `RobotVendor` and `GripperVendor` enums, used as config values and registry keys. |
@@ -57,8 +58,13 @@ and no end-effector, while a reserved arm name fails loudly at `create_arm` and 
 never substitutes.
 
 `MotionResult` is frozen: `(status, command, target_pose=None, target_joints=None, message="",
-exception=None)`, with an `ok` property, truthiness through `__bool__`, and the constructors
-`.executed()`, `.failed()` and `.from_bool()`. `JointPositions` validates a finite one-dimensional
+exception=None, camera_world=UNSTATED)`, with an `ok` property, truthiness through `__bool__`, and
+the constructors `.executed()`, `.failed()` and `.from_bool()`, each taking `camera_world=`. The
+stamp in `camera_world.py` says whether a world built from a current camera image stood behind the
+motion: only `PLANNED` vouches, a decline and a cell with no planner each carry a reason, and the
+stamp takes part in equality where `exception` does not. The `repr` shows the stamp only when it says
+something, so a result built without one prints what the generated repr prints. No driver sets the
+stamp, so every result a driver builds says `UNSTATED`. `JointPositions` validates a finite one-dimensional
 radians vector, exposes `.dof`, `.values`, `len`, iteration, indexing, `np.asarray()` support, exact
 equality and hashing, `.check_dof()`, `.tolist()` and `.from_list()`. `RobotCapabilities` is a frozen
 descriptor `(vendor, model="", dof=6, supports_joint_move=True, supports_linear_move=True,

@@ -89,10 +89,12 @@ mapping. A duplicate top-level key across two base files is a hard `ConfigError`
 override a model by adding a second base file; that is what profile overlays are for. Deleting the
 file that carries a required key is a load failure, not a leaner config.
 
-Three things under `config/` are not read by `load_config` at all: `config/robot/kpi_thresholds.yaml`, which
+Four things under `config/` are not read by `load_config` at all: `config/robot/kpi_thresholds.yaml`, which
 belongs to the soak and KPI gate; `robot/templates/kuka/`, controller-side files copied to a KUKA by
-hand; and `grasping_presets/*.yaml`, merged downstream and outside Pydantic
-([section 8](#8-the-grasping-presets-a-schema-bypass)).
+hand; `grasping_presets/*.yaml`, merged downstream and outside Pydantic
+([section 8](#8-the-grasping-presets-a-schema-bypass)); and `grippers/<model>.yaml`, the gripper
+registry, read by `src/config/grippers.py` and by nothing on the pick path. `python -m src.config`
+validating green says nothing about the registry: a malformed hand file passes it.
 
 **`config/all_keys/` is a reference tree, not one that loads.** It writes out every key the schema
 accepts with what it does, its default and its legal values. Nothing loads it by default, and it
@@ -275,6 +277,12 @@ from src.config import load_config, reload_config, ConfigError, AppConfig
 cfg = load_config("/path/to/mycell")     # frozen AppConfig; assignment raises
 reload_config()                          # drop the (directory, profile) cache
 ```
+
+`src.config` also exports `load_robot_config` and the four section loaders, `load_robot_section`,
+`load_camera_section`, `load_speech_section` and `load_perception_section`. Each reads and validates one
+section through the same profile chain, so a broken camera file does not refuse an arm; they are not
+cached, and a caller that combines the camera and robot sections runs
+`src.config.schema.primary_camera_calibration_conflict`, the one rule that spans both.
 
 For a simulated cell use `load_sim_config` in
 [`src/willy_sim/config.py`](../../src/willy_sim/README.md), which builds the chain, forces it for the

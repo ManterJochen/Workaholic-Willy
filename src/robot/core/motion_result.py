@@ -13,6 +13,9 @@ Contract
 * :class:`MotionCommand` names the high-level command that produced the result, so a
   policy or runtime report carries context without parsing strings.
 * :class:`MotionResult` is the immutable wire type returned by ``RobotArm.move``.
+* Every :class:`MotionResult` carries a camera-world stamp (:mod:`.camera_world`)
+  saying whether a world built from a current camera image stood behind the motion.
+  A result built without one says ``UNSTATED``, which vouches for nothing.
 
 When may a driver raise?
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -26,9 +29,11 @@ build the dataclass, so a driver author does not hand-roll one per code path.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from typing import TYPE_CHECKING
+
+from .camera_world import CameraWorldStamp, CameraWorldUse
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.geometry import Pose
@@ -127,6 +132,9 @@ consumer that branches on nothing having moved matches on this, never on ``TIMEO
 alone.
 """
 
+#: The stamp a result carries when its builder gives none: one frozen instance that says nothing.
+_UNSTATED = CameraWorldStamp.unstated()
+
 
 class MotionCommand(StrEnum):
     """High-level command kind that produced a :class:`MotionResult`."""
@@ -157,6 +165,12 @@ class MotionResult:
     exception
         Optional underlying exception for a ``CONNECTION_ERROR`` or ``UNKNOWN``
         fault, where the original traceback helps diagnosis. May be ``None``.
+    camera_world
+        Whether a camera world stood behind this motion (:mod:`.camera_world`). The
+        default, ``UNSTATED``, is what a result built without one says: nobody
+        vouched for it. Unlike ``exception`` it takes part in equality, because two
+        motions planned against different knowledge of the cell did not do the same
+        thing.
 
     Notes
     -----
@@ -171,6 +185,28 @@ class MotionResult:
     target_joints: "JointPositions | None" = None
     message: str = ""
     exception: BaseException | None = field(default=None, repr=False, compare=False)
+    camera_world: CameraWorldStamp = field(default=_UNSTATED, repr=False)
+
+    def __post_init__(self) -> None:
+        # The repr below reads the stamp's use, so anything else in its place would make every log
+        # line that prints this result raise instead of print.
+        if not isinstance(self.camera_world, CameraWorldStamp):
+            raise TypeError(
+                f"camera_world is a CameraWorldStamp, not {self.camera_world!r}; build one with "
+                f"CameraWorldStamp.declined(...), .unplanned(...) or .planned(...)"
+            )
+
+    def __repr__(self) -> str:
+        """The generated dataclass text, plus the stamp whenever the stamp says something.
+
+        An UNSTATED stamp adds nothing, so a result built without one prints exactly
+        the text the generated repr prints. Any other stamp is shown, because a decline
+        that no log line shows is not visible.
+        """
+        parts = [f"{item.name}={getattr(self, item.name)!r}" for item in fields(self) if item.repr]
+        if self.camera_world.use is not CameraWorldUse.UNSTATED:
+            parts.append(f"camera_world={self.camera_world!r}")
+        return f"{type(self).__qualname__}({', '.join(parts)})"
 
     # ------------------------------------------------------------------
     # Convenience predicates
@@ -197,6 +233,7 @@ class MotionResult:
         target_pose: "Pose | None" = None,
         target_joints: "JointPositions | None" = None,
         message: str = "",
+        camera_world: CameraWorldStamp = _UNSTATED,
     ) -> "MotionResult":
         """Build a successful result."""
         return cls(
@@ -205,6 +242,7 @@ class MotionResult:
             target_pose=target_pose,
             target_joints=target_joints,
             message=message,
+            camera_world=camera_world,
         )
 
     @classmethod
@@ -217,6 +255,7 @@ class MotionResult:
         target_joints: "JointPositions | None" = None,
         message: str = "",
         exception: BaseException | None = None,
+        camera_world: CameraWorldStamp = _UNSTATED,
     ) -> "MotionResult":
         """Build a failure result with an explicit ``status``."""
         if status is MotionStatus.EXECUTED:
@@ -231,6 +270,7 @@ class MotionResult:
             target_joints=target_joints,
             message=message,
             exception=exception,
+            camera_world=camera_world,
         )
 
     @classmethod
@@ -243,6 +283,7 @@ class MotionResult:
         target_joints: "JointPositions | None" = None,
         failure_status: MotionStatus = MotionStatus.CONTROLLER_REJECTED,
         message: str = "",
+        camera_world: CameraWorldStamp = _UNSTATED,
     ) -> "MotionResult":
         """Bridge a bool return into a typed result.
 
@@ -250,7 +291,8 @@ class MotionResult:
         default :attr:`MotionStatus.CONTROLLER_REJECTED` is the most common cause for
         a driver that returns ``False`` without a richer classification. A caller
         that has already proved a more specific cause, such as ``WORKSPACE_REJECTED``
-        from a pre-flight check, sets ``failure_status`` explicitly.
+        from a pre-flight check, sets ``failure_status`` explicitly. ``camera_world``
+        reaches the result on either branch.
         """
         if ok:
             return cls.executed(
@@ -258,6 +300,7 @@ class MotionResult:
                 target_pose=target_pose,
                 target_joints=target_joints,
                 message=message,
+                camera_world=camera_world,
             )
         return cls.failed(
             failure_status,
@@ -265,4 +308,5 @@ class MotionResult:
             target_pose=target_pose,
             target_joints=target_joints,
             message=message,
+            camera_world=camera_world,
         )

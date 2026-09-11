@@ -380,6 +380,13 @@ robot:
     # [default: robotiq] [none, dummy, robotiq, vacuum, jaw_io, onrobot]
     vendor: robotiq
 
+    # The registry name of the hand bolted on: the stem of a file under config/grippers/, for example
+    # robotiq_2f85. Lower case letters, digits and underscores only. The schema checks only that shape,
+    # so a name no registry file defines, or the short name 2f85, still passes. Nothing reads this key:
+    # the hand a cell uses is decided by vendor, the sim gripper profile and the planner bundles.
+    # [default: null]
+    model: null
+
     # Physical opening of the mounted gripper, in mm. Default is the Robotiq 2F-85 (85 mm), the end-effector
     # this project ships. The Robotiq driver anchors its count map on this value, so it must be the real
     # physical open width, not a policy ceiling.

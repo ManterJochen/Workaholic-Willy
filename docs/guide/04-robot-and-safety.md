@@ -206,6 +206,11 @@ with none. Two sub-blocks configure the digital-I/O end-effectors, `robot.grippe
 end-effector selection lives in `robot.sim.*` instead, as `gripper_variant`, `gripper_mount` and
 `suction_cup`.
 
+`robot.gripper.model` names the hand by its registry file, `config/grippers/<model>.yaml` (`robotiq_2f85`
+today, read by `src.config.grippers.load_gripper`). Nothing reads the key, and a name no registry file
+defines still passes the schema: the steps that take the labeller, the network conditioning and the
+planner descriptor from the key are the ones that refuse an unknown name.
+
 Three things belong here rather than in [06](06-grippers.md), because they are properties of the
 composition rather than of a gripper:
 

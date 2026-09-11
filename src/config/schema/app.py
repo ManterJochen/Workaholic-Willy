@@ -75,6 +75,59 @@ class ModelsConfig(StrictModel):
     pipeline: PipelineConfig | None = None
 
 
+class PerceptionModelsConfig(StrictModel):
+    """The seven ``models`` keys the perception stack reads, loadable without the rest of ``models``.
+
+    ``src.config.loader.load_perception_section`` returns this, so perception loads without the
+    Whisper block or the hand detectors. Field for field it carries :class:`ModelsConfig`'s
+    annotations and defaults for the fields ``PerceptionSpec`` reads. ``ModelsConfig`` itself is
+    unchanged, so a loaded tree keeps its field order.
+    """
+
+    objectdetector: ObjectDetectorConfig
+    segmenter: SegmenterConfig
+    detector: Literal["groundingdino", "rtdetr"] = "groundingdino"
+    segmenter_backend: Literal["sam2", "oneformer"] = "sam2"
+    rtdetr: ObjectDetectorConfig | None = None
+    oneformer: OneFormerConfig | None = None
+    pipeline: PipelineConfig | None = None
+
+
+def primary_camera_calibration_conflict(camera: CameraConfig, robot: RobotConfig | None) -> str | None:
+    """The refusal when the primary camera is calibrated twice and the two artifacts disagree, else None.
+
+    ``robot.grasping.fusion.cameras`` lists every camera that takes part in fusion, the primary
+    included, each with its own artifact. ``fusion.extrinsics_artifact_path`` beside it is the
+    primary's, and it stays: it is the key ``from_robot_config`` names when it refuses a cell with no
+    CAMERA to BASE transform, and the key ``real_cell --check`` reports on. So a cell that lists its
+    primary in the map has written the same fact down twice, and two artifacts for one camera is a cell
+    that is calibrated differently depending on which loader ran.
+
+    The rule needs both sections: which rig is primary is ``camera.cameras.primary_rig_id`` and the map
+    is under ``robot``, so a validator on the fusion block cannot see the camera section.
+    :class:`AppConfig` runs it for the whole tree. A section loader sees one half and cannot run it, so a
+    door that combines a camera section with a robot section loaded apart calls this function.
+    """
+    fusion = getattr(getattr(robot, "grasping", None), "fusion", None)
+    if fusion is None:
+        return None
+    entry = (getattr(fusion, "cameras", None) or {}).get(camera.cameras.primary_rig_id)
+    scalar = getattr(fusion, "extrinsics_artifact_path", None)
+    if entry is None or scalar is None:
+        return None
+    mapped = getattr(entry, "extrinsics_artifact_path", None)
+    if mapped is not None and str(mapped) != str(scalar):
+        return (
+            f"the primary camera {camera.cameras.primary_rig_id!r} is calibrated twice "
+            f"and the two disagree: robot.grasping.fusion.extrinsics_artifact_path is "
+            f"{scalar!r} and its entry in robot.grasping.fusion.cameras is {mapped!r}. Both "
+            "must name the same artifact. Which of the two a cell ends up using depends on "
+            "which loader ran, so a cell configured this way is calibrated differently on two "
+            "code paths."
+        )
+    return None
+
+
 class AppConfig(StrictModel):
     """Root configuration object returned by :func:`src.config.load_config`."""
 
@@ -87,32 +140,10 @@ class AppConfig(StrictModel):
     def _the_primary_camera_is_calibrated_in_one_place(self) -> AppConfig:
         """The primary camera's calibration may be stated twice, and then it must say one thing.
 
-        ``robot.grasping.fusion.cameras`` lists every camera that takes part in fusion, the primary
-        included, each with its own artifact. ``fusion.extrinsics_artifact_path`` beside it is the
-        primary's, and it stays: it is the key ``from_robot_config`` names when it refuses a cell
-        with no CAMERA to BASE transform, and the key ``real_cell --check`` reports on. So a cell
-        that lists its primary in the map has written the same fact down twice, and two artifacts
-        for one camera is a cell that is calibrated differently depending on which loader ran.
-
-        This lives on the root because it is the only place both halves are visible: which rig is
-        primary is ``camera.cameras.primary_rig_id`` and the map is under ``robot``. A validator on
-        the fusion block cannot see the camera section at all.
+        The rule is :func:`primary_camera_calibration_conflict`; this validator runs it for the whole
+        tree, the one place both halves are visible at load.
         """
-        fusion = getattr(getattr(self.robot, "grasping", None), "fusion", None)
-        if fusion is None:
-            return self
-        entry = (getattr(fusion, "cameras", None) or {}).get(self.camera.cameras.primary_rig_id)
-        scalar = getattr(fusion, "extrinsics_artifact_path", None)
-        if entry is None or scalar is None:
-            return self
-        mapped = getattr(entry, "extrinsics_artifact_path", None)
-        if mapped is not None and str(mapped) != str(scalar):
-            raise ValueError(
-                f"the primary camera {self.camera.cameras.primary_rig_id!r} is calibrated twice "
-                f"and the two disagree: robot.grasping.fusion.extrinsics_artifact_path is "
-                f"{scalar!r} and its entry in robot.grasping.fusion.cameras is {mapped!r}. Both "
-                "must name the same artifact. Which of the two a cell ends up using depends on "
-                "which loader ran, so a cell configured this way is calibrated differently on two "
-                "code paths."
-            )
+        conflict = primary_camera_calibration_conflict(self.camera, self.robot)
+        if conflict is not None:
+            raise ValueError(conflict)
         return self

@@ -1,0 +1,39 @@
+# The Robotiq 2F-85, described once.
+#
+# Every number below is what these four places state for this hand:
+#   datagen/grasps/verdict.py JawModel              the labeller's reach model
+#   src/robot/grasping/deep/net/gripper.py           JAW_GEOMETRY["2f85"], the network's conditioning
+#   grasping.gripper_geometry.parallel_jaw           the runtime collision envelope defaults
+#   robot.gripper                                    the actuation widths
+#
+# Grasp frame: X closes between the contacts, Y is the binormal, Z is the approach, z = 0 is the grasp
+# centre. finger_behind_mm (measured reach) and finger_length_mm (the envelope's conservative length)
+# are two different numbers; see src/config/schema/grippers/gripper_schema.py.
+gripper:
+  model: robotiq_2f85
+  aliases: [2f85]
+  kind: parallel_jaw
+  source: >-
+    Isaac asset Robotiq_2F_85_edit.usd, off its collision shapes as the worst case over apertures of 10
+    to 82 mm: the finger reach ahead and behind, the finger thickness and width, the envelope's finger
+    length, and the 38.0 mm contact patch that runs 14.39 mm behind and 23.61 mm in front of the grasp
+    centre, as datagen/grasps/verdict.py JawModel and GraspingParallelJawGeometryConfig record them. The
+    palm is not measured and the friction is a default.
+  jaw:
+    aperture_mm: 85.0
+    min_width_mm: 5.0
+    closed_width_mm: 0.0
+    finger_ahead_mm: 28.72
+    finger_behind_mm: 33.37
+    finger_length_mm: 39.98
+    finger_thickness_mm: 31.35
+    finger_width_mm: 27.0
+    finger_pad_overlap_mm: 2.0
+    pad_length_mm: 38.0
+    pad_ahead_mm: 23.61
+    pad_behind_mm: 14.39
+    palm_depth_mm: 35.0
+    palm_width_mm: 70.0
+    palm_measured: false
+    friction_coefficient: 0.5
+    friction_is_default: true

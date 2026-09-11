@@ -1675,6 +1675,19 @@
           "title": "Min Width Mm",
           "type": "number"
         },
+        "model": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9_]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
         "onrobot": {
           "$ref": "#/$defs/OnRobotGripperConfig"
         },

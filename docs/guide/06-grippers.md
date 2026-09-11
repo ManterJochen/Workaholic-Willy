@@ -38,6 +38,13 @@ directly, and the two digital-I/O drivers switch pins through the arm. So on a b
 `python -m src.robot.drivers.doctor` reports every gripper row as ready; the rows that are not ready
 are arm rows whose SDK is missing, and the two reserved gripper slots.
 
+**`robot.gripper.vendor` picks the driver; `robot.gripper.model` names the hand.** The hand's geometry
+lives in the gripper registry, one file per hand under [`config/grippers/`](../../config/grippers/),
+read by [`src/config/grippers.py`](../../src/config/grippers.py). Only the 2F-85 has a file. Nothing
+reads `robot.gripper.model`, so setting it changes nothing: the labeller, the network conditioning and
+the planner descriptor carry their own copies of the hand, and a registry file that does not validate
+still passes `python -m src.config`.
+
 > **`jaw_io` is the one most people need and the one nobody looks for.** It is deliberately not named
 > after a manufacturer: a pneumatic or electric two-finger gripper on a UR is one or two output pins
 > plus, usually, reed switches on inputs. If your gripper is not a Robotiq or an OnRobot, try this

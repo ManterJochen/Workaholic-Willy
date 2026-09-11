@@ -57,8 +57,7 @@ robot:
       offset_mm: [0.0, 0.0, 132.0]
       # Identity: the approach runs along flange +Z, the axis the offset above lies on. The
       # Isaac rotation, -90 deg about flange X, belongs to a convention whose offset runs
-      # along flange +Y; next to a +Z offset it pointed the approach 90 deg off the tool
-      # axis. tests/test_declared_ur_tool_frames_approach_along_their_offset.py holds it.
+      # along flange +Y; next to a +Z offset it points the approach 90 deg off the tool axis.
       rotation_quat_xyzw: [0.0, 0.0, 0.0, 1.0]
       verify_tolerance_mm: 10.0
 

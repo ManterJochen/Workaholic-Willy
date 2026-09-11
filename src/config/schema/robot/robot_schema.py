@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import Field, field_validator, model_validator
 
 from .._base import StrictModel
+from ..grippers.gripper_schema import MODEL_NAME_PATTERN
 
 from .ur_schema import URConfig
 from .kuka_schema import KukaConfig, KukaEkiConfig
@@ -346,6 +347,14 @@ class GripperConfig(StrictModel):
     """
 
     vendor: str = Field(default="robotiq", min_length=1)
+    #: The registry name of the hand bolted on: the stem of a file under ``config/grippers/``
+    #: (``robotiq_2f85``), loaded by ``src.config.grippers.load_gripper``. ``None``, the default,
+    #: changes nothing. A set value is lower case letters, digits and underscores, so it can never read
+    #: as a profile overlay or reach outside the registry. A name no registry file defines still
+    #: passes: a schema is validated without a data directory, so it cannot see which files exist.
+    #: Nothing reads the key; the steps that take the labeller, the network and the planner descriptor
+    #: from it are the ones that refuse an unknown name.
+    model: str | None = Field(default=None, pattern=MODEL_NAME_PATTERN)
     #: Physical opening of the mounted gripper, in mm. The default 85 mm is the Robotiq 2F-85,
     #: the end-effector this project ships. The Robotiq driver anchors its count map on this
     #: value, so it must be the real physical open width, not a policy ceiling.

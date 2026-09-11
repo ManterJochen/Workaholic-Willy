@@ -10,6 +10,8 @@ from .app import (
     AppConfig,
     CameraConfig,
     ModelsConfig,
+    PerceptionModelsConfig,
+    primary_camera_calibration_conflict,
 )
 from .camera import (
     ArucoDictName,
@@ -76,6 +78,7 @@ __all__ = [
     "ModelsConfig",
     "MotionLimitsConfig",
     "ObjectDetectorConfig",
+    "PerceptionModelsConfig",
     "QualityConfig",
     "RGBDCalibPaths",
     "RGBDDeviceRigConfig",
@@ -98,5 +101,6 @@ __all__ = [
     "WebcamPairRigConfig",
     "WlsFilterConfig",
     "WorkspaceLimitsConfig",
+    "primary_camera_calibration_conflict",
     "validate_aruco_dict_name",
 ]
