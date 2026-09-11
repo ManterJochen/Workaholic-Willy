@@ -363,3 +363,102 @@ class PlannerAndGuardConsumeTheTruthTests(unittest.TestCase):
         arm = URRobotArm(cfg)
         tcp = self._tcp()
         np.testing.assert_allclose(arm._pose_to_flange(tcp).position_mm, tcp.position_mm, atol=0.0)
+
+
+class _AcceptEverything:
+    """A pipeline that passes every pose, so these tests are about the FRAME the controller is told."""
+
+    name = "workspace"
+
+    def evaluate(self, ctx):
+        from src.robot.safety.decision import SafetyDecision
+
+        return SafetyDecision.accept(self.name, message="ok")
+
+
+class EveryControllerCommandIsTheFlangeInWillyModeTests(unittest.TestCase):
+    """`willy` means the driver composes the tool frame, on EVERY path that reaches the controller.
+
+    `ik()` and `move_linear` composed it. `_drive_pose`, which `move()` and `move_to()` use on the ik
+    planner, and `amove_to` did not: they handed the grasp centre to a bare controller as its flange
+    target. So the guard judged the joints for the right pose while the controller drove the flange to
+    the grasp centre, one tool length (132 mm here) further along the approach. The `ursim` profile is
+    exactly that combination: `motion_planner: ik` with `tool_frame.source: willy`.
+    """
+
+    @staticmethod
+    def _ik_arm(source: str):
+        from unittest.mock import AsyncMock
+
+        from src.robot.safety import SafetyPreflight
+
+        cfg = RobotConfig.model_validate({
+            "vendor": "ur",
+            "ur": {"motion_planner": "ik"},
+            "safety": {"payload": {"enforce": False}},
+            "gripper": {"tool_frame": {
+                "source": source, "offset_mm": _2F85_OFFSET, "rotation_quat_xyzw": _2F85_QUAT,
+            }},
+        })
+        arm = URRobotArm(cfg)
+        arm._conn = _conn(None if source == "willy" else tool_frame_matrix(_2F85_OFFSET, _2F85_QUAT))
+        arm._conn.ik.return_value = list(_Q)
+        arm._preflight = SafetyPreflight([_AcceptEverything()])
+        arm._motion = MagicMock()
+        arm._motion.move_to.return_value = True
+        arm._motion.last_reject_status = None
+        arm._motion.amove_to = AsyncMock(return_value=True)
+        return arm
+
+    @staticmethod
+    def _tcp():
+        return Pose(position_mm=np.array([400.0, 0.0, 300.0]),
+                    quaternion_xyzw=np.array([0.0, 1.0, 0.0, 0.0]),
+                    frame=Frame.BASE, label="grasp")
+
+    def _drive(self, arm, surface, target):
+        """Command ``target`` through one surface; return what the controller was handed."""
+        import asyncio
+
+        if surface == "move":
+            result = arm.move(target)
+            self.assertEqual(result.status.value, "executed", result.message)
+            return arm._motion.move_to.call_args[0][0]
+        if surface == "move_to":
+            self.assertTrue(arm.move_to(target))
+            return arm._motion.move_to.call_args[0][0]
+        self.assertTrue(asyncio.run(arm.amove_to(target)))
+        return arm._motion.amove_to.call_args[0][0]
+
+    def test_every_cartesian_surface_hands_the_controller_the_flange(self):
+        for surface in ("move", "move_to", "amove_to"):
+            with self.subTest(surface=surface):
+                arm = self._ik_arm("willy")
+                tcp = self._tcp()
+                sent = self._drive(arm, surface, tcp)
+                offset = float(np.linalg.norm(np.asarray([sent.x, sent.y, sent.z]) - tcp.position_mm))
+                self.assertAlmostEqual(
+                    offset, 132.0, places=3,
+                    msg=f"{surface} handed the controller a pose {offset:.1f} mm from the grasp "
+                        f"centre; a bare controller needs the flange target, 132.0 mm away")
+                np.testing.assert_allclose(sent.to_ur_list(), arm._pose_to_controller(tcp).to_ur_list(),
+                                           atol=1e-9)
+
+    def test_polyscope_mode_hands_every_surface_the_tcp_untouched(self):
+        """The control: here the controller applies the tool frame, so composing it again is the bug."""
+        for surface in ("move", "move_to", "amove_to"):
+            with self.subTest(surface=surface):
+                arm = self._ik_arm("polyscope")
+                tcp = self._tcp()
+                sent = self._drive(arm, surface, tcp)
+                np.testing.assert_allclose([sent.x, sent.y, sent.z], tcp.position_mm, atol=1e-9)
+
+    def test_a_urpose_is_already_in_the_controller_frame_and_passes_through(self):
+        """The calibration path hands a URPose, which is the controller's own frame. Composing it would
+        move the flange by a tool length the other way."""
+        for surface in ("move_to", "amove_to"):
+            with self.subTest(surface=surface):
+                arm = self._ik_arm("willy")
+                urpose = URPose.from_ur_list([0.4, 0.0, 0.3, 0.0, 3.14159, 0.0], label="calibration")
+                sent = self._drive(arm, surface, urpose)
+                np.testing.assert_allclose(sent.to_ur_list(), urpose.to_ur_list(), atol=1e-12)

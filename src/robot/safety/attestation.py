@@ -20,10 +20,10 @@ An arm that does not answer is not treated as safe.
 failure mode this module is named after.
 
 It attests and it does not enforce. Nothing here can stop a motion.
-`SafetyPreflight` is gated inside the driver own `move` (`drivers/ur/arm.py:499-527`,
-`:613`), which is the only place that can refuse a command. This says what is in the
-pipeline, so a run that enforced nothing cannot be mistaken for one that enforced
-everything.
+`SafetyPreflight` is consulted inside each driver's own motion verbs, which are the only
+places that can refuse a command, and `tests/test_ungated_motion_surfaces.py` holds every
+verb of every driver to it. This says what is in the pipeline, so a run that enforced
+nothing cannot be mistaken for one that enforced everything.
 """
 
 from __future__ import annotations
@@ -60,7 +60,12 @@ class SafetyGated(Protocol):
 
     @property
     def safety_preflight(self) -> "SafetyPreflight | None":
-        """The guard pipeline every motion of this arm passes through, or ``None`` for none."""
+        """The guard pipeline that judges every commanded motion of this arm, or ``None``.
+
+        Judging is not uniform: a joint command meets only the destination guards, and
+        the middle of a planned path is judged only when ``checks_trajectories`` is on.
+        Which planner, if any, produced the path is a separate question.
+        """
         ...
 
 

@@ -151,7 +151,13 @@ class KukaRobotArm(RobotArm):
 
     @property
     def safety_preflight(self) -> "SafetyPreflight | None":
-        """The guard pipeline every motion of this arm passes through.
+        """The guard pipeline that judges every commanded motion of this arm.
+
+        What it judges differs by command, and the difference is what a caller needs to
+        know. A Cartesian command is judged at its target pose. A joint command is judged
+        at its target configuration by the destination guards only (joint limits,
+        self-collision, payload). This driver has no planner, so no path between two
+        poses is ever judged.
 
         It implements :class:`~src.robot.safety.attestation.SafetyGated`, so a caller
         asks what this arm will refuse without reaching into `_preflight`. That matters
@@ -303,6 +309,12 @@ class KukaRobotArm(RobotArm):
         if not self._eki.is_connected:
             raise RobotConnectionError(
                 "KUKA driver: move_linear() requires an open EKI link."
+            )
+        # The pipeline move_to runs, so a LIN reaches the link only after every guard passed.
+        rejected = self._gate_pose(pose)
+        if rejected is not None:
+            raise RobotMotionRejected(
+                f"KUKA move_linear refused by the safety preflight: {rejected.message}"
             )
         try:
             self._eki.send_move_cartesian(

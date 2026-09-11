@@ -98,11 +98,11 @@ class RobotArm(Protocol):
         """Typed joint-space move, the fail-closed counterpart of :meth:`move_joint`.
 
         The commanded joints go through the ``SafetyPreflight`` destination guards
-        (joint limit, self-collision, payload, and static IK quality including
-        singularity) and are then driven. A commanded joint move to a park, home or
-        scan pose is a deliberate trajectory restart, so the step-size checks
-        (motion continuity and the IK-jump check) and the pose-only workspace guard
-        are exempted, and the continuity reference is reset around it. A guard
+        (joint limit, self-collision, payload) and are then driven. A commanded joint
+        move to a park, home or scan pose is a deliberate trajectory restart, so all
+        three Cartesian-control guards are exempted: the pose-only workspace box, IK
+        quality (the IK-jump check and the singularity check alike) and motion
+        continuity. The continuity reference is reset around it. A guard
         rejection comes back as a typed :class:`MotionResult` carrying the matching
         :class:`MotionStatus`, where the void :meth:`move_joint` raises. A driver
         with no preflight wired drives and returns ``EXECUTED``.
@@ -194,8 +194,10 @@ class RobotArm(Protocol):
         out-of-workspace and IK-failed cases, which the bool return signals, but may
         raise for a connection error.
 
-        ``linear=True`` asks for a straight-line Cartesian move where the driver
-        supports one, and the driver otherwise falls back to a joint-space move.
+        ``linear=True`` asks for a straight line, and not every path keeps it. The UR
+        driver's ``move_to`` sends a ``moveL`` whatever the planner, and KUKA sends
+        ``LIN``. The sim driver under cuRobo plans a free-space path and drops the
+        flag, and so does the typed :meth:`move` on a cuRobo UR.
 
         ``register=False`` tells the driver not to add ``pose`` to any internal
         diversity or sampling history. A calibration routine or another per-pose
@@ -253,6 +255,7 @@ class RobotArm(Protocol):
         the caller on the typed code path.
 
         ``register=False`` tells the driver not to add ``pose`` to any internal
-        diversity or sampling history, with the semantics of :meth:`move_to`.
+        diversity or sampling history, with the semantics of :meth:`move_to`, which
+        also says what ``linear=True`` does and does not guarantee.
         """
         ...

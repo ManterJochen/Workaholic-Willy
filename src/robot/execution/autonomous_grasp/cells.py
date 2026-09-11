@@ -480,7 +480,17 @@ def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception:
     if world is None:
         return
     setter(world)
-    logging.getLogger(__name__).info(
+    log = logging.getLogger(__name__)
+    planner = getattr(getattr(robot_cfg, "ur", None), "motion_planner", None)
+    if planner != "curobo":
+        # The UR arm reads this world only inside its cuRobo planner, so on any other
+        # planner the world is handed over and never consulted.
+        log.warning(
+            "live planner world wired: %d camera(s), but robot.ur.motion_planner is %r, so no planner "
+            "runs on this cell and nothing reads it", len(world.cameras), planner,
+        )
+        return
+    log.info(
         "live planner world wired: %d camera(s), refreshed before every plan", len(world.cameras)
     )
 

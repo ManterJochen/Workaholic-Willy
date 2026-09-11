@@ -203,17 +203,25 @@ class CartesianSurfacesAreGatedTests(unittest.TestCase):
     """
 
     def test_ur_move_to_is_refused_and_commands_nothing(self) -> None:
-        arm, conn = _ur_arm(SafetyPreflight([_RefusingGuard()]))
+        guard = _RefusingGuard()
+        arm, conn = _ur_arm(SafetyPreflight([guard]))
+        # IK answers, so the refusal below is the GUARD's. Without it the mocked connection fails IK
+        # and the surface refuses for a reason that has nothing to do with the pipeline.
+        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
         arm._motion = MagicMock()
         self.assertFalse(arm.move_to(_pose()))
         arm._motion.move_to.assert_not_called()
+        self.assertEqual(guard.calls, 1, "the refusal did not come from the pipeline")
 
     def test_ur_move_linear_raises_and_commands_nothing(self) -> None:
-        arm, conn = _ur_arm(SafetyPreflight([_RefusingGuard()]))
+        guard = _RefusingGuard()
+        arm, conn = _ur_arm(SafetyPreflight([guard]))
+        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
         arm._motion = MagicMock()
         with self.assertRaises(RobotMotionRejected):
             arm.move_linear(_pose())
         arm._motion.move_to.assert_not_called()
+        self.assertEqual(guard.calls, 1, "the refusal did not come from the pipeline")
 
     def test_ur_move_gates_exactly_once(self) -> None:
         """`move()` drives the ungated primitive, so the pipeline runs once per commanded pose."""
@@ -294,3 +302,75 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
         arm.move(_pose(400.0, 0.0, 300.0))
         self.assertEqual(seen["joints"], final)
         self.assertTrue(seen["pose"], "and a pose, or the box cannot be applied at all")
+
+
+class EveryCartesianSurfaceIsGatedTests(unittest.TestCase):
+    """The attestation says the pipeline judges every commanded motion of an arm. Four surfaces did not.
+
+    UR `amove_to` called `MotionController.amove_to` directly, KUKA `move_linear` sent LIN down the EKI
+    link, and the sim mock's `move_to` and `move_linear` committed the pose before any guard saw it. Each
+    one is a motion `SafetyAttestation.of(arm)` reported as GATED while nothing judged it, and the sim
+    mock is what the whole off-box suite drives.
+    """
+
+    def test_ur_amove_to_is_refused_and_commands_nothing(self) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        guard = _RefusingGuard()
+        arm, conn = _ur_arm(SafetyPreflight([guard]))
+        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
+        arm._motion = MagicMock()
+        arm._motion.amove_to = AsyncMock(return_value=True)
+        self.assertFalse(asyncio.run(arm.amove_to(_pose())))
+        arm._motion.amove_to.assert_not_called()
+        self.assertEqual(guard.calls, 1, "the refusal did not come from the pipeline")
+
+    def test_kuka_move_linear_raises_and_sends_nothing(self) -> None:
+        guard = _RefusingGuard()
+        arm, eki = _kuka_arm(SafetyPreflight([guard]))
+        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
+        arm.get_joint_positions = lambda: _Q  # type: ignore[assignment, misc]
+        with self.assertRaises(RobotMotionRejected):
+            arm.move_linear(_pose())
+        eki.send_move_cartesian.assert_not_called()
+        self.assertEqual(guard.calls, 1, "the refusal did not come from the pipeline")
+
+    def test_sim_mock_move_linear_raises_and_keeps_the_tcp(self) -> None:
+        arm = _sim_arm(SafetyPreflight([_RefusingGuard()]))
+        before = arm.get_tcp_pose().position_mm.tolist()
+        with self.assertRaises(RobotMotionRejected):
+            arm.move_linear(_pose(410.0, 5.0, 290.0))
+        self.assertEqual(arm.get_tcp_pose().position_mm.tolist(), before)
+
+    def test_sim_mock_move_to_is_refused_and_keeps_the_tcp(self) -> None:
+        arm = _sim_arm(SafetyPreflight([_RefusingGuard()]))
+        before = arm.get_tcp_pose().position_mm.tolist()
+        self.assertFalse(arm.move_to(_pose(410.0, 5.0, 290.0)))
+        self.assertEqual(arm.get_tcp_pose().position_mm.tolist(), before)
+
+    def test_the_accepted_surfaces_still_move(self) -> None:
+        """The control. A gate that refused everything would pass every test above."""
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        arm, conn = _ur_arm(SafetyPreflight([_AcceptingGuard()]))
+        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
+        arm._motion = MagicMock()
+        arm._motion.amove_to = AsyncMock(return_value=True)
+        self.assertTrue(asyncio.run(arm.amove_to(_pose())))
+        arm._motion.amove_to.assert_awaited_once()
+
+        kuka, eki = _kuka_arm(SafetyPreflight([_AcceptingGuard()]))
+        kuka.ik = lambda pose: _Q  # type: ignore[assignment, misc]
+        kuka.get_joint_positions = lambda: _Q  # type: ignore[assignment, misc]
+        kuka.move_linear(_pose())
+        eki.send_move_cartesian.assert_called_once()
+
+        sim = _sim_arm(SafetyPreflight([_AcceptingGuard()]))
+        target = _pose(410.0, 5.0, 290.0)
+        sim.move_linear(target)
+        self.assertEqual(sim.get_tcp_pose().position_mm.tolist(), target.position_mm.tolist())
+        target = _pose(420.0, -5.0, 280.0)
+        self.assertTrue(sim.move_to(target))
+        self.assertEqual(sim.get_tcp_pose().position_mm.tolist(), target.position_mm.tolist())

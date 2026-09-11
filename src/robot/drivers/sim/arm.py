@@ -323,7 +323,15 @@ class IsaacRobotArm(RobotArm):
 
     @property
     def safety_preflight(self) -> "SafetyPreflight | None":
-        """The guard pipeline every motion of this arm passes through.
+        """The guard pipeline that judges every commanded motion of this arm.
+
+        What it judges differs by command, and the difference is what a caller needs to
+        know. A Cartesian command is judged at its target pose; on a cuRobo path the
+        planned final configuration is judged without IK quality and motion continuity,
+        and in mock mode the joint guards see no target joints. A joint command is judged
+        at its target configuration by the destination guards only (joint limits,
+        self-collision, payload). The middle of a planned path is judged only when
+        ``checks_trajectories`` is on.
 
         It implements :class:`~src.robot.safety.attestation.SafetyGated`, so a caller
         asks what this arm will refuse without reaching into `_preflight`. That matters
@@ -736,6 +744,13 @@ class IsaacRobotArm(RobotArm):
                     "IsaacRobotArm.move_linear requires Frame.BASE; "
                     f"got {pose.frame!r}."
                 )
+            # Gated before the pose is committed, as the mock move() is, because the mock
+            # is what the off-box suite drives.
+            rejected = self._preflight_reject(pose, target_joints=None, current_joints=None)
+            if rejected is not None:
+                raise RobotMotionRejected(
+                    f"IsaacRobotArm.move_linear refused by the safety preflight: {rejected.message}"
+                )
             self._tcp = pose
             return
         result = self.move(pose, linear=True, vel=velocity, acc=acceleration)
@@ -799,6 +814,8 @@ class IsaacRobotArm(RobotArm):
     ) -> bool:
         if self.mock_mode:
             if not self._connected or pose.frame is not Frame.BASE:
+                return False
+            if self._preflight_reject(pose, target_joints=None, current_joints=None) is not None:
                 return False
             self._tcp = pose
             return True

@@ -164,7 +164,15 @@ class URRobotArm(RobotArm):
 
     @property
     def safety_preflight(self) -> "SafetyPreflight | None":
-        """The guard pipeline every motion of this arm passes through.
+        """The guard pipeline that judges every commanded motion of this arm.
+
+        What it judges differs by command, and the difference is what a caller needs to
+        know. A Cartesian command is judged at its target pose; on a cuRobo path the
+        planned final configuration is judged without IK quality and motion continuity.
+        A joint command is judged at its target configuration by the destination guards
+        only (joint limits, self-collision, payload). The middle of a planned path is
+        judged only when ``checks_trajectories`` is on, and whether a planner produced
+        the path at all is not something this pipeline answers.
 
         It implements :class:`~src.robot.safety.attestation.SafetyGated`, so a caller
         asks what this arm will refuse without reaching into `_preflight`. That matters
@@ -639,7 +647,7 @@ class URRobotArm(RobotArm):
     ) -> bool:
         """Command a Cartesian pose with no safety gate. Callers must have gated it first."""
         return self._motion.move_to(
-            self._coerce_urpose(pose),
+            self._to_controller_urpose(pose),
             linear=linear, vel=vel, acc=acc, register=register,
         )
 
@@ -684,7 +692,12 @@ class URRobotArm(RobotArm):
 
     @staticmethod
     def _coerce_urpose(pose: Pose | URPose) -> URPose:
-        """Convert a :class:`Pose` to :class:`URPose` if needed."""
+        """A :class:`Pose` as a :class:`URPose` with no tool frame applied.
+
+        A URPose passes through. This is for the workspace box, which bounds the
+        commanded TCP, and it is not a controller command: in ``willy`` mode the
+        controller runs a bare flange and needs :meth:`_to_controller_urpose`.
+        """
         if isinstance(pose, URPose):
             return pose
         if pose.frame is not Frame.BASE:
@@ -692,6 +705,26 @@ class URRobotArm(RobotArm):
                 f"URRobotArm requires Frame.BASE; got {pose.frame!r}."
             )
         return pose_to_urpose(pose)
+
+    def _to_controller_urpose(self, pose: Pose | URPose) -> URPose:
+        """What the controller is told for ``pose``.
+
+        A :class:`URPose` is already in the controller frame, which is how the
+        calibration path and :meth:`_pose_from_any` read it, so it passes through. A
+        :class:`Pose` is the grasp centre every Protocol caller speaks, and in ``willy``
+        mode it becomes the flange target before the controller sees it, the same
+        conversion :meth:`ik` and :meth:`move_linear` make. The guard judges the joints
+        for that flange target, so every command that reaches the controller carries the
+        same target; a grasp centre sent as a flange target would land one tool length
+        further along the approach.
+        """
+        if isinstance(pose, URPose):
+            return pose
+        if pose.frame is not Frame.BASE:
+            raise FrameMismatchError(
+                f"URRobotArm requires Frame.BASE; got {pose.frame!r}."
+            )
+        return self._pose_to_controller(pose)
 
     def move_home(self) -> bool:
         """Move to the home joint configuration, gated. ``False`` means refused, with nothing moved.
@@ -1086,9 +1119,13 @@ class URRobotArm(RobotArm):
         acc: float | None = None,
         register: bool = True,
     ) -> bool:
-        """Awaitable variant of :meth:`move_to`."""
+        """Awaitable variant of :meth:`move_to`, gated and commanded the same way."""
+        rejected = self._gate_pose(self._pose_from_any(pose), MotionCommand.MOVE_TO)
+        if rejected is not None:
+            self.logger.error("amove_to REFUSED by %s: %s", rejected.status, rejected.message)
+            return False
         return await self._motion.amove_to(
-            self._coerce_urpose(pose),
+            self._to_controller_urpose(pose),
             linear=linear, vel=vel, acc=acc, register=register,
         )
 
