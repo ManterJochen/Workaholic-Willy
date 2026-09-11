@@ -196,8 +196,9 @@ class RobotArm(Protocol):
 
         ``linear=True`` asks for a straight line, and not every path keeps it. The UR
         driver's ``move_to`` sends a ``moveL`` whatever the planner, and KUKA sends
-        ``LIN``. The sim driver under cuRobo plans a free-space path and drops the
-        flag, and so does the typed :meth:`move` on a cuRobo UR.
+        ``LIN``. The typed :meth:`move` on a cuRobo UR drops the flag and plans free
+        space. The sim driver drops it on every planner, its ik and RMPflow paths
+        ending in a joint move, although its capabilities report ``supports_linear_move``.
 
         ``register=False`` tells the driver not to add ``pose`` to any internal
         diversity or sampling history. A calibration routine or another per-pose

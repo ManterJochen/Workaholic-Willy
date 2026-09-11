@@ -151,13 +151,14 @@ class KukaRobotArm(RobotArm):
 
     @property
     def safety_preflight(self) -> "SafetyPreflight | None":
-        """The guard pipeline that judges every commanded motion of this arm.
+        """The guard pipeline that judges every motion commanded through this arm's own verbs.
 
         What it judges differs by command, and the difference is what a caller needs to
         know. A Cartesian command is judged at its target pose. A joint command is judged
         at its target configuration by the destination guards only (joint limits,
         self-collision, payload). This driver has no planner, so no path between two
-        poses is ever judged.
+        poses is ever judged. The raw transport :attr:`eki_client` reaches the controller
+        below it.
 
         It implements :class:`~src.robot.safety.attestation.SafetyGated`, so a caller
         asks what this arm will refuse without reaching into `_preflight`. That matters
@@ -636,7 +637,10 @@ class KukaRobotArm(RobotArm):
 
     @property
     def eki_client(self) -> EkiClient:
-        """Underlying transport (mostly useful in tests)."""
+        """Underlying transport (mostly useful in tests).
+
+        Ungated: its ``send_*`` calls reach the controller below the SafetyPreflight.
+        """
         return self._eki
 
     @property

@@ -454,11 +454,87 @@ class EveryControllerCommandIsTheFlangeInWillyModeTests(unittest.TestCase):
                 np.testing.assert_allclose([sent.x, sent.y, sent.z], tcp.position_mm, atol=1e-9)
 
     def test_a_urpose_is_already_in_the_controller_frame_and_passes_through(self):
-        """The calibration path hands a URPose, which is the controller's own frame. Composing it would
-        move the flange by a tool length the other way."""
+        """A URPose is the controller's own frame, so it is handed over untouched. No library caller sends
+        one today (the calibration routine refuses anything but a Pose), but `move_to` accepts it, and
+        composing it would move the flange by a tool length the other way."""
         for surface in ("move_to", "amove_to"):
             with self.subTest(surface=surface):
                 arm = self._ik_arm("willy")
-                urpose = URPose.from_ur_list([0.4, 0.0, 0.3, 0.0, 3.14159, 0.0], label="calibration")
+                urpose = URPose.from_ur_list([0.4, 0.0, 0.3, 0.0, 3.14159, 0.0], label="controller_frame")
                 sent = self._drive(arm, surface, urpose)
                 np.testing.assert_allclose(sent.to_ur_list(), urpose.to_ur_list(), atol=1e-12)
+
+
+class _HeightBox:
+    """A workspace guard that bounds height only, placed between the grasp centre and the flange."""
+
+    def __init__(self, limit_mm: float, *, keep_below: bool) -> None:
+        self.limit_mm = limit_mm
+        self.keep_below = keep_below
+        self.judged: list[float] = []
+
+    def is_inside_workspace(self, pose) -> bool:
+        self.judged.append(float(pose.z))
+        return pose.z <= self.limit_mm if self.keep_below else pose.z >= self.limit_mm
+
+    def accept(self, pose) -> None:
+        return None
+
+
+class TheControllerBoxJudgesTheGraspCentreTests(unittest.TestCase):
+    """`workspace_limits` bound the commanded TCP, and the controller path boxes whatever it is handed.
+
+    `MotionController.move_to` runs its own full-box check on the URPose it receives. Once willy mode
+    hands it the flange target, a grasp centre inside the box whose flange is outside is refused as
+    WORKSPACE_REJECTED after the preflight accepted it. `move_linear` always handed over the flange;
+    since `move`, `move_to` and `amove_to` do as well, all four refused that way until this fix.
+    """
+
+    @staticmethod
+    def _arm():
+        from src.robot.safety import SafetyPreflight
+
+        cfg = RobotConfig.model_validate({
+            "vendor": "ur",
+            "ur": {"motion_planner": "ik"},
+            "safety": {"payload": {"enforce": False}},
+            "gripper": {"tool_frame": {
+                "source": "willy", "offset_mm": _2F85_OFFSET, "rotation_quat_xyzw": _2F85_QUAT,
+            }},
+        })
+        arm = URRobotArm(cfg)
+        arm._conn = _conn(None)
+        arm._conn.ik.return_value = list(_Q)
+        arm._conn.moveJ.return_value = True
+        arm._conn.moveL.return_value = True
+        arm._motion.conn = arm._conn
+        arm._motion._is_singularity_risky = lambda joints: False
+        arm._preflight = SafetyPreflight([_AcceptEverything()])
+        return arm
+
+    def test_every_cartesian_surface_boxes_the_grasp_centre_not_the_flange(self):
+        import asyncio
+
+        tcp = Pose(position_mm=np.array([400.0, 0.0, 300.0]),
+                   quaternion_xyzw=np.array([0.0, 1.0, 0.0, 0.0]),
+                   frame=Frame.BASE, label="grasp")
+        tcp_z = float(tcp.position_mm[2])
+        for surface in ("move", "move_to", "amove_to", "move_linear"):
+            with self.subTest(surface=surface):
+                arm = self._arm()
+                flange_z = float(arm._pose_to_controller(tcp).z)
+                self.assertGreater(abs(flange_z - tcp_z), 50.0, "the fixture needs the two apart")
+                box = _HeightBox((tcp_z + flange_z) / 2.0, keep_below=tcp_z < flange_z)
+                arm._motion.guard = box
+                if surface == "move":
+                    result = arm.move(tcp)
+                    self.assertEqual(result.status.value, "executed", result.message)
+                elif surface == "move_to":
+                    self.assertTrue(arm.move_to(tcp), "move_to was refused")
+                elif surface == "amove_to":
+                    self.assertTrue(asyncio.run(arm.amove_to(tcp)), "amove_to was refused")
+                else:
+                    arm.move_linear(tcp)
+                self.assertEqual(len(box.judged), 1, box.judged)
+                self.assertAlmostEqual(box.judged[0], tcp_z, places=6,
+                                       msg=f"{surface} boxed z={box.judged[0]:.1f}, not the grasp centre")

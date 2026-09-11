@@ -120,8 +120,15 @@ class MotionController:
         vel: float | None = None,
         acc: float | None = None,
         register: bool = True,
+        workspace_pose: URPose | None = None,
     ) -> bool:
-        """Move the robot to ``pose`` after workspace validation."""
+        """Move the robot to ``pose`` after workspace validation.
+
+        ``pose`` is what the controller is told, in the frame its tool register uses.
+        ``workspace_pose`` is what the workspace box judges when that differs: in
+        ``willy`` tool-frame mode the controller is told the flange target, while
+        ``workspace_limits`` bound the grasp centre. ``None`` boxes ``pose`` itself.
+        """
         # Classify each rejection, so URRobotArm.move attaches the real typed cause
         # rather than the generic CONTROLLER_REJECTED of from_bool. It is cleared per
         # call and set at each branch below.
@@ -140,7 +147,8 @@ class MotionController:
         # too similar to the standoff at 0.0 mm and 0.0 deg. The arm would grasp and
         # refuse to lift on every pick, and the symptom reads as a gripper, planner or
         # calibration fault rather than a sampling rule.
-        if not self.guard.is_inside_workspace(pose):
+        boxed = pose if workspace_pose is None else workspace_pose
+        if not self.guard.is_inside_workspace(boxed):
             self.logger.warning("Pose '%s' rejected by workspace guard.", pose.label)
             self.last_reject_status = MotionStatus.WORKSPACE_REJECTED
             return False
@@ -194,7 +202,7 @@ class MotionController:
             return False
 
         if ok and register:
-            self.guard.accept(pose)
+            self.guard.accept(boxed)
 
         if not ok:
             self.last_reject_status = MotionStatus.CONTROLLER_REJECTED
@@ -236,11 +244,12 @@ class MotionController:
         vel: float | None = None,
         acc: float | None = None,
         register: bool = True,
+        workspace_pose: URPose | None = None,
     ) -> bool:
         """Async variant of :meth:`move_to` using ``asyncio.to_thread``."""
         return await asyncio.to_thread(
             self.move_to, pose,
-            linear=linear, vel=vel, acc=acc, register=register,
+            linear=linear, vel=vel, acc=acc, register=register, workspace_pose=workspace_pose,
         )
 
     async def amove_home(self, home_joints=None) -> bool:

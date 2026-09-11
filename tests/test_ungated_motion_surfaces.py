@@ -305,11 +305,12 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
 
 
 class EveryCartesianSurfaceIsGatedTests(unittest.TestCase):
-    """The attestation says the pipeline judges every commanded motion of an arm. Four surfaces did not.
+    """The attestation says the pipeline judges every motion an arm's verbs command. Four did not.
 
-    UR `amove_to` called `MotionController.amove_to` directly, KUKA `move_linear` sent LIN down the EKI
-    link, and the sim mock's `move_to` and `move_linear` committed the pose before any guard saw it. Each
-    one is a motion `SafetyAttestation.of(arm)` reported as GATED while nothing judged it, and the sim
+    UR `amove_to` called `MotionController.amove_to` directly, so only that controller path's own box,
+    IK and singularity checks ran; KUKA `move_linear` sent LIN down the EKI link with no check at all;
+    and the sim mock's `move_to` and `move_linear` committed the pose before any guard saw it. Each was a
+    motion `SafetyAttestation.of(arm)` reported as GATED while the pipeline never judged it, and the sim
     mock is what the whole off-box suite drives.
     """
 

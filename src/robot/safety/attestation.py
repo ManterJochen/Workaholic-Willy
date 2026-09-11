@@ -21,9 +21,11 @@ failure mode this module is named after.
 
 It attests and it does not enforce. Nothing here can stop a motion.
 `SafetyPreflight` is consulted inside each driver's own motion verbs, which are the only
-places that can refuse a command, and `tests/test_ungated_motion_surfaces.py` holds every
-verb of every driver to it. This says what is in the pipeline, so a run that enforced
-nothing cannot be mistaken for one that enforced everything.
+places that can refuse a command. `tests/test_ungated_motion_surfaces.py` holds a chosen
+set of verbs per driver to that, not every verb of every driver, and the raw transports
+some drivers expose (`URRobotArm.connection` and `.motion`, `KukaRobotArm.eki_client`)
+reach the controller below the pipeline. This says what is in the pipeline, so a run that
+enforced nothing cannot be mistaken for one that enforced everything.
 """
 
 from __future__ import annotations
@@ -60,11 +62,12 @@ class SafetyGated(Protocol):
 
     @property
     def safety_preflight(self) -> "SafetyPreflight | None":
-        """The guard pipeline that judges every commanded motion of this arm, or ``None``.
+        """The pipeline judging every motion commanded through this arm's verbs, or ``None``.
 
         Judging is not uniform: a joint command meets only the destination guards, and
         the middle of a planned path is judged only when ``checks_trajectories`` is on.
-        Which planner, if any, produced the path is a separate question.
+        Which planner, if any, produced the path is a separate question, and a raw
+        transport a driver also exposes reaches the controller below this pipeline.
         """
         ...
 

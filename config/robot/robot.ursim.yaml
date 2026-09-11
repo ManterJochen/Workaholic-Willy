@@ -13,14 +13,12 @@
 #     the flange.
 #
 # The numbers below are a simulator's numbers: they exist so the code path can be
-# exercised, not because anybody weighed a tool. The rotation is the 2F-85 one the Isaac
-# cell runs, -90 deg about flange X; the stand-off is not. `robot.sim.yaml` puts its 132 mm
-# on flange +Y, the axis that rotation maps the approach onto, and this profile puts the same
-# 132 mm on flange +Z, so the two halves belong to different flange conventions. `willy` mode
-# expects a bare flange at the controller, so nothing in URSim checks the pair. The payload is
-# a plausible mass for a 2F-85 with its coupling. On a real cell every one of them is a bench
-# measurement; the `ToolFrameConfig` docstring says why the rotational half is the
-# dangerous half.
+# exercised, not because anybody weighed a tool. The 132 mm stand-off is the 2F-85 one the
+# Isaac cell carries, placed on flange +Z, the UR tool axis, and the rotation is identity so
+# the approach runs along that same axis. `willy` mode expects a bare flange at the
+# controller, so nothing in URSim checks the pair. The payload is a plausible mass for a
+# 2F-85 with its coupling. On a real cell every one of them is a bench measurement; the
+# `ToolFrameConfig` docstring says why the rotational half is the dangerous half.
 #
 # URSim must be in remote control. In local mode the controller runs no program sent from
 # outside, so RTDEControlInterface times out with a message that names nothing; `connect()`
@@ -57,7 +55,11 @@ robot:
       # disagree with this declaration, and the driver then refuses to connect.
       source: "willy"
       offset_mm: [0.0, 0.0, 132.0]
-      rotation_quat_xyzw: [-0.70710678, 0.0, 0.0, 0.70710678]
+      # Identity: the approach runs along flange +Z, the axis the offset above lies on. The
+      # Isaac rotation, -90 deg about flange X, belongs to a convention whose offset runs
+      # along flange +Y; next to a +Z offset it pointed the approach 90 deg off the tool
+      # axis. tests/test_declared_ur_tool_frames_approach_along_their_offset.py holds it.
+      rotation_quat_xyzw: [0.0, 0.0, 0.0, 1.0]
       verify_tolerance_mm: 10.0
 
   safety:

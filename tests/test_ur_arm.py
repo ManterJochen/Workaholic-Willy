@@ -430,6 +430,39 @@ class MoveHomeIsGatedTests(unittest.TestCase):
         self.assertFalse(arm.move_home())
         arm._conn.moveJ.assert_not_called()
 
+    def test_amove_home_refuses_a_home_pose_outside_the_workspace_like_move_home(self) -> None:
+        """The async twin said "gated the same way" and was not: it ran the joint guards and then
+        `MotionController.move_home`, which warns outside the box and moves anyway."""
+        import asyncio
+
+        arm = self._arm()
+        arm._conn.fk.return_value = [0.0, -0.22, 0.562, 0.0, 3.14, 0.0]   # z = 562 mm, outside
+        self.assertFalse(asyncio.run(arm.amove_home()))
+        arm._conn.moveJ.assert_not_called()
+
+    def test_amove_home_refuses_an_unreadable_home_pose_like_move_home(self) -> None:
+        import asyncio
+
+        arm = self._arm()
+        arm._conn.fk.side_effect = RuntimeError("controller dropped")
+        self.assertFalse(asyncio.run(arm.amove_home()))
+        arm._conn.moveJ.assert_not_called()
+
+    def test_the_box_judges_the_grasp_centre_not_the_bare_flange(self) -> None:
+        """In willy mode the controller's FK is the bare flange, and `workspace_limits` bound the grasp
+        centre. Here the flange sits at z = 450 mm, inside the default z_max of 500, turned so its +Y
+        points up: the grasp centre, 132 mm along flange +Y, is at z = 582 mm and outside."""
+        import asyncio
+        import math
+
+        for verb in ("move_home", "amove_home"):
+            with self.subTest(verb=verb):
+                arm = self._arm()
+                arm._conn.fk.return_value = [0.4, 0.0, 0.45, math.pi / 2, 0.0, 0.0]
+                moved = arm.move_home() if verb == "move_home" else asyncio.run(arm.amove_home())
+                self.assertFalse(moved, f"{verb} boxed the flange instead of the grasp centre")
+                arm._conn.moveJ.assert_not_called()
+
     def test_the_cell_can_declare_its_own_home(self) -> None:
         """The real path had NO field for this; the sim has had one all along."""
         measured_ur3e_home = (3.14, -1.0, 1.0, -1.7, -1.57, 0.0)

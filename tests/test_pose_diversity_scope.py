@@ -53,15 +53,21 @@ class DiversityIsNotOnTheMotionPathTests(unittest.TestCase):
 
     def test_neither_real_driver_calls_validate_on_the_motion_path(self) -> None:
         """The two vendor drivers that command real hardware. Source-level, because the alternative is
-        a mock that would pass whichever method the driver happened to call."""
+        a mock that would pass whichever method the driver happened to call.
+
+        Matched on the call, not on the name of its argument: the UR controller path boxes `boxed`, the
+        grasp centre whenever its arm passes one as `workspace_pose`, and a check spelled
+        `validate(pose)` would have let `validate(boxed)` straight through. The box call is looked for
+        in the method that commands the move, because `move_home` carries one too and would answer for
+        a `move_to` that had lost its own; `validate` is refused anywhere in the class."""
         from src.robot.drivers.kuka import arm as kuka_arm
         from src.robot.drivers.ur import motion as ur_motion
 
-        for mod, fn in ((ur_motion, "move_to"), (kuka_arm, "move_to")):
-            with self.subTest(module=mod.__name__):
-                src = inspect.getsource(getattr(mod, "MotionController", getattr(mod, "KukaRobotArm", None)))
-                self.assertIn("is_inside_workspace(pose)", src)
-                self.assertNotIn("guard.validate(pose)", src.replace("_guard.validate(pose)", "guard.validate(pose)"))
+        for cls, commanding in ((ur_motion.MotionController, "move_to"),
+                                (kuka_arm.KukaRobotArm, "_drive_pose")):
+            with self.subTest(driver=cls.__name__):
+                self.assertRegex(inspect.getsource(getattr(cls, commanding)), r"guard\.is_inside_workspace\(")
+                self.assertNotRegex(inspect.getsource(cls), r"guard\.validate\(")
 
     def test_calibration_pose_generation_keeps_its_own_diversity_guard(self) -> None:
         """The rule is not deleted -- it is back where it belongs. pose_provider builds a LOCAL guard so

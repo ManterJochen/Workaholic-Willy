@@ -164,7 +164,7 @@ class URRobotArm(RobotArm):
 
     @property
     def safety_preflight(self) -> "SafetyPreflight | None":
-        """The guard pipeline that judges every commanded motion of this arm.
+        """The guard pipeline that judges every motion commanded through this arm's own verbs.
 
         What it judges differs by command, and the difference is what a caller needs to
         know. A Cartesian command is judged at its target pose; on a cuRobo path the
@@ -172,7 +172,8 @@ class URRobotArm(RobotArm):
         A joint command is judged at its target configuration by the destination guards
         only (joint limits, self-collision, payload). The middle of a planned path is
         judged only when ``checks_trajectories`` is on, and whether a planner produced
-        the path at all is not something this pipeline answers.
+        the path at all is not something this pipeline answers. The raw transports
+        :attr:`connection` and :attr:`motion` reach the controller below it.
 
         It implements :class:`~src.robot.safety.attestation.SafetyGated`, so a caller
         asks what this arm will refuse without reaching into `_preflight`. That matters
@@ -584,7 +585,10 @@ class URRobotArm(RobotArm):
 
     @property
     def pose(self) -> URPose:
-        """Current TCP pose (mm / axis-angle rad)."""
+        """The controller's TCP register (mm, axis-angle rad): the bare flange in ``willy`` mode.
+
+        The grasp centre every Protocol caller speaks is :meth:`get_tcp_pose`.
+        """
         return self._motion.get_current_pose()
 
     @property
@@ -649,6 +653,7 @@ class URRobotArm(RobotArm):
         return self._motion.move_to(
             self._to_controller_urpose(pose),
             linear=linear, vel=vel, acc=acc, register=register,
+            workspace_pose=self._coerce_urpose(pose),
         )
 
     def move_to(
@@ -663,7 +668,8 @@ class URRobotArm(RobotArm):
         """Move to ``pose``, gated through the full preflight pipeline.
 
         It accepts a vendor-neutral :class:`Pose`, which the pipelines and the API use,
-        or a :class:`URPose`, which the calibration code path still uses.
+        or a :class:`URPose`, which is the controller's own frame. Only tests send one:
+        the calibration routine refuses anything but a Pose.
 
         It runs the whole pipeline and not the workspace box alone, which is all
         ``MotionController.move_to`` checks. A surface that ran the box alone would
@@ -695,8 +701,9 @@ class URRobotArm(RobotArm):
         """A :class:`Pose` as a :class:`URPose` with no tool frame applied.
 
         A URPose passes through. This is for the workspace box, which bounds the
-        commanded TCP, and it is not a controller command: in ``willy`` mode the
-        controller runs a bare flange and needs :meth:`_to_controller_urpose`.
+        commanded TCP, both in :meth:`is_inside_workspace` and as the ``workspace_pose``
+        of every controller command. It is not itself a controller command: in ``willy``
+        mode the controller runs a bare flange and needs :meth:`_to_controller_urpose`.
         """
         if isinstance(pose, URPose):
             return pose
@@ -709,8 +716,8 @@ class URRobotArm(RobotArm):
     def _to_controller_urpose(self, pose: Pose | URPose) -> URPose:
         """What the controller is told for ``pose``.
 
-        A :class:`URPose` is already in the controller frame, which is how the
-        calibration path and :meth:`_pose_from_any` read it, so it passes through. A
+        A :class:`URPose` is already in the controller frame, which is how
+        :meth:`_pose_from_any` reads it, so it passes through. A
         :class:`Pose` is the grasp centre every Protocol caller speaks, and in ``willy``
         mode it becomes the flange target before the controller sees it, the same
         conversion :meth:`ik` and :meth:`move_linear` make. The guard judges the joints
@@ -747,29 +754,43 @@ class URRobotArm(RobotArm):
         It returns ``bool`` so every existing caller keeps working, and the typed reason
         is logged.
         """
+        if not self._home_is_admissible("move_home"):
+            return False
+        return self._motion.move_home(self._home_joints)
+
+    def _home_is_admissible(self, verb: str) -> bool:
+        """The whole home gate, shared by :meth:`move_home` and :meth:`amove_home`.
+
+        It returns ``False`` when the move is refused. The destination guards run first,
+        then the workspace box on the home pose. The box bounds the grasp centre, so the
+        controller FK is converted out of its TCP register first: in ``willy`` mode that
+        register is the bare flange, and boxing it would pass a home whose grasp centre
+        lies a tool length outside. An FK that cannot be read refuses, because an
+        unchecked home is what this gate stops.
+        """
         joints = JointPositions(np.asarray(self._home_joints, dtype=np.float64))
         if self._preflight is not None:
             rejected = self._preflight.gate_joint_target(joints, arm=self)
             if rejected is not None:
+                self.logger.error("%s REFUSED by %s: %s", verb, rejected.status, rejected.message)
+                return False
+        if not self._conn.is_connected:
+            return True
+        try:
+            reported = URPose.from_ur_list(self._conn.fk(list(self._home_joints)), label="home")
+            home_pose = self._coerce_urpose(self._pose_from_controller(reported, label="home"))
+            if not self._guard.is_inside_workspace(home_pose):
                 self.logger.error(
-                    "move_home REFUSED by %s: %s", rejected.status, rejected.message,
+                    "%s REFUSED: the home grasp centre (%.1f, %.1f, %.1f) is outside "
+                    "workspace_limits. Set robot.home_joint_positions to a configuration inside "
+                    "this cell's own box; the shipped default was authored for a UR5e.",
+                    verb, home_pose.x, home_pose.y, home_pose.z,
                 )
                 return False
-        if self._conn.is_connected:
-            try:
-                home_pose = URPose.from_ur_list(self._conn.fk(list(self._home_joints)), label="home")
-                if not self._guard.is_inside_workspace(home_pose):
-                    self.logger.error(
-                        "move_home REFUSED: the home pose (%.1f, %.1f, %.1f) is outside "
-                        "workspace_limits. Set robot.home_joint_positions to a configuration inside "
-                        "this cell's own box; the shipped default was authored for a UR5e.",
-                        home_pose.x, home_pose.y, home_pose.z,
-                    )
-                    return False
-            except Exception as exc:  # noqa: BLE001 (FK unavailable must not silently wave the move through)
-                self.logger.error("move_home REFUSED: could not check the home pose (%s)", exc)
-                return False
-        return self._motion.move_home(self._home_joints)
+        except Exception as exc:  # noqa: BLE001 (FK unavailable must not silently wave the move through)
+            self.logger.error("%s REFUSED: could not check the home pose (%s)", verb, exc)
+            return False
+        return True
 
     def stop(self) -> None:
         """Emergency stop."""
@@ -1127,6 +1148,7 @@ class URRobotArm(RobotArm):
         return await self._motion.amove_to(
             self._to_controller_urpose(pose),
             linear=linear, vel=vel, acc=acc, register=register,
+            workspace_pose=self._coerce_urpose(pose),
         )
 
     async def amove_home(self) -> bool:
@@ -1136,15 +1158,10 @@ class URRobotArm(RobotArm):
         proceeding anyway where the home pose lies outside the workspace box, and
         command the move regardless with no joint-limit, self-collision or payload check
         at all, which would leave this path strictly weaker than the method it mirrors.
+        Both verbs share :meth:`_home_is_admissible`, which runs synchronously.
         """
-        joints = JointPositions(np.asarray(self._home_joints, dtype=np.float64))
-        if self._preflight is not None:
-            rejected = self._preflight.gate_joint_target(joints, arm=self)
-            if rejected is not None:
-                self.logger.error(
-                    "amove_home REFUSED by %s: %s", rejected.status, rejected.message,
-                )
-                return False
+        if not self._home_is_admissible("amove_home"):
+            return False
         return await self._motion.amove_home(self._home_joints)
 
     def fk(self, joints: JointPositions) -> Pose:
@@ -1292,6 +1309,7 @@ class URRobotArm(RobotArm):
         urpose = self._pose_to_controller(pose)
         ok = self._motion.move_to(
             urpose, linear=True, vel=velocity, acc=acceleration, register=False,
+            workspace_pose=self._coerce_urpose(pose),
         )
         if not ok:
             raise RobotMotionRejected(
@@ -1300,7 +1318,10 @@ class URRobotArm(RobotArm):
 
     @property
     def connection(self) -> URConnection:
-        """Underlying RTDE connection."""
+        """Underlying RTDE connection.
+
+        Ungated: its move calls reach the controller below the SafetyPreflight.
+        """
         return self._conn
 
     @property
@@ -1310,7 +1331,11 @@ class URRobotArm(RobotArm):
 
     @property
     def motion(self) -> MotionController:
-        """Motion controller instance."""
+        """Motion controller instance.
+
+        Ungated: its move calls check only the workspace box, IK and singularity, below
+        the SafetyPreflight.
+        """
         return self._motion
 
     @property
