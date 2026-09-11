@@ -395,10 +395,87 @@ class BaselineReportTests(unittest.TestCase):
             report_path.read_bytes(),
             rendered.encode("utf-8"),
             msg=(
-                "the committed baseline report is not the bytes `--baseline-report` writes. If the "
-                "content matches and only the line ending differs, the writer is translating."
+                "the committed baseline report is not the bytes the builder renders. This compares "
+                "a render to the file and calls no writer; the writers are pinned by the two tests "
+                "below."
             ),
         )
+
+    def test_the_writer_the_cli_calls_does_not_translate_the_line_ending(self) -> None:
+        """⛔ THE TEST ABOVE NEVER CALLS A WRITER, AND ITS OWN MESSAGE SAID IT MEASURED ONE.
+
+        It renders ``build_baseline_report`` in memory and compares the render to the committed file,
+        which proves the committed bytes equal the render and nothing about any writer, because it
+        writes nothing. The writer ``--baseline-report`` reaches is not ``write_baseline_report``:
+        ``replay/__main__._baseline_report_mode`` calls ``Baseline.canonical().measure()`` and then
+        ``measured.write(out_path)``, which is :meth:`BaselineMeasurement.write`.
+
+        In this tree that method already passes ``newline=""``, and nothing noticed that it had to.
+        MEASURED 2026-09-11 in the dev tree, which carries the same code: the determinism repair
+        reached the library twin the tests named and left this method translating, so the operator
+        command wrote 25130 CRLF bytes against a 24431-byte LF golden while every test was green.
+        This pins the method here before the same removal can happen silently.
+
+        Goes through the real writer and reads the file back as bytes. Red where the platform line
+        separator is CRLF, which is the platform the defect lives on.
+        """
+        from src.robot.grasping.replay.runs import Baseline
+
+        measured = Baseline.canonical().measure()
+        expected = (json.dumps(dict(measured.report), indent=2, sort_keys=True) + "\n").encode("utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            written = measured.write(Path(tmp) / "baseline.json").read_bytes()
+        # A count rather than assertNotIn, and assertTrue rather than assertEqual: both of those print
+        # their operands, and the first red run of this test in dev printed the whole 25 KB report as
+        # its failure message, which is a wall rather than a diagnosis. Two numbers say what went wrong.
+        carriage_returns = written.count(b"\r")
+        self.assertEqual(
+            carriage_returns, 0,
+            f"the writer --baseline-report calls translated the line ending: {carriage_returns} "
+            f"carriage return(s) in {len(written)} bytes, where the render has {len(expected)} and none",
+        )
+        self.assertTrue(written == expected,
+                        f"written {len(written)} bytes differ from the {len(expected)}-byte render")
+
+    def test_every_writer_of_this_golden_asks_for_no_translation(self) -> None:
+        """The same property, readable on EVERY platform, because the test above is not.
+
+        ⚠ WHY A SECOND TEST, AND WHY IT READS SOURCE. ``write_text`` without ``newline`` translates only
+        where CPython was compiled with a CRLF line separator (``#ifdef MS_WINDOWS`` in ``textio.c``),
+        so no patching of ``os.linesep`` makes a Linux run translate. CI runs on Linux. A byte
+        comparison there passes WITH the defect: a guard that cannot fire where it is checked. So both
+        writers of this golden are read here, and every ``write_text`` in them must pass
+        ``newline=""``. Scoped to the two writers of THIS golden, so an unrelated log writer elsewhere
+        in the module cannot turn it red for the wrong reason.
+        """
+        import ast
+
+        replay = REPO_ROOT / "src" / "robot" / "grasping" / "replay"
+
+        def method(tree: ast.Module, cls: str, name: str) -> "list[ast.FunctionDef]":
+            return [fn for node in ast.walk(tree)
+                    if isinstance(node, ast.ClassDef) and node.name == cls
+                    for fn in node.body if isinstance(fn, ast.FunctionDef) and fn.name == name]
+
+        def function(tree: ast.Module, name: str) -> "list[ast.FunctionDef]":
+            return [fn for fn in tree.body if isinstance(fn, ast.FunctionDef) and fn.name == name]
+
+        runs = ast.parse((replay / "runs.py").read_text(encoding="utf-8"))
+        report = ast.parse((replay / "baseline_report.py").read_text(encoding="utf-8"))
+        writers = [("runs.py BaselineMeasurement.write", method(runs, "BaselineMeasurement", "write")),
+                   ("baseline_report.py write_baseline_report", function(report, "write_baseline_report"))]
+
+        offenders = []
+        for label, found in writers:
+            self.assertTrue(found, f"{label} no longer exists; this test is stale, not green")
+            for call in ast.walk(found[0]):
+                if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                        and call.func.attr == "write_text"):
+                    continue
+                newline = [kw.value for kw in call.keywords if kw.arg == "newline"]
+                if not (newline and isinstance(newline[0], ast.Constant) and newline[0].value == ""):
+                    offenders.append(f"{label}, line {call.lineno}")
+        self.assertEqual(offenders, [], "a writer of the committed baseline translates line endings")
 
     def test_report_contains_all_packs(self) -> None:
         report = build_baseline_report(REPO_ROOT)
