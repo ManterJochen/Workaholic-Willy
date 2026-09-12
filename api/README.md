@@ -127,7 +127,7 @@ Everything is mounted under `/v1`.
 | `GET /v1/camera` | what the cell is looking at, and which of three pictures that is |
 | `POST /v1/overlay/enable` | opt into the debug render; it costs time per pick |
 | `WS /v1/overlay` | each new overlay still, with its age |
-| `POST /v1/voice/transcribe` | audio to text. Never starts anything. |
+| `POST /v1/voice/transcribe` | WAV to a text proposal, with the voice check behind it. Never starts anything. |
 | **History** | |
 | `GET /v1/history/kpis` | rolled up with the same function the offline gate uses |
 | `GET /v1/history/records` | logged grasp attempts, newest first |
@@ -176,17 +176,32 @@ a driver that stamps nothing adds no key. The sentence names only `missing` and 
 `unplanned` on every motion, and repeating that on every line would bury the one that matters. The
 React console types `data` as `Record<string, unknown>`, so the new keys needed no client change.
 
-**Speech goes to the prompt box, not to the arm.** `POST /v1/voice/transcribe` returns text and starts
-nothing: a misheard word must not be able to move an arm, so a spoken prompt is confirmed by the same
-button, with the same acknowledgement, as a typed one. The recogniser loads on first use, so a console
-on a machine without the model still starts and says what is missing instead of failing to boot.
+**Speech goes to the prompt box, not to the arm.** `POST /v1/voice/transcribe` returns a text proposal
+and starts nothing: a misheard word must not be able to move an arm, so a spoken prompt is confirmed by
+the same button, with the same acknowledgement, as a typed one, and "Stopp" is no exception. The text
+stays in the language it was spoken in, because Whisper transcribes and never translates, and the
+answer carries the engine's whole `Transcript`: the language code, whether Whisper detected it or
+`models.stt.language` configured it, the recording's length, the engine, the weights, the device and
+the milliseconds the decode took. Before Whisper is asked what was said, Silero is asked whether
+anything was said at all, so a recording holding no speech comes back as an empty proposal with the
+reason rather than as a hallucinated word.
 
-[`audio.py`](audio.py) decodes 16-bit WAV with the standard library, which is what the console itself
-uploads, and everything else (webm/opus, mp4, ogg, flac, mp3) through the optional `av` dependency. No
-browser records WAV, so that second path is the everyday one. The two failures are answered
-differently on purpose: a container this host cannot decode is `501 audio_format_unsupported` and names
-the dependency, while bytes that are not usable audio are `422 audio_undecodable`. An operator sent to
-their microphone settings for something that is an install has been told the wrong thing.
+**One speech engine per process.** The console reads `models.stt` alone through `load_speech_section`,
+so a typo in a camera file cannot refuse a recording, and it keeps the engine and voice gate that
+section builds; a changed section builds a new pair. The weights load on the first transcription and
+stay loaded, because a model load per request sits inside the 2 s budget from the end of speaking. A
+machine that cannot import the stack answers `501 speech_unavailable` and names the file that installs
+the missing package, and a DLL that Smart App Control refuses raises `OSError` rather than
+`ImportError` and gets the same answer. An upload opens no microphone, so a machine without PortAudio
+transcribes uploads all the same.
+
+[`audio.py`](audio.py) decodes 16-bit PCM WAV with the standard library, which is what the console
+records in the browser, and nothing else. The second decoder for webm/opus, mp4, ogg, flac and mp3 is
+gone: its wheel bundled a GPL build of FFmpeg, which is not what it was admitted under (see `NOTICE`).
+The two failures are answered differently on purpose: a format this server will never decode is
+`415 audio_format_unsupported`, and the sentence names what arrived and what the upload declared
+itself to be, while bytes that are not usable audio are `422 audio_undecodable`. Neither is a 501,
+because neither is a missing capability: no install makes this endpoint read webm.
 
 **A truncated upload is one of those 422s, and it used to be a crash.** A connection dropped
 mid-upload delivers a few bytes, and `wave.open()` answers a short read with a bare `EOFError`, which

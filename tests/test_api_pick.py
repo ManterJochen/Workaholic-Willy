@@ -15,6 +15,7 @@ Honesty bucket (2): a real dummy cell, real threads, real sockets, no hardware.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import shutil
 import tempfile
@@ -22,7 +23,9 @@ import time
 import types
 import unittest
 import unittest.mock
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 try:
     from fastapi.testclient import TestClient
@@ -383,7 +386,7 @@ class MediaTests(unittest.TestCase):
         shutil.rmtree(self.tmp.parent, ignore_errors=True)
 
     @staticmethod
-    def _wav(*, channels: int = 1, rate: int = 16000, seconds: float = 0.2) -> bytes:
+    def _wav(*, channels: int = 1, rate: int = 16000, seconds: float = 1.0) -> bytes:
         import io
         import math
         import struct
@@ -428,30 +431,103 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["code"], "empty_audio")
 
+    def _forget_speech_engine(self) -> None:
+        """The process holds one speech engine per section; a test must not leave its fakes in it."""
+        from src.models.speech.holder import shared_speech
+
+        shared_speech().forget()
+
+    @contextlib.contextmanager
+    def _speech(self, *, speech: bool = True, weights: bool = True) -> Iterator[dict[str, Any]]:
+        """Whisper and Silero behind their real loaders, from paths written into this test's own tree.
+
+        ⛔ THE FAILURE TEST BELOW WAS NOT HERMETIC. It counted on no Whisper weights being on the box
+        and went red on the first box that had them, measured with whisper-small present:
+        `AssertionError: 200 not found in (422, 501) : {"text":"you","language":"en",...}`. Every model
+        path is now written into the temporary tree, both loaders are stand-ins, and the device is the
+        CPU. ``speech`` is what the stand-in voice detector hears; ``weights`` False leaves the Whisper
+        directory absent.
+        """
+        import os
+
+        import torch
+        import transformers
+
+        from tests._speech_fakes import FakeSileroModel, whisper_parts
+
+        whisper = self.tmp.parent / "whisper"
+        if weights:
+            whisper.mkdir(exist_ok=True)
+        vad = self.tmp.parent / "silero_vad.jit"
+        vad.write_bytes(b"stand-in")
+        stt = self.tmp / "models" / "stt.yaml"
+        text, hits = re.subn(r"(?m)^(\s*)model_path:.*$", rf'\g<1>model_path: "{whisper.as_posix()}"',
+                             stt.read_text(encoding="utf-8"))
+        text, vad_hits = re.subn(r"(?m)^(\s*)vad_model_path:.*$",
+                                 rf'\g<1>vad_model_path: "{vad.as_posix()}"', text)
+        assert (hits, vad_hits) == (1, 1), "the shipped stt.yaml stopped naming its two model paths"
+        stt.write_text(text, encoding="utf-8")
+        self.addCleanup(self._forget_speech_engine)
+        processor, model = whisper_parts()
+        silero = FakeSileroModel(speech=speech)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.dict(os.environ, {"WILLY_DEVICE": "cpu"}))
+            yield {
+                "processors": stack.enter_context(unittest.mock.patch.object(
+                    transformers.WhisperProcessor, "from_pretrained", return_value=processor)),
+                "models": stack.enter_context(unittest.mock.patch.object(
+                    transformers.WhisperForConditionalGeneration, "from_pretrained", return_value=model)),
+                "loads": stack.enter_context(unittest.mock.patch.object(
+                    torch.jit, "load", return_value=silero)),
+                "silero": silero,
+            }
+
+    @staticmethod
+    def _proposal(text: str = "pick the red cube") -> Any:
+        from src.models.speech.transcript import LanguageSource, Proposal, SpeechCheck, Transcript
+
+        return Proposal(
+            text=text,
+            reason=None,
+            speech=SpeechCheck(
+                heard_speech=True, duration_s=1.0, checked_s=0.5, peak_probability=0.97, onset=0.5,
+                min_speech_s=0.25, detector="silero-vad", latency_ms=3.0,
+            ),
+            transcript=Transcript(
+                text=text, language="en", language_source=LanguageSource.DETECTED, duration_s=1.0,
+                engine="whisper-transformers", model="org/whisper", device="cpu", latency_ms=12.5,
+            ),
+        )
+
     def test_a_transcription_failure_is_an_answer_not_a_crash(self) -> None:
-        """No Whisper model on this box, which is exactly the state a fresh bench machine is in.
+        """No Whisper weights where the section says, which is the state a fresh bench machine is in.
 
         The endpoint must name the reason and stay up: a console that 500s on a missing optional model
-        tells an operator nothing about what to install.
+        tells an operator nothing about what to fetch. A model this host has not fetched is a missing
+        capability (501), and the message names the directory and the fetch.
         """
-        response = self.client.post(
-            "/v1/voice/transcribe", files={"audio": ("a.wav", self._wav(), "audio/wav")}
-        )
-        self.assertIn(response.status_code, (422, 501), response.text)
-        self.assertIn(response.json()["code"], {"transcription_failed", "speech_unavailable"})
-        self.assertTrue(response.json()["message"])
+        with self._speech(weights=False) as fakes:
+            response = self.client.post(
+                "/v1/voice/transcribe", files={"audio": ("a.wav", self._wav(), "audio/wav")}
+            )
+        self.assertEqual(response.status_code, 501, response.text)
+        self.assertEqual(response.json()["code"], "speech_model_missing")
+        self.assertIn("whisper", response.json()["message"])
+        self.assertIn("fetch.py", response.json()["message"])
+        self.assertEqual(fakes["processors"].call_count, 0)
 
     def test_speech_returns_text_and_never_starts_a_run(self) -> None:
         """A misheard word must not be able to move an arm. Speech lands in the prompt box; a human
         presses the same button, with the same acknowledgement, as for a typed prompt."""
         from unittest.mock import patch
 
-        with patch("api.routers.media._transcribe", return_value="  pick the red cube  "):
+        proposal = self._proposal()
+        with patch("api.routers.media._transcribe", return_value=proposal):
             response = self.client.post(
                 "/v1/voice/transcribe", files={"audio": ("a.wav", self._wav(), "audio/wav")}
             )
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json(), {"text": "pick the red cube"})
+        self.assertEqual(response.json(), proposal.to_dict(), "the wire answer is the proposal, whole")
         self.assertEqual(self.client.get("/v1/runs").json(), [], "no run may have been started")
 
     def test_stereo_audio_is_mixed_rather_than_half_discarded(self) -> None:
@@ -459,28 +535,183 @@ class MediaTests(unittest.TestCase):
         transcribe the quiet side."""
         import numpy as np
 
-        from api.routers.media import _transcribe
+        from api.routers import media
+        from src.models.speech import holder
 
         captured: dict[str, object] = {}
+        proposal = self._proposal("ok")
 
-        class _FakeWhisper:
-            def __init__(self, _config: object) -> None:
-                pass
+        class _Held:
+            def propose(self, samples: "np.ndarray", *, samplerate: int) -> object:
+                captured["samples"], captured["rate"] = samples, samplerate
+                return proposal
 
-            def transcribe_array(self, audio: "np.ndarray", rate: int) -> str:
-                captured["samples"], captured["rate"] = audio, rate
-                return "ok"
+        class _Holder:
+            def for_tree(self, data_dir: object, *, profile: object) -> _Held:
+                return _Held()
 
-        with unittest.mock.patch(
-            "src.models.speech.speech_to_text.WhisperSpeechToText", _FakeWhisper
-        ):
-            _transcribe(self.cell, self._wav(channels=2, rate=16000, seconds=0.1))
+        with unittest.mock.patch.object(holder, "shared_speech", return_value=_Holder()):
+            media._transcribe(self.cell, self._wav(channels=2, rate=16000, seconds=0.1))
 
         samples = captured["samples"]
         assert isinstance(samples, np.ndarray)
         self.assertEqual(samples.ndim, 1, "Whisper takes mono")
         self.assertEqual(captured["rate"], 16000)
         self.assertEqual(len(samples), 1600, "one sample per FRAME, not per channel")
+
+    def test_the_speech_model_loads_once_across_two_requests(self) -> None:
+        """Whisper was loaded from disk on every request, against a 2 s budget from the end of speaking.
+
+        The two `from_pretrained` holders and `torch.jit.load` are faked, so this needs no weights and
+        counts real loads."""
+        with self._speech() as fakes:
+            answers = [
+                self.client.post(
+                    "/v1/voice/transcribe", files={"audio": ("a.wav", self._wav(), "audio/wav")}
+                )
+                for _ in range(2)
+            ]
+        for answer in answers:
+            self.assertEqual(answer.status_code, 200, answer.text)
+            self.assertEqual(answer.json()["text"], "Pick the red cube", "and never lower-cased")
+        self.assertEqual((fakes["processors"].call_count, fakes["models"].call_count), (1, 1),
+                         "the weights were loaded per request")
+        self.assertEqual(fakes["loads"].call_count, 1, "the voice detector was loaded per request")
+
+    def _evict_speech_modules(self) -> None:
+        """Make the next request import the speech package afresh, as a newly started console would."""
+        import sys
+
+        evicted = {name: module for name, module in sys.modules.items()
+                   if name.startswith("src.models.speech")}
+        for name in evicted:
+            del sys.modules[name]
+        self.addCleanup(sys.modules.update, evicted)
+
+    def test_a_missing_portaudio_leaves_the_upload_path_alone(self) -> None:
+        """`import sounddevice` raises OSError when the system PortAudio library is missing. An upload
+        opens no microphone, so it must not need one; the speech module imported sounddevice at its top
+        and the endpoint answered 422 on such a machine."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def no_portaudio(name: str, *args: object, **kwargs: object) -> object:
+            if name == "sounddevice" or name.startswith("sounddevice."):
+                raise OSError("PortAudio library not found")
+            return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+        with self._speech():
+            self._evict_speech_modules()
+            with unittest.mock.patch.object(builtins, "__import__", no_portaudio):
+                response = self.client.post(
+                    "/v1/voice/transcribe", files={"audio": ("a.wav", self._wav(), "audio/wav")}
+                )
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_a_speech_stack_that_cannot_load_answers_501_naming_the_file_that_holds_it(self) -> None:
+        """A DLL the OS refuses arrives as OSError, a missing package as ModuleNotFoundError. Both mean
+        this machine cannot run speech, which is a missing capability (501), not a bad request (422).
+        A missing package is answered with the requirements file that really holds it; a refused DLL
+        with the sentence that the package is installed and Windows refused the named file."""
+        import builtins
+
+        real_import = builtins.__import__
+        refused_dll = OSError(
+            "[WinError 4551] An Application Control policy has blocked this file. Error loading "
+            '"D:\\venv\\Lib\\site-packages\\torch\\lib\\c10.dll" or one of its dependencies.'
+        )
+        cases: tuple[tuple[str, BaseException, tuple[str, ...]], ...] = (
+            ("torch", refused_dll, ("torch is installed", "Windows refused", "c10.dll")),
+            ("transformers",
+             ModuleNotFoundError("No module named 'transformers'", name="transformers"),
+             ("requirements.txt",)),
+        )
+        with self._speech():
+            for package, failure, fragments in cases:
+                with self.subTest(package=package):
+                    self._evict_speech_modules()
+
+                    def blocked(name: str, *args: object, _package: str = package,
+                                _failure: BaseException = failure, **kwargs: object) -> object:
+                        if name == _package or name.startswith(_package + "."):
+                            raise _failure
+                        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+                    with unittest.mock.patch.object(builtins, "__import__", blocked):
+                        response = self.client.post(
+                            "/v1/voice/transcribe", files={"audio": ("a.wav", self._wav(), "audio/wav")}
+                        )
+                    self.assertEqual(response.status_code, 501, response.text)
+                    self.assertEqual(response.json()["code"], "speech_unavailable")
+                    for fragment in fragments:
+                        self.assertIn(fragment, response.json()["message"])
+                    self.assertNotIn("voice.txt", response.json()["message"],
+                                     "there is no voice.txt in this tree to send anyone to")
+
+    def test_a_broken_camera_file_does_not_refuse_transcription(self) -> None:
+        """Speech reads `models.stt` alone. It read the whole tree, so a camera file with a typo refused
+        a recording that needs no camera."""
+        (self.tmp / "camera" / "cam.yaml").write_text("cameras: [never closed\n", encoding="utf-8")
+        reload_config()
+        with self._speech():
+            response = self.client.post(
+                "/v1/voice/transcribe", files={"audio": ("a.wav", self._wav(), "audio/wav")}
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["text"], "Pick the red cube")
+
+    def test_an_upload_without_speech_proposes_nothing_and_says_why(self) -> None:
+        """Whisper answered 0.2 s of a tone with "you" through this endpoint (2026-09-11, whisper-small),
+        and the word would have landed in the prompt box. The voice detector runs first; a recording in
+        which it hears no speech is an empty proposal with a reason, and Whisper is not asked."""
+        with self._speech(speech=False) as fakes:
+            response = self.client.post(
+                "/v1/voice/transcribe", files={"audio": ("a.wav", self._wav(), "audio/wav")}
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["text"], "")
+        self.assertIn("no speech", str(body["reason"]).lower())
+        self.assertIsNone(body["transcript"])
+        self.assertFalse(body["speech"]["heard_speech"])
+        self.assertEqual(fakes["processors"].call_count, 0, "Whisper was loaded for a recording without speech")
+
+    def test_a_recording_longer_than_whispers_window_is_refused_with_a_sentence(self) -> None:
+        with self._speech() as fakes:
+            response = self.client.post(
+                "/v1/voice/transcribe", files={"audio": ("a.wav", self._wav(seconds=31.0), "audio/wav")}
+            )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(response.json()["code"], "audio_too_long")
+        self.assertIn("30 s", response.json()["message"])
+        self.assertEqual(fakes["silero"].calls, [], "the voice detector ran on a recording it refuses")
+
+    def test_an_upload_that_is_not_wav_is_refused_saying_the_console_records_wav(self) -> None:
+        response = self.client.post(
+            "/v1/voice/transcribe",
+            files={"audio": ("a.webm", b"\x1aE\xdf\xa3" + bytes(64), "audio/webm")},
+        )
+        self.assertEqual(response.status_code, 415, response.text)
+        self.assertEqual(response.json()["code"], "audio_format_unsupported")
+        for fragment in ("WAV", "WebM", "audio/webm"):
+            self.assertIn(fragment, response.json()["message"])
+
+    def test_the_console_takes_its_engine_from_the_library_holder(self) -> None:
+        """The one engine lived in a private router global, where a `Listener` caller could not reach it.
+        It lives in `src.models.speech.holder` now, and the console asks the holder."""
+        import numpy as np
+
+        from src.models.speech.holder import shared_speech
+
+        with self._speech() as fakes:
+            answer = self.client.post(
+                "/v1/voice/transcribe", files={"audio": ("a.wav", self._wav(), "audio/wav")}
+            )
+            held = shared_speech().for_tree(self.tmp, profile=None)
+            held.engine.transcribe(np.zeros(16000, dtype=np.float32), samplerate=16000)
+        self.assertEqual(answer.status_code, 200, answer.text)
+        self.assertEqual(fakes["processors"].call_count, 1, "the holder did not hold the console's engine")
 
 
 @unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")

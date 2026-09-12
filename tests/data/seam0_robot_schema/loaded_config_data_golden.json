@@ -250,15 +250,15 @@
       }
     },
     "stt": {
-      "model_id": "openai/whisper-small",
-      "model_path": "assets/models/hf/speech/openai--whisper-small",
+      "model_id": "openai/whisper-large-v3-turbo",
+      "model_path": "assets/models/hf/speech/openai--whisper-large-v3-turbo",
+      "vad_model_path": "assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit",
       "samplerate": 16000,
       "blocksize": 8000,
       "channels": 1,
       "dtype": "int16",
-      "chunk_duration": 3,
-      "language": "german",
-      "task": "translate",
+      "language": "auto",
+      "task": "transcribe",
       "local": true,
       "optim": {
         "torch_dtype": "auto",

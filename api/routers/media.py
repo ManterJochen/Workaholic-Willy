@@ -16,7 +16,7 @@ import asyncio
 import base64
 import hashlib
 import time
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 
@@ -28,9 +28,12 @@ from api.audio import (
 )
 from api.cell import Console, console
 from api.constants import API_LOG_DIR, ROUTER_MEDIA_LOG_FILE
-from api.schemas import TranscriptOut, ViewfinderOut
+from api.schemas import ProposalOut, ViewfinderOut
 from api.viewfinder import ViewfinderFrame, read_viewfinder
 from src.utility.log_cfg import create_logger
+
+if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.models.speech.transcript import Proposal
 
 router = APIRouter(tags=["media"])
 
@@ -177,19 +180,24 @@ async def overlay_socket(socket: WebSocket) -> None:
         return
 
 
-@router.post("/voice/transcribe", response_model=TranscriptOut, summary="Speech to a prompt")
+@router.post("/voice/transcribe", response_model=ProposalOut, summary="Speech to a prompt")
 async def post_transcribe(
     cell: Annotated[Console, Depends(console)],
     audio: Annotated[UploadFile, File(description=describe_upload)],
-) -> TranscriptOut:
-    """Turn a recording into text. It returns the text; it does not start anything.
+) -> ProposalOut:
+    """Turn a recording into a proposal for the prompt box. It does not start anything.
 
     Deliberately not a shortcut to a pick. A spoken command that went straight to motion would mean a
     misheard word moves an arm, so speech lands in the prompt box and a human presses the button: the
-    same button, with the same acknowledgement, as a typed prompt.
+    same button, with the same acknowledgement, as a typed prompt. "Stopp" is no exception.
 
-    Whisper is loaded on first use, not at import: a console on a machine without it must still start,
-    and must say what is missing rather than fail to boot.
+    The answer is the speech library's `Proposal`: the words, or an empty text and the sentence saying
+    why there are none; what the voice detector found; and Whisper's `Transcript` when Whisper was
+    asked. A recording in which the detector hears no speech is never handed to Whisper, which answers
+    silence with a word. The text stays in the language it was spoken in. The process's one engine and
+    gate live in `src.models.speech.holder` and load on the first recording, never at import and never
+    per request: a console on a machine without the speech stack still starts, and answers 501 naming
+    what is missing.
     """
     raw = await audio.read()
     if not raw:
@@ -199,65 +207,83 @@ async def post_transcribe(
         )
     started = time.perf_counter()
     try:
-        text = await asyncio.to_thread(_transcribe, cell, raw)
-    except AudioFormatUnsupported as exc:
-        # 501 and not 422, and the difference is the whole point of the separate exception. The
-        # operator did nothing wrong: their browser recorded webm because that is what browsers do,
-        # and an "unprocessable" answer would send them hunting through microphone settings for
-        # something that is a `pip install`. Same shape as the missing-Whisper answer below.
-        logger.warning("A recording arrived in a format this host cannot decode: %s", exc)
-        raise HTTPException(
-            status_code=501,
-            detail={"code": "audio_format_unsupported", "message": str(exc), "detail": {}},
-        ) from exc
-    except AudioDecodeError as exc:
-        logger.warning("A recording could not be decoded: %s", exc)
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "audio_undecodable", "message": str(exc), "detail": {}},
-        ) from exc
-    except ImportError as exc:
-        logger.warning(
-            "Speech-to-text is not installed on this machine (%s); the prompt must be typed.", exc
-        )
-        raise HTTPException(
-            status_code=501,
-            detail={
-                "code": "speech_unavailable",
-                "message": (
-                    f"speech-to-text is not installed on this machine ({exc}). "
-                    f"pip install -r requirements.txt, or type the prompt instead."
-                ),
-                "detail": {},
-            },
-        ) from exc
-    except Exception as exc:  # noqa: BLE001 (a failed transcription is an answer, not a crash)
-        logger.error(
-            "Transcription of %d byte(s) failed after %.1f s: %s: %s",
-            len(raw), time.perf_counter() - started, type(exc).__name__, exc,
-        )
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "transcription_failed",
-                "message": f"{type(exc).__name__}: {exc}",
-                "detail": {},
-            },
-        ) from exc
+        proposal = await asyncio.to_thread(_transcribe, cell, raw)
+    except Exception as exc:  # noqa: BLE001 (every failure becomes a typed answer, never a crash)
+        raise _refusal(exc, size=len(raw), declared=audio.content_type, started=started) from exc
     # The text as well as the timing: it becomes the prompt of a run that will move an arm, and
     # "the operator asked for the wrong thing" and "Whisper heard the wrong thing" are different
-    # faults that look identical in a run log alone.
+    # faults that look identical in a run log alone. The language goes with it, because a command
+    # decoded as the wrong language reads as nonsense rather than as a mishearing.
+    transcript = proposal.transcript
     logger.info(
-        "Transcribed %d byte(s) of audio in %.1f s -> %r.",
-        len(raw), time.perf_counter() - started, text.strip(),
+        "Proposed %r from %d byte(s) in %.1f s (speech %s, peak %.2f; %s).",
+        proposal.text, len(raw), time.perf_counter() - started,
+        "heard" if proposal.speech.heard_speech else "not heard", proposal.speech.peak_probability,
+        "Whisper not asked" if transcript is None else (
+            f"{transcript.language}, {transcript.language_source.value}, decode "
+            f"{transcript.latency_ms:.0f} ms on {transcript.device}"
+        ),
     )
-    return TranscriptOut(text=text.strip())
+    return ProposalOut(**proposal.to_dict())
 
 
-def _transcribe(cell: Console, raw: bytes) -> str:
-    """Decode the upload and run it through Whisper. Blocking: the caller runs it off the loop."""
-    from src.models.speech.speech_to_text import WhisperSpeechToText
+def _refusal(exc: Exception, *, size: int, declared: str | None, started: float) -> HTTPException:
+    """The typed answer to a recording that produced no proposal.
+
+    The speech library's refusals are imported here, on the error path, so they are the classes of the
+    modules that raised them, even in a process that imported the speech package afresh. Each answer
+    says whether the request was wrong (415, 422) or this host lacks something (501).
+    """
+    from src.models.speech.engine import (
+        RecordingTooLong,
+        SpeechModelMissing,
+        SpeechStackUnavailable,
+        requirements_for,
+    )
+
+    def answer(status: int, code: str, message: str) -> HTTPException:
+        return HTTPException(status_code=status, detail={"code": code, "message": message, "detail": {}})
+
+    if isinstance(exc, AudioFormatUnsupported):
+        # 415: a format this server never decodes. The console records WAV, and the sentence says so,
+        # names what arrived and what the upload claimed to be.
+        logger.warning("A recording arrived in a format the console does not decode: %s", exc)
+        return answer(415, "audio_format_unsupported", f"{exc} It was declared as {declared or 'no type'}.")
+    if isinstance(exc, AudioDecodeError):
+        logger.warning("A recording could not be decoded: %s", exc)
+        return answer(422, "audio_undecodable", str(exc))
+    if isinstance(exc, RecordingTooLong):
+        logger.warning("A recording of %.1f s was refused as longer than Whisper's window.", exc.duration_s)
+        return answer(422, "audio_too_long", str(exc))
+    if isinstance(exc, SpeechModelMissing):
+        logger.warning("A speech model is not on this machine: %s", exc)
+        return answer(501, "speech_model_missing", f"{exc} Type the prompt instead.")
+    if isinstance(exc, ImportError):
+        # A package this machine cannot import: a capability this host lacks (501), never a bad request.
+        # `SpeechStackUnavailable` already says what to do, including when Windows refused a DLL.
+        if isinstance(exc, SpeechStackUnavailable):
+            hint = str(exc)
+        else:
+            hint = (
+                f"speech-to-text is not installed on this machine ({exc}). It is installed by "
+                f"{requirements_for(exc.name)}."
+            )
+        logger.warning("Speech-to-text cannot run on this machine (%s); the prompt must be typed.", exc)
+        return answer(501, "speech_unavailable", f"{hint} Type the prompt instead.")
+    logger.error(
+        "Transcription of %d byte(s) failed after %.1f s: %s: %s",
+        size, time.perf_counter() - started, type(exc).__name__, exc,
+    )
+    return answer(422, "transcription_failed", f"{type(exc).__name__}: {exc}")
+
+
+def _transcribe(cell: Console, raw: bytes) -> Proposal:
+    """Decode the upload and hand it to the process's speech holder. Blocking; the caller runs it off the loop.
+
+    The config is `models.stt` alone, read from the console's own tree under its own profile chain:
+    speech needs no camera, robot or detector, so a fault in one of those must not refuse a recording.
+    """
+    from src.models.speech.holder import shared_speech
 
     samples, rate = decode_audio(raw)
-    config = cell.config().models.stt
-    return WhisperSpeechToText(config).transcribe_array(samples, rate)
+    return shared_speech().for_tree(cell.root, profile=cell.profile).propose(samples, samplerate=rate)

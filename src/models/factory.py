@@ -14,7 +14,7 @@ from src.utility.log_cfg import create_logger
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     # A structural Protocol over the seven fields this module reads. Both `ModelsConfig` and
-    # `PerceptionSpec` satisfy it, so a caller carrying no `stt` block (eleven Whisper fields, ten
+    # `PerceptionSpec` satisfy it, so a caller carrying no `stt` block (eleven speech fields, ten
     # of them mandatory, none read here) reaches this builder without a second builder.
     from src.models.perception_spec import PerceptionFields
 

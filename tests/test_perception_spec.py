@@ -64,7 +64,7 @@ class SevenNotTenTests(unittest.TestCase):
         self.assertEqual((len(SpeechToTextConfig.model_fields), mandatory), (11, 10))
 
     def test_a_spec_can_be_built_with_no_stt_block_at_all(self) -> None:
-        """The whole point of (b) for a Python caller: a perception stack without ten Whisper values."""
+        """The whole point of (b) for a Python caller: a perception stack without ten speech values."""
         models = _models()
         spec = PerceptionSpec.zero_shot(
             objectdetector=models.objectdetector, segmenter=models.segmenter,

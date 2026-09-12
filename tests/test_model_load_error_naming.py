@@ -1,8 +1,9 @@
 """Unusable weights say WHICH model, in every way weights are actually unusable.
 
-The five model wrappers each wrap their ``from_pretrained`` pair in a handler whose only job is to
-name the model before re-raising: it is the one log line that connects a transformers traceback to
-the config key that pointed there. It caught ``RuntimeError``.
+The four vision wrappers here, and the speech engine in ``tests/test_speech_engine.py``, each wrap
+their ``from_pretrained`` pair in a handler whose only job is to name the model before re-raising:
+it is the one log line that connects a transformers traceback to the config key that pointed there.
+It caught ``RuntimeError``.
 
 MEASURED 2026-09-10 on this box (transformers 5.5.4, torch
 2.7.1+cu128, safetensors 0.8.0), driving the REAL ``from_pretrained`` against three throwaway
@@ -44,19 +45,12 @@ def _vision_config() -> MagicMock:
     return cfg
 
 
-def _speech_config() -> MagicMock:
-    cfg = _vision_config()
-    cfg.samplerate = 16000
-    cfg.blocksize = 1024
-    cfg.channels = 1
-    cfg.dtype = "float32"
-    cfg.chunk_duration = 1.0
-    cfg.language = "en"
-    cfg.task = "transcribe"
-    return cfg
-
-
 #: (module, wrapper class, the two module-level from_pretrained holders, config builder).
+#:
+#: Speech is not a row. `WhisperTransformersEngine` imports transformers inside `load()` rather than at
+#: module level and loads in `load()` rather than in its constructor, so it has no module-level holder
+#: to patch. The same contract (the measured failures named and re-raised, a defect passed through
+#: unlabelled) is pinned against it in `tests/test_speech_engine.py::TheEngineNamesUnusableWeightsTests`.
 _LOADERS = (
     (
         "src.models.detection.zero_shot.detector",
@@ -81,12 +75,6 @@ _LOADERS = (
         "OneFormerSegmenter",
         ("OneFormerProcessor", "OneFormerForUniversalSegmentation"),
         _vision_config,
-    ),
-    (
-        "src.models.speech.speech_to_text",
-        "WhisperSpeechToText",
-        ("WhisperProcessor", "WhisperForConditionalGeneration"),
-        _speech_config,
     ),
 )
 

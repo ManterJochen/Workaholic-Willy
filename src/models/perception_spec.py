@@ -12,7 +12,7 @@ the same structural contract a ``ModelsConfig`` does and why the factory annotat
 :class:`PerceptionFields` rather than ``ModelsConfig``.
 
 Seven and not the ten a ``ModelsConfig`` carries: three of those ten are required and one of the
-three is ``stt``, eleven Whisper fields with ten mandatory that perception never reads. ``stt`` is
+three is ``stt``, eleven speech fields with ten mandatory that perception never reads. ``stt`` is
 not defaulted, and defaulting it would change validation for every YAML tree in the repository, so
 the spec carries seven fields and a Python caller never has to supply ``stt`` at all.
 

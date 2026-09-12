@@ -31,6 +31,8 @@ export type ConfigValueOut = Schemas['ConfigValueOut']
 export type ViewfinderOut = Schemas['ViewfinderOut']
 export type WritableOut = Schemas['WritableOut']
 export type TranscriptOut = Schemas['TranscriptOut']
+export type SpeechCheckOut = Schemas['SpeechCheckOut']
+export type ProposalOut = Schemas['ProposalOut']
 export type ErrorOut = Schemas['ErrorOut']
 
 /** The four verdicts a preflight row can carry. Pinned by the backend, mirrored here by generation. */
@@ -181,19 +183,23 @@ export const api = {
   stopPick: () => request<RunOut>('POST', '/v1/pick/stop'),
 
   /**
-   * Turn a recording into TEXT. It starts nothing.
+   * Turn a recording into a text PROPOSAL. It starts nothing.
    *
    * ⛔ Deliberately not a shortcut to a pick, on both sides of the wire: the text lands in the
    * prompt box and a human presses the button, because a spoken command that went straight to motion
    * would mean a misheard word moves an arm.
    *
+   * The answer carries `text` plus the evidence behind it: `speech`, what the voice detector found
+   * before Whisper was asked, and `transcript`, Whisper's own report (the language it decoded, the
+   * milliseconds it took). A recording the detector hears no speech in comes back with an empty
+   * `text` and a `reason`, and Whisper is never asked, because Whisper answers silence with a word.
+   *
    * ⚠ Send WAV. The console encodes it in the browser (`prompt/recordWav.ts`) because no browser
-   * RECORDS WAV, and WAV is the one container the backend decodes without an optional extra. Other
-   * formats are accepted where `requirements/voice.txt` is installed, and answered with a 501 naming
-   * that file where it is not.
+   * RECORDS WAV, and WAV is the only format the backend decodes: the second decoder is gone
+   * (a GPL FFmpeg inside the wheel), and anything else is answered with 415.
    */
   transcribe: (wav: Blob) =>
-    upload<TranscriptOut>('/v1/voice/transcribe', 'audio', wav, 'prompt.wav'),
+    upload<ProposalOut>('/v1/voice/transcribe', 'audio', wav, 'prompt.wav'),
 
   runs: () => request<RunOut[]>('GET', '/v1/runs'),
   run: (runId: string) => request<RunOut>('GET', `/v1/runs/${encodeURIComponent(runId)}`),

@@ -1,25 +1,26 @@
 # Whisper speech-to-text: where the weights come from, how the microphone is opened, and what the
-# decoder is asked for. Read by `src.models.speech.speech_to_text.WhisperSpeechToText`, which the
-# console reaches over POST /v1/voice/transcribe. Nothing on the grasp path reads this block.
+# decoder is asked for. Read by `src.models.speech.holder.SpeechHolder`, which the console reaches
+# over POST /v1/voice/transcribe. Nothing on the grasp path reads this block.
 stt:
   # `local: True` below reads `model_path` from disk and downloads nothing, and
-  # `python scripts/model_weights/fetch.py whisper` writes that directory. It lands as 1.0 GB of
-  # safetensors out of the 3.9 GB this repository publishes across all weight formats.
-  model_id: "openai/whisper-small"
-  model_path: "assets/models/hf/speech/openai--whisper-small"
+  # `python scripts/model_weights/fetch.py whisper-turbo` writes that directory, pinned to one hub
+  # commit. It lands as 1.6 GB of safetensors.
+  model_id: "openai/whisper-large-v3-turbo"
+  model_path: "assets/models/hf/speech/openai--whisper-large-v3-turbo"
+  # The Silero voice detector, read from disk whatever `local` says. Every recording is scored for
+  # speech before Whisper is asked what was said, because Whisper answers silence with a word.
+  # `python scripts/model_weights/fetch.py silero-vad` writes it, pinned by hash.
+  vad_model_path: "assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit"
   # The microphone stream. Audio that arrives from anywhere else is resampled to `samplerate`, so
   # that key is the model's input rate and not only a device setting.
   samplerate: 16000
   blocksize: 8000
   channels: 1
   dtype: "int16"
-  # Seconds of audio per transcription: `samplerate * chunk_duration` samples buffer before the
-  # model is asked anything.
-  chunk_duration: 3
-  # `language` and `task` become Whisper's decoder prompt, so `task: translate` returns English
-  # from a non-English `language`.
-  language: "german"
-  task: "translate"
+  # `auto` picks German or English per recording; `german` or `english` forces that language token.
+  # `task` accepts `transcribe` alone, so the text stays in the language it was spoken in.
+  language: "auto"
+  task: "transcribe"
   local: True
   optim:
     torch_dtype: auto

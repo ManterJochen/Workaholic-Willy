@@ -123,15 +123,21 @@ python scripts/model_weights/fetch.py dino-tiny sam2      # the pair a real-visi
 python scripts/model_weights/fetch.py --mediapipe         # the hand and gesture .task bundles
 ```
 
-Its keys are `dino-tiny`, `dino-base`, `rtdetr`, `sam2`, `oneformer`, `whisper`, `vlm-2b`, `vlm-4b`,
-`vlm-8b` and `vlm-4b-fp8`, and `--list` prints each with its approximate download size and what it is
-for. Exit codes: `0` everything asked for is present, `1` at least one fetch failed, `2` an unknown
-key was named.
+Its keys are `dino-tiny`, `dino-base`, `rtdetr`, `sam2`, `oneformer`, `whisper-turbo`, `silero-vad`,
+`vlm-2b`, `vlm-4b`, `vlm-8b` and `vlm-4b-fp8`, and `--list` prints each with its approximate download
+size, its pin and what it is for. Exit codes: `0` everything asked for is present, `1` at least one
+fetch failed, `2` an unknown key was named.
+
+`silero-vad` is the one entry that is not a Hub repository. It is a single TorchScript file shipped
+inside a PyPI wheel, fetched by downloading the pinned wheel, checking the wheel's sha256, reading the
+one member out of it and checking that member's sha256. Nothing is installed: the file is what the
+speech path reads, not the package's code. The speech entries also carry a hub commit, so a second
+fetch cannot replace the bytes under a config path without a trace.
 
 The catalogue also decides what is left on the Hub. Several repositories publish the same weights
 twice, once as `.safetensors` and once as `.bin`, and `transformers` reads only what the index names,
-so a per-model ignore list drops the duplicate: `openai/whisper-small` is 3.87 GB whole and 0.97 GB
-filtered, `IDEA-Research/grounding-dino-tiny` 1.38 against 0.69. It cannot be a blanket rule.
+so a per-model ignore list drops the duplicate: `openai/whisper-large-v3-turbo` is 1.62 GB filtered,
+`IDEA-Research/grounding-dino-tiny` 1.38 GB whole against 0.69 filtered. It cannot be a blanket rule.
 `shi-labs/oneformer_coco_swin_large` publishes no safetensors at all, measured, so a global `*.bin`
 filter would fetch it empty and the failure would surface much later as a missing weight file.
 
@@ -274,10 +280,16 @@ name. They are not inert. `build_object_detector` and `build_segmenter` read the
 `pipeline` adds: the two keys have no validator between them, so every detector and segmenter
 combination builds, including ones where the prompt means something different to each half.
 
-**`models.stt`** is Whisper, and it has a caller: the operator console passes `cfg.models.stt` into
-`WhisperSpeechToText` to turn a recording into a prompt, which a human reads before pressing the
-button. Its base block is `local: True` against an absent directory, and it does not check, so a
-base-profile console fails inside `from_pretrained` on the first transcription.
+**`models.stt`** is Whisper, and it has a caller: the operator console reads the section alone
+(`load_speech_section`) and keeps one `WhisperTransformersEngine` for the process, which turns a
+recording into a text proposal that a human reads before pressing the button. The text stays in the
+language it was spoken in: `task` accepts only `transcribe`, and `language: auto` lets Whisper detect
+German or English per recording. Its base block is `local: True` against an absent directory, so a
+base-profile console is refused on the first transcription, by name and with the fetch that fixes it.
+The microphone keys (`samplerate`, `blocksize`, `channels`, `dtype`) are read by `Listener.from_config`,
+which no console route or cell verb builds yet; `chunk_duration` left with the fixed-window path it fed,
+so a tree that still writes it is refused as an unknown key
+([`src/models/speech/README.md`](../../src/models/speech/README.md)).
 
 **`handdetect` and `gesturedetect`** are standalone MediaPipe and are not on the grasp path. Nothing
 auto-builds them, which is why their config blocks carry no `enabled` flag: a switch would have no
@@ -484,8 +496,12 @@ the prompt router's rules, `PerceptionSpec.resolve()` agreeing with what `build(
 the VLM response parser and its coordinate-space contract.
 
 **Analytical or unit-tested only:** `RtDetrObjectDetector`, `OneFormerSegmenter`, the RT-DETR
-training CLI, `WhisperSpeechToText`, the MediaPipe detectors, and the SAM2 against OneFormer
-comparison, which has not been made here.
+training CLI, the MediaPipe detectors, and the SAM2 against OneFormer comparison, which has not been
+made here. `WhisperTransformersEngine` and `SileroVoiceActivityDetector` run against fakes and a
+randomly initialised Whisper, plus the real weights on this box: a machinery measurement only (load
+time, latency, memory, and the probabilities silence and a tone score), never accuracy, because no
+recording of a spoken command exists here to be right or wrong about
+([`src/models/speech/README.md`](../../src/models/speech/README.md)).
 
 **Not validated against real hardware:** every model against a physical camera, the `local: True`
 production path, and the live RGB-D adapter, which has only ever seen a fake streamer.

@@ -317,15 +317,19 @@ class ProfileChainTests(unittest.TestCase):
             self._write_layers(root)
             # Turn stt.yaml into a PROFILE-ONLY file (no non-profile base counterpart), then have a
             # second layer refine it -- the branch that discovers such files.
+            import yaml
+
             (root / "models" / "stt.yaml").rename(root / "models" / "stt.base.yaml")
+            base_text = (root / "models" / "stt.base.yaml").read_text(encoding="utf-8")
+            base_model_id = yaml.safe_load(base_text)["stt"]["model_id"]
             (root / "models" / "stt.top.yaml").write_text(
                 "stt:\n  language: english\n", encoding="utf-8",
             )
             set_active_profile("base,top")
             cfg = load_config(root)
 
-        self.assertEqual(cfg.models.stt.language, "english")             # later layer wins
-        self.assertEqual(cfg.models.stt.model_id, "openai/whisper-small")  # earlier layer survives
+        self.assertEqual(cfg.models.stt.language, "english")          # later layer wins
+        self.assertEqual(cfg.models.stt.model_id, base_model_id)      # earlier layer survives
 
 
 class AvailableProfilesTests(unittest.TestCase):

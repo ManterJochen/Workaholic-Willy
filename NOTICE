@@ -73,7 +73,7 @@ python-multipart 0.0.20
 Apache-2.0
 https://github.com/Kludex/python-multipart
 
-mediapipe 0.10.21
+mediapipe 1.0.1
 Apache-2.0
 https://github.com/google-ai-edge/mediapipe
 
@@ -120,10 +120,6 @@ https://github.com/mikedh/trimesh
 mujoco 3.12.0
 Apache-2.0
 https://github.com/google-deepmind/mujoco
-
-av 13.1.0
-BSD-3-Clause
-https://github.com/PyAV-Org/PyAV
 
 ruff 0.15.15
 MIT
@@ -196,9 +192,29 @@ shi-labs/oneformer_coco_swin_large
 MIT for code; see the model card for model-specific terms
 https://huggingface.co/shi-labs
 
-openai/whisper-small
+openai/whisper-large-v3-turbo
 MIT
-https://huggingface.co/openai
+https://huggingface.co/openai/whisper-large-v3-turbo
+
+The weights of the speech engine, pinned in `scripts/model_weights/fetch.py` at commit
+41f01f3fe87f28c78e2fbf8b568835947dd65ed9, whose model card states `license: mit`.
+
+The training data of this model is undisclosed, and that is recorded here as a known gap rather than
+smoothed over. The model card's own Training Data section reads "No information provided", and the
+paper describes weakly labelled and pseudo-labelled audio collected from the web with no dataset
+licences. The weights are MIT, which is what this repository fetches under and redistributes nothing
+of; what cannot be certified is that no non-commercial corpus was inside the training set. This is a
+provenance gap, not a proven violation, and it is shared by every Whisper-family option and by every
+other large speech recognition model surveyed.
+
+silero-vad 6.2.1
+MIT
+https://github.com/snakers4/silero-vad
+
+The voice detector: the single TorchScript file `silero_vad/data/silero_vad.jit` out of the PyPI
+wheel, pinned in `scripts/model_weights/fetch.py` by the wheel's sha256 and by the file's own. The
+package's code is neither installed nor vendored here; the file is read by
+`src/models/speech/silero.py` through `torch.jit.load`.
 
 ## Published Research and Prior Art
 
@@ -305,6 +321,13 @@ Third-party software is used only where its applicable license permits the inten
 Datasets and pretrained weights subject to non-commercial or research-only restrictions are not included in the distributed repository unless their use is separately permitted.
 
 No third-party source code is intentionally copied into this repository unless its applicable license permits such use.
+
+PyAV (`av`) is not installed, used or redistributed by this repository. Its own metadata and license
+file are BSD-3-Clause, but its wheels bundle an FFmpeg built with `--enable-gpl`, `--enable-version3`,
+`--enable-libx264` and `--enable-libx265`, and the bundled avutil and avcodec report "GPL version 3 or
+later", with no FFmpeg license text installed beside them. Uploads to the operator console are 16-bit
+PCM WAV, which the standard library decodes and which the console records; any other format is refused
+with a sentence.
 
 ## Asset Licensing
 

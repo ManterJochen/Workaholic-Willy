@@ -343,9 +343,64 @@ class RunOut(BaseModel):
 
 
 class TranscriptOut(BaseModel):
-    """What was heard. Text only: transcription never starts anything on its own."""
+    """What Whisper heard, as the speech engine's `Transcript` reports it; `Transcript.to_dict()` whole."""
 
+    #: The words as decoded: stripped, never lower-cased, never translated.
     text: str
+    #: The Whisper language code the decoder prompt carried (``de``, ``en``), or null when it carried none.
+    language: str | None
+    #: ``detected`` when the engine picked German or English, ``configured`` when `models.stt.language`
+    #: forced it.
+    language_source: Literal["detected", "configured"]
+    #: Length of the recording in seconds.
+    duration_s: float
+    #: Which engine decoded it, e.g. ``whisper-transformers``.
+    engine: str
+    #: The weights it ran: a local directory or a Hub id.
+    model: str
+    #: The torch device type the decode ran on.
+    device: str
+    #: Milliseconds from the audio to the text; the one-time weight load is not part of it.
+    latency_ms: float
+
+
+class SpeechCheckOut(BaseModel):
+    """What the voice detector found before Whisper was asked; `SpeechCheck.to_dict()` whole."""
+
+    #: An utterance closed: a window at or above `onset` and at least `min_speech_s` of speech.
+    heard_speech: bool
+    #: Length of the recording in seconds.
+    duration_s: float
+    #: Seconds of audio scored before the detector answered; it stops at the first utterance.
+    checked_s: float
+    #: The highest speech probability of any window scored.
+    peak_probability: float
+    #: The probability a window needs to open an utterance.
+    onset: float
+    #: The speech an utterance needs to be kept, in seconds.
+    min_speech_s: float
+    #: Which detector scored it, e.g. ``silero-vad``.
+    detector: str
+    #: Milliseconds the check took; the one-time model load is not part of it.
+    latency_ms: float
+
+
+class ProposalOut(BaseModel):
+    """What one recording proposes for the prompt box, as the speech library's `Proposal` reports it.
+
+    A proposal only: transcription never starts anything, and a human confirms the text before it becomes
+    a prompt. The fields are `Proposal.to_dict()`, whole, so the console and a library caller read the
+    same answer.
+    """
+
+    #: The words Whisper decoded, or an empty string when there are none to propose.
+    text: str
+    #: Why `text` is empty, as a sentence; null when it holds words.
+    reason: str | None
+    #: What the voice detector found before Whisper was asked.
+    speech: SpeechCheckOut
+    #: Whisper's report; null when the detector heard no speech and Whisper was not asked.
+    transcript: TranscriptOut | None
 
 
 class ViewfinderOut(BaseModel):

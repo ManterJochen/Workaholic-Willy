@@ -138,6 +138,25 @@ def audit_distributions(dist_names: Iterable[str]) -> list[str]:
     ]
 
 
+def _downloader_top_level() -> frozenset[str]:
+    """What the fetchers produce at the top of the weights root.
+
+    One directory per category in ``scripts/model_weights/fetch.py``, from its catalogue and from its
+    packaged files; ``mediapipe`` from its ``--mediapipe``; ``hub`` and ``xet`` from ``HF_HOME``;
+    ``torch`` from ``TORCH_HOME``. Asked of the fetch script rather than written here: as a literal,
+    this set refused ``speech/`` on the first box that fetched a speech model, as
+    ``AssertionError: Lists differ: ['speech'] != []``.
+    """
+    import sys
+
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from scripts.model_weights.fetch import CATALOGUE, PACKAGED_FILES
+
+    categories = {w.category for w in CATALOGUE} | {f.category for f in PACKAGED_FILES}
+    return frozenset(categories | {"hub", "xet", "mediapipe", "torch"})
+
+
 def _rel(path: Path) -> str:
     return path.relative_to(REPO).as_posix()
 
@@ -192,19 +211,16 @@ class DownloadedWeightsAreNotOursToPoliceTests(unittest.TestCase):
     anything else was put there by hand.
     """
 
-    #: What the fetchers produce. ``hub`` and ``xet`` come from ``HF_HOME``, ``mediapipe`` from
-    #: ``scripts/model_weights/fetch.py --mediapipe``, ``torch`` from ``TORCH_HOME``.
-    _EXPECTED_TOP_LEVEL = frozenset({"hub", "xet", "mediapipe", "torch"})
-
     def test_the_weights_directory_holds_only_downloaded_files(self) -> None:
         from src.utility.paths import weights_root
 
         root = weights_root()
         if not root.is_dir():
             self.skipTest(f"{root} does not exist; nothing has been fetched on this box")
+        expected = _downloader_top_level()
         unexpected = sorted(
             child.name for child in root.iterdir()
-            if child.name not in self._EXPECTED_TOP_LEVEL and not child.name.startswith(".")
+            if child.name not in expected and not child.name.startswith(".")
         )
         self.assertEqual(
             unexpected, [],
@@ -213,6 +229,18 @@ class DownloadedWeightsAreNotOursToPoliceTests(unittest.TestCase):
             f"inside a directory nothing reads. Move them out, or add them to _SKIP_DIR_EXCEPTIONS "
             f"so they are scanned where they are.",
         )
+
+    def test_the_expected_set_is_every_fetch_category_and_nothing_a_person_chose(self) -> None:
+        """The control on the derivation: every category the fetch script writes into is expected,
+        and a name nothing writes is not."""
+        from scripts.model_weights.fetch import CATALOGUE, PACKAGED_FILES
+
+        expected = _downloader_top_level()
+        for category in {w.category for w in CATALOGUE} | {f.category for f in PACKAGED_FILES}:
+            with self.subTest(category=category):
+                self.assertIn(category, expected)
+        self.assertIn("speech", expected)
+        self.assertNotIn("notes_somebody_left_here", expected)
 
     def test_the_skip_prefix_is_a_prefix_and_not_a_directory_name(self) -> None:
         """A name in ``_SKIP_DIRS`` matches per path component, so "hf" would exempt every directory

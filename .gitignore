@@ -42,6 +42,12 @@ Thumbs.db
 # task bundles under mediapipe/ included.
 assets/models/hf/
 
+# CTranslate2 conversions of a Whisper checkpoint, which is where faster-whisper would read its
+# weights from. Ignored before anything writes here: a conversion of large-v3-turbo is 1.6 GB and the
+# converter writes it in one command. An operator converts the originals themselves; a third-party
+# conversion with a relabelled licence does not ship.
+assets/models/ct2/
+
 # Frontend (the operator console).
 frontend/node_modules/
 api/static/

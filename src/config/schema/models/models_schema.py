@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, get_args
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .._base import StrictModel
 
@@ -89,29 +89,72 @@ class OneFormerConfig(StrictModel):
     optim: InferenceOptimization = Field(default_factory=InferenceOptimization)
 
 
-class SpeechToTextConfig(StrictModel):
-    """Speech-to-text (Whisper) configuration.
+#: What Whisper does with speech: one legal value, and the reason is a decision rather than a limit of
+#: the model. Text stays in the language it was spoken in, so a German command reaches the prompt box as
+#: German. Whisper can also translate into English; that is refused rather than offered, because it chose
+#: the perception route of every spoken command without saying so.
+SpeechTask = Literal["transcribe"]
 
-    ``samplerate``, ``blocksize``, ``channels`` and ``dtype`` configure the microphone stream.
-    ``chunk_duration`` is in seconds and sets how much audio one transcription consumes
-    (``samplerate * chunk_duration`` samples). ``language`` and ``task`` become Whisper's
-    decoder prompt, so ``task: translate`` returns English from a non-English ``language``.
-    ``local`` picks the weight source the same way as :class:`ObjectDetectorConfig`.
-    """
+#: Which language the decoder runs with. `auto` picks German or English per recording from Whisper's
+#: language scores for exactly those two, which is how a cell with German and English operators runs; a
+#: recording in any other language still comes out as one of the two. A named language forces that
+#: language token instead. Only the two languages this stack is decided on are offered; widen this the
+#: day another one is measured.
+SpeechLanguage = Literal["auto", "german", "english"]
+
+#: The sample formats the microphone stream opens with. Each has a full scale the stream divides by,
+#: so every block lands in [-1, 1] whatever it arrived as.
+SampleFormat = Literal["int16", "int32", "float32"]
+
+
+class SpeechToTextConfig(StrictModel):
+    """Speech-to-text configuration: Whisper, the Silero voice detector, and the cell PC's microphone."""
 
     model_id: str
     model_path: str
-    samplerate: int
-    # `WhisperSpeechToText.__init__` takes the whole block rather than a key path, so a search
-    # for the four below by config key finds no reader and reads them as dead.
-    blocksize: int
-    channels: int
-    dtype: str
-    chunk_duration: int
-    language: str
-    task: str
+    #: The Silero VAD TorchScript file (`silero_vad.jit` from the silero-vad 6.2.1 wheel, MIT), read by
+    #: `SileroVoiceActivityDetector.from_config`. The upload path scores every recording with it before
+    #: Whisper is asked, and `Listener.from_config` cuts utterances with it. Always a local file, whatever
+    #: `local` says; `scripts/model_weights/fetch.py silero-vad` writes it, pinned by hash.
+    vad_model_path: str
+    #: The rate in Hz Whisper is fed at and the cell PC's microphone stream opens at. An upload at any
+    #: other rate is resampled to it. 16000 for every Whisper checkpoint, and for Silero VAD.
+    samplerate: int = Field(gt=0)
+    #: The three microphone keys, read by `MicrophoneSource.from_config` for `Listener.from_config`.
+    #: No console route or cell verb builds a `Listener` yet and an upload opens no microphone, so
+    #: today none of them changes a path that runs. Frames per callback; 0 lets PortAudio choose.
+    blocksize: int = Field(ge=0)
+    #: Channels to open; every block is averaged into one.
+    channels: int = Field(ge=1)
+    #: The format the stream opens with; each block is scaled by its own full scale into [-1, 1].
+    #: Not the model's compute dtype, which is `optim.torch_dtype`.
+    dtype: SampleFormat
+    language: SpeechLanguage
+    task: SpeechTask
     local: bool
     optim: InferenceOptimization = Field(default_factory=InferenceOptimization)
+
+    @field_validator("task", mode="before")
+    @classmethod
+    def _transcribe_never_translate(cls, value: object) -> object:
+        """Refuse any task but `transcribe` with a sentence rather than pydantic's list of literals."""
+        if value != "transcribe":
+            raise ValueError(
+                f"models.stt.task: {value!r} is refused. Whisper transcribes and never translates, so "
+                f"the text stays in the language it was spoken in. Write task: transcribe."
+            )
+        return value
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def _a_language_this_stack_is_decided_on(cls, value: object) -> object:
+        """Refuse a free string with a sentence naming the three values that are offered."""
+        if value not in get_args(SpeechLanguage):
+            raise ValueError(
+                f"models.stt.language: {value!r} is not offered. Write auto (German or English, picked "
+                f"per recording), german or english."
+            )
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +287,8 @@ class PromptRouterConfig(StrictModel):
 
     enabled: bool = True
     #: A non-English prompt routes to the VLM regardless of complexity. GroundingDINO is effectively
-    #: English-only, and Whisper's German->English translation covers the spoken path only: a typed
-    #: German prompt reaches the detector untranslated.
+    #: English-only, and no path translates: a typed German prompt and a spoken one (Whisper
+    #: transcribes, see `models.stt.task`) both arrive here as German text.
     route_non_english_to_vlm: bool = True
 
 

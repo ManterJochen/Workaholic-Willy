@@ -7,43 +7,47 @@ stt:
 
   # Model ID for the Whisper checkpoint, used when `local` is false.
   # [REQUIRED - no default]
-  model_id: openai/whisper-small
+  model_id: openai/whisper-large-v3-turbo
 
   # Local directory holding the Whisper checkpoint, used when `local: true`
   # [REQUIRED - no default]
-  model_path: assets/models/hf/speech/openai--whisper-small
+  model_path: assets/models/hf/speech/openai--whisper-large-v3-turbo
 
-  # The sample rate in Hz that Whisper is fed at.
+  # The Silero voice activity detector as a TorchScript file, read from disk whatever `local` says.
+  # Every recording is scored for speech before Whisper is asked what was said.
+  # [REQUIRED - no default]
+  vad_model_path: assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit
+
+  # The sample rate in Hz that Whisper is fed at, and the rate the microphone stream opens at. Audio that
+  # arrives at another rate is resampled to it. Must be greater than 0.
   # [REQUIRED - no default]
   samplerate: 16000
 
-  # Frames per callback of the sounddevice microphone stream how big a bite the audio driver hands back at
-  # a time (8000 frames = 0.5 s at 16 kHz).
+  # Frames per callback of the sounddevice microphone stream, how big a bite the audio driver hands back at
+  # a time (8000 frames = 0.5 s at 16 kHz). 0 lets PortAudio choose. Must be 0 or more.
   # [REQUIRED - no default]
   blocksize: 8000
 
-  # Number of microphone channels to open on the capture stream. 1 (mono) is what Whisper wants; the code
-  # flattens whatever arrives, so >1 would interleave channels rather than mix them.
+  # Number of microphone channels to open on the capture stream. 1 (mono) is what Whisper wants; every
+  # block is averaged into one channel, so more than one is mixed rather than interleaved.
   # [REQUIRED - no default]
   channels: 1
 
-  # The raw PCM sample format requested from the sound card ('int16'), passed to sounddevice's
-  # RawInputStream.
+  # The raw PCM sample format the capture stream opens with: 'int16', 'int32' or 'float32'. Each block is
+  # divided by the full scale of its own format. Not the model's compute dtype, which is
+  # `optim.torch_dtype`.
   # [REQUIRED - no default]
   dtype: int16
 
-  # Seconds of microphone audio accumulated before one transcription fires (3 s -> 48000 samples at 16 kHz).
+  # Which language the decoder runs with: 'auto' picks German or English per recording, 'german' or
+  # 'english' forces that language token. Nothing else is offered.
   # [REQUIRED - no default]
-  chunk_duration: 3
+  language: auto
 
-  # Source language name given to Whisper's forced decoder prompt ('german').
+  # Whisper's decoding task. 'transcribe' is the only value accepted, so the text stays in the language it
+  # was spoken in; 'translate' is refused at load.
   # [REQUIRED - no default]
-  language: german
-
-  # Whisper's decoding task: 'transcribe' keeps the spoken language, 'translate' emits English regardless of
-  # input.
-  # [REQUIRED - no default]
-  task: translate
+  task: transcribe
 
   # Load Whisper offline from `model_path` (true) or from the Hub `model_id` (false).
   # [REQUIRED - no default]

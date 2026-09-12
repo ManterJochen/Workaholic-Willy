@@ -29,7 +29,16 @@ import pytest
         "src.models.handdetection.model_files",
         "src.models.handdetection.palm_detector",
         "src.models.handdetection.types",
-        "src.models.speech.speech_to_text",
+        "src.models.speech",
+        "src.models.speech.capture",
+        "src.models.speech.endpointing",
+        "src.models.speech.engine",
+        "src.models.speech.gate",
+        "src.models.speech.holder",
+        "src.models.speech.listener",
+        "src.models.speech.silero",
+        "src.models.speech.transcript",
+        "src.models.speech.whisper_transformers",
     ],
 )
 def test_optional_model_module_imports(module: str) -> None:

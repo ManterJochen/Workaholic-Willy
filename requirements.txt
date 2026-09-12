@@ -21,6 +21,10 @@ pillow==12.2.0
 opencv-contrib-python==4.13.0.92
 matplotlib==3.10.8
 open3d==0.19.0
+# sounddevice needs the system PortAudio library at runtime. On Linux install it with
+# `apt-get install -y libportaudio2`. Without it, `MicrophoneSource.start()` in
+# src/models/speech/capture.py raises SpeechStackUnavailable; an upload to the console
+# never imports sounddevice.
 sounddevice==0.5.5
 tqdm==4.67.3
 transformers==5.5.4
@@ -53,8 +57,9 @@ httpx==0.28.1
 # ---------------------------------------------------------------------------
 # Voice and gesture surfaces
 # ---------------------------------------------------------------------------
+# PyAV is deliberately absent. Uploads to the operator console are 16-bit PCM WAV, which the
+# standard library decodes, and the av wheel bundles a GPL build of FFmpeg (see NOTICE).
 mediapipe==1.0.1
-av==13.1.0
 
 # ---------------------------------------------------------------------------
 # Offline training

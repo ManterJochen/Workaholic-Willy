@@ -570,7 +570,7 @@ export interface components {
             /**
              * Audio
              * Format: binary
-             * @description WAV/FLAC/OGG audio to transcribe
+             * @description A recording to transcribe, as 16-bit PCM WAV: the format the operator console records. Any other format is refused with 415.
              */
             audio: string;
         };
@@ -874,6 +874,22 @@ export interface components {
             vendor: string;
         };
         /**
+         * ProposalOut
+         * @description What one recording proposes for the prompt box, as the speech library's `Proposal` reports it.
+         *
+         *     A proposal only: transcription never starts anything, and a human confirms the text before it becomes
+         *     a prompt. The fields are `Proposal.to_dict()`, whole, so the console and a library caller read the
+         *     same answer.
+         */
+        ProposalOut: {
+            /** Text */
+            text: string;
+            /** Reason */
+            reason: string | null;
+            speech: components["schemas"]["SpeechCheckOut"];
+            transcript: components["schemas"]["TranscriptOut"] | null;
+        };
+        /**
          * ReachabilityOut
          * @description Is anything listening at the controller's address?
          */
@@ -1047,6 +1063,28 @@ export interface components {
             version?: string | null;
         };
         /**
+         * SpeechCheckOut
+         * @description What the voice detector found before Whisper was asked; `SpeechCheck.to_dict()` whole.
+         */
+        SpeechCheckOut: {
+            /** Heard Speech */
+            heard_speech: boolean;
+            /** Duration S */
+            duration_s: number;
+            /** Checked S */
+            checked_s: number;
+            /** Peak Probability */
+            peak_probability: number;
+            /** Onset */
+            onset: number;
+            /** Min Speech S */
+            min_speech_s: number;
+            /** Detector */
+            detector: string;
+            /** Latency Ms */
+            latency_ms: number;
+        };
+        /**
          * TelemetryOut
          * @description One live snapshot of the cell.
          *
@@ -1112,11 +1150,28 @@ export interface components {
         };
         /**
          * TranscriptOut
-         * @description What was heard. Text only -- transcription never starts anything on its own.
+         * @description What Whisper heard, as the speech engine's `Transcript` reports it; `Transcript.to_dict()` whole.
          */
         TranscriptOut: {
             /** Text */
             text: string;
+            /** Language */
+            language: string | null;
+            /**
+             * Language Source
+             * @enum {string}
+             */
+            language_source: "detected" | "configured";
+            /** Duration S */
+            duration_s: number;
+            /** Engine */
+            engine: string;
+            /** Model */
+            model: string;
+            /** Device */
+            device: string;
+            /** Latency Ms */
+            latency_ms: number;
         };
         /** VendorReadinessOut */
         VendorReadinessOut: {
@@ -1815,7 +1870,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TranscriptOut"];
+                    "application/json": components["schemas"]["ProposalOut"];
                 };
             };
             /** @description The one failure envelope. */

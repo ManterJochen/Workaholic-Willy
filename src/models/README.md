@@ -69,7 +69,7 @@ a kind whose model block is missing, before any weight loads.
 | [`segmentation/realtime/segmenter.py`](segmentation/realtime/segmenter.py) | `Sam2Segmenter`, the default: one box in, one mask out. |
 | [`segmentation/research/segmenter.py`](segmentation/research/segmenter.py) | `OneFormerSegmenter`: one universal-segmentation pass, then the instance matching the box. |
 | [`handdetection/`](handdetection/README.md) | `PalmDetector` / `ThumbGestureRecognizer` / `HandFinder`. Optional and standalone; nothing on the grasp path builds them. |
-| [`speech/speech_to_text.py`](speech/speech_to_text.py) | `WhisperSpeechToText`. Optional and standalone; the operator console reaches it over `POST /v1/voice/transcribe`. |
+| [`speech/`](speech/README.md) | `SpeechEngine`, `Transcript`, `WhisperTransformersEngine`, `SpeechGate`, `Listener`: speech to text behind one protocol, answering with a frozen report (text, detected language, duration, engine, weights, device, latency). Whisper large-v3-turbo on transformers is the engine, and Silero VAD scores a recording before Whisper is asked, because Whisper answers silence with a word. The operator console reaches it over `POST /v1/voice/transcribe`; `Listener.listen()` cuts utterances from the cell PC's microphone and has no caller yet. |
 | [`_inference.py`](_inference.py) | `build_load_kwargs` / `finalize_model` / `autocast_ctx` / `weight_load_errors`, the shared torch load and optimise helpers. |
 
 ## Usage
@@ -91,7 +91,7 @@ for obj in objects:
 
 `build_perception(cfg.models)` is still the one-line call. The spec is the narrower way in: it
 carries the seven fields the builder reads, out of the ten a `ModelsConfig` carries, which is what
-lets a Python caller build a perception stack without inventing an `stt` block (eleven Whisper
+lets a Python caller build a perception stack without inventing an `stt` block (eleven speech
 fields, ten of them mandatory, none of them read here).
 
 Assembling the two stages by hand stays supported, for a caller that needs a checkpoint the config
@@ -112,9 +112,10 @@ seg_result = seg.segment_detection(image_bgr, det_result)  # -> SegmentationResu
 **The shipped `model_path` directories do not exist in a fresh checkout.**
 `config/models/object.yaml`, `segmenting.yaml` and `stt.yaml` all set `local: True` with a path
 under `src/models/*/model`. Put the weights there, or set `local: false` and name a Hub id in
-`model_id`. Only the GroundingDINO detector checks: it raises `FileNotFoundError` naming the
-resolved directory and both ways out. The SAM2 segmenter and the Whisper wrapper do not check, and
-fail inside `from_pretrained` instead.
+`model_id`. The GroundingDINO detector checks: it raises `FileNotFoundError` naming the resolved
+directory and both ways out. The speech engine checks too, and so does the voice detector, each
+naming its own key and the fetch that writes the file. The SAM2 segmenter does not check, and fails
+inside `from_pretrained` instead.
 
 **Which half of the config decides depends on which builder you call.** While `models.pipeline` is
 set, that block decides for everything built through `build_perception`, which is how a cell is
