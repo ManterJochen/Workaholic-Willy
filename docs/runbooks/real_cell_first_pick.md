@@ -201,9 +201,13 @@ The real command is one per rig:
 
 ```bash
 python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --check     # touches nothing
-python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --dry-run   # opens the camera
+python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --dry-run   # builds the arm, opens the camera
 python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --poses 22  # moves the robot
 ```
+
+The sweep takes the cell lock and connects the arm alone, with no gripper. While the operator console
+holds this cell the sweep exits 1 and names the holder, so end the console's session first. A refused
+connect exits 1 as well, and exit 3 is a sweep that raised.
 
 It writes `eth_<rig_id>.json` under `calibration/real` and prints the
 `robot.grasping.fusion.cameras` entry to paste. Run it once per camera. Until a camera is in that

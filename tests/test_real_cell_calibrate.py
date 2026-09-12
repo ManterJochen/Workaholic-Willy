@@ -22,6 +22,7 @@ from unittest import mock
 
 import yaml
 
+from src.config.schema.robot import RobotConfig
 from src.config.schema.robot.grasping_schema import CameraExtrinsicsConfig
 from src.robot.execution.real_cell import calibrate
 
@@ -119,23 +120,27 @@ class CheckTouchesNothingTests(unittest.TestCase):
         self.assertEqual(code, calibrate._EXIT_OK)
 
     def test_the_exploding_arm_factory_IS_reached_without_check(self) -> None:
-        """Proves the test above is not vacuous. The same patch, the same config, `--check` dropped:
-        the run must now reach the factory and be refused. If this passed too, the patch would be
-        pointing at nothing and the safety assertion would be decoration."""
+        """Proves the test above is not vacuous. The same patch, `--check` dropped, a real UR robot
+        section: the run must now reach the factory and be refused there. If the factory were not
+        reached, the patch would be pointing at nothing and the safety assertion would be decoration.
+
+        The readiness gate runs before the factory, so it is patched, and the call is asserted rather
+        than inferred from the exit code: on a host without ur_rtde the gate refuses with the same
+        exit code before the factory runs, and this test would pass for the wrong reason."""
         cfg = mock.Mock()
-        cfg.robot.vendor = "ur"
+        cfg.robot = RobotConfig.model_validate({"vendor": "ur"})
         cfg.camera = _CameraCfg([_real_rgbd("overhead")])
         cfg.camera.hand_eye = mock.Mock()
         cfg.camera.hand_eye.eye_to_hand.marker_length_mm = 50.0
 
-        def explode(*_a, **_k):
-            raise RuntimeError("no controller here")
-
+        explode = mock.Mock(side_effect=RuntimeError("no controller here"))
         patched_load = mock.patch.object(calibrate, "_load", return_value=cfg)
-        patched_arm = mock.patch("src.robot.drivers.create_arm", side_effect=explode)
-        with patched_load, patched_arm:
+        patched_gate = mock.patch("src.robot.drivers.doctor.require_arm_vendor_ready")
+        patched_arm = mock.patch("src.robot.drivers.create_arm", explode)
+        with patched_load, patched_gate, patched_arm:
             code = calibrate.main(["--rig", "overhead", "--dry-run"])
         self.assertEqual(code, calibrate._EXIT_CONFIG)
+        explode.assert_called_once()
 
     def test_check_REFUSES_a_disabled_rig_instead_of_calling_it_usable(self) -> None:
         """The sentence `--check` prints is what an operator acts on. Calling a switched-off rig

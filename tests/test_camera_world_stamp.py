@@ -1,11 +1,11 @@
 """Every motion result says whether a camera world stood behind the motion.
 
 The owner decided on 2026-09-11 that with cuRobo every motion plans against a current camera image
-unless the caller declines, and that a decline is explicit and visible. This file pins the carrier
-before anything fills it. A result built the way every driver builds one today says it is NOT vouched
-for; a decline cannot be written without a reason; and the stamp is part of what makes two results the
-same result, because two motions that differ in what the planner knew about the cell did not do the
-same thing.
+unless the caller declines, and that a decline is explicit and visible. This file pins the carrier; what
+each driver stamps is pinned in ``tests/test_camera_world_on_every_driver.py``. A result built without a
+stamp says it is NOT vouched for; a decline cannot be written without a reason; and the stamp is part
+of what makes two results the same result, because two motions that differ in what the planner knew
+about the cell did not do the same thing.
 """
 
 from __future__ import annotations
@@ -23,11 +23,26 @@ def _every_kind() -> tuple[CameraWorldStamp, ...]:
         CameraWorldStamp.planned(cameras=("realsense_d435", "oblique_left"), captured_at_s=12.5),
         CameraWorldStamp.declined(CameraWorldDecline("calibration sweep, no CAMERA->BASE yet")),
         CameraWorldStamp.unplanned("robot.ur.motion_planner is 'ik'"),
+        CameraWorldStamp.missing("cuRobo plans this motion and no live camera world is wired"),
     )
 
 
+class TheUsesAreFiveTests(unittest.TestCase):
+    def test_the_uses_and_their_wire_values(self) -> None:
+        """MISSING is its own answer: a planner planned with no camera world and nobody declined,
+        which is what a later step refuses. DECLINED stays a caller's decision."""
+        self.assertEqual([use.value for use in CameraWorldUse],
+                         ["unstated", "planned", "declined", "unplanned", "missing"])
+
+    def test_a_missing_world_renders_its_reason(self) -> None:
+        self.assertEqual(
+            CameraWorldStamp.missing("no live camera world is wired").render(),
+            "camera world  MISSING  no live camera world is wired",
+        )
+
+
 class TheDefaultPromisesNothingTests(unittest.TestCase):
-    def test_a_result_built_as_every_driver_builds_one_today_is_unstated(self) -> None:
+    def test_a_result_built_without_a_stamp_is_unstated(self) -> None:
         results = (
             MotionResult.executed(MotionCommand.MOVE_TO),
             MotionResult.failed(MotionStatus.IK_FAILED, MotionCommand.MOVE_TO),
@@ -54,6 +69,11 @@ class ADeclineNeedsAReasonTests(unittest.TestCase):
     def test_an_unplanned_cell_must_say_why_too(self) -> None:
         with self.assertRaises(ValueError):
             CameraWorldStamp.unplanned("  ")
+
+    def test_a_missing_world_must_say_why_too(self) -> None:
+        for reason in ("", "   "):
+            with self.subTest(reason=repr(reason)), self.assertRaises(ValueError):
+                CameraWorldStamp.missing(reason)
 
     def test_the_reason_reaches_the_stamp_and_its_text(self) -> None:
         reason = "calibration sweep, no CAMERA->BASE yet"
@@ -192,7 +212,7 @@ class AStampHoldsOnlyWhatItsUseCanMeanTests(unittest.TestCase):
         self.assertIsInstance(stamp.captured_at_s, float)
 
     def test_the_use_is_checked_and_a_plain_string_cannot_skip_the_rules(self) -> None:
-        for use in ("planned", "declined", "unplanned", "not_a_use", 3):
+        for use in ("planned", "declined", "unplanned", "missing", "not_a_use", 3):
             with self.subTest(use=use), self.assertRaises(ValueError):
                 CameraWorldStamp(use=use)
         self.assertIs(CameraWorldStamp(use="unstated").use, CameraWorldUse.UNSTATED)
@@ -203,6 +223,8 @@ class AStampHoldsOnlyWhatItsUseCanMeanTests(unittest.TestCase):
             {"use": CameraWorldUse.DECLINED, "reason": "bench", "captured_at_s": 1.0},
             {"use": CameraWorldUse.UNPLANNED, "reason": "ik cell", "cameras": ("realsense_d435",)},
             {"use": CameraWorldUse.UNPLANNED, "reason": "ik cell", "captured_at_s": 1.0},
+            {"use": CameraWorldUse.MISSING, "reason": "no world", "cameras": ("realsense_d435",)},
+            {"use": CameraWorldUse.MISSING, "reason": "no world", "captured_at_s": 1.0},
             {"use": CameraWorldUse.PLANNED, "cameras": ("realsense_d435",), "captured_at_s": 1.0,
              "reason": "a planned world has no reason to give"},
         )
@@ -245,6 +267,7 @@ class TheStampIsVisibleWhereResultsAreLoggedTests(unittest.TestCase):
         stamps = (
             CameraWorldStamp.declined(CameraWorldDecline(reason)),
             CameraWorldStamp.unplanned(reason),
+            CameraWorldStamp.missing(reason),
             CameraWorldStamp.planned(cameras=(reason,), captured_at_s=1.0),
         )
         for stamp in stamps:

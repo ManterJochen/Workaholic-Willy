@@ -32,10 +32,12 @@ upward. Build it through the registry: `create_arm(RobotVendor.UR, config=cfg.ro
 - `connect()` and `disconnect()`, also usable as a context manager. `connect()` pushes
   `set_payload` with mass and centre of gravity where `config.safety.payload.enforce` is true, and
   rolls the connection back if that push fails.
-- `move(pose, *, linear, vel, acc, register) -> MotionResult`, the typed path. It pre-resolves IK,
-  runs `SafetyPreflight`, and returns a precise `MotionStatus` on rejection. Where
+- `move(pose, *, linear, vel, acc, register, camera_world) -> MotionResult`, the typed path. It
+  pre-resolves IK, runs `SafetyPreflight`, and returns a precise `MotionStatus` on rejection. Where
   `robot.ur.motion_planner` is `curobo` it routes through `CuroboUrPlanner` instead of controller
-  IK.
+  IK. The result carries a camera-world stamp: UNPLANNED on `ik`, MISSING on `curobo` with no live
+  world, DECLINED for a decline. `without_camera_world(reason)` declines the camera world for a
+  block of motions.
 - `move_to(...) -> bool`, the boolean path through `MotionController`, plus `move_linear` and
   `move_joint` (which raise `RobotMotionRejected` where the preflight denies the move),
   `move_to_joints`, `move_home`, `stop`, `wait_until_steady`, and the asynchronous `amove_to` and

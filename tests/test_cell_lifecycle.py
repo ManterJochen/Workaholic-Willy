@@ -309,12 +309,19 @@ class NeitherCallerWritesTheOrderTests(unittest.TestCase):
     CALLERS = (
         "api/lifecycle.py",
         "src/robot/execution/real_cell/__main__.py",
+        "src/robot/execution/real_cell/calibrate.py",
+        "src/robot/execution/robot.py",
     )
 
     @staticmethod
     def _direct_calls(path: Path) -> list[str]:
-        """`x.connect()` / `x.disconnect()` on an `arm` or `gripper` name."""
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        """`x.connect()` / `x.disconnect()` on an `arm` or `gripper` name, in one file."""
+        return NeitherCallerWritesTheOrderTests._direct_calls_in(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _direct_calls_in(source: str) -> list[str]:
+        """The same scan over source text. A private ``_arm`` or ``_gripper`` handle counts too."""
+        tree = ast.parse(source)
         found: list[str] = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
@@ -323,9 +330,18 @@ class NeitherCallerWritesTheOrderTests(unittest.TestCase):
                 continue
             target = node.func.value
             name = target.id if isinstance(target, ast.Name) else getattr(target, "attr", "")
-            if name in ("arm", "gripper"):
+            if name.lstrip("_") in ("arm", "gripper"):
                 found.append(f"{name}.{node.func.attr}()")
         return found
+
+    def test_the_guard_sees_a_private_handle(self) -> None:
+        """The self-failing control for the underscore: ``self._arm.connect()`` escaped a matcher
+        that compared the bare name, so a class keeping its handles private could write its own
+        order and pass."""
+        self.assertEqual(
+            self._direct_calls_in("self._arm.connect()\nself._gripper.disconnect()\n"),
+            ["_arm.connect()", "_gripper.disconnect()"],
+        )
 
     def test_no_caller_connects_or_disconnects_a_handle_itself(self) -> None:
         offenders = {rel: found for rel in self.CALLERS

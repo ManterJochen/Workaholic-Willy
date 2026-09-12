@@ -14,8 +14,9 @@ never import at `core` or `registry` top level.
 
 With no registered factory, `create_arm("ros2", ...)` raises `RobotConnectionError` from
 [`../registry.py`](../registry.py), reporting that no driver is registered for vendor `'ros2'` and
-listing the vendors that are. The composition root passes whatever vendor the config names straight
-to `create_arm`, so a config that selects `ros2` fails there with that message rather than silently.
+listing the vendors that are. The builder that `RuntimePickService` and `AutonomousGraspService`
+share, `execution/robot_parts.py`, passes whatever vendor the config names straight to `create_arm`,
+so a config that selects `ros2` fails there with that message rather than silently.
 
 `RobotVendor.ROS2` is a declared enum member and no factory is registered for it. Those are
 different things: enum membership exists, factory registration does not.

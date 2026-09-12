@@ -21,6 +21,8 @@ _LAZY: dict[str, tuple[str, str]] = {
     "PickRun": ("src.robot.execution.pick_run", "PickRun"),
     "PickRunReport": ("src.robot.execution.pick_run", "PickRunReport"),
     "Recording": ("src.robot.execution.pick_run", "Recording"),
+    # The arm and the gripper as one noun, with no pick service.
+    "Robot": ("src.robot.execution.robot", "Robot"),
     "PoseProvider": ("src.robot.execution.pose_provider", "PoseProvider"),
     "CalibrationRoutine": (
         "src.robot.execution.calibration",
@@ -107,6 +109,7 @@ __all__ = [
     "PickRun",
     "PickRunReport",
     "Recording",
+    "Robot",
     "CalibrationResult",
     "CalibrationRoutine",
     "MarkerPoseProvider",

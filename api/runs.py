@@ -75,6 +75,11 @@ _STAGE_COPY: dict[str, tuple[Severity, str]] = {
     "cancelled": (Severity.WARN, "Stopped by the operator before attempt {attempt_1}."),
 }
 
+#: The camera-world uses a sentence speaks: a planned motion with no camera world, and a caller's
+#: decline. A dummy or ik cell stamps ``unplanned`` on every motion, and a sentence repeating that on
+#: every event would bury the line that matters; the payload still carries it.
+_SPOKEN_CAMERA_WORLDS = frozenset({"missing", "declined"})
+
 
 def _sentence(event: "PickProgress") -> tuple[Severity, str]:
     """Render one library event for a person. Never raises: a missing field yields a plainer line."""
@@ -111,6 +116,13 @@ def _sentence(event: "PickProgress") -> tuple[Severity, str]:
         if event.motion_status:
             sentence = f"{sentence} ({event.motion_status})"
         severity = Severity.WARN
+    if event.camera_world in _SPOKEN_CAMERA_WORLDS:
+        # Appended at the event's own severity: a missing or declined camera world is a fact about
+        # how the motions were planned, not a failure of the attempt.
+        sentence = (
+            f"{sentence} Camera world: {str(event.camera_world).upper()} "
+            f"({event.camera_world_reason})."
+        )
     if "labels_seen" in (event.extra or {}):
         # A label the scene does not contain is the one rejection an operator can fix in a second,
         # but only if the line says what perception did return. "no usable grasp" sends them to the
@@ -377,6 +389,8 @@ def _payload(event: "PickProgress") -> dict[str, Any]:
         "motion_status": event.motion_status,
         "motion_message": event.motion_message,
         "motion_error": event.motion_error,
+        "camera_world": event.camera_world,
+        "camera_world_reason": event.camera_world_reason,
     }
     payload = {k: v for k, v in fields.items() if v is not None}
     # Stage-specific extras (`labels_seen`, ...) belong in the machine half too. Without this they

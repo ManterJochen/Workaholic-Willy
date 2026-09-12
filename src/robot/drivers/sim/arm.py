@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from src.contracts import UNSET, Maybe
 from src.geometry import Frame, FrameMismatchError, Pose
 from src.geometry.quaternion import (
     IDENTITY_QUAT_XYZW,
@@ -36,7 +38,11 @@ from src.geometry.quaternion import (
 )
 
 from ...core import (
+    DECLINE_ON_A_LIVE_WORLD_MESSAGE,
     NO_PLAN_FAIL_SAFE_MESSAGE,
+    CameraWorldDecline,
+    CameraWorldStamp,
+    CameraWorldUse,
     IsaacNotAvailableError,
     JointPositions,
     MotionCommand,
@@ -47,7 +53,11 @@ from ...core import (
     RobotConnectionError,
     RobotKinematicsError,
     RobotMotionRejected,
+    active_decline,
+    resolve_camera_world,
+    stamp_result,
 )
+from ...core.camera_world import without_camera_world as _without_camera_world
 from ...safety import SafetyPreflight
 from ...safety._ur_kinematics import ur_link_origins_mm
 from ...safety.continuous_monitor import ContinuousCollisionMonitor, ContinuousGuardAbort
@@ -145,6 +155,15 @@ _RMP_APPROACH_TOL_M = 0.03
 # what makes the follow robust across arbitrary cuRobo plans.
 _CUROBO_WP_TOL_RAD = 0.03
 _CUROBO_MAX_STEPS_PER_WP = 12
+
+#: Why a typed motion on the kinematic mock says UNPLANNED.
+_MOCK_PLANS_NOTHING = "mock_mode: the kinematic mock has no planner"
+#: Why a motion cuRobo plans says MISSING while no live camera world is wired to the arm.
+_NO_LIVE_WORLD = "cuRobo plans this motion and no live camera world is wired to this arm"
+#: Why a joint move that ``plan_joint_moves`` does not hand to cuRobo says UNPLANNED.
+_INTERPOLATED_JOINT_MOVE = "this joint move is interpolated in joint space, and no planner plans it"
+#: Why a move on the RMPflow policy says UNPLANNED: a reactive controller, not a planner over a world.
+_RMPFLOW_PLANS_NOTHING = "the RMPflow policy drives this arm: a reactive policy consults no camera world"
 
 # The six arm joints, by name. The Isaac robot is a combined 12-DoF articulation: the
 # arm, the Robotiq 2F-85 finger_joint and its five mimics. The driver addresses these six
@@ -604,19 +623,100 @@ class IsaacRobotArm(RobotArm):
         if self._preflight is not None:
             self._preflight.reset()
 
+    def without_camera_world(self, reason: str) -> AbstractContextManager[CameraWorldDecline]:
+        """Decline the camera world for every motion this arm commands inside the ``with`` block.
+
+        Bound to this arm alone. A decline reaches a motion cuRobo plans: :meth:`move` on the
+        cuRobo planner, and :meth:`move_to_joints` with ``plan_joint_moves``. Every other typed
+        motion plans nothing and says UNPLANNED whatever was declined, and with a live camera world
+        wired a declined planned motion is refused before planning.
+        """
+        return _without_camera_world(self, reason)
+
+    def _move_camera_world(self, keyword: Maybe[CameraWorldDecline]) -> CameraWorldStamp:
+        """What stands behind a ``move`` on this arm as it is now.
+
+        Asked again after the move for the stamp, because the move is where a cuRobo arm finds its
+        sidecar missing and latches the ik fallback: the latch is read here, and the sidecar is
+        never probed from here. The RMPflow policy is a reactive controller that consults no camera
+        world, so its motions say UNPLANNED, as every motion no planner planned does.
+        """
+        block = active_decline(self)
+        planner = self._motion_planner
+        unplanned: str | None
+        if self.mock_mode:
+            unplanned = _MOCK_PLANS_NOTHING
+        elif planner == "curobo" and self._curobo_unavailable:
+            unplanned = (
+                f"cuRobo is configured and unavailable, so this arm drives the ik path: "
+                f"{self._curobo_unavailable_reason}"
+            )
+        elif planner == "curobo":
+            unplanned = None
+        elif planner == "rmpflow":
+            unplanned = _RMPFLOW_PLANS_NOTHING
+        else:
+            unplanned = f"the motion planner of this arm is {planner!r}"
+        return resolve_camera_world(
+            unplanned=unplanned,
+            missing=None if self._live_world is not None else _NO_LIVE_WORLD,
+            keyword=keyword,
+            block=block,
+        )
+
+    def _joint_move_camera_world(self, keyword: Maybe[CameraWorldDecline]) -> CameraWorldStamp:
+        """What stands behind a ``move_to_joints`` here: cuRobo plans it only with ``plan_joint_moves``."""
+        unplanned: str | None
+        if self.mock_mode:
+            unplanned = _MOCK_PLANS_NOTHING
+        elif self._plan_joint_moves and self._motion_planner == "curobo":
+            unplanned = None
+        else:
+            unplanned = _INTERPOLATED_JOINT_MOVE
+        return resolve_camera_world(
+            unplanned=unplanned,
+            missing=None if self._live_world is not None else _NO_LIVE_WORLD,
+            keyword=keyword,
+            block=active_decline(self),
+        )
+
     def move_to_joints(
         self,
         joints: JointPositions,
         *,
         velocity: float | None = None,
         acceleration: float | None = None,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
         """The typed joint move: gate the destination through the preflight, then drive.
 
         It returns the typed rejection where :meth:`move_joint` raises it. The gate is
         the same one, run once here rather than twice by delegating to the public
         method.
+
+        The result says UNPLANNED unless cuRobo plans the joint move (``plan_joint_moves`` on the
+        cuRobo planner), which then stamps as :meth:`move` does, the refusal of a decline on a live
+        world included.
         """
+        stamp = self._joint_move_camera_world(camera_world)
+        if stamp.use is CameraWorldUse.DECLINED and self._live_world is not None:
+            return MotionResult.failed(
+                MotionStatus.UNSUPPORTED, MotionCommand.MOVE_JOINTS, target_joints=joints,
+                message=DECLINE_ON_A_LIVE_WORLD_MESSAGE, camera_world=stamp,
+            )
+        unstamped = self._move_to_joints_unstamped(
+            joints, velocity=velocity, acceleration=acceleration,
+        )
+        return stamp_result(unstamped, stamp)
+
+    def _move_to_joints_unstamped(
+        self,
+        joints: JointPositions,
+        *,
+        velocity: float | None = None,
+        acceleration: float | None = None,
+    ) -> MotionResult:
+        """The body of :meth:`move_to_joints`. It stamps nothing; the public verb does."""
         if self._preflight is not None:
             rejected = self._preflight.gate_joint_target(joints, arm=self)
             if rejected is not None:
@@ -1444,6 +1544,7 @@ class IsaacRobotArm(RobotArm):
         vel: float | None = None,
         acc: float | None = None,
         register: bool = True,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
         """The typed move: Cartesian motion through RMPflow with an IK refine.
 
@@ -1453,7 +1554,32 @@ class IsaacRobotArm(RobotArm):
         collision-aware approach, and then snaps to the exact IK solution. It is
         ``EXECUTED`` where the refined TCP is within ``_MOVE_POS_TOL_MM``, and
         ``TIMEOUT`` otherwise.
+
+        The result says what stood behind the motion: UNPLANNED on the mock, on the ik planner, on
+        the RMPflow policy and on a cuRobo arm that fell back to ik, and on cuRobo DECLINED for a
+        decline (``camera_world``, or :meth:`without_camera_world`), MISSING while no live camera
+        world is wired, UNSTATED once one is. A declined motion on a cuRobo arm whose live camera
+        world is wired is refused with ``UNSUPPORTED`` before the planner is asked.
         """
+        before = self._move_camera_world(camera_world)
+        if before.use is CameraWorldUse.DECLINED and self._live_world is not None:
+            return MotionResult.failed(
+                MotionStatus.UNSUPPORTED, MotionCommand.MOVE_TO, target_pose=pose,
+                message=DECLINE_ON_A_LIVE_WORLD_MESSAGE, camera_world=before,
+            )
+        unstamped = self._move_unstamped(pose, linear=linear, vel=vel, acc=acc, register=register)
+        return stamp_result(unstamped, self._move_camera_world(camera_world))
+
+    def _move_unstamped(
+        self,
+        pose: Pose,
+        *,
+        linear: bool = False,
+        vel: float | None = None,
+        acc: float | None = None,
+        register: bool = True,
+    ) -> MotionResult:
+        """The body of :meth:`move`. It stamps nothing; the public verb does."""
         if pose.frame is not Frame.BASE:
             return MotionResult.failed(
                 MotionStatus.INVALID_TARGET,

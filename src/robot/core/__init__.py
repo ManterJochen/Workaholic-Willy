@@ -14,7 +14,10 @@ Public exports:
 * :class:`MotionResult`, :class:`MotionStatus`, :class:`MotionCommand` are the typed
   motion-outcome contract.
 * :class:`CameraWorldStamp`, :class:`CameraWorldUse` and :class:`CameraWorldDecline`
-  say whether a camera world stood behind a motion, carried on its result.
+  say whether a camera world stood behind a motion, carried on its result;
+  :func:`without_camera_world`, :func:`active_decline`, :func:`resolve_camera_world`,
+  :func:`stamp_result` and the :class:`DeclinesCameraWorld` capability say how a driver
+  declines, reads a decline and stamps its motions.
 * :class:`RobotError` and its subclasses are the vendor-neutral error hierarchy.
 
 The numerics contract mirrors :mod:`src.geometry`: translations in millimetres,
@@ -34,7 +37,17 @@ from .arm_capabilities import (
     SupportsRobotStatus,
     Wrench,
 )
-from .camera_world import CameraWorldDecline, CameraWorldStamp, CameraWorldUse
+from .camera_world import (
+    DECLINE_ON_A_LIVE_WORLD_MESSAGE,
+    CameraWorldDecline,
+    CameraWorldStamp,
+    CameraWorldUse,
+    DeclinesCameraWorld,
+    active_decline,
+    resolve_camera_world,
+    stamp_result,
+    without_camera_world,
+)
 from .capabilities import RobotCapabilities
 from .errors import (
     IsaacNotAvailableError,
@@ -61,6 +74,8 @@ __all__ = [
     "CameraWorldDecline",
     "CameraWorldStamp",
     "CameraWorldUse",
+    "DECLINE_ON_A_LIVE_WORLD_MESSAGE",
+    "DeclinesCameraWorld",
     "DigitalIOPort",
     "Gripper",
     "GripperVendor",
@@ -87,4 +102,8 @@ __all__ = [
     "SupportsForceTorque",
     "SupportsRobotStatus",
     "Wrench",
+    "active_decline",
+    "resolve_camera_world",
+    "stamp_result",
+    "without_camera_world",
 ]

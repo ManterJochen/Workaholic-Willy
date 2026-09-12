@@ -23,8 +23,10 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from src.contracts import UNSET, Maybe
 from src.geometry import Pose
 
+from .camera_world import CameraWorldDecline
 from .capabilities import RobotCapabilities
 from .joint_positions import JointPositions
 from .motion_result import MotionResult
@@ -94,6 +96,7 @@ class RobotArm(Protocol):
         *,
         velocity: float | None = None,
         acceleration: float | None = None,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
         """Typed joint-space move, the fail-closed counterpart of :meth:`move_joint`.
 
@@ -106,6 +109,13 @@ class RobotArm(Protocol):
         rejection comes back as a typed :class:`MotionResult` carrying the matching
         :class:`MotionStatus`, where the void :meth:`move_joint` raises. A driver
         with no preflight wired drives and returns ``EXECUTED``.
+
+        ``camera_world`` declines the camera world for this motion, with a reason. A
+        driver that implements
+        :class:`~src.robot.core.camera_world.DeclinesCameraWorld` also declines a block
+        of motions, and says on the result what stood behind this one: a joint move no
+        planner plans says UNPLANNED whatever was declined. See :meth:`move` for the
+        rest.
         """
         ...
 
@@ -245,6 +255,7 @@ class RobotArm(Protocol):
         vel: float | None = None,
         acc: float | None = None,
         register: bool = True,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
         """Typed go-there command for runtime orchestration.
 
@@ -258,5 +269,18 @@ class RobotArm(Protocol):
         ``register=False`` tells the driver not to add ``pose`` to any internal
         diversity or sampling history, with the semantics of :meth:`move_to`, which
         also says what ``linear=True`` does and does not guarantee.
+
+        ``camera_world`` declines the camera world for this motion, with a
+        reason (:class:`~src.robot.core.camera_world.CameraWorldDecline`). A
+        driver that implements
+        :class:`~src.robot.core.camera_world.DeclinesCameraWorld` also
+        declines a block of motions, and says on
+        :attr:`MotionResult.camera_world` what stood behind this one:
+        UNPLANNED where no planner planned it, DECLINED for a decline,
+        MISSING for a planned motion with no camera world, and UNSTATED
+        where a live camera world is wired and nothing declined it. On an
+        arm whose live camera world is wired, a declined planned motion is
+        refused with ``UNSUPPORTED`` before the planner is asked. An arm
+        that stamps nothing leaves every result UNSTATED.
         """
         ...

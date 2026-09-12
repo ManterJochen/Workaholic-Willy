@@ -7,7 +7,7 @@ tree, not from this package. It reads ``cfg.robot.sim`` (driver and scene author
 ``cfg.camera.hand_eye`` (calibration tuning), ``cfg.robot.calibration``,
 ``cfg.robot.workspace_limits`` and ``cfg.models.*``. This module is the bridge: activate the
 ``sim`` profile, load the tree, and convert ``cfg.robot.sim`` into the driver-side
-:class:`SimRobotConfig` (reusing :func:`src.robot.execution.runtime_pick.build_sim_driver_config`).
+:class:`SimRobotConfig` (reusing :func:`src.robot.execution.robot_parts.build_sim_driver_config`).
 
 Imports no ``isaacsim``, so it stays safe on macOS and CI.
 """
@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 
 from src.config import load_config
 from src.config.loader import active_profile, join_profiles, set_active_profile
-from src.robot.execution.runtime_pick import build_sim_driver_config
+from src.robot.execution.robot_parts import build_sim_driver_config
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.app import AppConfig

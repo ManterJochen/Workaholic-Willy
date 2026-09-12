@@ -168,6 +168,14 @@ The library side of this is `PickStage` and the frozen `PickProgress` payload in
 attached the emit is one `is None` test and no payload is constructed, so a cell that never runs this
 server pays nothing for the seam.
 
+**The camera world behind an attempt.** `pick.attempt_finished` carries `camera_world` and
+`camera_world_reason` in `data` whenever the weakest camera-world stamp of the attempt's motions says
+something (`unplanned`, `missing`, `declined`, `planned`), and omits both where it is `unstated`, so
+a driver that stamps nothing adds no key. The sentence names only `missing` and `declined`, as
+` Camera world: MISSING (<reason>).`, at the event's own severity: a dummy or ik cell stamps
+`unplanned` on every motion, and repeating that on every line would bury the one that matters. The
+React console types `data` as `Record<string, unknown>`, so the new keys needed no client change.
+
 **Speech goes to the prompt box, not to the arm.** `POST /v1/voice/transcribe` returns text and starts
 nothing: a misheard word must not be able to move an arm, so a spoken prompt is confirmed by the same
 button, with the same acknowledgement, as a typed one. The recogniser loads on first use, so a console

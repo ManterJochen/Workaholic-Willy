@@ -109,6 +109,11 @@ class PickProgress:
     motion_status: str | None = None
     motion_message: str | None = None
     motion_error: str | None = None
+    #: Which camera world stood behind the attempt's motions, on :attr:`PickStage.ATTEMPT_FINISHED`: the
+    #: use of the weakest stamp (``unplanned``, ``missing``, ``declined``, ``planned``) and its reason.
+    #: Both ``None`` when no typed motion was commanded or the stamp said nothing.
+    camera_world: str | None = None
+    camera_world_reason: str | None = None
     #: Anything a stage needs that does not deserve a field of its own.
     extra: dict[str, Any] = field(default_factory=dict)
 

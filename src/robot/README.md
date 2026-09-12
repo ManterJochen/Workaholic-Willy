@@ -74,16 +74,20 @@ Eager, vendor-free: `RobotArm`, `Gripper`, `JointPositions`, `RobotCapabilities`
 `RobotError` with `RobotConnectionError`, `RobotKinematicsError`, `RobotMotionRejected`,
 `RobotSingularityRisk` and `RobotEmergencyStop`; and the constants above.
 
-Lazy, resolved on first access: the UR facade `Robot` and `URRobotArm`, `URConnection`, `URPose`;
+Lazy, resolved on first access: `Robot`, the arm and the gripper on it as one noun
+(`execution/robot.py`); the UR driver `URRobotArm`, `URConnection`, `URPose`;
 `GripperController`; the safety guards with `SafetyPreflight`, `SafetyContext`, `SafetyDecision` and
 `SafetyReason`; `MotionController`, `PoseProvider`, `CalibrationRoutine` and `CalibrationResult`.
 
 Registries: `create_arm(vendor, **kwargs)`, `register_arm_driver` and `available_vendors` from
 `drivers/`; `create_gripper(vendor, **kwargs)` and `register_gripper_driver` from `grippers/`.
 
-Facades from `execution/`: `RuntimePickService` returning a `PickSessionReport`, and
-`AutonomousGraspService` with a typed `GraspMode` (`easy`, `auto`, `closed_loop`, `dense_clutter`,
-`dense_autonomous`), built by `from_robot_config(...)` or `from_components(...)`, whose `pick()`
+Facades from `execution/`: `Robot`, built by `from_config(robot_config, gripper=UNSET)` or
+`from_parts(arm=, gripper=, lock_key=)`, with `connected()` returning a `ConnectedRobot` and
+`safety()` a `SafetyAttestation`, and no pick service; `RuntimePickService` returning a
+`PickSessionReport`; and `AutonomousGraspService` with a typed `GraspMode` (`easy`, `auto`,
+`closed_loop`, `dense_clutter`, `dense_autonomous`), built by `from_robot_config(...)` or
+`from_components(...)`, whose `pick()`
 returns an `AutonomousGraspReport`.
 
 `RobotArm` fixes the vendor contract: `connect`, `disconnect`, `is_connected`, `get_tcp_pose()` and

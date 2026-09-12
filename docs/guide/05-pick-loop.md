@@ -421,6 +421,20 @@ attempts each carry an index, an action and typed reasons.
 | `no_commit_insufficient_fusion` | there was a candidate, not enough fused evidence, and the budget is gone | check `scene_fusion` is wired; the commit policy alone is inert |
 | `drift_blocked_auto`, `ood_blocked_auto` | the watchdog locked autonomous operation | inspect the drift and out-of-distribution telemetry. Do not bypass |
 
+**Which camera world stood behind the motions.** Every rendered report prints a `camera` line, and
+`report.pick_report.camera_worlds` holds one stamp per typed motion of the last attempt, read weakest
+first through `camera_world`. On a dummy arm, an `ik` cell or the simulator mock every stamp reads
+`UNPLANNED` with the driver's reason, so the rehearsal prints
+`camera     0 of 5 motion(s) vouched; camera world  UNPLANNED  DummyRobotArm has no planner`. That is
+the honest answer rather than a fault. On a cuRobo cell with no camera world wired the stamps read
+`MISSING`, and a decline reads `DECLINED`: `camera_world=CameraWorldDecline(reason)` on `move` or
+`move_to_joints`, or a `with arm.without_camera_world(reason):` block. On a cell whose live camera
+world is wired (`safety.planning_world.enabled`), a declined planned motion is refused before
+planning: the pick ends `execution_failed`, status `unsupported`, with a message starting
+`Refused before planning`. Nothing reads `PLANNED`. The console names `MISSING` and `DECLINED` in the
+event sentence and carries every other use only in the payload, and the grasp record does not carry
+the stamp.
+
 **The arm refused.** A safety rejection surfaces as `execution_failed` with a motion message prefixed
 `[safety:<guard>/<reason>]`. Guard order and verdicts: [04](04-robot-and-safety.md). Two things belong
 here. `enforce: false` on a guard removes it at construction, so its surface is gone rather than

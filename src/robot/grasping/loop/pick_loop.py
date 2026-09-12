@@ -39,7 +39,14 @@ from typing import (
 import numpy as np
 
 from src.geometry import Frame, Pose, Transform
-from src.robot.core import Gripper, MotionStatus, RobotArm, SupportsRobotStatus
+from src.robot.core import (
+    CameraWorldStamp,
+    CameraWorldUse,
+    Gripper,
+    MotionStatus,
+    RobotArm,
+    SupportsRobotStatus,
+)
 from src.robot.grasping.loop._shadow_aggregator import (
     _ShadowTelemetryAggregator,
     _build_candidate_log as _build_candidate_log,  # re-exported under this module's name
@@ -265,16 +272,27 @@ class PickOutcome(str, Enum):
 
 
 def _motion_fields(report: "PolicyReport | None") -> dict[str, str | None]:
-    """The three motion explanations a ``PolicyReport`` carries, flattened onto an attempt.
+    """The motion explanations a ``PolicyReport`` carries, flattened onto an attempt.
 
     Best-effort and never raising: a report that predates these fields, or an object that is not a
-    ``PolicyReport`` at all, yields three ``None``s and the attempt is exactly as before.
+    ``PolicyReport`` at all, yields ``None`` for each and the attempt is exactly as before.
     Stringified on the way out so the attempt stays JSON-safe for the telemetry tail.
+
+    ``camera_world`` and ``camera_world_reason`` are the use and the reason of the report's weakest
+    camera-world stamp. Both are ``None`` when no typed motion was commanded or that stamp is
+    UNSTATED, so a driver that stamps nothing adds nothing to the attempt or to the event.
     """
     if report is None:
-        return {"motion_status": None, "motion_message": None, "motion_error": None}
+        return {"motion_status": None, "motion_message": None, "motion_error": None,
+                "camera_world": None, "camera_world_reason": None}
     status = getattr(report, "motion_status", None)
     err = getattr(report, "error", None)
+    stamp = getattr(report, "camera_world", None)
+    said: CameraWorldStamp | None = (
+        stamp
+        if isinstance(stamp, CameraWorldStamp) and stamp.use is not CameraWorldUse.UNSTATED
+        else None
+    )
     return {
         "motion_status": getattr(status, "value", None) if status is not None else None,
         "motion_message": (
@@ -283,6 +301,8 @@ def _motion_fields(report: "PolicyReport | None") -> dict[str, str | None]:
             else None
         ),
         "motion_error": f"{type(err).__name__}: {err}" if err is not None else None,
+        "camera_world": said.use.value if said is not None else None,
+        "camera_world_reason": said.reason if said is not None else None,
     }
 
 
@@ -318,6 +338,11 @@ class PickAttempt:
     motion_status: str | None = None
     motion_message: str | None = None
     motion_error: str | None = None
+    # Which camera world stood behind the motions, copied for the same reason: the use and the
+    # reason of the policy report's weakest stamp, both None when no typed motion was commanded or
+    # the stamp said nothing.
+    camera_world: str | None = None
+    camera_world_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,7 +7,8 @@ every pipeline above them agrees on.
 
 No vendor SDK is ever imported here, and nothing above `core` is imported here either. It sits just
 above `geometry` in the downward stack: it consumes `Pose` and `Frame` from `geometry`, it uses
-`numpy`, and it is otherwise a leaf. Drivers, safety and the grasping pipeline depend on these
+`numpy` and `UNSET`/`Maybe` from the stdlib-only `src.contracts`, and it is otherwise a leaf.
+Drivers, safety and the grasping pipeline depend on these
 Protocols; the dependency never runs the other way.
 
 Everything defined here is a Protocol, a frozen value object or a `StrEnum`. There is no behaviour
@@ -21,7 +22,7 @@ to configure and no `python -m` entry point.
 | `gripper.py` | The `Gripper` Protocol and the opt-in `ObjectDetectingGripper` extension. |
 | `arm_capabilities.py` | Opt-in arm capability Protocols `SupportsDigitalIO`, `SupportsForceTorque` and `SupportsRobotStatus`, with the value types `Wrench`, `RobotStatus`, `RobotMode`, `SafetyMode` and `DigitalIOPort`. |
 | `motion_result.py` | The typed outcome contract: `MotionStatus`, `MotionCommand`, `MotionResult`, and `NO_PLAN_FAIL_SAFE_MESSAGE`. |
-| `camera_world.py` | `CameraWorldStamp`, `CameraWorldUse` and `CameraWorldDecline`: whether a camera world stood behind a motion, carried on its `MotionResult`. |
+| `camera_world.py` | `CameraWorldStamp`, `CameraWorldUse` and `CameraWorldDecline`: whether a camera world stood behind a motion, carried on its `MotionResult`. Also how a driver declines and stamps: `without_camera_world`, `active_decline`, `resolve_camera_world`, `stamp_result`, the `DeclinesCameraWorld` capability and `DECLINE_ON_A_LIVE_WORLD_MESSAGE`. |
 | `joint_positions.py` | `JointPositions`, an immutable validated vector of joint angles in radians. |
 | `capabilities.py` | `RobotCapabilities`, the descriptor a driver advertises about itself. |
 | `vendor.py`, `gripper_vendor.py` | The `RobotVendor` and `GripperVendor` enums, used as config values and registry keys. |
@@ -33,7 +34,8 @@ to configure and no `python -m` entry point.
 `capabilities` and `is_connected`; `connect()`, `disconnect()` and `stop()`; `get_tcp_pose()` and
 `get_joint_positions()`; `move_joint` and `move_linear`; `fk` and `ik`; the bool helpers
 `is_inside_workspace`, `move_to`, `move_home` and `wait_until_steady`; and the typed
-`move(...) -> MotionResult` and `move_to_joints(...) -> MotionResult`.
+`move(...) -> MotionResult` and `move_to_joints(...) -> MotionResult`, each taking a keyword-only
+`camera_world` decline that defaults to `UNSET`.
 
 `Gripper` carries `is_connected`, `min_width_mm`, `max_width_mm`, `connect`, `disconnect`,
 `activate`, `set_width_mm` and `get_width_mm`. `ObjectDetectingGripper` adds
@@ -61,10 +63,37 @@ never substitutes.
 exception=None, camera_world=UNSTATED)`, with an `ok` property, truthiness through `__bool__`, and
 the constructors `.executed()`, `.failed()` and `.from_bool()`, each taking `camera_world=`. The
 stamp in `camera_world.py` says whether a world built from a current camera image stood behind the
-motion: only `PLANNED` vouches, a decline and a cell with no planner each carry a reason, and the
-stamp takes part in equality where `exception` does not. The `repr` shows the stamp only when it says
-something, so a result built without one prints what the generated repr prints. No driver sets the
-stamp, so every result a driver builds says `UNSTATED`. `JointPositions` validates a finite one-dimensional
+motion. There are five uses: `UNSTATED` (nothing was said, the default), `PLANNED` (the only one
+that vouches), `DECLINED` (a caller's decision), `UNPLANNED` (no planner planned this motion) and
+`MISSING` (a planner planned it with no camera world, and nobody declined). The last three each
+carry a mandatory reason, and the stamp takes part in equality where `exception` does not. The
+`repr` shows the stamp only when it says something, so a result built without one prints what the
+generated repr prints.
+
+Every driver stamps `move` and `move_to_joints`, read off the built arm and never off config: the
+`console_dummy` profile keeps `ur.motion_planner: curobo` on a dummy arm, whose motions say
+`UNPLANNED`.
+
+| arm | `move` | `move_to_joints` |
+| --- | --- | --- |
+| UR, `ik` | `UNPLANNED` | `UNPLANNED` |
+| UR, `curobo` | `DECLINED` for a decline, else `MISSING` with no live world, else `UNSTATED` | `UNPLANNED`, because this driver plans no joint move |
+| Isaac, `mock_mode` | `UNPLANNED` | `UNPLANNED` |
+| Isaac, `curobo` | as the UR, and `UNPLANNED` once it fell back to ik, read from the latch after the move | as `move` with `plan_joint_moves`, else `UNPLANNED` |
+| Isaac, `rmpflow` | `UNPLANNED`, because a reactive policy consults no camera world | `UNPLANNED` |
+| KUKA, dummy | `UNPLANNED` | `UNPLANNED` |
+
+A decline is `camera_world=CameraWorldDecline(reason)` on the verb or a block,
+`with arm.without_camera_world(reason):`, and the keyword beats the block. The block is bound to one
+arm and held in a `ContextVar`, so it does not follow into a thread started inside it. A motion no
+planner plans says `UNPLANNED` whatever was declined. A declined planned motion on an arm whose live
+camera world is wired is refused before the planner is asked, as `UNSUPPORTED` with
+`DECLINE_ON_A_LIVE_WORLD_MESSAGE`. `resolve_camera_world` is that precedence as one pure function,
+and `stamp_result` replaces only a `MotionResult` whose stamp is `UNSTATED`. `DeclinesCameraWorld` is
+a capability rather than a `RobotArm` member, so a caller's own arm still satisfies the Protocol and
+its results keep saying `UNSTATED`. Nothing stamps `PLANNED`.
+
+`JointPositions` validates a finite one-dimensional
 radians vector, exposes `.dof`, `.values`, `len`, iteration, indexing, `np.asarray()` support, exact
 equality and hashing, `.check_dof()`, `.tolist()` and `.from_list()`. `RobotCapabilities` is a frozen
 descriptor `(vendor, model="", dof=6, supports_joint_move=True, supports_linear_move=True,

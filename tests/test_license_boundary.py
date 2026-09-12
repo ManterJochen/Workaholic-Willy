@@ -142,6 +142,13 @@ def _rel(path: Path) -> str:
     return path.relative_to(REPO).as_posix()
 
 
+#: Git worktrees that agents check out inside the repository. Each one is a second copy of this tree,
+#: so reading it reports the same files again under another path, and a worktree based on an older
+#: commit reports files this tree no longer carries. A prefix, for the reason ``_SKIP_PREFIXES`` gives,
+#: and paired with its own guard: everything under it must be a git worktree.
+_AGENT_WORKTREES = ".claude/worktrees/"
+
+
 def _repo_files(suffixes: tuple[str, ...]) -> list[Path]:
     out: list[Path] = []
     for path in REPO.rglob("*"):
@@ -152,10 +159,26 @@ def _repo_files(suffixes: tuple[str, ...]) -> list[Path]:
             part in _SKIP_DIRS for part in path.relative_to(REPO).parts
         ):
             continue
-        if rel.startswith(_SKIP_PREFIXES):
+        if rel.startswith(_SKIP_PREFIXES) or rel.startswith(_AGENT_WORKTREES):
             continue
         out.append(path)
     return out
+
+
+class AgentWorktreesAreNotOursToPoliceTests(unittest.TestCase):
+    """The worktree skip exempts copies of this repository, and nothing else."""
+
+    def test_everything_under_the_agent_worktrees_is_a_git_worktree(self) -> None:
+        root = REPO / _AGENT_WORKTREES
+        if not root.is_dir():
+            self.skipTest(f"{root} does not exist; no agent worktree is checked out here")
+        strangers = sorted(child.name for child in root.iterdir() if not (child / ".git").is_file())
+        self.assertEqual(
+            strangers, [],
+            f"{root} is skipped by the licence scanner because it holds git worktrees of this "
+            f"repository. These entries are not worktrees (no .git file), so they are files nothing "
+            f"reads. Move them out of {_AGENT_WORKTREES}.",
+        )
 
 
 class DownloadedWeightsAreNotOursToPoliceTests(unittest.TestCase):

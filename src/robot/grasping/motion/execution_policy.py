@@ -25,6 +25,7 @@ This module imports no vendor driver. It talks only to the
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import cast
@@ -34,6 +35,7 @@ import numpy as np
 from src.geometry import Frame, Pose
 from src.geometry.quaternion import from_rotation_matrix
 from src.robot.core import (
+    CameraWorldStamp,
     Gripper,
     MotionCommand,
     MotionResult,
@@ -47,6 +49,7 @@ __all__ = [
     "GraspExecutionPolicy",
     "PolicyOutcome",
     "PolicyReport",
+    "weakest_camera_world",
 ]
 
 
@@ -77,6 +80,20 @@ class PolicyOutcome(str, Enum):
     """
 
 
+def weakest_camera_world(stamps: Sequence[CameraWorldStamp]) -> CameraWorldStamp | None:
+    """The camera-world stamp a report reads for a run of motions.
+
+    The first stamp in command order that does not vouch answers, because one approach planned
+    with no camera world is what a reader of the whole pick has to see, however many motions
+    around it were planned. When every stamp vouches, the last one answers. ``None`` when no
+    typed motion was commanded.
+    """
+    for stamp in stamps:
+        if not stamp.vouched:
+            return stamp
+    return stamps[-1] if stamps else None
+
+
 @dataclass(frozen=True, slots=True)
 class PolicyReport:
     """Outcome of a :meth:`GraspExecutionPolicy.execute` call.
@@ -103,6 +120,11 @@ class PolicyReport:
     motion_message
         Optional human-readable detail forwarded from the underlying
         :class:`MotionResult.message`. Empty string when not provided.
+    camera_worlds
+        One :class:`CameraWorldStamp` per typed motion, in command order,
+        the stamp of a motion that failed included. Empty when the driver
+        only exposes the legacy bool ``move_to`` path or no motion was
+        commanded. :attr:`camera_world` reads the weakest one.
     """
 
     outcome: PolicyOutcome
@@ -111,6 +133,12 @@ class PolicyReport:
     error: Exception | None = None
     motion_status: MotionStatus | None = None
     motion_message: str = ""
+    camera_worlds: tuple[CameraWorldStamp, ...] = ()
+
+    @property
+    def camera_world(self) -> CameraWorldStamp | None:
+        """The weakest stamp of :attr:`camera_worlds` (:func:`weakest_camera_world`)."""
+        return weakest_camera_world(self.camera_worlds)
 
 
 @dataclass
@@ -253,6 +281,9 @@ class GraspExecutionPolicy:
         commanded: list[Pose] = []
         last_status: MotionStatus | None = None
         last_message: str = ""
+        # One camera-world stamp per typed motion, collected wherever a status is, so a report of
+        # a failed pick still says what stood behind the motion that failed.
+        stamps: list[CameraWorldStamp] = []
         approach = waypoints[:-self.retreat_steps]  # all but the retreat lift(s)
         if self.planner_owns_approach:
             # cuRobo plans the full collision-free descent to the grasp itself, so only the grasp is
@@ -269,10 +300,12 @@ class GraspExecutionPolicy:
                     error=exc,
                     motion_status=last_status,
                     motion_message=last_message,
+                    camera_worlds=tuple(stamps),
                 )
             if result is not None:
                 last_status = result.status
                 last_message = result.message
+                stamps.append(result.camera_world)
                 if not result.ok:
                     return PolicyReport(
                         outcome=PolicyOutcome.MOTION_FAILED,
@@ -280,6 +313,7 @@ class GraspExecutionPolicy:
                         error=cast("Exception | None", result.exception),
                         motion_status=result.status,
                         motion_message=result.message,
+                        camera_worlds=tuple(stamps),
                     )
             commanded.append(pose)
 
@@ -301,6 +335,7 @@ class GraspExecutionPolicy:
                         object_detected=False,
                         motion_status=last_status,
                         motion_message=last_message,
+                        camera_worlds=tuple(stamps),
                     )
 
         # The planner learns what it is carrying, before the first motion that carries it. A lift,
@@ -327,10 +362,12 @@ class GraspExecutionPolicy:
                     error=exc,
                     motion_status=last_status,
                     motion_message=last_message,
+                    camera_worlds=tuple(stamps),
                 )
             if result is not None:
                 last_status = result.status
                 last_message = result.message
+                stamps.append(result.camera_world)
                 if not result.ok:
                     return PolicyReport(
                         outcome=PolicyOutcome.MOTION_FAILED,
@@ -339,6 +376,7 @@ class GraspExecutionPolicy:
                         error=cast("Exception | None", result.exception),
                         motion_status=result.status,
                         motion_message=result.message,
+                        camera_worlds=tuple(stamps),
                     )
             commanded.append(pose)
 
@@ -348,6 +386,7 @@ class GraspExecutionPolicy:
             object_detected=object_detected,
             motion_status=last_status,
             motion_message=last_message,
+            camera_worlds=tuple(stamps),
         )
 
     # ------------------------------------------------------------------

@@ -26,10 +26,15 @@ templates live under ``config/robot/templates/kuka/``.
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
+
 from src.config.schema.robot import RobotConfig
+from src.contracts import UNSET, Maybe
 from src.geometry import Frame, FrameMismatchError, Pose
 from src.robot.constants import HOME_JOINTS_DEFAULT, KUKA_ARM_LOG_FILE, create_robot_logger
 from src.robot.core import (
+    CameraWorldDecline,
+    CameraWorldStamp,
     JointPositions,
     MotionCommand,
     MotionResult,
@@ -39,7 +44,11 @@ from src.robot.core import (
     RobotConnectionError,
     RobotKinematicsError,
     RobotMotionRejected,
+    active_decline,
+    resolve_camera_world,
+    stamp_result,
 )
+from src.robot.core.camera_world import without_camera_world as _without_camera_world
 from src.robot.safety.workspace import WorkspaceGuard
 from src.robot.safety import SafetyPreflight
 
@@ -66,6 +75,9 @@ KUKA_CAPABILITIES = RobotCapabilities(
     has_force_control=False,
     is_simulated=False,
 )
+
+#: Why every typed motion on this driver says UNPLANNED.
+_NO_PLANNER = "KukaRobotArm has no planner"
 
 
 class KukaRobotArm(RobotArm):
@@ -234,14 +246,46 @@ class KukaRobotArm(RobotArm):
     # Motion
     # ------------------------------------------------------------------
 
+    def without_camera_world(self, reason: str) -> AbstractContextManager[CameraWorldDecline]:
+        """Decline the camera world for every motion this arm commands inside the ``with`` block.
+
+        This driver has no planner, so its typed motions say UNPLANNED whatever was declined. The
+        block is still accepted, so code that declines reads the same on every arm.
+        """
+        return _without_camera_world(self, reason)
+
+    def _camera_world(self, keyword: Maybe[CameraWorldDecline]) -> CameraWorldStamp:
+        """What stands behind a typed motion on this driver: no planner, whatever was declined."""
+        return resolve_camera_world(
+            unplanned=_NO_PLANNER, missing=None, keyword=keyword, block=active_decline(self),
+        )
+
     def move_to_joints(
         self,
         joints: JointPositions,
         *,
         velocity: float | None = None,
         acceleration: float | None = None,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
-        """The typed joint move: gate the destination through the preflight, then drive."""
+        """The typed joint move: gate the destination through the preflight, then drive.
+
+        The result says UNPLANNED: this driver has no planner.
+        """
+        stamp = self._camera_world(camera_world)
+        unstamped = self._move_to_joints_unstamped(
+            joints, velocity=velocity, acceleration=acceleration,
+        )
+        return stamp_result(unstamped, stamp)
+
+    def _move_to_joints_unstamped(
+        self,
+        joints: JointPositions,
+        *,
+        velocity: float | None = None,
+        acceleration: float | None = None,
+    ) -> MotionResult:
+        """The body of :meth:`move_to_joints`. It stamps nothing; the public verb does."""
         if self._preflight is not None:
             rejected = self._preflight.gate_joint_target(joints, arm=self)
             if rejected is not None:
@@ -551,6 +595,7 @@ class KukaRobotArm(RobotArm):
         vel: float | None = None,
         acc: float | None = None,
         register: bool = True,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
         """The typed counterpart of :meth:`move_to`.
 
@@ -558,7 +603,24 @@ class KukaRobotArm(RobotArm):
         pipeline, so a rejection surfaces the precise :class:`MotionStatus` rather than
         a blanket ``WORKSPACE_REJECTED``. A connection fault comes back as
         :attr:`MotionStatus.CONNECTION_ERROR` rather than ``False``.
+
+        The result says UNPLANNED: this driver has no planner, whatever ``camera_world``
+        declines.
         """
+        stamp = self._camera_world(camera_world)
+        unstamped = self._move_unstamped(pose, linear=linear, vel=vel, acc=acc, register=register)
+        return stamp_result(unstamped, stamp)
+
+    def _move_unstamped(
+        self,
+        pose: Pose,
+        *,
+        linear: bool = False,
+        vel: float | None = None,
+        acc: float | None = None,
+        register: bool = True,
+    ) -> MotionResult:
+        """The body of :meth:`move`. It stamps nothing; the public verb does."""
         if pose.frame is not Frame.BASE:
             return MotionResult.failed(
                 MotionStatus.INVALID_TARGET,

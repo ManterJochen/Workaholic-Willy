@@ -12,12 +12,17 @@ the Isaac-backed ``sim`` driver instead.
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
+
 import numpy as np
 
+from src.contracts import UNSET, Maybe
 from src.geometry import Frame, FrameMismatchError, Pose
 from src.geometry.quaternion import IDENTITY_QUAT_XYZW
 
 from ...core import (
+    CameraWorldDecline,
+    CameraWorldStamp,
     JointPositions,
     MotionCommand,
     MotionResult,
@@ -26,7 +31,11 @@ from ...core import (
     RobotCapabilities,
     RobotConnectionError,
     RobotMotionRejected,
+    active_decline,
+    resolve_camera_world,
+    stamp_result,
 )
+from ...core.camera_world import without_camera_world as _without_camera_world
 
 __all__ = ["DUMMY_CAPABILITIES", "DummyRobotArm"]
 
@@ -43,6 +52,9 @@ DUMMY_CAPABILITIES = RobotCapabilities(
     has_force_control=False,
     is_simulated=True,
 )
+
+#: Why every typed motion on the dummy says UNPLANNED.
+_NO_PLANNER = "DummyRobotArm has no planner"
 
 
 class DummyRobotArm(RobotArm):
@@ -144,14 +156,46 @@ class DummyRobotArm(RobotArm):
 
     # ---- motion ----
 
+    def without_camera_world(self, reason: str) -> AbstractContextManager[CameraWorldDecline]:
+        """Decline the camera world for every motion this arm commands inside the ``with`` block.
+
+        The dummy has no planner, so its typed motions say UNPLANNED whatever was declined. The
+        block is still accepted, so code that declines reads the same on a dummy as on a cell.
+        """
+        return _without_camera_world(self, reason)
+
+    def _camera_world(self, keyword: Maybe[CameraWorldDecline]) -> CameraWorldStamp:
+        """What stands behind a typed motion on the dummy: no planner, whatever was declined."""
+        return resolve_camera_world(
+            unplanned=_NO_PLANNER, missing=None, keyword=keyword, block=active_decline(self),
+        )
+
     def move_to_joints(
         self,
         joints: JointPositions,
         *,
         velocity: float | None = None,
         acceleration: float | None = None,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
-        """The typed joint move. The dummy carries no preflight, so it simply drives."""
+        """The typed joint move. The dummy carries no preflight, so it simply drives.
+
+        The result says UNPLANNED: the dummy has no planner.
+        """
+        stamp = self._camera_world(camera_world)
+        unstamped = self._move_to_joints_unstamped(
+            joints, velocity=velocity, acceleration=acceleration,
+        )
+        return stamp_result(unstamped, stamp)
+
+    def _move_to_joints_unstamped(
+        self,
+        joints: JointPositions,
+        *,
+        velocity: float | None = None,
+        acceleration: float | None = None,
+    ) -> MotionResult:
+        """The body of :meth:`move_to_joints`. It stamps nothing; the public verb does."""
         self.move_joint(joints, velocity=velocity, acceleration=acceleration)
         return MotionResult.executed(
             MotionCommand.MOVE_JOINTS, target_joints=joints, message="move_to_joints",
@@ -270,13 +314,22 @@ class DummyRobotArm(RobotArm):
         vel: float | None = None,
         acc: float | None = None,
         register: bool = True,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
         """The typed counterpart of :meth:`move_to`.
 
         This driver has no workspace box and no real controller, so a successful move
         always returns :attr:`MotionStatus.EXECUTED`. A connection or frame fault is
         reported as a typed failure rather than raised.
+
+        The result says UNPLANNED: the dummy has no planner, whatever ``camera_world``
+        declines.
         """
+        stamp = self._camera_world(camera_world)
+        return stamp_result(self._move_unstamped(pose), stamp)
+
+    def _move_unstamped(self, pose: Pose) -> MotionResult:
+        """The body of :meth:`move`. It stamps nothing; the public verb does."""
         if pose.frame is not Frame.BASE:
             return MotionResult.failed(
                 MotionStatus.INVALID_TARGET,

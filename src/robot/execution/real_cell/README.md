@@ -130,6 +130,16 @@ The artifact is keyed
 by `rig_id`, which is also its key in `fusion.cameras`, and that alignment is what lets
 `build_config_frame_resolvers` find the file.
 
+It builds the arm through `Robot.from_config(robot_config, gripper=None)`. The arm-vendor readiness
+gate runs first, and no gripper is built or connected: a Robotiq does not run its activation stroke
+beside the board, and a gripper this tree cannot build does not block a calibration. `--dry-run`
+prints the arm, the cell lock and the safety attestation, then stops without taking the lock. The
+sweep connects through `Robot.connected()`, which runs the enter and the exit this runner's pick runs
+use, so it takes the same cell lock as this runner and the operator console: while either holds the
+controller the sweep is refused and names the holder. On the way out the arm comes down and the lock
+is given back before the camera is. Every move declines the camera world with a reason naming the
+mounting, because the sweep produces the transform a camera world needs.
+
 Writing the artifact is half the job. Until the camera is listed in `grasping.fusion.cameras`,
 geometry fusion stands down to a single view and says so only in telemetry. The runner prints the
 exact YAML to paste.
@@ -140,8 +150,9 @@ exact YAML to paste.
 | `--marker-length-mm` | a wrong value scales every sample uniformly, so the solve converges and is uniformly wrong. Measure the printed board |
 | `--poses` | 22 by default. The orientation spread is widened because a planar marker viewed near-frontally has a pose-estimation flip ambiguity that ruins the `AX=XB` rotation |
 
-Exit codes: `0` done; `1` configuration refused; `2` it ran and produced no artifact, which is loud,
-and the cell keeps its previous calibration; `3` unexpected.
+Exit codes: `0` done; `1` configuration or build refused, the cell held by another process, or the
+connect refused; `2` it ran and produced no artifact, which is loud, and the cell keeps its previous
+calibration; `3` the sweep raised.
 
 ## Status
 

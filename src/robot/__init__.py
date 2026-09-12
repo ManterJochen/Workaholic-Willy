@@ -59,7 +59,7 @@ from .core import (
 # Lazy proxies for the concrete UR-facing names.
 # Each entry: attribute_name -> (relative_module, attribute_in_module).
 _LAZY: dict[str, tuple[str, str]] = {
-    "Robot": (".drivers.ur.arm", "URRobotArm"),
+    "Robot": (".execution", "Robot"),
     "URRobotArm": (".drivers.ur.arm", "URRobotArm"),
     "URConnection": (".drivers.ur", "URConnection"),
     "GripperController": (".grippers", "GripperController"),
@@ -121,7 +121,7 @@ __all__ = [
     "JointPositions",
     "MotionController",
     "PoseProvider",
-    # Lazy UR-facing facade + helpers
+    # The arm and the gripper as one noun (execution/robot.py)
     "Robot",
     # Vendor-neutral core
     "RobotArm",

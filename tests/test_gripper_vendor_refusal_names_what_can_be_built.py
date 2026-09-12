@@ -5,7 +5,7 @@ MEASURED 2026-09-09, before the repair: ``GripperVendor`` carried eight members 
 ENUM, so a typo was answered with ``robotiq, franka_hand, schunk, vacuum, jaw_io, onrobot, dummy,
 none``. ``franka_hand`` and ``schunk`` have no registered factory: a config that copies one of them
 out of that message passes schema validation, then falls through to the
-``SubstitutionReason.NO_DRIVER`` substitution in ``execution/runtime_pick.py`` and the cell comes up
+``SubstitutionReason.NO_DRIVER`` substitution in ``execution/robot_parts.py`` and the cell comes up
 with a ``NullGripper``. It connects, reports every pick a success, and holds nothing.
 
 The two names are deliberate reserved slots, so the fix is not to delete them. It is the split the

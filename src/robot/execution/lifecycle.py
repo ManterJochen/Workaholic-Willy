@@ -13,6 +13,10 @@ repeated.
 Teardown reports, it never raises, and it is never silent. ``except Exception: pass`` around a
 disconnect leaves a gripper that would not release with no trace anywhere. Every step's outcome is
 on :class:`TeardownReport` instead, so a caller that ignores it still cannot make it silent.
+
+``ConnectedCell`` holds a pick service and ``ConnectedRobot`` holds an arm and a gripper with no
+service. Both run the same enter and the same exit (``_bring_up`` and ``_take_down``), so a robot
+connected for calibration takes the lock and keeps the order a cell connected for a pick does.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from src.robot.constants import ROBOT_LOG_FILE, create_robot_logger
 
 __all__ = [
     "ConnectedCell",
+    "ConnectedRobot",
     "ConnectStage",
     "NoRealGripper",
     "StepOutcome",
@@ -285,6 +290,26 @@ def disconnect_cell(arm: Any, gripper: Any, service: Any = None) -> TeardownRepo
     return report
 
 
+def _bring_up(session: "ConnectedCell | ConnectedRobot") -> None:
+    """The one enter: take the lock, then :func:`connect_cell`, and give the lock back on a refusal."""
+    if session.lock is not None:
+        session.lock.acquire()
+    try:
+        connect_cell(session.arm, session.gripper, announce=session.announce)
+    except BaseException:
+        # `connect_cell` has already rolled the arm back; the lock is this object's to give up.
+        if session.lock is not None:
+            session.lock.release()
+        raise
+
+
+def _take_down(session: "ConnectedCell | ConnectedRobot", service: Any) -> None:
+    """The one exit: :func:`disconnect_cell`, its report kept on the session, then the lock."""
+    session.teardown = disconnect_cell(session.arm, session.gripper, service)
+    if session.lock is not None:
+        session.lock.release()
+
+
 @dataclass
 class ConnectedCell:
     """A connected cell, for the duration of a ``with`` block.
@@ -319,15 +344,7 @@ class ConnectedCell:
         return getattr(getattr(self.service, "runtime", None), "orchestrator", None)
 
     def __enter__(self) -> "ConnectedCell":
-        if self.lock is not None:
-            self.lock.acquire()
-        try:
-            connect_cell(self.arm, self.gripper, announce=self.announce)
-        except BaseException:
-            # `connect_cell` has already rolled the arm back; the lock is this object's to give up.
-            if self.lock is not None:
-                self.lock.release()
-            raise
+        _bring_up(self)
         return self
 
     def __exit__(
@@ -336,6 +353,41 @@ class ConnectedCell:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.teardown = disconnect_cell(self.arm, self.gripper, self.service)
-        if self.lock is not None:
-            self.lock.release()
+        _take_down(self, self.service)
+
+
+@dataclass
+class ConnectedRobot:
+    """An arm and its gripper, connected for the duration of a ``with`` block, with no pick service.
+
+        with ConnectedRobot(arm, gripper, lock=cell_lock) as live:
+            live.gripper.set_width_mm(40.0)
+        print(live.teardown.render())
+
+    The enter and the exit are the ones :class:`ConnectedCell` runs: the lock, the refusal of a
+    substituted gripper, the arm before the gripper, and the reverse on the way out. With no service
+    there is no camera to close, so the teardown reports perception as absent.
+    """
+
+    arm: Any
+    #: ``None`` for an arm-only robot, which connects the arm alone.
+    gripper: Any
+    #: Acquired before anything is touched and released after everything is down. ``None`` for a
+    #: robot that owns no controller.
+    lock: Any = None
+    #: Narration hook, forwarded to :func:`connect_cell`. See :class:`ConnectStage`.
+    announce: "Callable[[ConnectStage], None] | None" = None
+    #: Filled in on exit. ``None`` while the block is running.
+    teardown: TeardownReport | None = None
+
+    def __enter__(self) -> "ConnectedRobot":
+        _bring_up(self)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        _take_down(self, None)

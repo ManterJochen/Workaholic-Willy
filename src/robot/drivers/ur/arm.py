@@ -7,13 +7,19 @@ import re
 
 import numpy as np
 
+from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING
 
 from src.config.schema.robot import RobotConfig
+from src.contracts import UNSET, Maybe
 from src.geometry import Frame, FrameMismatchError, Pose
 from src.robot.constants import HOME_JOINTS_DEFAULT, UR_ARM_LOG_FILE, create_robot_logger
 from src.robot.core import (
+    DECLINE_ON_A_LIVE_WORLD_MESSAGE,
     NO_PLAN_FAIL_SAFE_MESSAGE,
+    CameraWorldDecline,
+    CameraWorldStamp,
+    CameraWorldUse,
     DigitalIOPort,
     JointPositions,
     MotionCommand,
@@ -29,8 +35,11 @@ from src.robot.core import (
     RobotStatus,
     SafetyMode,
     Wrench,
+    active_decline,
+    resolve_camera_world,
+    stamp_result,
 )
-from src.robot.grippers import GripperController
+from src.robot.core.camera_world import without_camera_world as _without_camera_world
 from src.robot.safety import SafetyPreflight
 from src.robot.safety._ur_kinematics import ur_series_twin
 from src.robot.safety.planning import CuroboPlanClient, CuroboUnavailableError
@@ -90,6 +99,13 @@ _UR_SAFETY_MODE: dict[int, SafetyMode] = {
     7: SafetyMode.ROBOT_EMERGENCY_STOP, 8: SafetyMode.VIOLATION, 9: SafetyMode.FAULT,
 }
 
+#: Why a cuRobo ``move`` says MISSING while no live camera world is wired to the arm.
+_UR_NO_LIVE_WORLD = "robot.ur.motion_planner is 'curobo' and no live camera world is wired to this arm"
+#: Why ``move_to_joints`` on a cuRobo arm says UNPLANNED: this driver plans no joint move.
+_UR_JOINT_MOVE_UNPLANNED = (
+    "move_to_joints sends one moveJ to the controller, and no planner plans a joint move on this driver"
+)
+
 
 class URRobotArm(RobotArm):
     """The UR-backed arm driver.
@@ -135,7 +151,6 @@ class URRobotArm(RobotArm):
             list(home_joints) if home_joints
             else list(config.home_joint_positions or HOME_JOINTS_DEFAULT)
         )
-        self._gripper = GripperController(config.gripper, ip=config.ur.ip)
         self._capabilities = ur_capabilities(config.ur.model)
         # The real-UR cuRobo binding. "ik", the default, uses the controller IK path.
         # "curobo" plans a collision-free trajectory through safety.planning and executes
@@ -814,6 +829,7 @@ class URRobotArm(RobotArm):
         vel: float | None = None,
         acc: float | None = None,
         register: bool = True,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
         """The typed counterpart of :meth:`move_to`.
 
@@ -824,7 +840,42 @@ class URRobotArm(RobotArm):
         ``CONTINUITY_REJECTED``, so a caller branches on the precise cause without
         scraping a log. A connection fault raised by the underlying bool path is caught
         and reported as :attr:`MotionStatus.CONNECTION_ERROR`.
+
+        The result says what stood behind the motion: UNPLANNED on the ik planner, and on cuRobo
+        DECLINED for a decline (``camera_world``, or :meth:`without_camera_world`), MISSING while
+        no live camera world is wired, UNSTATED once one is. A declined motion on an arm whose live
+        camera world is wired is refused with ``UNSUPPORTED`` before the planner is asked, because
+        the planner is handed that world before every plan and cannot set it aside for one motion.
         """
+        stamp = self._move_camera_world(camera_world)
+        if stamp.use is CameraWorldUse.DECLINED and self._live_world is not None:
+            return MotionResult.failed(
+                MotionStatus.UNSUPPORTED, MotionCommand.MOVE_TO, target_pose=pose,
+                message=DECLINE_ON_A_LIVE_WORLD_MESSAGE, camera_world=stamp,
+            )
+        unstamped = self._move_unstamped(pose, linear=linear, vel=vel, acc=acc, register=register)
+        return stamp_result(unstamped, stamp)
+
+    def _move_camera_world(self, keyword: Maybe[CameraWorldDecline]) -> CameraWorldStamp:
+        """What stands behind a ``move`` on this arm, read off the arm as it is now, never off config."""
+        curobo = self._motion_planner == "curobo"
+        return resolve_camera_world(
+            unplanned=None if curobo else f"robot.ur.motion_planner is {self._motion_planner!r}",
+            missing=None if self._live_world is not None else _UR_NO_LIVE_WORLD,
+            keyword=keyword,
+            block=active_decline(self),
+        )
+
+    def _move_unstamped(
+        self,
+        pose: Pose,
+        *,
+        linear: bool = False,
+        vel: float | None = None,
+        acc: float | None = None,
+        register: bool = True,
+    ) -> MotionResult:
+        """The body of :meth:`move`. It stamps nothing; the public verb does."""
         if pose.frame is not Frame.BASE:
             return MotionResult.failed(
                 MotionStatus.INVALID_TARGET,
@@ -1101,6 +1152,16 @@ class URRobotArm(RobotArm):
         if self._curobo_ur is not None:
             self._curobo_ur.set_live_world(world)
 
+    def without_camera_world(self, reason: str) -> AbstractContextManager[CameraWorldDecline]:
+        """Decline the camera world for every motion this arm commands inside the ``with`` block.
+
+        Bound to this arm alone (:func:`~src.robot.core.camera_world.without_camera_world`). A
+        decline reaches :meth:`move` on the cuRobo planner. Every other typed motion here plans
+        nothing and says UNPLANNED whatever was declined, and with a live camera world wired a
+        declined :meth:`move` is refused before planning.
+        """
+        return _without_camera_world(self, reason)
+
     def _self_link_origins_mm(self) -> "list[list[float]] | None":
         """Where this arm's own links are, in BASE millimetres, for taking the robot out of the view.
 
@@ -1230,8 +1291,35 @@ class URRobotArm(RobotArm):
         *,
         velocity: float | None = None,
         acceleration: float | None = None,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
-        """The typed joint move: gate the destination through the preflight, then drive."""
+        """The typed joint move: gate the destination through the preflight, then drive.
+
+        No planner plans a joint move on this driver, on either planner, so the result says
+        UNPLANNED whatever ``camera_world`` declines.
+        """
+        stamp = resolve_camera_world(
+            unplanned=(
+                _UR_JOINT_MOVE_UNPLANNED if self._motion_planner == "curobo"
+                else f"robot.ur.motion_planner is {self._motion_planner!r}"
+            ),
+            missing=None,
+            keyword=camera_world,
+            block=active_decline(self),
+        )
+        unstamped = self._move_to_joints_unstamped(
+            joints, velocity=velocity, acceleration=acceleration,
+        )
+        return stamp_result(unstamped, stamp)
+
+    def _move_to_joints_unstamped(
+        self,
+        joints: JointPositions,
+        *,
+        velocity: float | None = None,
+        acceleration: float | None = None,
+    ) -> MotionResult:
+        """The body of :meth:`move_to_joints`. It stamps nothing; the public verb does."""
         if self._preflight is not None:
             rejected = self._preflight.gate_joint_target(joints, arm=self)
             if rejected is not None:
@@ -1337,11 +1425,6 @@ class URRobotArm(RobotArm):
         the SafetyPreflight.
         """
         return self._motion
-
-    @property
-    def gripper(self) -> GripperController:
-        """Gripper controller instance."""
-        return self._gripper
 
     # ------------------------------------------------------------------
     # The optional capabilities: SupportsDigitalIO, SupportsForceTorque and

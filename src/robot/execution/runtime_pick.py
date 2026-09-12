@@ -28,21 +28,22 @@ Design notes
 
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, TYPE_CHECKING
 
 from src.robot.core import (
+    CameraWorldStamp,
     Gripper,
     MotionStatus,
     RobotArm,
     RobotCapabilities,
-    RobotVendor,
 )
+from src.robot.execution.robot_parts import build_gripper, resolve_arm
 from src.robot.grasping.motion.execution_policy import (
     GraspExecutionPolicy,
     PolicyReport,
+    weakest_camera_world,
 )
 from src.robot.grasping.types.feedback import GraspResult
 from src.robot.grasping.generation.calculator import GraspCalculator
@@ -57,7 +58,6 @@ from src.robot.grasping.loop.pick_loop import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover (import only for typing)
-    from src.config.schema.robot.tool_frame_schema import ToolFrameConfig
     # Telemetry carriers, referenced only from string-form field
     # annotations (PEP 563 ``from __future__ import annotations`` is in
     # effect at module top). Keeping the import behind ``TYPE_CHECKING``
@@ -74,75 +74,12 @@ if TYPE_CHECKING:  # pragma: no cover (import only for typing)
     )
     from src.robot.grasping.loop.pick_loop import CommitDecision
 
-    # Typing-only imports for the sim-config bridge below. Both are pure
-    # (Pydantic schema + a plain driver dataclass, no Isaac/vendor SDK), and live
-    # behind TYPE_CHECKING so the runtime import graph is unchanged.
-    from src.config.schema.robot.sim_schema import SimConfig
-    from src.robot.drivers.sim.config import SimRobotConfig
-
-
-_LOG = logging.getLogger(__name__)
 
 __all__ = [
     "PickSessionReport",
     "PickTimings",
     "RuntimePickService",
-    "build_sim_driver_config",
 ]
-
-
-def build_sim_driver_config(
-    schema_sim: "SimConfig", tool_frame: "ToolFrameConfig | None" = None
-) -> "SimRobotConfig":
-    """Convert a Pydantic ``SimConfig`` into the driver-side ``SimRobotConfig`` dataclass.
-
-    The single conversion point shared by ``RuntimePickService.from_robot_config`` and the
-    ``src.willy_sim`` runners (so the Pydantic config tree is the one source of truth for
-    the sim cell). Copies only the driver-relevant fields; the Pydantic-only scene-authoring extras
-    (``assets_root``/``gripper_variant``/``scene_setup``/camera mount+near-clip) are read directly
-    off the schema by willy_sim and intentionally do not cross into the lean driver dataclass.
-    """
-    from src.robot.drivers.sim.config import SimCameraConfig, SimRobotConfig
-
-    cameras: dict[str, SimCameraConfig] = {
-        name: SimCameraConfig(
-            prim_path=cam.prim_path,
-            mounting_mode=cam.mounting_mode,
-        )
-        for name, cam in schema_sim.cameras.items()
-    }
-    return SimRobotConfig(
-        backend=schema_sim.backend,
-        enabled=schema_sim.enabled,
-        mock_mode=schema_sim.mock_mode,
-        robot_model=schema_sim.robot_model,
-        scene=schema_sim.scene,
-        robot_prim_path=schema_sim.robot_prim_path,
-        gripper_prim_path=schema_sim.gripper_prim_path,
-        home_joint_positions=(
-            tuple(schema_sim.home_joint_positions)
-            if schema_sim.home_joint_positions is not None
-            else None
-        ),
-        cameras=cameras,
-        step_dt_s=schema_sim.step_dt_s,
-        settle_timeout_s=schema_sim.settle_timeout_s,
-        # One source of truth for flange->TCP: the gripper block the real drivers read too.
-        # There is no `robot.sim.tcp_offset_mm`: a scalar paired with a quaternion hardcoded in
-        # the sim driver would be two values for one transform, one of them invisible to config,
-        # which lets `gripper_mount` swap a gripper's width profile while the arm keeps the
-        # 2F-85's geometry (measured: EZU-35 8 mm out, EGU-50 17 mm).
-        tool_offset_mm=(
-            (float(tool_frame.offset_mm[0]), float(tool_frame.offset_mm[1]),
-             float(tool_frame.offset_mm[2])) if tool_frame is not None else (0.0, 0.0, 0.0)
-        ),
-        tool_rotation_quat_xyzw=(
-            (float(tool_frame.rotation_quat_xyzw[0]), float(tool_frame.rotation_quat_xyzw[1]),
-             float(tool_frame.rotation_quat_xyzw[2]), float(tool_frame.rotation_quat_xyzw[3]))
-            if tool_frame is not None else (0.0, 0.0, 0.0, 1.0)
-        ),
-        headless=schema_sim.headless,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +139,14 @@ class PickSessionReport:
     motion_message
         Free-text detail from the last :class:`MotionResult`, useful
         for surfacing controller-side rejection messages.
+    camera_worlds
+        One :class:`CameraWorldStamp` per typed motion of the last
+        policy call, in command order, threaded from
+        :attr:`PolicyReport.camera_worlds` and read weakest first through
+        :attr:`camera_world`. Stamps from an earlier attempt of the same
+        session survive only on :attr:`attempts` and in the progress
+        events. Empty for a legacy ``move_to`` driver and when no motion
+        was commanded.
     object_detected
         Threaded from :attr:`PolicyReport.object_detected`. :data:`None`
         when the gripper has no detection capability.
@@ -239,6 +184,7 @@ class PickSessionReport:
     selected_score: float = 0.0
     motion_status_chain: tuple[MotionStatus, ...] = ()
     motion_message: str = ""
+    camera_worlds: tuple[CameraWorldStamp, ...] = ()
     object_detected: Optional[bool] = None
     attempts: tuple[PickAttempt, ...] = ()
     executed_grasp: Optional[GraspResult] = None
@@ -276,6 +222,11 @@ class PickSessionReport:
         """Convenience flag: :data:`True` iff the grasp was executed."""
 
         return self.outcome is PickOutcome.EXECUTED
+
+    @property
+    def camera_world(self) -> CameraWorldStamp | None:
+        """The weakest stamp of :attr:`camera_worlds` (:func:`weakest_camera_world`)."""
+        return weakest_camera_world(self.camera_worlds)
 
 
 # ---------------------------------------------------------------------------
@@ -382,16 +333,19 @@ class RuntimePickService:
         the config names, because such an arm is a stand-in that drives no device of the configured
         vendor. A handle that advertises the configured vendor is that vendor's driver and still
         faces the gate, since constructing one proves nothing about the SDK (see the comment at the
-        gate).
+        gate in :func:`~src.robot.execution.robot_parts.resolve_arm`).
 
         A Robotiq is the one end-effector whose construction reads the arm rather than only the tree:
         it lives on the UR controller's tool I/O, so it is built only when the arm in hand reports
         vendor ``ur``, and against the controller address that arm was built with
         (``arm.config.ur.ip``) rather than against ``robot.ur.ip`` of the tree being picked with.
-        Whenever this method built the arm the two are the same object. See the comment on the branch.
+        Whenever this method built the arm the two are the same object. See the comment on the branch
+        in :func:`~src.robot.execution.robot_parts.build_gripper`.
 
         The vendor block in the schema is the single
-        source of truth: this method reads ``robot_cfg.vendor`` and
+        source of truth: this method reads ``robot_cfg.vendor`` and,
+        through :func:`~src.robot.execution.robot_parts.resolve_arm` and
+        :func:`~src.robot.execution.robot_parts.build_gripper`,
         dispatches to the matching driver factory via
         :func:`src.robot.drivers.create_arm` /
         :func:`src.robot.grippers.create_gripper`. For
@@ -423,300 +377,13 @@ class RuntimePickService:
             lifecycle.
         """
 
-        from src.robot.drivers import create_arm
-        from src.robot.grippers import (
-            GripperSubstitution,
-            SubstitutionReason,
-            create_gripper,
-        )
-        from src.robot.core import GripperVendor
-
-        vendor = RobotVendor.from_string(robot_cfg.vendor)
-
-        # Startup gate: fail early with a clear "host not ready for vendor X" message if the
-        # configured arm vendor's SDK is missing, instead of late inside connect(). Mock paths that
-        # drive no real device (the sim in mock_mode, the dummy) are skipped, so a host without the
-        # vendor SDK can still run them.
-        from src.robot.drivers.doctor import require_arm_vendor_ready
-
-        sim_mock = vendor is RobotVendor.SIM and bool(robot_cfg.sim.mock_mode)
-        # `arm is not None` used to count as mock mode, and the reason given for it is refuted.
-        # The claim was that a caller holding a constructed arm has already proved the SDK is there.
-        # Measured: `URRobotArm` constructs with no `ur_rtde` on the box, because the SDK import sits
-        # inside `connect()`, which is exactly what lets
-        # `tests/test_gripper_branch_reads_the_arm_in_hand.py` build a real UR arm in CI. So a handle
-        # proves only that `create_arm` will not run here; whether a real device gets driven is
-        # decided by what the arm is. An arm advertising another vendor is a stand-in and drives
-        # nothing of this one; an arm advertising this vendor is the driver, and its connect() still
-        # needs the SDK the gate is asking about.
-        #
-        # `RobotCapabilities.vendor`, not `isinstance` against a driver class: reading the class
-        # would import the vendor module (`isaacsim` for the sim) into the composition root, and
-        # `core/capabilities.py` says in as many words that pipeline code branches on these flags
-        # instead. Every driver already declares it (sim/arm.py `vendor="sim"`, ur/arm.py
-        # `vendor="ur"`), and the dataclass enforces the lower-case form the enum values use. Read
-        # through `getattr` the way `_capabilities` below already does: a partial double that
-        # implements no capabilities is not any vendor's driver, so it counts as a stand-in.
-        supplied_caps = getattr(arm, "capabilities", None)
-        supplied_arm_vendor = (
-            supplied_caps.vendor if isinstance(supplied_caps, RobotCapabilities) else None
-        )
-        stand_in_arm = arm is not None and supplied_arm_vendor != vendor.value
-        require_arm_vendor_ready(
-            vendor,
-            mock_mode=sim_mock or vendor is RobotVendor.DUMMY or stand_in_arm,
-        )
-
-        # --- Arm construction --------------------------------------------------
-        if arm is not None:
-            pass  # caller supplied a live handle; every other step still runs from config
-        elif vendor is RobotVendor.SIM:
-            arm = create_arm(
-                RobotVendor.SIM,
-                config=build_sim_driver_config(robot_cfg.sim, robot_cfg.gripper.tool_frame),
-            )
-        elif vendor is RobotVendor.DUMMY:
-            # Dummy arm ignores the config tree entirely.
-            arm = create_arm(RobotVendor.DUMMY)
-        else:
-            # UR, KUKA, etc. take the full schema config tree.
-            arm = create_arm(vendor, config=robot_cfg)
-
-        # --- Gripper construction ----------------------------------------------
-        #
-        # Five config combinations cannot produce a real end-effector, one per `SubstitutionReason`
-        # member. Resolving them to a working NullGripper and a log line is the most dangerous
-        # silent state in this build path: the cell connects, every pick reports success, the jaws
-        # close on nothing and lift nothing. `_substitute` below routes all five through one place
-        # that warns and records the reason on the object, so a caller sees it without parsing
-        # logs. A sixth case goes through it too.
-        gripper_cfg = robot_cfg.gripper
-
-        def _substitute(reason: SubstitutionReason, detail: str, fix: str) -> Gripper:
-            _LOG.warning("from_robot_config: %s Built a NullGripper (no real end-effector). %s",
-                         detail, fix)
-            return create_gripper(
-                GripperVendor.NONE,
-                min_width_mm=gripper_cfg.min_width_mm,
-                max_width_mm=gripper_cfg.max_width_mm,
-                substitution=GripperSubstitution(
-                    reason=reason, requested=str(gripper_cfg.vendor), detail=detail, fix=fix,
-                ),
-            )
-
-        substituted: Gripper | None = None
-        if gripper is not None:
-            # A live end-effector the config cannot describe (the Isaac gripper on a shared
-            # session). Skipping the block below also skips its NullGripper substitution, which is
-            # the point: the sim's `gripper.vendor: robotiq` on a `sim` arm would otherwise
-            # substitute a gripper that closes on nothing and reports success.
-            return cls.from_components(
-                arm=arm, calculator=calculator, perception=perception, gripper=gripper,
-                viewpoint_planner=viewpoint_planner, max_attempts=max_attempts,
-                grasp_sampling_mode=grasp_sampling_mode, dense_sampling=dense_sampling,
-                standoff_mm=standoff_mm, retreat_mm=retreat_mm, policy=policy,
-            )
-        try:
-            gripper_vendor = GripperVendor.from_string(gripper_cfg.vendor)
-        except ValueError:
-            # An unrecognised gripper.vendor string is a misconfig; tolerate it as "no gripper"
-            # (the facade stays usable) but warn instead of silently dropping the end-effector.
-            substituted = _substitute(
-                SubstitutionReason.UNKNOWN_VENDOR,
-                f"gripper.vendor={gripper_cfg.vendor!r} is not a gripper this stack knows.",
-                "Set gripper.vendor to one of: none, dummy, robotiq, vacuum, jaw_io, onrobot.",
-            )
-            gripper_vendor = GripperVendor.NONE
-
-        if gripper_vendor is GripperVendor.NONE:
-            # Either a cell that genuinely has no end-effector (substitution stays None, a legitimate
-            # configuration) or the unknown-vendor fallback above, which already built one with a reason.
-            gripper = substituted if substituted is not None else create_gripper(
-                GripperVendor.NONE,
-                min_width_mm=gripper_cfg.min_width_mm,
-                max_width_mm=gripper_cfg.max_width_mm,
-            )
-        elif gripper_vendor is GripperVendor.DUMMY:
-            gripper = create_gripper(
-                GripperVendor.DUMMY,
-                min_width_mm=gripper_cfg.min_width_mm,
-                max_width_mm=gripper_cfg.max_width_mm,
-            )
-        elif gripper_vendor is GripperVendor.ROBOTIQ:
-            # Robotiq lives on the UR controller's tool I/O, reached over a socket the URCap opens at
-            # that controller's address. Two separate facts have to hold, and until 2026-09-09 only
-            # the second was checked.
-            #
-            # Measured: this branch asked `robot_cfg.vendor` while an unrelated arm was in use. A
-            # supplied handle replaces the arm construction step, so from that point the config no
-            # longer describes the arm the cell runs on. A `DummyRobotArm` handed to the shipped
-            # `vendor: ur` tree produced arm=DummyRobotArm beside gripper=GripperController with
-            # substitution=None: a real Robotiq driver aimed at a real controller address, next to an
-            # arm holding no controller connection, and nothing on the built cell said so. The two
-            # I/O branches below never had that hole because they ask the handle
-            # (`isinstance(arm, SupportsDigitalIO)`), so this one now asks the handle too.
-            #
-            # The address comes off the arm as well, and that took no new config field.
-            # `URRobotArm.__init__` keeps the tree it was built from (`self.config = config`), so
-            # `arm.config.ur.ip` is the controller this arm talks to. The config half used to answer
-            # that question and answered it badly for a supplied arm: a tree naming another vendor
-            # leaves `robot.ur.ip` at the schema default 192.168.1.100, a plausible address on a real
-            # subnet that nobody chose, so a caller holding a genuine UR arm was refused instead of
-            # served. Read through `getattr` rather than by importing the UR driver: the execution
-            # layer has no import edge to a vendor driver today and this must not add one.
-            #
-            # When this method built the arm itself the two sources are the same object
-            # (`create_arm(RobotVendor.UR, config=robot_cfg)` hands `robot_cfg` straight to
-            # `URRobotArm`), so the shipped no-handle UR cell reads the address it always read.
-            arm_caps = getattr(arm, "capabilities", None)
-            arm_vendor = (
-                arm_caps.vendor if isinstance(arm_caps, RobotCapabilities) else "unknown"
-            )
-            arm_ip = getattr(getattr(getattr(arm, "config", None), "ur", None), "ip", None)
-            if arm_vendor != RobotVendor.UR.value:
-                # A config requesting Robotiq on a non-UR arm (notably the Isaac sim, whose `sim`
-                # profile sets gripper.vendor=robotiq + arm vendor=sim) cannot build a real gripper
-                # through from_robot_config. Warn instead of silently booting gripper-less; the sim
-                # builds its IsaacGripper via AutonomousGraspService.from_components (shared session).
-                gripper = _substitute(
-                    SubstitutionReason.ROBOTIQ_NEEDS_UR,
-                    f"gripper.vendor='robotiq' but the arm in hand reports vendor {arm_vendor!r}, "
-                    f"which is not a UR. A Robotiq lives on the UR controller's tool I/O, so an arm "
-                    f"that is not on such a controller cannot reach one.",
-                    "For the Isaac sim use AutonomousGraspService.from_components (the IsaacGripper "
-                    "needs the shared session). On a real cell, set robot.vendor: ur and either let "
-                    "this build the arm or hand in the UR arm you built yourself.",
-                )
-            elif not arm_ip:
-                # The other half of the same refusal, and it is stated separately because an operator
-                # cannot act on the two the same way. Falling back to `robot_cfg.ur.ip` here is the
-                # thing that must not happen: on a tree that names no UR that value is the schema
-                # default, and pointing a real driver at an address nobody chose is exactly what the
-                # config half was kept to prevent.
-                gripper = _substitute(
-                    SubstitutionReason.ROBOTIQ_NEEDS_UR,
-                    f"gripper.vendor='robotiq' and the arm in hand does report vendor "
-                    f"{RobotVendor.UR.value!r}, but it exposes no controller address: reading "
-                    f"arm.config.ur.ip off it found nothing. The Robotiq is reached over a socket on "
-                    f"that arm's controller, and robot.ur.ip in this tree ({robot_cfg.ur.ip!r}) "
-                    f"describes whatever the config names, not the arm that was handed in.",
-                    "Hand in an arm built from a config tree (URRobotArm keeps the one it was "
-                    "constructed with), or supply no arm at all and set robot.vendor: ur so this "
-                    "builds the arm from this tree and both halves come from the same place.",
-                )
-            else:
-                gripper = create_gripper(
-                    GripperVendor.ROBOTIQ,
-                    config=gripper_cfg,
-                    ip=str(arm_ip),
-                )
-        elif gripper_vendor is GripperVendor.VACUUM:
-            # Suction over the arm's digital I/O: no SDK, so it builds from config (the driver, its
-            # factory, the enum member and VacuumGripperConfig all ship). The arm must satisfy
-            # SupportsDigitalIO (the real UR driver does); anything else falls back to NullGripper + warn,
-            # mirroring the Robotiq-on-non-UR branch above rather than crashing at connect.
-            #
-            # Lifecycle contract: VacuumGripper.connect() immediately drives set_digital_output, and
-            # from_robot_config does not call arm.connect() (the caller owns the lifecycle). So a real
-            # cell must call arm.connect() before gripper.connect(), or the vacuum connect raises with no
-            # I/O behind it.
-            from src.robot.core import SupportsDigitalIO
-
-            if isinstance(arm, SupportsDigitalIO):
-                vac = gripper_cfg.vacuum
-                gripper = create_gripper(
-                    GripperVendor.VACUUM,
-                    io=arm,
-                    config=gripper_cfg,
-                    vacuum_output_pin=vac.vacuum_output_pin,
-                    blow_off_output_pin=vac.blow_off_output_pin,
-                    vacuum_ok_input_pin=vac.vacuum_ok_input_pin,
-                    io_port=vac.io_port,
-                    engage_timeout_s=vac.engage_timeout_s,
-                    blow_off_s=vac.blow_off_s,
-                    vacuum_on_below_mm=vac.vacuum_on_below_mm,
-                    min_width_mm=gripper_cfg.min_width_mm,
-                    max_width_mm=gripper_cfg.max_width_mm,
-                )
-            else:
-                gripper = _substitute(
-                    SubstitutionReason.VACUUM_NEEDS_DIGITAL_IO,
-                    f"gripper.vendor='vacuum' but the arm vendor {vendor.value!r} does not advertise "
-                    f"SupportsDigitalIO; suction switches the controller's digital I/O, which only "
-                    f"the real UR driver exposes.",
-                    "Set robot.vendor: ur for a real suction cell, or gripper.vendor: none.",
-                )
-        elif gripper_vendor is GripperVendor.JAW_IO:
-            # Parallel jaws over the arm's digital I/O: same story as suction directly above, same
-            # lifecycle contract (arm.connect() before gripper.connect(), because the driver touches
-            # the controller's I/O as soon as it connects), and the same fallback when the
-            # configured arm cannot switch a pin.
-            #
-            # This is the vendor for a gripper wired to the controller. A Robotiq is jaws too and
-            # is not this: it speaks a socket the URCap opens, which is why it has its own branch
-            # and its own failure mode.
-            from src.robot.core import SupportsDigitalIO
-
-            if isinstance(arm, SupportsDigitalIO):
-                jaw = gripper_cfg.jaw_io
-                gripper = create_gripper(
-                    GripperVendor.JAW_IO,
-                    io=arm,
-                    config=gripper_cfg,
-                    actuation=jaw.actuation,
-                    close_output_pin=jaw.close_output_pin,
-                    open_output_pin=jaw.open_output_pin,
-                    pulse_s=jaw.pulse_s,
-                    part_present_input_pin=jaw.part_present_input_pin,
-                    closed_confirm_input_pin=jaw.closed_confirm_input_pin,
-                    open_confirm_input_pin=jaw.open_confirm_input_pin,
-                    io_port=jaw.io_port,
-                    close_timeout_s=jaw.close_timeout_s,
-                    close_settle_s=jaw.close_settle_s,
-                    closed_below_mm=jaw.closed_below_mm,
-                    open_on_connect_without_feedback=jaw.open_on_connect_without_feedback,
-                    min_width_mm=gripper_cfg.min_width_mm,
-                    max_width_mm=gripper_cfg.max_width_mm,
-                )
-            else:
-                gripper = _substitute(
-                    SubstitutionReason.JAW_IO_NEEDS_DIGITAL_IO,
-                    f"gripper.vendor='jaw_io' but the arm vendor {vendor.value!r} does not advertise "
-                    f"SupportsDigitalIO; a solenoid jaw switches the controller's digital I/O, "
-                    f"which only the real UR driver exposes.",
-                    "Set robot.vendor: ur for a real I/O jaw cell, or gripper.vendor: none.",
-                )
-        elif gripper_vendor is GripperVendor.ONROBOT:
-            # A gripper vendor in the enum with no branch here falls into the `else` below: a
-            # `NullGripper` is substituted, a warning is logged, and the cell connects, reports
-            # every pick a success and holds nothing. Every new enum member needs its branch
-            # written here.
-            #
-            # There is no `SupportsDigitalIO` precondition, unlike the two I/O branches, and none
-            # is missing: a Compute Box is a separate device on its own network address, so this
-            # gripper has no dependency on the arm vendor at all. That is also why `host` comes from
-            # the gripper's own config and not from `robot.ur.ip` the way the Robotiq branch does.
-            rg = gripper_cfg.onrobot
-            gripper = create_gripper(
-                GripperVendor.ONROBOT,
-                config=gripper_cfg,
-                host=rg.host,
-                port=rg.port,
-                unit=rg.unit_id,
-                default_force_n=rg.default_force_n,
-                use_fingertip_offset=rg.use_fingertip_offset,
-            )
-        else:  # pragma: no cover (future vendors)
-            # A recognised gripper vendor with no registered driver (FRANKA_HAND, schunk, future)
-            # falls back to NullGripper; warn so a config-only build is not silently gripper-less.
-            gripper = _substitute(
-                SubstitutionReason.NO_DRIVER,
-                f"gripper.vendor={gripper_vendor.value!r} is a recognised name with no driver in this "
-                f"repo.",
-                "Use robotiq, vacuum, jaw_io or onrobot, or write the driver and register it in "
-                "grippers/registry.py.",
-            )
-
+        arm = resolve_arm(robot_cfg, arm=arm)
+        # A supplied gripper is a live end-effector the config cannot describe (the Isaac gripper
+        # on a shared session). Skipping the builder also skips its NullGripper substitution,
+        # which is the point: the sim's `gripper.vendor: robotiq` on a `sim` arm would otherwise
+        # substitute a gripper that closes on nothing and reports success.
+        if gripper is None:
+            gripper = build_gripper(robot_cfg, arm=arm)
         return cls.from_components(
             arm=arm,
             calculator=calculator,
@@ -760,7 +427,7 @@ class RuntimePickService:
     ) -> PickSessionReport:
         capabilities = self._capabilities()
         policy_report = self.orchestrator._last_policy_report  # noqa: SLF001
-        chain, message, object_detected, error = self._extract_policy_fields(
+        chain, message, object_detected, error, camera_worlds = self._extract_policy_fields(
             policy_report,
         )
 
@@ -784,6 +451,7 @@ class RuntimePickService:
             selected_score=selected_score,
             motion_status_chain=chain,
             motion_message=message,
+            camera_worlds=camera_worlds,
             object_detected=object_detected,
             attempts=pick_report.attempts,
             executed_grasp=pick_report.executed_grasp,
@@ -815,7 +483,10 @@ class RuntimePickService:
     @staticmethod
     def _extract_policy_fields(
         policy_report: PolicyReport | None,
-    ) -> tuple[tuple[MotionStatus, ...], str, bool | None, BaseException | None]:
+    ) -> tuple[
+        tuple[MotionStatus, ...], str, bool | None, BaseException | None,
+        tuple[CameraWorldStamp, ...],
+    ]:
         """Pull the typed motion fields off the orchestrator's last policy report.
 
         The orchestrator stores only the most recent policy report,
@@ -825,10 +496,14 @@ class RuntimePickService:
         one :class:`PolicyReport` per session, and its
         :attr:`PolicyReport.motion_status` is the canonical chain
         entry.
+
+        The camera-world stamps share that limit: they are the last
+        policy call's. An earlier attempt's weakest stamp survives on its
+        :class:`PickAttempt` and in its progress event.
         """
 
         if policy_report is None:
-            return (), "", None, None
+            return (), "", None, None, ()
 
         chain: tuple[MotionStatus, ...]
         if policy_report.motion_status is None:
@@ -841,6 +516,7 @@ class RuntimePickService:
             policy_report.motion_message,
             policy_report.object_detected,
             policy_report.error,
+            tuple(policy_report.camera_worlds),
         )
 
     @staticmethod

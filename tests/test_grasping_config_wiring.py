@@ -655,7 +655,7 @@ class FromRobotConfigRecordLoggingTests(unittest.TestCase):
 class FromRobotConfigGripperFallbackWarnsTests(unittest.TestCase):
     """H0.3a — from_robot_config WARNS (not silently) when it falls back to a NullGripper."""
 
-    _LOGGER = "src.robot.execution.runtime_pick"
+    _LOGGER = "src.robot.execution.robot_parts"
 
     @staticmethod
     def _cfg(gripper_vendor: str) -> RobotConfig:

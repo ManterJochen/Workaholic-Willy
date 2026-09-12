@@ -15,6 +15,7 @@ from src.robot.execution.runtime_pick import PickSessionReport
 from src.robot.grasping.decision import DecisionReport
 from src.robot.grasping.multiview.fusion import FusionTelemetry
 from src.robot.grasping.loop.pick_loop import PickOutcome
+from src.robot.grasping.motion.execution_policy import weakest_camera_world
 from src.robot.grasping.rl.router import ShadowRouterTelemetry
 from src.robot.grasping.scoring.success_probability import (
     RankingBlendTelemetry,
@@ -320,6 +321,11 @@ class AutonomousGraspReport:
 
         The failure line is :meth:`failure_summary`, not a second lookup, so the CLI and the
         console give one answer.
+
+        The camera line is printed on every attempt for the same reason as the layers line: how many
+        typed motions a current camera world vouched for, and the weakest stamp, read through
+        :func:`~src.robot.grasping.motion.execution_policy.weakest_camera_world`. When no typed
+        motion was commanded it says so rather than going missing.
         """
         pick = self.pick_report
         head = f"  outcome    {str(self.outcome).upper():<28} mode={self.mode}"
@@ -338,6 +344,15 @@ class AutonomousGraspReport:
                 + (f", executed #{chosen} at score {getattr(pick, 'selected_score', 0.0):.3f}"
                    if chosen is not None else ", none executed")
             )
+        stamps = tuple(getattr(pick, "camera_worlds", ()) or ())
+        weakest = weakest_camera_world(stamps)
+        if weakest is None:
+            lines.append("  camera     no typed motion was commanded")
+        else:
+            vouched = sum(1 for stamp in stamps if stamp.vouched)
+            lines.append(
+                f"  camera     {vouched} of {len(stamps)} motion(s) vouched; {weakest.render()}"
+            )
         ran = self.layers_that_ran()
         lines.append(f"  layers     {', '.join(ran) if ran else '(none)'}")
         return "\n".join(lines)
@@ -354,6 +369,8 @@ class AutonomousGraspReport:
         it would make this dict far larger than the attempt it describes.
         """
         pick = self.pick_report
+        stamps = tuple(getattr(pick, "camera_worlds", ()) or ())
+        weakest = weakest_camera_world(stamps)
         return {
             "outcome": str(self.outcome),
             "mode": str(self.mode),
@@ -366,6 +383,8 @@ class AutonomousGraspReport:
             "candidate_count": getattr(pick, "candidate_count", 0),
             "target_index": getattr(pick, "target_index", None),
             "selected_score": float(getattr(pick, "selected_score", 0.0) or 0.0),
+            "camera_worlds": [stamp.to_dict() for stamp in stamps],
+            "camera_world": weakest.to_dict() if weakest is not None else None,
             "uncertainty": self.uncertainty.to_dict(),
             "decision": self.decision.to_dict() if self.decision is not None else None,
             "recovery_actions": [dict(action) for action in self.recovery_actions],

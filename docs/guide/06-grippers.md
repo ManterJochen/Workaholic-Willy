@@ -249,18 +249,20 @@ state. Wire nothing and you get no measurement, only a politer restatement of wh
 ## 6. From Python
 
 Every gripper satisfies the same vendor-neutral `Gripper` Protocol, so a caller that holds one does
-not know which of the six it has:
+not know which of the six it has. `Robot` builds the arm and the gripper your config names, with no
+pick service around them, and connects them in the order a cell connects:
 
 ```python
-from src.config import load_robot_config
-from src.robot.execution.cell import Cell
+from src.config import load_robot_section
+from src.robot.execution.robot import Robot
 
-cell = Cell.from_robot_config(load_robot_config())
-cell.build()
-with cell.connected() as live:
-    gripper = live.service.runtime.orchestrator.gripper
-    gripper.set_width_mm(40.0)
+robot = Robot.from_config(load_robot_section())
+with robot.connected() as live:          # lock, arm, then gripper
+    live.gripper.set_width_mm(40.0)
 ```
+
+A gripper that had to be substituted is refused at `connected()` rather than connected, as the cell
+refuses it. `Robot.from_config(..., gripper=None)` builds the arm alone.
 
 The bench is a noun too, and its interlock is not optional:
 

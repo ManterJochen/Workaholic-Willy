@@ -72,8 +72,11 @@ python -m src.config
 python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --dry-run
 ```
 
-`--dry-run` builds the arm, opens exactly that one rig through `FrameProvider.rig`, prints whether
-the camera answered with intrinsics, and stops before any motion. For the detector and segmenter on
+`--dry-run` runs the arm-vendor readiness gate, builds the arm alone with no gripper, opens exactly
+that one rig through `FrameProvider.rig`, and prints the arm, the cell lock the sweep will take,
+whether the camera answered with intrinsics, and what the arm's safety pipeline refuses. Then it
+stops, before any motion and without taking the lock. On a host without the arm vendor's SDK it
+refuses at the build, as a pick run on the same tree does. For the detector and segmenter on
 real frames with no robot:
 
 ```bash
@@ -157,9 +160,18 @@ python -m src.robot.execution.real_cell.calibrate \
     --rig realsense_d435 --mode eye_to_hand --poses 22 --marker-length-mm 49.6
 ```
 
+It takes the cell lock before the arm is commanded. That is the lock a pick run and the operator
+console take for the same controller, so while either holds the cell the sweep exits `1` and names
+the holder: end the console's session first. Then it connects the arm alone. No gripper is built or
+activated, so a Robotiq does not run its activation stroke beside the board. On the way out the arm
+comes down and the lock is given back before the camera is, and the teardown is printed.
+
 Per pose: move, settle, read the actual TCP pose with `arm.get_tcp_pose()`, grab a frame, detect the
 marker, offer the pair to the calibrator. A sample is kept only if it beats `min_distance_mm` or
-`min_angle` against every stored sample, and a refused move or a missing marker drops it too.
+`min_angle` against every stored sample, and a refused move or a missing marker drops it too. Every
+move declines the camera world, because the sweep is what produces the transform a camera world
+needs: on a cuRobo cell each move's result says `DECLINED` with the mounting's reason instead of
+`MISSING`.
 
 **On a UR, `get_tcp_pose()` is the controller's reported actual TCP, not a pose this code derives.**
 So the TCP offset configured in PolyScope determines every `A_i` the solver sees. Get that offset
@@ -174,8 +186,9 @@ the sample dataset under `calibration/real` unless `--out` says otherwise, and p
 `fusion.geometry.enabled` nor the top-level `extrinsics_artifact_path`, and without them the map is
 ignored without a word. Paste it, then add the rest from section 7.
 
-Exit codes: `0` done, `1` configuration refused, `2` it ran but wrote no artifact, `3` unexpected.
-Exit `2` is loud on purpose, because the cell then keeps whatever calibration it had.
+Exit codes: `0` done, `1` configuration or build refused, the cell held by another process, or the
+connect refused, `2` it ran but wrote no artifact, `3` the sweep raised. Exit `2` is loud on purpose,
+because the cell then keeps whatever calibration it had.
 
 ## 6. Read the residual honestly
 

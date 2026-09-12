@@ -175,11 +175,10 @@ payload.
 **Both real drivers build their own `SafetyPreflight` from config in `__init__`.** `DummyRobotArm`
 carries none and simply drives: fine for tests, never for anything with a motor.
 
-One more thing about a UR: `URRobotArm.__init__` always constructs a Robotiq `GripperController` from
-`config.gripper` and exposes it as `arm.gripper`, whatever `gripper.vendor` says. It is inert, since
-`connect()` does not connect it and nothing in the pick path touches the property, but do not read "I
-set a different vendor" as "there is no Robotiq object here". The gripper the cell actually uses comes
-from `create_gripper` on the composition path.
+One more thing about a UR: `URRobotArm` is the arm alone and builds no gripper, so it has no
+`gripper` property. The end-effector a UR cell drives is the one `build_gripper` in
+`execution/robot_parts.py` builds from `gripper.vendor`, so a cell configured for suction or for I/O
+jaws holds no Robotiq object anywhere, and a Robotiq cell holds exactly one `GripperController`.
 
 ### 2.4 The multi-robot key registry
 

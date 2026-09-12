@@ -46,7 +46,7 @@ grip = IsaacGripper(session=arm.session, gripper_prim_path=cfg.gripper_prim_path
 grip.connect()
 ```
 
-`build_sim_driver_config` in `execution/runtime_pick.py` translates the Pydantic `SimConfig` into a
+`build_sim_driver_config` in `execution/robot_parts.py` translates the Pydantic `SimConfig` into a
 `SimRobotConfig`. The end-to-end picks and calibrations live under
 [`willy_sim`](../../../willy_sim/README.md) as `run_m1_pick`, `run_m2_pick`, `run_eih_pick`,
 `run_eth_calibrate` and `run_eih_calibrate`, among others. This package has no `python -m` entry.

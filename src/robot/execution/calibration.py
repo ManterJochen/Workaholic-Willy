@@ -20,6 +20,15 @@ When all poses are processed the calibrator solves for ``T_cam_to_base``
 validated. Both metrics (RMSE, max error) are carried on
 :class:`CalibrationResult`.
 
+Camera world
+------------
+A sweep produces the transform a camera world is built with, so its moves
+cannot plan against one. Every move runs inside
+:func:`~src.robot.core.camera_world.without_camera_world` for the
+routine's arm, with one reason per mounting unless the caller passes
+``camera_world=``, and :attr:`CalibrationResult.camera_worlds` carries the
+stamp of each move.
+
 Vendor neutrality
 -----------------
 This module commands motion exclusively through the vendor-neutral
@@ -59,10 +68,12 @@ from src.calibration import (
 )
 from src.calibration.stereo.manager import StereoCam3D
 from src.camera.orchestration import FrameProvider
+from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Pose, Transform
 from src.geometry.adapters.matrix import pose_to_matrix
 from src.robot.constants import ROBOT_LOG_DIR, ROBOT_LOG_FILE
-from src.robot.core import MotionStatus, RobotArm
+from src.robot.core import CameraWorldDecline, CameraWorldStamp, MotionStatus, RobotArm
+from src.robot.core.camera_world import without_camera_world
 from src.robot.events import RobotCalibrationEvent, RobotCalibrationEventListener
 from src.robot.execution.pose_provider import PoseProvider
 from src.robot.safety.workspace import WorkspaceGuard
@@ -76,6 +87,23 @@ EyeHandCalibrator: TypeAlias = EyeToHandCalibrator | EyeInHandCalibrator
 #: but injecting a ``marker_source`` (e.g. a sim Isaac-camera ArUco/ground-truth source) overrides
 #: it so the same orchestration drives real-stereo, sim, or any other marker pipeline.
 MarkerPoseProvider: TypeAlias = Callable[[], Optional[np.ndarray]]
+
+#: The camera-world decline a sweep runs under when its caller states none, one per mounting. A
+#: hand-eye sweep produces the transform a camera world is built with, so no camera world can stand
+#: behind the sweep's own motions, and each motion's result says so.
+_SWEEP_DECLINES: dict[MountingMode, CameraWorldDecline] = {
+    MountingMode.EYE_TO_HAND: CameraWorldDecline(
+        "eye-to-hand calibration: this sweep produces the CAMERA to BASE transform a camera "
+        "world needs"
+    ),
+    MountingMode.EYE_IN_HAND: CameraWorldDecline(
+        "eye-in-hand calibration: the CAMERA to TOOL transform is being solved"
+    ),
+}
+#: The decline of a routine built without ``__init__``, whose mounting nobody set.
+_SWEEP_DECLINE_UNSET_MOUNTING = CameraWorldDecline(
+    "hand-eye calibration: this sweep produces the transform a camera world is built with"
+)
 
 
 @dataclass
@@ -105,6 +133,10 @@ class CalibrationResult:
         :meth:`EyeHandCalibrationResult.to_extrinsics`. ``None`` in
         eye-in-hand mode, and when the result is built directly from
         ndarrays.
+    camera_worlds : tuple of CameraWorldStamp
+        What stood behind each move the sweep commanded: one stamp per
+        move in command order, rejected moves included. A move that raised
+        returned no result and has no stamp.
     """
 
     T_cam_to_base: np.ndarray | None
@@ -116,6 +148,7 @@ class CalibrationResult:
     T_cam_to_tool: np.ndarray | None = None
     transform: Transform | None = None
     mode: CalibrationMode = MountingMode.EYE_TO_HAND
+    camera_worlds: tuple[CameraWorldStamp, ...] = ()
 
 
 class CalibrationRoutine:
@@ -172,7 +205,20 @@ class CalibrationRoutine:
         ``EyeInHandWorkflowConfig``, because a plain
         :class:`EyeHandRoutineConfig` declares no ``mode`` and the
         fallback is ``MountingMode.EYE_IN_HAND``.
+    camera_world : CameraWorldDecline, keyword only
+        The decline every move of the sweep runs under. Left unset, the
+        mounting's own: the sweep produces the transform a camera world
+        needs, so no camera world can stand behind its moves. On an arm
+        that plans with cuRobo each move then says DECLINED with this
+        reason, and an arm whose live camera world is wired refuses a
+        declined planned move. A move no planner plans says UNPLANNED.
     """
+
+    #: The decline the sweep's moves run under. ``__init__`` sets it from the caller or the
+    #: mounting; this value serves a routine built without ``__init__``.
+    _camera_world: CameraWorldDecline = _SWEEP_DECLINE_UNSET_MOUNTING
+    #: One stamp per move commanded since the run began, in command order.
+    _camera_worlds: tuple[CameraWorldStamp, ...] = ()
 
     def __init__(
         self,
@@ -189,9 +235,17 @@ class CalibrationRoutine:
         on_event: RobotCalibrationEventListener | None = None,
         calibration_mode: CalibrationMode | str | None = None,
         marker_source: MarkerPoseProvider | None = None,
+        *,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
     ):
         if arm is None:
             raise ValueError("CalibrationRoutine requires arm=RobotArm.")
+        if chosen(camera_world) and not isinstance(camera_world, CameraWorldDecline):
+            raise TypeError(
+                f"camera_world is a CameraWorldDecline, not {camera_world!r}; pass "
+                f"CameraWorldDecline('why this sweep needs no camera world'), or leave it unset "
+                f"for the mounting's own"
+            )
         # The marker comes either from a stereo provider+ArUco pipeline or from an injected
         # marker_source (e.g. the Isaac sim). Require the stereo pair only when no source is given.
         if marker_source is None and (provider is None or stereo is None):
@@ -238,6 +292,7 @@ class CalibrationRoutine:
         self.marker_id = marker_id
         self.settle_time_s = max(0.0, float(settle_time_s))
         self.calibration_mode = selected_mode
+        self._camera_world = camera_world if chosen(camera_world) else _SWEEP_DECLINES[selected_mode]
 
     @staticmethod
     def _build_calibrator(
@@ -333,6 +388,7 @@ class CalibrationRoutine:
 
         accepted = 0
         total = len(poses)
+        self._camera_worlds = ()
         for i, pose in enumerate(poses):
             idx = i + 1
             self.logger.info("=== Pose %d/%d '%s' ===", idx, total, pose.label)
@@ -433,6 +489,7 @@ class CalibrationRoutine:
                 extrinsics=extrinsics,
                 transform=transform,
                 mode=self.calibration_mode,
+                camera_worlds=self._camera_worlds,
             )
 
         T_cam_to_tool = transform.to_matrix()
@@ -450,6 +507,7 @@ class CalibrationRoutine:
             extrinsics=None,
             transform=transform,
             mode=self.calibration_mode,
+            camera_worlds=self._camera_worlds,
         )
 
     # ------------------------------------------------------------------
@@ -468,27 +526,38 @@ class CalibrationRoutine:
         and ``max_acceleration`` are commanded through
         ``RobotArm.move(vel=, acc=)``; without them the driver default
         speed applies.
+
+        The move runs inside the sweep's camera-world decline, bound to this
+        routine's arm, and its stamp is kept for ``CalibrationResult``. A
+        result that carries no stamp counts as UNSTATED, because nothing
+        said what stood behind it. A rejection is logged with the stamp.
         """
         if not isinstance(pose, Pose):
             raise TypeError(
                 f"CalibrationRoutine requires Pose targets; got {type(pose).__name__}."
             )
-        if self._motion_limits is not None:
-            result = self.arm.move(
-                pose,
-                register=False,
-                vel=self._motion_limits.max_velocity,
-                acc=self._motion_limits.max_acceleration,
-            )
-        else:
-            result = self.arm.move(pose, register=False)
+        with without_camera_world(self.arm, self._camera_world.reason):
+            if self._motion_limits is not None:
+                result = self.arm.move(
+                    pose,
+                    register=False,
+                    vel=self._motion_limits.max_velocity,
+                    acc=self._motion_limits.max_acceleration,
+                )
+            else:
+                result = self.arm.move(pose, register=False)
+        stamp = getattr(result, "camera_world", None)
+        if not isinstance(stamp, CameraWorldStamp):
+            stamp = CameraWorldStamp.unstated()
+        self._camera_worlds = (*self._camera_worlds, stamp)
         if result.status is MotionStatus.EXECUTED:
             return True
         self.logger.warning(
-            "Move to '%s' rejected: status=%s message=%s",
+            "Move to '%s' rejected: status=%s message=%s; %s",
             pose.label or "<unlabeled>",
             result.status.value,
             result.message or "<no detail>",
+            stamp.render(),
         )
         return False
 

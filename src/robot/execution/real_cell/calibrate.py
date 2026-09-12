@@ -16,19 +16,28 @@ It follows the simulated runner's path: the same `CalibrationRoutine`, the same 
 
 * the marker comes from `RGBDArucoMarkerSource` on a live RGB-D rig instead of simulated ground
   truth,
-* the arm is the configured vendor driver instead of a simulated one,
+* the arm is the configured vendor driver, built alone through
+  `Robot.from_config(robot_config, gripper=None)`, instead of a simulated one,
 * and the frames come from `FrameProvider.rig(rig_id)`, so this holds exactly one camera and gives
   it back, the same seam the pick path uses.
 
 This moves the robot. `run_auto` drives the arm to N generated poses. `--check` validates everything
-and touches nothing; `--dry-run` additionally builds the arm and opens the camera but never commands
-a motion. Run both before the first live sweep.
+and touches nothing. `--dry-run` additionally runs the arm-vendor readiness gate, builds the arm,
+opens the camera and prints what the arm's safety pipeline refuses, but takes no lock and never
+commands a motion. Run both before the first live sweep.
+
+The sweep connects through `Robot.connected()`. The cell lock comes first, the lock a pick run and
+the operator console take for the same controller, so a sweep is refused while either holds it and
+is told who does. Then the arm, and no gripper: a sweep beside a board needs no activation stroke,
+and a gripper this tree cannot build must not stand in the way of calibrating a camera. On the way
+out the arm comes down, the lock is given back, and then the camera. Every move of the sweep
+declines the camera world, because the sweep is what produces the transform a camera world needs.
 
 The routine and the solve are exercised in simulation only. The ArUco marker source has never seen
 a physical D435, and nothing here has run against a physical controller.
 
-Exit codes: 0 success; 1 configuration refused; 2 the calibration ran but did not produce an
-artifact; 3 unexpected error.
+Exit codes: 0 success; 1 configuration refused, build refused, the cell held by another process, or
+the connect refused; 2 the calibration ran but did not produce an artifact; 3 the sweep raised.
 """
 
 from __future__ import annotations
@@ -187,18 +196,21 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
         return _EXIT_OK
 
     # ---- 2. Build -------------------------------------------------------------------------------
-    print("\n=== 2. BUILD === arm driver + one camera", flush=True)
-    provider = handle = arm = None
+    print("\n=== 2. BUILD === the arm alone, and one camera", flush=True)
+    provider = handle = None
     try:
         import numpy as np
 
         from src.calibration.rgbd_marker_source import RGBDArucoMarkerSource
         from src.camera.orchestration.frame_provider import FrameProvider
         from src.calibration.eye_hand import MountingMode
-        from src.robot.drivers import create_arm
         from src.robot.execution.calibration import CalibrationRoutine
+        from src.robot.execution.robot import Robot
 
-        arm = create_arm(robot_cfg.vendor, config=robot_cfg)
+        # The arm through the builder a pick run uses, so the arm-vendor readiness gate runs first.
+        # `gripper=None` builds no gripper: a sweep needs none, and one this tree cannot build is
+        # not a reason to refuse calibrating a camera.
+        robot = Robot.from_config(robot_cfg, gripper=None)
         # Through the frame provider, and it opens exactly one rig. A calibration sweep that
         # claimed every configured camera would fight the console for devices it does not need.
         provider = FrameProvider(list(cfg.camera.cameras.rigs))
@@ -210,7 +222,7 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
         )
         calibration = robot_cfg.calibration
         routine = CalibrationRoutine(
-            arm=arm, marker_source=marker_source,
+            arm=robot.arm, marker_source=marker_source,
             workspace_limits=robot_cfg.workspace_limits, eth_settings=settings,
             rig_id=rig.rig_id, marker_id=args.marker_id,
             settle_time_s=calibration.settle_time_s,
@@ -219,7 +231,12 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
             on_event=lambda evt, data: print(
                 f"  [{evt}] {data.get('reason', data.get('accepted', ''))}", flush=True),
         )
-        print(f"  arm      {type(arm).__name__}", flush=True)
+        gripper = ("none, the sweep connects the arm alone" if robot.gripper is None
+                   else type(robot.gripper).__name__)
+        print(f"  arm      {type(robot.arm).__name__}", flush=True)
+        print(f"  gripper  {gripper}", flush=True)
+        print(f"  lock     {robot.lock_key or 'none, this arm drives no controller of its own'}",
+              flush=True)
         print(f"  camera   {handle!r} intrinsics={'yes' if handle.get_intrinsics() is not None else 'NO'}",
               flush=True)
     except Exception as exc:  # noqa: BLE001 (a build refusal is the designed outcome)
@@ -227,6 +244,9 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
         if handle is not None:
             handle.release()
         return _EXIT_CONFIG
+    # What this arm will refuse, read off the built arm and printed above the --dry-run exit,
+    # because that is the question a dry run is asked.
+    print(robot.safety().render(), flush=True)
 
     if args.dry_run:
         print("\n--dry-run: built cleanly and the camera answered. Stopping before any motion.",
@@ -236,32 +256,57 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
 
     # ---- 3. Sweep -------------------------------------------------------------------------------
     print("\n=== 3. SWEEP === the robot moves now, keep hands clear", flush=True)
-    try:
-        from pathlib import Path
+    from pathlib import Path
 
-        arm.connect()
-        Path(out_dir).mkdir(parents=True, exist_ok=True)
-        result = routine.run_auto(
-            args.poses,
-            # Tool down, so a board lying face-up on the table faces the fixed camera. The spread
-            # is the config's, floored at 30 deg: a planar ArUco viewed near-frontally has an IPPE
-            # flip ambiguity that ruins the AX=XB rotation, and a narrow spread never breaks it.
-            base_orientation=[float(np.pi), 0.0, 0.0],
-            orientation_spread_deg=max(30.0, float(calibration.orientation_spread_deg)),
-            max_attempts_per_pose=calibration.max_attempts_per_pose,
-            seed=0,
-            dataset_save_path=f"{out_dir}/{args.mode}_{rig.rig_id}_dataset.json",
-        )
-    except Exception as exc:  # noqa: BLE001 (report and tear down; never leave a live arm)
-        print(f"[sweep] FAILED: {type(exc).__name__}: {exc}", flush=True)
-        return _EXIT_ERROR
+    from src.robot.execution.cell_lock import CellBusy
+    from src.robot.execution.lifecycle import ConnectStage
+
+    def _narrate(stage: ConnectStage) -> None:
+        """The bench wording. `lifecycle` owns the order; this file owns how it reads."""
+        if stage is ConnectStage.ARM_CONNECTED:
+            print("  arm connected, and no gripper: the sweep drives the arm alone", flush=True)
+
+    # The lock, the connect and the teardown are `Robot.connected()`, the enter and the exit a pick
+    # run uses, so this file writes no connect or disconnect of its own. A refused connect is
+    # answered before the sweep starts; a sweep that raises is reported once the arm is down.
+    failure: Exception | None = None
+    try:
+        with robot.connected(announce=_narrate) as live:
+            try:
+                Path(out_dir).mkdir(parents=True, exist_ok=True)
+                result = routine.run_auto(
+                    args.poses,
+                    # Tool down, so a board lying face-up on the table faces the fixed camera. The
+                    # spread is the config's, floored at 30 deg: a planar ArUco viewed
+                    # near-frontally has an IPPE flip ambiguity that ruins the AX=XB rotation, and a
+                    # narrow spread never breaks it.
+                    base_orientation=[float(np.pi), 0.0, 0.0],
+                    orientation_spread_deg=max(30.0, float(calibration.orientation_spread_deg)),
+                    max_attempts_per_pose=calibration.max_attempts_per_pose,
+                    seed=0,
+                    dataset_save_path=f"{out_dir}/{args.mode}_{rig.rig_id}_dataset.json",
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Reported below, once the arm is down.
+                failure = exc
+    except CellBusy as exc:
+        # Another process holds this controller, and nothing was commanded.
+        print(f"[connect] REFUSED: {exc}", flush=True)
+        return _EXIT_CONFIG
+    except Exception as exc:  # noqa: BLE001
+        # Connect is a transaction, and it has already rolled the arm back and given up the lock.
+        print(f"[connect] FAILED: {type(exc).__name__}: {exc}", flush=True)
+        return _EXIT_CONFIG
     finally:
-        # Arm first, then the camera: a disconnect that raises must not leave the device held.
-        try:
-            arm.disconnect()
-        except Exception as exc:  # noqa: BLE001 (teardown reports, it does not propagate)
-            print(f"  [teardown] arm.disconnect: {type(exc).__name__}: {exc}", flush=True)
+        # After the block, so the arm is down and the lock given back before the camera is.
         handle.release()
+
+    print("\n  down: the arm, then the lock, then the camera", flush=True)
+    if live.teardown is not None:
+        print(live.teardown.render(), flush=True)
+    if failure is not None:
+        print(f"[sweep] FAILED: {type(failure).__name__}: {failure}", flush=True)
+        return _EXIT_ERROR
 
     # ---- 4. Result ------------------------------------------------------------------------------
     from src.calibration.quality import QualityBandsMm, classify_rmse

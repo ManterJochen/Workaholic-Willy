@@ -374,6 +374,13 @@ touch nothing and open the camera without moving. Below `--dry-run` it is unprov
 source has never seen a physical camera, and an aligned stream reports distortion coefficients near
 zero, so its residual is unconfirmed on a real bench.
 
+That command builds its arm through `Robot.from_config(robot_config, gripper=None)`, so the
+arm-vendor readiness gate runs and no gripper is built. The sweep takes the cell lock before the arm
+connects, connects no gripper, and exits 1 where another process holds the cell or the connect is
+refused. Every move the routine commands runs inside a camera-world decline named for the mounting,
+so on a cuRobo cell a move's result says `DECLINED` with that reason instead of `MISSING`. All of
+that is exercised off-box by the mock suite, and none of it has met a physical controller.
+
 ---
 
 ## 7. Where to read next

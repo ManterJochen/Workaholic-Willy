@@ -1,7 +1,7 @@
 """The OnRobot RG2/RG6 as a configured vendor, and the branch whose absence fails silently.
 
 ⛔⛔ **THE MOST IMPORTANT TEST HERE IS `test_a_configured_onrobot_cell_is_not_silently_gripper_less`.**
-`runtime_pick.py` dispatches on the gripper vendor and ends in an `else` that substitutes a
+`robot_parts.py` dispatches on the gripper vendor and ends in an `else` that substitutes a
 `NullGripper`: the cell connects, reports every pick a success and holds nothing. That `else` carries
 `# pragma: no cover` and nothing enumerated it. So adding an enum member WITHOUT its branch produces
 a cell that looks healthy and grips air, and no existing test would have noticed.
@@ -140,7 +140,7 @@ class ConnectRefusalTests(unittest.TestCase):
 
 class VendorWiringTests(unittest.TestCase):
     def test_a_configured_onrobot_cell_is_not_silently_gripper_less(self) -> None:
-        """⛔⛔ THE ONE THAT MATTERS. `runtime_pick` dispatches on the gripper vendor and ends in an
+        """⛔⛔ THE ONE THAT MATTERS. `robot_parts` dispatches on the gripper vendor and ends in an
         `else` that substitutes a NullGripper -- the cell CONNECTS, reports every pick a success and
         holds nothing. That `else` carries `# pragma: no cover` and nothing enumerated it, so an
         enum member added without its branch produces a healthy-looking cell that grips air.
@@ -153,7 +153,7 @@ class VendorWiringTests(unittest.TestCase):
 
         body = (
             Path(__file__).resolve().parents[1]
-            / "src" / "robot" / "execution" / "runtime_pick.py"
+            / "src" / "robot" / "execution" / "robot_parts.py"
         ).read_text(encoding="utf-8")
         self.assertIn("GripperVendor.ONROBOT", body, "no dispatch branch: cells would grip air")
         self.assertLess(
@@ -185,13 +185,13 @@ class VendorWiringTests(unittest.TestCase):
         command at a machine that has never heard of it."""
         import inspect
 
-        from src.robot.execution import runtime_pick
+        from src.robot.execution import robot_parts
 
-        source = inspect.getsource(runtime_pick.RuntimePickService.from_robot_config)
+        source = inspect.getsource(robot_parts.build_gripper)
         # ⚠ FROM THE `create_gripper` CALL, NOT FROM THE ENUM NAME. A window measured from the enum
         # was 900 characters of explanatory comment and never reached the code, so the assertion
         # failed on prose rather than on wiring -- a guard that measures the wrong span.
-        marker = source.index("create_gripper(\n                GripperVendor.ONROBOT")
+        marker = source.index("create_gripper(\n            GripperVendor.ONROBOT")
         branch = source[marker:marker + 600]
         self.assertIn("rg.host", branch)
         self.assertNotIn("robot_cfg.ur.ip", branch)

@@ -73,6 +73,10 @@ class NoWebFrameworkImportTests(unittest.TestCase):
         for py in _ROOT.rglob("*.py"):
             if any(part in {".venv", "__pycache__", "node_modules", "ext_deps"} for part in py.parts):
                 continue
+            # An agent's git worktree is a second checkout of this repository, whose api/ is not the
+            # api/ exempted above; reading it would report the console's own imports again.
+            if py.relative_to(_ROOT).as_posix().startswith(".claude/worktrees/"):
+                continue
             if allowed in py.resolve().parents:
                 continue
             if py.parent.name == "tests" and py.name.startswith("test_api_"):

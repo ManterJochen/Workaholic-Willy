@@ -12,7 +12,7 @@ which half of the list they belong to, not to delete them.
 
 ⚠ THE CONSEQUENCE IS NOT THE GRIPPER'S CONSEQUENCE, AND THAT IS WHY THIS IS A MESSAGE REPAIR RATHER
 THAN A BEHAVIOUR REPAIR. A gripper name with no driver falls through to
-``SubstitutionReason.NO_DRIVER`` in ``execution/runtime_pick.py`` and the cell comes up with a
+``SubstitutionReason.NO_DRIVER`` in ``execution/robot_parts.py`` and the cell comes up with a
 ``NullGripper``: it connects, reports every pick a success, and holds nothing. The arm side has no
 such fallback. MEASURED, same day::
 

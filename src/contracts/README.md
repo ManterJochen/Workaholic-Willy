@@ -39,8 +39,9 @@ value names the source instead, as `ConfigTree.from_directory`, `RecordLog.from_
 **2b. One builder, not two.** The YAML door resolves config into arguments and then calls the Python
 door. This is not style. Two doors that each assemble their own object are two objects that drift,
 and the drift is silent: one path applies an overlay the other does not, and the difference surfaces
-as a runtime filter that quietly rejects nothing. `RuntimePickService.from_robot_config` returns
-`cls.from_components(...)`; copy that shape.
+as a runtime filter that quietly rejects nothing. `RuntimePickService.from_robot_config` resolves the
+arm and the gripper through `robot_parts.py` and then returns its one `cls.from_components(...)`
+call; copy that shape.
 
 **3. One verb, and options are an object.** `tree.load()`, `cell.preflight()`, `scene.grasps()`,
 `run.execute()`, `log.kpis()`, `training.train()`. Everything overridable goes into one frozen
