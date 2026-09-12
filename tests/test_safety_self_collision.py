@@ -474,6 +474,45 @@ class SelfCollisionGuardTests(unittest.TestCase):
             self.assertEqual(backend.evaluate(t, 180.0, (), 8.0, broadphase=False),
                              backend.evaluate(t, 180.0, (), 8.0, broadphase=True))
 
+    def test_broadphase_cull_matches_brute_over_a_sweep_with_fixtures(self) -> None:
+        """The cull is what every exact-mesh verdict now runs behind, so two configurations is thin.
+
+        The argument is geometric: a pair whose bounding spheres cannot be within the margin cannot
+        violate it, because the spheres bound the meshes. This is the measurement beside the argument,
+        and it includes declared fixtures, which the case above does not: a bench under the arm and a
+        bin wall beside it, the two shapes a real cell declares most often.
+        """
+        from src.robot.safety._capsule import AxisAlignedBox
+        from src.robot.safety._fcl_self_collision import make_backend
+        from src.robot.safety._ur_kinematics import ur_link_transforms_mm
+        backend = make_backend("ur5e")
+        if backend is None:
+            self.skipTest("mesh backend not available (optional dependency)")
+        fixtures = (
+            AxisAlignedBox(
+                name="bench", center_mm=np.array([400.0, 0.0, -60.0]),
+                half_extents_mm=np.array([600.0, 600.0, 50.0]),
+            ),
+            AxisAlignedBox(
+                name="bin_wall", center_mm=np.array([600.0, 300.0, 200.0]),
+                half_extents_mm=np.array([200.0, 20.0, 200.0]),
+            ),
+        )
+        rng = np.random.default_rng(20260912)
+        refused = 0
+        for index in range(60):
+            t = ur_link_transforms_mm("ur5e", rng.uniform(-np.pi, np.pi, 6))
+            if t is None:
+                continue
+            brute = backend.evaluate(t, 180.0, fixtures, 10.0, broadphase=False)
+            culled = backend.evaluate(t, 180.0, fixtures, 10.0, broadphase=True)
+            with self.subTest(configuration=index):
+                self.assertEqual(brute, culled)
+            refused += brute is not None
+        # The control: a sweep that refused nothing would agree trivially, because both paths would
+        # only ever have returned None.
+        self.assertGreater(refused, 10, "the sweep found almost nothing to refuse")
+
     def test_continuous_monitor_margin_and_failsafe(self) -> None:
         # The continuous monitor STOPS on a collision within margin, PASSES a clear config, and
         # fail-safes to STOP when a check overruns its budget. SOFTWARE avoidance, not certified.

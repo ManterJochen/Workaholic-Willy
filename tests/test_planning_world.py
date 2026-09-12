@@ -368,7 +368,7 @@ def test_the_preflight_reads_the_fixture_list_where_it_actually_lives() -> None:
 # --------------------------------------------------------------------------------------------
 
 
-def _preflight(*, enabled: bool, stride: int = 1, fixtures=()):
+def _preflight(*, fixtures=()):
     from src.config.schema.robot import RobotSafetyConfig, WorkspaceLimitsConfig
     from src.robot.safety import SafetyPreflight
 
@@ -378,9 +378,19 @@ def _preflight(*, enabled: bool, stride: int = 1, fixtures=()):
             {"name": f.name, "center_mm": list(f.center_mm),
              "half_extents_mm": list(f.half_extents_mm)} for f in fixtures
         ]},
-        "trajectory_check": {"enabled": enabled, "stride": stride},
     })
     return SafetyPreflight.from_safety_config(safety, WorkspaceLimitsConfig())
+
+
+def _samples(*configs):
+    """The configurations as they are, so these tests keep asking about the guards, not the sampler.
+
+    `gate_planned_path` derives its own samples from the geometry; `tests/test_path_samples.py` holds
+    that half. Here a path IS its configurations, which is what these tests were always about.
+    """
+    from src.robot.safety import PathSamples
+
+    return PathSamples(configs=tuple(tuple(c) for c in configs), step_bound_mm=10.0)
 
 
 class _Arm:
@@ -395,10 +405,12 @@ _FOLDED = [1.95, 0.38, -1.33, -0.55, 2.00, 0.79]
 _CLEAR = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0]
 
 
-def test_the_check_is_off_by_default_and_waves_any_path_through() -> None:
-    preflight = _preflight(enabled=False)
-    assert preflight.checks_trajectories is False
-    assert preflight.gate_trajectory([_CLEAR, _FOLDED, _CLEAR], arm=_Arm()) is None
+def test_there_is_no_longer_a_switch_that_waves_a_path_through() -> None:
+    """The old gate had one, and every profile this repository shipped set it to off."""
+    from src.robot.safety import SafetyPreflight
+
+    assert not hasattr(SafetyPreflight, "gate_trajectory")
+    assert not hasattr(SafetyPreflight, "checks_trajectories")
 
 
 def _mesh_backend_available() -> bool:
@@ -413,37 +425,35 @@ def test_a_colliding_waypoint_in_the_MIDDLE_is_caught() -> None:
     """The whole point. The endpoint gate cannot see this path: it starts and ends clear."""
     if not _mesh_backend_available():
         pytest.skip("no exact-mesh backend on this box")
-    preflight = _preflight(enabled=True)
-    assert preflight.checks_trajectories is True
-    rejected = preflight.gate_trajectory([_CLEAR, _FOLDED, _CLEAR], arm=_Arm())
+    preflight = _preflight()
+    rejected = preflight.gate_joint_path(_samples(_CLEAR, _FOLDED, _CLEAR), arm=_Arm())
     assert rejected is not None, "a path through a self-collision was accepted"
     assert "lfinger" in (rejected.message or "") or "collision" in (rejected.message or "").lower()
 
 
 def test_a_clear_path_is_accepted() -> None:
-    preflight = _preflight(enabled=True)
-    assert preflight.gate_trajectory([_CLEAR, _CLEAR, _CLEAR], arm=_Arm()) is None
+    if not _mesh_backend_available():
+        pytest.skip("no exact-mesh backend on this box")
+    assert _preflight().gate_joint_path(_samples(_CLEAR, _CLEAR, _CLEAR), arm=_Arm()) is None
 
 
 def test_an_empty_trajectory_is_not_an_error() -> None:
-    assert _preflight(enabled=True).gate_trajectory([], arm=_Arm()) is None
+    from src.robot.safety import PathSamples
+
+    assert _preflight().gate_joint_path(
+        PathSamples(configs=(), step_bound_mm=0.0), arm=_Arm()
+    ) is None
 
 
-def test_the_endpoint_is_checked_whatever_the_stride() -> None:
-    """A stride samples the path, but the arm certainly stops in the last configuration."""
+def test_every_configuration_is_visited_and_none_is_skipped() -> None:
+    """The old gate could sample the path with a stride and leave the rest unexamined. This one
+    cannot: the only configurations it does not look at are the ones nobody handed it."""
     if not _mesh_backend_available():
         pytest.skip("no exact-mesh backend on this box")
-    path = [_CLEAR] * 8 + [_FOLDED]
-    assert _preflight(enabled=True, stride=64).gate_trajectory(path, arm=_Arm()) is not None
-
-
-def test_a_stride_really_does_skip_configurations() -> None:
-    """Honest about what the knob costs: index 1 is not visited with stride 4."""
-    if not _mesh_backend_available():
-        pytest.skip("no exact-mesh backend on this box")
-    path = [_CLEAR, _FOLDED, _CLEAR, _CLEAR, _CLEAR]
-    assert _preflight(enabled=True, stride=4).gate_trajectory(path, arm=_Arm()) is None
-    assert _preflight(enabled=True, stride=1).gate_trajectory(path, arm=_Arm()) is not None
+    for index in range(5):
+        path = [_CLEAR] * 5
+        path[index] = _FOLDED
+        assert _preflight().gate_joint_path(_samples(*path), arm=_Arm()) is not None, index
 
 
 def test_a_declared_fixture_is_checked_along_the_path_too() -> None:
@@ -455,8 +465,8 @@ def test_a_declared_fixture_is_checked_along_the_path_too() -> None:
     post = FixtureBoxConfig(
         name="post", center_mm=(-422.3, -232.9, 486.7), half_extents_mm=(60.0, 60.0, 60.0)
     )
-    preflight = _preflight(enabled=True, fixtures=(post,))
-    assert preflight.gate_trajectory([_CLEAR], arm=_Arm()) is not None
+    preflight = _preflight(fixtures=(post,))
+    assert preflight.gate_joint_path(_samples(_CLEAR), arm=_Arm()) is not None
 
 
 # --------------------------------------------------------------------------------------------

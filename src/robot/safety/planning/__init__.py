@@ -16,12 +16,11 @@ locates the environment, defaulting to ``ext_deps/curobo_env/python.exe``, and t
 reference robot and gripper descriptor lives under :mod:`.robot` at
 ``WILLY_CUROBO_ROBOT``. ``ext_deps/README.md`` covers the install.
 
-The fail-closed contract: where the cuRobo environment is unavailable, the sim and mock
-path may fall back to blind IK, which leaves behaviour unchanged, but a real-hardware
-caller fails closed with no blind motion and surfaces
-:class:`CuroboUnavailableError`. Planner collision-awareness is simulation-grade and
-not a certified functional-safety stop, so a real cell still needs the vendor
-safety-rated stop.
+The fail-closed contract: where the cuRobo environment is unavailable, every caller fails
+closed. The sim refuses, as the real cell always did, and surfaces
+:class:`CuroboUnavailableError`; mock mode is the exception, and it drives nothing.
+Planner collision-awareness is simulation-grade and not a certified functional-safety
+stop, so a real cell still needs the vendor safety-rated stop.
 
 This package is also the anchor for the external engines the motion stack builds on.
 :mod:`.environment` owns every environment-variable name, default path and
@@ -32,7 +31,13 @@ this box.
 
 from __future__ import annotations
 
-from .curobo_client import CuroboPlanClient, CuroboUnavailableError, curobo_env_available
+from .curobo_client import (
+    MAX_CHECK_CONFIGURATIONS,
+    CuroboPlanClient,
+    CuroboUnavailableError,
+    JointCheckVerdict,
+    curobo_env_available,
+)
 from .environment import (
     CollisionEngineStatus,
     CuroboStatus,
@@ -46,6 +51,8 @@ from .stack import ModelSource, MotionStack, MotionStackReport
 
 __all__ = [
     "CuroboPlanClient",
+    "JointCheckVerdict",
+    "MAX_CHECK_CONFIGURATIONS",
     "ModelSource",
     "MotionStack",
     "MotionStackReport",

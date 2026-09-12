@@ -248,7 +248,6 @@ without touching the others.
 | `self_collision` | link-link and link-fixture, capsule or mesh backend | `enforce` |
 | `dwell` | post-stop dwell and steady-before-motion | `require_steady_before_motion` |
 | `planning_world` | the boxes the trajectory planner routes around | `enabled` |
-| `trajectory_check` | every configuration of a planned path, not only its end | `enabled` |
 
 The single entry point is `SafetyPreflight` in [`src/robot/safety/`](../robot/safety/). Each driver
 builds one with `SafetyPreflight.from_safety_config(...)` and evaluates it before commanding motion.

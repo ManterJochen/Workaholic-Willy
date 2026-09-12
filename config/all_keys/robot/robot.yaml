@@ -978,19 +978,6 @@ robot:
         # [default: 150.0]
         tool_radius_mm: 150.0
 
-    # Whether a PLANNED PATH is checked configuration by configuration before any of it is commanded.
-    trajectory_check:
-
-      # Whether a planned PATH is judged configuration by configuration before any of it is commanded.
-      # [default: false]
-      enabled: false
-
-      # Check every n-th configuration of the path instead of all of them. 1, the default, checks the path;
-      # anything above 1 SAMPLES it and leaves the skipped configurations unexamined, which is a latency
-      # trade against safety and should be a deliberate one.
-      # [default: 1]
-      stride: 1
-
   # Vendor-neutral grasping-behaviour surface.
   grasping:
 

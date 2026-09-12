@@ -31,6 +31,8 @@ __all__ = [
     "UR_DH_TABLES_M",
     "ur_link_origins_mm",
     "ur_link_transforms_mm",
+    "ur_joint_radii_mm",
+    "ur_reach_mm",
     "ur_series_twin",
 ]
 
@@ -186,6 +188,48 @@ def ur_link_origins_mm(model: str, joints_rad: np.ndarray) -> list[np.ndarray] |
         T = T @ _dh_transform(float(theta), row)
         origins_m.append(T[:3, 3].copy())
     return [o * 1000.0 for o in origins_m]
+
+
+def ur_joint_radii_mm(model: str) -> tuple[float, ...] | None:
+    """Per joint, an upper bound in mm on the distance from that joint's axis to anything beyond it.
+
+    Rotating joint ``j`` by ``dq`` sweeps every point distal to it through an arc of at most
+    ``dq * radius[j]``. The radius is the sum of every link length and joint offset from that joint
+    outwards, which over-estimates for the same reason :func:`ur_reach_mm` does and in the same safe
+    direction.
+
+    Per joint rather than one number for the arm, because the wrist carries a hand while the shoulder
+    carries the whole arm, and holding both to the shoulder's radius samples a wrist move seventeen
+    times more densely than the geometry asks for. On a ur5e a six joint move of 10 rad in total needs
+    1312 samples under one reach and 743 under these, so the difference decides whether an ordinary
+    move fits under the checker's cap at all. Both are upper bounds; this one keeps what the table
+    already knows.
+    """
+    table = UR_DH_TABLES_M.get(model.lower())
+    if table is None:
+        return None
+    return tuple(
+        float(sum(abs(row.a_m) + abs(row.d_m) for row in table[index:]) * 1000.0)
+        for index in range(len(table))
+    )
+
+
+def ur_reach_mm(model: str) -> float | None:
+    """An upper bound in mm on the distance from the base to any point of this UR, or ``None``.
+
+    The sum of every link length and every joint offset in the model's own DH table. Adding them all
+    is an over-estimate, because the ``d`` offsets run perpendicular to the ``a`` lengths and never
+    stack end to end: a UR5e comes out at 1312 mm against the 850 mm the datasheet calls its reach.
+    That is the safe direction for the one thing this number is for, which is turning a joint angle
+    into the arc a point of the arm can sweep: a bound that is too large samples a path more densely
+    than it has to, and a bound that is too small leaves gaps nobody looked at.
+
+    Derived rather than tabulated so a model added to ``UR_DH_TABLES_M`` cannot arrive without one.
+    """
+    table = UR_DH_TABLES_M.get(model.lower())
+    if table is None:
+        return None
+    return float(sum(abs(row.a_m) + abs(row.d_m) for row in table) * 1000.0)
 
 
 def ur_link_transforms_mm(model: str, joints_rad: np.ndarray) -> list[np.ndarray] | None:

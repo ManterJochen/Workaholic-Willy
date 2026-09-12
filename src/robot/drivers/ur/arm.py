@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import re
 
@@ -40,7 +41,13 @@ from src.robot.core import (
     stamp_result,
 )
 from src.robot.core.camera_world import without_camera_world as _without_camera_world
-from src.robot.safety import SafetyPreflight
+from src.geometry.quaternion import angle_between
+from src.robot.safety import (
+    LineSamples,
+    PathSamples,
+    SafetyPreflight,
+    line_samples,
+)
 from src.robot.safety._ur_kinematics import ur_series_twin
 from src.robot.safety.planning import CuroboPlanClient, CuroboUnavailableError
 from src.robot.safety.workspace import WorkspaceGuard
@@ -186,9 +193,9 @@ class URRobotArm(RobotArm):
         planned final configuration is judged without IK quality and motion continuity.
         A joint command is judged at its target configuration by the destination guards
         only (joint limits, self-collision, payload). The middle of a planned path is
-        judged only when ``checks_trajectories`` is on, and whether a planner produced
-        the path at all is not something this pipeline answers. The raw transports
-        :attr:`connection` and :attr:`motion` reach the controller below it.
+        judged sample by sample, always, whenever a planner produced one, which is what
+        :attr:`plans_paths` answers. The raw transports :attr:`connection` and
+        :attr:`motion` reach the controller below it.
 
         It implements :class:`~src.robot.safety.attestation.SafetyGated`, so a caller
         asks what this arm will refuse without reaching into `_preflight`. That matters
@@ -196,6 +203,18 @@ class URRobotArm(RobotArm):
         driver registry cannot see, so the answer travels with the object.
         """
         return self._preflight
+
+    @property
+    def plans_paths(self) -> bool:
+        """Whether a move on this arm produces a path, and so has a middle to judge.
+
+        Read off the arm as it is now, never off a key somebody could set: a cuRobo move
+        hands over a trajectory and every configuration of it is judged, while an ik move
+        interpolates and has no middle anybody could look at. The attestation prints one of
+        the two, so a cell cannot claim a path check it will never run, or hide one it
+        always does.
+        """
+        return self._motion_planner == "curobo"
 
     def _declared_tool_matrix(self) -> "np.ndarray | None":
         """The declared flange-to-TCP 4x4, whoever applies it. ``None`` while it is undeclared.
@@ -691,8 +710,19 @@ class URRobotArm(RobotArm):
         command motion no joint-limit, IK-quality, self-collision, fixture, payload or
         continuity guard ever saw, on a cell where :meth:`move` runs all six. ``False``
         therefore also means a guard refused, and the typed reason is logged.
+
+        On a cuRobo cell it goes through :meth:`move`, which is what makes the two surfaces
+        the same motion: the planner plans it, or the line is sampled and judged when
+        ``linear`` is set. Reaching the controller directly from here would leave a cell
+        configured for cuRobo with one verb that does not use it.
         """
-        rejected = self._gate_pose(self._pose_from_any(pose), MotionCommand.MOVE_TO)
+        target = self._pose_from_any(pose)
+        if self._motion_planner == "curobo":
+            result = self.move(target, linear=linear, vel=vel, acc=acc, register=register)
+            if not result.ok:
+                self.logger.error("move_to REFUSED by %s: %s", result.status, result.message)
+            return result.ok
+        rejected = self._gate_pose(target, MotionCommand.MOVE_TO)
         if rejected is not None:
             self.logger.error("move_to REFUSED by %s: %s", rejected.status, rejected.message)
             return False
@@ -768,10 +798,25 @@ class URRobotArm(RobotArm):
 
         It returns ``bool`` so every existing caller keeps working, and the typed reason
         is logged.
+
+        On a cuRobo cell the whole line to the home configuration is judged as well, by
+        :meth:`_judge_joint_move`, and the ``moveJ`` is sent here rather than through
+        ``MotionController.move_home``: that method sends an unclamped command at the
+        controller's own defaults, and a move that was judged has to be the move that runs.
         """
         if not self._home_is_admissible("move_home"):
             return False
-        return self._motion.move_home(self._home_joints)
+        joints = JointPositions(np.asarray(self._home_joints, dtype=np.float64))
+        refused = self._judge_joint_move(joints, command=MotionCommand.MOVE_HOME)
+        if refused is not None:
+            self.logger.error("move_home REFUSED by %s: %s", refused.status, refused.message)
+            return False
+        try:
+            self._drive_joints(joints)
+        except (RobotConnectionError, RobotMotionRejected) as exc:
+            self.logger.error("move_home REFUSED: %s", exc)
+            return False
+        return True
 
     def _home_is_admissible(self, verb: str) -> bool:
         """The whole home gate, shared by :meth:`move_home` and :meth:`amove_home`.
@@ -884,6 +929,12 @@ class URRobotArm(RobotArm):
                 message=f"URRobotArm.move requires Frame.BASE; got {pose.frame!r}",
             )
         if self._motion_planner == "curobo":
+            # Dropping `linear` here would make `move(pose, linear=True)` on a cuRobo cell
+            # plan a path instead of running the line the caller asked for. It is a
+            # different motion: the planner routes around obstacles and the controller
+            # does not.
+            if linear:
+                return self._drive_checked_line(pose, vel=vel, acc=acc)
             return self._drive_curobo(pose, vel=vel, acc=acc)
         # Pre-resolve IK on the driver side, so the preflight pipeline sees
         # ``target_joints`` for every Cartesian command. Joint-limit, IK-quality and the
@@ -1002,14 +1053,6 @@ class URRobotArm(RobotArm):
                 MotionStatus.TIMEOUT, MotionCommand.MOVE_TO, target_pose=pose,
                 message=NO_PLAN_FAIL_SAFE_MESSAGE,
             )
-        # The whole path, where one is asked for. The gate below judges where the move
-        # ends, and a plan that grazes a fixture in the middle and lands clear is exactly
-        # what an endpoint check cannot see. It is checked before the first waypoint
-        # moves, because a refusal partway leaves the arm standing on a path already
-        # judged unsafe.
-        rejected = self._preflight.gate_trajectory(traj_ur, arm=self)
-        if rejected is not None:
-            return rejected
         # The workspace box belongs here too. `gate_joint_target` deliberately skips it,
         # and that is right for a joint-only command: the guard reads `target_pose`, so
         # on a joint context it accepts for want of a Cartesian target and un-skipping it
@@ -1023,10 +1066,26 @@ class URRobotArm(RobotArm):
         # shoulder wrap from +pi to -pi is not a blind interpolator teleporting.
         #
         # The limit is real: the box is applied to the commanded TCP pose, not to the FK
-        # of the planned configuration and not to the middle of the path.
-        # `gate_trajectory` covers the path with the joint-readable guards, and no guard
-        # bounds a planned configuration against the Cartesian box.
+        # of the planned configuration and not to the middle of the path. The path gate
+        # below covers the path with the joint-readable guards, and no guard bounds a
+        # planned configuration against the Cartesian box.
+        #
+        # The endpoint comes first, deliberately. It is the cheap check and the one most
+        # often refused, while the path gate below costs a few milliseconds per sample of a
+        # path with as many samples as the plan is long. Nothing moves before both have
+        # passed, so the order is only about what a refused move pays.
         rejected = self._gate_planned_config(pose, JointPositions(traj_ur[-1]))
+        if rejected is not None:
+            return rejected
+        # And the whole path. The gate above judges where the move ends, and a plan that
+        # grazes a fixture in the middle and lands clear is exactly what an endpoint check
+        # cannot see. The legs between the planner's waypoints are sampled, because the
+        # controller moveJ's from one to the next and the line between them is executed
+        # too. Judged before the first waypoint moves: a refusal partway leaves the arm
+        # standing on a path already judged unsafe.
+        rejected = self._preflight.gate_planned_path(
+            traj_ur, arm=self, command=MotionCommand.MOVE_TO,
+        )
         if rejected is not None:
             return rejected
         return planner.execute(traj_ur, pose, vel=vel, acc=acc)
@@ -1201,7 +1260,17 @@ class URRobotArm(RobotArm):
         acc: float | None = None,
         register: bool = True,
     ) -> bool:
-        """Awaitable variant of :meth:`move_to`, gated and commanded the same way."""
+        """Awaitable variant of :meth:`move_to`, gated and commanded the same way.
+
+        On a cuRobo cell it runs the sync twin in a worker thread rather than mirroring its
+        body. The plan and the sampled line are both synchronous and both talk to the
+        sidecar and to the controller; a second async body beside them is how this verb
+        drifted from its twin twice already.
+        """
+        if self._motion_planner == "curobo":
+            return await asyncio.to_thread(
+                self.move_to, pose, linear=linear, vel=vel, acc=acc, register=register,
+            )
         rejected = self._gate_pose(self._pose_from_any(pose), MotionCommand.MOVE_TO)
         if rejected is not None:
             self.logger.error("amove_to REFUSED by %s: %s", rejected.status, rejected.message)
@@ -1220,10 +1289,12 @@ class URRobotArm(RobotArm):
         command the move regardless with no joint-limit, self-collision or payload check
         at all, which would leave this path strictly weaker than the method it mirrors.
         Both verbs share :meth:`_home_is_admissible`, which runs synchronously.
+
+        It runs the whole sync body in a worker thread rather than mirroring it: two bodies
+        that have to stay the same is how this verb drifted apart from its twin in the
+        first place.
         """
-        if not self._home_is_admissible("amove_home"):
-            return False
-        return await self._motion.amove_home(self._home_joints)
+        return await asyncio.to_thread(self.move_home)
 
     def fk(self, joints: JointPositions) -> Pose:
         """Forward kinematics: :class:`JointPositions` to TCP :class:`Pose`."""
@@ -1320,16 +1391,264 @@ class URRobotArm(RobotArm):
         acceleration: float | None = None,
     ) -> MotionResult:
         """The body of :meth:`move_to_joints`. It stamps nothing; the public verb does."""
-        if self._preflight is not None:
-            rejected = self._preflight.gate_joint_target(joints, arm=self)
-            if rejected is not None:
-                return rejected
-        # The ungated primitive, because the destination was just gated. Calling the
-        # public `move_joint` here would run the same guards a second time for nothing.
-        self._drive_joints(joints, velocity=velocity, acceleration=acceleration)
+        refused = self._judge_joint_move(joints, command=MotionCommand.MOVE_JOINTS)
+        if refused is not None:
+            return refused
+        # The ungated primitive, because the move was just judged. Calling the public
+        # `move_joint` here would run the same guards a second time for nothing.
+        try:
+            self._drive_joints(joints, velocity=velocity, acceleration=acceleration)
+        except RobotConnectionError as exc:
+            return MotionResult.failed(
+                MotionStatus.CONNECTION_ERROR, MotionCommand.MOVE_JOINTS,
+                target_joints=joints, message=str(exc), exception=exc,
+            )
         return MotionResult.executed(
             MotionCommand.MOVE_JOINTS, target_joints=joints, message="move_to_joints",
         )
+
+    def _judge_joint_move(
+        self, joints: JointPositions, *, command: MotionCommand
+    ) -> "MotionResult | None":
+        """Judge a joint move before anything is commanded; ``None`` means it may run.
+
+        On an ik cell this is the destination gate and nothing else: no planner produced a
+        path, and `moveJ` interpolating between two configurations is a line nothing in this
+        repository models.
+
+        On a cuRobo cell it is the whole line from where the arm is standing to where it was
+        told to go, judged twice over, because the two authorities see different cells. The
+        local guards carry the declared fixtures and the exact link meshes; the planner
+        carries the camera world and whatever is attached to the tool. Either one alone
+        would miss what the other holds.
+
+        The connection is read first, because a path starts at the current configuration and
+        a disconnected arm has none to give. That is a change of order: gating the
+        destination first only finds out afterwards that it cannot move.
+        """
+        if self._preflight is None:
+            return None
+        if self._motion_planner != "curobo":
+            return self._preflight.gate_joint_target(joints, arm=self)
+
+        if not self._conn.is_connected:
+            return MotionResult.failed(
+                MotionStatus.CONNECTION_ERROR, command, target_joints=joints,
+                message="a judged joint move starts at the current configuration, which needs an "
+                        "open connection.",
+            )
+        here = [float(v) for v in self._conn.get_joint_positions()]
+        refused = self._preflight.gate_planned_path(
+            [here, joints.tolist()], arm=self, command=command,
+        )
+        if refused is not None:
+            return refused
+        return self._planner_judges_joint_path(here, joints, command=command)
+
+    def _planner_judges_joint_path(
+        self, here: list[float], goal: JointPositions, *, command: MotionCommand
+    ) -> "MotionResult | None":
+        """The planner's verdict on the same line, against the world it holds; ``None`` accepts."""
+        samples = self._preflight.path_step_mm if self._preflight is not None else None
+        if samples is None:  # no self-collision guard: gate_planned_path already refused
+            return None
+        from src.robot.safety.path_samples import joint_path_samples
+
+        reach = self._preflight.joint_radii_mm(self)
+        if reach is None:
+            return None  # gate_planned_path refused this already; here it would be a second voice
+        path = joint_path_samples(here, goal.tolist(), reach_mm=reach, max_step_mm=samples)
+        try:
+            verdict = self._curobo_ur_planner().check_joint_path(path.configs)
+        except CuroboUnavailableError as exc:
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, command, target_joints=goal,
+                message=f"cuRobo planner unavailable: {exc}", exception=exc,
+            )
+        if verdict.valid:
+            return None
+        return MotionResult.failed(
+            MotionStatus.SELF_COLLISION_REJECTED, command, target_joints=goal,
+            message=f"the planner refused this joint path: {verdict.reason}",
+        )
+
+    #: How much the tool may turn along a ``willy`` mode line before it stops being a
+    #: straight line for the thing that matters. The controller runs the flange straight;
+    #: with the tool composed on this side, a turn swings the grasp centre off that line by
+    #: up to the tool length. Half a degree: enough to absorb a pose that is nominally
+    #: equal, far too little to hide a real reorientation.
+    _WILLY_LINE_MAX_TURN_DEG = 0.5
+
+    def _judge_linear_move(
+        self, pose: Pose, *, command: MotionCommand
+    ) -> "MotionResult | None":
+        """Judge the straight line the controller will run to ``pose``; ``None`` means it may run.
+
+        On an ik cell this is the endpoint gate and nothing else.
+
+        On a cuRobo cell the line is sampled in the frame the controller interpolates,
+        because that is the frame in which the motion is actually straight: the bare flange
+        in ``willy`` mode, the declared tool in ``polyscope`` mode. Every sample is solved by
+        the controller's own inverse kinematics, seeded with the previous solution, so the
+        configurations judged are the ones the controller will pass through rather than a
+        second opinion from a different solver. Then the local guards judge all of them, and
+        the planner judges the same list against its world.
+
+        It is not free: one RTDE round trip per sample, and the samples are as dense as the
+        collision margin asks for. A line is the one motion in this stack that nothing plans,
+        so the alternative to paying for it is executing it unexamined.
+        """
+        if self._preflight is None:
+            return None
+        if self._motion_planner != "curobo":
+            return self._gate_pose(pose, command)
+        if not self._conn.is_connected:
+            return MotionResult.failed(
+                MotionStatus.CONNECTION_ERROR, command, target_pose=pose,
+                message="a judged line starts at the current pose, which needs an open connection.",
+            )
+
+        step_mm = self._preflight.path_step_mm
+        radii = self._preflight.joint_radii_mm(self)
+        if step_mm is None or radii is None:
+            # The same two refusals a judged joint path gives, in the same words. Asked
+            # through the joint gate rather than restated here, so one place says them.
+            return self._preflight.gate_planned_path(
+                [[float(v) for v in self._conn.get_joint_positions()]], arm=self, command=command,
+            )
+
+        owns_tool = self.config.gripper.tool_frame.source == "willy"
+        start_tcp = self.get_tcp_pose()
+        if owns_tool:
+            turn_deg = float(
+                np.degrees(angle_between(start_tcp.quaternion_xyzw, pose.quaternion_xyzw))
+            )
+            if turn_deg > self._WILLY_LINE_MAX_TURN_DEG:
+                return MotionResult.failed(
+                    MotionStatus.UNSUPPORTED, command, target_pose=pose,
+                    message=(
+                        f"this line turns the tool by {turn_deg:.2f} degrees, and in willy mode the "
+                        f"controller runs the flange straight while this driver composes the tool: "
+                        f"the grasp centre would travel an arc, not the line that was asked for. "
+                        f"Move without the turn, or run the cell in polyscope mode, where the "
+                        f"controller holds the tool and moveL draws a straight tool line"
+                    ),
+                )
+            start_line = self._pose_to_flange(start_tcp)
+            goal_line = self._pose_to_flange(pose)
+        else:
+            start_line, goal_line = start_tcp, pose
+
+        try:
+            samples = line_samples(
+                start_line, goal_line, reach_mm=max(radii), max_step_mm=step_mm,
+            )
+        except ValueError as exc:
+            return MotionResult.failed(
+                MotionStatus.UNSUPPORTED, command, target_pose=pose, message=str(exc),
+            )
+        return self._judge_line_samples(
+            samples, pose=pose, owns_tool=owns_tool, radii=radii, command=command,
+        )
+
+    def _judge_line_samples(
+        self,
+        samples: "LineSamples",
+        *,
+        pose: Pose,
+        owns_tool: bool,
+        radii: "tuple[float, ...]",
+        command: MotionCommand,
+    ) -> "MotionResult | None":
+        """Solve every sample of a line and hand the configurations to both authorities."""
+        assert self._preflight is not None  # noqa: S101 (the caller checked)
+        configs: list[tuple[float, ...]] = []
+        seed: JointPositions | None = None
+        for index, sample in enumerate(samples.poses):
+            tcp = self._pose_from_flange(sample) if owns_tool else sample
+            if not self._guard.is_inside_workspace(self._coerce_urpose(tcp)):
+                x, y, z = (float(v) for v in tcp.position_mm)
+                return MotionResult.failed(
+                    MotionStatus.WORKSPACE_REJECTED, command, target_pose=pose,
+                    message=(
+                        f"sample {index + 1} of {len(samples.poses)} of this line puts the grasp "
+                        f"centre at ({x:.1f}, {y:.1f}, {z:.1f}), outside workspace_limits"
+                    ),
+                )
+            try:
+                solved = self.ik(tcp, seed=seed)
+            except (RobotKinematicsError, RobotConnectionError) as exc:
+                return MotionResult.failed(
+                    MotionStatus.IK_FAILED, command, target_pose=pose,
+                    message=(
+                        f"sample {index + 1} of {len(samples.poses)} of this line has no inverse "
+                        f"kinematics solution: {exc}"
+                    ),
+                    exception=exc,
+                )
+            if seed is not None:
+                swept = sum(
+                    abs(b - a) * radius
+                    for a, b, radius in zip(seed.tolist(), solved.tolist(), radii)
+                )
+                if swept > samples.step_bound_mm + 1e-6:
+                    return MotionResult.failed(
+                        MotionStatus.IK_QUALITY_REJECTED, command, target_pose=pose,
+                        message=(
+                            f"the controller changed IK branch between samples {index} and "
+                            f"{index + 1} of this line: {swept:.1f} mm of arm travel for a step "
+                            f"bounded at {samples.step_bound_mm:.1f} mm. The arm would take a route "
+                            f"none of these samples describes"
+                        ),
+                    )
+            configs.append(tuple(solved.tolist()))
+            seed = solved
+
+        judged = PathSamples(configs=tuple(configs), step_bound_mm=samples.step_bound_mm)
+        refused = self._preflight.gate_joint_path(judged, arm=self, command=command)
+        if refused is not None:
+            return refused
+        try:
+            verdict = self._curobo_ur_planner().check_joint_path(judged.configs)
+        except CuroboUnavailableError as exc:
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, command, target_pose=pose,
+                message=f"cuRobo planner unavailable: {exc}", exception=exc,
+            )
+        if verdict.valid:
+            return None
+        return MotionResult.failed(
+            MotionStatus.SELF_COLLISION_REJECTED, command, target_pose=pose,
+            message=f"the planner refused this line: {verdict.reason}",
+        )
+
+    def _drive_checked_line(
+        self, pose: Pose, *, vel: float | None = None, acc: float | None = None
+    ) -> MotionResult:
+        """Judge the line, then run it as one ``moveL``. The typed half of :meth:`move_linear`.
+
+        The command that reaches the controller is the same one an unchecked linear move
+        sent, through the same `MotionController.move_to`, so its endpoint inverse kinematics
+        and its singularity check still run below this. What is added is that the line it
+        draws has been looked at.
+        """
+        refused = self._judge_linear_move(pose, command=MotionCommand.MOVE_TO)
+        if refused is not None:
+            return refused
+        urpose = self._pose_to_controller(pose)
+        ok = self._motion.move_to(
+            urpose, linear=True, vel=vel, acc=acc, register=False,
+            workspace_pose=self._coerce_urpose(pose),
+        )
+        return MotionResult.from_bool(ok, MotionCommand.MOVE_TO, target_pose=pose)
+
+    def _pose_from_flange(self, flange: Pose) -> Pose:
+        """Flange (tool0) to TCP, the inverse of :meth:`_pose_to_flange`."""
+        t = self._declared_tool_matrix()
+        if t is None:
+            return flange
+        m = np.asarray(flange.to_matrix(), dtype=np.float64) @ t
+        return Pose.from_matrix(m, frame=Frame.BASE, label=flange.label)
 
     def move_joint(
         self,
@@ -1343,14 +1662,16 @@ class URRobotArm(RobotArm):
         The Protocol promises ``RobotMotionRejected`` where a safety pre-check denies
         the move, and this is a public Protocol-level surface that sim runners and
         operator code reach directly rather than only through :meth:`move_to_joints`. It
-        runs the destination guards alone, the same set that method uses.
+        judges exactly what that method judges, through the same helper, and raises what
+        it returns: the destination on an ik cell, the whole line on a cuRobo one.
         """
-        if self._preflight is not None:
-            rejected = self._preflight.gate_joint_target(joints, arm=self)
-            if rejected is not None:
-                raise RobotMotionRejected(
-                    f"move_joint refused by the safety preflight: {rejected.message}"
-                )
+        rejected = self._judge_joint_move(joints, command=MotionCommand.MOVE_JOINTS)
+        if rejected is not None:
+            if rejected.status is MotionStatus.CONNECTION_ERROR:
+                raise RobotConnectionError(rejected.message or "move_joint needs a connection.")
+            raise RobotMotionRejected(
+                f"move_joint refused: {rejected.message}", result=rejected,
+            ) from rejected.exception
         self._drive_joints(joints, velocity=velocity, acceleration=acceleration)
 
     def _drive_joints(
@@ -1389,11 +1710,11 @@ class URRobotArm(RobotArm):
             )
         if not self._conn.is_connected:
             raise RobotConnectionError("move_linear() requires an open connection.")
-        rejected = self._gate_pose(pose, MotionCommand.MOVE_TO)
+        rejected = self._judge_linear_move(pose, command=MotionCommand.MOVE_TO)
         if rejected is not None:
             raise RobotMotionRejected(
-                f"move_linear refused by the safety preflight: {rejected.message}"
-            )
+                f"move_linear refused: {rejected.message}", result=rejected,
+            ) from rejected.exception
         urpose = self._pose_to_controller(pose)
         ok = self._motion.move_to(
             urpose, linear=True, vel=velocity, acc=acceleration, register=False,

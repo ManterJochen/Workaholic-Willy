@@ -45,7 +45,22 @@ class RobotMotionRejected(RobotError):
 
     The causes are a workspace-guard rejection, a joint-limit pre-check failure, a
     soft-limit violation, or an input-validation error.
+
+    ``result`` carries the typed :class:`~src.robot.core.motion_result.MotionResult` the
+    refusal came from, where one exists. The bool-and-raise verbs and their typed twins
+    refuse for the same reasons and through the same gates, so the raise carries the
+    status, the target and the camera-world stamp instead of one string. It is ``None``
+    for a refusal raised before any gate produced a result, such as a wrong number of
+    joints.
     """
+
+    def __init__(self, *args: object, result: object | None = None) -> None:
+        super().__init__(*args)
+        #: The refusal as the typed verbs report it, or ``None``. Typed as ``object`` so
+        #: the error module stays importable from anywhere: ``motion_result`` imports the
+        #: camera world, which imports back into core, and a cycle here would be paid by
+        #: every module in the package.
+        self.result = result
 
 
 class RobotSingularityRisk(RobotMotionRejected):

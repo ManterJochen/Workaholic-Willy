@@ -459,13 +459,15 @@ The practical consequence: **do not accept a capsule verdict as evidence about a
 `tool_model: finger`, add the bin walls as `fixtures`, and set `planner_margin_mm` per section 6. If
 `mesh_backend_status(model)` is not `ok`, treat that cell as having no self-collision authority.
 
-### 5.4 The two opt-in path gates
+### 5.4 The two path gates
 
-`safety.trajectory_check` gates every configuration of a planned path before any of it is commanded,
-with the same guards a joint move gets: joint limits, self-collision including fixtures, and payload.
-It is off by default. While it is off, nothing examines the middle of a plan, so a path that grazes a
-fixture halfway and lands clear passes every check there is. `stride` samples the path instead of
-checking all of it, and the final configuration is checked whatever the stride.
+`gate_joint_path` and `gate_planned_path` judge every configuration of a path before any of it is
+commanded, with the same guards a joint move gets: joint limits, self-collision including fixtures,
+and payload. There is no key that switches them off and no stride: a path that grazes a fixture
+halfway and lands clear is exactly what an endpoint check cannot see. The step comes from the
+collision margin, which is the coarsest sampling the check can survive, and the reach is read off the
+arm, so a robot whose reach does not derive is refused rather than sampled by a number nobody
+measured.
 
 [`src/robot/safety/continuous_monitor.py`](../../src/robot/safety/continuous_monitor.py) runs the exact-mesh
 backend over **every** interpolation waypoint of a move, with a clearance margin and a fail-safe of its
@@ -507,15 +509,22 @@ environment; exit 0 does not prove cuRobo runs, because the check only verifies 
 interpreter exists. The command reads the model from config and also takes `--model`, so a UR3e cell
 needs no guess: `python -m src.robot.safety.planning --check --model ur3e`.
 
-**The two drivers take opposite policies on a missing engine, on purpose.** A real UR fails closed:
-`robot.ur.motion_planner` is a real config key (`ik` or `curobo`, shipped `curobo`), and with cuRobo
-unavailable the move returns `CONTROLLER_REJECTED`, while no collision-free plan returns `TIMEOUT`. It
-never falls back to blind IK. The simulator degrades: its planner is a dataclass field rather than a
-YAML key, which `python -m src.config explain robot.sim.motion_planner` will tell you outright, and
-with cuRobo missing the resolution latches unavailability, emits one warning and returns `ik`. Choose
-the simulation planner from the runner instead, through `--motion-planner`.
+**Both drivers fail closed on a missing engine, and only one of them always did.** A real UR fails
+closed: `robot.ur.motion_planner` is a real config key (`ik` or `curobo`, shipped `curobo`), and with
+cuRobo unavailable the move returns `CONTROLLER_REJECTED`, while no collision-free plan returns
+`TIMEOUT`. It never falls back to blind IK.
 
-That silence is what the boot gate stops. `require_motion_stack` in
+The simulator used to degrade. Its planner is a dataclass field rather than a YAML key, which
+`python -m src.config explain robot.sim.motion_planner` will tell you outright, and with cuRobo
+missing the resolution latched unavailability, emitted one warning and returned `ik` for the rest of
+that arm's life. What an operator saw was a cell that kept running and picked badly: blind IK proposes
+configurations the self-collision guard correctly refuses, so the run reported a low rate with nothing
+tying it back. That latch is gone. A cuRobo simulator arm that cannot reach its sidecar refuses its
+motions, `resolve_runner_planner` refuses the run one layer up, and `--motion-planner ik` is how you
+say a run is deliberately unplanned. Rather than trusting a count of which runners take that flag, run
+`grep -l -- "--motion-planner" src/willy_sim/run_*.py`.
+
+That silence is what the boot gate stopped first, and it still runs. `require_motion_stack` in
 [`src/willy_sim/harness/bootstrap.py`](../../src/willy_sim/harness/bootstrap.py) runs before the simulator
 boot, keyed on the cell's actual descriptor and `kinematics_model`, and raises
 `DegradedMotionStackError` unless `WILLY_ALLOW_DEGRADED_MOTION=1`. It prints a box rather than a log

@@ -43,7 +43,8 @@ robot:
     # than in the container, spawned from the cuRobo environment under `ext_deps/`. Where that
     # is missing the UR path is fail-closed: it refuses every move with CONTROLLER_REJECTED and
     # never degrades to blind IK. This profile exercises the driver against a real controller,
-    # not the planner.
+    # not the planner, and the container's missing GPU never enters into it. Layer
+    # `ursim_curobo` on top to run the same bed with the planner on.
     motion_planner: "ik"
 
   gripper:

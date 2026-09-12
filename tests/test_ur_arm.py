@@ -376,12 +376,18 @@ class MoveHomeIsGatedTests(unittest.TestCase):
     limits, self-collision, payload) and deliberately SKIPS the Cartesian workspace box, because that
     guard does not apply to a point-to-point joint command -- but here the box matters, because a home
     pose is a place the arm will sit.
+
+    These arms are `motion_planner: ik` on purpose, which the schema default is not: on a cuRobo
+    cell `move_home` also has the whole line to the home configuration judged by the guards and by
+    the planner, and that half is pinned in tests/test_ur_checked_joint_verbs.py. Here the question
+    is the box and the destination guards, so the planner is kept out of the picture.
     """
 
     @staticmethod
     def _arm(home=None, **cfg_extra):
         cfg = RobotConfig.model_validate({
             "vendor": "ur", "safety": {"payload": {"enforce": False}},
+            "ur": {"motion_planner": "ik"},
             "gripper": {"tool_frame": {
                 "source": "willy", "offset_mm": (0.0, 132.0, 0.0),
                 "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476),

@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from src.contracts import UNSET, Maybe, chosen
 from src.robot.drivers.sim.arm import IsaacRobotArm
 from src.utility.log_cfg import create_logger
 from src.willy_sim.config import (
@@ -50,6 +51,7 @@ __all__ = [
     "bootstrap_sim_cell",
     "motion_stack_banner",
     "require_motion_stack",
+    "resolve_runner_planner",
 ]
 
 
@@ -161,6 +163,27 @@ def _wrap(text: str, width: int) -> list[str]:
     return lines
 
 
+def resolve_runner_planner(requested: str, *, env_available: bool) -> str:
+    """The planner a runner will actually use, or a refusal. Never a quieter one than was asked for.
+
+    A run that asks for `curobo` on a box without the cuRobo environment is refused rather
+    than built on the blind `ik` path. A pick rate measured that way describes a different
+    motion stack than the cell was configured with, and the number cannot say so on its own.
+
+    Asking for `ik` explicitly still gives `ik`, whatever is installed: that is somebody
+    deciding, and a decision does not depend on what happens to be on the box.
+    """
+    if requested != "curobo" or env_available:
+        return requested
+    raise DegradedMotionStackError(
+        "this run asks for motion_planner='curobo' and the cuRobo environment is not available on "
+        "this box. Every motion would be planned and path checked by a sidecar that cannot start, so "
+        "the run is refused rather than built on the blind ik path: a pick rate measured that way "
+        "describes a different motion stack. Install the environment (see ext_deps/README.md), or "
+        "pass --motion-planner ik to say that this run is deliberately unplanned."
+    )
+
+
 def require_motion_stack(
     planner: str,
     *,
@@ -242,6 +265,7 @@ def bootstrap_sim_cell(
     robot_model: str | None = None,
     extra_profiles: Sequence[str] | None = None,
     post_scene_hook: Callable[[Any], None] | None = None,
+    motion_planner: Maybe[str] = UNSET,
 ) -> SimCell:
     """Boot the combined arm and gripper Isaac cell from the sim config tree.
 
@@ -320,9 +344,20 @@ def bootstrap_sim_cell(
     # kinematics_model is optional in the schema; an unset one means the guard has no DH chain
     # configured at all, so report the bundle for the robot the cell actually drives.
     _kin_model = robot.safety.self_collision.kinematics_model or sim.robot_model
+    # The planner this run uses: the caller's, else the tree's. It is read here rather than off
+    # ``driver_cfg`` so that the engine check, the banner and the arm all speak about the same one,
+    # because a runner that resolves ``ik`` otherwise leaves this gate asking about ``curobo``.
+    _planner = motion_planner if chosen(motion_planner) else driver_cfg.motion_planner
+    if _planner not in ("ik", "rmpflow", "curobo"):
+        raise ValueError(
+            f"motion_planner={_planner!r} is not one this driver knows; it takes 'ik', 'rmpflow' or "
+            f"'curobo'"
+        )
+    if _planner != driver_cfg.motion_planner:
+        driver_cfg = replace(driver_cfg, motion_planner=_planner)  # type: ignore[arg-type]
     degraded = tuple(
         require_motion_stack(
-            driver_cfg.motion_planner,
+            _planner,
             robot_config=_robot_yml,
             kinematics_model=_kin_model,
             exact_mesh_collision=(robot.safety.self_collision.backend or "").lower() == "fcl",
@@ -366,9 +401,10 @@ def bootstrap_sim_cell(
         session=arm.session, gripper_prim_path=sim.gripper_prim_path, profile=gripper_profile,
     )
     gripper.connect()
-    # Announce the cuRobo and Coal anchoring once, right before the runner's run loop: a "curobo"
-    # run with a missing cuRobo env degrades to blind IK, whose self-collision rejects look like
-    # grasp failures.
+    # Announce the cuRobo and Coal anchoring once, right before the runner's run loop. A "curobo"
+    # run with a missing cuRobo env refuses, so this is not the last warning before a degraded run;
+    # it stays because Coal is the other engine, and its absence is still a quieter check rather
+    # than a refusal.
     announce_planning_environment(
         driver_cfg.motion_planner, robot_config=_robot_yml, kinematics_model=_kin_model,
     )

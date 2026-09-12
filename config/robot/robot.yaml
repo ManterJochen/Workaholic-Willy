@@ -155,9 +155,9 @@ robot:
   # ``enforce: false`` removes that guard from the per-move
   # SafetyPreflight pipeline at construction time; it does not just
   # silence its log output. ``limits`` is the exception, because the
-  # workspace box is always wired, and ``planning_world`` and
-  # ``trajectory_check`` gate on ``enabled`` instead. See
-  # ``src/robot/safety/preflight.py`` for the canonical guard order.
+  # workspace box is always wired, and ``planning_world`` gates on
+  # ``enabled`` instead. See ``src/robot/safety/preflight.py`` for the
+  # canonical guard order.
   # ----------------------------------------------------------------------
   safety:
     # Margin subtracted from every face of workspace_limits before the workspace guard runs.
@@ -347,20 +347,6 @@ robot:
         sphere_slots: 16
         length_mm: 120.0
         lateral_margin_mm: 10.0
-
-    # Judge a planned path configuration by configuration, not only where it ends. Off by default,
-    # and with it off the middle of a cuRobo plan executes unexamined: the sim applies each waypoint
-    # straight to the articulation and the real UR moveJ's them in turn, so a plan that grazes a
-    # fixture halfway and lands clear passes every check there is. Guard set is the same one a
-    # commanded joint move gets (joint limits, self-collision including the declared fixtures,
-    # payload), run before the first waypoint moves rather than as they execute, because a refusal
-    # partway leaves the arm standing on a path already judged unsafe. Cost is about 9.6 ms per
-    # configuration with the exact-mesh backend, so 0.3 to 1.0 s before a 30 to 100 waypoint move.
-    # `stride` above 1 samples the path instead of checking it and leaves the rest unexamined; the
-    # final configuration is checked whatever the stride.
-    trajectory_check:
-      enabled: false
-      stride: 1
 
   # ----------------------------------------------------------------------
   # Vendor-neutral grasping behaviour: which mode runs, how many attempts,

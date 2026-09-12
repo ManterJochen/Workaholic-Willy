@@ -93,6 +93,12 @@ def _ur_curobo(planner: object | None = None, *, live_world: object | None = Non
                                              message="curobo"),
     )
     arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
+    # The path gate too. This file is about the camera world stamp, and the preflight above holds
+    # one accepting stand-in rather than a self collision guard, which a judged path refuses for
+    # its own good reasons (tests/test_planned_paths_are_judged.py holds that half).
+    arm._preflight.gate_planned_path = (  # type: ignore[method-assign]
+        lambda waypoints, *, arm=None, command=None: None
+    )
     return arm
 
 
@@ -177,19 +183,16 @@ class TheStampMatrixTests(unittest.TestCase):
 
 
 class TheSimArmTests(unittest.TestCase):
-    """The sim follows its own state: the mock, the degrade latch and ``plan_joint_moves``."""
+    """The sim follows its own state: the mock, the missing sidecar and ``plan_joint_moves``."""
 
-    def test_a_degraded_arm_says_unplanned_and_why(self) -> None:
-        arm = _sim_unconnected()
-        arm._curobo_unavailable = True
-        arm._curobo_unavailable_reason = "no cuRobo environment on this host"
-        result = arm.move(_pose())
-        self.assertIs(result.status, MotionStatus.CONNECTION_ERROR)
-        self.assertEqual(result.camera_world, _SIM_DEGRADED)
+    def test_a_sidecar_that_cannot_start_refuses_the_move(self) -> None:
+        """It used to drive the blind ik path instead and stamp the result UNPLANNED, saying why.
 
-    def test_the_latch_is_read_after_the_move_that_set_it(self) -> None:
-        """Before this move the arm reads as a cuRobo arm; the move probes the sidecar, finds none and
-        drives ik. The stamp describes the motion that happened."""
+        That stamp was the honest half of a dishonest arrangement: the cell kept running, blind IK
+        proposed configurations the self collision guard refused, and a validation run reported a low
+        rate with nothing tying it back to a planner that never started. The move is refused now, so
+        there is no motion left to stamp.
+        """
         arm = _sim_unconnected()
         arm._articulation = object()  # type: ignore[assignment]
         arm._kin_solver = object()  # type: ignore[assignment]
@@ -197,11 +200,19 @@ class TheSimArmTests(unittest.TestCase):
         arm._resolve_ik = lambda pose: _JOINTS  # type: ignore[method-assign]
         arm._get_curobo_client = MagicMock(  # type: ignore[method-assign]
             side_effect=CuroboUnavailableError("no cuRobo environment on this host"))
-        arm._drive_to_target = lambda pose, joints: MotionResult.executed(  # type: ignore[method-assign]
-            MotionCommand.MOVE_TO, target_pose=pose, message="ik")
+        drove = []
+        arm._drive_to_target = lambda pose, joints: drove.append(pose)  # type: ignore[method-assign]
         result = arm.move(_pose())
-        self.assertTrue(arm.curobo_degraded, "the move did not take the degrade path")
-        self.assertEqual(result.camera_world, _SIM_DEGRADED)
+        self.assertIs(result.status, MotionStatus.CONTROLLER_REJECTED)
+        self.assertIn("cuRobo planner unavailable", result.message or "")
+        self.assertEqual([], drove, "the arm drove the blind path anyway")
+
+    def test_the_arm_no_longer_carries_a_degrade_latch(self) -> None:
+        """A flag nobody can set is a state nobody can be in, which is the point of the change."""
+        arm = _sim_unconnected()
+        for name in ("curobo_degraded", "curobo_degraded_reason", "_curobo_unavailable"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(arm, name))
 
     def test_an_rmpflow_arm_says_unplanned_and_names_the_policy(self) -> None:
         """RMPflow is a reactive policy on the sim arm, not a planner that consults a camera world, so

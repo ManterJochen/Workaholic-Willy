@@ -65,9 +65,9 @@ class SafetyGated(Protocol):
         """The pipeline judging every motion commanded through this arm's verbs, or ``None``.
 
         Judging is not uniform: a joint command meets only the destination guards, and
-        the middle of a planned path is judged only when ``checks_trajectories`` is on.
-        Which planner, if any, produced the path is a separate question, and a raw
-        transport a driver also exposes reaches the controller below this pipeline.
+        the middle of a path is judged only where a path exists, which is to say only
+        where a planner produced one. A raw transport a driver also exposes reaches the
+        controller below this pipeline.
         """
         ...
 
@@ -115,7 +115,9 @@ class SafetyAttestation:
     #: an `enforce: false` block removes that family surface entirely rather than
     #: silencing its log.
     omitted: tuple[str, ...] = ()
-    #: Whether the guards ever judge the middle of a planned path, or only its endpoints.
+    #: Whether the guards ever judge the middle of a path, or only its endpoints. True
+    #: where the arm plans its moves, because a planned path is judged sample by sample
+    #: and an interpolated move has no middle to judge.
     checks_trajectories: bool = False
 
     @property
@@ -157,7 +159,13 @@ class SafetyAttestation:
             if preflight is None:
                 return cls(arm=name, posture=SafetyPosture.UNGATED)
             names = tuple(preflight.guard_names)
-            trajectories = bool(preflight.checks_trajectories)
+            # Read this off the arm and not off a config key. A path is judged whenever
+            # there is one, and whether there is one is decided by what plans this arm's
+            # moves: a planner produces a path, an interpolated move has no middle to
+            # look at. A key answering this can stand at false on a cell that plans every
+            # move, and the attestation then reads as endpoints only for a cell about to
+            # execute a whole trajectory.
+            trajectories = bool(getattr(arm, "plans_paths", False))
             # `getattr` with a default, because a caller can supply any object with a
             # `safety_preflight`, and an attestation that raised on an unfamiliar one
             # would fail exactly where it is asked whether it is safe to start.

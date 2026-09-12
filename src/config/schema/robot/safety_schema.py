@@ -330,23 +330,6 @@ class SupportPlaneConfig(StrictModel):
         return self
 
 
-class TrajectoryCheckConfig(StrictModel):
-    """Whether a planned path is checked configuration by configuration before any of it is commanded.
-
-    The one-shot guards judge where a move ends, so a plan that grazes a fixture in the middle and
-    lands clear passes them. While this is disabled nothing checks the middle: the sim applies each
-    waypoint straight to the articulation and the real UR moveJ's them in turn, so the planner is
-    asked for a collision-free path and then trusted to have produced one.
-
-    The exact-mesh backend costs about 9.6 ms per configuration, so a 30 to 100 waypoint plan adds
-    roughly 0.3 to 1.0 s before the arm starts moving. That is paid once per move, ahead of motion,
-    not interleaved with control.
-    """
-
-    enabled: bool = Field(default=False)
-    stride: int = Field(default=1, ge=1, le=64)
-
-
 class AttachedPayloadConfig(StrictModel):
     """Whether the planner is told that the gripper is carrying something.
 
@@ -561,8 +544,8 @@ class RobotSafetyConfig(StrictModel):
     """Vendor-neutral safety surface.
 
     Each guard is a dedicated sub-block carrying its own gate: ``enforce`` on most, ``enabled`` on
-    :attr:`planning_world` and :attr:`trajectory_check`, ``require_steady_before_motion`` on
-    :attr:`dwell`. An operator can disable one guard without touching the others.
+    :attr:`planning_world`, ``require_steady_before_motion`` on :attr:`dwell`. An operator can
+    disable one guard without touching the others.
 
     Sub-blocks
     ----------
@@ -574,7 +557,6 @@ class RobotSafetyConfig(StrictModel):
     * :attr:`self_collision`: link-link and link-fixture collision.
     * :attr:`dwell`: post-Stop dwell and steady-state gating.
     * :attr:`planning_world`: the boxes the trajectory planner routes around.
-    * :attr:`trajectory_check`: gate every configuration of a planned path, not only its end.
 
     Not here: the emergency stop. It is a hardware and controller function, and nothing in this
     package can enable, disable, route or observe it.
@@ -592,5 +574,4 @@ class RobotSafetyConfig(StrictModel):
     )
     dwell: DwellSafetyConfig = Field(default_factory=DwellSafetyConfig)
     planning_world: PlanningWorldConfig = Field(default_factory=PlanningWorldConfig)
-    trajectory_check: TrajectoryCheckConfig = Field(default_factory=TrajectoryCheckConfig)
 

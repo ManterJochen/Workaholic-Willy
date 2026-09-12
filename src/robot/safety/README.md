@@ -52,6 +52,7 @@ reclassifying anything.
 | `ik_quality.py` | `IKQualityGuard` |
 | `self_collision.py` | `SelfCollisionGuard`, with the capsule and exact-mesh backends |
 | `payload.py` | `PayloadGuard` |
+| `path_samples.py` | `PathSamples` and `LineSamples` with `joint_path_samples` and `line_samples`: a move turned into the configurations a checker judges, with the step derived from the reach |
 | `continuity.py` | `MotionContinuityGuard` |
 | `singularity.py` | Jacobian and singular-value analysis helpers, and `SingularityGuard` |
 | `continuous_monitor.py` | the opt-in per-control-step collision-avoidance monitor |
@@ -116,9 +117,13 @@ if (result := SafetyPreflight.as_motion_result(decision, command, target_pose=po
 `from_safety_config(safety_cfg, workspace_cfg, *, extra_guards=())` or `from_workspace_only(...)`.
 Make a context with `context_for_pose(...)` or `context_for_joints(...)`; evaluate with
 `evaluate(ctx)`; gate a deliberate joint move with `gate_joint_target(joints, *, arm=None)`; gate a
-whole planned path with `gate_trajectory(waypoints, *, arm=None, stride=None)`; clear the memo with
-`reset()`; translate a rejection with the static `as_motion_result(...)`. Introspect through
-`guards`, `guard_names`, `omitted_guards` and `checks_trajectories`.
+whole path with `gate_joint_path(samples, *, arm=None, command=...)` or, from a planner's waypoints,
+with `gate_planned_path(waypoints, *, arm=None, command=...)`; clear the memo with `reset()`;
+translate a rejection with the static `as_motion_result(...)`. Introspect through `guards`,
+`guard_names`, `omitted_guards` and `path_step_mm`.
+
+The path gates have no off switch and no stride. They refuse rather than judge a path with the
+capsule proxy or with no self-collision guard at all, and a refusal names the sample.
 
 `SafetyDecision` is built with `accept(guard)`, `reject(guard, reason, ...)` or
 `unavailable(guard, ...)` and read through `accepted`, `rejected` and `motion_status`.
@@ -186,12 +191,13 @@ that final configuration, so the exact-mesh gate is never skipped.
 
 ## Two things that gate a path rather than a point
 
-`safety.trajectory_check` gates every configuration of a planned path before any of it is commanded,
-using the same guards as a joint move: joint limits, self-collision including the declared fixtures,
-and payload. It is off by default. While it is off, nothing examines the middle of a plan: the sim
-applies each waypoint to the articulation and a real UR runs them in turn, so a path that grazes a
-fixture halfway and lands clear passes every check there is. `stride` samples the path instead of
-checking it, trading coverage for time, and the final configuration is checked whatever the stride.
+`gate_joint_path` and `gate_planned_path` judge every configuration of a path before any of it is
+commanded, using the same guards as a joint move: joint limits, self-collision including the declared
+fixtures, and payload. There is no key that switches them off and no stride. The sim applies each
+waypoint to the articulation and a real UR runs them in turn, so a path that grazes a fixture halfway
+and lands clear is exactly what an endpoint check cannot see. The step comes from the collision
+margin, which is the coarsest sampling the check can survive, and the reach is read off the arm, so a
+robot whose reach does not derive is refused rather than sampled by a number nobody measured.
 
 `ContinuousCollisionMonitor` runs the exact-mesh backend over every interpolation waypoint of a move,
 arm against itself and arm against fixtures, with a clearance margin that stops before contact and a

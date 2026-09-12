@@ -45,7 +45,7 @@ from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
 from src.robot.constants import SAFETY_PREFLIGHT_LOG_FILE, create_robot_logger
-from src.robot.core import MotionCommand, MotionResult
+from src.robot.core import MotionCommand, MotionResult, MotionStatus
 
 from .continuity import MotionContinuityGuard
 from .decision import SafetyDecision, SafetyReason
@@ -64,6 +64,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.geometry import Pose
     from src.robot.core import JointPositions, RobotArm
     from src.robot.safety._capsule import AxisAlignedBox
+    from src.robot.safety.path_samples import PathSamples
 
 __all__ = [
     "SafetyPreflight",
@@ -137,13 +138,7 @@ class SafetyPreflight:
         "motion_continuity",
     )
 
-    def __init__(
-        self,
-        guards: Sequence[SafetyGuard],
-        *,
-        check_trajectories: bool = False,
-        trajectory_stride: int = 1,
-    ) -> None:
+    def __init__(self, guards: Sequence[SafetyGuard]) -> None:
         # Copy to a tuple, so the pipeline is immutable after construction. A guard
         # instance stays mutable, because it owns its own cache, but the sequence
         # cannot be reordered or extended at runtime.
@@ -154,16 +149,6 @@ class SafetyPreflight:
         # guard has the previous target to compare against on the next call.
         self._last_target_pose: "Pose | None" = None
         self._last_target_joints: "JointPositions | None" = None
-        # Whether a planned path is judged configuration by configuration, and how
-        # densely. It is held here rather than read by each driver, because the two
-        # drivers that reach a planned trajectory hold different config objects and the
-        # sim one carries no safety block at all.
-        self._check_trajectories = bool(check_trajectories)
-        self._trajectory_stride = max(1, int(trajectory_stride))
-        #: The warn-once latch for a planned path executing with the trajectory check
-        #: off. It is per preflight rather than per module, so a second cell in the same
-        #: process is still told.
-        self._warned_unchecked_path = False
 
     # ------------------------------------------------------------------
     # Factories
@@ -227,12 +212,7 @@ class SafetyPreflight:
             guards.append(MotionContinuityGuard(safety_cfg.motion_continuity))
         guards.extend(extra_guards)
         guards.sort(key=lambda g: cls._guard_order_key(g.name))
-        check = getattr(safety_cfg, "trajectory_check", None)
-        return cls(
-            guards,
-            check_trajectories=bool(getattr(check, "enabled", False)),
-            trajectory_stride=int(getattr(check, "stride", 1) or 1),
-        )
+        return cls(guards)
 
     @staticmethod
     def _guard_order_key(name: str) -> int:
@@ -277,16 +257,6 @@ class SafetyPreflight:
         """
         wired = set(self.guard_names)
         return tuple(name for name in self._CANONICAL_ORDER if name not in wired)
-
-    @property
-    def checks_trajectories(self) -> bool:
-        """Whether :meth:`gate_trajectory` judges a path or waves it through.
-
-        It is printable on purpose. ``guard_names`` is how an operator sees which guards
-        are in the pipeline, and this is how they see whether those guards ever meet the
-        middle of a planned path.
-        """
-        return self._check_trajectories
 
     # ------------------------------------------------------------------
     # Context builders
@@ -429,101 +399,231 @@ class SafetyPreflight:
                 told += 1
         return told
 
-    def gate_trajectory(
+    #: The guard whose verdict a judged path rests on. Named once, because three places
+    #: ask for it.
+    _PATH_AUTHORITY = "self_collision"
+
+    def _path_authority(self, arm: "RobotArm | None") -> "SelfCollisionGuard | None":
+        """The self-collision guard, if one is wired at all."""
+        for guard in self._guards:
+            if guard.name == self._PATH_AUTHORITY and isinstance(guard, SelfCollisionGuard):
+                return guard
+        return None
+
+    def _say_and_refuse(
+        self, message: str, command: MotionCommand
+    ) -> "MotionResult | None":
+        """Refuse a path, and say so where somebody will read it.
+
+        The guards log when they refuse a sample, and these refusals happen before any
+        sample is judged. Without a line here, a cell that cannot judge a path at all
+        produces a pass rate of zero and a log full of successful perception, with nothing
+        naming the cause. The typed result carries it too, but a runner that reports only
+        a rate throws the result away.
+        """
+        self._logger.warning("Safety preflight refused to judge a path: %s", message)
+        return SafetyPreflight.as_motion_result(
+            SafetyDecision.reject(
+                self._PATH_AUTHORITY,
+                SafetyReason.UNAVAILABLE,
+                message=message,
+                motion_status_override=MotionStatus.UNSUPPORTED,
+            ),
+            command,
+        )
+
+    def _cannot_judge_a_path(
+        self, arm: "RobotArm | None", command: MotionCommand
+    ) -> "MotionResult | None":
+        """Refuse before the first sample where the verdict would be a fiction, else ``None``.
+
+        There are two ways it would be. With no self-collision guard there is nothing to
+        ask, and every sample would come back accepted by a pipeline that looked at
+        nothing. With the capsule proxy the answer is worse than nothing: the proxy bounds
+        the arm links with capsules and cannot see the gripper on a joint-only context, so
+        a folded finger passes it. A path is judged on exact meshes at every sample, and a
+        gate that quietly degraded would report a check that never ran.
+        """
+        guard = self._path_authority(arm)
+        if guard is None:
+            return self._say_and_refuse(
+                "no self_collision guard is wired, so nothing here can judge a path: "
+                "safety.self_collision.enforce is false in this cell. A planned path is "
+                "refused rather than executed unexamined",
+                command,
+            )
+        if guard.exact_mesh_engine(arm) is None:
+            return self._say_and_refuse(
+                "the self_collision guard would answer this path with the capsule proxy, "
+                "which bounds the arm links and cannot see the gripper on a joint "
+                "configuration at all. Judging a path needs the exact mesh engine: set "
+                "safety.self_collision.backend to fcl, install python-fcl or Coal, and give "
+                "the cell the baked mesh bundle for its robot model",
+                command,
+            )
+        return None
+
+    def gate_joint_path(
         self,
-        waypoints: "Sequence[Sequence[float]]",
+        samples: "PathSamples",
         *,
         arm: "RobotArm | None" = None,
-        stride: int | None = None,
+        command: MotionCommand = MotionCommand.MOVE_JOINTS,
     ) -> "MotionResult | None":
-        """Gate a whole planned path before any of it is commanded.
+        """Judge every configuration of a path before any of it is commanded.
 
-        ``None`` means every checked configuration passed. The one-shot gates in this
-        class judge where a move ends, and a planner hands over the whole path, so the
-        whole path can be judged: a plan that grazes a fixture in the middle and lands
-        clear is exactly what an endpoint check cannot see.
+        ``None`` means every sample passed. There is no off switch and no stride. This
+        gate is reached only where a path exists and is about to execute, and a path
+        nobody looks at is the hole it closes: a plan that grazes a bench halfway and
+        lands clear passes every endpoint check there is.
 
-        The check runs before the first waypoint moves rather than as they execute,
-        because a refusal partway leaves the arm standing on a path already judged
-        unsafe, and there is nowhere good to put it.
+        The samples carry the step they kept (``step_bound_mm``), so a pass means the path
+        is clear to within that much unexamined travel between neighbours, and a refusal
+        names the sample.
 
-        The guard set matches :meth:`gate_joint_target`: joint limits, self-collision,
-        which carries the declared fixtures so the bench is checked here too, and
-        payload. The Cartesian guards do not apply to an interpolated joint
-        configuration, and continuity between waypoints that are adjacent by
-        construction would reject every plan.
+        Judged before the first configuration moves rather than as they execute, because a
+        refusal partway leaves the arm standing on a path already judged unsafe, and there
+        is nowhere good to put it.
 
-        It returns ``None`` immediately unless ``safety.trajectory_check.enabled`` built
-        this preflight with the check on, and off is the default that leaves behaviour
-        unchanged.
-
-        ``stride`` samples the path instead of checking it. A stride above 1 trades
-        coverage for speed and leaves the skipped configurations unexamined. The
-        endpoint is checked whatever the stride, because it is the one configuration the
-        arm certainly stops in. ``None`` uses the configured stride.
+        ``command`` is the verb the caller is serving, and it is what the refusal carries.
+        The guards themselves are always asked about a joint configuration, because that
+        is what a sample is, whether it came from a joint move or from the inverse
+        kinematics of a line.
         """
         from src.robot.core import JointPositions
 
-        if not waypoints:
+        configs = samples.configs
+        if not configs:
             return None
-        if not self._check_trajectories:
-            # Said here, because here is where it becomes true. Reaching this line
-            # means a multi-waypoint path is about to execute and nothing will look at
-            # its middle: the sim applies each waypoint straight to the articulation and
-            # a real UR moveJ runs them in turn, so a plan that grazes a bench or a bin
-            # wall halfway and lands clear passes every check there is. The one-shot
-            # guard on the final configuration cannot see a path.
-            #
-            # It is a warning rather than a refusal for a measured reason. Every profile
-            # this repository ships has `motion_planner: curobo` with
-            # `trajectory_check.enabled: false`, `planning_world.enabled: false` and
-            # `self_collision.fixtures: []`, so a config-time refusal would refuse the
-            # shipped tree, which is a rule too sharp to be a guard. What is missing is
-            # not a rule but the sentence: the YAML comment states this exactly, and
-            # nobody reads a YAML comment with an arm in front of them.
-            #
-            # Once per preflight, because a pick loop plans continuously and a line per
-            # motion would teach an operator to filter the channel it appears in.
-            if not self._warned_unchecked_path:
-                self._warned_unchecked_path = True
-                self._logger.warning(
-                    "a %d-waypoint planned path is executing unexamined between its endpoints: "
-                    "safety.trajectory_check.enabled is false, so only the final configuration was "
-                    "gated. Turn it on to judge the path (about 9.6 ms per configuration), and "
-                    "declare safety.self_collision.fixtures plus safety.planning_world so the guard "
-                    "and the planner both know your bench, bin and fixtures exist",
-                    len(waypoints),
-                )
-            return None
-        step = max(1, int(self._trajectory_stride if stride is None else stride))
-        indices = list(range(0, len(waypoints), step))
-        if indices[-1] != len(waypoints) - 1:
-            indices.append(len(waypoints) - 1)
+        if (refusal := self._cannot_judge_a_path(arm, command)) is not None:
+            return refusal
 
-        self.reset()  # a planned path restarts the trajectory, as a joint move does
+        self.reset()  # a judged path is a restart, as a commanded joint move is
+        total = len(configs)
         rejected: "MotionResult | None" = None
-        for position in indices:
-            joints = JointPositions(tuple(float(v) for v in waypoints[position]))
+        for index, values in enumerate(configs):
+            joints = JointPositions(tuple(float(v) for v in values))
             ctx = self.context_for_joints(joints, command=MotionCommand.MOVE_JOINTS, arm=arm)
             for guard in self._guards:
                 if guard.name in self._JOINT_MOVE_SKIP_GUARDS:
                     continue
                 decision = guard.evaluate(ctx)
-                if decision.rejected:
-                    self._logger.warning(
-                        "Safety preflight rejected a PLANNED PATH at waypoint %d of %d: "
-                        "guard=%s reason=%s message=%s",
-                        position + 1, len(waypoints), decision.guard, decision.reason.value,
-                        decision.message or "<empty>",
-                    )
-                    rejected = SafetyPreflight.as_motion_result(
-                        decision, MotionCommand.MOVE_JOINTS, target_joints=joints,
-                    )
-                    break
+                if not decision.rejected:
+                    continue
+                self._logger.warning(
+                    "Safety preflight rejected a PLANNED PATH at sample %d of %d "
+                    "(step bound %.3f mm): guard=%s reason=%s message=%s",
+                    index + 1, total, samples.step_bound_mm, decision.guard,
+                    decision.reason.value, decision.message or "<empty>",
+                )
+                located = SafetyDecision.reject(
+                    decision.guard,
+                    decision.reason,
+                    message=(
+                        f"sample {index + 1} of {total} of a path sampled at "
+                        f"{samples.step_bound_mm:.3f} mm a step: {decision.message}"
+                        if decision.message
+                        else f"sample {index + 1} of {total} of a path sampled at "
+                             f"{samples.step_bound_mm:.3f} mm a step"
+                    ),
+                    detail={
+                        **decision.detail,
+                        "sample": str(index + 1),
+                        "samples": str(total),
+                        "step_bound_mm": f"{samples.step_bound_mm:.6f}",
+                    },
+                )
+                rejected = SafetyPreflight.as_motion_result(
+                    located, command, target_joints=joints,
+                )
+                break
             if rejected is not None:
                 break
         self.reset()
         return rejected
+
+    @property
+    def path_step_mm(self) -> float | None:
+        """How far a sampled path may move any point of the arm between two samples, or ``None``.
+
+        It is the collision margin of the self-collision guard. A path sampled more
+        coarsely than the margin can pass a link through a body between two samples with
+        both of them accepted, so the margin is not one choice among several: it is the
+        coarsest sampling the check can survive. ``None`` when no self-collision guard is
+        wired, which is also when a path cannot be judged at all.
+        """
+        guard = self._path_authority(None)
+        return None if guard is None else guard.min_distance_mm
+
+    def gate_planned_path(
+        self,
+        waypoints: "Sequence[Sequence[float]]",
+        *,
+        arm: "RobotArm | None" = None,
+        command: MotionCommand = MotionCommand.MOVE_TO,
+    ) -> "MotionResult | None":
+        """Sample a planner's whole path and judge every configuration.
+
+        ``None`` means every sample passed. A planner hands over corners. Between two of
+        them the arm runs the joint-space line, on a real UR by moveJ-ing to each in turn
+        and in the sim by applying each to the articulation, so judging the waypoints
+        alone judges the corners and not the path. The legs are sampled at the collision
+        margin, which is the coarsest step the check can survive, and the reach the
+        sampling needs is read off the arm rather than configured.
+
+        Fail-closed in both new ways it can fail: a robot whose reach does not derive
+        cannot be sampled by this rule, and a path too long for the checker's cap is
+        refused rather than thinned.
+        """
+        from .path_samples import waypoint_path_samples
+
+        if not waypoints:
+            return None
+        if (refusal := self._cannot_judge_a_path(arm, command)) is not None:
+            return refusal
+        step_mm = self.path_step_mm
+        reach_mm = self.joint_radii_mm(arm)
+        if reach_mm is None or step_mm is None:
+            return self._say_and_refuse(
+                f"no reach derives for {type(arm).__name__}, and a path is sampled by how far a "
+                f"joint angle can swing a point of the arm. Declare the robot this cell drives as "
+                f"safety.self_collision.kinematics_model, which is also what the guard loads its "
+                f"meshes for; only the UR models in UR_DH_TABLES_M carry a reach today",
+                command,
+            )
+        try:
+            samples = waypoint_path_samples(
+                waypoints, reach_mm=reach_mm, max_step_mm=step_mm,
+            )
+        except ValueError as exc:
+            return self._say_and_refuse(str(exc), command)
+        return self.gate_joint_path(samples, arm=arm, command=command)
+
+    def joint_radii_mm(self, arm: "RobotArm | None") -> "tuple[float, ...] | None":
+        """Per joint, how far ``arm`` can swing a point when that joint turns, or ``None``.
+
+        One radius per joint rather than one for the arm, because the wrist carries a hand
+        and the shoulder carries the whole arm: holding both to the shoulder's radius
+        samples a wrist move far more densely than the geometry asks, and on a ur5e it is
+        the difference between an ordinary six-joint move fitting under the checker's cap
+        and being refused by it.
+
+        The model comes from the self-collision guard, which resolves ``kinematics_model``
+        first and the arm second. It has to be the same answer: the guard places link
+        meshes for one robot and the sampler bounds the sweep of another, and a cell where
+        those disagree is judged twice against two arms. It is also the only answer a sim
+        cell has, because the Isaac driver reports its model as ``isaac-sim``.
+        """
+        from ._ur_kinematics import ur_joint_radii_mm
+
+        guard = self._path_authority(arm)
+        model = guard.model_for(arm) if guard is not None else None
+        if not model:
+            capabilities = getattr(arm, "capabilities", None)
+            model = getattr(capabilities, "model", None)
+        if not model:
+            return None
+        return ur_joint_radii_mm(str(model))
 
     def gate_joint_target(
         self,

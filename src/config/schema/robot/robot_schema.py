@@ -39,7 +39,6 @@ from .safety_schema import (
     PlannerMeshConfig,
     SelfCollisionSafetyConfig,
     SupportPlaneConfig,
-    TrajectoryCheckConfig,
 )
 from .tool_frame_schema import ToolFrameConfig
 
@@ -128,7 +127,6 @@ __all__ = [
     "PlanningWorldConfig",
     "SelfCollisionSafetyConfig",
     "SupportPlaneConfig",
-    "TrajectoryCheckConfig",
     "SimCameraSchema",
     "SimConfig",
     "SimGateConfig",

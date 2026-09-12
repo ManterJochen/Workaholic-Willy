@@ -76,6 +76,13 @@ def _curobo_ur(*, plans: bool = True) -> tuple[URRobotArm, list[MotionResult]]:
     planner = _PlannerThatArrives([[0.0, -1.5, 1.5, 0.0, 1.5, 0.0]] if plans else [])
     arm._curobo_ur = planner  # type: ignore[assignment]
     arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
+    # The path gate too. This file is about what a calibration sweep says about the camera world,
+    # and the preflight above holds one accepting stand-in rather than a self collision guard,
+    # which a judged path refuses outright (exact meshes on every sample, or no motion).
+    # tests/test_planned_paths_are_judged.py holds that half.
+    arm._preflight.gate_planned_path = (  # type: ignore[method-assign]
+        lambda waypoints, *, arm=None, command=None: None
+    )
     arm.get_tcp_pose = lambda: planner.at  # type: ignore[method-assign, assignment, return-value]
     seen: list[MotionResult] = []
     move = arm.move

@@ -20,3 +20,11 @@
 robot:
   ur:
     model: "ur3e"
+
+  safety:
+    self_collision:
+      # A UR3e is a smaller arm, and the 10 mm margin the `ursim_curobo` layer sets for a
+      # UR5e leaves it no plan at all. Inert while this layer runs over plain `ursim`, which
+      # plans nothing; it bites on the bed chain `ursim,ursim_curobo,ursim_ur3`, where the
+      # layer order puts this one last.
+      planner_margin_mm: 4.0

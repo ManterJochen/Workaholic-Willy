@@ -246,12 +246,30 @@ class TheProtocolCarriesTheIdOnBothSidesTests(unittest.TestCase):
                       "the server no longer reads the request id")
 
     def test_every_request_method_demands_its_own_reply(self) -> None:
-        """⚠ ONE FORGOTTEN CALL SITE WOULD BE THE WHOLE DEFECT AGAIN, on whichever verb it was."""
+        """⚠ ONE FORGOTTEN CALL SITE WOULD BE THE WHOLE DEFECT AGAIN, on whichever verb it was.
+
+        Every read of the queue names the reply it wants, whatever timeout it passes. The one read
+        that cannot is the ready handshake, which the server emits before it has a request to answer.
+        """
         source = Path(client_module.__file__).read_text(encoding="utf-8")
-        unpaired = [line.strip() for line in source.splitlines()
-                    if "self._recv(_PLAN_TIMEOUT_S)" in line]
-        self.assertEqual([], unpaired,
-                         "a request method reads the queue without naming which reply it wants")
+        unpaired = _reads_without_want(source)
+        self.assertEqual(1, len(unpaired),
+                         f"a request method reads the queue without naming which reply it wants: "
+                         f"{unpaired}")
+        self.assertIn("_READY_TIMEOUT_S", unpaired[0],
+                      "the only read without an id must be the ready handshake")
+
+    def test_the_scan_reports_a_read_under_any_timeout_name(self) -> None:
+        """The self-failing control: a read under a timeout name the old scan never listed."""
+        synthetic = ("msg = self._recv(_CHECK_TIMEOUT_S)\n"
+                     "msg = self._recv(_PLAN_TIMEOUT_S, want=want)\n")
+        self.assertEqual(["msg = self._recv(_CHECK_TIMEOUT_S)"], _reads_without_want(synthetic))
+
+
+def _reads_without_want(source: str) -> list[str]:
+    """Every line that reads the reply queue without naming which reply it wants."""
+    return [line.strip() for line in source.splitlines()
+            if "self._recv(" in line and "want=" not in line]
 
 
 if __name__ == "__main__":

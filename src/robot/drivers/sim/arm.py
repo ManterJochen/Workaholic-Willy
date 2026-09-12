@@ -304,15 +304,6 @@ class IsaacRobotArm(RobotArm):
         # it. A runner sets it, as it sets _natural_aim_seed and _continuous_monitor,
         # before the config carries it.
         self._plan_joint_moves: bool = False
-        # The cuRobo fallback. Where motion_planner is "curobo" and the sidecar or its
-        # environment is unavailable, for want of an environment or a python or because
-        # the server boot fails, the first move() probes once, logs a warning, latches
-        # this flag and degrades to the blind "ik" path. That is what makes cuRobo by
-        # default safe on a box without the cuRobo environment instead of failing every
-        # motion.
-        self._curobo_unavailable: bool = False
-        #: Why it became unavailable, kept so a runner can report the cause and not just the symptom.
-        self._curobo_unavailable_reason: str = ""
         #: Obstacles re-sent underneath every scene registration; see set_planner_base_world.
         self._planner_base_world: list[dict] = []
         #: The cell as the cameras see it, asked immediately before every plan. `None` is the
@@ -352,7 +343,7 @@ class IsaacRobotArm(RobotArm):
         judged without IK quality and motion continuity. A joint command is judged at its
         destination by the destination guards only (joint limits, self-collision,
         payload), and a cuRobo-planned joint path (``plan_joint_moves``) is not judged
-        between its endpoints, whatever ``checks_trajectories`` says.
+        between its endpoints.
 
         It implements :class:`~src.robot.safety.attestation.SafetyGated`, so a caller
         asks what this arm will refuse without reaching into `_preflight`. That matters
@@ -360,6 +351,16 @@ class IsaacRobotArm(RobotArm):
         driver registry cannot see, so the answer travels with the object.
         """
         return self._preflight
+
+    @property
+    def plans_paths(self) -> bool:
+        """Whether a move on this arm produces a path, and so has a middle to judge.
+
+        A cuRobo arm that cannot reach its sidecar refuses its motions rather than running
+        them unplanned, so what this says is what the cell will do, and the alternative is a
+        refusal rather than a quieter planner.
+        """
+        return self._motion_planner == "curobo"
 
     @property
     def mock_mode(self) -> bool:
@@ -636,21 +637,17 @@ class IsaacRobotArm(RobotArm):
     def _move_camera_world(self, keyword: Maybe[CameraWorldDecline]) -> CameraWorldStamp:
         """What stands behind a ``move`` on this arm as it is now.
 
-        Asked again after the move for the stamp, because the move is where a cuRobo arm finds its
-        sidecar missing and latches the ik fallback: the latch is read here, and the sidecar is
-        never probed from here. The RMPflow policy is a reactive controller that consults no camera
-        world, so its motions say UNPLANNED, as every motion no planner planned does.
+        Read off the arm rather than off config, and there is no case where the two differ: a cuRobo
+        arm whose sidecar cannot start refuses the move instead of driving it blind, so a result that
+        exists at all was planned by the planner this cell was configured with. The RMPflow policy is
+        a reactive controller that consults no camera world, so its motions say UNPLANNED, as every
+        motion no planner planned does.
         """
         block = active_decline(self)
         planner = self._motion_planner
         unplanned: str | None
         if self.mock_mode:
             unplanned = _MOCK_PLANS_NOTHING
-        elif planner == "curobo" and self._curobo_unavailable:
-            unplanned = (
-                f"cuRobo is configured and unavailable, so this arm drives the ik path: "
-                f"{self._curobo_unavailable_reason}"
-            )
         elif planner == "curobo":
             unplanned = None
         elif planner == "rmpflow":
@@ -717,14 +714,81 @@ class IsaacRobotArm(RobotArm):
         acceleration: float | None = None,
     ) -> MotionResult:
         """The body of :meth:`move_to_joints`. It stamps nothing; the public verb does."""
-        if self._preflight is not None:
-            rejected = self._preflight.gate_joint_target(joints, arm=self)
-            if rejected is not None:
-                return rejected
+        refused = self._judge_joint_move(joints, command=MotionCommand.MOVE_JOINTS)
+        if refused is not None:
+            return refused
         self._drive_joints(joints, velocity=velocity, acceleration=acceleration)
         return MotionResult.executed(
             MotionCommand.MOVE_JOINTS, target_joints=joints, message="move_to_joints",
         )
+
+    def _judge_joint_move(
+        self, joints: JointPositions, *, command: MotionCommand
+    ) -> "MotionResult | None":
+        """Judge a joint move before anything is applied; ``None`` means it may run.
+
+        In mock mode and on any planner but cuRobo this is the destination gate and nothing
+        else. On a cuRobo cell it is the whole line from where the arm is standing to where
+        it was told to go, judged by the local guards and by the planner, because
+        ``_walk_joints`` applies the interpolation straight to the articulation: the
+        configurations between the two ends are executed and nothing else looks at them.
+        """
+        if self._preflight is None:
+            return None
+        if self.mock_mode or self._motion_planner != "curobo":
+            return self._preflight.gate_joint_target(joints, arm=self)
+        try:
+            here = [float(v) for v in self.get_joint_positions().tolist()]
+        except Exception as exc:  # noqa: BLE001 (no current configuration, no path to judge)
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, command, target_joints=joints,
+                message=f"a judged joint move starts at the current configuration: {exc}",
+                exception=exc,
+            )
+        refused = self._preflight.gate_planned_path(
+            [here, joints.tolist()], arm=self, command=command,
+        )
+        if refused is not None:
+            return refused
+        return self._planner_judges_joints(here, joints, command=command)
+
+    def _planner_judges_joints(
+        self, here: list[float], goal: JointPositions, *, command: MotionCommand
+    ) -> "MotionResult | None":
+        """The sidecar's verdict on the same line, against the world it holds; ``None`` accepts."""
+        from src.robot.safety.path_samples import joint_path_samples
+
+        assert self._preflight is not None  # noqa: S101 (the caller checked)
+        step_mm = self._preflight.path_step_mm
+        radii = self._preflight.joint_radii_mm(self)
+        if step_mm is None or radii is None:
+            return None  # gate_planned_path said so already; a second voice would only repeat it
+        path = joint_path_samples(here, goal.tolist(), reach_mm=radii, max_step_mm=step_mm)
+        try:
+            client = self._get_curobo_client()
+            verdict = client.check_joints(self._to_client_joint_order(path.configs, client))
+        except CuroboUnavailableError as exc:
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, command, target_joints=goal,
+                message=f"cuRobo planner unavailable: {exc}", exception=exc,
+            )
+        if verdict.valid:
+            return None
+        return MotionResult.failed(
+            MotionStatus.SELF_COLLISION_REJECTED, command, target_joints=goal,
+            message=f"the planner refused this joint path: {verdict.reason}",
+        )
+
+    @staticmethod
+    def _to_client_joint_order(
+        configs: "Sequence[Sequence[float]]", client: "CuroboPlanClient"
+    ) -> list[list[float]]:
+        """Reorder arm-order configurations into the planner's own joint order."""
+        names = list(getattr(client, "joint_names", ()) or ())
+        if not names or set(names) != set(_ARM_JOINT_NAMES):
+            return [[float(v) for v in config] for config in configs]
+        index = {name: position for position, name in enumerate(_ARM_JOINT_NAMES)}
+        return [[float(config[index[name]]) for name in names] for config in configs]
 
     def move_joint(
         self,
@@ -1226,50 +1290,31 @@ class IsaacRobotArm(RobotArm):
         return self._curobo_client
 
     def _resolve_motion_planner(self) -> str:
-        """The effective planner for this move, with the cuRobo fallback.
+        """The planner for this move, or a refusal. Never a quieter planner than the one configured.
 
-        It returns ``self._motion_planner`` verbatim unless that is ``"curobo"`` and the
-        cuRobo sidecar or environment cannot be brought up. Then it probes once, warns,
-        latches ``_curobo_unavailable`` and returns ``"ik"``, so a ``"curobo"`` default
-        degrades to the blind path on a host without the cuRobo environment instead of
-        failing every motion. Once latched, a later move skips the probe.
+        There is no fallback. A cell configured for cuRobo whose sidecar cannot start
+        refuses, because a cell that degraded instead kept running and picked badly: blind
+        IK proposes configurations the self-collision guard correctly refuses, so the run
+        reports a low rate with nothing tying it back to a planner that never started. One
+        such diagnosis, where an OS policy blocked the sidecar CUDA extension, took an hour
+        against a single warning among thousands of lines.
+
+        It is also no longer only a fidelity question. Every motion on a cuRobo cell is
+        judged against the planner's world as well as the local guards, so a fallback would
+        drop half the safety of every verb and keep going.
+
+        Mock mode is unchanged: it has no sidecar and drives nothing.
+
+        Raises
+        ------
+        CuroboUnavailableError
+            When the configured planner is cuRobo and it cannot be brought up. Every caller
+            turns that into a typed refusal; none of them substitutes another planner.
         """
         if self._motion_planner != "curobo" or self.mock_mode:
             return self._motion_planner
-        if self._curobo_unavailable:
-            return "ik"
-        try:
-            self._get_curobo_client()  # idempotent: spawns + JIT-warms the server once, else raises
-        except CuroboUnavailableError as exc:
-            self._curobo_unavailable = True
-            # Kept for the caller to read rather than only for a log line to scroll past.
-            # A silent degradation here is invisible where it matters: the cell keeps
-            # running, the blind IK path proposes configurations the self-collision guard
-            # correctly refuses, and a validation run reports 0/10 with nothing tying
-            # that back to a planner that never started. Measured once when an OS policy
-            # blocked the sidecar CUDA extension, where the only evidence was this one
-            # warning among thousands of lines.
-            self._curobo_unavailable_reason = str(exc)
-            _LOGGER.warning(
-                "cuRobo planner unavailable (%s); falling back to the blind IK path for this arm.", exc,
-            )
-            return "ik"
+        self._get_curobo_client()  # idempotent: spawns + JIT-warms the server once, else raises
         return "curobo"
-
-    @property
-    def curobo_degraded(self) -> bool:
-        """``True`` where this arm was configured for cuRobo and is running blind IK instead.
-
-        A runner that reports a pass rate reports this next to it, because the two
-        numbers mean different things and a rate measured on the fallback path is not a
-        measurement of the configured cell.
-        """
-        return self._motion_planner == "curobo" and self._curobo_unavailable
-
-    @property
-    def curobo_degraded_reason(self) -> str:
-        """Why the planner could not start. Empty while nothing has degraded."""
-        return self._curobo_unavailable_reason
 
     def set_planner_base_world(self, cuboids: "list[dict]") -> None:
         """The obstacles that survive every later registration: the bench, the fixtures, the cell.
@@ -1477,13 +1522,16 @@ class IsaacRobotArm(RobotArm):
             )
             if rejected is not None:
                 return rejected
-            # And the path, where one is asked for. `_execute_curobo_trajectory` applies
-            # every waypoint straight to the articulation and never routes through
-            # `move_joint`, which is the only place the in-motion monitor is consulted,
-            # so without this the middle of a cuRobo plan executes unexamined on this
-            # driver too.
+            # And the path, always. `_execute_curobo_trajectory` applies every waypoint
+            # straight to the articulation and never routes through `move_joint`, which is
+            # the only place the in-motion monitor is consulted, so without this the middle
+            # of a cuRobo plan executes unexamined on this driver too. The legs between the
+            # waypoints are sampled as well, because applying them in turn is the
+            # joint-space line between them.
             ordered = [[float(wp[i]) for i in order] for wp in traj]
-            rejected = self._preflight.gate_trajectory(ordered, arm=self)
+            rejected = self._preflight.gate_planned_path(
+                ordered, arm=self, command=MotionCommand.MOVE_TO,
+            )
             if rejected is not None:
                 return rejected
         self._execute_curobo_trajectory(traj, client.joint_names, client.dt)
@@ -1640,10 +1688,19 @@ class IsaacRobotArm(RobotArm):
             current_joints = self.get_joint_positions()
         except Exception:  # noqa: BLE001 (telemetry hiccup: the IK-jump check skips on None)
             current_joints = None
-        # Resolve the effective planner once, falling back from curobo to ik where the
-        # sidecar or its environment is unavailable, and then route on it, so a "curobo"
-        # default is safe wherever the cuRobo environment is absent.
-        planner = self._resolve_motion_planner()
+        # The planner this cell was configured with, or a refusal. There is no fallback: a
+        # cuRobo cell whose sidecar cannot start refuses its motions rather than running
+        # them blind.
+        try:
+            planner = self._resolve_motion_planner()
+        except CuroboUnavailableError as exc:
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED,
+                MotionCommand.MOVE_TO,
+                target_pose=pose,
+                message=f"cuRobo planner unavailable: {exc}",
+                exception=exc,
+            )
         # cuRobo plans a smooth, in-limits, collision-free joint trajectory itself, so
         # the motion_continuity guard misfires across cuRobo moves. It memoises the
         # pre-resolved IK, which is used only for this preflight, while cuRobo executes a
@@ -1654,6 +1711,12 @@ class IsaacRobotArm(RobotArm):
         if planner == "curobo":
             if self._preflight is not None:
                 self._preflight.reset()
+            # A caller asking for a straight line gets one. Dropping `linear` here would let
+            # the planner route its own way to the same endpoint: a different motion, and
+            # one a caller reaching for `move_linear` is reaching past on purpose, since a
+            # retreat straight up out of a bin is not a path anybody wants planned around.
+            if linear:
+                return self._drive_checked_line(pose)
             # cuRobo owns collision, both self and world, so the preflight runs inside
             # _drive_curobo on the actual planned final configuration rather than on the
             # _resolve_ik above, which can pick a self-colliding IK branch cuRobo would
@@ -1689,6 +1752,79 @@ class IsaacRobotArm(RobotArm):
                     ),
                 )
         return self._drive_to_target(pose, target_joints)
+
+    def _drive_checked_line(self, pose: Pose) -> MotionResult:
+        """Walk a straight TCP line to ``pose``, every configuration on it judged before any of it runs.
+
+        The line is sampled in the base frame, solved one sample at a time with Lula seeded
+        on the previous solution, and the whole list goes to the local guards and to the
+        sidecar before the arm is asked to move. Then it is walked as the joint path it is,
+        rather than driven to the endpoint: walking the samples is what makes the executed
+        motion the one that was judged.
+        """
+        from src.robot.safety.path_samples import PathSamples, line_samples
+
+        if self._preflight is None:
+            return self._drive_to_target(pose, self._resolve_ik(pose))
+        step_mm = self._preflight.path_step_mm
+        radii = self._preflight.joint_radii_mm(self)
+        if step_mm is None or radii is None:
+            return self._preflight.gate_planned_path(
+                [], arm=self, command=MotionCommand.MOVE_TO,
+            ) or self._drive_to_target(pose, self._resolve_ik(pose))
+        try:
+            samples = line_samples(
+                self.get_tcp_pose(), pose, reach_mm=max(radii), max_step_mm=step_mm,
+            )
+        except ValueError as exc:
+            return MotionResult.failed(
+                MotionStatus.UNSUPPORTED, MotionCommand.MOVE_TO, target_pose=pose, message=str(exc),
+            )
+
+        configs: list[tuple[float, ...]] = []
+        for index, sample in enumerate(samples.poses):
+            try:
+                solved = self._resolve_ik(sample)
+            except RobotKinematicsError as exc:
+                return MotionResult.failed(
+                    MotionStatus.IK_FAILED, MotionCommand.MOVE_TO, target_pose=pose,
+                    message=(
+                        f"sample {index + 1} of {len(samples.poses)} of this line has no inverse "
+                        f"kinematics solution: {exc}"
+                    ),
+                    exception=exc,
+                )
+            configs.append(tuple(float(v) for v in solved.tolist()))
+
+        judged = PathSamples(configs=tuple(configs), step_bound_mm=samples.step_bound_mm)
+        refused = self._preflight.gate_joint_path(
+            judged, arm=self, command=MotionCommand.MOVE_TO,
+        )
+        if refused is not None:
+            return refused
+        try:
+            client = self._get_curobo_client()
+            verdict = client.check_joints(self._to_client_joint_order(judged.configs, client))
+        except CuroboUnavailableError as exc:
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+                message=f"cuRobo planner unavailable: {exc}", exception=exc,
+            )
+        if not verdict.valid:
+            return MotionResult.failed(
+                MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+                message=f"the planner refused this line: {verdict.reason}",
+            )
+        # Walked sample by sample rather than driven to the endpoint: the motion that
+        # executes is the one that was judged. Each leg is already at the collision margin,
+        # so the interpolation inside `_drive_joints` adds at most one step of its own.
+        for config in judged.configs:
+            self._drive_joints(JointPositions(np.asarray(config, dtype=np.float64)))
+        return MotionResult.executed(
+            MotionCommand.MOVE_TO, target_pose=pose,
+            message=f"checked line, {len(judged.configs)} samples at "
+                    f"{judged.step_bound_mm:.2f} mm a step",
+        )
 
     def _drive_to_target(
         self,

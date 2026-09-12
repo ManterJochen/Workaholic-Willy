@@ -149,6 +149,20 @@ def _models_for(cfg: Any, detector_model_id: str | None) -> Any:
     return cfg.models.model_copy(update={"objectdetector": swapped})
 
 
+def _declared_planner(arm: object) -> str | None:
+    """The sentence a report carries when this run did not use a planner, else ``None``.
+
+    Nothing degrades: a cuRobo arm that cannot reach its sidecar refuses its motions rather
+    than running them blind, so the only way a run is unplanned is that somebody asked for
+    it. That is a decision worth printing beside the rate, because a rate measured without
+    a planner is not a measurement of a planned cell.
+    """
+    planner = str(getattr(arm, "_motion_planner", "") or "")
+    if planner in ("", "curobo"):
+        return None
+    return f"this run was asked for motion_planner={planner!r}, so no planner planned its motions"
+
+
 def run_gate(runs: int = 10, *, prompt: str = "a red cube", headless: bool = True,
              data_dir: str | None = None, mode: str = "easy",
              record_log: str | None = None, debug_frames: str | None = None,
@@ -218,19 +232,18 @@ def run_gate(runs: int = 10, *, prompt: str = "a red cube", headless: bool = Tru
                    "sim_lift_mm": round(lift_mm, 2), "sim_lifted": bool(passed), "sim_gate_passed": passed},
         )
     n_pass = sum(1 for r in results if r["passed"])
-    # A rate measured on the fallback path is not a measurement of the configured cell, and the number
-    # cannot say so on its own. The cause is reported next to the number rather than left as one
-    # warning among thousands of log lines.
-    degraded = getattr(arm, "curobo_degraded", False)
-    reason = str(getattr(arm, "curobo_degraded_reason", "") or "") if degraded else None
-    if degraded:
+    # A rate measured without a planner is not a measurement of a planned cell, and the number cannot
+    # say so on its own. The cause is reported next to the number rather than left as one warning
+    # among thousands of log lines.
+    reason = _declared_planner(arm)
+    if reason is not None:
         print("", flush=True)
         print("!" * 78, flush=True)
-        print("!! THIS RUN DID NOT USE THE CONFIGURED PLANNER.", flush=True)
-        print("!! motion_planner='curobo' was configured; the sidecar could not start, so every", flush=True)
-        print("!! motion was planned by the blind IK path. Expect the self-collision guard to", flush=True)
-        print("!! refuse poses it would never have been offered; the pass rate below measures", flush=True)
-        print("!! the FALLBACK, not this cell.", flush=True)
+        print("!! NO PLANNER PLANNED THIS RUN.", flush=True)
+        print("!! Somebody asked for it: a cuRobo cell whose sidecar cannot start refuses its", flush=True)
+        print("!! motions rather than driving them blind, so this is a decision and not a", flush=True)
+        print("!! degradation. Expect the self-collision guard to refuse poses a planner would", flush=True)
+        print("!! never have offered; the pass rate below measures the blind path, not this cell.", flush=True)
         print(f"!! reason: {reason}", flush=True)
         print("!! see ext_deps/README.md section 5.", flush=True)
         print("!" * 78, flush=True)

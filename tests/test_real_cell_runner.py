@@ -41,14 +41,71 @@ class PreflightTests(unittest.TestCase):
     def test_the_shipped_config_as_a_real_cell_blocks_on_the_three_known_traps(self) -> None:
         """This is the whole point of the runner: the DEFAULT state of a freshly configured real cell
         is not runnable, and each reason is one an operator would otherwise meet as a separate crash."""
-        report = run_config_preflight(RobotConfig(vendor="ur"))
+        report = run_config_preflight(RobotConfig(vendor="ur"), curobo_available=True)
         blocking = {c.name for c in report.blocking}
         self.assertEqual(blocking, {"tool frame", "payload", "camera -> base"})
         self.assertFalse(report.ok)
 
+    def test_a_curobo_cell_without_the_environment_blocks(self) -> None:
+        """A cuRobo cell refuses every motion without the sidecar, which looks like a broken robot.
+
+        Every motion on such a cell is planned or path-checked, and both go through the sidecar. With
+        the environment absent the cell comes up, connects, and then fails closed on the first move
+        with a planner error. That is the right refusal in the wrong place: it belongs here, before
+        anybody stands next to the arm.
+        """
+        report = run_config_preflight(
+            RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "curobo"}}),
+            curobo_available=False,
+        )
+        blocking = {c.name for c in report.blocking}
+        self.assertEqual(
+            blocking, {"tool frame", "payload", "camera -> base", "cuRobo environment"}
+        )
+        self.assertIn("--doctor", _named(report, "cuRobo environment").fix)
+
+    def test_an_ik_cell_is_warned_rather_than_blocked(self) -> None:
+        """An ik cell plans nothing, so a missing sidecar stops nothing. What it loses is the check."""
+        report = run_config_preflight(
+            RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "ik"}}),
+            curobo_available=False,
+        )
+        row = _named(report, "cuRobo environment")
+        self.assertIs(CheckStatus.WARN, row.status)
+        self.assertNotIn("cuRobo environment", {c.name for c in report.blocking})
+
+    def test_sim_and_dummy_carry_no_curobo_row(self) -> None:
+        for vendor in ("sim", "dummy"):
+            with self.subTest(vendor=vendor):
+                report = run_config_preflight(RobotConfig(vendor=vendor), curobo_available=False)
+                self.assertNotIn(
+                    "cuRobo environment", {c.name for c in report.checks}
+                )
+                self.assertTrue(report.ok)
+
+    def test_unset_reads_the_probe(self) -> None:
+        """Self failing control: with the probe patched to False, UNSET has to block as False does."""
+        from unittest.mock import patch
+
+        cfg = RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "curobo"}})
+        with patch(
+            "src.robot.execution.real_cell.preflight.curobo_env_available",
+            return_value=False,
+        ):
+            self.assertIn(
+                "cuRobo environment", {c.name for c in run_config_preflight(cfg).blocking}
+            )
+        with patch(
+            "src.robot.execution.real_cell.preflight.curobo_env_available",
+            return_value=True,
+        ):
+            self.assertNotIn(
+                "cuRobo environment", {c.name for c in run_config_preflight(cfg).blocking}
+            )
+
     def test_every_blocking_check_states_a_concrete_fix(self) -> None:
         """A checklist that says "wrong" without saying "do this" just moves the guessing."""
-        for c in run_config_preflight(RobotConfig(vendor="ur")).blocking:
+        for c in run_config_preflight(RobotConfig(vendor="ur"), curobo_available=True).blocking:
             with self.subTest(check=c.name):
                 self.assertTrue(c.fix.strip(), f"{c.name} blocks without naming a fix")
 
@@ -64,19 +121,19 @@ class PreflightTests(unittest.TestCase):
                        "self_collision": {"kinematics_model": "ur3e"}},
             "grasping": {"fusion": {"enabled": True, "extrinsics_artifact_path": "logs/eth.json"}},
         })
-        report = run_config_preflight(cfg)
+        report = run_config_preflight(cfg, curobo_available=True)
         self.assertTrue(report.ok, report.render())
 
     def test_sim_and_dummy_are_never_blocked(self) -> None:
         """A rehearsal must not be gated on facts that only a physical cell has."""
         for vendor in ("sim", "dummy"):
             with self.subTest(vendor=vendor):
-                self.assertTrue(run_config_preflight(RobotConfig(vendor=vendor)).ok)
+                self.assertTrue(run_config_preflight(RobotConfig(vendor=vendor), curobo_available=True).ok)
 
     def test_the_bench_items_are_reported_but_never_block(self) -> None:
         """Remote Control, brakes, the URCap: no API reports these, so the checklist names them as
         human steps rather than pretending to verify them."""
-        report = run_config_preflight(RobotConfig(vendor="ur"))
+        report = run_config_preflight(RobotConfig(vendor="ur"), curobo_available=True)
         bench = [c for c in report.checks if c.status is CheckStatus.BENCH]
         self.assertTrue(bench)
         self.assertTrue(all(c not in report.blocking for c in bench))
@@ -86,10 +143,10 @@ class PreflightTests(unittest.TestCase):
         cfg = RobotConfig.model_validate({
             "vendor": "ur", "safety": {"payload": {"enforce": True, "mass_kg": 2.2}},
         })
-        self.assertIs(_named(run_config_preflight(cfg), "payload").status, CheckStatus.BLOCK)
+        self.assertIs(_named(run_config_preflight(cfg, curobo_available=True), "payload").status, CheckStatus.BLOCK)
 
     def test_the_report_renders_every_check(self) -> None:
-        report = run_config_preflight(RobotConfig(vendor="ur"))
+        report = run_config_preflight(RobotConfig(vendor="ur"), curobo_available=True)
         text = report.render()
         for c in report.checks:
             self.assertIn(c.name, text)

@@ -81,12 +81,21 @@ class RobotArm(Protocol):
     ) -> None:
         """Joint-space move to ``joints``.
 
+        What a driver checks before commanding it is the driver's own business, and the
+        two kinds differ: a cell whose moves are planned judges the whole line from the
+        current configuration to ``joints``, sample by sample, because the controller
+        interpolates and every configuration between the two ends is executed. A cell
+        that plans nothing judges the destination.
+
         Raises
         ------
         RobotMotionRejected
-            If a workspace or safety pre-check denies the move.
+            If a workspace or safety pre-check denies the move. It carries ``result``,
+            the typed :class:`~src.robot.core.motion_result.MotionResult` the refusal
+            came from, where the driver had one.
         RobotConnectionError
-            If the link is not open.
+            If the link is not open. A driver that judges a path reads the current
+            configuration first, so it raises this before any guard runs.
         """
         ...
 

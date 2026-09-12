@@ -46,6 +46,13 @@ The units and conventions flip at that boundary. This stack is millimetres and X
 planner is metres and WXYZ. Goal poses cross as `tool0` in the base frame, in metres, with a WXYZ
 quaternion, and the trajectory comes back as joint waypoints in the planner's own joint order.
 
+`check_js` judges a whole joint path in one request: up to 1000 configurations in the planner's joint
+order, each held against the joint limits, the robot itself and the world the planner holds. The
+spheres come from the planner's own kinematics, so a payload attached to the planner counts, where a
+checker built on its own would be blind to one. A sample passes when the three terms sum to exactly
+0, which means no sphere penetrates, not that any clearance is kept. The reply names the first
+refused sample, counted from 0.
+
 ## What the planner is told about the cell
 
 Three kinds of geometry reach it, and the difference between them is not academic.
@@ -152,8 +159,9 @@ robot's geometry has no visible symptom.
 
 | Path | When the planner is unavailable |
 | --- | --- |
-| simulator and mock | may fall back to blind IK, leaving behaviour unchanged |
+| simulator and mock | refuses, as the real cell does. There is no fall back to blind IK, because a planner that never started then hides behind a low pick rate |
 | real UR with `robot.ur.motion_planner: curobo`, which is the default | fails closed. No blind motion. `CuroboUnavailableError` becomes `CONTROLLER_REJECTED` or `TIMEOUT`, and the message says the arm never moved |
+| batch check, `CuroboPlanClient.check_joints` sending the `check_js` request | never a pass. No reply, a sidecar that exited, a failed call (`planner_error`) or a reply that is not a whole verdict for every sample sent raises `CuroboUnavailableError`. A sidecar older than `check_js` answers through its plan branch, and the error says to restart it from this tree. No configuration at all, a value that is not finite or a wrong joint count raise `ValueError` before anything is sent. A path longer than one request is split across requests and never thinned |
 
 Coal and python-fcl resolve through one seam. Both the exact-mesh self-collision backend and the
 continuous monitor call `environment.import_collision_engine()`, which prefers Coal and falls back to

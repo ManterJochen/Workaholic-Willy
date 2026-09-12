@@ -20,8 +20,19 @@ Protocol, one JSON object per line:
               "start_quat_wxyz":[...]}   |   {"status":"error","reason":str}
   request <- {"start_joints":[6 rad],"goal_pos_m":[x,y,z],"goal_quat_wxyz":[w,x,y,z]}
              {"cmd":"fk","joints":[6 rad]}   |   {"cmd":"shutdown"}
+             {"cmd":"check_js","joints":[[6 rad],...]}
   reply   -> {"success":bool,"trajectory":[[6 rad]...],"dt":float}  |  {"success":false,"reason":str}
              {"fk_pos_m":[...],"fk_quat_wxyz":[...]}
+             check_js: {"success":true,"valid":bool,"first_invalid":int|null,"checked":int}
+                       |  {"success":false,"planner_error":true,"reason":str}
+
+check_js judges every configuration of a joint path, in joint_names order, against the
+joint limits, the robot itself and the planner's world, on the planner's own collision
+spheres so that an attached payload counts. A sample passes when those three terms sum to
+exactly 0, and first_invalid is the 0-based index of the first sample that does not. A
+sidecar older than check_js has no such branch: the request falls into the plan branch,
+fails on the missing start_joints and answers planner_error, which the client reports as a
+sidecar to restart.
 
 The goal pose is the tool0 pose, which Lula calls the EE pose, in metres in the base
 frame with a WXYZ quaternion. The caller maps its grasp TCP onto tool0 and converts
@@ -33,6 +44,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from typing import Any
 
 ROBOT = sys.argv[1] if len(sys.argv) > 1 else "ur5e.yml"
 # Reliability for a constrained query, such as a tight bin. cuRobo plan_pose is
@@ -81,6 +93,13 @@ _REQUEST_ID: object = None
 #: sends a live scene would otherwise delete the bench, the bin and every fixture it
 #: declared, with nothing said about it anywhere.
 _LAST_CUBOIDS: dict = {}
+
+#: The batch checker behind check_js, built on the first such request and kept for the session.
+#:
+#: It is built on the planner's own scene_collision_checker, the object update_world reloads,
+#: so it judges against whatever world was registered last without being rebuilt. It stays
+#: None until a build succeeds, so a build that raised is tried again by the next request.
+_CHECKER: Any = None
 
 
 def _emit(obj: dict) -> None:
@@ -260,6 +279,62 @@ for _line in sys.stdin:
             # that does not exist in this cuRobo build, reads at the caller as cuRobo
             # refusing the configuration.
             print(f"[plan_cspace] CALL FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            _emit({"success": False, "planner_error": True, "reason": f"{type(exc).__name__}: {exc}"})
+        continue
+    if cmd == "check_js":
+        # Judge a whole joint path in one call. Every configuration, in joint_names order,
+        # is held against the joint limits, the robot itself and the world this planner
+        # holds, and the reply names the first one refused.
+        #
+        # The spheres come from the planner's own kinematics. A checker keeps a Kinematics
+        # of its own, and that copy never sees a payload attached to the planner: a part
+        # 50 mm inside a wall passes the separate checker and is refused by this sum over
+        # the planner's spheres. The three terms are the ones the checker's own validation
+        # adds up, and a sample passes only when their sum is exactly 0.
+        #
+        # The robot in use is the derived one, so the guard margin is in its self collision
+        # padding. Activation distance 0.0 makes a pass mean that cuRobo's spheres do not
+        # penetrate, not that they keep any clearance.
+        try:
+            if _CHECKER is None:
+                from curobo.collision_checking import (  # type: ignore[import-not-found]
+                    RobotCollisionChecker,
+                    RobotCollisionCheckerCfg,
+                )
+
+                _CHECKER = RobotCollisionChecker(
+                    RobotCollisionCheckerCfg.load_from_config(
+                        robot_config=_ROBOT_IN_USE,
+                        scene_collision_checker=_planner.scene_collision_checker,
+                        collision_activation_distance=0.0,
+                    )
+                )
+            _cq = torch.tensor(req["joints"], device="cuda", dtype=torch.float32)
+            if _cq.ndim != 2 or _cq.shape[0] == 0 or _cq.shape[1] != _N:
+                raise ValueError(f"joints must be a non-empty list of {_N} joint configurations, "
+                                 f"got shape {tuple(_cq.shape)}")
+            _cq = _cq.unsqueeze(0)
+            _h = int(_cq.shape[1])
+            _spheres = _planner.compute_kinematics(
+                JointState.from_position(_cq, joint_names=_planner.joint_names)
+            ).robot_spheres.reshape(1, _h, -1, 4)
+            _terms = torch.cat(
+                [
+                    _CHECKER.get_bound(_cq).reshape(1, _h, -1).sum(dim=-1, keepdim=True),
+                    _CHECKER.get_self_collision(_spheres).reshape(1, _h, -1).sum(dim=-1, keepdim=True),
+                    _CHECKER.get_collision_constraint(_spheres).reshape(1, _h, -1).sum(dim=-1, keepdim=True),
+                ],
+                dim=-1,
+            )
+            _passes = (torch.sum(_terms, dim=-1) == 0.0).reshape(-1).cpu().tolist()
+            _first = next((i for i, ok in enumerate(_passes) if not ok), None)
+            _word = "valid" if _first is None else f"invalid from sample {_first}"
+            print(f"[check_js] {len(_passes)} sample(s): {_word}", file=sys.stderr, flush=True)
+            _emit({"success": True, "valid": _first is None, "first_invalid": _first, "checked": len(_passes)})
+        except Exception as exc:  # noqa: BLE001
+            # The call failed and nothing was judged: labelled planner_error so the client
+            # can never read it as a verdict about the path.
+            print(f"[check_js] CALL FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             _emit({"success": False, "planner_error": True, "reason": f"{type(exc).__name__}: {exc}"})
         continue
     if cmd == "attach":

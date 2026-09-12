@@ -17,6 +17,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from src.contracts import UNSET, Maybe, chosen
+from src.robot.safety.planning import curobo_env_available
+
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import RobotConfig
 
@@ -124,8 +127,15 @@ def _vendor(robot_cfg: "RobotConfig") -> str:
     return str(getattr(v, "value", v)).lower()
 
 
-def run_config_preflight(robot_cfg: "RobotConfig") -> PreflightReport:
-    """Check a ``RobotConfig`` for everything that stops a real pick, without touching hardware."""
+def run_config_preflight(
+    robot_cfg: "RobotConfig", *, curobo_available: Maybe[bool] = UNSET
+) -> PreflightReport:
+    """Check a ``RobotConfig`` for everything that stops a real pick, without touching hardware.
+
+    ``curobo_available`` left unset asks this box, through ``curobo_env_available()``. It is
+    a keyword so a caller can state the answer instead: a check that must not depend on what
+    is installed, and a report written for a cell other than the one it runs on.
+    """
     checks: list[PreflightCheck] = []
     vendor = _vendor(robot_cfg)
     is_real = vendor not in ("sim", "dummy")
@@ -200,6 +210,36 @@ def run_config_preflight(robot_cfg: "RobotConfig") -> PreflightReport:
             "calibration and point grasping.fusion.extrinsics_artifact_path at what it wrote, or "
             "pass a resolver in code (the eye-in-hand route)",
         ))
+
+    # ---- the cuRobo environment -----------------------------------------------------------------
+    # Only a real arm has this row. A sim cell reaches cuRobo through its own driver and a dummy
+    # plans nothing, so a missing environment there is not a fact about this checklist.
+    if is_real:
+        planner = getattr(getattr(robot_cfg, "ur", None), "motion_planner", None)
+        here = curobo_available if chosen(curobo_available) else curobo_env_available()
+        if planner == "curobo" and not here:
+            checks.append(PreflightCheck(
+                "cuRobo environment", CheckStatus.BLOCK,
+                "robot.ur.motion_planner is 'curobo' and the cuRobo environment is not on this box",
+                "every motion on this cell is planned or path checked, and both go through the "
+                "sidecar, so the cell would connect and then refuse the first move. Install the "
+                "environment (see ext_deps/README.md) or set robot.ur.motion_planner: ik, and run "
+                "`python -m src.robot.execution.real_cell --doctor` afterwards: a `--check` "
+                "that exits 0 says the config is sound, not that cuRobo runs here",
+            ))
+        elif planner == "curobo":
+            checks.append(PreflightCheck(
+                "cuRobo environment", CheckStatus.OK,
+                "the cuRobo environment is present, so every motion is planned and every path judged",
+            ))
+        else:
+            checks.append(PreflightCheck(
+                "cuRobo environment", CheckStatus.WARN,
+                f"robot.ur.motion_planner is {planner!r}, so no planner plans this cell's motions",
+                "an interpolated move has no path anybody can judge and no camera world behind it: "
+                "the guards see where each move ends and nothing in between. Set "
+                "robot.ur.motion_planner: curobo for a cell that should be protected the whole way",
+            ))
 
     # ---- self-collision ------------------------------------------------------------------------
     sc = robot_cfg.safety.self_collision

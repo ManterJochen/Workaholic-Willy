@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import atexit
 import json
+import math
 import os
 import queue
 import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +43,13 @@ from .environment import (
     curobo_voxel_grid,
 )
 
-__all__ = ["CuroboPlanClient", "CuroboUnavailableError", "curobo_env_available"]
+__all__ = [
+    "CuroboPlanClient",
+    "CuroboUnavailableError",
+    "JointCheckVerdict",
+    "MAX_CHECK_CONFIGURATIONS",
+    "curobo_env_available",
+]
 
 # The server file ships in this package and is run by the external cuRobo python. It is
 # never imported here.
@@ -84,6 +92,74 @@ def _raise_if_call_failed(msg: dict) -> None:
         raise CuroboUnavailableError(
             f"the cuRobo planning CALL failed (not a planning verdict): {msg.get('reason')}"
         )
+
+
+#: The most configurations one batch check request carries. A longer path is split across
+#: requests and never thinned, because the samples a thinned path leaves out are samples
+#: nobody checked.
+MAX_CHECK_CONFIGURATIONS = 1000
+
+#: What a sidecar older than check_js answers it with. The request falls through into that
+#: sidecar's plan branch, which reads start_joints first and raises KeyError on it.
+_OLD_SIDECAR_MARK = "start_joints"
+
+
+@dataclass(frozen=True, slots=True)
+class JointCheckVerdict:
+    """What the cuRobo sidecar said about a joint path, sample by sample.
+
+    ``valid`` is true only when every sample passed. ``first_invalid`` is the 0-based index
+    of the first sample that did not, and None exactly when ``valid``. ``checked`` is how
+    many samples the sidecar judged, which is always the number sent. ``reason`` says the
+    same in a sentence.
+
+    A pass means cuRobo's collision spheres penetrate neither the planner's world nor the
+    robot itself, and no joint limit is exceeded. It is not a clearance: the guard margin
+    lives in the derived robot the sidecar plans with, and exact meshes stay the
+    self-collision guard's job.
+    """
+
+    valid: bool
+    first_invalid: int | None
+    checked: int
+    reason: str
+
+
+def _verdict_from_reply(msg: dict, *, sent: int) -> JointCheckVerdict:
+    """Read a check_js reply as a verdict on ``sent`` samples, or raise: only a whole verdict passes.
+
+    A failed call, an old sidecar and a reply that does not account for every sample sent
+    all raise ``CuroboUnavailableError``, because each of them means nobody judged the path.
+    """
+    if not msg.get("success"):
+        reason = msg.get("reason")
+        if _OLD_SIDECAR_MARK in str(reason):
+            raise CuroboUnavailableError(
+                "the sidecar does not know check_js; restart it from this tree "
+                f"(it answered through its plan branch: {reason})"
+            )
+        _raise_if_call_failed(msg)
+        raise CuroboUnavailableError(
+            f"the cuRobo sidecar answered check_js with an unlabelled failure, so nothing was "
+            f"judged: {reason}"
+        )
+    valid, first, checked = msg.get("valid"), msg.get("first_invalid"), msg.get("checked")
+    counted = type(checked) is int and checked == sent
+    if counted and valid is True and first is None:
+        return JointCheckVerdict(
+            valid=True, first_invalid=None, checked=sent,
+            reason=f"all {sent} samples pass the cuRobo check",
+        )
+    if counted and valid is False and type(first) is int and 0 <= first < sent:
+        return JointCheckVerdict(
+            valid=False, first_invalid=first, checked=sent,
+            reason=(f"the cuRobo check refuses sample {first} of {sent}, counted from 0: a joint "
+                    f"limit, a self collision or the planner's world"),
+        )
+    raise CuroboUnavailableError(
+        f"the cuRobo sidecar answered check_js on {sent} samples with a reply that is not a whole "
+        f"verdict: {msg}"
+    )
 
 
 def _log_at_exit(emit: "Callable[..., None]", message: str, *args: object) -> None:
@@ -406,6 +482,89 @@ class CuroboPlanClient:
             (time.monotonic() - started) * 1000.0, msg.get("reason", "no reason given"),
         )
         return None
+
+    def check_joints(self, configs: "Sequence[Sequence[float]]") -> JointCheckVerdict:
+        """Judge every configuration of a joint path in the world this sidecar plans in.
+
+        ``configs`` are joint configurations in :attr:`joint_names` order, in radians and in
+        path order. A path longer than :data:`MAX_CHECK_CONFIGURATIONS` is sent in that many
+        at a time and the verdict names the first sample cuRobo refuses, counted in the whole
+        path.
+
+        The cap is the size of a request and not a rule about moves. Refusing a longer path
+        outright costs real picks: a cuRobo plan of 121 waypoints needs more than 1000
+        samples, and that was about one pick in ten on the M2 Isaac gate. Splitting the
+        request thins nothing and leaves no gap; it only takes longer.
+
+        Refused with ``ValueError`` before anything is sent: no configuration, a value that
+        is not a finite number, or a configuration whose length is not the sidecar's joint
+        count. The first two are refused before the sidecar is started at all.
+
+        Raises ``CuroboUnavailableError`` whenever no verdict came back: the sidecar could
+        not start, did not answer in time, exited, failed inside the call, answered with
+        something that is not a whole verdict, or is older than ``check_js``. None of these
+        is ever returned as a verdict.
+        """
+        rows = [[float(v) for v in config] for config in configs]
+        if not rows:
+            raise ValueError(
+                "check_joints was given no configuration, and an empty path is not a checked path"
+            )
+        for index, row in enumerate(rows):
+            if not all(math.isfinite(v) for v in row):
+                raise ValueError(
+                    f"sample {index} of the joint path holds a value that is not a finite number: {row}"
+                )
+        if self._proc is None:
+            self.start()
+        for index, row in enumerate(rows):
+            if len(row) != len(self.joint_names):
+                raise ValueError(
+                    f"sample {index} of the joint path has {len(row)} joints and the sidecar plans "
+                    f"{len(self.joint_names)}"
+                )
+        # perf_counter rather than monotonic: a check takes a few milliseconds, and monotonic
+        # ticks in 15.6 ms steps on Windows, which logs most checks as 0 ms.
+        started = time.perf_counter()
+        checked = 0
+        for offset in range(0, len(rows), MAX_CHECK_CONFIGURATIONS):
+            batch = rows[offset : offset + MAX_CHECK_CONFIGURATIONS]
+            want = self._send({"cmd": "check_js", "joints": batch})
+            msg = self._recv(_PLAN_TIMEOUT_S, want=want)
+            if msg is None:
+                raise CuroboUnavailableError(
+                    "the cuRobo sidecar gave no verdict on the joint path: it did not answer in time "
+                    "or it exited"
+                )
+            verdict = _verdict_from_reply(msg, sent=len(batch))
+            checked += verdict.checked
+            if not verdict.valid:
+                # Stop here: the arm is not taking this path, so the rest of it is not a
+                # question. The index is restated over the whole path, because a sample
+                # number counted from the start of a batch points at a configuration nobody
+                # can find.
+                first = None if verdict.first_invalid is None else verdict.first_invalid + offset
+                took_ms = (time.perf_counter() - started) * 1000.0
+                refused = JointCheckVerdict(
+                    valid=False,
+                    first_invalid=first,
+                    checked=checked,
+                    reason=(
+                        f"the cuRobo check refuses sample {first} of {len(rows)}, counted from 0: "
+                        f"a joint limit, a self collision or the planner's world"
+                    ),
+                )
+                # A verdict, and the caller turns it into no motion, so this is where the
+                # reason stays.
+                logger.warning("the cuRobo check refused a joint path after %.0f ms: %s",
+                               took_ms, refused.reason)
+                return refused
+        took_ms = (time.perf_counter() - started) * 1000.0
+        logger.debug("checked %d joint configuration(s) in %.0f ms: all pass", checked, took_ms)
+        return JointCheckVerdict(
+            valid=True, first_invalid=None, checked=checked,
+            reason=f"all {checked} samples pass the cuRobo check",
+        )
 
     def set_world(self, cuboids: list[dict], meshes: "list[dict] | None" = None) -> int:
         """Replace cuRobo's collision world with these obstacles (the scene->planner world-model).

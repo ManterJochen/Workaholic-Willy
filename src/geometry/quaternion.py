@@ -33,6 +33,7 @@ __all__ = [
     "multiply",
     "rotate_vector",
     "rotation_vector_to_matrix",
+    "slerp",
     "to_axis_angle",
     "to_euler",
     "to_rotation_matrix",
@@ -257,3 +258,46 @@ def angle_between(q1: np.ndarray, q2: np.ndarray) -> float:
     dot = abs(float(np.dot(a, b)))
     dot = min(1.0, max(-1.0, dot))
     return 2.0 * float(np.arccos(dot))
+
+
+def slerp(q0: np.ndarray, q1: np.ndarray, t: float) -> np.ndarray:
+    """Spherical linear interpolation from ``q0`` to ``q1``, ``t`` in ``[0, 1]``.
+
+    The result walks the shorter of the two arcs between the rotations at a constant
+    angular rate, so ``angle_between(q0, slerp(q0, q1, t))`` is ``t`` times the total
+    angle. That is the property a sampled Cartesian path needs: a caller that bounds the
+    angle per step knows what the bound buys, which linear interpolation of the four
+    components followed by a normalise does not give, since that walks the chord and
+    speeds up in the middle.
+
+    ``q`` and ``-q`` are the same rotation, so the sign of ``q1`` is flipped when the two
+    point away from each other. Without that, a half turn of the arc between a quaternion
+    and its own negation would be a half turn of the arm, for a move that does not rotate
+    at all.
+
+    Nearly parallel rotations fall back to the normalised straight line between them,
+    because ``sin`` of the half angle goes to zero and the quotient stops being
+    computable. At the angle where it switches, the two agree to well past float64
+    precision.
+    """
+    a = validate_quaternion_xyzw(q0)
+    b = validate_quaternion_xyzw(q1)
+    fraction = float(t)
+    if not np.isfinite(fraction) or fraction < 0.0 or fraction > 1.0:
+        # A ValueError and not an InvalidQuaternionError: the two quaternions may be
+        # perfectly good and it is the caller's fraction that is not a point on the arc
+        # between them.
+        raise ValueError(f"slerp takes a fraction of the arc in [0, 1], got {t!r}")
+    dot = float(np.dot(a, b))
+    if dot < 0.0:  # the same rotation, spelled the other way round: take the short arc
+        b = -b
+        dot = -dot
+    dot = min(1.0, max(-1.0, dot))
+    if dot > 1.0 - 1e-12:
+        out = a + fraction * (b - a)
+        return normalise_quaternion(out, canonicalise=True)
+    half_angle = float(np.arccos(dot))
+    sin_half = float(np.sin(half_angle))
+    weight_a = float(np.sin((1.0 - fraction) * half_angle)) / sin_half
+    weight_b = float(np.sin(fraction * half_angle)) / sin_half
+    return normalise_quaternion(weight_a * a + weight_b * b, canonicalise=True)

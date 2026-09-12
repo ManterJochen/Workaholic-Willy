@@ -29,7 +29,11 @@ import numpy as np
 from src.geometry import Frame, Pose
 from src.robot.constants import UR_CUROBO_LOG_FILE, create_robot_logger
 from src.robot.core import MotionCommand, MotionResult, MotionStatus
-from src.robot.safety.planning import CuroboPlanClient, CuroboUnavailableError
+from src.robot.safety.planning import (
+    CuroboPlanClient,
+    CuroboUnavailableError,
+    JointCheckVerdict,
+)
 from src.robot.safety.planning.live_world import WorldRefresh, refresh_planner_world
 from src.robot.safety.planning.world import merge_planner_worlds
 
@@ -335,6 +339,41 @@ class CuroboUrPlanner:
         if not traj:
             return None
         return [self._to_ur_order(list(wp), client.joint_names) for wp in traj]
+
+    def check_joint_path(
+        self, samples_ur: "Sequence[Sequence[float]]"
+    ) -> JointCheckVerdict:
+        """Ask cuRobo whether every configuration of a joint path is admissible, in UR joint order.
+
+        The same planner, the same world and the same attached payload the Cartesian path
+        gets, so a joint move is judged against the cell the planner actually holds rather
+        than against a second model that agreed with it when somebody last looked. The world
+        is refreshed first for the reason :meth:`_refresh_world` gives: a world registered
+        once is a photograph.
+
+        Judged in one request. Returning after the first refused sample would cost a round
+        trip per configuration, and the sidecar already answers with the index it stopped at.
+
+        Raises
+        ------
+        CuroboUnavailableError
+            If the cuRobo env cannot be brought up or the world cannot be vouched for. Fail
+            closed: the caller gets no verdict rather than an invented one.
+        """
+        configs = [[float(v) for v in sample] for sample in samples_ur]
+        if not configs:
+            return JointCheckVerdict(
+                valid=True, first_invalid=None, checked=0,
+                reason="an empty path has nothing to refuse",
+            )
+        client = self._client_or_start()
+        # The goal decides which obstacles matter when the slot budget bites, and the goal of
+        # a joint path is its last configuration. Its flange position is not known here
+        # without FK, so the refresh runs without a near point and keeps whatever the source
+        # hands over.
+        self._refresh_world()
+        ordered = [self._to_client_order(list(c), client.joint_names) for c in configs]
+        return client.check_joints(ordered)
 
     def execute(
         self,

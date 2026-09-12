@@ -742,10 +742,6 @@
           "tool_radius_mm": 150.0
         },
         "meshes": []
-      },
-      "trajectory_check": {
-        "enabled": false,
-        "stride": 1
       }
     },
     "grasping": {

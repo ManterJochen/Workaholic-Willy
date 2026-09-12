@@ -13,6 +13,13 @@ from .joint_limits import (
     resolve_joint_limits_deg,
 )
 from .payload import PayloadGuard
+from .path_samples import (
+    MAX_PATH_SAMPLES,
+    LineSamples,
+    PathSamples,
+    joint_path_samples,
+    line_samples,
+)
 from .preflight import SafetyPreflight, WorkspaceSafetyGuard
 from .self_collision import SelfCollisionGuard
 from .singularity import (
@@ -26,15 +33,13 @@ from .singularity import (
 from .workspace import WorkspaceGuard
 
 __all__ = [
-    "analyze_joint_singularity",
-    "analyze_pose_singularity",
-    "assert_pose_not_singular",
     "IKQualityGuard",
     "JointLimitGuard",
+    "LineSamples",
+    "MAX_PATH_SAMPLES",
     "MotionContinuityGuard",
+    "PathSamples",
     "PayloadGuard",
-    "resolve_joint_limits_deg",
-    "safety_reason_to_motion_status",
     "SafetyAttestation",
     "SafetyContext",
     "SafetyDecision",
@@ -50,4 +55,11 @@ __all__ = [
     "UR_JOINT_LIMITS_DEG",
     "WorkspaceGuard",
     "WorkspaceSafetyGuard",
+    "analyze_joint_singularity",
+    "analyze_pose_singularity",
+    "assert_pose_not_singular",
+    "joint_path_samples",
+    "line_samples",
+    "resolve_joint_limits_deg",
+    "safety_reason_to_motion_status",
 ]

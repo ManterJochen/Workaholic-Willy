@@ -440,6 +440,20 @@ def _service_for(
     )
 
 
+def _declared_planner(arm: object) -> str | None:
+    """The sentence a report carries when this run did not use a planner, else ``None``.
+
+    Nothing degrades: a cuRobo arm that cannot reach its sidecar refuses its motions rather
+    than running them blind, so the only way a run is unplanned is that somebody asked for
+    it. That is a decision worth printing beside the rate, because a rate measured without
+    a planner is not a measurement of a planned cell.
+    """
+    planner = str(getattr(arm, "_motion_planner", "") or "")
+    if planner in ("", "curobo"):
+        return None
+    return f"this run was asked for motion_planner={planner!r}, so no planner planned its motions"
+
+
 def run_picks(
     runs: int = 10, *, prompt: str = "der rote Würfel", route: str = "vlm", headless: bool = True,
     data_dir: str | None = None, cell_kwargs: Mapping[str, Any] | None = None,
@@ -529,8 +543,7 @@ def run_picks(
     n_wrong = sum(1 for r in results if r["wrong_object"])
     print(f"ATTRIBUTE GATE [{route}]: {n_pass}/{runs} picked the intended object "
           f"({n_wrong} wrong-object grasps)", flush=True)
-    degraded = getattr(arm, "curobo_degraded", False)
-    reason = str(getattr(arm, "curobo_degraded_reason", "") or "") if degraded else None
+    reason = _declared_planner(arm)
     return GateResult(
         runs=runs, passed=n_pass, results=results, target=ATTRIBUTE_OBJECTS[target][0],
         distractor_lifts=n_wrong, planner_degraded=reason,

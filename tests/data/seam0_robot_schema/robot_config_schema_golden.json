@@ -2970,7 +2970,7 @@
     },
     "RobotSafetyConfig": {
       "additionalProperties": false,
-      "description": "Vendor-neutral safety surface.\n\nEach guard is a dedicated sub-block carrying its own gate: ``enforce`` on most, ``enabled`` on\n:attr:`planning_world` and :attr:`trajectory_check`, ``require_steady_before_motion`` on\n:attr:`dwell`. An operator can disable one guard without touching the others.\n\nSub-blocks\n----------\n* :attr:`limits`: the ``workspace_margin_mm`` consumed by the workspace guard.\n* :attr:`joint_limits`: per-axis joint hard limits and margin.\n* :attr:`ik_quality`: IK-solution quality checks.\n* :attr:`motion_continuity`: step size between consecutive commanded targets.\n* :attr:`payload`: mass, CoG and inertia envelope.\n* :attr:`self_collision`: link-link and link-fixture collision.\n* :attr:`dwell`: post-Stop dwell and steady-state gating.\n* :attr:`planning_world`: the boxes the trajectory planner routes around.\n* :attr:`trajectory_check`: gate every configuration of a planned path, not only its end.\n\nNot here: the emergency stop. It is a hardware and controller function, and nothing in this\npackage can enable, disable, route or observe it.",
+      "description": "Vendor-neutral safety surface.\n\nEach guard is a dedicated sub-block carrying its own gate: ``enforce`` on most, ``enabled`` on\n:attr:`planning_world`, ``require_steady_before_motion`` on :attr:`dwell`. An operator can\ndisable one guard without touching the others.\n\nSub-blocks\n----------\n* :attr:`limits`: the ``workspace_margin_mm`` consumed by the workspace guard.\n* :attr:`joint_limits`: per-axis joint hard limits and margin.\n* :attr:`ik_quality`: IK-solution quality checks.\n* :attr:`motion_continuity`: step size between consecutive commanded targets.\n* :attr:`payload`: mass, CoG and inertia envelope.\n* :attr:`self_collision`: link-link and link-fixture collision.\n* :attr:`dwell`: post-Stop dwell and steady-state gating.\n* :attr:`planning_world`: the boxes the trajectory planner routes around.\n\nNot here: the emergency stop. It is a hardware and controller function, and nothing in this\npackage can enable, disable, route or observe it.",
       "properties": {
         "dwell": {
           "$ref": "#/$defs/DwellSafetyConfig"
@@ -2995,9 +2995,6 @@
         },
         "self_collision": {
           "$ref": "#/$defs/SelfCollisionSafetyConfig"
-        },
-        "trajectory_check": {
-          "$ref": "#/$defs/TrajectoryCheckConfig"
         }
       },
       "title": "RobotSafetyConfig",
@@ -4013,26 +4010,6 @@
         }
       },
       "title": "ToolFrameConfig",
-      "type": "object"
-    },
-    "TrajectoryCheckConfig": {
-      "additionalProperties": false,
-      "description": "Whether a planned path is checked configuration by configuration before any of it is commanded.\n\nThe one-shot guards judge where a move ends, so a plan that grazes a fixture in the middle and\nlands clear passes them. While this is disabled nothing checks the middle: the sim applies each\nwaypoint straight to the articulation and the real UR moveJ's them in turn, so the planner is\nasked for a collision-free path and then trusted to have produced one.\n\nThe exact-mesh backend costs about 9.6 ms per configuration, so a 30 to 100 waypoint plan adds\nroughly 0.3 to 1.0 s before the arm starts moving. That is paid once per move, ahead of motion,\nnot interleaved with control.",
-      "properties": {
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "stride": {
-          "default": 1,
-          "maximum": 64,
-          "minimum": 1,
-          "title": "Stride",
-          "type": "integer"
-        }
-      },
-      "title": "TrajectoryCheckConfig",
       "type": "object"
     },
     "URConfig": {

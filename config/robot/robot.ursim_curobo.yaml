@@ -1,0 +1,19 @@
+# The URSim bed with the planner on: a real controller, a real sidecar, no hardware.
+#
+# Layered on top of `ursim`, as `WILLY_PROFILE=ursim,ursim_curobo`. That profile exercises the driver
+# against a real UR controller with `motion_planner: ik`, because nothing there plans. This layer
+# turns the planner on, so the bed measures every verb planned or path checked, against a controller
+# that answers like the real one.
+#
+# The sidecar runs on the host, not in the container. `CuroboPlanClient` spawns it over pipes with the
+# cuRobo environment's own python, so the container's missing GPU decides nothing here; what decides
+# it is whether that environment is installed on the machine running this repository.
+robot:
+  ur:
+    motion_planner: "curobo"
+
+  safety:
+    self_collision:
+      # The margin the planner keeps, as the UR5e sim cell uses. A UR3e is a smaller arm and finds no
+      # plan at 10 mm, which is why the ur3 bed layer lowers it rather than inheriting this.
+      planner_margin_mm: 10.0

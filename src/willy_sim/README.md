@@ -114,7 +114,7 @@ The seams in `harness/`:
 | One single file-redirected `cmd /c "...python.bat... > log 2>&1"` | `cmd` writes UTF-8 and PowerShell redirection writes UTF-16 |
 | Never a compound command | it hangs the boot |
 | One Isaac process at a time | they contend for the GPU and the asset cache |
-| Export `WILLY_CUROBO_PYTHON` and `WILLY_COAL_PREFIX` before launching | otherwise the boot refuses, and every runner prints the anchoring status so a degraded run is obvious rather than mistaken for a grasp-quality problem |
+| Export `WILLY_CUROBO_PYTHON` and `WILLY_COAL_PREFIX` before launching | otherwise a cuRobo cell refuses, at the boot and again at every motion, rather than running the blind IK path whose self-collisions on some reach poses read as grasp failures. Every runner prints the anchoring status, so a degraded run is obvious rather than mistaken for a grasp-quality problem |
 
 ## Traps
 

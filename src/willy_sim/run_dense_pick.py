@@ -759,16 +759,16 @@ def build_service(
         },
     )
     arm, gripper, handles, cfg, sim = cell.arm, cell.gripper, cell.handles, cell.cfg, cell.sim
-    # Resolve the effective planner: the explicit parameter, else the config default. A build-time
-    # availability check then degrades "curobo" to "ik" when the cuRobo environment is absent, so the
-    # per-planner config below, the align flag and the arm planner, matches the planner that will really
-    # run. The driver's move-time fallback catches only a present but broken environment.
+    # The planner this run uses: the explicit parameter, else the config default. A "curobo" run on a
+    # box without the environment is refused rather than degraded to "ik", because the pick rate a
+    # degraded run produces describes a different motion stack than the cell was configured with.
+    # Asking for --motion-planner ik is still how somebody says a run is deliberately unplanned.
     from src.robot.safety.planning import curobo_env_available
+    from src.willy_sim.harness.bootstrap import resolve_runner_planner
     _requested_planner = motion_planner if motion_planner is not None else arm._motion_planner
-    _effective_planner = _requested_planner
-    if _requested_planner == "curobo" and not curobo_env_available():
-        _effective_planner = "ik"
-        print("[motion-planner] cuRobo env absent -> building the 'ik' (blind) path for this run.", flush=True)
+    _effective_planner = resolve_runner_planner(
+        _requested_planner, env_available=curobo_env_available()
+    )
     arm._motion_planner = _effective_planner
     # Register the bin walls, the same FixtureBoxConfig list, into cuRobo's collision world, so the planner
     # takes the gripper into the bin around the walls instead of meeting them only as a physical prim and a
