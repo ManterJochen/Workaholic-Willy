@@ -198,5 +198,81 @@ class TheBatchCheckBranchTests(unittest.TestCase):
                 self.assertNotIn(name, text)
 
 
+_SET_WORLD_HEAD = 'if cmd == "set_world":'
+_SET_VOXELS_HEAD = 'if cmd == "set_voxels":'
+
+
+def _def_block(source: str, name: str) -> list[str]:
+    """The lines of the function ``name`` at whatever depth it is defined; empty when absent."""
+    lines = source.splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if line.strip().startswith(f"def {name}(")), None
+    )
+    if start is None:
+        return []
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        block.append(line)
+    return block
+
+
+class TheSceneBranchesTests(unittest.TestCase):
+    """The sidecar's world and field branches, read as source, each scan scoped to its own block.
+
+    Scoped because a whole-file scan is green before any of this exists: ``"mesh"`` is already in the
+    file twice (the slot reservation and the set_world branch) and ``_collision_cache["voxel"]`` once
+    (the grid reservation). What was missing is each name in the branch whose behaviour it stands for:
+    the field branch rebuilt the scene from the cuboids alone, set_world remembered no meshes, and
+    nothing compared a field's grid with the grid the planner reserved.
+    """
+
+    def setUp(self) -> None:
+        self.source = _SERVER.read_text(encoding="utf-8")
+        self.set_world = "\n".join(_block(self.source, _SET_WORLD_HEAD))
+        self.set_voxels = "\n".join(_block(self.source, _SET_VOXELS_HEAD))
+        self.grid_check = "\n".join(_def_block(self.source, "_grid_refusal"))
+
+    def test_the_field_branch_keeps_the_declared_meshes(self) -> None:
+        self.assertTrue(self.set_voxels, "the sidecar has no set_voxels branch")
+        self.assertIn("_LAST_MESHES", self.set_voxels)
+        self.assertIn('"mesh"', self.set_voxels)
+
+    def test_set_world_remembers_its_meshes_and_takes_a_field_in_the_same_request(self) -> None:
+        self.assertTrue(self.set_world, "the sidecar has no set_world branch")
+        self.assertIn("_LAST_MESHES =", self.set_world)
+        self.assertIn('req.get("voxels")', self.set_world)
+        self.assertIn('"voxels_set"', self.set_world)
+
+    def test_a_field_on_a_grid_that_was_not_reserved_is_refused(self) -> None:
+        self.assertIn('_collision_cache["voxel"]', self.grid_check)
+        for label, branch in (("set_world", self.set_world), ("set_voxels", self.set_voxels)):
+            with self.subTest(branch=label):
+                self.assertIn("_grid_refusal(", branch)
+
+    def test_the_scoped_scans_can_fail(self) -> None:
+        """The control: every name present in a source, and absent from the block it is scanned in."""
+        synthetic = (
+            'scene["mesh"] = meshes\n'
+            "_LAST_MESHES = {}\n"
+            '_cache = _collision_cache["voxel"]\n'
+            "for line in stdin:\n"
+            '    if cmd == "set_voxels":\n'
+            '        _planner.update_world(SceneCfg.create({"cuboid": cuboids}))\n'
+            "        continue\n"
+        )
+        block = "\n".join(_block(synthetic, _SET_VOXELS_HEAD))
+        self.assertTrue(block)
+        for name in ('"mesh"', "_LAST_MESHES", '_collision_cache["voxel"]'):
+            with self.subTest(name=name):
+                self.assertIn(name, synthetic)
+                self.assertNotIn(name, block)
+        self.assertEqual(_def_block(synthetic, "_grid_refusal"), [])
+        found = _def_block("try:\n    def _grid_refusal(req):\n        return ''\n    x = 1\n", "_grid_refusal")
+        self.assertEqual(len(found), 2, "a helper defined inside the sidecar's try block must be found")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -45,6 +45,7 @@ from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING
 
 from src.robot.constants import SAFETY_PREFLIGHT_LOG_FILE, create_robot_logger
+from src.contracts import UNSET, Maybe, chosen
 from src.robot.core import MotionCommand, MotionResult, MotionStatus
 
 from .continuity import MotionContinuityGuard
@@ -65,6 +66,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.core import JointPositions, RobotArm
     from src.robot.safety._capsule import AxisAlignedBox
     from src.robot.safety.path_samples import PathSamples
+    from src.robot.safety.planning.hand import PlannerHand
 
 __all__ = [
     "SafetyPreflight",
@@ -169,6 +171,8 @@ class SafetyPreflight:
         workspace_cfg: "WorkspaceLimitsConfig",
         *,
         extra_guards: Iterable[SafetyGuard] = (),
+        hand: "Maybe[PlannerHand]" = UNSET,
+        arm_model: Maybe[str] = UNSET,
     ) -> "SafetyPreflight":
         """Build the canonical preflight pipeline from configuration.
 
@@ -185,6 +189,16 @@ class SafetyPreflight:
             Optional additional guards, injected after the canonical set. Each is named
             for the canonical slot it belongs in, and the factory re-sorts the full set
             into :attr:`_CANONICAL_ORDER` before constructing the preflight.
+        hand
+            The hand the cell names, ``planner_hand(robot_config)``. The self-collision
+            guard loads its mesh bundle and its coupling from it.
+        arm_model
+            The arm the driver knows it is, for a guard with no ``kinematics_model``: the
+            UR driver passes ``robot.ur.model``. With either resolving a model, an exact
+            mesh guard reads hand geometry, and an unset ``hand`` raises ``ConfigError``
+            naming ``robot.gripper.model`` rather than checking whatever hand the arm
+            bundle carries. A declared tool frame whose approach disagrees with the hand
+            model's raises the same way.
         """
         # The workspace guard is non-negotiable and is always wired.
         workspace_margin = float(safety_cfg.limits.workspace_margin_mm)
@@ -205,7 +219,31 @@ class SafetyPreflight:
                 )
             )
         if safety_cfg.self_collision.enforce:
-            guards.append(SelfCollisionGuard(safety_cfg.self_collision))
+            # No hand is implied. An exact mesh guard on a resolvable arm reads hand
+            # geometry, and with no hand named it would check the 2F-85 every arm bundle
+            # carries, which on a Hand-E cell that forgot its name passes by coincidence.
+            # It is refused here, at build, where the model resolves.
+            from src.robot.safety.planning.hand import (
+                approach_refusal,
+                hand_geometry_model,
+                unset_hand_refusal,
+            )
+
+            reads = hand_geometry_model(safety_cfg.self_collision, arm_model)
+            if reads is not None:
+                from src.config.loader import ConfigError
+
+                if not chosen(hand):
+                    what, fix = unset_hand_refusal(reads)
+                    raise ConfigError(f"{what} {fix}")
+                # The declared tool frame has to approach along the hand model's axis:
+                # every committed model holds the hand along flange +Y, as the Isaac cell
+                # measures, and a real UR flange approaches along +Z, which no committed
+                # model describes yet.
+                disagreement = approach_refusal(hand)
+                if disagreement is not None:
+                    raise ConfigError(disagreement)
+            guards.append(SelfCollisionGuard(safety_cfg.self_collision, hand=hand))
         if safety_cfg.payload.enforce:
             guards.append(PayloadGuard(safety_cfg.payload))
         if safety_cfg.motion_continuity.enforce:
@@ -410,6 +448,15 @@ class SafetyPreflight:
                 return guard
         return None
 
+    def planner_hand(self, arm: "RobotArm | None" = None) -> "Maybe[PlannerHand]":
+        """The hand this pipeline's self-collision guard models, from ``robot.gripper.model``.
+
+        ``UNSET`` where no self-collision guard is wired, or where it was built without a
+        hand and keeps the arm bundle's own.
+        """
+        guard = self._path_authority(arm)
+        return guard.hand if guard is not None else UNSET
+
     def _say_and_refuse(
         self, message: str, command: MotionCommand
     ) -> "MotionResult | None":
@@ -598,6 +645,20 @@ class SafetyPreflight:
         except ValueError as exc:
             return self._say_and_refuse(str(exc), command)
         return self.gate_joint_path(samples, arm=arm, command=command)
+
+    def self_kinematics(self, arm: "RobotArm | None") -> "tuple[str, float] | None":
+        """The model and base yaw this pipeline's self-collision guard places ``arm`` with.
+
+        ``None`` where no guard is wired or no model derives. The self filter stands the
+        robot where the guard does. Asking the arm instead mirrors the sim's filter through
+        its base: the Isaac cell's guard turns the DH base by 180 degrees, and origins
+        placed without that put the robot's own body on the other side of the bench.
+        """
+        guard = self._path_authority(arm)
+        model = guard.model_for(arm) if guard is not None else None
+        if guard is None or not model:
+            return None
+        return str(model), guard.base_yaw_deg
 
     def joint_radii_mm(self, arm: "RobotArm | None") -> "tuple[float, ...] | None":
         """Per joint, how far ``arm`` can swing a point when that joint turns, or ``None``.

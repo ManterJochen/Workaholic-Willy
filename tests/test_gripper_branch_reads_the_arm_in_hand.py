@@ -43,7 +43,7 @@ _READY = "src.robot.drivers.doctor.require_arm_vendor_ready"
 
 _UR_CELL = {
     "vendor": "ur",
-    "gripper": {"vendor": "robotiq"},
+    "gripper": {"vendor": "robotiq", "model": "robotiq_2f85"},
     "ur": {"ip": "10.9.9.9"},
     "grasping": {"default_mode": "auto", "max_attempts": 5},
 }

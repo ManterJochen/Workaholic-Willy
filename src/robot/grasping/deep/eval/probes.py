@@ -208,7 +208,7 @@ def oracle_ceiling(index: CorpusIndex, plan: SetTrainingPlan, *, units: int = 25
         unit = index.units[int(position)]
         from src.robot.grasping.deep.corpus.sample import build_sample, load_scene  # noqa: PLC0415
 
-        sample = build_sample(load_scene(index.files[unit.scene]), rng, plan.sample,
+        sample = build_sample(load_scene(index.files[unit.scene], gripper=index.grippers[unit.scene]), rng, plan.sample,
                               target_instance=unit.instance)
         supervise = torch.as_tensor(np.asarray(sample["supervise"]), dtype=torch.bool)
         pair_point = torch.as_tensor(np.asarray(sample["set_pair_point"]), dtype=torch.int64)
@@ -321,7 +321,7 @@ def baseline_floor(index: CorpusIndex, plan: SetTrainingPlan, *, units: int = 25
 
     for position in chosen:
         unit = index.units[int(position)]
-        sample = build_sample(load_scene(index.files[unit.scene]), rng, plan.sample,
+        sample = build_sample(load_scene(index.files[unit.scene], gripper=index.grippers[unit.scene]), rng, plan.sample,
                               target_instance=unit.instance)
         supervise = torch.as_tensor(np.asarray(sample["supervise"]), dtype=torch.bool)
         pair_point = torch.as_tensor(np.asarray(sample["set_pair_point"]), dtype=torch.int64)
@@ -419,7 +419,7 @@ def approach_headroom(index: CorpusIndex, plan: SetTrainingPlan, *, units: int =
         pooled: list[np.ndarray] = []
         for position in chosen:
             unit = index.units[int(position)]
-            sample = build_sample(load_scene(index.files[unit.scene]), rng, spec,
+            sample = build_sample(load_scene(index.files[unit.scene], gripper=index.grippers[unit.scene]), rng, spec,
                                   target_instance=unit.instance)
             pair_point = np.asarray(sample["set_pair_point"])
             if not pair_point.size:

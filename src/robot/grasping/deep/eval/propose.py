@@ -166,8 +166,7 @@ def propose_for_scenes(artifact: str | Path, files: Sequence[str | Path], *,
     import torch  # noqa: PLC0415 (heavy, and only this path needs it)
 
     from src.robot.grasping.deep.corpus.sample import build_sample, load_scene  # noqa: PLC0415
-    from src.robot.grasping.deep.net.gripper import (  # noqa: PLC0415
-        JAW_GEOMETRY, gripper_vector)
+    from src.robot.grasping.deep.hands import hand_vector, resolve_hand  # noqa: PLC0415
     from src.robot.grasping.deep.net.set_targets import (  # noqa: PLC0415
         sample_seeds)
     from src.robot.grasping.deep.set_artifact import load_set_generator  # noqa: PLC0415
@@ -186,7 +185,7 @@ def propose_for_scenes(artifact: str | Path, files: Sequence[str | Path], *,
     say(f"  seeds drawn at predicted {shares.predicted:.2f} / random {shares.random:.2f}, "
         f"from the SERVING defaults (the artifact's own mixture is not carried through the reader). "
         f"Serving all-predicted collapses the draw onto one blob of identical features")
-    gripper = gripper_vector(loaded.gripper).to(device)
+    gripper = hand_vector(loaded.gripper).to(device)
     # The augmentation is off here. `SampleSpec.rotate_z` defaults to true because it is a training
     # device: `build_sample` in `corpus/sample.py` draws `rng.uniform(0, 2*pi)` and rotates the
     # cloud, the normals and the grasp targets about the cloud centroid. At training time that is
@@ -264,7 +263,7 @@ def propose_for_scenes(artifact: str | Path, files: Sequence[str | Path], *,
             centre_xy_mm=np.asarray(sample["centre_xy_mm"], dtype=np.float64),
             support_height_mm=float(np.asarray(sample["support_height_mm"]).reshape(-1)[0]),
             min_width_mm=1.0,
-            max_width_mm=float(JAW_GEOMETRY[loaded.gripper]["aperture_mm"]),
+            max_width_mm=float(resolve_hand(loaded.gripper).numbers["aperture_mm"]),
             # From the artifact's own head, so a role is named by the net that was trained.
             part_roles=tuple(net.config.head.part_roles))
         scene_id = str(np.asarray(scene.get("scene_id", Path(path).stem)).reshape(-1)[0])

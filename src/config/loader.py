@@ -428,6 +428,7 @@ def _describe_validation_error(
     lines = [header + ":"]
     try:
         from ._provenance import index_origins, nearest_keys
+        from .schema._removed import REMOVED_KEYS
 
         origins = index_origins(root, layers)
     except Exception:  # noqa: BLE001 (never let the explainer mask the real error)
@@ -444,7 +445,9 @@ def _describe_validation_error(
             # cross-field rule, or a required field nobody wrote.
             lines.append("      (not written in any YAML: a default or a cross-field rule)")
         lines.append(f"      {err['msg']}")
-        if err["type"] == "extra_forbidden" and err["loc"]:
+        if err["type"] == "extra_forbidden" and dotted in REMOVED_KEYS:
+            lines.append(f"      removed on purpose: {REMOVED_KEYS[dotted]}")
+        elif err["type"] == "extra_forbidden" and err["loc"]:
             siblings = [
                 key.rsplit(".", 1)[-1]
                 for key in origins

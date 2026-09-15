@@ -337,12 +337,18 @@ rt.kernel_backend = 'pybind'
 
 cuRobo ships `ur10e` and `franka` but no `ur5e` or `ur3e`. One script assembles either from on-box
 ingredients, the canonical URDF of Isaac plus its Lula collision spheres, writing `<model>.urdf`
-and `<model>.yml` into the content directory of the clone:
+and `<model>_<hand>.yml` into the content directory of the clone, one descriptor per arm and hand:
 
 ```bash
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur3e
+ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e --gripper robotiq_2f85
+ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur3e --gripper robotiq_2f85
+ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e --gripper robotiq_hande --coupling-mm 20
+ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py
 ```
+
+The hand is the cell's `robot.gripper.model`. Each descriptor records its arm, hand and plate under
+`_provenance`, and the driver refuses one that does not match its cell or records none, so a box
+with descriptors built under the earlier per-arm names rebuilds them once.
 
 The builder fixes an upstream `self_collision_ignore` typo, `forarm_link` for `forearm_link`. It is
 harmless with the sparse ur10e spheres, but with the dense Lula ur5e spheres it leaves
@@ -352,7 +358,7 @@ everywhere until the key is renamed.
 The arm-link surface augmentation is UR5e-only and the script says so: the fitted meshes and the DH
 chain are ur5e-specific, so any other model keeps its own model-tuned Lula arm spheres.
 
-The sphere fit is not deterministic, so two runs do not produce the same `ur5e.yml`. Everything
+The sphere fit is not deterministic, so two runs do not produce the same descriptor. Everything
 that is not a sphere centre is stable. Where a measured planner result depends on one specific
 descriptor, keep that file: a rebuild will not reproduce it. Full record:
 [`src/robot/safety/planning/robot/PROVENANCE.md`](../src/robot/safety/planning/robot/PROVENANCE.md).
@@ -360,7 +366,7 @@ descriptor, keep that file: a rebuild will not reproduce it. Full record:
 > A robot config lives inside the clone, so a fresh clone needs this step again. The boot banner
 > cannot verify it: it reports that the Python of the sidecar exists, and explicitly not that the
 > descriptor inside that separate environment is present.
-> `python -m src.robot.safety.planning --check` names the descriptor it expects.
+> `python -m src.robot.safety.planning --check --hand <hand>` names the descriptor it expects.
 
 ### 4. Wiring
 
@@ -386,7 +392,7 @@ configuration:
 | variable | default |
 |---|---|
 | `WILLY_CUROBO_PYTHON` | `ext_deps/curobo_env/python.exe` |
-| `WILLY_CUROBO_ROBOT` | `ur5e.yml` |
+| `WILLY_CUROBO_ROBOT` | `ur5e.yml`, read only by a client built without a descriptor: every cell names `{arm}_{hand}.yml` itself, and both drivers refuse a descriptor whose `_provenance` names another arm, hand or plate |
 | `WILLY_CUROBO_CUBOID_CACHE` | `16` collision-world cuboid slots reserved at boot: a real table plus far-away placeholders that `set_world` later fills |
 | `WILLY_CUROBO_MAX_ATTEMPTS` | `16` plan attempts, each a fresh IK and trajopt seed batch, which is what finds a plan reliably on a tight query |
 | `WILLY_CUROBO_GRAPH_FROM_ATTEMPT` | `1`, which is the cuRobo default: the first attempt stays trajopt-only, because the graph seeder can return no seed for a tight final approach and would otherwise skip every attempt |
@@ -445,9 +451,9 @@ together.
    the driver falls back to blind IK at both build time and move time; not optional on a real UR
    arm, which refuses to move without it.
 4. **Generate the robot configs**, which cuRobo does not ship. The install script does this, and by
-   hand it is `ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e` and the same
-   for `ur3e`. They are written inside the cuRobo clone, so a fresh clone always needs this step
-   again.
+   hand it is `ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e --gripper robotiq_2f85`
+   and the same for every arm and hand the box runs, as in section 3. They are written inside the
+   cuRobo clone, so a fresh clone always needs this step again.
 5. **If your layout differs**, every path above is an environment variable and none of them is
    baked into the package. The `ISAAC_MODEL_DIR` and `CUROBO` constants of the generator are the
    last two.

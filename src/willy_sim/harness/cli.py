@@ -13,6 +13,10 @@ Both map onto the loader's profile chain (see ``src/config/loader.py``):
     run_m1_pick --robot-model ur3e --profile tiltcam  ->  WILLY_PROFILE=sim,ur3e,tiltcam
 
 Omitting both loads the plain ``sim`` profile, with no extra layer.
+
+``--hand`` is not a layer: it runs another hand, a registry name, than the one the chain names,
+and the bootstrap revalidates the robot with it and derives the mount and the tool frame from it
+(``bootstrap_sim_cell(hand=)``).
 """
 
 from __future__ import annotations
@@ -44,6 +48,12 @@ def add_cell_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
         help="extra config layer stacked on top, repeatable (e.g. --profile tiltcam for the real "
              "cell's tilted D435 pair instead of the nadir camera).",
     )
+    parser.add_argument(
+        "--hand", type=str, default=None, metavar="NAME",
+        help="run this hand, a registry name under config/grippers (e.g. schunk_egu50), instead "
+             "of the chain's robot.gripper.model. The sim mount and the tool frame follow from it; "
+             "a hand the sim cannot mount is refused before the Isaac boot. Default: the chain's hand.",
+    )
     return parser
 
 
@@ -52,4 +62,5 @@ def cell_profile_kwargs(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "robot_model": getattr(args, "robot_model", None),
         "extra_profiles": tuple(getattr(args, "profile", None) or ()),
+        "hand": getattr(args, "hand", None),
     }

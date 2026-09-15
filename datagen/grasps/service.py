@@ -32,7 +32,7 @@ _NEWLINE = chr(10)
 
 
 def physics_output_name(*, proposals: bool = False,
-                        paired_arms: Sequence[str] | None = None) -> str:
+                        paired_arms: Sequence[str] | None = None, jaw: str | None = None) -> str:
     """Which file this run writes, given which question it asks.
 
     Three questions, three files, and the separation is not tidiness. A proposal verdict and a label
@@ -40,9 +40,19 @@ def physics_output_name(*, proposals: bool = False,
     second whether a grasp the geometry calls valid held. A shared file lets one be quoted as the
     other. A paired comparison is a third question again, and its file names the arms so that two
     comparisons of different arms cannot merge.
+
+    ``jaw`` names the gripper a label run shook. Its verdicts get their own file, because each label
+    file numbers its rows from zero and a shared file would join one jaw's verdict onto another
+    jaw's row. A proposal or a paired run is not a label run, so either with a jaw refuses.
     """
+    if jaw is not None and (paired_arms or proposals):
+        raise ValueError(f"a per-jaw physics run shakes that jaw's labels; jaw={jaw!r} on a "
+                         f"proposal or paired run would name a file for a question that run does "
+                         f"not ask")
     if paired_arms:
         return f"grasp_physics_paired_{'_vs_'.join(paired_arms)}.jsonl"
+    if jaw is not None:
+        return f"grasp_physics_jaw_{jaw}.jsonl"
     return "grasp_physics_proposals.jsonl" if proposals else "grasp_physics.jsonl"
 
 
@@ -128,7 +138,8 @@ class PhysicsSampling:
                               f"  referee        {self.engine}",
                               f"  display        {'headless' if self.headless else 'gui'}"])
 
-    def sample(self, *, per_class: int = 40, proposals: str | Path | None = None) -> PhysicsReport:
+    def sample(self, *, per_class: int = 40, proposals: str | Path | None = None,
+               jaw: str | None = None) -> PhysicsReport:
         """Does a grasp the geometry calls valid actually hold?
 
         Both the accepted and the rejected are sampled, because only the second half can show that
@@ -137,15 +148,18 @@ class PhysicsSampling:
 
         `proposals` asks a different question and writes a different file. It grades a model's own
         proposals, and mixing those rows with label verdicts would let one be quoted as the other.
+
+        ``jaw`` shakes that jaw's labels in a MuJoCo cell that models it, into its own file.
         """
         from datagen.grasps.physics import (  # noqa: PLC0415
             run_physics_sample, trials_from_proposals,
         )
 
         trials = trials_from_proposals(proposals) if proposals is not None else None
-        out_name = physics_output_name(proposals=proposals is not None)
+        out_name = physics_output_name(proposals=proposals is not None, jaw=jaw)
         raw = run_physics_sample(self.dataset, trials=trials, headless=self.headless,
-                                 per_class=per_class, engine=self.engine, out_name=out_name)
+                                 per_class=per_class, engine=self.engine, out_name=out_name,
+                                 jaw=jaw)
         return PhysicsReport(raw=raw, out_name=out_name)
 
     def compare(self, arms: Sequence[str], *, per_class: int = 20) -> PhysicsReport:

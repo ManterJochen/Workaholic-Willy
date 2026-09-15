@@ -41,7 +41,11 @@ print(f"backend {block.backend}, enforce {block.enforce}, "
 #    so a present ur5e bundle says nothing about a UR3e cell.
 print(MotionStack.from_robot_config(config).probe().render())
 
-# 4. An arm to hang the link meshes on. Nothing connects; the guard reads capabilities only.
+# 4. An arm to hang the link meshes on. Nothing connects; the guard reads capabilities only. The base
+#    tree names no hand, on purpose, and the arm's own guard refuses to build without one, so this desk
+#    names the 2F-85 the arm bundles carry.
+config = config.model_copy(update={"gripper": config.gripper.model_copy(
+    update={"model": config.gripper.model or "robotiq_2f85"})})
 arm = create_arm(RobotVendor.from_string(config.vendor), config=config)
 
 # 5. One folded configuration, a gripper finger driven into the forearm. This is the context

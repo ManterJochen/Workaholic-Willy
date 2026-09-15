@@ -484,19 +484,6 @@
           "description": "Torch device for inference. Null picks CUDA when available and CPU otherwise. Named explicitly only by a cell that has a reason: a second GPU, or a deliberate CPU run.",
           "title": "Device"
         },
-        "gripper": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Which JAW_GEOMETRY hand this cell has, for the deep generator's conditioning vector. None uses the hand the artifact was stamped for. A hand the artifact never trained across is refused.",
-          "title": "Gripper"
-        },
         "minimum_score": {
           "default": 0.5,
           "description": "Points below this graspability score are never seeded. 0.5 is the natural threshold for a calibrated head and this head is not calibrated, so it is a knob rather than a constant: the first real run is expected to move it once the score distribution has been looked at rather than assumed.",
@@ -1660,6 +1647,22 @@
           "title": "Closed Width Mm",
           "type": "number"
         },
+        "coupling_plates_mm": {
+          "anyOf": [
+            {
+              "items": {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Coupling Plates Mm"
+        },
         "jaw_io": {
           "$ref": "#/$defs/JawIOGripperConfig"
         },
@@ -2206,6 +2209,13 @@
           "title": "Floor To Plane",
           "type": "boolean"
         },
+        "fresh_frame_attempts": {
+          "default": 3,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Fresh Frame Attempts",
+          "type": "integer"
+        },
         "margin_mm": {
           "default": 15.0,
           "maximum": 500.0,
@@ -2246,20 +2256,6 @@
           "maximum": 200.0,
           "minimum": 0.0,
           "title": "Plane Clearance Mm",
-          "type": "number"
-        },
-        "self_radius_mm": {
-          "default": 90.0,
-          "maximum": 1000.0,
-          "minimum": 0.0,
-          "title": "Self Radius Mm",
-          "type": "number"
-        },
-        "tool_radius_mm": {
-          "default": 150.0,
-          "maximum": 1000.0,
-          "minimum": 0.0,
-          "title": "Tool Radius Mm",
           "type": "number"
         },
         "voxel_field_mm": {
@@ -3050,24 +3046,6 @@
           "title": "Base Radius Mm",
           "type": "number"
         },
-        "collision_mesh_variant": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Collision Mesh Variant"
-        },
-        "coupling_mm": {
-          "default": 0.0,
-          "minimum": 0.0,
-          "title": "Coupling Mm",
-          "type": "number"
-        },
         "enforce": {
           "default": true,
           "title": "Enforce",
@@ -3387,18 +3365,6 @@
           "title": "Enabled",
           "type": "boolean"
         },
-        "gripper_mount": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Gripper Mount"
-        },
         "gripper_prim_path": {
           "anyOf": [
             {
@@ -3410,11 +3376,6 @@
           ],
           "default": null,
           "title": "Gripper Prim Path"
-        },
-        "gripper_variant": {
-          "default": "Robotiq_2f_85",
-          "title": "Gripper Variant",
-          "type": "string"
         },
         "headless": {
           "default": true,

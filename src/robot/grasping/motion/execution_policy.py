@@ -43,6 +43,7 @@ from src.robot.core import (
     ObjectDetectingGripper,
     RobotArm,
 )
+from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 
 __all__ = [
@@ -293,6 +294,10 @@ class GraspExecutionPolicy:
         for pose in approach:
             try:
                 result = self._drive_to(pose)
+            except CameraWorldUnavailable:
+                # A camera that could not vouch for the cell is a fault of the cell, so it leaves the
+                # pick and PickRun stops the campaign on it rather than retrying a grasp.
+                raise
             except Exception as exc:  # noqa: BLE001 (propagate via report)
                 return PolicyReport(
                     outcome=PolicyOutcome.MOTION_FAILED,
@@ -354,6 +359,8 @@ class GraspExecutionPolicy:
         for pose in waypoints[-self.retreat_steps:]:
             try:
                 result = self._drive_to(pose)
+            except CameraWorldUnavailable:
+                raise  # out of the pick, for the reason the approach gives
             except Exception as exc:  # noqa: BLE001 (propagate via report)
                 return PolicyReport(
                     outcome=PolicyOutcome.MOTION_FAILED,

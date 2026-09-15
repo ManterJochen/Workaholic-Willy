@@ -43,6 +43,7 @@ at x=600.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -59,10 +60,13 @@ from src.robot.grasping.deep.corpus.grasp_encoding import (
 
 __all__ = [
     "FEATURE_NAMES",
+    "GRASP_TABLE_SUFFIX",
     "NO_TARGET",
     "SampleSpec",
     "build_sample",
+    "grasp_table_path",
     "load_scene",
+    "same_hand",
 ]
 
 _MM_TO_M: Final[float] = 1e-3
@@ -78,9 +82,9 @@ _ARM_INSTANCE: Final[int] = -2
 #: agree with it.
 _MINIMUM_CORPUS_VERSION: Final[int] = 3
 
-#: Deliberately not raised to 4, and not to 5 either. Version 4 adds the `engine` stamp and 5 adds
-#: `gripper`; every array a sample is built from is unchanged, so a v3 corpus still reads exactly
-#: right and stays usable, as do v4 and v5 clouds. Raising the floor would invalidate them over
+#: Deliberately not raised to 4, 5 or 6. Version 4 adds the `engine` stamp, 5 adds `gripper`, and 6
+#: another hand's grasp table beside the cloud; every array a sample is built from is unchanged, so a
+#: v3 corpus still reads exactly right and stays usable, as do v4 and v5 clouds. Raising the floor would invalidate them over
 #: keys the reader does not consume.
 #:
 #: A consumer that wants the gripper reads the key and defaults, rather than gating on the version.
@@ -136,6 +140,43 @@ _PART_ROLE_INDEX: Final[dict[str, int]] = {
 #: `src` may never import `datagen`, and the two must agree. It is here for one reason: scale jitter
 #: may not invent a grasp the gripper cannot close on.
 _MAX_JAW_APERTURE_MM: Final[float] = 85.0
+
+#: What a cloud written before the gripper stamp existed was labelled for. The same default the
+#: trainer applies (`train.trainer._DEFAULT_GRIPPER`), and safe for the same reason: every such corpus
+#: was labelled with the 2F-85.
+_DEFAULT_GRIPPER: Final[str] = "2f85"
+
+#: Another hand's grasp table beside a cloud, `<scene>.<model>.grasps`. Mirrored from
+#: `datagen.corpus.tables`, because `src` may never import `datagen`, and the two must agree.
+GRASP_TABLE_SUFFIX: Final[str] = ".grasps"
+
+
+def grasp_table_path(cloud: str | Path, gripper: str) -> Path:
+    """Where ``gripper``'s grasp table for ``cloud`` lives, as `datagen.corpus.tables.table_path` writes it."""
+    cloud = Path(cloud)
+    return cloud.with_name(f"{cloud.stem}.{gripper}{GRASP_TABLE_SUFFIX}")
+
+
+@functools.lru_cache(maxsize=None)
+def _hand_model(name: str) -> str:
+    """The registry model a hand's name means, or the name itself for a jaw the registry does not hold.
+
+    ``2f85`` is ``robotiq_2f85``; a procedural jaw keeps its own name. Torch-free, unlike
+    ``deep.hands``, because this reader is; cached, because the registry reads its files on every
+    lookup and this is asked per sample.
+    """
+    from src.config.grippers import load_gripper  # noqa: PLC0415
+    from src.config.loader import ConfigError  # noqa: PLC0415
+
+    try:
+        return load_gripper(name).model
+    except ConfigError:
+        return name
+
+
+def same_hand(first: str, second: str) -> bool:
+    """Whether two hand names mean one hand, by the registry's model name. Equal text never asks the registry."""
+    return first == second or _hand_model(first) == _hand_model(second)
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,12 +302,19 @@ class SampleSpec:
     approach_multilabel: bool = False
 
 
-def load_scene(path: str | Path) -> dict[str, np.ndarray]:
+def load_scene(path: str | Path, gripper: str | None = None) -> dict[str, np.ndarray]:
     """Read one scene ``.npz`` into memory, eagerly.
 
     `np.load` on an `.npz` returns a lazy handle, and every `d[key]` re-decompresses that whole
     column: a comprehension over a corpus does it once per key per scene and turns a read measured
     in seconds into one measured in hours. A full eager read is about 3.8 ms per scene.
+
+    ``gripper`` names the hand whose grasp table the sample is built from. ``None``, or the hand the
+    cloud is stamped for, returns the cloud as it is. Another hand overlays its table from beside
+    the cloud (`python -m datagen build-grasp-tables`): the ``grasp_*`` and ``contact_*`` arrays are
+    the table's, and ``gripper`` and ``gripper_aperture_mm`` say whose. A missing table, one written
+    for another hand or beside a cloud of another extraction, and one written against a different
+    point count refuse.
     """
     with np.load(Path(path), allow_pickle=False) as handle:
         scene = {name: handle[name] for name in handle.files}
@@ -283,7 +331,45 @@ def load_scene(path: str | Path) -> dict[str, np.ndarray]:
             f"{Path(path).name} is corpus version {version}, this reader needs "
             f"{_MINIMUM_CORPUS_VERSION}. Re-extract it with a current `datagen.corpus.clouds`; the "
             f"arrays it is missing would otherwise read as empty and break a split silently.")
-    return scene
+    if gripper is None:
+        return scene
+    stamp = str(np.asarray(scene["gripper"]).reshape(-1)[0]) if "gripper" in scene else _DEFAULT_GRIPPER
+    if same_hand(gripper, stamp):
+        return scene
+    return _overlay_table(Path(path), scene, gripper)
+
+
+def _overlay_table(path: Path, scene: dict[str, np.ndarray], gripper: str) -> dict[str, np.ndarray]:
+    """``scene`` with ``gripper``'s grasp table in place of the one the cloud carries. See :func:`load_scene`."""
+    table_file = grasp_table_path(path, gripper)
+    if not table_file.is_file():
+        raise FileNotFoundError(
+            f"{path.name} carries the grasp table of the hand it was extracted for and none for {gripper!r}: there "
+            f"is no {table_file.name} beside it. Write one with `python -m datagen build-grasp-tables`.")
+    with np.load(table_file, allow_pickle=False) as handle:
+        table = {name: handle[name] for name in handle.files}
+
+    def first(arrays: dict[str, np.ndarray], key: str) -> Any:
+        return np.asarray(arrays[key]).reshape(-1)[0] if key in arrays else None
+
+    written_for = str(first(table, "gripper"))
+    if written_for != gripper:
+        raise ValueError(f"{table_file.name} is named for {gripper!r} and was written for {written_for!r}")
+    cloud_source = first(scene, "source_dataset")
+    if cloud_source is not None and str(first(table, "source_dataset")) != str(cloud_source):
+        raise ValueError(
+            f"{table_file.name} was written beside a cloud of {first(table, 'source_dataset')} and {path.name} is a "
+            f"cloud of {cloud_source}: a table for another extraction would join labels onto the wrong scene")
+    points, written_points = int(len(scene["points_mm"])), int(first(table, "cloud_points"))
+    if written_points != points:
+        raise ValueError(
+            f"{table_file.name} was written against a cloud of {written_points} point(s) and {path.name} has "
+            f"{points}: the cloud was extracted again since, so write its table again")
+    overlaid = {key: value for key, value in scene.items() if not key.startswith(("grasp_", "contact_"))}
+    overlaid.update({key: value for key, value in table.items() if key.startswith(("grasp_", "contact_"))})
+    overlaid["gripper"] = np.asarray([gripper], dtype="<U32")
+    overlaid["gripper_aperture_mm"] = np.asarray(table["gripper_aperture_mm"], dtype=np.float32)
+    return overlaid
 
 
 def _rotation_z(angle: float) -> np.ndarray:
@@ -340,8 +426,10 @@ def _stratified_indices(instance: np.ndarray, target: int, count: int, spec: "Sa
 
 
 def _draw_scale(rng: np.random.Generator, spec: "SampleSpec",
-                grasp_width_mm: np.ndarray) -> float:
+                grasp_width_mm: np.ndarray, aperture_mm: float = _MAX_JAW_APERTURE_MM) -> float:
     """The scene's resize factor, capped so no label outgrows the jaw. ``1.0`` means untouched.
+
+    ``aperture_mm`` is the opening of the sample's own hand, the 2F-85's by default.
 
     Log-uniform rather than uniform: `(0.8, 1.25)` should shrink as often as it grows, and a uniform
     draw over that range grows 69 % of the time.
@@ -355,7 +443,7 @@ def _draw_scale(rng: np.random.Generator, spec: "SampleSpec",
         return 1.0
     widest = float(np.max(grasp_width_mm)) if len(grasp_width_mm) else 0.0
     if widest > 0.0:
-        high = min(high, _MAX_JAW_APERTURE_MM / widest)
+        high = min(high, aperture_mm / widest)
     low = min(low, high)
     if low >= high:
         return float(high)
@@ -509,7 +597,10 @@ def build_sample(scene: dict[str, np.ndarray], rng: np.random.Generator,
     # radii (10 mm here, 20/50/120 mm in the net) deliberately do not scale with it: they describe a
     # gripper pad and a receptive field, not the object, so a bigger object correctly covers fewer
     # of them, which is the point of the augmentation.
-    scale = _draw_scale(rng, spec, grasp_width)
+    # The sample's own hand caps the resize: a cloud read for another hand carries that hand's
+    # opening, and a cloud read as it was extracted carries none, which is the 2F-85's 85 mm.
+    aperture = float(np.asarray(scene.get("gripper_aperture_mm", [_MAX_JAW_APERTURE_MM])).reshape(-1)[0])
+    scale = _draw_scale(rng, spec, grasp_width, aperture_mm=aperture)
     if scale != 1.0:
         points_mm = points_mm * scale
         grasp_position = grasp_position * scale

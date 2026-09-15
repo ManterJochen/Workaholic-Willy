@@ -85,6 +85,7 @@ def _curobo_arm(trajectory: list[list[float]]) -> tuple[URRobotArm, _FakePlanner
         "vendor": "ur",
         "ur": {"motion_planner": "curobo"},
         "safety": {"payload": {"enforce": False}},
+        "gripper": {"model": "robotiq_2f85"},
     })
     arm = URRobotArm(config)
     arm._conn = MagicMock()
@@ -224,7 +225,7 @@ class TheAttestationReadsThePlannerTests(unittest.TestCase):
         from src.robot.safety.attestation import SafetyAttestation
 
         config = RobotConfig.model_validate(
-            {"vendor": vendor, "ur": {"motion_planner": planner}} if vendor == "ur"
+            {"vendor": vendor, "ur": {"motion_planner": planner}, "gripper": {"model": "robotiq_2f85"}} if vendor == "ur"
             else {"vendor": vendor}
         )
         arm = URRobotArm(config) if vendor == "ur" else None

@@ -265,6 +265,35 @@ def _cmd_split_dataset(args, config: DatagenConfig) -> int:  # noqa: ANN001 (arg
     return _EXIT_OK
 
 
+def _cmd_build_grasp_tables(args, config: DatagenConfig) -> int:  # noqa: ANN001 (argparse Namespace, as siblings take)
+    """Write another hand's grasp table beside every cloud of a dataset. No GPU, no images.
+
+    ``--labels grasps_jaw_<model>.jsonl`` names the hand, ``--clouds DIR`` the extracted clouds, ``--physics`` that
+    hand's shake to join. The work and its refusals are `datagen.corpus.tables.build_grasp_tables`.
+    """
+    from pathlib import Path
+
+    from datagen.corpus.tables import build_grasp_tables
+
+    if args.clouds is None:
+        print("build-grasp-tables needs --clouds DIR (the tables are written beside the clouds there)",
+              file=sys.stderr)
+        return _EXIT_USAGE
+    root = Path(args.out) if args.out is not None else Path(config.output.root)
+    try:
+        report = build_grasp_tables(root / args.name, args.clouds, labels=args.labels, physics=args.physics)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error("build-grasp-tables refused: %s: %s", type(exc).__name__, exc)
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return _EXIT_USAGE
+    print(f"{report['tables_written']} table(s) for {report['gripper']} beside {report['clouds']} cloud(s) "
+          f"in {args.clouds}")
+    print(f"  grasps: {report['grasps']} ({report['grasps_with_physics']} with a physics verdict)")
+    if report["clouds_of_other_datasets"]:
+        print(f"  {report['clouds_of_other_datasets']} cloud(s) there belong to other datasets and got none")
+    return _EXIT_OK if report["tables_written"] else _EXIT_PROBLEM
+
+
 def _cmd_build_ranker_corpus(args, config: DatagenConfig) -> int:  # noqa: ANN001 (argparse Namespace, as siblings take)
     """Walk a rendered dataset and write a ranker training corpus. No GPU, no cell, no model.
 
@@ -651,7 +680,7 @@ def _cmd_eval_grasps(config: DatagenConfig, *, name: str, out_root: str | None,
 
 def _cmd_physics_sample(config: DatagenConfig, *, name: str, out_root: str | None,
                         headless: bool, per_class: int, physics_engine: str = "isaac",
-                        proposals: str | None = None) -> int:
+                        proposals: str | None = None, jaw: str | None = None) -> int:
     """On-box: does a grasp the geometry calls valid actually hold? Samples both the accepted and
     the rejected, because only the second half can show the reference discriminates.
 
@@ -666,7 +695,14 @@ def _cmd_physics_sample(config: DatagenConfig, *, name: str, out_root: str | Non
         headless=headless)
     if proposals:
         print(f"  judging the proposals in {proposals}")
-    report = sampling.sample(per_class=per_class, proposals=proposals)
+    try:
+        report = sampling.sample(per_class=per_class, proposals=proposals, jaw=jaw)
+    except ValueError as exc:
+        if jaw is None:
+            raise
+        # A jaw on the Isaac referee or on a proposal run: a usage problem, said as one.
+        print(str(exc), file=sys.stderr)
+        return _EXIT_USAGE
     if proposals:
         print(f"\n  REFEREE SUCCESS RATE: {report.held}/{report.trials} = "
               f"{report.hold_rate * 100:.1f}%")
@@ -901,7 +937,8 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         choices=["plan", "describe", "audit", "verify", "verify-robot", "preview",
                  "prompts", "label-grasps", "predict-masks", "eval-grasps", "grasp-gate",
-                 "check-dataset", "build-cloud-corpus", "build-ranker-corpus", "split-dataset",
+                 "check-dataset", "build-cloud-corpus", "build-grasp-tables", "build-ranker-corpus",
+                 "split-dataset",
                  "train-ranker", "physics-sample", "physics-compare", "why-no-jaw",
                  "camera-probe", "cost", "heldout", "side-approach",
                  "decompose", "normalise-meshes", "screen-meshes", "prepare-assets",
@@ -1066,14 +1103,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="build-cloud-corpus: which grasp file inside the dataset to join. Not the default when "
              "the scenes were labelled for another gripper (grasps_jaw_<name>.jsonl). A non-default "
              "file changes the stamped dataset identity, so the overwrite guard can tell two "
-             "grippers' clouds apart in one directory.",
+             "grippers' clouds apart in one directory. build-grasp-tables: the other hand's file "
+             "(grasps_jaw_<model>.jsonl) whose table is written beside each cloud.",
+    )
+    parser.add_argument(
+        "--clouds", default=None, metavar="DIR",
+        help="build-grasp-tables: the extracted clouds of --name, walked recursively. A table is written "
+             "beside every cloud extracted from that dataset or one of its split views; clouds of other "
+             "datasets get none.",
     )
     parser.add_argument(
         "--jaw", type=str, default=None,
-        help="label-grasps: label for a DIFFERENT gripper than the 2F-85, by name (see "
-             "PROCEDURAL_JAWS). Writes grasps_jaw_<name>.jsonl, never the corpus file. Exists so the "
-             "generator's gripper input VARIES: with one gripper it is constant, carries no "
-             "gradient, and the conditioning seam cannot be shown to do anything.",
+        help="label-grasps: label for a DIFFERENT gripper than the 2F-85, by name: a procedural jaw (see "
+             "PROCEDURAL_JAWS) or a registry hand (config/grippers). Writes grasps_jaw_<name>.jsonl, never "
+             "the corpus file. Exists so the generator's gripper input VARIES: with one gripper it is "
+             "constant, carries no gradient, and the conditioning seam cannot be shown to do anything. "
+             "physics-sample: shake that jaw's labels in a MuJoCo cell modelling it, into "
+             "grasp_physics_jaw_<name>.jsonl; refused on --physics-engine isaac, whose cell is the 2F-85.",
     )
     parser.add_argument(
         "--parts", type=int, default=4,
@@ -1187,7 +1233,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--physics", default=None,
         help="build-ranker-corpus: a grasp_physics*.jsonl to join `held` from. Without it the corpus "
-             "carries only `valid`, our own verdict; with it, stage two's target",
+             "carries only `valid`, our own verdict; with it, stage two's target. build-cloud-corpus and "
+             "build-grasp-tables: the shake whose verdicts join the grasp table by (label file, row)",
     )
     # These four default to `UNSET`, and that is not a style choice. Declaring the numbers here as
     # well as in `fit_ranker` puts them in exactly the state in which a drift is invisible: both
@@ -1383,6 +1430,8 @@ def _dispatch(args: argparse.Namespace, config: DatagenConfig) -> int:
         return _cmd_prompts(config, name=args.name, out_root=args.out)
     if args.command == "build-cloud-corpus":
         return _cmd_build_cloud_corpus(args, config)
+    if args.command == "build-grasp-tables":
+        return _cmd_build_grasp_tables(args, config)
     if args.command == "build-ranker-corpus":
         return _cmd_build_ranker_corpus(args, config)
     if args.command == "split-dataset":
@@ -1457,7 +1506,7 @@ def _dispatch(args: argparse.Namespace, config: DatagenConfig) -> int:
     if args.command == "physics-sample":
         return _cmd_physics_sample(config, name=args.name, out_root=args.out,
                                    physics_engine=args.physics_engine, proposals=args.proposals,
-                                   headless=not args.gui, per_class=args.per_class)
+                                   headless=not args.gui, per_class=args.per_class, jaw=args.jaw)
     if args.command == "verify-robot":
         return _cmd_verify_robot(
             config, headless=not args.gui, require_curobo=args.require_curobo,

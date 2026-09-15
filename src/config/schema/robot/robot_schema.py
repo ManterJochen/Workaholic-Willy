@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -350,9 +350,19 @@ class GripperConfig(StrictModel):
     #: changes nothing. A set value is lower case letters, digits and underscores, so it can never read
     #: as a profile overlay or reach outside the registry. A name no registry file defines still
     #: passes: a schema is validated without a data directory, so it cannot see which files exist.
-    #: Nothing reads the key; the steps that take the labeller, the network and the planner descriptor
-    #: from it are the ones that refuse an unknown name.
+    #: `python -m src.config`, the sim's mount derivation, the labeller, the deep calculator and the
+    #: self collision guard refuse it. The guard loads its mesh bundle by this name
+    #: (``safety.planning.hand.planner_hand``), and a cell whose guard reads hand geometry refuses to
+    #: build while it is unset.
     model: str | None = Field(default=None, pattern=MODEL_NAME_PATTERN)
+    #: The plates between the arm flange and the hand's own mounting face, in mm. Their sum is where a
+    #: hand whose sphere map starts at its mounting face sits on the flange, and the self collision
+    #: guard adds it to that hand's meshes. ``None``, the default, is no measurement: such a hand
+    #: refuses at build until the plates are written, and ``[]`` says it is bolted straight to the
+    #: flange. A hand whose map already sits at the flange (the 2F-85, placed by its arm asset)
+    #: refuses any plate. It is the same bench measurement as the plate term in
+    #: ``tool_frame.offset_mm``.
+    coupling_plates_mm: list[Annotated[float, Field(ge=0.0)]] | None = Field(default=None)
     #: Physical opening of the mounted gripper, in mm. The default 85 mm is the Robotiq 2F-85,
     #: the end-effector this project ships. The Robotiq driver anchors its count map on this
     #: value, so it must be the real physical open width, not a policy ceiling.

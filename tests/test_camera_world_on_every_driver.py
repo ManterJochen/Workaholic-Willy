@@ -50,9 +50,6 @@ _JOINTS = JointPositions([0.0, -1.5, 1.5, 0.0, 1.5, 0.0])
 _UR_IK = CameraWorldStamp.unplanned("robot.ur.motion_planner is 'ik'")
 _UR_NO_WORLD = CameraWorldStamp.missing(
     "robot.ur.motion_planner is 'curobo' and no live camera world is wired to this arm")
-_UR_JOINT_MOVE = CameraWorldStamp.unplanned(
-    "move_to_joints sends one moveJ to the controller, and no planner plans a joint move on this "
-    "driver")
 _KUKA = CameraWorldStamp.unplanned("KukaRobotArm has no planner")
 _DUMMY = CameraWorldStamp.unplanned("DummyRobotArm has no planner")
 _SIM_MOCK = CameraWorldStamp.unplanned("mock_mode: the kinematic mock has no planner")
@@ -65,6 +62,7 @@ _SIM_DEGRADED = CameraWorldStamp.unplanned(
     "on this host")
 
 _BENCH = CameraWorldDecline("bench check, no cameras mounted")
+_VOUCHED = CameraWorldStamp.planned(cameras=("overhead",), captured_at_s=100.0)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -149,7 +147,7 @@ class TheStampMatrixTests(unittest.TestCase):
             ("ur ik move", lambda: _ur_ik().move(_pose()), _UR_IK),
             ("ur ik move_to_joints", lambda: _ur_ik().move_to_joints(_JOINTS), _UR_IK),
             ("ur curobo move, no live world", lambda: _ur_curobo().move(_pose()), _UR_NO_WORLD),
-            ("ur curobo move_to_joints", lambda: _ur_curobo().move_to_joints(_JOINTS), _UR_JOINT_MOVE),
+            ("ur curobo move_to_joints, no live world", lambda: _ur_curobo().move_to_joints(_JOINTS), _UR_NO_WORLD),
             ("kuka move", lambda: _kuka().move(_pose()), _KUKA),
             ("kuka move_to_joints", lambda: _kuka().move_to_joints(_JOINTS), _KUKA),
             ("dummy move", lambda: _dummy().move(_pose()), _DUMMY),
@@ -163,11 +161,35 @@ class TheStampMatrixTests(unittest.TestCase):
                 self.assertIsInstance(result, MotionResult)
                 self.assertEqual(result.camera_world, expected)
 
-    def test_the_ur_curobo_row_with_a_live_world_and_no_decline_stays_unstated(self) -> None:
-        """PLANNED needs camera names and a capture time, which no refresh reports yet."""
+    def test_a_live_world_row_whose_planner_reports_no_refresh_stays_unstated(self) -> None:
+        """Nothing vouched: this planner double reports no refresh, so the row cannot say PLANNED.
+
+        Until Step 4 this row said UNSTATED because no refresh reported cameras and a capture time. A
+        refresh does now, and a move on a world its refresh vouched for says PLANNED
+        (tests/test_every_verb_meets_the_camera_world.py). What stays is the control: a stamp that
+        vouches needs a refresh that did.
+        """
         result = _ur_curobo(live_world=object()).move(_pose())
         self.assertIs(result.status, MotionStatus.EXECUTED)
         self.assertIs(result.camera_world.use, CameraWorldUse.UNSTATED)
+
+    def test_a_ur_joint_move_whose_refresh_vouched_says_planned(self) -> None:
+        """Owner, Step 4 C: nothing plans a UR joint move, but on cuRobo its path is checked against the world its
+        refresh registered, so it says PLANNED as a move does. It said UNPLANNED, "no world could be consulted"."""
+        from src.robot.safety.planning.live_world import WorldRefresh, WorldVerdict
+
+        class _Refreshing(_FakePlanner):
+            last_world_refresh: object = None
+
+            def refresh_world(self, *, near_point_mm: object = None) -> None:
+                self.last_world_refresh = WorldRefresh(
+                    verdict=WorldVerdict.FRESH, sent=1, registered=1, build_ms=0.0, register_ms=0.0, age_ms=5.0,
+                    dropped_obstacles=0, cameras=("overhead",), captured_at_s=100.0,
+                )
+
+        result = _ur_curobo(_Refreshing(plan_result=[_JOINTS.tolist()]), live_world=object()).move_to_joints(_JOINTS)
+        self.assertIs(result.status, MotionStatus.EXECUTED, result.message)
+        self.assertEqual(result.camera_world, _VOUCHED)
 
     def test_only_the_stamp_changes_on_a_stamped_result(self) -> None:
         pose = _pose()
@@ -231,14 +253,22 @@ class TheSimArmTests(unittest.TestCase):
         self.assertIs(result.status, MotionStatus.CONNECTION_ERROR)
         self.assertEqual(result.camera_world, _SIM_NO_WORLD)
 
-    def test_a_joint_move_follows_plan_joint_moves(self) -> None:
+    def test_a_curobo_joint_move_is_judged_against_the_world_planned_or_not(self) -> None:
+        """Owner, Step 4 C. A cuRobo joint move's path is checked against the live world whether or not
+        ``plan_joint_moves`` plans it, so with no world wired it says MISSING either way; the interpolated one said
+        UNPLANNED, which the check against the world has contradicted since Step 4e. A sim on another planner
+        interpolates and consults no world, and says so: the control, green before and after."""
         interpolated = _sim_unconnected()
         interpolated._drive_joints = lambda joints, **_: None  # type: ignore[method-assign]
         planned = _sim_unconnected()
         planned._plan_joint_moves = True
         planned._drive_joints = lambda joints, **_: None  # type: ignore[method-assign]
-        self.assertEqual(interpolated.move_to_joints(_JOINTS).camera_world, _SIM_INTERPOLATED)
+        other = _sim_unconnected()
+        other._motion_planner = "ik"
+        other._drive_joints = lambda joints, **_: None  # type: ignore[method-assign]
+        self.assertEqual(interpolated.move_to_joints(_JOINTS).camera_world, _SIM_NO_WORLD)
         self.assertEqual(planned.move_to_joints(_JOINTS).camera_world, _SIM_NO_WORLD)
+        self.assertEqual(other.move_to_joints(_JOINTS).camera_world, _SIM_INTERPOLATED)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -259,6 +289,10 @@ class PrecedenceTests(unittest.TestCase):
              CameraWorldStamp.declined(block)),
             (dict(unplanned=None, missing="m", keyword=UNSET, block=None),
              CameraWorldStamp.missing("m")),
+            (dict(unplanned=None, missing=None, keyword=UNSET, block=block, planned=_VOUCHED),
+             CameraWorldStamp.declined(block)),
+            (dict(unplanned=None, missing=None, keyword=UNSET, block=None, planned=_VOUCHED),
+             _VOUCHED),
             (dict(unplanned=None, missing=None, keyword=UNSET, block=None),
              CameraWorldStamp.unstated()),
         )
@@ -312,9 +346,7 @@ class PrecedenceTests(unittest.TestCase):
     def test_unplanned_wins_over_a_decline(self) -> None:
         cases = (
             ("ur ik move", lambda: _ur_ik().move(_pose(), camera_world=_BENCH), _UR_IK),
-            ("ur curobo move_to_joints",
-             lambda: _ur_curobo(live_world=object()).move_to_joints(_JOINTS, camera_world=_BENCH),
-             _UR_JOINT_MOVE),
+            ("ur ik move_to_joints", lambda: _ur_ik().move_to_joints(_JOINTS, camera_world=_BENCH), _UR_IK),
             ("dummy move in a block", lambda: _in_block(_dummy(), "move"), _DUMMY),
             ("sim mock move", lambda: _sim_mock().move(_pose(), camera_world=_BENCH), _SIM_MOCK),
         )
@@ -351,6 +383,25 @@ class ADeclineOnALiveWorldIsRefusedTests(unittest.TestCase):
                 self.assertIs(result.status, MotionStatus.UNSUPPORTED)
                 self.assertIs(result.command, MotionCommand.MOVE_TO)
                 self.assertIs(result.target_pose, pose)
+                self.assertEqual(result.message, cw.DECLINE_ON_A_LIVE_WORLD_MESSAGE)
+                self.assertEqual(result.camera_world, CameraWorldStamp.declined(_BENCH))
+
+    def test_the_ur_refuses_a_declined_joint_move_before_its_path_is_judged(self) -> None:
+        """Owner, Step 4 C: the path of a cuRobo joint move is checked against the live world, which a decline cannot
+        set aside for one motion. It ran and said UNPLANNED."""
+        for label, enter in (("keyword", False), ("block", True)):
+            with self.subTest(label):
+                planner = MagicMock()
+                arm = _ur_curobo(planner, live_world=object())
+                if enter:
+                    with arm.without_camera_world(_BENCH.reason):
+                        result = arm.move_to_joints(_JOINTS)
+                else:
+                    result = arm.move_to_joints(_JOINTS, camera_world=_BENCH)
+                planner.refresh_world.assert_not_called()
+                arm._conn.moveJ.assert_not_called()  # type: ignore[attr-defined]
+                self.assertIs(result.status, MotionStatus.UNSUPPORTED)
+                self.assertIs(result.command, MotionCommand.MOVE_JOINTS)
                 self.assertEqual(result.message, cw.DECLINE_ON_A_LIVE_WORLD_MESSAGE)
                 self.assertEqual(result.camera_world, CameraWorldStamp.declined(_BENCH))
 

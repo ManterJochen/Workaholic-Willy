@@ -126,8 +126,8 @@ network, just an import-spec lookup and two registry lookups.
 ## Traps
 
 **The sim driver is model-selectable, and the config wins.** `SimRobotConfig.robot_model`
-(`ur5e` by default, or `ur3e` or `ur10e`) picks the Lula solver config, the Isaac USD and the
-cuRobo `{model}.yml` together, through `sim/robot_models.py`. A disagreeing `WILLY_CUROBO_ROBOT`
+(`ur5e` by default, or `ur3e` or `ur10e`) picks the Lula solver config, the Isaac USD and, with
+the cell's hand, the cuRobo `{model}_{hand}.yml` together, through `sim/robot_models.py`. A disagreeing `WILLY_CUROBO_ROBOT`
 environment variable is loudly ignored, because planning one cell against another robot's geometry
 has no visible symptom. Only `ur5e` is validated on the workstation.
 

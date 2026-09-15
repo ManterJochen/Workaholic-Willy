@@ -50,7 +50,7 @@ class _RecordingPlanner:
         self._verdict = verdict
         self.checked: list[list[float]] | None = None
 
-    def check_joint_path(self, samples):
+    def check_joint_path(self, samples, *, refresh=True):
         self.checked = [list(s) for s in samples]
         if isinstance(self._verdict, Exception):
             raise self._verdict
@@ -72,6 +72,7 @@ def _arm(
         "vendor": "ur",
         "ur": {"motion_planner": planner_kind},
         "safety": {"payload": {"enforce": False}},
+        "gripper": {"model": "robotiq_2f85"},
     })
     arm = URRobotArm(config)
     arm._conn = MagicMock()

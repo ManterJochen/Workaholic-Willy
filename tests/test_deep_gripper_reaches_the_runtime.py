@@ -85,28 +85,23 @@ class TheArtifactRecordsWhatItSawTests(unittest.TestCase):
         self.assertEqual(["slim_pad", "wide_140"], card["trained_grippers"])
 
 
-class TheCellCanSayWhichHandItHasTests(unittest.TestCase):
-    """⛔ IT COULD NOT. `GraspingDeepGeneratorConfig` had `artifact_path`, `device` and
-    `minimum_score`, so the one thing a customer swapping grippers most needs to state was the one
-    thing the schema had no word for."""
+class TheCellSaysWhichHandItHasTests(unittest.TestCase):
+    """⛔ IT COULD NOT, and then it could twice. `GraspingDeepGeneratorConfig` had no word for the hand, gained
+    `gripper` on 2026-09-04, and lost it again in lane (i) D2: `robot.gripper.model` is the one name for a hand,
+    and the factory hands it to the calculator after checking it against the artifact at build
+    (tests/test_deep_hand_at_build.py)."""
 
-    def test_the_schema_has_the_field(self) -> None:
+    def test_the_deep_generator_block_names_no_hand(self) -> None:
         from src.config.schema.robot.grasping_schema import GraspingDeepGeneratorConfig
 
-        self.assertIn("gripper", GraspingDeepGeneratorConfig.model_fields)
+        self.assertNotIn("gripper", GraspingDeepGeneratorConfig.model_fields)
 
-    def test_it_defaults_to_None_so_an_existing_cell_is_unchanged(self) -> None:
-        """⚠ DEFAULT-OFF BYTE-IDENTICAL. `None` keeps the artifact's stamp, which is exactly what
-        every cell did before the field existed."""
-        from src.config.schema.robot.grasping_schema import GraspingDeepGeneratorConfig
+    def test_the_calculator_config_carries_the_cells_hand(self) -> None:
+        """`None` keeps the artifact's stamp, which is what a calculator built outside the factory gets."""
+        from src.robot.grasping.deep.calculator import DeepCalculatorConfig
 
-        self.assertIsNone(GraspingDeepGeneratorConfig().gripper)
-
-    def test_a_real_config_tree_accepts_it(self) -> None:
-        """The schema is one thing; a tree that validates is another."""
-        from src.config.schema.robot.grasping_schema import GraspingDeepGeneratorConfig
-
-        self.assertEqual("wide_140", GraspingDeepGeneratorConfig(gripper="wide_140").gripper)
+        self.assertIsNone(DeepCalculatorConfig(artifact_path="x").gripper)
+        self.assertEqual("robotiq_2f85", DeepCalculatorConfig(artifact_path="x", gripper="robotiq_2f85").gripper)
 
 
 class TheRuntimeUsesTheCellsHandTests(unittest.TestCase):
@@ -135,20 +130,20 @@ class TheRuntimeUsesTheCellsHandTests(unittest.TestCase):
         loaded, _ = self._loaded("slim_pad", ["slim_pad"])
         self.assertNotIn("wide_140", loaded.grippers)
 
-    def test_the_calculator_reads_the_config_field_at_all(self) -> None:
-        """⚠ ASSERTED ON THE SOURCE OF THE RESOLUTION, because building a real calculator needs an
-        artifact with trained weights and a cell. What this pins is that the resolution exists and
-        prefers the config: the behaviour is covered by the two tests above plus the refusal."""
-        import inspect
+    def test_the_calculator_conditions_on_the_cells_hand(self) -> None:
+        """Behavioural since lane (i) D2, where it was a source scan: a named hand the model saw wins over the stamp,
+        and one it never saw refuses."""
+        from src.robot.grasping.deep.calculator import DeepCalculatorConfig, DeepGraspCalculator
 
-        from src.robot.grasping.deep import calculator
-
-        body = inspect.getsource(calculator)
-        self.assertIn('getattr(self.config, "gripper", None)', body,
-                      "the runtime no longer reads the cell's hand")
-        self.assertIn("wanted or loaded.gripper", body,
-                      "the artifact's stamp is no longer the fallback")
-        self.assertIn("Refusing to condition on a hand", body, "the refusal is gone")
+        _, path = self._loaded("slim_pad", ["narrow_55", "slim_pad", "wide_140"])
+        seen = DeepGraspCalculator(DeepCalculatorConfig(artifact_path=str(path), device="cpu", gripper="wide_140"))
+        seen.preload()
+        self.assertEqual(seen._set_gripper, "wide_140")  # noqa: SLF001
+        unseen = DeepGraspCalculator(DeepCalculatorConfig(artifact_path=str(path), device="cpu",
+                                                          gripper="robotiq_2f85"))
+        with self.assertRaises(ValueError) as caught:
+            unseen.preload()
+        self.assertIn("Refusing to condition on a hand", str(caught.exception))
 
 
 if __name__ == "__main__":

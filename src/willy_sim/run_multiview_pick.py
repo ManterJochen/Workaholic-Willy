@@ -399,6 +399,8 @@ def compare_grasp_views(
     cameras: "dict[str, tuple[MultiObjectGroundTruthPerceptionSource, Transform]]",
     target_idx: int,
     cfg: Any,
+    *,
+    data_dir: str | None = None,
 ) -> "tuple[dict[str, Any], dict[str, GraspPoint | None]]":
     """Synthesize a grasp from each camera's view of the target and report which view yields the best one.
 
@@ -442,6 +444,7 @@ def compare_grasp_views(
         if key not in cache:
             cache[key] = build_calculator(
                 cfg.robot,
+                data_dir=data_dir,
                 camera_matrix=intrinsics,
                 max_grip_width_mm=g.max_width_mm, min_grip_width_mm=g.min_width_mm,
             )
@@ -876,7 +879,7 @@ def run_multiview_gate(
     if compare_views:
         arm.move_joint(JointPositions(home_q))
         session.step_n(20)
-        cmp, _grasps = compare_grasp_views(cameras, target_idx, cfg)
+        cmp, _grasps = compare_grasp_views(cameras, target_idx, cfg, data_dir=data_dir)
         print("\n=== H5.1 Lever A: best grasp-synthesis view (arm at home) ===", flush=True)
         for name, r in cmp.items():
             print(f"  {name:>9}: visible_px={r['px']:>7d}  grasp_success={int(r['success'])}  score={r['score']}", flush=True)
@@ -1122,7 +1125,7 @@ def run_multiview_gate(
                     pass
                 session.step_n(30)
 
-                cmp, grasps = compare_grasp_views(cameras, target_idx, cfg)
+                cmp, grasps = compare_grasp_views(cameras, target_idx, cfg, data_dir=data_dir)
                 best = _best_view(cmp)
                 if best is None or grasps.get(best) is None:
                     print(f"RUN {i}: NO view synthesized a grasp (overhead occluded, obliques empty?) -> fail  "

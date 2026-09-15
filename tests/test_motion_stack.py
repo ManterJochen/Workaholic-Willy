@@ -35,11 +35,14 @@ class _Safety:
 
 
 class _Robot:
-    """The three fields the ladder reads, and nothing else."""
+    """The three fields the ladder reads, and the hand the descriptor is named by (Step 4i)."""
 
-    def __init__(self, *, kinematics_model: object = None, ur_model: object = None) -> None:
+    def __init__(
+        self, *, kinematics_model: object = None, ur_model: object = None, hand: object = "robotiq_2f85",
+    ) -> None:
         self.safety = _Safety(kinematics_model)
         self.ur = _Model(ur_model) if ur_model else None
+        self.gripper = _Model(hand)
 
 
 class ModelResolutionTests(unittest.TestCase):
@@ -82,7 +85,23 @@ class ReadingTests(unittest.TestCase):
             stack_mod, "probe_planning_environment", return_value=ANCHORED
         ) as probe:
             MotionStack.from_robot_config(_Robot(ur_model="ur3e")).probe()
-        probe.assert_called_once_with(robot_config="ur3e.yml", kinematics_model="ur3e")
+        probe.assert_called_once_with(robot_config="ur3e_robotiq_2f85.yml", kinematics_model="ur3e")
+
+    def test_the_descriptor_is_named_by_the_arm_and_the_hand(self) -> None:
+        """Step 4i, owner Q5: a UR3e with a Hand-E plans against ur3e_robotiq_hande.yml, not against ur3e.yml."""
+        with mock.patch.object(stack_mod, "probe_planning_environment", return_value=ANCHORED) as probe:
+            MotionStack.from_robot_config(_Robot(ur_model="ur3e", hand="robotiq_hande")).probe()
+        probe.assert_called_once_with(robot_config="ur3e_robotiq_hande.yml", kinematics_model="ur3e")
+
+    def test_a_cell_that_names_no_hand_names_no_descriptor_and_is_not_anchored(self) -> None:
+        """No implied 2F-85 (owner Q5): the reading says which key is missing, and exit 1 is its refusal."""
+        from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR
+
+        with mock.patch.object(stack_mod, "probe_planning_environment", return_value=ANCHORED) as probe:
+            report = MotionStack.from_robot_config(_Robot(ur_model="ur3e", hand=None)).probe()
+        probe.assert_called_once_with(robot_config=NO_DESCRIPTOR, kinematics_model="ur3e")
+        self.assertEqual(report.exit_code, 1, report.render())
+        self.assertIn("robot.gripper.model", report.render().splitlines()[-1])
 
     def test_render_is_the_whole_object_including_the_model_line(self) -> None:
         """⭐ The CLI used to append the model line itself, so `render()` returned a fragment and the
@@ -188,13 +207,20 @@ class ConfigThatDidNotLoadTests(unittest.TestCase):
         self.assertTrue(payload["config_error"])
 
     def test_a_tree_that_loads_is_untouched_by_any_of_this(self) -> None:
-        """The shipped tree loads and declares a robot; that reading stays exactly what it was."""
+        """The shipped tree loads and declares a robot, and no config error is reported about it.
+
+        From Step 4i it also names no hand (the base robot.yaml leaves robot.gripper.model unset on purpose, owner Q5),
+        so the reading is not anchored for a cell until the hand is named: exit 1, with the sentence last. Named, it is 0.
+        """
         s = MotionStack.for_this_box()
         with mock.patch.object(stack_mod, "probe_planning_environment", return_value=ANCHORED):
             report = s.probe()
-        self.assertEqual(report.exit_code, 0)
+            named = MotionStack.for_this_box(hand="robotiq_2f85").probe()
+        self.assertEqual(report.exit_code, 1)
         self.assertIn("=> fully anchored", report.render())
+        self.assertIn("robot.gripper.model", report.render().splitlines()[-1])
         self.assertEqual(report.to_dict()["config_error"], "")
+        self.assertEqual(named.exit_code, 0, named.render())
 
 
 if __name__ == "__main__":  # pragma: no cover

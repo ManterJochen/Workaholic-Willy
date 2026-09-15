@@ -125,10 +125,16 @@ def sim_driver_config(cfg: "AppConfig", *, headless: bool | None = None) -> "Sim
     """Build the driver-side :class:`SimRobotConfig` from a loaded sim ``cfg``.
 
     ``headless`` overrides the YAML value (e.g. a ``--gui`` CLI flag) without mutating the frozen
-    config. All other driver fields come straight from ``cfg.robot.sim`` via the shared converter.
+    config. All other driver fields come straight from ``cfg.robot.sim`` via the shared converter,
+    except the planner reservation, which depends on the declared world and comes from the whole robot.
     """
     _robot = require_robot(cfg)
-    driver = build_sim_driver_config(_robot.sim, _robot.gripper.tool_frame)
+    from src.robot.safety.planning.reservation import PlannerReservation
+
+    driver = build_sim_driver_config(
+        _robot.sim, _robot.gripper.tool_frame,
+        planner_reservation=PlannerReservation.from_config(robot_cfg=_robot),
+    )
     if headless is not None and headless != driver.headless:
         driver = replace(driver, headless=headless)
     return driver
@@ -142,7 +148,11 @@ def sim_safety_preflight(cfg: "AppConfig"):
     ``cfg.robot.workspace_limits``. Pass the result to ``IsaacRobotArm(safety_preflight=...)`` so
     the sim pick path runs through the guards instead of bypassing them.
     """
+    from src.robot.safety.planning.hand import planner_hand
     from src.robot.safety.preflight import SafetyPreflight
 
     robot = require_robot(cfg)
-    return SafetyPreflight.from_safety_config(robot.safety, robot.workspace_limits)
+    # The hand the cell names. The Isaac arm reports no UR model, so the guard's model is
+    # safety.self_collision.kinematics_model, which the sim profile sets; with it set and no hand
+    # named, this refuses.
+    return SafetyPreflight.from_safety_config(robot.safety, robot.workspace_limits, hand=planner_hand(robot))

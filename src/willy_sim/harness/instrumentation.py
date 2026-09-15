@@ -55,7 +55,7 @@ def cell_identity(cell: Any) -> dict[str, Any]:
     return {
         "robot_vendor": "sim",
         "robot_model": getattr(sim, "robot_model", None),
-        "gripper_mount": getattr(sim, "gripper_mount", None) or "baked",
+        "gripper_mount": mount.name if (mount := getattr(cell, "mount", None)) is not None else "baked",
         "degraded_engines": list(getattr(cell, "degraded_engines", ()) or ()),
     }
 

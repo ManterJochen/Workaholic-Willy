@@ -36,8 +36,9 @@ upward. Build it through the registry: `create_arm(RobotVendor.UR, config=cfg.ro
   pre-resolves IK, runs `SafetyPreflight`, and returns a precise `MotionStatus` on rejection. Where
   `robot.ur.motion_planner` is `curobo` it routes through `CuroboUrPlanner` instead of controller
   IK. The result carries a camera-world stamp: UNPLANNED on `ik`, MISSING on `curobo` with no live
-  world, DECLINED for a decline. `without_camera_world(reason)` declines the camera world for a
-  block of motions.
+  world, DECLINED for a decline, PLANNED when the refresh this motion made vouched.
+  `move_to_joints` stamps the same way, because on `curobo` its path is checked against that
+  world. `without_camera_world(reason)` declines the camera world for a block of motions.
 - `move_to(...) -> bool`, the boolean path through `MotionController`, plus `move_linear` and
   `move_joint` (which raise `RobotMotionRejected` where the preflight denies the move),
   `move_to_joints`, `move_home`, `stop`, `wait_until_steady`, and the asynchronous `amove_to` and

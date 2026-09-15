@@ -164,6 +164,25 @@ class TheRungGoesThroughTheProductionFactoryTests(unittest.TestCase):
             evaluate._make_deep(camera_matrix=None)                   # noqa: SLF001
 
 
+class TheRungNamesItsHandTests(unittest.TestCase):
+    """Lane (i) D2. The factory refuses a deep cell that names no hand, and the rung builds a cell, so it names the
+    2F-85 every artifact on this ladder was trained for."""
+
+    def setUp(self) -> None:
+        from datagen.eval import ladder as evaluate
+
+        evaluate._DEEP_CACHE.clear()                            # noqa: SLF001 - per-process cache
+        self.addCleanup(evaluate._DEEP_CACHE.clear)             # noqa: SLF001
+
+    def test_the_rung_builds_a_cell_that_names_the_2f85(self) -> None:
+        from datagen.eval.ladder import _make_deep                # noqa: PLC0415
+
+        with mock.patch.dict(os.environ, {ENV_DEEP_ARTIFACT: "/the/rung/artifact.pt"}, clear=False), \
+             mock.patch("src.robot.grasping.calculator_factory.build_calculator") as build:
+            _make_deep(camera_matrix=None)                        # noqa: SLF001
+        self.assertEqual(build.call_args.args[0].gripper.model, "robotiq_2f85")
+
+
 class APartialLadderNeverTouchesTheReferenceTests(unittest.TestCase):
     """⛔ A REPAIR, NOT A PRECAUTION -- this happened. `grasp_eval.jsonl` is APPENDED across runs, so a
     two-scene exploratory run with `--rungs sfe_fused,deep` wrote 964 rows from a throwaway 2-epoch

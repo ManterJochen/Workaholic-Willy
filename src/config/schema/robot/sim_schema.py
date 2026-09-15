@@ -138,12 +138,10 @@ class SimConfig(StrictModel):
     # --- Isaac scene-authoring extras (read by src.willy_sim, not forwarded to the bare
     # driver dataclass; the "robot.sim" namespace owns the whole simulated work-cell). ---
     assets_root: str | None = None              # Isaac asset pack root (carb asset_root + scene build)
-    gripper_variant: str = "Robotiq_2f_85"      # USD Gripper variant selection on the UR5e asset
-    # A key in willy_sim.grippers.MOUNTED_GRIPPERS, such as "schunk_egu50": the scene builder picks
-    # the "None" UR5e Gripper variant and mounts that standalone vendor gripper on the wrist
-    # instead, and the runtime drives it through the matching GripperProfile. None, the default,
-    # keeps the baked ``gripper_variant``.
-    gripper_mount: str | None = None
+    # No key here names the gripper. Which one Isaac puts on the arm, a baked USD variant or a mounted
+    # standalone asset, is derived from the hand, ``robot.gripper.model``, and ``robot_model`` above
+    # (``willy_sim.grippers.sim_mount_for``). ``gripper_mount`` and ``gripper_variant`` are not keys,
+    # because each was a second name for the hand (src/config/schema/_removed.py).
     # Which suction cup to mount for a suction pick: a key in willy_sim.grippers.SUCTION_CUPS, such
     # as "slim" for a finer cup that reaches tighter gaps. None, the default, uses the standard cup.
     # Only the suction runners read it; the jaw cells ignore it.

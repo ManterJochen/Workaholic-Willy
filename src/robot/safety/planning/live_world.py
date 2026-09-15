@@ -38,12 +38,16 @@ from typing import Any, Protocol, Sequence
 
 import numpy as np
 
+from src.robot.core.camera_world import CameraWorldStamp
+from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.safety._capsule import AxisAlignedBox
 from src.robot.safety.planning.perceived import (
     DepthView,
     PerceivedWorld,
     PerceptionGeometryError,
     SelfBody,
+    SelfEnvelope,
+    VoxelField,
     WorldBuildLimits,
     WorldBuildTuning,
     build_perceived_boxes,
@@ -75,8 +79,17 @@ class WorldVerdict(StrEnum):
     STALE = "stale"
     #: The camera answered nothing, or answered something that cannot be used.
     NO_FRAME = "no_frame"
+    #: The camera answered with a frame that holds no valid depth at all: a covered lens, a dead
+    #: emitter, a frame of zeros. Not an empty cell, which is valid depth that shows nothing on
+    #: the bench.
+    BLIND = "blind"
     #: The frame arrived and the geometry could not be built from it.
     UNUSABLE = "unusable"
+
+
+#: What a camera answers when it cannot vouch for the cell. These are asked again, and after the
+#: attempts they raise; every other verdict is decided on the first answer.
+_CAMERA_FAILURES = frozenset({WorldVerdict.NO_FRAME, WorldVerdict.STALE, WorldVerdict.BLIND})
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +164,15 @@ class PlannerWorldSnapshot:
     reason: str = ""
     #: Declared boxes in this snapshot, so a reader can tell the two halves apart in a report.
     declared_count: int = 0
+    #: The camera behind a verdict that is not `FRESH`, empty otherwise. It is what an operator
+    #: has to go and look at, and what a refusal raised later names.
+    camera: str = ""
+    #: The cameras a `FRESH` world was built from, empty otherwise.
+    cameras: tuple[str, ...] = ()
+    #: When the oldest image in a `FRESH` world was captured, `time.time()` seconds, `None`
+    #: otherwise. A fused world is exactly as current as its stalest image, so this is the one
+    #: moment it can name.
+    captured_at_s: float | None = None
 
     @property
     def usable(self) -> bool:
@@ -181,6 +203,7 @@ class PlannerWorldSnapshot:
             "reason": self.reason,
             "declared": int(self.declared_count),
             "perceived": self.perceived_count,
+            "camera": self.camera,
             "dropped_obstacles": (
                 self.perceived.dropped_obstacle_count if self.perceived is not None else 0
             ),
@@ -212,12 +235,17 @@ class LivePlannerWorld:
     tuning: WorldBuildTuning = field(default_factory=WorldBuildTuning)
     #: A frame older than this is not planned against. An unstamped frame is older than any value.
     max_age_ms: float = 500.0
-    #: Radius of the capsules that stand for the arm own links, millimetres.
-    self_radius_mm: float = 90.0
-    #: Radius of the last capsule, which covers the gripper and anything in it.
-    tool_radius_mm: float = 150.0
+    #: How many more times a camera that cannot vouch for the cell is asked before the refresh
+    #: raises `CameraWorldUnavailable` instead of refusing. From `perceived.fresh_frame_attempts`.
+    fresh_frame_attempts: int = 3
+    #: Whether a registration the planner confirms only in part refuses the motion. From
+    #: `planning_world.require_registration`, so every driver reads the cell's own answer.
+    require_registration: bool = True
 
     _frames: dict[str, DepthSnapshot] = field(default_factory=dict, init=False, repr=False)
+    #: Where the robot's body stood when each cached frame was taken, as its capsule end points
+    #: in BASE. A frame is served again only while the body still stands there.
+    _frame_bodies: dict[str, "np.ndarray | None"] = field(default_factory=dict, init=False, repr=False)
     _labels: dict[str, tuple[tuple[str, np.ndarray], ...]] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -292,6 +320,12 @@ class LivePlannerWorld:
         so here rather than by waiting out the age limit.
         """
         self._frames.clear()
+        self._frame_bodies.clear()
+
+    def drop_cached_frame(self, camera: str) -> None:
+        """Forget one camera's cached reading, so the next question reaches that camera and no other."""
+        self._frames.pop(str(camera), None)
+        self._frame_bodies.pop(str(camera), None)
 
     def forget_segmentation(self) -> None:
         """Drop the masks. Called when a pick ends, so the next motion excludes nothing."""
@@ -306,7 +340,7 @@ class LivePlannerWorld:
     def world_for(
         self,
         *,
-        link_origins_mm: Sequence[Sequence[float]] | None = None,
+        self_envelope: SelfEnvelope | None = None,
         near_point_mm: Sequence[float] | None = None,
         now: float | None = None,
     ) -> PlannerWorldSnapshot:
@@ -314,11 +348,12 @@ class LivePlannerWorld:
 
         Parameters
         ----------
-        link_origins_mm
-            The arm own link origins in BASE millimetres, as a forward kinematic returns them. They
-            become the capsules that take the robot back out of what the cameras saw. `None` means
-            the caller cannot describe its own links, and then the arm itself would be registered as
-            an obstacle, so no perceived world is built at all.
+        self_envelope
+            The robot's own body now: where every frame of its chain is and the capsules those
+            frames carry, from ``self_envelope.self_envelope``. Padded by ``tuning.margin_mm``, it
+            takes the robot back out of what the cameras saw. `None` means the caller cannot
+            describe its own body, and then the arm itself would be registered as an obstacle, so
+            no perceived world is built at all.
         near_point_mm
             Where the motion is going. It decides which obstacles survive the slot budget, because
             the ones near the path are the ones that matter.
@@ -328,7 +363,7 @@ class LivePlannerWorld:
         clock = time.time() if now is None else float(now)
         declared = tuple(dict(box) for box in self.declared)
         meshes = tuple(dict(mesh) for mesh in self.declared_meshes)
-        frames, verdict, reason = self._frames_for(clock)
+        frames, verdict, reason, failed_camera = self._frames_for(clock, _placed_body(self_envelope))
         # The clock is read again after the cameras answered, because a grab takes time and the
         # first reading is older than the frames it went out to fetch. Measured before this line
         # existed: a fresh frame reported as two milliseconds from the future.
@@ -345,11 +380,11 @@ class LivePlannerWorld:
             return PlannerWorldSnapshot(
                 verdict=verdict, cuboids=declared, perceived=None,
                 age_ms=max(known) if known else None, reason=reason,
-                meshes=meshes, declared_count=len(declared),
+                meshes=meshes, declared_count=len(declared), camera=failed_camera,
             )
 
         oldest = self._oldest_age_ms(frames, clock)
-        if link_origins_mm is None:
+        if self_envelope is None:
             return PlannerWorldSnapshot(
                 verdict=WorldVerdict.UNUSABLE, cuboids=declared, perceived=None, age_ms=oldest,
                 reason=(
@@ -379,10 +414,9 @@ class LivePlannerWorld:
                 views=views,
                 limits=self.limits,
                 tuning=self.tuning,
-                self_body=SelfBody.from_polyline(
-                    link_origins_mm,
-                    radius_mm=self.self_radius_mm,
-                    tool_radius_mm=self.tool_radius_mm,
+                self_body=SelfBody.from_frames(
+                    self_envelope.frames_mm, self_envelope.capsules,
+                    padding_mm=float(self.tuning.margin_mm),
                 ),
                 near_point_mm=near_point_mm,
             )
@@ -402,6 +436,8 @@ class LivePlannerWorld:
             perceived=perceived,
             age_ms=oldest,
             meshes=meshes, declared_count=len(declared),
+            cameras=tuple(camera.name for camera in self.cameras),
+            captured_at_s=self._oldest_capture_s(frames),
         )
 
     # -----------------------------------------------------------------------------------------
@@ -409,20 +445,33 @@ class LivePlannerWorld:
     # -----------------------------------------------------------------------------------------
 
     def _frames_for(
-        self, clock: float
-    ) -> tuple[dict[str, DepthSnapshot], WorldVerdict, str]:
-        """A reading from every camera: the cached one while it is young enough, else a new grab.
+        self, clock: float, body: "np.ndarray | None" = None
+    ) -> tuple[dict[str, DepthSnapshot], WorldVerdict, str, str]:
+        """A reading from every camera: the cached one while it is young and the robot has not moved.
+
+        Otherwise a new grab. ``body`` is where the robot stands now, as :func:`_placed_body` gives
+        it. A frame shows the robot where it stood when it was taken, and the self filter takes out
+        the robot where it stands now, so a frame taken before a motion would keep the arm it shows
+        as an obstacle beside the arm. ``None`` is a body nobody can describe: the world built from
+        it is refused whatever frame it uses, so the age alone decides.
 
         Every camera has to answer. A cell with two cameras has two because one of them cannot see
         the whole cell, so carrying on without one means planning against a world with a hole in it
         exactly where nobody is looking. The verdict names the camera that failed, because that is
         the thing an operator has to go and fix.
+
+        A blind frame is judged per camera and never cached. Fused, a sighted camera's points would
+        hide a blind one, and cached, a young blind frame would be served again instead of asking
+        the camera.
         """
         frames: dict[str, DepthSnapshot] = {}
         for camera in self.cameras:
             cached = self._frames.get(camera.name)
             cached_age = None if cached is None else self._age_ms(cached, clock)
-            if cached is not None and cached_age is not None and cached_age <= self.max_age_ms:
+            if (
+                cached is not None and cached_age is not None and cached_age <= self.max_age_ms
+                and self._body_still(camera.name, body)
+            ):
                 frames[camera.name] = cached
                 continue
 
@@ -433,8 +482,18 @@ class LivePlannerWorld:
                     WorldVerdict.NO_FRAME,
                     f"camera {camera.name!r} returned no depth, so nothing can vouch for what is "
                     "in the part of the cell it watches",
+                    camera.name,
+                )
+            if not _has_valid_depth(grabbed):
+                return (
+                    frames,
+                    WorldVerdict.BLIND,
+                    f"camera {camera.name!r} returned a depth frame with no valid pixel, so it is "
+                    "blind and cannot vouch for the part of the cell it watches",
+                    camera.name,
                 )
             self._frames[camera.name] = grabbed
+            self._frame_bodies[camera.name] = body
             frames[camera.name] = grabbed
 
             age = self._age_ms(grabbed, clock)
@@ -444,6 +503,7 @@ class LivePlannerWorld:
                     WorldVerdict.STALE,
                     f"the depth frame from camera {camera.name!r} carries no capture time, so its "
                     "age is unknown and it cannot be shown to be inside the limit this cell allows",
+                    camera.name,
                 )
             if age > self.max_age_ms:
                 return (
@@ -451,8 +511,18 @@ class LivePlannerWorld:
                     WorldVerdict.STALE,
                     f"the depth frame from camera {camera.name!r} is {age:.0f} ms old and this "
                     f"cell allows {self.max_age_ms:.0f} ms",
+                    camera.name,
                 )
-        return frames, WorldVerdict.FRESH, ""
+        return frames, WorldVerdict.FRESH, "", ""
+
+    def _body_still(self, camera: str, body: "np.ndarray | None") -> bool:
+        """Whether the robot stands where it stood when ``camera``'s cached frame was taken, within 1 mm."""
+        if body is None:
+            return True
+        then = self._frame_bodies.get(camera)
+        if then is None or then.shape != body.shape:
+            return False
+        return body.size == 0 or float(np.max(np.linalg.norm(then - body, axis=1))) <= _BODY_STILL_MM
 
     @staticmethod
     def _age_ms(frame: DepthSnapshot, clock: float) -> float | None:
@@ -467,6 +537,14 @@ class LivePlannerWorld:
             return None
         return max(age for age in ages if age is not None)
 
+    @staticmethod
+    def _oldest_capture_s(frames: dict[str, DepthSnapshot]) -> float | None:
+        """When the stalest image was captured, or `None` when any image carries no capture time."""
+        stamps = [frame.timestamp for frame in frames.values()]
+        if not stamps or any(stamp is None for stamp in stamps):
+            return None
+        return min(float(stamp) for stamp in stamps if stamp is not None)
+
     def _labels_fresh(self, clock: float) -> bool:
         """Masks age exactly like the frame they came from.
 
@@ -476,6 +554,35 @@ class LivePlannerWorld:
         if self._labels_stamped is None:
             return False
         return (clock - self._labels_stamped) * 1000.0 <= self.max_age_ms
+
+
+#: How far the robot's body may move, at any capsule end, before a cached frame of it is taken
+#: again, millimetres. Well above joint encoder noise at arm's length, well below the padding the
+#: self filter adds.
+_BODY_STILL_MM = 1.0
+
+
+def _placed_body(envelope: SelfEnvelope | None) -> "np.ndarray | None":
+    """The robot's body as the end points of its capsules in BASE, or ``None`` for a body nobody can describe."""
+    if envelope is None:
+        return None
+    points = []
+    for capsule in envelope.capsules:
+        frame = np.asarray(envelope.frames_mm[capsule.frame], dtype=np.float64)
+        for end in (capsule.start_mm, capsule.end_mm):
+            points.append(frame[:3, :3] @ np.asarray(end, dtype=np.float64) + frame[:3, 3])
+    return np.asarray(points, dtype=np.float64).reshape(-1, 3)
+
+
+def _has_valid_depth(frame: DepthSnapshot) -> bool:
+    """Whether any pixel holds a depth the converter would use: finite and in front of the camera.
+
+    It is the same test the converter applies to each pixel, so a frame judged blind here is
+    exactly a frame that would have produced no point there.
+    """
+    depth = np.asarray(frame.depth_mm, dtype=np.float64)
+    with np.errstate(invalid="ignore"):
+        return bool(np.any(np.isfinite(depth) & (depth > 0.0)))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -514,6 +621,10 @@ class WorldRefresh:
     #: Values in the distance field the planner accepted, or `None` when no field was sent. The
     #: boxes go to the guard and the field goes to the planner, and both come from one cloud.
     voxels_registered: int | None = None
+    #: The cameras the world was built from, empty when none answered.
+    cameras: tuple[str, ...] = ()
+    #: When the oldest image in it was captured, `time.time()` seconds, or `None`.
+    captured_at_s: float | None = None
 
     @property
     def ok(self) -> bool:
@@ -523,6 +634,17 @@ class WorldRefresh:
     @property
     def total_ms(self) -> float:
         return self.build_ms + self.register_ms
+
+    def camera_world(self) -> CameraWorldStamp | None:
+        """The stamp this refresh vouches for, or `None` when it vouches for nothing.
+
+        PLANNED, on its cameras and the capture time of its oldest image, for a refresh the caller
+        may plan against. A refused refresh vouches for nothing, and neither does one that cannot
+        name a camera or a capture time, because a stamp that vouches has to say for what.
+        """
+        if not self.ok or not self.cameras or self.captured_at_s is None:
+            return None
+        return CameraWorldStamp.planned(cameras=self.cameras, captured_at_s=self.captured_at_s)
 
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""
@@ -554,6 +676,8 @@ class WorldRefresh:
             "age_ms": self.age_ms,
             "dropped_obstacles": int(self.dropped_obstacles),
             "voxels": self.voxels_registered,
+            "cameras": list(self.cameras),
+            "captured_at_s": self.captured_at_s,
             "reason": self.reason,
         }
 
@@ -562,7 +686,7 @@ def refresh_planner_world(
     *,
     source: LivePlannerWorld,
     client: Any,
-    link_origins_mm: Sequence[Sequence[float]] | None,
+    self_envelope: SelfEnvelope | None,
     near_point_mm: Sequence[float] | None = None,
     require_registration: bool = True,
     now: float | None = None,
@@ -583,11 +707,32 @@ def refresh_planner_world(
     had time to change, and planning against it is the failure, not the recovery.
     """
     started = time.perf_counter()
+    # A camera that cannot vouch for the cell is asked again before anything is decided, and after
+    # its attempts the motion raises rather than being refused. Only the camera's own failures are
+    # asked again: an arm that cannot place its links, or geometry that cannot be built, gives the
+    # same answer however often it is asked.
     snapshot = source.world_for(
-        link_origins_mm=link_origins_mm, near_point_mm=near_point_mm, now=now
+        self_envelope=self_envelope, near_point_mm=near_point_mm, now=now
     )
+    readings = 1
+    while snapshot.verdict in _CAMERA_FAILURES and readings <= max(0, int(source.fresh_frame_attempts)):
+        source.drop_cached_frame(snapshot.camera)
+        snapshot = source.world_for(
+            self_envelope=self_envelope, near_point_mm=near_point_mm, now=now
+        )
+        readings += 1
     build_ms = (time.perf_counter() - started) * 1000.0
     dropped = snapshot.perceived.dropped_obstacle_count if snapshot.perceived is not None else 0
+
+    if snapshot.verdict in _CAMERA_FAILURES:
+        refused = WorldRefresh(
+            verdict=snapshot.verdict, sent=0, registered=0, build_ms=build_ms, register_ms=0.0,
+            age_ms=snapshot.age_ms, dropped_obstacles=dropped, reason=snapshot.reason,
+        )
+        raise CameraWorldUnavailable(
+            camera=snapshot.camera, verdict=snapshot.verdict, attempts=readings,
+            reason=snapshot.reason, refresh=refused,
+        )
 
     if not snapshot.usable:
         return WorldRefresh(
@@ -597,36 +742,56 @@ def refresh_planner_world(
 
     started = time.perf_counter()
     boxes = [dict(box) for box in snapshot.cuboids]
-    # Named only when there is something to name: a planner client from before meshes existed takes
-    # one argument, and a cell that declares no mesh should not need a newer one.
-    registered = int(
-        client.set_world(boxes, [dict(m) for m in snapshot.meshes])
-        if snapshot.meshes else client.set_world(boxes)
-    )
-    wanted, voxels, why = _send_voxel_field(client, snapshot)
+    meshes = [dict(m) for m in snapshot.meshes]
+    voxel_field = snapshot.perceived.voxels if snapshot.perceived is not None else None
+    scene_setter = getattr(client, "set_scene", None)
+    if voxel_field is not None and callable(scene_setter):
+        # One request for the boxes, the meshes and the field. Two are not atomic: the field request
+        # rebuilds the planner's world from the boxes it remembered, and a declared mesh is lost in
+        # between with both requests reporting success.
+        registration = scene_setter(boxes, meshes, _write_voxel_field(client, voxel_field))
+        registered = int(registration.world_set)
+        wanted, voxels = True, registration.voxels_set
+        why = str(registration.reason or "") or "the planner did not say why"
+    else:
+        # Named only when there is something to name: a planner client from before meshes existed
+        # takes one argument, and a cell that declares no mesh should not need a newer one.
+        registered = int(client.set_world(boxes, meshes) if meshes else client.set_world(boxes))
+        wanted, voxels, why = _send_voxel_field(client, snapshot)
     register_ms = (time.perf_counter() - started) * 1000.0
 
-    reason = ""
+    reasons: list[str] = []
     if wanted and voxels is None:
         # A cell that asked for a live scene and did not get one is planning against less than it
         # believes, and believing it is the whole danger. Refuse, and say which of the two happened.
-        reason = (
+        reasons.append(
             f"the live scene did not reach the planner ({why}), so it would be planning against "
             "the declared world alone while the cameras can see more than that"
         )
-    expected = len(snapshot.cuboids) + len(snapshot.meshes)
+    expected = len(boxes) + len(meshes)
     if registered != expected and require_registration:
-        reason = (
+        # Kept beside a field reason rather than written over it, so an operator is told all of
+        # what is wrong.
+        reasons.append(
             f"the planner confirmed {registered} of {expected} obstacle(s), so it is "
             "planning against a world that is missing part of this cell. Set "
             "safety.planning_world.require_registration false to plan anyway, deliberately."
         )
+    if dropped:
+        # An obstacle the cameras saw and the planner has no slot for is one it will route through,
+        # so it refuses the motion rather than standing as a footnote in the render.
+        reasons.append(
+            f"{dropped} perceived obstacle(s) did not fit the {source.tuning.max_boxes} slot(s) this "
+            "cell allows, so the planner would route through them"
+        )
+    reason = "; and ".join(reasons)
     return WorldRefresh(
         verdict=snapshot.verdict, sent=expected, registered=registered,
         build_ms=build_ms, register_ms=register_ms, age_ms=snapshot.age_ms,
         dropped_obstacles=dropped, reason=reason,
         guard_boxes=() if reason else _guard_boxes(snapshot.perceived),
         voxels_registered=voxels,
+        cameras=snapshot.cameras, captured_at_s=snapshot.captured_at_s,
     )
 
 
@@ -649,10 +814,31 @@ def _guard_boxes(perceived: PerceivedWorld | None) -> tuple[AxisAlignedBox, ...]
     )
 
 
+def _write_voxel_field(client: Any, voxels: VoxelField) -> dict[str, Any]:
+    """Write the field where the planner reads it, in its sign and unit, and say where and on which grid.
+
+    The file is the client's own when it names one, so two arms in one process never write the
+    same file; a client without one falls back to one file per process. `VoxelField` is in
+    millimetres like the rest of this package and the planner reads metres, so the values are
+    divided by 1000 here and nowhere else. The same file is reused every refresh, because a new one
+    per motion would fill a temp directory at the rate the arm moves.
+    """
+    path = getattr(client, "live_scene_path", None) or os.path.join(
+        tempfile.gettempdir(), f"willy_live_scene_{os.getpid()}.npy"
+    )
+    np.save(path, (voxels.field / 1000.0).astype(np.float16))
+    return {
+        "path": str(path),
+        "dims_m": [d / 1000.0 for d in voxels.dims_mm],
+        "voxel_size_m": voxels.voxel_size_mm / 1000.0,
+        "pose": [c / 1000.0 for c in voxels.center_mm] + [1.0, 0.0, 0.0, 0.0],
+    }
+
+
 def _send_voxel_field(
     client: Any, snapshot: PlannerWorldSnapshot
 ) -> "tuple[bool, int | None, str]":
-    """Hand the planner the distance field, through a file rather than through the pipe.
+    """Hand the planner the field on its own, for a client that has no one-request scene call.
 
     Returns `(wanted, registered, why)`. `wanted` says whether this cell asked for a live scene at
     all, which is the difference between a cell that never configured one and a cell whose planner
@@ -661,10 +847,6 @@ def _send_voxel_field(
     A 30 mm grid over a two metre cell is 179,560 values. That is not a message, and this protocol is
     one JSON object per line, so the field is written where the sidecar can read it and the request
     carries the path. Writing costs about a millisecond and the sidecar reads it in about two.
-
-    The same file is reused every refresh. A new one per motion would fill a temp directory at the
-    rate the arm moves, and there is never more than one live scene.
-
     """
     if snapshot.perceived is None or snapshot.perceived.voxels is None:
         return False, None, ""
@@ -676,15 +858,12 @@ def _send_voxel_field(
             "this planner has no live-scene channel at all, which on the real sidecar means it was "
             "started without a voxel reservation",
         )
-
-    field = snapshot.perceived.voxels
-    path = os.path.join(tempfile.gettempdir(), f"willy_live_scene_{os.getpid()}.npy")
-    np.save(path, field.field.astype(np.float16))
+    payload = _write_voxel_field(client, snapshot.perceived.voxels)
     registered = setter(
-        path,
-        dims_m=[d / 1000.0 for d in field.dims_mm],
-        voxel_size_m=field.voxel_size_mm / 1000.0,
-        pose=[c / 1000.0 for c in field.center_mm] + [1.0, 0.0, 0.0, 0.0],
+        payload["path"],
+        dims_m=payload["dims_m"],
+        voxel_size_m=payload["voxel_size_m"],
+        pose=payload["pose"],
     )
     if registered is None:
         return True, None, "the planner refused it"

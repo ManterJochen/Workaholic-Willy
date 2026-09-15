@@ -73,8 +73,8 @@ per-DH-frame vertex and face arrays, so no config is needed to find them: with
 directory. `mesh_dir` names an alternate directory for a bundle you baked yourself.
 
 A model gets exact meshes as soon as `{model}_collision_meshes.npz` lands beside these, with no code
-change. `collision_mesh_variant` selects a per-gripper bundle instead of the model default, for a
-cell running an end-effector other than the baked Robotiq 2F-85.
+change. The bundle for another hand is derived from `robot.gripper.model`, for a cell running an
+end-effector other than the baked Robotiq 2F-85.
 
 ## The exact-mesh guard falls back rather than failing closed
 

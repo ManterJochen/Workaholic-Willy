@@ -36,7 +36,7 @@ Adding a gripper means adding a `GripperVendor` member and one module here. No p
 | Gripper | Selected by | Mechanism |
 | --- | --- | --- |
 | Real hardware | `robot.gripper.vendor` | `create_gripper(vendor, **kwargs)` looks up the lazy factory and checks the result against the Protocol |
-| Simulated parallel jaw | `robot.sim.gripper_mount`, for example `schunk_egu50` | picks a `MountedGripperSpec` from `willy_sim.grippers.MOUNTED_GRIPPERS` and uses its `GripperProfile`; the default is the baked Robotiq 2F-85 |
+| Simulated parallel jaw | `robot.gripper.model`, for example `schunk_egu50` | `willy_sim.grippers.sim_mount_for` derives the gripper from the hand and the arm asset: the asset's baked variant, or a `MountedGripperSpec` from `MOUNTED_GRIPPERS` and its `GripperProfile` |
 | Simulated suction cup | `robot.sim.suction_cup`, for example `slim` | picks a `SuctionCupProfile` from `willy_sim.grippers.SUCTION_CUPS`; the default is the standard cup |
 
 The rule is the same in every row: a new gripper, or a new cup, is data in the shape of a profile,
@@ -190,8 +190,9 @@ exerciser above exists to measure.
 
 `GripperVendor` lists `FRANKA_HAND` and `SCHUNK`, and neither has a real-hardware driver.
 `create_gripper(GripperVendor.FRANKA_HAND)` raises `RobotConnectionError`. Schunk is realised in
-simulation only, through `robot.sim.gripper_mount: schunk_egu50` or `schunk_ezu35` on the
-vendor-neutral `IsaacGripper`.
+simulation only, through a sim cell naming `robot.gripper.model: schunk_egu50`, on the
+vendor-neutral `IsaacGripper`. The three-finger `schunk_ezu35` has a mount spec and no registry
+name.
 
 Simulated suction has a binary bond. The simulator models the attach and the lift, meaning whether
 the cup holds the part through the move. It does not model seal quality. The analytical seal and

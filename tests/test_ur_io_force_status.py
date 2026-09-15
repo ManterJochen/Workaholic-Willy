@@ -153,7 +153,7 @@ class URConnectionCapabilityTests(unittest.TestCase):
 # --------------------------------------------------------------------------- arm capabilities
 def _ur_arm() -> tuple[URRobotArm, MagicMock]:
     """A URRobotArm whose whole RTDE connection is a MagicMock (delegation is what we assert)."""
-    arm = URRobotArm(RobotConfig.model_validate({"vendor": "ur"}))
+    arm = URRobotArm(RobotConfig.model_validate({"vendor": "ur", "gripper": {"model": "robotiq_2f85"}}))
     # spec=URConnection: the arm delegates to its connection, so a call to a URConnection method that
     # does not exist (renamed/removed) now fails here instead of returning a happy MagicMock.
     conn = MagicMock(spec=URConnection)

@@ -357,8 +357,6 @@
       "settle_timeout_s": 5.0,
       "headless": true,
       "assets_root": null,
-      "gripper_variant": "Robotiq_2f_85",
-      "gripper_mount": null,
       "suction_cup": null,
       "park_joint_positions": null,
       "scene_setup": {
@@ -469,6 +467,7 @@
     "gripper": {
       "vendor": "robotiq",
       "model": null,
+      "coupling_plates_mm": null,
       "max_width_mm": 85.0,
       "min_width_mm": 5.0,
       "closed_width_mm": 0.0,
@@ -562,8 +561,6 @@
         "fixtures": [],
         "mesh_dir": null,
         "kinematics_model": null,
-        "collision_mesh_variant": null,
-        "coupling_mm": 0.0,
         "kinematics_base_yaw_deg": 0.0,
         "tool_length_mm": 150.0,
         "tool_radius_mm": 70.0,
@@ -612,6 +609,7 @@
         "perceived": {
           "enabled": true,
           "max_age_ms": 500.0,
+          "fresh_frame_attempts": 3,
           "pixel_stride": 2,
           "voxel_size_mm": 10.0,
           "voxel_field_mm": 0.0,
@@ -620,9 +618,7 @@
           "margin_mm": 15.0,
           "max_boxes": 8,
           "floor_to_plane": true,
-          "plane_clearance_mm": 5.0,
-          "self_radius_mm": 90.0,
-          "tool_radius_mm": 150.0
+          "plane_clearance_mm": 5.0
         },
         "meshes": []
       }
@@ -869,7 +865,6 @@
       "deep_generator": {
         "artifact_path": null,
         "device": null,
-        "gripper": null,
         "minimum_score": 0.5
       },
       "deep_ranker": {

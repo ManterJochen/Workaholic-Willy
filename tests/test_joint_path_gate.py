@@ -21,12 +21,13 @@ import unittest
 
 import pytest
 
-from src.config.schema.robot import RobotSafetyConfig, WorkspaceLimitsConfig
+from src.config.schema.robot import RobotConfig, RobotSafetyConfig, WorkspaceLimitsConfig
 from src.robot.core.capabilities import RobotCapabilities
 from src.robot.core.motion_result import MotionCommand, MotionStatus
 from src.robot.safety import SafetyPreflight
 from src.robot.safety._fcl_self_collision import mesh_backend_status
 from src.robot.safety.path_samples import PathSamples
+from src.robot.safety.planning.hand import planner_hand
 
 #: A configuration that folds a finger into the forearm. The exact mesh backend refuses it with
 #: "forearm|lfinger: mesh distance 0.367 mm"; the capsule proxy cannot see the gripper at all here.
@@ -55,7 +56,9 @@ def _preflight(**overrides: object) -> SafetyPreflight:
         "payload": {"enforce": False},
         "self_collision": self_collision,
     })
-    return SafetyPreflight.from_safety_config(safety, WorkspaceLimitsConfig())
+    # The hand every committed arm bundle carries, named, so a declared kinematics model builds (Step 4f).
+    hand = planner_hand(RobotConfig.model_validate({"gripper": {"model": "robotiq_2f85"}}))
+    return SafetyPreflight.from_safety_config(safety, WorkspaceLimitsConfig(), hand=hand)
 
 
 def _samples(*configs: tuple[float, ...]) -> PathSamples:

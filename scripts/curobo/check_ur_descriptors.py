@@ -1,7 +1,9 @@
 """Load every built UR descriptor in cuRobo and plan one motion with it. Run it after a build.
 
     ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py
-    ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py ur3 ur5
+    ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py ur3_robotiq_2f85 ur5_robotiq_2f85
+
+Descriptors are named by arm and hand; with no argument every ``ur*_*.yml`` in the content is checked.
 
 ⭐ **WHY A LOADER AND NOT A READER.** ``build_ur_config.py`` writes a yml and says so, and until now
 that was the only evidence a model could be planned at all. A yml that parses is not a robot cuRobo
@@ -39,7 +41,10 @@ def _content_dir() -> Path:
 
 
 def _plan_once(model: str) -> tuple[bool, str]:
-    """Build a planner for ``model`` and plan one short motion. Returns (ok, what happened)."""
+    """Build a planner for the descriptor ``model`` names and plan one short motion. Returns (ok, what happened).
+
+    ``model`` is a descriptor stem, ``{arm}_{hand}`` (``ur5e_robotiq_2f85``).
+    """
     import torch  # type: ignore[import-not-found]
     from curobo.kinematics import Kinematics, KinematicsCfg  # type: ignore[import-not-found]
     from curobo.motion_planner import MotionPlanner, MotionPlannerCfg  # type: ignore[import-not-found]
@@ -87,7 +92,7 @@ def main(argv: "list[str] | None" = None) -> int:
     models = [a for a in args if not a.startswith("-")]
     if not models:
         content = _content_dir() / "configs" / "robot"
-        models = sorted(p.stem for p in content.glob("ur*.yml")
+        models = sorted(p.stem for p in content.glob("ur*_*.yml")
                         if not p.stem.startswith("_") and "dual" not in p.stem)
     print(f"checking {len(models)} descriptor(s): {', '.join(models)}\n", flush=True)
 

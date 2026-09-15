@@ -34,7 +34,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Final
+from typing import Any, Final
 
 import numpy as np
 
@@ -72,6 +72,7 @@ class Rejection(StrEnum):
     APPROACH_BLOCKED = "approach_blocked"               # the path in is not clear
     BELOW_TABLE = "below_table"                         # a fingertip would be under the support plane
     APPROACH_UNDER_TABLE = "approach_under_table"        # the path in passes under the support plane
+    PALM_UNDER_TABLE = "palm_under_table"                # a measured housing is under the support plane
     # suction only
     CONTACT_OFF_SURFACE = "contact_off_surface"
     SEAL_NOT_FLAT = "seal_not_flat"                     # the cup rim cannot sit on the surface
@@ -172,10 +173,34 @@ class JawModel:
     #: How far outside the contact interval the anchor may sit. The anchor is derived from a quantised
     #: depth image; a pad that reaches the object does not care where the label point was placed.
     anchor_tolerance_mm: float = 3.0
+    #: Whether the housing is checked against the table. Off for a hand whose palm numbers are an
+    #: estimate, the 2F-85's (robotiq_2f85.yaml, `palm_measured: false`), so its labels stay what they
+    #: were; on for a hand whose housing was measured.
+    check_palm: bool = False
 
     @property
     def friction_half_angle_deg(self) -> float:
         return float(np.degrees(np.arctan(self.friction_coefficient)))
+
+    @classmethod
+    def from_spec(cls, spec: Any) -> "JawModel":
+        """The jaw a registry file describes, a ``ParallelJawSpec``, with the labeller's policy.
+
+        The policy is at its defaults.
+
+        Policy is what this module decides rather than what a hand is: the approach clearance and
+        opening margin, the sample step and the anchor tolerance. The housing is checked exactly when
+        the file says it was measured.
+        """
+        return cls(
+            aperture_mm=spec.aperture_mm, min_width_mm=spec.min_width_mm,
+            finger_ahead_mm=spec.finger_ahead_mm, finger_behind_mm=spec.finger_behind_mm,
+            finger_thickness_mm=spec.finger_thickness_mm, finger_width_mm=spec.finger_width_mm,
+            palm_depth_mm=spec.palm_depth_mm, palm_width_mm=spec.palm_width_mm,
+            friction_coefficient=spec.friction_coefficient,
+            pad_ahead_mm=spec.pad_ahead_mm, pad_behind_mm=spec.pad_behind_mm,
+            check_palm=bool(spec.palm_measured),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,6 +468,23 @@ def check_jaw_grasp(
         return Verdict(False, Rejection.BELOW_TABLE, object_span_mm=object_span,
                        contact_angle_deg=worst, approach_tilt_deg=tilt,
                        detail=f"lowest finger sample at z={closed[:, 2].min():.1f} mm")
+    # The housing, for a hand whose palm was measured. It sits behind the finger reach, `palm_depth_mm`
+    # deep and `palm_width_mm` across the binormal, where the runtime envelope and the support-footprint
+    # stage place it, so as the approach tilts it becomes the lowest part of the gripper. Its corners
+    # bound it against a plane. An estimated palm is not checked: refusing grasps on a guess would move
+    # labels for no measured reason.
+    if model.check_palm:
+        outside = object_span / 2.0 + model.finger_thickness_mm
+        palm = np.asarray([
+            position - depth * approach + across * binormal + side * axis
+            for depth in (model.finger_behind_mm, model.finger_behind_mm + model.palm_depth_mm)
+            for across in (-model.palm_width_mm / 2.0, model.palm_width_mm / 2.0)
+            for side in (-outside, outside)
+        ])
+        if float(palm[:, 2].min()) < table_z_mm:
+            return Verdict(False, Rejection.PALM_UNDER_TABLE, object_span_mm=object_span,
+                           contact_angle_deg=worst, approach_tilt_deg=tilt,
+                           detail=f"the housing reaches z={palm[:, 2].min():.1f} mm")
     blocker = _hits_any(closed, obstacles, half_thickness)
     if blocker is not None:
         return Verdict(False, Rejection.FINGER_COLLISION, object_span_mm=object_span,

@@ -42,7 +42,7 @@ def _cfg() -> RobotConfig:
     default is intentionally not trusted on production hosts". A bare `RobotConfig()` therefore cannot
     build a cell at all, which is the guard doing its job and not a fixture detail to work around
     silently."""
-    return RobotConfig.model_validate({"grasping": {}})
+    return RobotConfig.model_validate({"grasping": {}, "gripper": {"model": "robotiq_2f85"}})
 
 
 class OneCallEqualsTheOldTwoTests(unittest.TestCase):

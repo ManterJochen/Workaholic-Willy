@@ -58,8 +58,8 @@ from ...core import (
     stamp_result,
 )
 from ...core.camera_world import without_camera_world as _without_camera_world
+from ...core.errors import CameraWorldUnavailable
 from ...safety import SafetyPreflight
-from ...safety._ur_kinematics import ur_link_origins_mm
 from ...safety.continuous_monitor import ContinuousCollisionMonitor, ContinuousGuardAbort
 from ...safety.planning import CuroboPlanClient, CuroboUnavailableError
 from ...safety.planning.live_world import WorldRefresh, refresh_planner_world
@@ -67,6 +67,7 @@ from ...safety.planning.world import merge_planner_worlds
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from ...safety.planning.live_world import LivePlannerWorld
+    from ...safety.planning.perceived import SelfEnvelope
 from .adapter import (
     willy_joints_to_isaac,
     willy_pose_to_isaac,
@@ -306,6 +307,7 @@ class IsaacRobotArm(RobotArm):
         self._plan_joint_moves: bool = False
         #: Obstacles re-sent underneath every scene registration; see set_planner_base_world.
         self._planner_base_world: list[dict] = []
+        self._planner_base_meshes: list[dict] = []
         #: The cell as the cameras see it, asked immediately before every plan. `None` is the
         #: unchanged path: the planner keeps whatever world a runner last registered.
         self._live_world: "LivePlannerWorld | None" = None
@@ -627,14 +629,17 @@ class IsaacRobotArm(RobotArm):
     def without_camera_world(self, reason: str) -> AbstractContextManager[CameraWorldDecline]:
         """Decline the camera world for every motion this arm commands inside the ``with`` block.
 
-        Bound to this arm alone. A decline reaches a motion cuRobo plans: :meth:`move` on the
-        cuRobo planner, and :meth:`move_to_joints` with ``plan_joint_moves``. Every other typed
-        motion plans nothing and says UNPLANNED whatever was declined, and with a live camera world
-        wired a declined planned motion is refused before planning.
+        Bound to this arm alone. A decline reaches both typed motions on the cuRobo planner,
+        :meth:`move` and :meth:`move_to_joints`, whose paths are planned or checked against the
+        camera world. On the mock, the ik planner and the RMPflow policy they say UNPLANNED whatever
+        was declined, and with a live camera world wired a declined typed motion is refused before
+        its path is judged.
         """
         return _without_camera_world(self, reason)
 
-    def _move_camera_world(self, keyword: Maybe[CameraWorldDecline]) -> CameraWorldStamp:
+    def _move_camera_world(
+        self, keyword: Maybe[CameraWorldDecline], *, planned: CameraWorldStamp | None = None
+    ) -> CameraWorldStamp:
         """What stands behind a ``move`` on this arm as it is now.
 
         Read off the arm rather than off config, and there is no case where the two differ: a cuRobo
@@ -642,6 +647,8 @@ class IsaacRobotArm(RobotArm):
         exists at all was planned by the planner this cell was configured with. The RMPflow policy is
         a reactive controller that consults no camera world, so its motions say UNPLANNED, as every
         motion no planner planned does.
+
+        ``planned`` is the stamp of the refresh the motion made, which only the motion can know.
         """
         block = active_decline(self)
         planner = self._motion_planner
@@ -659,14 +666,23 @@ class IsaacRobotArm(RobotArm):
             missing=None if self._live_world is not None else _NO_LIVE_WORLD,
             keyword=keyword,
             block=block,
+            planned=planned,
         )
 
-    def _joint_move_camera_world(self, keyword: Maybe[CameraWorldDecline]) -> CameraWorldStamp:
-        """What stands behind a ``move_to_joints`` here: cuRobo plans it only with ``plan_joint_moves``."""
+    def _joint_move_camera_world(
+        self, keyword: Maybe[CameraWorldDecline], *, planned: CameraWorldStamp | None = None
+    ) -> CameraWorldStamp:
+        """What stands behind a ``move_to_joints`` here.
+
+        On the cuRobo planner its path is checked against the refreshed world, and planned against
+        it with ``plan_joint_moves``, so it stamps as :meth:`move` does. The mock and any other
+        planner interpolate in joint space and consult no world. ``planned`` is the stamp of the
+        refresh the motion made.
+        """
         unplanned: str | None
         if self.mock_mode:
             unplanned = _MOCK_PLANS_NOTHING
-        elif self._plan_joint_moves and self._motion_planner == "curobo":
+        elif self._motion_planner == "curobo":
             unplanned = None
         else:
             unplanned = _INTERPOLATED_JOINT_MOVE
@@ -675,6 +691,7 @@ class IsaacRobotArm(RobotArm):
             missing=None if self._live_world is not None else _NO_LIVE_WORLD,
             keyword=keyword,
             block=active_decline(self),
+            planned=planned,
         )
 
     def move_to_joints(
@@ -691,9 +708,9 @@ class IsaacRobotArm(RobotArm):
         the same one, run once here rather than twice by delegating to the public
         method.
 
-        The result says UNPLANNED unless cuRobo plans the joint move (``plan_joint_moves`` on the
-        cuRobo planner), which then stamps as :meth:`move` does, the refusal of a decline on a live
-        world included.
+        On the cuRobo planner the result stamps as :meth:`move` does, the refusal of a decline on a
+        live world included: its path is checked against the refreshed world, and planned against it
+        with ``plan_joint_moves``. The mock and any other planner say UNPLANNED.
         """
         stamp = self._joint_move_camera_world(camera_world)
         if stamp.use is CameraWorldUse.DECLINED and self._live_world is not None:
@@ -701,10 +718,15 @@ class IsaacRobotArm(RobotArm):
                 MotionStatus.UNSUPPORTED, MotionCommand.MOVE_JOINTS, target_joints=joints,
                 message=DECLINE_ON_A_LIVE_WORLD_MESSAGE, camera_world=stamp,
             )
+        # A refresh that is the same object as before was made for an earlier motion, and must not
+        # vouch for this one.
+        refreshed = self._last_world_refresh
         unstamped = self._move_to_joints_unstamped(
             joints, velocity=velocity, acceleration=acceleration,
         )
-        return stamp_result(unstamped, stamp)
+        after = self._last_world_refresh
+        vouched = after.camera_world() if after is not None and after is not refreshed else None
+        return stamp_result(unstamped, self._joint_move_camera_world(camera_world, planned=vouched))
 
     def _move_to_joints_unstamped(
         self,
@@ -744,6 +766,14 @@ class IsaacRobotArm(RobotArm):
                 MotionStatus.CONTROLLER_REJECTED, command, target_joints=joints,
                 message=f"a judged joint move starts at the current configuration: {exc}",
                 exception=exc,
+            )
+        # The world first, near the goal flange. The path guard below learns the perceived obstacles
+        # from this refresh, and the planner's check does not refresh at all.
+        stale = self._refresh_planner_world(near_point_mm=self._flange_mm(joints))
+        if stale:
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, command, target_joints=joints,
+                message=f"planner world not refreshed, so this move is refused. {stale}",
             )
         refused = self._preflight.gate_planned_path(
             [here, joints.tolist()], arm=self, command=command,
@@ -804,16 +834,19 @@ class IsaacRobotArm(RobotArm):
         :meth:`move_to_joints`. :meth:`move_home` routes through here too, which is what
         closes it.
 
+        It judges what :meth:`move_to_joints` judges, through the same helper: the destination in
+        mock mode and on any planner but cuRobo, the whole line on a cuRobo cell, so the joint verb
+        runners reach directly has its path judged as well.
+
         The gate runs before the mock branch on purpose. A configuration the guard would
         refuse on the articulation is one it refuses on the mock as well, because a mock
         that accepts what the real driver rejects hides regressions.
         """
-        if self._preflight is not None:
-            rejected = self._preflight.gate_joint_target(joints, arm=self)
-            if rejected is not None:
-                raise RobotMotionRejected(
-                    f"move_joint refused by the safety preflight: {rejected.message}"
-                )
+        rejected = self._judge_joint_move(joints, command=MotionCommand.MOVE_JOINTS)
+        if rejected is not None:
+            raise RobotMotionRejected(
+                f"move_joint refused by the safety preflight: {rejected.message}", result=rejected,
+            ) from rejected.exception
         self._drive_joints(joints, velocity=velocity, acceleration=acceleration)
 
     def _drive_joints(
@@ -997,6 +1030,9 @@ class IsaacRobotArm(RobotArm):
         configuration is a place the arm will sit, and a mock that committed one the
         guard would refuse is how a regression stays invisible off-box. It returns
         ``bool`` like its two siblings, and the typed reason is logged.
+
+        On a cuRobo cell the whole line home is judged, through :meth:`move_joint`, and a refused
+        line returns ``False``. A camera that could not vouch for the cell still raises.
         """
         if self._preflight is not None and self._home_joints is not None:
             home = JointPositions(np.asarray(self._home_joints, dtype=np.float64))
@@ -1020,7 +1056,11 @@ class IsaacRobotArm(RobotArm):
             return False
         if self._preflight is not None:
             self._preflight.reset()
-        self.move_joint(self._home_joints)
+        try:
+            self.move_joint(self._home_joints)
+        except RobotMotionRejected as exc:
+            _LOGGER.error("move_home REFUSED: %s", exc)
+            return False
         return True
 
     def wait_until_steady(
@@ -1260,16 +1300,26 @@ class IsaacRobotArm(RobotArm):
         if self._curobo_client is None:
             import os
 
+            from src.contracts import chosen
             from src.robot.drivers.sim.robot_models import curobo_robot_yml
             from src.robot.safety.planning.environment import ENV_CUROBO_ROBOT
+            from src.robot.safety.planning.hand import descriptor_refusal
 
-            # The cuRobo robot config is the {key}.yml of the configured model. The
+            # Named by the arm and the hand, the hand being the one this cell's safety pipeline
+            # models. A cell with no hand there has no descriptor to name, and plans nothing.
+            hand = self._preflight.planner_hand(self) if self._preflight is not None else None
+            if hand is None or not chosen(hand):
+                raise CuroboUnavailableError(
+                    "this cell's safety pipeline models no hand (robot.gripper.model is unset, or the arm has no "
+                    "preflight), so no cuRobo descriptor can be named: descriptors are named by the arm and the hand"
+                )
+            # The cuRobo robot config is the {key}_{hand}.yml of the configured model. The
             # config wins on purpose: a shell-scoped WILLY_CUROBO_ROBOT would otherwise
             # plan one robot cell against another robot geometry silently, such as a ur3e
             # cell planned with ur5e link lengths, with no visible symptom. A disagreeing
             # variable is therefore ignored loudly, and planning a different robot means
             # setting robot_model.
-            robot_yml = curobo_robot_yml(self._config.robot_model)
+            robot_yml = curobo_robot_yml(self._config.robot_model, hand.model)
             env_yml = os.environ.get(ENV_CUROBO_ROBOT)
             if env_yml and env_yml != robot_yml:
                 _LOGGER.warning(
@@ -1285,7 +1335,18 @@ class IsaacRobotArm(RobotArm):
             client = CuroboPlanClient(
                 robot_config=robot_yml, self_collision_margin_mm=self._guard_self_collision_margin_mm(),
             )
+            if self._config.planner_reservation is not None:
+                # Before start: the sidecar allocates its collision storage once, when it spawns.
+                client.reserve_world(self._config.planner_reservation)
             client.start()
+            refusal = descriptor_refusal(
+                getattr(client, "descriptor_provenance", None), hand, arm=str(self._config.robot_model),
+            )
+            if refusal is not None:
+                # Closed rather than kept: the next call would find a started client and plan with it.
+                client.close()
+                _LOGGER.error("cuRobo planner refused: %s", refusal)
+                raise CuroboUnavailableError(refusal)
             self._curobo_client = client
         return self._curobo_client
 
@@ -1316,7 +1377,9 @@ class IsaacRobotArm(RobotArm):
         self._get_curobo_client()  # idempotent: spawns + JIT-warms the server once, else raises
         return "curobo"
 
-    def set_planner_base_world(self, cuboids: "list[dict]") -> None:
+    def set_planner_base_world(
+        self, cuboids: "list[dict]", meshes: "list[dict] | tuple[dict, ...]" = ()
+    ) -> None:
         """The obstacles that survive every later registration: the bench, the fixtures, the cell.
 
         ``set_world`` replaces the planner world rather than extending it, so a runner
@@ -1326,6 +1389,8 @@ class IsaacRobotArm(RobotArm):
         rather than in place of it.
         """
         self._planner_base_world = [dict(c) for c in cuboids]
+        # The declared meshes go with them, so a tote keeps its hollow in every registration.
+        self._planner_base_meshes = [dict(m) for m in meshes]
 
     def set_curobo_world(self, cuboids: list[dict]) -> int:
         """Register the scene obstacles into the cuRobo collision world.
@@ -1346,15 +1411,18 @@ class IsaacRobotArm(RobotArm):
         planner never received is one it routes straight through.
         """
         merged = merge_planner_worlds(self._planner_base_world, cuboids)
+        meshes = [dict(m) for m in self._planner_base_meshes]
         try:
-            count = self._get_curobo_client().set_world(merged)
+            client = self._get_curobo_client()
+            count = client.set_world(merged, meshes) if meshes else client.set_world(merged)
         except CuroboUnavailableError:
             return 0
-        if count != len(merged):
+        expected = len(merged) + len(meshes)
+        if count != expected:
             _LOGGER.error(
                 "the planner confirmed %d of %d obstacle(s): it is planning against a world that is "
                 "missing part of this cell, and an obstacle it never received is one it will route "
-                "straight through", count, len(merged),
+                "straight through", count, expected,
             )
         return count
 
@@ -1383,26 +1451,46 @@ class IsaacRobotArm(RobotArm):
         """What the most recent refresh did, or `None` where none has run."""
         return self._last_world_refresh
 
-    def _self_link_origins_mm(self) -> "list[list[float]] | None":
-        """Where this arm's own links are, in BASE millimetres, for taking the robot out of the view.
+    def _self_envelope(self) -> "SelfEnvelope | None":
+        """This arm's own body now, for taking the robot out of the view.
 
-        `None` where the model has no bundled kinematic chain or the arm is not connected.
-        The world source treats that as a cell that cannot describe itself and refuses to
-        build a perceived world, which is the right answer: a camera that can see the robot
-        and a robot that cannot say where it is produce an obstacle exactly where the arm
-        is standing.
+        Placed with the model and the base yaw of this cell's self-collision guard, which on the
+        Isaac cell turns the DH base by 180 degrees: origins placed without it would stand the
+        filtered body mirrored through the base. `None` where the arm is not connected, no preflight
+        is wired, or no model or hand resolves. The world source treats that as a cell that cannot
+        describe itself and refuses to build a perceived world, which is the right answer: a camera
+        that can see the robot and a robot that cannot say where it is produce an obstacle exactly
+        where the arm is standing.
         """
-        if self._arm_subset is None:
+        from ...safety.planning.self_envelope import self_envelope
+
+        if self._arm_subset is None or self._preflight is None:
             return None
-        joints = np.asarray(self._arm_subset.get_joint_positions(), dtype=np.float64)
+        try:
+            joints = np.asarray(self._arm_subset.get_joint_positions(), dtype=np.float64)
+        except Exception:  # noqa: BLE001 (a cell that cannot say where it is has no self to filter)
+            return None
         ordered = np.asarray(
             [float(joints[_ARM_JOINT_NAMES.index(name)]) for name in _ARM_JOINT_NAMES],
             dtype=np.float64,
         )
-        origins = ur_link_origins_mm(str(self._config.robot_model), ordered)
-        # Plain numbers across the boundary: the world source is pure geometry and takes
-        # points, not this repository's arrays.
-        return None if origins is None else [[float(v) for v in point] for point in origins]
+        return self_envelope(self._preflight, self, ordered)
+
+    def _flange_mm(self, joints: JointPositions) -> "list[float] | None":
+        """Where the flange stands at ``joints``, in BASE millimetres; ``None`` for a model with no chain.
+
+        The near point of a joint move's refresh: when the slot budget bites, the obstacles nearest
+        the goal are the ones kept, and the goal of a joint move is where its flange ends up.
+        """
+        from ...safety.planning.self_envelope import yawed_link_transforms_mm
+
+        # Where the guard stands the arm: its model and its base yaw, 180 degrees on the Isaac cell.
+        # Without them the near point would be the flange's mirror through the base. A cell with no
+        # guard keeps its model.
+        kinematics = self._preflight.self_kinematics(self) if self._preflight is not None else None
+        model, yaw_deg = kinematics if kinematics is not None else (str(self._config.robot_model), 0.0)
+        frames = yawed_link_transforms_mm(model, np.asarray(joints.tolist(), dtype=np.float64), yaw_deg)
+        return None if frames is None else [float(v) for v in frames[-1][:3, 3]]
 
     def _refresh_planner_world(self, *, near_point_mm: "Sequence[float] | None" = None) -> str:
         """Refresh the planner world before a plan. An empty string means it may go ahead.
@@ -1413,12 +1501,21 @@ class IsaacRobotArm(RobotArm):
         """
         if self._live_world is None:
             return ""
-        refresh = refresh_planner_world(
-            source=self._live_world,
-            client=self._get_curobo_client(),
-            link_origins_mm=self._self_link_origins_mm(),
-            near_point_mm=near_point_mm,
-        )
+        try:
+            refresh = refresh_planner_world(
+                source=self._live_world,
+                client=self._get_curobo_client(),
+                self_envelope=self._self_envelope(),
+                near_point_mm=near_point_mm,
+                require_registration=self._live_world.require_registration,
+            )
+        except CameraWorldUnavailable as exc:
+            # Raised on, not refused. The guard is emptied as on any refused refresh, and the fault
+            # is written down once, here.
+            if self._preflight is not None:
+                self._preflight.set_perceived_obstacles(())
+            _LOGGER.error("%s", exc)
+            raise
         self._last_world_refresh = refresh
         # The guard hears about the same obstacles, including the empty list when the world
         # could not be vouched for: a guard left holding boxes from a refused refresh is
@@ -1606,8 +1703,9 @@ class IsaacRobotArm(RobotArm):
         The result says what stood behind the motion: UNPLANNED on the mock, on the ik planner, on
         the RMPflow policy and on a cuRobo arm that fell back to ik, and on cuRobo DECLINED for a
         decline (``camera_world``, or :meth:`without_camera_world`), MISSING while no live camera
-        world is wired, UNSTATED once one is. A declined motion on a cuRobo arm whose live camera
-        world is wired is refused with ``UNSUPPORTED`` before the planner is asked.
+        world is wired, and once one is, PLANNED when the refresh this motion made vouched for the
+        cell and UNSTATED when none did. A declined motion on a cuRobo arm whose live camera world is
+        wired is refused with ``UNSUPPORTED`` before the planner is asked.
         """
         before = self._move_camera_world(camera_world)
         if before.use is CameraWorldUse.DECLINED and self._live_world is not None:
@@ -1615,8 +1713,13 @@ class IsaacRobotArm(RobotArm):
                 MotionStatus.UNSUPPORTED, MotionCommand.MOVE_TO, target_pose=pose,
                 message=DECLINE_ON_A_LIVE_WORLD_MESSAGE, camera_world=before,
             )
+        # A refresh that is the same object as before was made for an earlier motion, and must not
+        # vouch for this one.
+        refreshed = self._last_world_refresh
         unstamped = self._move_unstamped(pose, linear=linear, vel=vel, acc=acc, register=register)
-        return stamp_result(unstamped, self._move_camera_world(camera_world))
+        after = self._last_world_refresh
+        vouched = after.camera_world() if after is not None and after is not refreshed else None
+        return stamp_result(unstamped, self._move_camera_world(camera_world, planned=vouched))
 
     def _move_unstamped(
         self,
@@ -1761,6 +1864,9 @@ class IsaacRobotArm(RobotArm):
         sidecar before the arm is asked to move. Then it is walked as the joint path it is,
         rather than driven to the endpoint: walking the samples is what makes the executed
         motion the one that was judged.
+
+        With a live camera world the world is refreshed before the guards judge, so the guards
+        and the sidecar see the same cell.
         """
         from src.robot.safety.path_samples import PathSamples, line_samples
 
@@ -1797,6 +1903,12 @@ class IsaacRobotArm(RobotArm):
             configs.append(tuple(float(v) for v in solved.tolist()))
 
         judged = PathSamples(configs=tuple(configs), step_bound_mm=samples.step_bound_mm)
+        stale = self._refresh_planner_world(near_point_mm=[float(v) for v in pose.position_mm])
+        if stale:
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+                message=f"planner world not refreshed, so this move is refused. {stale}",
+            )
         refused = self._preflight.gate_joint_path(
             judged, arm=self, command=MotionCommand.MOVE_TO,
         )

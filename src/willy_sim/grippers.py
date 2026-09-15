@@ -2,11 +2,12 @@
 
 Two families, both selected by a config key and driven by the vendor-neutral sim drivers:
 
-* Parallel jaws: :data:`MOUNTED_GRIPPERS`, keyed by ``SimConfig.gripper_mount``. By default the sim
-  uses the UR5e asset's baked ``Gripper`` variant (the Robotiq 2F-85); when a key is named the scene
-  builder selects the ``"None"`` variant and mounts that standalone vendor gripper on the wrist:
-  reference it, drop its articulation root, add a fixed joint ``wrist_3_link -> base`` so it merges
-  into the UR5e articulation. :class:`~src.robot.grippers.sim.IsaacGripper` then drives it via the
+* Parallel jaws: :data:`MOUNTED_GRIPPERS`, keyed by the hand's registry name. :func:`sim_mount_for`
+  derives from ``robot.gripper.model`` and the arm asset which one a cell gets: an asset that bakes
+  the hand selects its ``Gripper`` variant, and otherwise the scene builder selects the ``"None"``
+  variant and mounts the standalone vendor gripper on the wrist: reference it, drop its articulation
+  root, add a fixed joint ``wrist_3_link -> base`` so it merges into the arm articulation.
+  :class:`~src.robot.grippers.sim.IsaacGripper` then drives it via the
   matching :class:`~src.robot.grippers.sim.GripperProfile`, so a new gripper is data here, not new
   driver code.
 * Suction cups: :data:`SUCTION_CUPS`, keyed by ``SimConfig.suction_cup``. Each entry is a
@@ -19,6 +20,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from src.config import ConfigError
+from src.config.grippers import load_gripper
+from src.robot.drivers.sim.robot_models import ur_model_spec
 from src.robot.grippers.sim import (
     ROBOTIQ_2F85_PROFILE,
     SCHUNK_EGU50_PROFILE,
@@ -30,12 +34,15 @@ from src.robot.grippers.sim import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from pathlib import Path
+
     from src.config.schema.robot.sim_schema import SimConfig
 
 __all__ = [
     "MountedGripperSpec",
     "MOUNTED_GRIPPERS",
     "resolve_mounted_gripper",
+    "sim_mount_for",
     "ROBOTIQ_2F85_MOUNT",
     "SCHUNK_EGU50_MOUNT",
     "SCHUNK_EZU35_MOUNT",
@@ -89,7 +96,7 @@ class MountedGripperSpec:
 
 
 # Schunk EGU-50 (parallel, a different vendor from the baked Robotiq 2F-85). Local frame: approach =
-# local +Z (grasp centre 115 mm out), closing = local +Y. The 2F-85's mounted grasp frame, which the
+# local +Z (the grasp centre is below, on the jaw face), closing = local +Y. The 2F-85's mounted grasp frame, which the
 # pick geometry is tuned to: approach = wrist_3 +Y, closing = wrist_3 +X. ``mount_rotation_matrix``
 # carries the EGU-50 onto that same orientation. ``flange_offset_mm`` is 29.1 mm along wrist +Y, the
 # approach: the EGU-50's FGR-mesh grasp centre sits ~24 mm shallower than the 2F-85 inner-finger-body
@@ -104,7 +111,11 @@ SCHUNK_EGU50_MOUNT = MountedGripperSpec(
     profile=SCHUNK_EGU50_PROFILE,
     mount_rotation_matrix=((0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)),
     flange_offset_mm=(0.0, 29.1, 0.0),
-    tcp_offset_mm=115.0,
+    # The midpoint of the flat jaw face, 159.1 mm from the flange, measured off the collision bundle
+    # by scripts/grippers/measure_jaw_from_bundle.py. The value was 115, a centre 7.5 mm below the
+    # face, tuned so one 30 mm cube's centre sat there; the registry's grasp centre is the face, and
+    # the mount sits on it. Lifts measured at 115 predate this value.
+    tcp_offset_mm=130.0,
     # Firm the soft vendor default (stiffness 1000, damping 10) by a factor of 12 so the grip holds the
     # cube through the lift under natural-aim, the safety branch. That branch is mandatory here: in the
     # flipped park-pi branch the EGU-50 self-collides (forearm against gripper, 0.000 mm) and Coal
@@ -126,7 +137,7 @@ SCHUNK_EGU50_MOUNT = MountedGripperSpec(
 # follower fingers (GBA2/GBA3) must be firmed and continuously target-synced to Jaw_Drive each physics
 # step, otherwise a firm follower drive fights the mimic and jams the gripper. That sync is not in
 # IsaacGripper. The free-cylinder pick is blocked by the descent-roll (see ``_cylinder_specs``).
-# Default-off: only build_service(gripper_mount="schunk_ezu35") reaches this.
+# No registry name reaches it: sim_mount_for refuses a hand the registry does not hold.
 SCHUNK_EZU35_MOUNT = MountedGripperSpec(
     name="schunk_ezu35",
     usd_asset_path="/Isaac/Robots/Schunk/ezu_35/schunk_ezu_35.usd",
@@ -182,7 +193,7 @@ MOUNTED_GRIPPERS: dict[str, MountedGripperSpec] = {
 
 
 def resolve_mounted_gripper(name: str) -> MountedGripperSpec:
-    """The one place ``sim.gripper_mount`` becomes a spec. ⛔ REFUSES A NAME IT DOES NOT KNOW.
+    """A mount spec by its name. Refuses a name it does not know.
 
     MEASURED 2026-09-10: the two call sites disagreed about an unknown name. One used ``.get()`` and
     carried on, which SKIPS the flange->TCP correction and leaves the cell composing the 2F-85's
@@ -199,9 +210,42 @@ def resolve_mounted_gripper(name: str) -> MountedGripperSpec:
     spec = MOUNTED_GRIPPERS.get(name)
     if spec is None:
         raise KeyError(
-            f"sim.gripper_mount={name!r} is not a mountable gripper. Available: "
+            f"{name!r} is not a mountable gripper. Available: "
             f"{sorted(MOUNTED_GRIPPERS)}. A GripperProfile (how to drive the joints) is not enough: "
             f"a mount also needs the USD asset, the mount rotation and a measured tcp_offset_mm."
+        )
+    return spec
+
+
+def sim_mount_for(
+    robot_model: str, hand: str | None, *, data_dir: "str | Path | None" = None,
+) -> MountedGripperSpec | None:
+    """The mount a sim cell gets for the hand it names on the arm asset it runs; ``None`` selects the baked variant.
+
+    Derived rather than configured: ``robot.gripper.model`` is the one name for a hand, and a second
+    key saying which gripper Isaac mounts could name a different one. The registry is read from the
+    cell's own tree, ``data_dir``, so a cell run from its own tree cannot borrow the repository's
+    hands.
+
+    Refuses, as a ``ConfigError``: a cell that names no hand; a name the registry does not hold, or a
+    short name; and a hand the sim cannot mount, because a :class:`GripperProfile` says how to drive a
+    hand's joints and a mount also needs its USD asset, its mount rotation and a measured
+    ``tcp_offset_mm``.
+    """
+    if not hand:
+        raise ConfigError(
+            f"a sim cell on {robot_model!r} names no hand, so there is nothing to mount: set robot.gripper.model "
+            f"to a registry name"
+        )
+    load_gripper(hand, data_dir=data_dir, aliases=False)
+    if ur_model_spec(robot_model).baked_hand == hand:
+        return None
+    spec = MOUNTED_GRIPPERS.get(hand)
+    if spec is None:
+        raise ConfigError(
+            f"the sim has no mount for {hand!r} on {robot_model!r}. Mountable: {sorted(MOUNTED_GRIPPERS)}. A "
+            f"GripperProfile says how to drive a hand's joints; a mount also needs the USD asset, the mount "
+            f"rotation and a measured tcp_offset_mm."
         )
     return spec
 

@@ -184,6 +184,8 @@ class _FakeClient:
         self._confirm = confirm
         self.worlds: list[list[dict]] = []
         self.started = False
+        # What a descriptor built for this arm and hand says of itself (Step 4i): a planner refuses one that says nothing.
+        self.descriptor_provenance = {"arm": "ur5e", "gripper_key": "robotiq_2f85", "coupling_mm": None}
 
     def start(self) -> None:
         self.started = True
@@ -295,6 +297,7 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
 
     config = RobotConfig.model_validate({
         "vendor": "ur",
+        "gripper": {"model": "robotiq_2f85"},
         "safety": {
             "payload": {"enforce": False},
             "self_collision": {
@@ -320,13 +323,77 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
     assert [c["name"] for c in client.worlds[0]] == ["support_plane", "bin_wall_left"]
 
     # And with the block off, nothing is registered: the byte-identical path.
-    off = RobotConfig.model_validate({"vendor": "ur", "safety": {"payload": {"enforce": False}}})
+    off = RobotConfig.model_validate({"vendor": "ur", "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"}})
     quiet = _FakeClient([[0.0] * 6])
     arm_off = URRobotArm(off)
     arm_off._conn = _FakeConn()  # type: ignore[assignment]
     arm_off._curobo_client_factory = lambda: quiet  # type: ignore[assignment]
     arm_off._curobo_ur_planner().plan(_pose())
     assert quiet.worlds == []
+
+
+class _ReservingClient(_FakeClient):
+    """Records whether it was told its reservation before it started, and the meshes it is sent."""
+
+    def __init__(self, traj) -> None:
+        super().__init__(traj)
+        self.events: list[str] = []
+        self.meshes: list[list[dict]] = []
+        self.reservation = None
+
+    def reserve_world(self, reservation) -> None:
+        self.events.append("reserve")
+        self.reservation = reservation
+
+    def start(self) -> None:
+        self.events.append("start")
+        super().start()
+
+    def set_world(self, cuboids, meshes=None):
+        self.meshes.append(list(meshes or ()))
+        return super().set_world(cuboids) + len(meshes or ())
+
+
+def test_an_injected_factory_still_gets_the_reservation() -> None:
+    """Every test injects its own client factory, so the reservation cannot live only in the default one."""
+    from src.robot.safety.planning.reservation import PlannerReservation
+
+    reservation = PlannerReservation(cuboid_slots=24, mesh_slots=1, voxel_grid="", sphere_slots=0)
+    client = _ReservingClient([[0.0] * 6, [0.1] * 6])
+
+    CuroboUrPlanner(_FakeConn(), client_factory=lambda: client, reservation=reservation).plan(_pose())
+
+    assert client.events[:2] == ["reserve", "start"], client.events
+    assert client.reservation == reservation
+
+
+def test_a_declared_mesh_is_registered_without_a_live_world() -> None:
+    """A tote declared as a mesh reached the planner only through the live world, never on its own."""
+    from src.config.schema.robot import RobotConfig
+    from src.robot.drivers.ur.arm import URRobotArm
+
+    config = RobotConfig.model_validate({
+        "vendor": "ur",
+        "gripper": {"model": "robotiq_2f85"},
+        "safety": {
+            "payload": {"enforce": False},
+            "planning_world": {
+                "enabled": True,
+                "support_plane": {"height_mm": -5.0, "extent_mm": [1600.0, 1600.0],
+                                  "thickness_mm": 50.0},
+                "meshes": [{"name": "tote", "path": "assets/tote.obj", "center_mm": [450.0, 0.0, 0.0]}],
+            },
+        },
+    })
+    client = _ReservingClient([[0.0] * 6, [0.1] * 6])
+    arm = URRobotArm(config)
+    arm._conn = _FakeConn()  # type: ignore[assignment]
+    arm._curobo_client_factory = lambda: client  # type: ignore[assignment]
+
+    arm._curobo_ur_planner().plan(_pose())
+
+    assert [m["name"] for m in client.meshes[0]] == ["tote"], "the declared mesh never reached the planner"
+    assert [c["name"] for c in client.worlds[0]] == ["support_plane"]
 
 
 def test_the_preflight_reads_the_fixture_list_where_it_actually_lives() -> None:
@@ -475,7 +542,8 @@ def test_a_declared_fixture_is_checked_along_the_path_too() -> None:
 
 
 def _ur5e_config_path() -> str:
-    return "ext_deps/curobo/curobo/content/configs/robot/ur5e.yml"
+    # Named by arm and hand from Step 4i; skips until the box rebuilds its descriptors.
+    return "ext_deps/curobo/curobo/content/configs/robot/ur5e_robotiq_2f85.yml"
 
 
 def test_the_derived_config_declares_a_payload_link_on_the_tool_frame() -> None:
@@ -561,6 +629,7 @@ def test_the_arm_turns_a_jaw_WIDTH_into_a_box_the_planner_can_use() -> None:
     config = RobotConfig.model_validate({
         "vendor": "ur",
         "ur": {"motion_planner": "curobo"},
+        "gripper": {"model": "robotiq_2f85"},
         "safety": {
             "payload": {"enforce": False},
             "planning_world": {
@@ -576,21 +645,31 @@ def test_the_arm_turns_a_jaw_WIDTH_into_a_box_the_planner_can_use() -> None:
     seen: dict = {}
 
     class _Planner:
-        def attach_payload(self, joints, dims_mm, offset_mm):
-            seen.update(joints=list(joints), dims=tuple(dims_mm), offset=offset_mm)
+        def attach_payload(self, joints, dims_mm, centre_mm):
+            seen.update(joints=list(joints), dims=tuple(dims_mm), centre=tuple(centre_mm))
             return True
 
     arm._curobo_ur = _Planner()  # type: ignore[assignment]
     assert arm.attach_payload(60.0) is True
-    assert seen["dims"] == (70.0, 70.0, 120.0), "jaw width plus the lateral margin, then the length"
-    assert seen["offset"] == 60.0, "the box centre sits half its length beyond the flange"
+    # Along the hand's approach, tool0 +Y as Step 4g.0 measured it, from the fingertips, as the self filter has the part
+    # (Step 4h). It was 120 mm along tool0 +Z from the flange: 90 degrees off the hand, and inside the wrist.
+    from src.robot.safety.planning.hand import HAND_APPROACH_IN_TOOL0
+    from src.robot.safety.planning.self_envelope import hand_spheres
+
+    spheres = hand_spheres(arm._preflight.planner_hand(arm), "ur5e")  # noqa: SLF001
+    assert spheres is not None
+    approach = np.asarray(HAND_APPROACH_IN_TOOL0, dtype=np.float64)
+    tip = max(float(np.dot(np.asarray(s.start_mm), approach)) + s.radius_mm for s in spheres)
+    assert float(np.abs(np.asarray(seen["dims"])) @ np.abs(approach)) == 120.0, "the length runs along the approach"
+    assert sorted(seen["dims"]) == [70.0, 70.0, 120.0], "jaw width plus the lateral margin on the two other axes"
+    assert np.allclose(seen["centre"], approach * (tip + 60.0)), "the centre sits half the length past the tips"
 
 
 def test_the_payload_is_off_by_default_and_the_arm_says_so() -> None:
     from src.config.schema.robot import RobotConfig
     from src.robot.drivers.ur.arm import URRobotArm
 
-    arm = URRobotArm(RobotConfig.model_validate({"vendor": "ur"}))
+    arm = URRobotArm(RobotConfig.model_validate({"vendor": "ur", "gripper": {"model": "robotiq_2f85"}}))
     arm._conn = _FakeConn()  # type: ignore[assignment]
     assert arm.attach_payload(60.0) is False
     assert arm.detach_payload() is True  # nothing was ever attached

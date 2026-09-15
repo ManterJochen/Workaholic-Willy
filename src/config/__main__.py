@@ -2,7 +2,8 @@
 
 Exit codes:
 * 0: the command succeeded (the config validates; a query ran)
-* 1: :class:`src.config.ConfigError` raised (file, parse or schema error)
+* 1: :class:`src.config.ConfigError` raised (file, parse or schema error, or a gripper registry that
+  cannot be read or does not hold the hand the cell names)
 * 2: bad CLI arguments
 
 A query that finds nothing still exits 0: ``explain`` reports the key as unknown and offers near

@@ -7,7 +7,7 @@ generator that claims to produce it.
 
 Both happened here. The on-box config builder carried a second copy of the fit and always used the
 Robotiq bundle, under a comment calling it model independent, while the safety guard already selected
-a per-gripper bundle through `collision_mesh_variant`. A Schunk cell therefore had a guard that knew
+a per-gripper bundle through its variant key. A Schunk cell therefore had a guard that knew
 its hand and a planner that did not.
 """
 
@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from src.robot.safety.planning.hand import guard_variant_for
 from src.robot.safety.planning.robot.build_gripper_spheres import build
 from src.robot.safety.planning.robot.gripper_spheres import (
     FLANGE,
@@ -124,7 +125,12 @@ class CommittedMapsTests(unittest.TestCase):
                 block = _map(name)["_provenance"]
                 self.assertIn("gripper", block)
                 self.assertIn("tool0", block["frame"])
-                self.assertIn(name, block["source"])
+                if guard_variant_for(name) is None:
+                    # The hand every arm bundle carries is fitted from an arm's own bundle, so its source names
+                    # the arm while the map is named after the hand (Step 4f).
+                    self.assertRegex(block["source"], r"^ur\d+e?_collision_meshes\.npz$")
+                else:
+                    self.assertIn(name, block["source"])
 
 
 class WhereTheNumbersStartTests(unittest.TestCase):
@@ -170,7 +176,8 @@ class OneHandOnEveryArmTests(unittest.TestCase):
 
     Measured before this: `schunk_egu50` on a ur3e trips `variant_model_mismatch`, and that drops
     the whole cell to the capsule proxy rather than only the hand, so the arm loses exact-mesh
-    checking too. `collision_mesh_variant` names the hand now and the arm is composed in.
+    checking too. The guard's bundle is named by the hand now, `robot.gripper.model`, and the arm is
+    composed in.
     """
 
     def test_the_hand_resolves_on_both_arms(self) -> None:

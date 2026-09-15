@@ -1,0 +1,41 @@
+# The Robotiq Hand-E, described once.
+#
+# The numbers are the ones robot.hande.yaml carries for this hand (its actuation widths and its collision
+# envelope, from one measurement session off robotiq_hande_ur5e_collision_meshes.npz), plus
+# finger_behind_mm, which no other file holds, measured by scripts/grippers/measure_jaw_from_bundle.py.
+#
+# Grasp frame: X closes between the contacts, Y is the binormal, Z is the approach, z = 0 is the grasp centre,
+# 135.75 mm from the gripper's own mounting face. The coupling plate between that face and the flange is in no
+# number here; it is a bench measurement (robot.hande.yaml, tool_frame, and robot.gripper.coupling_plates_mm).
+#
+# The contact patch is the committed 20.91 mm. It is 0.91 mm longer than the flat jaw face in the bundle
+# (20.00 mm from 126.20 mm), down the chamfer below the face. The committed patch is kept, and the suite
+# pins the difference, so a re-baked bundle that changes it is noticed.
+gripper:
+  model: robotiq_hande
+  kind: parallel_jaw
+  source: >-
+    Isaac asset Robotiq/Hand-E/Robotiq_Hand_E_edit.usd, baked into robotiq_hande_ur5e_collision_meshes.npz by
+    scripts/grippers/bake_gripper_variant.py and measured off that bundle at full open: the jaw faces 49.99 mm
+    apart, the fingertip 10.45 mm past the grasp centre, the finger material outside the housing 36.53 mm
+    behind it (the carriage inside the housing belongs to the palm), 10.80 mm thick and 29.24 mm wide, and the
+    housing 104.12 mm deep from the finger box to its coupling bolts and 75.00 mm across. The contact patch and
+    the 2.0 mm envelope overlap are the robot.hande.yaml values. The friction is a default.
+  jaw:
+    aperture_mm: 49.99
+    min_width_mm: 5.0
+    closed_width_mm: 0.0
+    finger_ahead_mm: 10.45
+    finger_behind_mm: 36.53
+    finger_length_mm: 36.53
+    finger_thickness_mm: 10.80
+    finger_width_mm: 29.24
+    finger_pad_overlap_mm: 2.0
+    pad_length_mm: 20.91
+    pad_ahead_mm: 10.45
+    pad_behind_mm: 10.46
+    palm_depth_mm: 104.12
+    palm_width_mm: 75.00
+    palm_measured: true
+    friction_coefficient: 0.5
+    friction_is_default: true

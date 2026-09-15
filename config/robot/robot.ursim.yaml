@@ -49,6 +49,16 @@ robot:
 
   gripper:
     vendor: "none"          # no end-effector on the container; a no-op gripper stands in
+    # The hand the guard models, by registry name. The container carries none, but the tool
+    # frame below is the 2F-85's 132 mm and the guard's exact meshes are the 2F-85 every arm
+    # bundle carries, so this bed names that hand; a UR cell whose guard reads hand geometry
+    # refuses to build without one.
+    model: robotiq_2f85
+    # This bed refuses to build its arm, on purpose. The frame below approaches along flange
+    # +Z, the UR tool axis, and every committed hand model holds the hand along flange +Y,
+    # which is how the Isaac asset mounts it (measured). Until the hand's axis on a real flange
+    # is measured and a model that holds it is committed, the guard and the planner would
+    # check a hand 90 degrees from this one, so the build says that instead.
     tool_frame:
       # `willy` means the controller runs a bare flange and this driver composes the
       # transform, which is what URSim is: no tool is configured on it. Declaring

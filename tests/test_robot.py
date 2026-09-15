@@ -162,7 +162,7 @@ class FromConfigTests(unittest.TestCase):
 
     def test_a_ur_tree_builds_the_driver_and_its_robotiq_and_opens_no_socket(self) -> None:
         tree = RobotConfig.model_validate(
-            {"vendor": "ur", "ur": {"ip": "10.9.9.9"}, "gripper": {"vendor": "robotiq"}})
+            {"vendor": "ur", "ur": {"ip": "10.9.9.9"}, "gripper": {"vendor": "robotiq", "model": "robotiq_2f85"}})
         refuse = AssertionError("building a robot opened a socket")
         with patch(_READY), \
                 patch.object(socket.socket, "connect", side_effect=refuse) as connect, \
@@ -185,7 +185,7 @@ class RobotAndCellContendTests(unittest.TestCase):
 
     def test_a_robot_is_refused_while_a_cell_holds_the_controller(self) -> None:
         tree = RobotConfig.model_validate(
-            {"vendor": "ur", "ur": {"ip": "10.254.254.1"}, "gripper": {"vendor": "none"}})
+            {"vendor": "ur", "ur": {"ip": "10.254.254.1"}, "gripper": {"vendor": "none", "model": "robotiq_2f85"}})
         with patch(_READY):
             robot = Robot.from_config(tree)
         with CellLock(self.KEY, owner="Cell"), \
@@ -201,7 +201,7 @@ class RobotAndCellContendTests(unittest.TestCase):
 class FromPartsTests(unittest.TestCase):
 
     def test_the_lock_key_comes_from_the_tree_the_arm_was_built_with(self) -> None:
-        ur = URRobotArm(RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "10.9.9.9"}}))
+        ur = URRobotArm(RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "10.9.9.9"}, "gripper": {"model": "robotiq_2f85"}}))
         kuka = KukaRobotArm(RobotConfig.model_validate(
             {"vendor": "kuka", "kuka": {"controller_ip": "10.8.8.8"}}))
         for arm, key in ((ur, "ur@10.9.9.9"), (kuka, "kuka@10.8.8.8"), (DummyRobotArm(), None),
@@ -216,7 +216,7 @@ class FromPartsTests(unittest.TestCase):
         """A UR driver built from a tree naming another vendor, and an adapter that keeps no tree,
         both report ``ur`` and derive no key. Taking no lock on either would let a second process
         compete for the controller."""
-        foreign_tree = URRobotArm(RobotConfig.model_validate({"vendor": "dummy"}))
+        foreign_tree = URRobotArm(RobotConfig.model_validate({"vendor": "dummy", "gripper": {"model": "robotiq_2f85"}}))
         for arm in (foreign_tree, _Reports("ur")):
             with self.subTest(type(arm).__name__):
                 with self.assertRaises(LockKeyRequired) as caught:

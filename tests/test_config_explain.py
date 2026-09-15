@@ -493,9 +493,9 @@ class TierTests(unittest.TestCase):
         """The filter is cosmetic: a field hidden from a listing must still validate."""
         from src.config.schema.robot.sim_schema import SimConfig
 
-        hidden = find_keys("gripper", tier="safety")
-        self.assertNotIn("gripper_mount", hidden)
-        self.assertEqual(SimConfig(gripper_mount="robotiq_2f85").gripper_mount, "robotiq_2f85")
+        hidden = find_keys("suction", tier="safety")
+        self.assertNotIn("suction_cup", hidden)
+        self.assertEqual(SimConfig(suction_cup="slim").suction_cup, "slim")
 
     def test_cli_accepts_the_tier_flag(self) -> None:
         self.assertEqual(main(["where", "gripper", "--tier", "advanced"]), 0)

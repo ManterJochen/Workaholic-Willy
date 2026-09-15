@@ -93,6 +93,122 @@ def _planner(conn, client):
     return CuroboUrPlanner(conn, client_factory=lambda: client)
 
 
+def test_the_carried_part_is_sent_where_the_arm_places_it_in_tool0_metres() -> None:
+    """The planner takes a centre in tool0, not a distance along +Z: the hand approaches along +Y (Step 4g.0)."""
+
+    class _AttachingClient(_FakeClient):
+        def attach_payload(self, joints, dims_m, pose):
+            self.calls.append("attach")
+            self.attached = (list(joints), list(dims_m), list(pose))
+            return True
+
+    client = _AttachingClient(UR_ARM_JOINT_NAMES, [[0.0] * 6])
+    planner = CuroboUrPlanner(_FakeConn([0.0] * 6), client_factory=lambda: client, require_registration=False)
+    assert planner.attach_payload([0.0] * 6, (70.0, 120.0, 70.0), (0.0, 212.0, 0.0)) is True
+    _, dims_m, pose = client.attached
+    assert dims_m == pytest.approx([0.07, 0.12, 0.07])
+    assert pose == pytest.approx([0.0, 0.212, 0.0, 1.0, 0.0, 0.0, 0.0])
+
+
+def test_a_refused_world_refresh_is_logged_once_before_the_refusal() -> None:
+    """The UR planner raised on a refused refresh and wrote nothing; only a successful one logged.
+
+    The caller turns the raise into CONTROLLER_REJECTED, so the one place the reason is readable by a
+    person is this log line, and it has to exist exactly once per refusal.
+    """
+    import unittest
+
+    from src.robot.safety.planning.live_world import CameraView, DepthSnapshot, LivePlannerWorld
+    from src.robot.safety.planning.perceived import WorldBuildLimits
+
+    # A sighted camera and an arm that cannot place its own links: an ordinary refusal, not a camera
+    # fault. Written first with a blind camera, which from Step 4e raises CameraWorldUnavailable instead
+    # (tests/test_live_planner_world.py FreshFrameAttemptsTests), so the refusal branch is held here by a
+    # reason nobody asks about twice.
+    class _SightedCamera:
+        def grab_surface_depth(self):
+            return DepthSnapshot(
+                depth_mm=np.full((40, 40), 1000.0, dtype=np.float64),
+                intrinsics=np.array([[50.0, 0.0, 20.0], [0.0, 50.0, 20.0], [0.0, 0.0, 1.0]]),
+                timestamp=__import__("time").time(),
+            )
+
+    world = LivePlannerWorld(
+        cameras=(CameraView(name="overhead", depth_source=_SightedCamera(), camera_to_base=np.eye(4)),),
+        declared=(),
+        limits=WorldBuildLimits(
+            x_mm=(-400.0, 400.0), y_mm=(-400.0, 400.0), z_mm=(-50.0, 900.0), support_plane_top_mm=0.0
+        ),
+    )
+    client = _FakeClient(UR_ARM_JOINT_NAMES, [[0.0] * 6])
+    planner = CuroboUrPlanner(
+        _FakeConn([0.0] * 6), client_factory=lambda: client, live_world=world,
+        self_envelope=lambda: None,
+    )
+
+    checker = unittest.TestCase()
+    with checker.assertLogs("CuroboUrPlanner", level="ERROR") as logs:
+        with pytest.raises(CuroboUnavailableError, match="its own links"):
+            planner._refresh_world()  # noqa: SLF001
+
+    errors = [record for record in logs.records if record.levelname == "ERROR"]
+    assert len(errors) == 1, logs.output
+    assert "its own links" in errors[0].getMessage()
+
+
+def test_a_camera_that_stays_silent_raises_logged_once_and_clears_the_guard() -> None:
+    """Owner, Step 4: after its fresh-frame attempts a silent camera raises out of the planner.
+
+    Logged once here, because this is where the camera and the attempts are known. And the path guard
+    is told the cell is empty of perceived boxes, as it is on any other refused refresh: a guard left
+    holding boxes from a camera nobody can vouch for is checking a cell that no longer exists.
+    """
+    import unittest
+
+    from src.robot.core.errors import CameraWorldUnavailable
+    from src.robot.safety.planning.live_world import CameraView, LivePlannerWorld
+    from src.robot.safety.planning.perceived import LinkCapsule, SelfEnvelope, WorldBuildLimits
+
+    class _SilentCamera:
+        def __init__(self) -> None:
+            self.grabs = 0
+
+        def grab_surface_depth(self):
+            self.grabs += 1
+            return None
+
+    camera = _SilentCamera()
+    world = LivePlannerWorld(
+        cameras=(CameraView(name="overhead", depth_source=camera, camera_to_base=np.eye(4)),),
+        declared=(),
+        limits=WorldBuildLimits(
+            x_mm=(-400.0, 400.0), y_mm=(-400.0, 400.0), z_mm=(-50.0, 900.0), support_plane_top_mm=0.0
+        ),
+        fresh_frame_attempts=2,
+    )
+    told: list = []
+    planner = CuroboUrPlanner(
+        _FakeConn([0.0] * 6), client_factory=lambda: _FakeClient(UR_ARM_JOINT_NAMES, [[0.0] * 6]),
+        live_world=world,
+        self_envelope=lambda: SelfEnvelope(
+            frames_mm=(np.eye(4),),
+            capsules=(LinkCapsule(frame=0, start_mm=(0.0, 0.0, 0.0), end_mm=(0.0, 0.0, 300.0), radius_mm=90.0),),
+        ),
+        on_perceived_obstacles=told.append,
+    )
+
+    checker = unittest.TestCase()
+    with checker.assertLogs("CuroboUrPlanner", level="ERROR") as logs:
+        with pytest.raises(CameraWorldUnavailable):
+            planner._refresh_world()  # noqa: SLF001
+
+    errors = [record for record in logs.records if record.levelname == "ERROR"]
+    assert len(errors) == 1, logs.output
+    assert "overhead" in errors[0].getMessage()
+    assert camera.grabs == 3
+    assert told == [()]
+
+
 def test_move_converts_goal_and_executes_waypoints() -> None:
     traj = [[0.0, 0.1, 0.2, 0.3, 0.4, 0.5], [0.6, 0.7, 0.8, 0.9, 1.0, 1.1]]
     client = _FakeClient(UR_ARM_JOINT_NAMES, traj)

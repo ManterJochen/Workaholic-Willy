@@ -1,8 +1,9 @@
 """Assemble a cuRobo robot config for one bundled UR model from the ingredients already on the box.
 
-Both drivers ask the planner for ``{model}.yml``, the name
-``src/robot/drivers/sim/robot_models.curobo_robot_yml`` derives from the configured ``robot_model``.
-That file is not shipped with the repository: it is assembled here, once per box and per model, and
+Both drivers ask the planner for ``{model}_{hand}.yml``, the name
+``src/robot/drivers/sim/robot_models.curobo_robot_yml`` derives from the configured ``robot_model``
+and ``robot.gripper.model``. That file is not shipped with the repository: it is assembled here, once
+per box, per model and per hand, and
 written into the gitignored cuRobo content directory. A fresh cuRobo clone always needs this step.
 
 Ingredients, all of them already installed on a cell that can plan:
@@ -40,7 +41,7 @@ collide so the planner returned nothing at all while the descriptor loaded perfe
 What a re-run reproduces: the URDF half is byte-identical, the YAML half is not. cuRobo's
 ``sphere_fit`` samples the mesh surface and is not deterministic, so two runs of the same recipe
 differ in the sphere centres and by a sphere or two on one link. Where a measured planner result
-depends on a particular ``{model}.yml``, keep that file rather than expecting a rebuild to reproduce
+depends on a particular ``{model}_{hand}.yml``, keep that file rather than expecting a rebuild to reproduce
 it. ``src/robot/safety/planning/robot/PROVENANCE.md`` records that comparison.
 
 This is a command line and not a library capability, and the reason is the interpreter. It reads
@@ -56,14 +57,19 @@ means changing it there, or the committed sphere map stops matching the on-box o
 
 Usage, on the box that owns the cell::
 
-    python scripts/curobo/build_ur_config.py ur3e     # writes ur3e.urdf and ur3e.yml
-    python scripts/curobo/build_ur_config.py ur5e
-    python scripts/curobo/build_ur_config.py ur5e --gripper schunk_egu50    # the same arm, another hand     # the ur5e recipe, including arm augmentation
+    python scripts/curobo/build_ur_config.py ur3e     # writes ur3e.urdf and ur3e_robotiq_2f85.yml
+    python scripts/curobo/build_ur_config.py ur5e     # the ur5e recipe, including arm augmentation
+    python scripts/curobo/build_ur_config.py ur5e --gripper schunk_egu50    # the same arm, another hand
+    python scripts/curobo/build_ur_config.py ur5e --gripper robotiq_hande --coupling-mm 20    # a hand behind a plate
 
 Run it with the cuRobo environment's interpreter. cuRobo then answers where its own content directory
 is and nothing has to be guessed::
 
-    ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e
+    ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e --gripper robotiq_2f85
+
+The descriptor is named by the arm and the hand, ``{model}_{gripper}.yml``, and carries both in
+``_provenance``; a planner refuses a descriptor whose provenance names another arm, hand or plate
+than its cell.
 
 Paths are auto-detected and overridable, so no machine-specific path is baked in:
 
@@ -90,10 +96,11 @@ REPO = Path(__file__).resolve().parents[2]  # scripts/curobo/this.py, then scrip
 
 # --- 0) model + path resolution -------------------------------------------------------------------------
 MODEL = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("WILLY_UR_MODEL", "ur3e")).lower()
-# Which hand is on the flange. The arm model does not decide it: the same UR5e takes a Robotiq 2F-85
-# or a Schunk EGU-50, and the planner has to model the one that is actually there. Mirrors the safety
-# guard's `collision_mesh_variant`, which selects the same bundle for the exact-mesh check.
-GRIPPER = "ur5e"
+# Which hand is on the flange, by its registry name, robot.gripper.model: the committed map is
+# `{GRIPPER}_gripper_spheres.yml`. The arm model does not decide it: the same UR5e takes a Robotiq
+# 2F-85 or a Schunk EGU-50, and the planner has to model the one that is actually there. The safety
+# guard derives its exact-mesh bundle from the same name.
+GRIPPER = "robotiq_2f85"
 for _i, _arg in enumerate(sys.argv):
     if _arg == "--gripper" and _i + 1 < len(sys.argv):
         GRIPPER = sys.argv[_i + 1]
@@ -190,7 +197,7 @@ def _resolve_curobo_content() -> Path:
 ISAAC_MODEL_DIR = _resolve_isaac_mp() / MODEL
 CUROBO = _resolve_curobo_content()
 URDF_OUT = CUROBO / f"assets/robot/ur_description/{MODEL}.urdf"
-YML_OUT = CUROBO / f"configs/robot/{MODEL}.yml"
+YML_OUT = CUROBO / f"configs/robot/{MODEL}_{GRIPPER}.yml"
 print(f"[paths] model={MODEL}\n  isaac  = {ISAAC_MODEL_DIR}\n  curobo = {CUROBO}")
 
 # --- 1) URDF: a description that actually DESCRIBES A BODY ------------------------------------------------
@@ -470,13 +477,13 @@ for entry in lula["collision_spheres"]:  # Lula = list of single-key {link: [ {c
 # test compares that file against the fit so the two cannot drift. This script used to carry its own
 # copy of the same arithmetic and always fitted the Robotiq 2F-85, under a comment calling it model
 # independent. It is independent of the arm and not of the hand: with a Schunk EGU-50 bolted on, the
-# guard read that bundle through `collision_mesh_variant` and the planner still modelled a Robotiq.
+# guard read that bundle through its variant key and the planner still modelled a Robotiq.
 _SPHERE_MAP = REPO / f"src/robot/safety/planning/robot/{GRIPPER}_gripper_spheres.yml"
 if not _SPHERE_MAP.is_file():
     raise SystemExit(
         f"no committed sphere map at {_SPHERE_MAP}. Write one in the project venv first:\n"
         f"  .venv/Scripts/python.exe -m src.robot.safety.planning.robot.build_gripper_spheres "
-        f"--variant {GRIPPER}\n"
+        f"--variant <the hand's baked bundle> --out {_SPHERE_MAP.name}\n"
         "or, for a gripper with no baked bundle, fit it from the vendor mesh with --mesh."
     )
 _gripper_cfg = yaml.safe_load(_SPHERE_MAP.read_text(encoding="utf-8"))
@@ -870,6 +877,6 @@ print(f"wrote {YML_OUT}")
 print(f"  provenance: {MODEL} + {_gripper_name} from {_SPHERE_MAP.name}"
       + (f", coupling {COUPLING_MM:.1f} mm" if COUPLING_MM is not None else ""))
 print(f"  joint order check: cspace.joint_names={cs.get('joint_names')}")
-print(f"\nNext: point the planner at it with WILLY_CUROBO_ROBOT={MODEL}.yml, or set robot_model: {MODEL} "
-      f"in the sim config, which derives the name automatically.")
-print(f"Then confirm the box agrees: python -m src.robot.safety.planning --check --model {MODEL}")
+print(f"\nNext: a cell with robot.ur.model (or sim robot_model) {MODEL} and robot.gripper.model {GRIPPER} loads "
+      f"{YML_OUT.name} by itself; check it plans: scripts/curobo/check_ur_descriptors.py {YML_OUT.stem}")
+print(f"Then confirm the box agrees: python -m src.robot.safety.planning --check --model {MODEL} --hand {GRIPPER}")

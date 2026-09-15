@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from src.config.schema.robot.sim_schema import SimConfig
     from src.config.schema.robot.tool_frame_schema import ToolFrameConfig
     from src.robot.drivers.sim.config import SimRobotConfig
+    from src.robot.safety.planning.reservation import PlannerReservation
 
 
 _LOG = logging.getLogger(__name__)
@@ -86,9 +87,14 @@ def resolve_arm(robot_cfg: "RobotConfig", *, arm: RobotArm | None) -> RobotArm:
     if arm is not None:
         pass  # caller supplied a live handle; every other step still runs from config
     elif vendor is RobotVendor.SIM:
+        from src.robot.safety.planning.reservation import PlannerReservation
+
         arm = create_arm(
             RobotVendor.SIM,
-            config=build_sim_driver_config(robot_cfg.sim, robot_cfg.gripper.tool_frame),
+            config=build_sim_driver_config(
+                robot_cfg.sim, robot_cfg.gripper.tool_frame,
+                planner_reservation=PlannerReservation.from_config(robot_cfg=robot_cfg),
+            ),
         )
     elif vendor is RobotVendor.DUMMY:
         # Dummy arm ignores the config tree entirely.
@@ -344,15 +350,22 @@ def build_gripper(robot_cfg: "RobotConfig", *, arm: RobotArm) -> Gripper:
 
 
 def build_sim_driver_config(
-    schema_sim: "SimConfig", tool_frame: "ToolFrameConfig | None" = None
+    schema_sim: "SimConfig",
+    tool_frame: "ToolFrameConfig | None" = None,
+    *,
+    planner_reservation: "PlannerReservation | None" = None,
 ) -> "SimRobotConfig":
     """Convert a Pydantic ``SimConfig`` into the driver-side ``SimRobotConfig`` dataclass.
 
     The single conversion point shared by ``RuntimePickService.from_robot_config`` and the
     ``src.willy_sim`` runners (so the Pydantic config tree is the one source of truth for
     the sim cell). Copies only the driver-relevant fields; the Pydantic-only scene-authoring extras
-    (``assets_root``/``gripper_variant``/``scene_setup``/camera mount+near-clip) are read directly
+    (``assets_root``/``scene_setup``/camera mount+near-clip) are read directly
     off the schema by willy_sim and intentionally do not cross into the lean driver dataclass.
+
+    ``planner_reservation`` is what the planner sidecar allocates. It depends on the declared world
+    rather than on the sim block, so the callers, which hold the whole robot config, pass
+    ``PlannerReservation.from_config`` of it.
     """
     from src.robot.drivers.sim.config import SimCameraConfig, SimRobotConfig
 
@@ -382,7 +395,7 @@ def build_sim_driver_config(
         # One source of truth for flange->TCP: the gripper block the real drivers read too.
         # There is no `robot.sim.tcp_offset_mm`: a scalar paired with a quaternion hardcoded in
         # the sim driver would be two values for one transform, one of them invisible to config,
-        # which lets `gripper_mount` swap a gripper's width profile while the arm keeps the
+        # which lets a mounted gripper swap its width profile while the arm keeps the
         # 2F-85's geometry (measured: EZU-35 8 mm out, EGU-50 17 mm).
         tool_offset_mm=(
             (float(tool_frame.offset_mm[0]), float(tool_frame.offset_mm[1]),
@@ -394,4 +407,5 @@ def build_sim_driver_config(
             if tool_frame is not None else (0.0, 0.0, 0.0, 1.0)
         ),
         headless=schema_sim.headless,
+        planner_reservation=planner_reservation,
     )

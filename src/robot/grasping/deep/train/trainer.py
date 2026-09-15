@@ -48,7 +48,13 @@ from typing import Any, Final
 import numpy as np
 import torch
 
-from src.robot.grasping.deep.corpus.sample import SampleSpec, build_sample, load_scene
+from src.robot.grasping.deep.corpus.sample import (
+    SampleSpec,
+    build_sample,
+    grasp_table_path,
+    load_scene,
+    same_hand,
+)
 from src.robot.grasping.deep.corpus.index import (
     TrainingUnit,
     grouped_folds,
@@ -57,7 +63,7 @@ from src.robot.grasping.deep.corpus.index import (
 )
 from src.robot.grasping.deep.train.progress import epoch_bar
 from src.robot.grasping.deep.train.progress import postfix as _postfix
-from src.robot.grasping.deep.net.gripper import gripper_vector
+from src.robot.grasping.deep.hands import canonical_hand, hand_vector
 from src.robot.grasping.deep.net.set_generator import SetGenerator, SetGeneratorConfig
 from src.robot.grasping.deep.train.step import SetStepConfig, set_training_step
 from src.utility.log_cfg import create_logger
@@ -207,25 +213,47 @@ class SetTrainingPlan:
 _OTHER_ANGLE: Final[dict[str, str]] = {"approach": "axis", "axis": "approach"}
 
 
-def corpus_index(files: Sequence[str | Path]) -> CorpusIndex:
-    """Walk the corpus reading only what the split needs. See the module docstring for the costs."""
+def corpus_index(files: Sequence[str | Path], hands: Sequence[str] | None = None) -> CorpusIndex:
+    """Walk the corpus reading only what the split needs. See the module docstring for the costs.
+
+    ``hands`` trains across several hands on the same clouds: one entry per cloud and hand, each
+    read with that hand's grasp table (`load_scene(path, gripper=)`), so ``files`` repeats a cloud
+    once per hand and ``grippers`` names each entry's hand. Every hand's entries of one asset carry
+    that asset's group, so they land in one fold. ``None`` is one entry per cloud, for the hand the
+    cloud was extracted for.
+    """
     started = time.perf_counter()
     paths = [Path(f) for f in files]
     if not paths:
         raise ValueError("no clouds to index")
+    wanted = None if hands is None else [str(hand).strip() for hand in hands if str(hand).strip()]
+    if wanted is not None and not wanted:
+        raise ValueError("hands names no hand; pass None to train on the hand each cloud was extracted for")
+    entries: list[Path] = []
     stubs: list[dict[str, np.ndarray]] = []
     grippers: list[str] = []
     for path in paths:
         with np.load(path, allow_pickle=False) as handle:
-            stubs.append({key: handle[key] for key in _INDEX_KEYS if key in handle.files})
+            stub = {key: handle[key] for key in _INDEX_KEYS if key in handle.files}
             stamp = (str(np.asarray(handle["gripper"]).reshape(-1)[0])
                      if "gripper" in handle.files else _DEFAULT_GRIPPER)
-        grippers.append(stamp)
+        for hand in (wanted if wanted is not None else [stamp]):
+            if wanted is None or same_hand(hand, stamp):
+                stubs.append(stub)
+            else:
+                table = grasp_table_path(path, hand)
+                if not table.is_file():
+                    raise FileNotFoundError(f"{path.name} has no grasp table for {hand!r} ({table.name}); write "
+                                            f"one with `python -m datagen build-grasp-tables`")
+                with np.load(table, allow_pickle=False) as handle:
+                    stubs.append({**stub, "grasp_instance": handle["grasp_instance"]})
+            entries.append(path)
+            grippers.append(hand)
     units = training_units(stubs)
     if not units:
         raise ValueError("no groupable objects: this corpus carries no `object_asset_id`, so no "
                          "asset-disjoint split is possible and a held-out number would be fiction")
-    index = CorpusIndex(files=paths, units=units, groups=[u.group for u in units],
+    index = CorpusIndex(files=entries, units=units, groups=[u.group for u in units],
                         grippers=grippers, seconds=time.perf_counter() - started)
     logger.info("indexed %d cloud(s): %d unit(s), %d asset group(s), %d gripper(s) in %.1f s",
                 len(paths), len(units), index.asset_groups, len(set(grippers)), index.seconds)
@@ -245,7 +273,7 @@ def _batch_samples(index: CorpusIndex, units: Sequence[int], spec: SampleSpec,
     rows: list[torch.Tensor] = []
     for position in units:
         unit = index.units[position]
-        scene = load_scene(index.files[unit.scene])
+        scene = load_scene(index.files[unit.scene], gripper=index.grippers[unit.scene])
         sample = build_sample(scene, rng, spec, target_instance=unit.instance)
         if control is not None:
             from src.robot.grasping.deep.train.synthetic_control import (  # noqa: PLC0415
@@ -254,7 +282,7 @@ def _batch_samples(index: CorpusIndex, units: Sequence[int], spec: SampleSpec,
 
             sample = synthetic_labels(sample, control)
         samples.append(sample)
-        rows.append(gripper_vector(index.grippers[unit.scene]))
+        rows.append(hand_vector(index.grippers[unit.scene]))
     return samples, torch.stack(rows)
 
 
@@ -380,6 +408,21 @@ def _write_artifact(directory: Path, net: Any, plan: SetTrainingPlan, grippers: 
     from src.robot.grasping.deep.set_artifact import write_set_generator  # noqa: PLC0415
 
     present = sorted(set(grippers))
+    if chosen is not None:
+        # A named stamp the run never saw is refused, and reported rather than raised for the reason
+        # below: the artifact would claim to plan for a hand no sample conditioned on. Compared by the
+        # resolver's name, so `robotiq_2f85` names the `2f85` a pre-registry corpus is stamped with.
+        try:
+            seen = {canonical_hand(name) for name in present}
+            named = canonical_hand(chosen)
+        except ValueError as exc:
+            logger.warning("no artifact written: %s", exc)
+            return {"written": False, "reason": f"ValueError: {exc}"}
+        if named not in seen:
+            reason = (f"artifact_gripper {chosen!r} is not among the hands this run trained across "
+                      f"({', '.join(present)}); an artifact plans only for a hand its samples conditioned on")
+            logger.warning("no artifact written: %s", reason)
+            return {"written": False, "reason": reason}
     gripper = chosen or (present[0] if len(present) == 1 else None)
     if gripper is None:
         reason = (f"the corpus carries {len(present)} grippers ({', '.join(present)}) and none was "
@@ -504,6 +547,7 @@ def train_set_generator(files: Sequence[str | Path], plan: SetTrainingPlan | Non
                         resume: bool = False,
                         artifact_gripper: str | None = None,
                         probe_units: int = 256,
+                        hands: Sequence[str] | None = None,
                         on_epoch: "Callable[[Mapping[str, Any]], None] | None" = None,
                         ) -> dict[str, Any]:
     """Train the K-slot generator and return one row per epoch per fold.
@@ -536,6 +580,9 @@ def train_set_generator(files: Sequence[str | Path], plan: SetTrainingPlan | Non
     nothing written that way can be deployed and the plan's primary metric, the referee success
     rate, has no model to propose grasps with.
 
+    `hands` trains across several hands on the same clouds, each read with its grasp table beside
+    the cloud; see `corpus_index`.
+
     `artifact_gripper` is required when the corpus carries more than one, and refused rather than
     guessed. A default would be the 2F-85, which is right today and silently wrong the first time
     anybody trains on a varied corpus, which is exactly what importing a foreign one produces.
@@ -547,11 +594,11 @@ def train_set_generator(files: Sequence[str | Path], plan: SetTrainingPlan | Non
     """
     plan = plan or SetTrainingPlan()
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    index = corpus_index(files)
+    index = corpus_index(files, hands=hands)
     splits = grouped_folds(index.groups, folds=plan.folds, seed=plan.seed)
 
     report: dict[str, Any] = {
-        "clouds": len(index.files), "units": len(index.units),
+        "clouds": len(set(index.files)), "units": len(index.units),
         # Stamped whether or not it was used. A card that mentions the source only when there is
         # one leaves a reader to infer "from scratch" from an absence, and an absence is also what a
         # writer that forgot to stamp it produces.

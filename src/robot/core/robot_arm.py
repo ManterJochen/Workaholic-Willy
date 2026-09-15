@@ -96,6 +96,11 @@ class RobotArm(Protocol):
         RobotConnectionError
             If the link is not open. A driver that judges a path reads the current
             configuration first, so it raises this before any guard runs.
+        CameraWorldUnavailable
+            If the driver judges the move against a live camera world and a camera stayed
+            silent, blind or stale through its fresh-frame attempts. Nothing is commanded,
+            and it is not a refusal: the cell cannot vouch for itself, so a pick stops
+            rather than trying again.
         """
         ...
 
@@ -122,9 +127,10 @@ class RobotArm(Protocol):
         ``camera_world`` declines the camera world for this motion, with a reason. A
         driver that implements
         :class:`~src.robot.core.camera_world.DeclinesCameraWorld` also declines a block
-        of motions, and says on the result what stood behind this one: a joint move no
-        planner plans says UNPLANNED whatever was declined. See :meth:`move` for the
-        rest.
+        of motions, and says on the result what stood behind this one: a joint move that
+        no planner plans or checks says UNPLANNED whatever was declined, and one whose
+        path is checked against a live camera world stamps as :meth:`move` does. See
+        :meth:`move` for the rest.
         """
         ...
 
@@ -145,6 +151,9 @@ class RobotArm(Protocol):
             If a workspace or safety pre-check denies the move.
         RobotKinematicsError
             If no IK solution exists.
+        CameraWorldUnavailable
+            If the driver judges the line against a live camera world and a camera stayed
+            silent, blind or stale through its fresh-frame attempts. Nothing is commanded.
         """
         ...
 
@@ -285,11 +294,19 @@ class RobotArm(Protocol):
         :class:`~src.robot.core.camera_world.DeclinesCameraWorld` also
         declines a block of motions, and says on
         :attr:`MotionResult.camera_world` what stood behind this one:
-        UNPLANNED where no planner planned it, DECLINED for a decline,
-        MISSING for a planned motion with no camera world, and UNSTATED
-        where a live camera world is wired and nothing declined it. On an
-        arm whose live camera world is wired, a declined planned motion is
-        refused with ``UNSUPPORTED`` before the planner is asked. An arm
-        that stamps nothing leaves every result UNSTATED.
+        UNPLANNED where no planner planned or checked it, DECLINED for a
+        decline, MISSING for a planned or checked motion with no camera
+        world, PLANNED where the refresh made for this motion vouched for the
+        cell, and UNSTATED where a live camera world is wired and nothing
+        vouched for it. On an arm whose live camera world is wired, a
+        declined planned or checked motion is refused with ``UNSUPPORTED``
+        before the planner is asked. An arm that stamps nothing leaves every
+        result UNSTATED.
+
+        A driver that plans against a live camera world raises
+        :class:`~src.robot.core.errors.CameraWorldUnavailable` when a camera
+        stayed silent, blind or stale through its fresh-frame attempts. That
+        is not one of the ordinary refusals above: nothing is commanded, and
+        the cell cannot vouch for itself.
         """
         ...

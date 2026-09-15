@@ -2,8 +2,8 @@
 #
 # The Robotiq Hand-E, as THE gripper of a cell. It is a gripper layer rather than a cell layer, so it
 # chains: `WILLY_PROFILE=ur3e,hande` puts this hand on the UR3e cell and `WILLY_PROFILE=hande` puts
-# it on the UR5e one. Nothing here names an arm, deliberately, and `collision_mesh_variant` below is
-# the reason that works.
+# it on the UR5e one. Nothing here names an arm, deliberately: the guard derives its bundle from
+# `model` below and composes the arm in, so the one name is right on either arm.
 #
 # THE HAND IS DESCRIBED THREE TIMES IN THIS TREE AND NOTHING CROSS-CHECKS THE THREE. They answer
 # three different questions about one piece of hardware, which is defensible; that no validator names
@@ -12,7 +12,7 @@
 #
 #   robot.gripper.*                      ACTUATION: what the driver may command
 #   robot.grasping.gripper_geometry      ENVELOPE: what shape the calculator sweeps
-#   robot.safety.self_collision          THE PLANNER'S MODEL: what cuRobo and Coal refuse against
+#   robot.gripper.model + coupling_plates_mm   THE PLANNER'S MODEL: what cuRobo and Coal refuse against
 #
 # Reachable before this file existed: set `max_width_mm: 50` and leave the rest, and the cell commands
 # a 50 mm stroke while the collision filter sweeps a 2F-85's fingers and the planner refuses against a
@@ -27,6 +27,17 @@
 robot:
   gripper:
     vendor: "robotiq"
+    # The hand, by registry name (config/grippers/robotiq_hande.yaml). Named in this layer so any chain
+    # it joins carries it: without it `sim,hande` would inherit the sim profile's 2F-85 under the
+    # Hand-E widths below.
+    model: robotiq_hande
+
+    # The plates between the flange and this hand's own mounting face, in mm. The Hand-E's sphere map
+    # and bundles start at that face (origin mounting_face), so the guard adds their sum to the hand
+    # and the cell refuses to build without them. 20.0 is an assumption, not a measurement: no rule has
+    # been put on this cell's coupling. Replace it with the bench number, the plate term of the tool
+    # frame below.
+    coupling_plates_mm: [20.0]
 
     # Same URCap socket, same 0..255 counts, same port. The transport does not know which Robotiq is
     # on the flange and does not need to: the count map is anchored on the two numbers below.
@@ -65,17 +76,6 @@ robot:
     # take it once.
     tool_frame:
       source: "undeclared"
-
-  safety:
-    self_collision:
-      # Names the HAND. The arm is composed in by `collision_mesh_bundle`, so this one line is right
-      # on a UR5e and on a UR3e and finds a different file in each case.
-      #
-      # A VARIANT BUNDLE IS AN ARM PLUS A HAND. It carries the arm meshes of the robot it was baked
-      # from, so naming an arm here is how a cell that changes arms keeps a bundle for the old one,
-      # trips `variant_model_mismatch`, and loses exact-mesh checking on the ARM as well as the hand.
-      # Measured: `schunk_egu50` on a ur3e does exactly that today.
-      collision_mesh_variant: "robotiq_hande"
 
   grasping:
     gripper_geometry:

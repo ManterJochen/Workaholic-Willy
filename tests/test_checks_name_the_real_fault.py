@@ -125,6 +125,7 @@ class TheFaultIsNamedWhereItIsTests(unittest.TestCase):
             (payload.enforce and payload.mass_kg == 0.0)
             or (payload.enforce and payload.mass_kg > 0.0 and all(v == 0.0 for v in payload.cog_mm))
             or tool.source == "undeclared"
+            or robot.gripper.model is None
         )
         if not early:
             self.skipTest("this tree's payload and tool frame are both declared, so connect() would "
@@ -139,7 +140,7 @@ class TheFaultIsNamedWhereItIsTests(unittest.TestCase):
         self.assertNotIn("is the controller reachable", output,
                          f"the fix line sends the reader to the cable:\n{output[-1200:]}")
         self.assertTrue(
-            any(key in output for key in ("safety.payload", "gripper.tool_frame")),
+            any(key in output for key in ("safety.payload", "gripper.tool_frame", "gripper.model")),
             f"the refusal does not name the YAML key that caused it:\n{output[-1200:]}",
         )
 

@@ -278,7 +278,10 @@ def _make_deep(**kwargs: Any) -> Any:
             f"the `deep` rung needs {ENV_DEEP_ARTIFACT} set to a generator artifact "
             f"(the .pt written beside the card by `python -m src.robot.grasping.deep train`). "
             f"not the .ckpt.pt: a checkpoint is refused by kind, on purpose.")
+    # The hand is named, because the factory refuses a deep cell that names none. The artifacts this
+    # rung grades were trained for the 2F-85, and the jaw limits `_deep` hands over are the 2F-85's.
     robot_cfg = RobotConfig.model_validate({
+        "gripper": {"model": "robotiq_2f85"},
         "grasping": {"calculator": "deep", "deep_generator": {"artifact_path": artifact}}})
     built = build_calculator(robot_cfg, **kwargs)
     # Load it now, so a bad artifact refuses the run instead of every object. The runtime catches

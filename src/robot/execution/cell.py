@@ -30,6 +30,8 @@ from src.robot.execution.real_cell.preflight import (
 from src.robot.safety import SafetyAttestation
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from pathlib import Path
+
     from src.config.schema import AppConfig
     from src.config.schema.robot import RobotConfig
 
@@ -85,6 +87,9 @@ class Cell:
     app_config: "Maybe[AppConfig]" = UNSET
     #: A dummy arm and a synthetic scene: the whole path at a desk, no camera, no robot.
     is_rehearsal: bool = False
+    #: The config tree ``robot_config`` came from, whose gripper registry answers for the cell's hand.
+    #: ``None`` is the repository's tree, which is what a caller loading the default tree gets.
+    data_dir: "str | Path | None" = None
     _service: Any = field(default=None, repr=False)
 
     # --- factories ---------------------------------------------------------------------------
@@ -92,7 +97,7 @@ class Cell:
     @classmethod
     def from_robot_config(
         cls, robot_config: "RobotConfig", *, prompt: "Maybe[str]" = UNSET,
-        app_config: "Maybe[AppConfig]" = UNSET,
+        app_config: "Maybe[AppConfig]" = UNSET, data_dir: "str | Path | None" = None,
     ) -> "Cell":
         """The cell the configuration describes, as configured.
 
@@ -102,10 +107,10 @@ class Cell:
         ``app_config`` is the tree ``robot_config`` came from, and a caller who resolved one should
         pass it: see the field for what happened while it could not be said.
         """
-        return cls(robot_config=robot_config, prompt=prompt, app_config=app_config)
+        return cls(robot_config=robot_config, prompt=prompt, app_config=app_config, data_dir=data_dir)
 
     @classmethod
-    def rehearsal(cls, robot_config: "RobotConfig") -> "Cell":
+    def rehearsal(cls, robot_config: "RobotConfig", *, data_dir: "str | Path | None" = None) -> "Cell":
         """The same path with a dummy arm and a synthetic scene.
 
         The operator's own config with the vendor changed, not a separate tree, so the profile
@@ -118,6 +123,7 @@ class Cell:
         return cls(
             robot_config=robot_config.model_copy(update={"vendor": _REHEARSAL_VENDOR}),
             is_rehearsal=True,
+            data_dir=data_dir,
         )
 
     # --- the four steps ----------------------------------------------------------------------
@@ -144,7 +150,7 @@ class Cell:
             # One branch, in one place. Both factories above produce a `Cell`; only this line
             # knows there are two ways to build the service behind it.
             if self.is_rehearsal:
-                self._service = build_rehearsal_cell(self.robot_config)
+                self._service = build_rehearsal_cell(self.robot_config, data_dir=self.data_dir)
             else:
                 # Forwarded only when chosen, so an unspecified prompt reaches the callee's own
                 # default rather than a copy of it made here.
@@ -154,7 +160,7 @@ class Cell:
                 extra: dict[str, Any] = {"prompt": self.prompt} if chosen(self.prompt) else {}
                 if chosen(self.app_config):
                     extra["app_config"] = self.app_config
-                self._service = build_real_cell(self.robot_config, **extra)
+                self._service = build_real_cell(self.robot_config, data_dir=self.data_dir, **extra)
         return self._service
 
     def safety(self) -> SafetyAttestation:

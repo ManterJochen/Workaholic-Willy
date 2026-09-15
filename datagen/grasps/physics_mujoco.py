@@ -168,9 +168,22 @@ class PhysicsCell:
     the lift was a proxy for and it introduces no gripper motion at all.
     """
 
-    def __init__(self, *, headless: bool = True, mesh_collision: str = "sdf") -> None:
+    def __init__(self, *, headless: bool = True, mesh_collision: str = "sdf",
+                 jaw: Any = None) -> None:
+        """``jaw`` is the ``JawModel`` the shaken labels were made for
+        (``datagen.grasps.labels.jaw_model_for``), or ``None`` for the reference 85 mm hand. Its
+        aperture sets the sanity limit, the restored and fallback opening and the open-jaw control,
+        and its finger width and contact patch set the pads."""
         self._headless = headless
         self._mesh_collision = str(mesh_collision)
+        self._aperture_mm = _JAW_APERTURE_MM if jaw is None else float(jaw.aperture_mm)
+        # 10 % over the cell's own hand, for the reason `_JAW_SANE_MM` records; the default cell's
+        # is that constant.
+        self._sane_mm = _JAW_SANE_MM if jaw is None else self._aperture_mm * 1.1
+        # The pad keeps its thickness, which is the harness's contact model rather than the hand;
+        # its width across the binormal and its length along the approach are the hand's.
+        self._pad_mm: tuple[float, float, float] = _PAD_MM if jaw is None else (
+            _PAD_MM[0], float(jaw.finger_width_mm), float(jaw.pad_ahead_mm + jaw.pad_behind_mm))
         self._mujoco: Any = None
         self._model: Any = None
         self._data: Any = None
@@ -192,7 +205,7 @@ class PhysicsCell:
 
     def _gripper_xml(self) -> str:
         """A parallel jaw: a mocap target, a welded palm, two sliding pads with position drives."""
-        pad = [v * _MM for v in _PAD_MM]
+        pad = [v * _MM for v in self._pad_mm]
         back = _PALM_BACK_MM * _MM
         return (
             '  <body name="target" mocap="true" pos="0 0 1">\n'
@@ -359,8 +372,8 @@ class PhysicsCell:
         if not np.all(np.isfinite(self._data.qpos)) or not np.all(np.isfinite(self._data.qvel)):
             return "the simulation state went non-finite"
         opening = self._jaw_opening_mm()
-        if not np.isfinite(opening) or opening > _JAW_SANE_MM:
-            return (f"the jaw reads {opening:.1f} mm, past the {_JAW_APERTURE_MM:.0f} mm hand this "
+        if not np.isfinite(opening) or opening > self._sane_mm:
+            return (f"the jaw reads {opening:.1f} mm, past the {self._aperture_mm:g} mm hand this "
                     f"cell models")
         return ""
 
@@ -379,7 +392,7 @@ class PhysicsCell:
     def restore(self, geometry: Any) -> None:
         """Put the scene back where the labeller found it, before every trial."""
         self.build_scene(geometry)
-        self._teleport_jaw(_JAW_APERTURE_MM)
+        self._teleport_jaw(self._aperture_mm)
         self._mujoco.mj_forward(self._model, self._data)
 
     def check_ready(self, geometry: Any, instance_id: int) -> str:
@@ -426,8 +439,8 @@ class PhysicsCell:
         # at the end would be reporting the grasp as a fault.
         drift_before = self.target_drift_mm(geometry, trial.instance_id)
 
-        width = float(trial.width_mm) if float(trial.width_mm) > 1.0 else _JAW_APERTURE_MM
-        self._teleport_jaw(min(_JAW_APERTURE_MM, width + 12.0))
+        width = float(trial.width_mm) if float(trial.width_mm) > 1.0 else self._aperture_mm
+        self._teleport_jaw(min(self._aperture_mm, width + 12.0))
         self._place(position - approach * _STANDOFF_MM, approach, closing)
         self._step(5)
         for step in range(_STEPS_APPROACH):
@@ -512,7 +525,7 @@ class PhysicsCell:
         #    Shut against open, same pose, same block, is a question neither of those can answer by
         #    accident, and the two rest heights have to differ by more than 20 mm.
         shut = self._drop_onto_jaw(block, opening_mm=0.0)
-        through = self._drop_onto_jaw(block, opening_mm=_JAW_APERTURE_MM)
+        through = self._drop_onto_jaw(block, opening_mm=self._aperture_mm)
         out["jaw_rest_shut_mm"] = round(shut, 1)
         out["jaw_rest_open_mm"] = round(through, 1)
         out["jaw_is_solid"] = bool(shut - through > 20.0)
@@ -548,7 +561,7 @@ class PhysicsCell:
         approach = np.array([0.0, 0.0, -1.0])
         closing = np.array([1.0, 0.0, 0.0])
         width = 2.0 * half if opening_mm is None else opening_mm
-        self._teleport_jaw(min(_JAW_APERTURE_MM, width + 12.0))
+        self._teleport_jaw(min(self._aperture_mm, width + 12.0))
         self._place(centre - approach * _STANDOFF_MM, approach, closing)
         self._step(5)
         for step in range(_STEPS_APPROACH):

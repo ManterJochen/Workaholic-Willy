@@ -169,23 +169,25 @@ its view and every other camera only confirms what it sees.
 Only relevant while `robot.ur.motion_planner` is `curobo`, which is the shipped value.
 
 ```bash
-python -m src.robot.safety.planning --check --model ur3e    # exit 0 means fully anchored
-python -m src.robot.safety.planning --doctor --model ur3e   # and that the engines actually load
+python -m src.robot.safety.planning --check --model ur3e --hand robotiq_2f85    # exit 0 means fully anchored
+python -m src.robot.safety.planning --doctor --model ur3e --hand robotiq_2f85   # and that the engines actually load
 ```
 
 The difference between the two matters here. `--check` is spawn-free: `cuRobo planner: AVAILABLE`
 means the sidecar's Python exists on disk and nothing more, and the banner says so in the same
-breath, because the robot descriptor `{model}.yml` lives inside the cuRobo installation in a
-separate environment this process deliberately does not spawn. A UR3e configured with no `ur3e.yml`
-passes that gate and fails later, inside the sidecar. `--doctor` does spawn it, and reports whether
-the descriptor is present.
+breath, because the robot descriptor `{model}_{hand}.yml`, the hand being `robot.gripper.model` or
+`--hand`, lives inside the cuRobo installation in a separate environment this process deliberately
+does not spawn. A UR3e with a 2F-85 and no `ur3e_robotiq_2f85.yml` passes that gate and fails later,
+inside the sidecar. `--doctor` does spawn it, and reports whether the descriptor is present. Once
+the sidecar is up it reports the descriptor's `_provenance`, and the driver refuses a descriptor
+built for another arm, another hand or another plate, or one that records none.
 
 To list what descriptors exist by hand, in the cuRobo environment:
 
 ```bash
 "$WILLY_CUROBO_PYTHON" -c "from curobo.content import get_content_root; import os, glob; \
   d = os.path.join(str(get_content_root()), 'configs', 'robot'); \
-  print(sorted(os.path.basename(p) for p in glob.glob(d + '/ur*.yml')))"
+  print(sorted(os.path.basename(p) for p in glob.glob(d + '/ur*_*.yml')))"
 ```
 
 If your model is missing, build it with `scripts/curobo/build_ur_config.py`, on the box and against

@@ -106,6 +106,7 @@ def build_service(
           flush=True)
     calculator = build_calculator(
         cell.robot,
+        data_dir=data_dir,
         camera_matrix=np.asarray(handles.camera.get_intrinsics_matrix(), dtype=np.float64),
         max_grip_width_mm=cell.robot.gripper.max_width_mm,
         min_grip_width_mm=cell.robot.gripper.min_width_mm,

@@ -26,7 +26,6 @@ robot:
     # One combined UR5e and Robotiq 2F-85 articulation, so the gripper shares the arm's root prim.
     robot_prim_path: "/World/UR5e"
     gripper_prim_path: "/World/UR5e"
-    gripper_variant: "Robotiq_2f_85"          # the `Gripper` variant selected on the UR5e USD asset
     home_joint_positions: [0.0, -1.0, 0.9, 0.0, 0.0, 0.0]
     park_joint_positions: [3.14, -1.0, 0.9, 0.0, 0.0, 0.0]   # swings the arm out of the camera view
     # Where the Isaac sample assets live. Null asks Isaac itself, through
@@ -181,6 +180,12 @@ robot:
 
   gripper:
     vendor: "robotiq"
+    # Which hand this sim cell carries, by registry name (config/grippers/robotiq_2f85.yaml). Named in
+    # this layer because every sim chain inherits it and no real cell does; not in robot.yaml, which no
+    # overlay may inherit a hand from, and not in the arm layers, which are also real UR overlays. The
+    # sim derives from it which gripper Isaac puts on the arm: the ur5e and ur10e assets bake this hand
+    # as a variant, every other arm mounts it standalone.
+    model: robotiq_2f85
     max_width_mm: 85.0          # Robotiq 2F-85 opening
     min_width_mm: 5.0
 
@@ -189,9 +194,8 @@ robot:
     # the driver composes flange and TCP inside its own boundary, which is the honest label for a
     # simulator: there is no controller holding a tool register at all. The values are the 2F-85
     # mount, 132 mm along flange +Y plus a -90 deg rotation about flange X that maps the TCP's +Z,
-    # the approach axis, onto flange +Y. Only the `bootstrap_sim_cell(gripper_mount=...)` argument
-    # swaps in a mounted gripper's own flange-to-TCP translation; the same key set in YAML mounts
-    # that gripper and its width profile and leaves the arm on this 2F-85 offset.
+    # the approach axis, onto flange +Y. A hand passed to the bootstrap writes the offset its mount
+    # composes, and a frame declared here that disagrees with the hand's mount is refused at build.
     tool_frame:
       source: "willy"
       offset_mm: [0.0, 132.0, 0.0]

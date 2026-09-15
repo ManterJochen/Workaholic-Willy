@@ -29,6 +29,7 @@ import numpy as np
 from src.geometry import Frame, Pose
 from src.robot.constants import UR_CUROBO_LOG_FILE, create_robot_logger
 from src.robot.core import MotionCommand, MotionResult, MotionStatus
+from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.safety.planning import (
     CuroboPlanClient,
     CuroboUnavailableError,
@@ -38,7 +39,9 @@ from src.robot.safety.planning.live_world import WorldRefresh, refresh_planner_w
 from src.robot.safety.planning.world import merge_planner_worlds
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.robot.safety.planning.reservation import PlannerReservation
     from src.robot.safety.planning.live_world import LivePlannerWorld
+    from src.robot.safety.planning.perceived import SelfEnvelope
 
     from .connection import URConnection
 
@@ -80,6 +83,13 @@ class CuroboUrPlanner:
         planning. The client returns 0 and logs that planning continues against the
         previous world, and an obstacle the planner never received is one it will route
         straight through.
+    world_meshes
+        The declared meshes of the cell, from
+        :func:`~src.robot.safety.planning.world.build_planner_meshes`, registered with the
+        boxes, so a tote declared as a mesh reaches the planner without a live world.
+    reservation
+        What the sidecar allocates when it starts, handed to the client before ``start``
+        whichever factory built it.
     """
 
     def __init__(
@@ -90,10 +100,13 @@ class CuroboUrPlanner:
         vel: float | None = None,
         acc: float | None = None,
         world_cuboids: Sequence[dict[str, object]] | None = None,
+        world_meshes: Sequence[dict[str, object]] | None = None,
         require_registration: bool = True,
         live_world: "LivePlannerWorld | None" = None,
-        link_origins: "Callable[[], Sequence[Sequence[float]] | None] | None" = None,
+        self_envelope: "Callable[[], SelfEnvelope | None] | None" = None,
         on_perceived_obstacles: "Callable[[Sequence[Any]], object] | None" = None,
+        reservation: "PlannerReservation | None" = None,
+        descriptor_check: "Callable[[object], str | None] | None" = None,
     ) -> None:
         self._conn = connection
         self._client_factory = client_factory
@@ -101,13 +114,14 @@ class CuroboUrPlanner:
         self._acc = acc
         self._client: CuroboPlanClient | None = None
         self._world_cuboids = [dict(c) for c in (world_cuboids or ())]
+        self._world_meshes = [dict(m) for m in (world_meshes or ())]
         self._require_registration = bool(require_registration)
         self._world_registered = False
         #: The cell as the cameras see it, asked immediately before every plan. `None` is the
         #: unchanged path: the declared world is registered once and never revisited.
         self._live_world = live_world
-        #: Where this arm's own links are, so the camera's view of the robot can be taken back out.
-        self._link_origins = link_origins
+        #: This arm's own body now, so the camera's view of the robot can be taken back out.
+        self._self_envelope = self_envelope
         #: Where the perceived obstacles go besides the planner. The path guard lives on the arm
         #: rather than here, and the two have to be looking at the same cell. Whatever it returns is
         #: ignored: the preflight answers how many guards took the boxes, which is a number for a
@@ -119,6 +133,12 @@ class CuroboUrPlanner:
         #: sidecar robot config is untouched and `attach_payload` refuses, which is the
         #: unchanged path.
         self._attach_spheres = 0
+        #: What the sidecar allocates when it starts, told to the client before `start`. None leaves
+        #: the client as its factory built it.
+        self._reservation = reservation
+        #: Asked of the descriptor the sidecar reports once it is ready: a sentence refuses the
+        #: planner. ``None`` asks nothing, which is what a caller that injects its own client gets.
+        self._descriptor_check = descriptor_check
         self.logger = create_robot_logger("CuroboUrPlanner", UR_CUROBO_LOG_FILE)
 
     def enable_payload(self, sphere_slots: int) -> None:
@@ -151,6 +171,12 @@ class CuroboUrPlanner:
 
         if self._client is None:
             client = self._client_factory()
+            if self._reservation is not None:
+                # For the same reason as the spheres below, and first: the slots have to be in the
+                # sidecar environment before it spawns, and an injected factory never sees the config.
+                reserve = getattr(client, "reserve_world", None)
+                if callable(reserve):
+                    reserve(self._reservation)
             if self._attach_spheres > 0:
                 # The sphere budget has to be in the sidecar environment before it
                 # spawns, because it decides which robot config gets built. It is set
@@ -160,6 +186,15 @@ class CuroboUrPlanner:
                 if callable(setter):
                     setter(self._attach_spheres)
             client.start()
+            refusal = (
+                self._descriptor_check(getattr(client, "descriptor_provenance", None))
+                if self._descriptor_check is not None else None
+            )
+            if refusal is not None:
+                # Closed rather than kept: the next move would find a started client and plan with it.
+                client.close()
+                self.logger.error("cuRobo planner refused: %s", refusal)
+                raise CuroboUnavailableError(refusal)
             self._client = client
             self._register_world(client)
         return self._client
@@ -173,15 +208,21 @@ class CuroboUrPlanner:
         partial world the refusal was about. A guard that fires once and then waves
         everything through afterwards is worse than either answer.
         """
-        if self._world_registered or not self._world_cuboids:
+        if self._world_registered or not (self._world_cuboids or self._world_meshes):
             return
-        count = client.set_world(list(self._world_cuboids))
-        if count == len(self._world_cuboids):
+        expected = len(self._world_cuboids) + len(self._world_meshes)
+        # Meshes are named only when there are some: a client from before meshes existed takes one
+        # argument, and a cell that declares none should not need a newer one.
+        count = (
+            client.set_world(list(self._world_cuboids), [dict(m) for m in self._world_meshes])
+            if self._world_meshes else client.set_world(list(self._world_cuboids))
+        )
+        if count == expected:
             self._world_registered = True
             self.logger.info("registered %d cell obstacle(s) with the planner", count)
             return
         message = (
-            f"the planner confirmed {count} of {len(self._world_cuboids)} declared cell obstacle(s). "
+            f"the planner confirmed {count} of {expected} declared cell obstacle(s). "
             "It is now planning against a world that is missing some of your cell, and an obstacle it "
             "never received is one it will route straight through."
         )
@@ -221,25 +262,47 @@ class CuroboUrPlanner:
         """
         if self._live_world is None:
             return
-        origins = self._link_origins() if self._link_origins is not None else None
-        refresh = refresh_planner_world(
-            source=self._live_world,
-            client=self._client_or_start(),
-            link_origins_mm=origins,
-            near_point_mm=near_point_mm,
-            require_registration=self._require_registration,
-        )
+        envelope = self._self_envelope() if self._self_envelope is not None else None
+        try:
+            refresh = refresh_planner_world(
+                source=self._live_world,
+                client=self._client_or_start(),
+                self_envelope=envelope,
+                near_point_mm=near_point_mm,
+                require_registration=self._require_registration,
+            )
+        except CameraWorldUnavailable as exc:
+            # Raised on, not refused: a camera that stayed silent, blind or stale through its attempts
+            # is a fault of the cell. The guard is emptied as on any refused refresh, and the fault is
+            # written down once, here, where the camera and the attempts are known.
+            if self._on_perceived_obstacles is not None:
+                self._on_perceived_obstacles(())
+            self.logger.error("%s", exc)
+            raise
         self._last_refresh = refresh
         # Including the empty list on a refusal: a guard left holding boxes from a refused
         # refresh is checking a cell that no longer exists.
         if self._on_perceived_obstacles is not None:
             self._on_perceived_obstacles(refresh.guard_boxes)
         if not refresh.ok:
+            # Logged here, once: the caller turns the raise into CONTROLLER_REJECTED, and this line
+            # is the only place a person reads why the move was refused.
+            self.logger.error("%s", refresh.render())
             raise CuroboUnavailableError(
                 f"the planner world could not be refreshed, so this move is refused. "
                 f"{refresh.render()}"
             )
         self.logger.info("%s", refresh.render())
+
+    def refresh_world(self, *, near_point_mm: "Sequence[float] | None" = None) -> None:
+        """Refresh the planner world now, for a caller that judges its own path before asking the planner.
+
+        The arm's path guard learns the perceived obstacles from this refresh, so the arm calls it
+        before that guard runs and then asks :meth:`check_joint_path` with ``refresh=False``: one
+        camera reading per motion, and both authorities judging the same cell. Raises what
+        :meth:`_refresh_world` raises.
+        """
+        self._refresh_world(near_point_mm=near_point_mm)
 
     @property
     def last_world_refresh(self) -> "WorldRefresh | None":
@@ -247,17 +310,19 @@ class CuroboUrPlanner:
         return self._last_refresh
 
     def attach_payload(
-        self, joints: "Sequence[float]", dims_mm: "Sequence[float]", offset_mm: float
+        self, joints: "Sequence[float]", dims_mm: "Sequence[float]", centre_mm: "Sequence[float]"
     ) -> bool:
         """Tell the planner the gripper is carrying a box, so later plans route the box around too.
 
-        ``offset_mm`` is how far beyond the flange the centre of the part sits. It
+        ``dims_mm`` are the sides of the box along the tool0 axes and ``centre_mm`` is its
+        centre in tool0, as ``self_envelope.carried_part_box`` places them. A distance along
+        tool0 +Z alone would not follow the hand, which approaches along another axis. It
         returns ``False`` where the planner could not attach, including a sidecar
         started with no sphere budget: a cell that cannot model its payload carries on
         and says so rather than stopping mid-pick.
         """
         dims_m = [float(d) / 1000.0 for d in dims_mm]
-        pose = [0.0, 0.0, float(offset_mm) / 1000.0, 1.0, 0.0, 0.0, 0.0]
+        pose = [*(float(c) / 1000.0 for c in centre_mm), 1.0, 0.0, 0.0, 0.0]
         try:
             return self._client_or_start().attach_payload(list(joints), dims_m, pose)
         except CuroboUnavailableError as exc:
@@ -341,7 +406,7 @@ class CuroboUrPlanner:
         return [self._to_ur_order(list(wp), client.joint_names) for wp in traj]
 
     def check_joint_path(
-        self, samples_ur: "Sequence[Sequence[float]]"
+        self, samples_ur: "Sequence[Sequence[float]]", *, refresh: bool = True
     ) -> JointCheckVerdict:
         """Ask cuRobo whether every configuration of a joint path is admissible, in UR joint order.
 
@@ -353,6 +418,10 @@ class CuroboUrPlanner:
 
         Judged in one request. Returning after the first refused sample would cost a round
         trip per configuration, and the sidecar already answers with the index it stopped at.
+
+        ``refresh=False`` skips the refresh, for a caller that ran :meth:`refresh_world` itself
+        before its own path guard judged the same samples. The arm does, so that guard is not
+        judging against the obstacles of the motion before.
 
         Raises
         ------
@@ -367,11 +436,12 @@ class CuroboUrPlanner:
                 reason="an empty path has nothing to refuse",
             )
         client = self._client_or_start()
-        # The goal decides which obstacles matter when the slot budget bites, and the goal of
-        # a joint path is its last configuration. Its flange position is not known here
-        # without FK, so the refresh runs without a near point and keeps whatever the source
-        # hands over.
-        self._refresh_world()
+        if refresh:
+            # The goal decides which obstacles matter when the slot budget bites, and the goal of
+            # a joint path is its last configuration. Its flange position is not known here
+            # without FK, so this refresh runs without a near point. The arm refreshes near the
+            # goal flange itself and asks with `refresh=False`.
+            self._refresh_world()
         ordered = [self._to_client_order(list(c), client.joint_names) for c in configs]
         return client.check_joints(ordered)
 

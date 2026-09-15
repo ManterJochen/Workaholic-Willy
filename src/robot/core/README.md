@@ -64,8 +64,9 @@ exception=None, camera_world=UNSTATED)`, with an `ok` property, truthiness throu
 the constructors `.executed()`, `.failed()` and `.from_bool()`, each taking `camera_world=`. The
 stamp in `camera_world.py` says whether a world built from a current camera image stood behind the
 motion. There are five uses: `UNSTATED` (nothing was said, the default), `PLANNED` (the only one
-that vouches), `DECLINED` (a caller's decision), `UNPLANNED` (no planner planned this motion) and
-`MISSING` (a planner planned it with no camera world, and nobody declined). The last three each
+that vouches), `DECLINED` (a caller's decision), `UNPLANNED` (no planner planned this motion or
+checked its path) and `MISSING` (a planner planned or checked it with no camera world, and nobody
+declined). The last three each
 carry a mandatory reason, and the stamp takes part in equality where `exception` does not. The
 `repr` shows the stamp only when it says something, so a result built without one prints what the
 generated repr prints.
@@ -77,21 +78,21 @@ Every driver stamps `move` and `move_to_joints`, read off the built arm and neve
 | arm | `move` | `move_to_joints` |
 | --- | --- | --- |
 | UR, `ik` | `UNPLANNED` | `UNPLANNED` |
-| UR, `curobo` | `DECLINED` for a decline, else `MISSING` with no live world, else `UNSTATED` | `UNPLANNED`, because this driver plans no joint move |
+| UR, `curobo` | `DECLINED` for a decline, else `MISSING` with no live world, else `PLANNED` when the refresh this motion made vouched, else `UNSTATED` | as `move`: nothing plans the joint move, and its path is checked against the refreshed world |
 | Isaac, `mock_mode` | `UNPLANNED` | `UNPLANNED` |
-| Isaac, `curobo` | as the UR, and `UNPLANNED` once it fell back to ik, read from the latch after the move | as `move` with `plan_joint_moves`, else `UNPLANNED` |
+| Isaac, `curobo` | as the UR, and a sidecar that cannot start refuses the move | as `move`: its path is checked against the refreshed world, and planned against it with `plan_joint_moves` |
 | Isaac, `rmpflow` | `UNPLANNED`, because a reactive policy consults no camera world | `UNPLANNED` |
 | KUKA, dummy | `UNPLANNED` | `UNPLANNED` |
 
 A decline is `camera_world=CameraWorldDecline(reason)` on the verb or a block,
 `with arm.without_camera_world(reason):`, and the keyword beats the block. The block is bound to one
 arm and held in a `ContextVar`, so it does not follow into a thread started inside it. A motion no
-planner plans says `UNPLANNED` whatever was declined. A declined planned motion on an arm whose live
-camera world is wired is refused before the planner is asked, as `UNSUPPORTED` with
+planner plans or checks says `UNPLANNED` whatever was declined. A declined planned or checked motion
+on an arm whose live camera world is wired is refused before the planner is asked, as `UNSUPPORTED` with
 `DECLINE_ON_A_LIVE_WORLD_MESSAGE`. `resolve_camera_world` is that precedence as one pure function,
 and `stamp_result` replaces only a `MotionResult` whose stamp is `UNSTATED`. `DeclinesCameraWorld` is
 a capability rather than a `RobotArm` member, so a caller's own arm still satisfies the Protocol and
-its results keep saying `UNSTATED`. Nothing stamps `PLANNED`.
+its results keep saying `UNSTATED`.
 
 `JointPositions` validates a finite one-dimensional
 radians vector, exposes `.dof`, `.values`, `len`, iteration, indexing, `np.asarray()` support, exact

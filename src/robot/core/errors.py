@@ -12,12 +12,14 @@ Hierarchy::
         +-- RobotMotionRejected     (workspace guard / safety pre-check denied)
         |       `-- RobotSingularityRisk   (target too close to a singularity)
         +-- RobotEmergencyStop      (e-stop / protective stop active)
+        +-- CameraWorldUnavailable  (a camera could not vouch for the cell after its attempts)
         `-- IsaacNotAvailableError  (sim/SDK backend not installed on this host)
 """
 
 from __future__ import annotations
 
 __all__ = [
+    "CameraWorldUnavailable",
     "IsaacNotAvailableError",
     "RobotConnectionError",
     "RobotEmergencyStop",
@@ -69,6 +71,45 @@ class RobotSingularityRisk(RobotMotionRejected):
 
 class RobotEmergencyStop(RobotError):
     """Raised when the controller reports an active e-stop or protective stop."""
+
+
+class CameraWorldUnavailable(RobotError):
+    """Raised when a camera could not vouch for the cell after its fresh-frame attempts.
+
+    This is a fault of the cell rather than the refusal of one motion: the camera answered nothing,
+    a blind frame, or only frames older than the cell allows, and asking it again did not change
+    that. It raises out of every verb and out of ``pick()``, where an ordinary refusal returns a
+    status, so a campaign stops on a dead camera instead of retrying it as though a grasp had
+    missed.
+
+    It is neither a ``CuroboUnavailableError``, which driver sites turn into CONTROLLER_REJECTED,
+    nor a :class:`RobotMotionRejected`, which is the ordinary refusal.
+    """
+
+    def __init__(
+        self,
+        *,
+        camera: str,
+        verdict: object,
+        attempts: int,
+        reason: str,
+        refresh: object | None = None,
+    ) -> None:
+        #: The camera that could not vouch, as the cell names it.
+        self.camera = str(camera)
+        #: What it answered on the last reading: no frame, blind or stale.
+        self.verdict = verdict
+        #: How many readings were asked of it, the first included.
+        self.attempts = int(attempts)
+        #: The sentence the world source gave for the last reading.
+        self.reason = str(reason)
+        #: The refused refresh as a report carries it, or ``None``. Typed as ``object`` for the
+        #: same import cycle rule as :attr:`RobotMotionRejected.result`.
+        self.refresh = refresh
+        super().__init__(
+            f"camera {self.camera!r} could not vouch for the cell after {self.attempts} reading(s) "
+            f"({verdict}): {self.reason}"
+        )
 
 
 class IsaacNotAvailableError(RobotError, RuntimeError):

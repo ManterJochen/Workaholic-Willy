@@ -50,6 +50,25 @@ def default_data_dir() -> Path:
     return _DEFAULT_DATA_DIR
 
 
+def _registry_hands(root: Path, config: Any) -> tuple[str, ...]:
+    """The hands in the tree's gripper registry, with the cell's hand resolved, or a ConfigError.
+
+    The registry is read whenever the tree has a ``grippers/`` directory, so a hand file that cannot
+    be read, an alias two hands claim, or a cell naming a hand no file describes refuses the tree it
+    sits in. A tree without one validates while it names no hand; naming a hand there is the refusal
+    ``load_gripper`` gives. The hand is resolved with ``aliases=False``, the lookup behind
+    ``robot.gripper.model``, so a short name is refused here too, naming its model. Refusing a cell
+    that names no hand at all is the build's job, not the validator's.
+    """
+    from .grippers import available_grippers, load_gripper  # noqa: PLC0415
+
+    hands = tuple(available_grippers(root)) if (root / "grippers").is_dir() else ()
+    model = getattr(getattr(getattr(config, "robot", None), "gripper", None), "model", None)
+    if model:
+        load_gripper(model, data_dir=root, aliases=False)
+    return hands
+
+
 @dataclass(frozen=True, slots=True)
 class LoadedTree:
     """A validated tree, and the three facts it was validated under.
@@ -64,6 +83,8 @@ class LoadedTree:
     config: Any = None
     #: The loader's refusal text verbatim, empty when the tree loaded.
     error: str = ""
+    #: The hands in the tree's gripper registry, sorted. Empty when the tree has no registry.
+    hands: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -124,7 +145,8 @@ class LoadedTree:
         if not self.ok:
             return f"config error:\n{self.error}"
         named = str(self.tree.named_root) if self.tree.named_root is not None else "<default>"
-        return f"OK: config under {named} validates.  layers: {self.chain}"
+        line = f"OK: config under {named} validates.  layers: {self.chain}"
+        return f"{line}  hands: {', '.join(self.hands)}" if self.hands else line
 
     def to_dict(self) -> dict[str, Any]:
         """Plain data: the tree, the chain and the verdict.
@@ -137,6 +159,7 @@ class LoadedTree:
             "profile": self.tree.profile,
             "layers": list(self.tree.layers),
             "chain": self.chain,
+            "hands": list(self.hands),
             "ok": self.ok,
             "exit_code": self.exit_code,
             "error": self.error,
@@ -230,9 +253,10 @@ class ConfigTree:
             # there is exactly one refusal either way.
             _validated_chain(self.root, self.profile, source=self.profile_source)
             config = load_config(self.named_root, profile=self.profile)
+            hands = _registry_hands(self.root, config)
         except ConfigError as exc:
             return LoadedTree(tree=self, error=str(exc))
-        return LoadedTree(tree=self, config=config)
+        return LoadedTree(tree=self, config=config, hands=hands)
 
     def write(self, items: "Mapping[str, Any]", *, connected: bool) -> "WriteResult":
         """Write measured values into this tree as one transaction: all land, or none do.

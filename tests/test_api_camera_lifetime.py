@@ -108,10 +108,10 @@ class CameraLifetimeTests(unittest.TestCase):
         from src.robot.grasping.generation.calculator import GraspCalculator
         from src.robot.perception import RealSenseVisionPerceptionSource
 
-        # `app_config` is accepted and ignored: this double stands in for the whole camera half, so
+        # `app_config` and `data_dir` are accepted and ignored: this double stands in for the whole camera half, so
         # it never reads a tree, and refusing the keyword would only make the fake disagree with the
         # signature its caller now uses.
-        def _fake_build_real(robot_cfg, prompt, *, app_config=None):  # noqa: ANN001, ANN202
+        def _fake_build_real(robot_cfg, prompt, *, app_config=None, data_dir=None):  # noqa: ANN001, ANN202
             self._n += 1
             streamer = _CountingStreamer(f"cam{self._n}", self.opens, self.releases, self.held)
             source = RealSenseVisionPerceptionSource(

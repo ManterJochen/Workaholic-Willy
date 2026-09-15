@@ -75,10 +75,10 @@ _STATUS_HINTS = {
     ),
     "no_engine": "Install Coal (WILLY_COAL_PREFIX) or python-fcl; expected/accepted on macOS + CI.",
     "variant_model_mismatch": (
-        "safety.self_collision.collision_mesh_variant names a bundle baked from a different robot: "
-        "its arm meshes belong to that arm, and placing them on this one puts every link somewhere "
-        "it is not. Bake the variant for this model, or drop the variant and lose only the gripper "
-        "geometry."
+        "the hand's bundle, derived from robot.gripper.model, was baked from a different robot: its "
+        "arm meshes belong to that arm, and placing them on this one puts every link somewhere it is "
+        "not. Bake the hand for this model: python scripts/grippers/bake_gripper_variant.py <hand> "
+        "--arm <model> --write."
     ),
 }
 
@@ -354,7 +354,8 @@ def make_backend(
         _LOGGER.warning(
             "%s is stamped origin=%r, so its gripper meshes start at the hand's MOUNTING FACE and a "
             "coupling plate has to be added before they are where the hand is. "
-            "safety.self_collision.coupling_mm is 0.0, so nothing was added and this guard models "
+            "The coupling is 0.0 (robot.gripper.coupling_plates_mm sums to nothing, or the guard was "
+            "built without a hand), so nothing was added and this guard models "
             "the hand one plate closer to the flange than it is. That is the conservative direction "
             "for arm-versus-hand, but it disagrees with the cuRobo descriptor, which DOES add the "
             "plate (build_ur_config.py --coupling-mm). Measure the plate once and set all three.",

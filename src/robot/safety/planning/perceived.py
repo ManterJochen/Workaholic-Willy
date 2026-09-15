@@ -46,10 +46,12 @@ import numpy as np
 __all__ = [
     "DepthView",
     "DropReason",
+    "LinkCapsule",
     "PerceivedBox",
     "PerceivedWorld",
     "PerceptionGeometryError",
     "SelfBody",
+    "SelfEnvelope",
     "VoxelField",
     "WorldBuildLimits",
     "WorldBuildTuning",
@@ -214,6 +216,34 @@ class DepthView:
 
 
 @dataclass(frozen=True, slots=True)
+class LinkCapsule:
+    """One capsule of the robot's own body, in the frame of the link that carries it.
+
+    A zero-length capsule is a sphere, which is how a hand's sphere map arrives. It stays in its
+    link's frame, so it is fitted once and placed wherever the kinematics say that link is now.
+    """
+
+    #: Which frame of the chain carries it: 0 is the base, 6 the flange of a six-joint arm.
+    frame: int
+    #: One end of the segment, in that frame, millimetres.
+    start_mm: tuple[float, float, float]
+    #: The other end, in that frame, millimetres.
+    end_mm: tuple[float, float, float]
+    #: Radius before any padding, millimetres.
+    radius_mm: float
+
+
+@dataclass(frozen=True, slots=True)
+class SelfEnvelope:
+    """The robot's own body at one instant: where every frame of its chain is, and the capsules they carry."""
+
+    #: One 4x4 per frame, BASE millimetres, index 0 the base.
+    frames_mm: tuple[np.ndarray, ...]
+    #: The capsules, each on the frame it names.
+    capsules: tuple[LinkCapsule, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class SelfBody:
     """Where the robot's own body is, so the camera's view of it can be taken back out.
 
@@ -274,6 +304,39 @@ class SelfBody:
         radii = np.full(segments.shape[0], float(radius_mm), dtype=np.float64)
         if tool_radius_mm is not None:
             radii[-1] = float(tool_radius_mm)
+        return cls(segments_mm=segments, radii_mm=radii)
+
+    @classmethod
+    def from_frames(
+        cls,
+        frames_mm: Sequence[np.ndarray],
+        capsules: Sequence[LinkCapsule],
+        *,
+        padding_mm: float = 0.0,
+    ) -> "SelfBody":
+        """Capsules carried by the frames of a chain, each placed by its frame and grown by ``padding_mm``.
+
+        This is what a driver hands over: the pose of every frame from its kinematics, and capsules
+        fitted once in those frames. The padding is the one number added around the body, so a point
+        just outside the robot is kept.
+        """
+        if float(padding_mm) < 0.0:
+            raise PerceptionGeometryError(f"padding_mm cannot be negative, got {padding_mm}")
+        if not capsules:
+            raise PerceptionGeometryError("a self body needs at least one capsule")
+        segments = np.empty((len(capsules), 2, 3), dtype=np.float64)
+        radii = np.empty(len(capsules), dtype=np.float64)
+        for index, capsule in enumerate(capsules):
+            if not 0 <= int(capsule.frame) < len(frames_mm):
+                raise PerceptionGeometryError(
+                    f"a capsule sits on frame {capsule.frame}, and the chain has {len(frames_mm)} frames"
+                )
+            frame = np.asarray(frames_mm[int(capsule.frame)], dtype=np.float64)
+            if frame.shape != (4, 4):
+                raise PerceptionGeometryError(f"frame {capsule.frame} must be a 4x4, got shape {frame.shape}")
+            ends = np.asarray((capsule.start_mm, capsule.end_mm), dtype=np.float64)
+            segments[index] = (frame[:3, :3] @ ends.T).T + frame[:3, 3]
+            radii[index] = float(capsule.radius_mm) + float(padding_mm)
         return cls(segments_mm=segments, radii_mm=radii)
 
     def contains(self, points_mm: np.ndarray) -> np.ndarray:
@@ -360,14 +423,15 @@ class VoxelField:
     to choose which ones matter. This carries everything the cameras saw at the resolution it was cut
     to, and nothing is left out. It costs one array.
 
-    ⛔ The sign is positive INSIDE an obstacle and negative in free space, which is the opposite of
-    the distance-to-obstacle a person would write, and the wrong sign fails silently. Measured on
-    this repository's planner against one wall: written positive-inside the planner refused the path;
-    written the intuitive way it registered without an error, reported success, and planned straight
-    through the wall.
+    The sign is negative inside an obstacle and positive in free space, and the values here are
+    millimetres; the wire divides by 1000, because the planner reads metres. Measured with
+    ``scripts/curobo/probe_live_world.py``: a uniform field over the arm collides at -0.5 and is clear
+    at +0.5, and a plane written this way touches the arm exactly where the same plane as a box does.
+    Written the other way, every voxel that is not an obstacle reads as inside one, so the whole grid
+    blocks and a wall looks seen when the cell is.
 
     The order is the planner's: x slowest, z fastest, over voxel centres that start half a voxel
-    inside the low corner. Anything else puts the geometry somewhere the cell is not.
+    inside the low corner. The same sweep confirms that placement to the millimetre.
     """
 
     #: Flat float32 field, one value per voxel, in the order described above.
@@ -747,11 +811,15 @@ def build_voxel_field(
 
     outside = ndimage.distance_transform_edt(~occupancy) * voxel
     within = ndimage.distance_transform_edt(occupancy) * voxel
-    # Positive inside, negative outside, shifted out by the margin. See the note on `VoxelField`:
-    # the other sign registers cleanly and stops nothing.
-    field = (within - outside + float(tuning.margin_mm)).astype(np.float32)
+    # Negative inside, positive outside, and the margin moves the surface outward by making every
+    # value smaller. See the note on `VoxelField`: the other sign turns the whole grid into an
+    # obstacle.
+    field = (outside - within - float(tuning.margin_mm)).astype(np.float32)
 
-    centre = (low + high) / 2.0
+    # The centre of the grid the voxels were indexed into, not of the span. The grid is rounded to
+    # whole voxels, and the planner puts a voxel centre half a voxel inside the low corner of the
+    # pose, so a centre taken from the span would move every obstacle by half the rounding.
+    centre = low + shape * voxel / 2.0
     return VoxelField(
         field=field.reshape(-1),
         dims_mm=(float(shape[0] * voxel), float(shape[1] * voxel), float(shape[2] * voxel)),

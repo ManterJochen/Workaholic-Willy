@@ -1,0 +1,42 @@
+# The Schunk EGU-50, described once.
+#
+# Every jaw number is measured by scripts/grippers/measure_jaw_from_bundle.py off schunk_egu50_collision_meshes.npz,
+# the sim harness's mounted EGU-50 baked into the tool0 frame at full open. The stroke is the sim profile's,
+# measured in Isaac (src/robot/grippers/sim/gripper.py): 4.1 mm shut, 84.1 mm open.
+#
+# Grasp frame: X closes between the contacts, Y is the binormal, Z is the approach, z = 0 is the grasp centre. The
+# grasp centre is the midpoint of the flat jaw face, 159.1 mm from the flange, and the sim mount grasps there too.
+# The mount's earlier centre, 144.1 mm from the flange and 7.5 mm below the face, was tuned for one 30 mm cube.
+#
+# A known under-model: along the closing axis the housing reaches 79.30 mm to one side, 2.25 mm past the finger's
+# outer face at full open, and a box envelope built from these numbers does not carry that corner. The exact mesh
+# guard and the planner read the bundle, which has it.
+gripper:
+  model: schunk_egu50
+  kind: parallel_jaw
+  source: >-
+    Isaac asset Schunk/egu_50/schunk_egu_50.usd, mounted by the sim harness and baked into
+    schunk_egu50_collision_meshes.npz at full open, measured off that bundle: the jaw faces 84.11 mm apart, a flat
+    jaw face 15.00 mm long ending at the fingertip, the grasp centre at its midpoint 159.1 mm from the flange, the
+    finger material outside the housing 47.50 mm behind it, 35.00 mm thick and 25.00 mm wide, and the housing
+    82.50 mm deep behind the finger box and 72.00 mm across the binormal. The aperture and the shut width are the
+    sim profile's, the 5.0 mm minimum grip is the policy floor every hand here carries, the 2.0 mm envelope overlap
+    is the modelling margin the other hands carry, and the friction is a default.
+  jaw:
+    aperture_mm: 84.1
+    min_width_mm: 5.0
+    closed_width_mm: 4.1
+    finger_ahead_mm: 7.5
+    finger_behind_mm: 47.5
+    finger_length_mm: 47.5
+    finger_thickness_mm: 35.0
+    finger_width_mm: 25.0
+    finger_pad_overlap_mm: 2.0
+    pad_length_mm: 15.0
+    pad_ahead_mm: 7.5
+    pad_behind_mm: 7.5
+    palm_depth_mm: 82.5
+    palm_width_mm: 72.0
+    palm_measured: true
+    friction_coefficient: 0.5
+    friction_is_default: true

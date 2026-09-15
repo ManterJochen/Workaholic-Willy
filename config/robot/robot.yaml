@@ -83,11 +83,19 @@ robot:
     # Which hand this is, by registry name: the stem of a file in the grippers/ directory beside
     # robot/, for example robotiq_2f85. Name the hand by its model name: 2f85 is the short name
     # existing corpora stamp this hand with, and the registry resolves it only for a lookup that asks
-    # for aliases, which the lookup behind this key does not. Unset here. Nothing reads the key, and
-    # the schema checks only the shape of the name, so a name no registry file defines, or the short
-    # name, still passes. The hand a cell uses is decided by robot.gripper.vendor, the sim gripper
-    # profile and the planner bundles.
+    # for aliases, which the lookup behind this key does not. Unset here, so no overlay inherits a
+    # hand: each cell profile names its own (the sim and ursim profiles the 2F-85, the hande layer
+    # the Hand-E). The sim derives from it which gripper Isaac puts on the arm, the self collision
+    # guard its mesh bundle, and `python -m src.config` refuses a name no registry file defines, or
+    # the short name. So this base tree alone does not build a UR arm: its exact mesh guard reads
+    # hand geometry, and it refuses with a sentence until a profile names the hand.
     # model: robotiq_2f85
+
+    # The plates between the flange and the hand's own mounting face, in mm; their sum is where the
+    # hand sits. Only a hand whose sphere map starts at its mounting face takes them (the Hand-E,
+    # whose layer writes them), and it refuses to build without; a hand its arm asset already placed
+    # (the 2F-85) refuses any. [] says the hand is bolted straight to the flange.
+    # coupling_plates_mm: [20.0]
 
     # Where the grasp centre sits on the flange. Left undeclared here on purpose: this is a
     # per-cell bench measurement of the coupling plate plus the gripper, and a plausible-looking
@@ -264,7 +272,8 @@ robot:
     # before every plan, including moves that have nothing to do with a pick. That is the point:
     # a world registered once is a photograph, and everything that arrived afterwards is
     # invisible to the planner while looking exactly like empty space in every log there is. It
-    # has a price and the block states it.
+    # has a price and the block states it. A camera that still cannot vouch for the cell after
+    # `perceived.fresh_frame_attempts` more readings stops the motion with an error, not a refusal.
     planning_world:
       enabled: false
       # Measure three things at the bench and this block is done. `height_mm` is the top surface of
@@ -320,6 +329,7 @@ robot:
       perceived:
         enabled: true
         max_age_ms: 500.0
+        fresh_frame_attempts: 3
         pixel_stride: 2
         voxel_size_mm: 10.0
         voxel_field_mm: 0.0
@@ -329,8 +339,6 @@ robot:
         max_boxes: 8
         floor_to_plane: true
         plane_clearance_mm: 5.0
-        self_radius_mm: 90.0
-        tool_radius_mm: 150.0
       # Refuse to plan when the declared world could not be registered with the planner. False
       # logs the failure and plans on against the planner's own boot world instead.
       require_registration: true

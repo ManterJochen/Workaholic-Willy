@@ -8,6 +8,10 @@ Fails closed. `deep` without a readable artifact raises here rather than falling
 `geometric`. A cell that asked for the learned generator and quietly got the analytic one would
 report the analytic one's numbers under the learned one's name, which is worse than not starting.
 
+The same holds for the cell's hand. `deep` on a cell whose `robot.gripper.model` is unset, is not in
+the cell's gripper registry, or is not among the hands the artifact was trained across refuses at
+build, as a `ValueError`, after the artifact checks.
+
 Importing this costs no torch. `deep.calculator` keeps torch inside `_ensure_model`, so the factory
 can name both implementations without putting a 2 GB import on the path of a cell that runs neither.
 """
@@ -34,8 +38,10 @@ from src.robot.grasping.constants import DEEP_GENERATOR_LOG_FILE
 logger = create_logger("CalculatorFactory", DEEP_GENERATOR_LOG_FILE)
 
 
-def _refuse_unless_artifact(path: str) -> None:
+def _refuse_unless_artifact(path: str) -> "tuple[str, tuple[str, ...]]":
     """Raise unless ``path`` is a runtime generator artifact, naming what it actually is.
+
+    Returns the hand the artifact was stamped for and the hands it was trained across.
 
     One family only. A file from the retired binned generator is refused here by name rather than
     loaded: its numbers were produced by a different model and are not comparable with anything
@@ -84,6 +90,11 @@ def _refuse_unless_artifact(path: str) -> None:
             f"{path!r} is a {kind} at artifact_version {version}, this build reads "
             f"{SET_ARTIFACT_VERSION}."
         )
+    stamp = str(payload.get("gripper", ""))
+    # An artifact written before the list existed reads back as its stamp alone, as
+    # `load_set_generator` reads it.
+    trained = tuple(str(name) for name in payload.get("trained_grippers") or (stamp,))
+    return stamp, trained
 
 
 #: What the deep branch reads off `kwargs`. Everything else is dropped, and the two sets below
@@ -127,7 +138,44 @@ def _is_active(value: Any) -> bool:
     return True
 
 
-def preflight_calculator(robot_cfg: "RobotConfig") -> str:
+def _the_cells_hand(robot_cfg: "RobotConfig", artifact: str, trained: "tuple[str, ...]",
+                    data_dir: "str | Path | None") -> str:
+    """The registry model of the hand this cell names, checked against the hands ``artifact`` saw.
+
+    The generator conditions on a hand, and a conditioning vector the model never saw produces
+    grasps that read as a bad model rather than as a wrong hand. So a deep cell names its hand, the
+    registry of its own tree holds that hand, and the artifact was trained across it, or the build
+    refuses here, while a caller can still refuse. The calculator's lazy loader checks the same
+    thing, but a cell's compute path swallows that refusal. Both sides are compared by canonical
+    name: an artifact written before the registry is stamped ``2f85``, the alias of
+    ``robotiq_2f85``. A registry refusal is re-raised as ``ValueError``, the type this factory's
+    callers catch (``ConfigError`` is a ``RuntimeError``).
+    """
+    from src.config.grippers import load_gripper  # noqa: PLC0415
+    from src.config.loader import ConfigError  # noqa: PLC0415
+    from src.robot.grasping.deep.hands import canonical_hand  # noqa: PLC0415
+
+    model = getattr(getattr(robot_cfg, "gripper", None), "model", None)
+    if not model:
+        raise ValueError(
+            "grasping.calculator is 'deep' and robot.gripper.model is unset. The learned generator conditions on the "
+            "hand, so a deep cell names it: set robot.gripper.model in the cell profile to a registry name, for "
+            "example robotiq_2f85.")
+    try:
+        spec = load_gripper(str(model), data_dir=data_dir, aliases=False)
+    except ConfigError as exc:
+        raise ValueError(f"robot.gripper.model {model!r} is not a hand this cell's registry holds: {exc}") from exc
+    seen = sorted({canonical_hand(name, data_dir=data_dir) for name in trained})
+    if spec.model not in seen:
+        raise ValueError(
+            f"robot.gripper.model is {spec.model!r}, and the generator artifact {Path(artifact).name} was trained "
+            f"across {', '.join(seen)}. Refusing to build a deep cell for a hand the model never saw: its grasps "
+            f"would read as a bad model rather than as a wrong hand. Train an artifact whose corpus carries "
+            f"{spec.model!r}, or name the hand this cell actually has.")
+    return spec.model
+
+
+def preflight_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None) -> str:
     """Check the selector without building anything, and return what it chose.
 
     For callers that build inside a loop and a `try`. `build_calculator` fails closed, so a sweep
@@ -136,6 +184,9 @@ def preflight_calculator(robot_cfg: "RobotConfig") -> str:
     feature pipeline rather than as a wrong artifact path.
 
     A loop calls this once, before the first scene, and the refusal arrives as itself.
+
+    ``data_dir`` is the config tree the cell came from, whose gripper registry answers for a deep
+    cell's hand; ``None`` is the repository's.
     """
     choice = str(getattr(robot_cfg.grasping, "calculator", "geometric"))
     if choice == "geometric":
@@ -147,7 +198,8 @@ def preflight_calculator(robot_cfg: "RobotConfig") -> str:
     if not artifact or not Path(artifact).is_file():
         raise FileNotFoundError(
             f"grasping.calculator is 'deep' but no generator artifact is readable at {artifact!r}.")
-    _refuse_unless_artifact(artifact)
+    _stamp, trained = _refuse_unless_artifact(artifact)
+    _the_cells_hand(robot_cfg, artifact, trained, data_dir)
     return choice
 
 
@@ -184,13 +236,17 @@ def _depth_kwargs(robot_cfg: "RobotConfig", supplied: "dict[str, Any]") -> "dict
     return out
 
 
-def build_calculator(robot_cfg: "RobotConfig", **kwargs: Any) -> Any:
+def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None, **kwargs: Any) -> Any:
     """The generator this cell's config asks for, built from ``kwargs`` common to both.
 
     ``kwargs`` are whatever the construction site already passes to `GraspCalculator`: camera
     matrix, grip limits, geometry stage. The deep implementation ignores what it does not
     understand, which is the protocol's rule and the reason a new analytic config block cannot
     break it.
+
+    ``data_dir`` is the config tree the cell came from: a deep cell's hand is checked against that
+    tree's gripper registry at build, and the calculator resolves its conditioning vector from it.
+    ``None`` is the repository's.
     """
     kwargs.update(_depth_kwargs(robot_cfg, kwargs))
     choice = str(getattr(robot_cfg.grasping, "calculator", "geometric"))
@@ -221,7 +277,11 @@ def build_calculator(robot_cfg: "RobotConfig", **kwargs: Any) -> Any:
     # file surfaces there as NO_CANDIDATES_GENERATED on every unit instead of as an error, and a run
     # graded that way reads as a bad generator rather than as a wrong path. A training checkpoint is
     # the wrong file that is easiest to reach for.
-    _refuse_unless_artifact(artifact)
+    _stamp, trained = _refuse_unless_artifact(artifact)
+    # The cell's hand, checked here and after the artifact checks, so a tree with no weights still
+    # refuses as a missing file. The calculator's loader checks it again; this is the check that
+    # fires while a caller can refuse.
+    hand = _the_cells_hand(robot_cfg, artifact, trained, data_dir)
     # A dropped kwarg is either a refusal or a stated loss, never silence. The geometric branch is
     # `GraspCalculator(**kwargs)` verbatim; this one maps an explicit list, so anything a
     # construction site passes and this list omits vanishes without a word.
@@ -251,7 +311,7 @@ def build_calculator(robot_cfg: "RobotConfig", **kwargs: Any) -> Any:
             "the deep generator ignores %s: it decodes its own approach, closing axis and seeds, so "
             "these analytic knobs have nothing to act on. Any banner printing them is describing the "
             "geometric path.", ", ".join(ignored))
-    logger.info("cell runs the DEEP grasp generator from %s", artifact)
+    logger.info("cell runs the DEEP grasp generator from %s for the hand %s", artifact, hand)
     return DeepGraspCalculator(DeepCalculatorConfig(
         artifact_path=artifact,
         camera_matrix=kwargs.get("camera_matrix"),
@@ -264,4 +324,8 @@ def build_calculator(robot_cfg: "RobotConfig", **kwargs: Any) -> Any:
         # open to; the analytic generator filters that at generation instead.
         min_grip_width_mm=float(kwargs.get("min_grip_width_mm", 0.0)),
         max_grip_width_mm=float(kwargs.get("max_grip_width_mm", 0.0)),
+        # The cell's hand, and the tree its registry was read from, so the conditioning vector is
+        # that hand's.
+        gripper=hand,
+        data_dir=None if data_dir is None else str(data_dir),
     ))

@@ -14,10 +14,12 @@ stamped MISSING rather than refused.
 
 Every driver in this repository stamps its two typed verbs, ``move`` and ``move_to_joints``, from what
 the arm knows as it moves: UNPLANNED and why where no planner planned the motion, MISSING where a
-planner planned it with no camera world, DECLINED where the caller declined one. A driver's result
-still says UNSTATED where a live camera world is wired and nothing declined it, because no refresh
-reports the cameras and the capture time a PLANNED stamp must name. An arm that stamps nothing, such
-as a caller's own, keeps saying UNSTATED, which is what the default is for.
+planner planned it with no camera world, DECLINED where the caller declined one. Where a live camera
+world is wired and nothing declined it, a ``move`` says PLANNED when the refresh made for that motion
+vouched for the cell, naming the cameras and the capture time of the oldest image, and UNSTATED when
+no refresh made for it did: the motion was refused before one ran, or its planner reports none. An
+arm that stamps nothing, such as a caller's own, keeps saying UNSTATED, which is what the default is
+for.
 
 A decline is a keyword on the verb or a block around several motions (:func:`without_camera_world`),
 with a reason either way. The block is bound to one arm, because two arms can run in one process, and
@@ -67,14 +69,16 @@ class CameraWorldUse(StrEnum):
 
     #: Nothing was said. The default of every result built without a stamp, read as not vouched for.
     UNSTATED = "unstated"
-    #: A world built from a current camera image was registered before this motion was planned.
+    #: A world built from a current camera image was registered before this motion was planned, or
+    #: before its path was checked against it (a cuRobo joint move is checked rather than planned).
     PLANNED = "planned"
     #: The caller declined the camera world for this motion or this block, with a reason.
     DECLINED = "declined"
-    #: No planner planned this motion, so no world could be consulted, with a reason: a cell with no
-    #: planner, or a verb that does not plan on a cell that has one.
+    #: No planner planned this motion or checked its path against a world, so none was consulted, with
+    #: a reason: a cell with no planner, or a verb that neither plans nor checks on a cell that has one.
     UNPLANNED = "unplanned"
-    #: A planner planned this motion with no camera world, and nobody declined one, with a reason.
+    #: A planner planned or checked this motion with no camera world, and nobody declined one, with a
+    #: reason.
     MISSING = "missing"
 
 
@@ -283,21 +287,25 @@ def resolve_camera_world(
     missing: str | None,
     keyword: Maybe[CameraWorldDecline],
     block: CameraWorldDecline | None,
+    planned: CameraWorldStamp | None = None,
 ) -> CameraWorldStamp:
     """The camera-world answer for one motion, from what its arm knows before it moves. Pure.
 
-    ``unplanned`` says why no planner plans this motion, and is ``None`` when one does. ``missing`` says
-    why a planned motion has no camera world, and is ``None`` when a live one is wired. ``keyword`` is
-    the verb's own decline and ``block`` the innermost one in scope (:func:`active_decline`).
+    ``unplanned`` says why no planner plans or checks this motion, and is ``None`` when one does.
+    ``missing`` says why such a motion has no camera world, and is ``None`` when a live one is wired.
+    ``keyword`` is the verb's own decline and ``block`` the innermost one in scope
+    (:func:`active_decline`). ``planned`` is the PLANNED stamp of the refresh made for this motion, and
+    ``None`` when none vouched.
 
     The first rule that matches answers:
 
-    1. UNPLANNED when no planner plans the motion. A decline changes nothing, because there was no world
-       to set aside.
+    1. UNPLANNED when no planner plans or checks the motion. A decline changes nothing, because there
+       was no world to set aside.
     2. DECLINED when a decline is in scope, the keyword before the block.
-    3. MISSING when the planned motion has no camera world.
-    4. UNSTATED otherwise: a live world is wired and nothing declined it, and the stamp that vouches for
-       it needs cameras and a capture time that no refresh reports.
+    3. MISSING when the planned or checked motion has no camera world.
+    4. PLANNED when the refresh made for this motion vouched for the cell.
+    5. UNSTATED otherwise: a live world is wired, nothing declined it, and no refresh made for this
+       motion vouched for it.
 
     A keyword that is not a :class:`CameraWorldDecline` is refused whatever the arm, so a reason passed as
     text fails where it was written rather than only on the cell that plans.
@@ -307,6 +315,10 @@ def resolve_camera_world(
             f"camera_world is a CameraWorldDecline, not {keyword!r}; pass "
             f"CameraWorldDecline('why this motion needs no camera world')"
         )
+    if planned is not None and planned.use is not CameraWorldUse.PLANNED:
+        raise ValueError(
+            f"planned is the stamp a refresh vouched with, and {planned.render()!r} vouches for nothing"
+        )
     if unplanned is not None:
         return CameraWorldStamp.unplanned(unplanned)
     decline = keyword if chosen(keyword) else block
@@ -314,6 +326,8 @@ def resolve_camera_world(
         return CameraWorldStamp.declined(decline)
     if missing is not None:
         return CameraWorldStamp.missing(missing)
+    if planned is not None:
+        return planned
     return CameraWorldStamp.unstated()
 
 

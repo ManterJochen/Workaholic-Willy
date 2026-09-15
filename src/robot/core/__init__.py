@@ -50,6 +50,7 @@ from .camera_world import (
 )
 from .capabilities import RobotCapabilities
 from .errors import (
+    CameraWorldUnavailable,
     IsaacNotAvailableError,
     RobotConnectionError,
     RobotEmergencyStop,
@@ -76,6 +77,7 @@ __all__ = [
     "CameraWorldUse",
     "DECLINE_ON_A_LIVE_WORLD_MESSAGE",
     "DeclinesCameraWorld",
+    "CameraWorldUnavailable",
     "DigitalIOPort",
     "Gripper",
     "GripperVendor",

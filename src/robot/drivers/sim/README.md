@@ -15,7 +15,7 @@ without Isaac raises `IsaacNotAvailableError`.
 | --- | --- |
 | `arm.py` | `IsaacRobotArm` and `ISAAC_CAPABILITIES`: Lula FK and IK, the flange-to-TCP transform, multi-seed IK resolve, interpolated `move_joint`, the cuRobo and RMPflow approach, and the typed `move()`. |
 | `session.py` | `IsaacSimSession`: the Isaac app lifecycle (`start`, `stop`, `step`, `step_n`). It lazily boots the `SimulationApp`, opens the scene and owns the `World`. |
-| `robot_models.py` | The model registry: a `robot_model` key maps to the Lula config name, the Isaac USD path, the cuRobo `{model}.yml`, the baked gripper variant if any, and reach, payload and workspace limits. |
+| `robot_models.py` | The model registry: a `robot_model` key maps to the Lula config name, the Isaac USD path, the cuRobo `{model}_{hand}.yml`, the baked gripper variant if any, and reach, payload and workspace limits. |
 | `config.py` | `SimRobotConfig` and `SimCameraConfig`, frozen pure-Python config dataclasses with no Isaac import, safe to build, validate and serialise anywhere. |
 | `adapter.py` | The unit and convention conversions: millimetres against metres, XYZW against Isaac WXYZ, rotation matrix to quaternion, and `Pose` and `JointPositions` round-trips, all tagged `Frame.BASE`. |
 | `_isaac_protocols.py` | Structural `Protocol` stubs for the lazy Isaac runtime surface, so type checking stays clean without importing `isaacsim`. Annotation-only. |
@@ -54,8 +54,10 @@ grip.connect()
 ## Load-bearing details
 
 **Model-selectable, and the config wins.** `SimRobotConfig.robot_model` (`ur5e` by default, or
-`ur3e` or `ur10e`) selects the Lula solver and RMPflow config, the Isaac USD and the cuRobo
-`{model}.yml` together, through `robot_models.py`. The end-effector frame `tool0` and the six arm
+`ur3e` or `ur10e`) selects the Lula solver and RMPflow config, the Isaac USD and, with the hand
+the cell's preflight models, the cuRobo `{model}_{hand}.yml` together, through `robot_models.py`.
+An arm with no hand there plans nothing, and a descriptor whose `_provenance` names another hand
+refuses at start. The end-effector frame `tool0` and the six arm
 joint names are shared by every UR e-series, so they stay constants. A disagreeing
 `WILLY_CUROBO_ROBOT` environment variable is loudly ignored, because planning one cell against
 another robot's geometry produces no visible symptom.

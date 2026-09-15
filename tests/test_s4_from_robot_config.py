@@ -42,7 +42,10 @@ class VacuumBranchTests(unittest.TestCase):
         calc, perc = _calc_and_perception()
         with patch(_READY):
             svc = RuntimePickService.from_robot_config(
-                _cfg("ur", {"vendor": "vacuum", "vacuum": {"vacuum_output_pin": 2, "io_port": "tool"}}),
+                # The hand the UR arm's exact mesh guard checks, the 2F-85 every arm bundle carries: the
+                # registry holds no suction hand yet, and a UR arm naming no hand refuses to build (Step 4f).
+                _cfg("ur", {"vendor": "vacuum", "model": "robotiq_2f85",
+                            "vacuum": {"vacuum_output_pin": 2, "io_port": "tool"}}),
                 calculator=calc, perception=perc,  # type: ignore[arg-type]
             )
         self.assertIsInstance(svc.orchestrator.gripper, VacuumGripper)
@@ -82,7 +85,7 @@ def _resolver():
 class RecordProvenanceTests(unittest.TestCase):
     def test_from_robot_config_stamps_vendor_and_model(self) -> None:
         calc, perc = _calc_and_perception()
-        cfg = _cfg("ur", {"vendor": "none"}, ur={"model": "ur3e"},
+        cfg = _cfg("ur", {"vendor": "none", "model": "robotiq_2f85"}, ur={"model": "ur3e"},
                    grasping={**_GRASPING, "record_log_path": "logs/unused.jsonl"})
         # A real (non-sim) cell must carry a CAMERA->BASE resolver or from_robot_config refuses -- see
         # RealCellFrameResolverGateTests below. This test is about record provenance, so hand it the
@@ -135,7 +138,7 @@ class RealCellFrameResolverGateTests(unittest.TestCase):
         calc, perc = _calc_and_perception()
         with patch(_READY), self.assertRaises(ValueError) as ctx:
             AutonomousGraspService.from_robot_config(
-                _cfg("ur", {"vendor": "none"}), calculator=calc, perception=perc,  # type: ignore[arg-type]
+                _cfg("ur", {"vendor": "none", "model": "robotiq_2f85"}), calculator=calc, perception=perc,  # type: ignore[arg-type]
             )
         msg = str(ctx.exception)
         self.assertIn("INVALID_TARGET", msg)                    # names the symptom the operator sees
@@ -147,7 +150,7 @@ class RealCellFrameResolverGateTests(unittest.TestCase):
         calc, perc = _calc_and_perception()
         with patch(_READY):
             svc = AutonomousGraspService.from_robot_config(
-                _cfg("ur", {"vendor": "none"}), calculator=calc, perception=perc,  # type: ignore[arg-type]
+                _cfg("ur", {"vendor": "none", "model": "robotiq_2f85"}), calculator=calc, perception=perc,  # type: ignore[arg-type]
                 frame_resolver=_resolver(),
             )
         self.assertIsNotNone(svc)

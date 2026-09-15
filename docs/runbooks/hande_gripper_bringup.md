@@ -44,7 +44,7 @@ Ask the artifacts, not your memory. The cuRobo descriptor states which hand it m
 ```bash
 python - <<'EOF'
 import yaml, pathlib
-cfg = yaml.safe_load(pathlib.Path("<curobo content>/configs/robot/ur3e.yml").read_text())
+cfg = yaml.safe_load(pathlib.Path("<curobo content>/configs/robot/ur3e_robotiq_hande.yml").read_text())
 print(cfg.get("_provenance", "NO PROVENANCE: built before 2026-09-08, hand unknown"))
 EOF
 ```
@@ -123,7 +123,7 @@ is the same number every time:
 
 ```
 robot.gripper.tool_frame.offset_mm            plate + 135.75 mm along the approach
-robot.safety.self_collision.coupling_mm       plate
+robot.gripper.coupling_plates_mm              [plate]
 scripts/curobo/build_ur_config.py --coupling-mm   plate
 ```
 
@@ -135,8 +135,10 @@ that could carry the number. A Hand-E cell therefore ran two collision models of
 differing by one plate: the planner's with it, the guard's without.
 
 ⚠ The guard's hand sat NEARER the arm than the real one, which is the conservative direction for
-arm-versus-hand, so this was a disagreement rather than a hole. Leaving `coupling_mm` at its default
-`0.0` reproduces the old behaviour exactly and the guard now says so out loud, once, at construction.
+arm-versus-hand, so this was a disagreement rather than a hole. The guard takes the plate
+from `robot.gripper.coupling_plates_mm`, and a Hand-E cell that writes none refuses to build: its sphere
+map starts at the mounting face, and no plate written is no measurement rather than zero.
+`robot.hande.yaml` writes `[20.0]`, an assumption to replace with this cell's bench number.
 
 ### 6. The planner does NOT know what it is carrying, and that is a decision
 
@@ -171,8 +173,9 @@ is gone once the descriptor was built with one.
 python -c "
 from src.config.loader import load_config
 from src.robot.safety._fcl_self_collision import mesh_backend_status
-c = load_config(); m = c.robot.ur.model
-print(mesh_backend_status(m, None, c.robot.safety.self_collision.collision_mesh_variant))"
+from src.robot.safety.planning.hand import planner_hand
+c = load_config(); h = planner_hand(c.robot)
+print(mesh_backend_status(c.robot.ur.model, None, h.guard_variant))"
 ```
 
 `ok`. Anything else means the whole cell is on the capsule proxy, arm included, not just the hand.

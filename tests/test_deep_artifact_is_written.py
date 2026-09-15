@@ -84,10 +84,11 @@ class GripperTests(unittest.TestCase):
     def test_a_named_gripper_wins_over_the_corpus(self) -> None:
         plan = _plan()
         with tempfile.TemporaryDirectory() as folder:
+            # A hand the run saw. Since lane (i) D5 one it never saw is refused (tests/test_deep_artifact_hands.py).
             block = _write_artifact(Path(folder), SetGenerator(plan.model), plan,
-                                    ["2f85", "wide_140"], "narrow_55")
+                                    ["2f85", "wide_140"], "wide_140")
         self.assertTrue(block["written"])
-        self.assertEqual(block["gripper"], "narrow_55")
+        self.assertEqual(block["gripper"], "wide_140")
 
     def test_an_unknown_gripper_is_reported_and_not_raised(self) -> None:
         """A run that has just spent hours training should not lose its weights to a typo in a flag,

@@ -13,7 +13,7 @@ This file is python 3.10 cuRobo code and is never imported by the python 3.11 pa
 so its cuRobo imports carry ``type: ignore`` for a mypy that has no cuRobo. Run it
 through the client, or standalone:
 
-    <cuRobo-env-python> -m ... curobo_planner_server.py [robot.yml] [scene.yml]
+    <cuRobo-env-python> -m ... curobo_planner_server.py [robot.yml] [cuboid slots]
 
 Protocol, one JSON object per line:
   startup -> {"status":"ready","joint_names":[...],"default_q":[...],"dt":float,"start_pos_m":[...],
@@ -21,10 +21,21 @@ Protocol, one JSON object per line:
   request <- {"start_joints":[6 rad],"goal_pos_m":[x,y,z],"goal_quat_wxyz":[w,x,y,z]}
              {"cmd":"fk","joints":[6 rad]}   |   {"cmd":"shutdown"}
              {"cmd":"check_js","joints":[[6 rad],...]}
+             {"cmd":"set_world","cuboids":[...],"meshes":[...],"voxels":{"path","dims_m","voxel_size_m","pose"}|null}
+             {"cmd":"set_voxels","path":str|null,"dims_m":[...],"voxel_size_m":float,"pose":[...]}
   reply   -> {"success":bool,"trajectory":[[6 rad]...],"dt":float}  |  {"success":false,"reason":str}
              {"fk_pos_m":[...],"fk_quat_wxyz":[...]}
              check_js: {"success":true,"valid":bool,"first_invalid":int|null,"checked":int}
                        |  {"success":false,"planner_error":true,"reason":str}
+             set_world: {"world_set":int|null,"voxels_set":int|null,"reason":str}
+             set_voxels: {"voxels_set":int|null,"reason":str}
+
+The ready line also carries "descriptor", the ``_provenance`` of the robot descriptor loaded, or null.
+
+A field is a signed distance in metres over the grid reserved at start, negative inside an
+obstacle and positive in free space, in the planner's voxel order. Written the other way
+round, every voxel that is not an obstacle reads as inside one and the whole grid blocks,
+as ``scripts/curobo/probe_live_world.py`` measures.
 
 check_js judges every configuration of a joint path, in joint_names order, against the
 joint limits, the robot itself and the planner's world, on the planner's own collision
@@ -87,12 +98,14 @@ VOXEL_GRID = os.environ.get("WILLY_CUROBO_VOXEL_GRID", "").strip()
 #: untraceable case this removes.
 _REQUEST_ID: object = None
 
-#: The cuboids most recently registered, re-sent underneath a voxel grid.
+#: The cuboids and meshes most recently registered, re-sent underneath a voxel grid.
 #:
 #: Registration replaces the collision world rather than extending it, so a caller that
 #: sends a live scene would otherwise delete the bench, the bin and every fixture it
-#: declared, with nothing said about it anywhere.
+#: declared, with nothing said about it anywhere. Without the meshes here a declared tote
+#: vanishes the first time a camera produces a field, and both requests report success.
 _LAST_CUBOIDS: dict = {}
+_LAST_MESHES: dict = {}
 
 #: The batch checker behind check_js, built on the first such request and kept for the session.
 #:
@@ -109,9 +122,50 @@ def _emit(obj: dict) -> None:
     sys.stdout.flush()
 
 
+def _grid_refusal(voxels: dict) -> str:
+    """Why a field cannot go into the grid this planner reserved, or an empty string when it can.
+
+    cuRobo allocates voxel storage once, for exactly the dims and voxel size it was started
+    with. A field cut to any other grid registers without an error and puts its geometry
+    somewhere the cell is not. The client rounds the reservation to four decimals, so the
+    tolerance is 1e-4 m.
+    """
+    if _collision_cache.get("voxel") is None:
+        return ("this planner was started with no voxel storage; set WILLY_CUROBO_VOXEL_GRID before "
+                "it starts")
+    dims = [float(v) for v in voxels.get("dims_m") or ()]
+    size = float(voxels.get("voxel_size_m") or 0.0)
+    want_dims = [float(v) for v in _collision_cache["voxel"]["dims"]]
+    want_size = float(_collision_cache["voxel"]["voxel_size"])
+    fits = len(dims) == 3 and all(abs(a - b) <= 1e-4 for a, b in zip(dims, want_dims))
+    if not fits or abs(size - want_size) > 1e-4:
+        return (f"this field is {dims} m at {size} m voxels and the planner reserved {want_dims} m at "
+                f"{want_size} m voxels, so it cannot be registered; restart the planner with the grid "
+                "the cell builds")
+    return ""
+
+
+def _field_block(voxels: dict) -> "tuple[dict[str, Any], int]":
+    """The voxel entry of a scene for a field on disk, and how many values it holds."""
+    import numpy as _np  # type: ignore[import-not-found]
+
+    values = _np.load(voxels["path"])
+    block = {
+        "scene": {
+            "dims": list(voxels["dims_m"]),
+            "pose": list(voxels["pose"]),
+            "voxel_size": float(voxels["voxel_size_m"]),
+            "feature_tensor": torch.as_tensor(values, dtype=torch.float16, device="cuda"),
+        }
+    }
+    return block, int(values.shape[0])
+
+
 try:
     import torch  # type: ignore[import-not-found]
+    import yaml
     from curobo._src.geom.types import SceneCfg  # type: ignore[import-not-found]
+    from curobo.content import get_content_root as _content_root  # type: ignore[import-not-found]
     from curobo.kinematics import Kinematics, KinematicsCfg  # type: ignore[import-not-found]
     from curobo.motion_planner import MotionPlanner, MotionPlannerCfg  # type: ignore[import-not-found]
     from curobo.types import GoalToolPose, JointState  # type: ignore[import-not-found]
@@ -186,6 +240,14 @@ try:
             print(f"[attach] {_asrc} already declares {ATTACHED_LINK_NAME}; using it as it is",
                   file=sys.stderr, flush=True)
 
+    # Which arm and hand this descriptor models, said once in the ready line.
+    # build_ur_config.py writes it under _provenance, the margin and attach copies above
+    # keep it, and the drivers refuse a descriptor for another arm, hand or plate.
+    _desc_path = _ROBOT_IN_USE if os.path.isabs(_ROBOT_IN_USE) else os.path.join(
+        str(_content_root()), "configs", "robot", _ROBOT_IN_USE
+    )
+    with open(_desc_path, encoding="utf-8") as _desc_file:
+        _descriptor = (yaml.safe_load(_desc_file) or {}).get("_provenance")
     _planner = MotionPlanner(
         MotionPlannerCfg.create(
             robot=_ROBOT_IN_USE,
@@ -212,7 +274,8 @@ except Exception as exc:  # noqa: BLE001 (any import/load/JIT failure -> a typed
 
 _sp, _sq = _fk(_default_q)
 _emit({"status": "ready", "joint_names": list(_planner.joint_names), "default_q": _default_q,
-       "dt": _DT, "start_pos_m": _sp, "start_quat_wxyz": _sq})
+       "dt": _DT, "start_pos_m": _sp, "start_quat_wxyz": _sq,
+       "descriptor": _descriptor if isinstance(_descriptor, dict) else None})
 
 for _line in sys.stdin:
     _line = _line.strip()
@@ -340,8 +403,8 @@ for _line in sys.stdin:
     if cmd == "attach":
         # Hang a box on the tool, so every later plan routes the carried part around
         # the world as well. dims_m are full side lengths, and pose is
-        # [x, y, z, qw, qx, qy, qz] in the tool frame, so [0, 0, h/2, 1, 0, 0, 0] is a
-        # part sitting h/2 beyond the flange.
+        # [x, y, z, qw, qx, qy, qz] in the tool frame. A UR hand approaches along tool0
+        # +Y, so the client sends the part's centre past the fingertips on +Y.
         try:
             if _attach_spheres <= 0:
                 _emit({"attached": False,
@@ -380,12 +443,13 @@ for _line in sys.stdin:
         # that carries a whole cell rather than the eight boxes a slot budget leaves room
         # for.
         #
-        # ⛔ THE SIGN IS THE WHOLE THING, AND THE WRONG ONE FAILS SILENTLY. cuRobo reads a
-        # value above minus half a voxel as occupied, so the field is positive INSIDE an
-        # obstacle and negative in free space, which is the opposite of the
-        # distance-to-obstacle a person would write. Measured both ways against the same
-        # wall: positive-inside refused the path, positive-outside registered without an
-        # error, reported success, and planned straight through it.
+        # The sign and the unit decide everything. The field is a signed distance in
+        # metres, negative inside an obstacle. Measured with probe_live_world: a uniform
+        # field over the arm collides at -0.5 and is clear at +0.5, and a plane written
+        # this way touches the arm exactly where the same plane as a box does. Written
+        # positive inside, every voxel that is not an obstacle reads as inside one, so the
+        # whole grid blocks and a wall looks seen when the cell is: it fails safe, and it
+        # fails silently.
         #
         # The field arrives as a file path rather than as numbers in this request: a 30 mm
         # grid over a 2 m cell is 179,560 values, and that is not something to send down a
@@ -396,61 +460,75 @@ for _line in sys.stdin:
                        "reason": "this planner was started with no voxel storage; set "
                                  "WILLY_CUROBO_VOXEL_GRID before it starts"})
                 continue
+            # The declared world goes back underneath, meshes included, because
+            # registration replaces.
+            scene: dict[str, Any] = {"cuboid": _LAST_CUBOIDS or _world}
+            if _LAST_MESHES:
+                scene["mesh"] = _LAST_MESHES
             path = req.get("path")
             if not path:
-                _planner.update_world(SceneCfg.create({"cuboid": _LAST_CUBOIDS or _world}))
+                _planner.update_world(SceneCfg.create(scene))
                 _emit({"voxels_set": 0})
                 continue
-            import numpy as _np  # type: ignore[import-not-found]
-
-            field = _np.load(path)
-            grid = {
-                "scene": {
-                    "dims": list(req["dims_m"]),
-                    "pose": list(req["pose"]),
-                    "voxel_size": float(req["voxel_size_m"]),
-                    "feature_tensor": torch.as_tensor(
-                        field, dtype=torch.float16, device="cuda"
-                    ),
-                }
-            }
-            _planner.update_world(
-                SceneCfg.create({"cuboid": _LAST_CUBOIDS or _world, "voxel": grid})
-            )
-            _emit({"voxels_set": int(field.shape[0])})
+            refusal = _grid_refusal(req)
+            if refusal:
+                _emit({"voxels_set": None, "reason": refusal})
+                continue
+            scene["voxel"], count = _field_block(req)
+            _planner.update_world(SceneCfg.create(scene))
+            _emit({"voxels_set": count})
         except Exception as exc:  # noqa: BLE001 - report, never take the sidecar down mid-session
             print(f"[set_voxels] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             _emit({"voxels_set": None, "reason": f"{type(exc).__name__}: {exc}"})
         continue
     if cmd == "set_world":
         # Replace the cuRobo collision world with the caller obstacles, in the base frame
-        # in metres.
+        # in metres, and with a field when the request carries one, in one update_world.
         #   cuboids: [{"name","dims_m":[x,y,z],"pose":[px,py,pz,qw,qx,qy,qz]}]
         #   meshes:  [{"name","file_path","pose":[...], "scale":[sx,sy,sz] optional}]
+        #   voxels:  {"path","dims_m","voxel_size_m","pose"} or null, in the sign and unit
+        #            set_voxels states
         #
         # A mesh is how a container reaches the planner as the shape it is. As a box a
         # tote is solid and the cell can never reach into it; as a mesh it keeps its
         # hollow. The file is read here rather than sent through the pipe, because a tote
         # is tens of thousands of triangles and this is a newline-delimited JSON protocol.
+        #
+        # One request rather than set_world then set_voxels, because the second rebuilds
+        # the world from the cuboids it remembered and the meshes are lost in between. A
+        # field this planner cannot hold is refused with its reason while the boxes and
+        # meshes still go: they are true whatever the camera did, and the caller refuses
+        # the motion on the reason.
         try:
             world = {c["name"]: {"dims": list(c["dims_m"]), "pose": list(c["pose"])} for c in req["cuboids"]}
-            scene = {"cuboid": world}
             meshes = req.get("meshes") or []
-            if meshes:
-                scene["mesh"] = {
-                    m["name"]: {
-                        "file_path": m["file_path"],
-                        "pose": list(m["pose"]),
-                        **({"scale": list(m["scale"])} if m.get("scale") else {}),
-                    }
-                    for m in meshes
+            mesh_block = {
+                m["name"]: {
+                    "file_path": m["file_path"],
+                    "pose": list(m["pose"]),
+                    **({"scale": list(m["scale"])} if m.get("scale") else {}),
                 }
-            _planner.update_world(SceneCfg.create(scene))
+                for m in meshes
+            }
+            world_scene: dict[str, Any] = {"cuboid": world}
+            if mesh_block:
+                world_scene["mesh"] = mesh_block
+            reply: dict[str, Any] = {"world_set": len(world) + len(meshes)}
+            voxels = req.get("voxels")
+            if voxels is not None:
+                refusal = _grid_refusal(voxels)
+                if refusal:
+                    reply.update({"voxels_set": None, "reason": refusal})
+                else:
+                    world_scene["voxel"], count = _field_block(voxels)
+                    reply.update({"voxels_set": count, "reason": ""})
+            _planner.update_world(SceneCfg.create(world_scene))
             # Remembered because registering voxels replaces the world too, and the
-            # declared boxes have to go back underneath them or the bench disappears the
+            # declared world has to go back underneath them or the bench disappears the
             # moment a camera speaks.
             _LAST_CUBOIDS = world
-            _emit({"world_set": len(world) + len(meshes)})
+            _LAST_MESHES = mesh_block
+            _emit(reply)
         except Exception as exc:  # noqa: BLE001
             _emit({"world_set": None, "reason": f"{type(exc).__name__}: {exc}"})
         continue

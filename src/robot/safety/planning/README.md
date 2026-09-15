@@ -32,9 +32,12 @@ pick paths, the simulator driver and the real UR execution path alike.
 | `world.py` | Converts the cell's declared geometry into the shape the planner accepts: boxes and meshes, metres and WXYZ, plus the merge rule that stops a caller deleting the bench. Pure: config in, wire dictionaries out. |
 | `perceived.py` | What the cameras see, as geometry: several camera views fused into one cloud, the robot filtered out of it, and out of that either turned boxes or a distance field over a grid. Pure, so an adversarial frame is a unit test. |
 | `live_world.py` | What an arm asks before every plan: it holds the cameras, the transforms and the declared world, answers with the cell as it is, and refuses when nobody can vouch for it. |
+| `reservation.py` | What the planner sidecar allocates when it starts: box slots, mesh slots, the live scene grid and payload spheres, derived once from the robot config and handed to every client that starts one, so a declared tote or a live scene always has somewhere to go. |
+| `hand.py` | The hand the planner and the guard model, derived from `robot.gripper.model` alone: its sphere map and origin, the bundle the exact-mesh guard loads, and the coupling from `robot.gripper.coupling_plates_mm`. An unset name is `UNSET`, and a cell whose guard reads hand geometry refuses to build on it. |
+| `self_envelope.py` | The robot's own body as the self filter takes it out of the camera view: one capsule per arm link fitted to the committed bundle, the hand's sphere map grown to hold its mesh, and a carried part while it is attached, all placed with the guard's model and base yaw. |
 | `_curobo_attach.py` | Tells the planner the gripper is carrying something, by deriving the attachment link the shipped UR configs do not declare. |
 | `_curobo_margin.py` | Tells the planner the clearance the self-collision guard will demand, by deriving it into a temporary config. |
-| [`robot/`](robot/) | The committed reference geometry and its label: [`PROVENANCE.md`](robot/PROVENANCE.md), the one sphere fit in `gripper_spheres.py`, its command line `build_gripper_spheres.py`, and the committed maps `ur5e_gripper_spheres.yml` and `schunk_egu50_gripper_spheres.yml`. |
+| [`robot/`](robot/) | The committed reference geometry and its label: [`PROVENANCE.md`](robot/PROVENANCE.md), the one sphere fit in `gripper_spheres.py`, its command line `build_gripper_spheres.py`, and one committed map per hand, named by its registry name: `robotiq_2f85_gripper_spheres.yml`, `robotiq_hande_gripper_spheres.yml` and `schunk_egu50_gripper_spheres.yml`. |
 
 ## Why the planner runs in another process
 
@@ -63,10 +66,10 @@ Three kinds of geometry reach it, and the difference between them is not academi
 | Meshes | How a container keeps its hollow. As a box a tote is solid and a cell can never reach into it. Declared under `planning_world.meshes`; the sidecar reads the file itself, because a tote is tens of thousands of triangles and this is a line-based protocol. | 6.4 ms to register one |
 | A distance field | The whole scene at once, at the resolution it is cut to, with nothing dropped for want of a slot. Built from the same cloud as the boxes. | 13.7 ms to build 179,560 cells, 1.9 ms to register |
 
-⛔ **The field is positive INSIDE an obstacle and negative in free space.** That is the opposite of
-the distance-to-obstacle a person would write, and the wrong sign fails silently: measured here
-against the same wall, written the intuitive way it registered without an error, reported success,
-and the planner drove straight through it.
+The field is a signed distance in metres, negative inside an obstacle. Written positive inside,
+every voxel that is not an obstacle reads as inside one, so the whole grid blocks and a wall looks seen
+when the cell is. That is also why the probe below carries a decoy: a wall stopping the plan proves
+nothing on its own.
 
 ⛔ **The guards cannot read a mesh or a field.** They work on boxes, so geometry declared as a mesh is
 known to the planner and to nothing else, and the perceived boxes are what the path guard is given.
@@ -81,6 +84,13 @@ space at every layer above. So `planning_world.enabled` also turns on a refresh 
 before every plan, for any motion rather than only for a pick, and a world nobody can vouch for
 refuses the motion instead of being planned against.
 
+A camera that cannot vouch for the cell is not refused, it raises. After `perceived.fresh_frame_attempts`
+more readings, a camera that stays silent, blind or stale raises `CameraWorldUnavailable` out of every
+verb, and a pick stops rather than trying its next candidate. The path guard hears the same refresh
+before it judges a joint move or a line, so the guard and the planner judge the same cell, and a
+`move` on a world its refresh vouched for is stamped `PLANNED` with its cameras and the capture time of
+its oldest image.
+
 Measured end to end through the real sidecar, with a wall that exists in no config file:
 
 ```bash
@@ -93,9 +103,9 @@ alone would prove nothing: a planner that refuses everything looks identical.
 ## Usage
 
 ```console
-$ python -m src.robot.safety.planning --check
+$ python -m src.robot.safety.planning --check --hand robotiq_2f85
 Workaholic-Willy motion-stack external engines
-  cuRobo planner: MISSING  (python=.../ext_deps/curobo_env/python.exe, robot=ur5e.yml not verified: ...)
+  cuRobo planner: MISSING  (python=.../ext_deps/curobo_env/python.exe, robot=ur5e_robotiq_2f85.yml not verified: ...)
   exact-mesh collision engine: fcl  (ur5e mesh bundle present)
   => partially anchored (degraded fallbacks active)
   (model: ur5e, from robot.ur.model)
@@ -103,7 +113,8 @@ Workaholic-Willy motion-stack external engines
 
 Exit `0` means fully anchored: the planner environment is present, and an exact-mesh engine plus the
 reference mesh bundle are importable. Exit `1` means partially anchored, so a degraded fallback is in
-force: blind IK instead of the planner, the capsule proxy instead of exact meshes, or both. Exit `2`
+force: blind IK instead of the planner, the capsule proxy instead of exact meshes, or both. It also
+means no hand is named. Exit `2`
 comes only from `--doctor` and means an operating-system policy blocked a binary that is otherwise
 present and intact, which needs the opposite response to a missing environment.
 
@@ -111,10 +122,14 @@ A development box without the GPU environment reports `1` by design. The check i
 target cell, not to gate a build.
 
 Both readings are per robot. The mesh bundle ships as `{model}_collision_meshes.npz` and the planner
-descriptor as `{model}.yml`, so a present `ur5e` bundle says nothing about a UR3e cell. The entry
+descriptor as `{model}_{hand}.yml`, so a present `ur5e` bundle says nothing about a UR3e cell. The entry
 point reads the model from the config the cell will load; `--profile` selects that config layer and
 `--model` overrides the model outright for a box with no config tree. `--json` prints the reading as
 data.
+
+The hand is `robot.gripper.model`, or `--hand`. A tree that names no hand names no descriptor, and the
+reading says which key to set and exits `1`, because a reading about a hand nobody named would be a
+reading about an implied 2F-85.
 
 From code:
 
@@ -139,8 +154,10 @@ All of them are read through `environment.py`, so every knob is discoverable in 
 | Variable | Default | Read by | Meaning |
 | --- | --- | --- | --- |
 | `WILLY_CUROBO_PYTHON` | `ext_deps/curobo_env/python.exe` | client | interpreter of the planner environment |
-| `WILLY_CUROBO_ROBOT` | `ur5e.yml` | client | planner robot descriptor |
+| `WILLY_CUROBO_ROBOT` | `ur5e.yml` | client | descriptor of a client built without one; every cell names `{arm}_{hand}.yml` itself |
 | `WILLY_CUROBO_CUBOID_CACHE` | `16` | client | reserved collision-world cuboid slots |
+| `WILLY_CUROBO_MESH_CACHE` | `0` | client | reserved collision-world mesh slots |
+| `WILLY_CUROBO_VOXEL_GRID` | unset, meaning no grid | client | live-scene grid, `x,y,z,voxel` in metres |
 | `WILLY_CUROBO_STDERR` | unset, meaning discarded | client | optional sidecar stderr log file |
 | `WILLY_CUROBO_MAX_ATTEMPTS` | `16` | sidecar | plan attempts, each a fresh seed batch |
 | `WILLY_CUROBO_GRAPH_FROM_ATTEMPT` | `1` | sidecar | the first graph-seeded attempt |
@@ -148,12 +165,17 @@ All of them are read through `environment.py`, so every knob is discoverable in 
 | `WILLY_CUROBO_SELF_COLLISION_MARGIN_MM` | unset, and `0` means the same | sidecar | the pairwise clearance the self-collision guard will demand, raised into the descriptor's per-link buffers. Unset leaves the descriptor untouched. |
 | `WILLY_COAL_PREFIX` | `ext_deps/coal_env` | collision engine | the environment prefix that provides Coal |
 
+A cell's own reservation (`reservation.py`) wins over the three slot variables, and the client warns
+when one of them disagrees with it.
+
 The sidecar-only variables are read inside the separate interpreter, which cannot import this
 package. They are named here so the full set stays in one table.
 
-`WILLY_CUROBO_ROBOT` loses to the robot model the cell config declares when the two disagree. The
+`WILLY_CUROBO_ROBOT` loses to the arm and hand the cell config declares when the two disagree. The
 environment variable is ignored loudly rather than obeyed, because planning one cell against another
-robot's geometry has no visible symptom.
+robot's geometry has no visible symptom. The descriptor the sidecar loaded then has to say so itself:
+its `_provenance` (arm, hand, plate) arrives with the ready line, and the driver refuses one that names
+another arm, hand or plate, or none.
 
 ## The fail-closed contract
 
@@ -182,7 +204,7 @@ with ISO 10218, ISO/TS 15066 and ISO 13849.
 [`robot/`](robot/) is the version-controlled geometry authority for the robot the planner plans for.
 The `tool0` gripper spheres there are grid-fit from the vertex-exact mesh bundle in
 [`../data/`](../data/) by a generator that needs no simulator, so they are repo-derived and
-regenerable. The complete descriptor the planner loads is assembled on the target box by
+regenerable. The complete `{arm}_{hand}.yml` descriptors the planner loads are assembled on the target box by
 `scripts/curobo/build_ur_config.py` and written into the ignored content directory under `ext_deps/`.
 
 What `available` does not mean: the planner half of the reading reports that the sidecar interpreter

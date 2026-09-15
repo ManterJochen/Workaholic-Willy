@@ -23,7 +23,7 @@ Currently shipping:
 Schunk is validated in sim only: ``GripperVendor.SCHUNK`` runs in Isaac on the
 vendor-neutral ``grippers/sim/gripper.IsaacGripper`` with the measured
 ``SCHUNK_EGU50_PROFILE``, under ``gripper.vendor: schunk`` and
-``robot.sim.gripper_mount: schunk_egu50``. A real-hardware Schunk driver, EGK, EGN or
+``robot.gripper.model: schunk_egu50``. A real-hardware Schunk driver, EGK, EGN or
 EGU over the Schunk SDK, waits on the hardware, and ``franka_hand`` over libfranka is
 planned.
 

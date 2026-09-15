@@ -164,8 +164,12 @@ def sample_trials(
     root: Path, *, per_class: int = 40, seed: int = 20260813,
     reasons: Sequence[str] = ("not_antipodal", "too_wide", "below_table", "finger_collision"),
     configs: Sequence[str] | None = None,
+    labels: str = "grasps.jsonl",
 ) -> list[PhysicsTrial]:
     """Draw a stratified sample across sources, families and rejection reasons.
+
+    ``labels`` names the label file inside ``root``, and its stem is every label trial's ``origin``, so
+    a per-jaw draw joins back to its own file rather than to `grasps.jsonl` by line number.
 
     Deterministic given ``seed``: the sample is part of the measurement, so it has to be reproducible
     and it has to be stated. Stratifying by family as well as by source stops the draw from becoming
@@ -214,7 +218,8 @@ def sample_trials(
     seen: set[tuple[str, tuple]] = set()
     repeats = 0
 
-    for index, line in enumerate((root / "grasps.jsonl").read_text(encoding="utf-8").splitlines()):
+    origin = Path(labels).stem
+    for index, line in enumerate((root / labels).read_text(encoding="utf-8").splitlines()):
         row = json.loads(line)
         if row["kind"] != "jaw":
             continue
@@ -223,7 +228,7 @@ def sample_trials(
             # carry no rung at all, so they would arrive with `config=""` and sit in their own
             # stratum, adding a third arm nobody asked for to a two-arm comparison.
             break
-        identity = ("grasps", grasp_identity(row))
+        identity = (origin, grasp_identity(row))
         if identity in seen:
             repeats += 1
             continue
@@ -231,7 +236,7 @@ def sample_trials(
         pools.setdefault("label", []).append(PhysicsTrial(
             row["scene_id"], row["instance_id"], "label", tuple(row["position_mm"]),
             tuple(row["approach"]), tuple(row["closing_axis"]), float(row["width_mm"]),
-            origin="grasps", row_index=index))
+            origin=origin, row_index=index))
 
     eval_path = root / "grasp_eval.jsonl"
     if eval_path.exists():
@@ -481,8 +486,14 @@ def trials_from_proposals(path: Path | str) -> list[PhysicsTrial]:
 def run_physics_sample(
     root: Path, *, trials: Sequence[PhysicsTrial] | None = None, per_class: int = 40,
     headless: bool = True, out_name: str = "grasp_physics.jsonl", engine: str = "isaac",
+    jaw: str | None = None,
 ) -> dict:
     """Run the sample on-box. Writes one row per trial as it lands, so a teardown cannot swallow it.
+
+    ``jaw`` shakes that jaw's labels (``grasps_jaw_<jaw>.jsonl``) in a MuJoCo cell that models it, into
+    the jaw's own file. It refuses on Isaac, whose cell loads the 2F-85's USD, and refuses an
+    ``out_name`` that is not the jaw's, because one jaw's verdicts in another file would join onto that
+    file's rows.
 
     `engine` chooses the referee, and it is a product decision rather than a preference. Isaac is
     Windows or Linux, NVIDIA only, and about 47 GB, and it is the one step in this pipeline that
@@ -495,6 +506,20 @@ def run_physics_sample(
     on the same grasps does not exist yet, so the engine is written into every row and a corpus can
     say which one shook it.
     """
+    model = None
+    if jaw is not None:
+        from datagen.grasps.labels import jaw_model_for  # noqa: PLC0415
+        from datagen.grasps.service import physics_output_name  # noqa: PLC0415
+
+        if engine == "isaac":
+            raise ValueError(
+                f"a shake for the jaw {jaw!r} needs a cell that models it, and the Isaac cell "
+                f"loads the 2F-85's USD (physics_isaac.py). Shake it with engine='mujoco'.")
+        if out_name != physics_output_name(jaw=jaw):
+            raise ValueError(
+                f"a shake for the jaw {jaw!r} writes {physics_output_name(jaw=jaw)}, not "
+                f"{out_name}: one jaw's verdicts in another file would join onto that file's rows")
+        model = jaw_model_for(jaw)
     cell_type: type[PhysicsCell]
     if engine == "mujoco":
         from datagen.grasps.physics_mujoco import PhysicsCell as MujocoCell  # noqa: PLC0415
@@ -507,7 +532,9 @@ def run_physics_sample(
         raise ValueError(f"unknown physics engine {engine!r}; choose from isaac, mujoco")
 
     root = Path(root)
-    trials = list(trials) if trials is not None else sample_trials(root, per_class=per_class)
+    labels = "grasps.jsonl" if jaw is None else f"grasps_jaw_{jaw}.jsonl"
+    trials = (list(trials) if trials is not None
+              else sample_trials(root, per_class=per_class, labels=labels))
     assets = scene_assets(root)
     by_scene: dict[str, list[PhysicsTrial]] = {}
     for trial in trials:
@@ -517,10 +544,13 @@ def run_physics_sample(
     counts: dict[str, dict[str, int]] = {}
     logger.info("physics sample over %s: %d trial(s) across %d scene(s), headless=%s -> %s",
                 root, len(trials), len(by_scene), headless, out_path)
-    with (cell_type(headless=headless, mesh_collision=assets.mesh_collision) as cell,
+    # The jaw reaches only a cell that can model one; a jaw on Isaac was refused above.
+    cell_kwargs: dict[str, Any] = {} if model is None else {"jaw": model}
+    with (cell_type(headless=headless, mesh_collision=assets.mesh_collision, **cell_kwargs) as cell,
           out_path.open("w", encoding="utf-8") as handle):
         controls = cell.run_controls()
         controls.setdefault("engine", engine)
+        controls.setdefault("jaw", jaw or "2f85")
         handle.write(json.dumps({"controls": controls}) + "\n")
         handle.flush()
         # Before the two refusals below, and unconditionally: the controls are what makes every hold

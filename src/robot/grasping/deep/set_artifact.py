@@ -18,7 +18,9 @@ For this head, because it is conditioned, that list is:
 The gripper is the one that fails silently. A net trained on the 2F-85 and served a 140 mm jaw's
 vector at inference gets a conditioning input it never saw; nothing raises, the grasps just come out
 wrong in a way that reads as a bad model. The name is recorded and `load_set_generator` refuses an
-artifact whose gripper this build does not know.
+artifact whose gripper this build does not know, through the same resolver the runtime conditions
+with (`deep.hands`: the gripper registry, then the procedural jaws). The file also carries each
+trained hand's numbers, and the loader refuses one whose registry no longer gives them.
 
 A different `kind` from the binned generator, deliberately. The binned calculator refuses a payload
 whose `kind` it does not recognise, so giving this one its own name means that decoder cannot
@@ -37,7 +39,7 @@ from typing import Any, Sequence
 import torch
 
 from src.robot.grasping.deep.corpus.sample import SampleSpec
-from src.robot.grasping.deep.net.gripper import JAW_GEOMETRY
+from src.robot.grasping.deep.hands import resolve_hand
 from src.robot.grasping.deep.net.generative_head import GenerativeHeadConfig
 from src.robot.grasping.deep.net.local_crop import LocalCropConfig
 from src.robot.grasping.deep.net.slot_head import SlotHeadConfig
@@ -165,8 +167,17 @@ def write_set_generator(directory: str | Path, net: SetGenerator, *, sample: Sam
     The gripper is a required argument rather than a default. A 2F-85 default is wrong, and wrong
     silently, for the first run on a varied corpus.
     """
-    if gripper not in JAW_GEOMETRY:
-        raise ValueError(f"unknown gripper {gripper!r}; known: {', '.join(sorted(JAW_GEOMETRY))}")
+    trained = list(trained_grippers or (gripper,))
+    # Every hand goes through the resolver the runtime conditions with (`deep.hands`): a registry
+    # model or alias, or a procedural jaw. Their numbers go into the file, so an artifact says what
+    # each hand it saw measured when it was trained, and a registry re-measured since cannot silently
+    # change it.
+    hand_numbers: dict[str, dict[str, float]] = {}
+    for hand in dict.fromkeys([gripper, *trained]):
+        try:
+            hand_numbers[hand] = {key: float(value) for key, value in resolve_hand(hand).numbers.items()}
+        except ValueError as exc:
+            raise ValueError(f"unknown gripper {hand!r}: {exc}") from exc
     out = Path(directory)
     out.mkdir(parents=True, exist_ok=True)
     weights = out / f"{name}.pt"
@@ -182,7 +193,8 @@ def write_set_generator(directory: str | Path, net: SetGenerator, *, sample: Sam
         # hand the cell has bolted on. A model fitted across `narrow_55`, `slim_pad` and `wide_140`
         # and stamped `slim_pad` can still be conditioned on the cell's own hand; without the list
         # that fitted generalisation is unreachable.
-        "trained_grippers": list(trained_grippers or (gripper,)),
+        "trained_grippers": trained,
+        "hand_numbers": hand_numbers,
         "state_dict": {key: value.cpu() for key, value in net.state_dict().items()},
     }
     torch.save(payload, weights)
@@ -191,7 +203,8 @@ def write_set_generator(directory: str | Path, net: SetGenerator, *, sample: Sam
     card.write_text(json.dumps({
         "kind": SET_ARTIFACT_KIND, "artifact_version": SET_ARTIFACT_VERSION,
         "sha256": digest, "gripper": gripper,
-        "trained_grippers": list(trained_grippers or (gripper,)),
+        "trained_grippers": trained,
+        "hand_numbers": hand_numbers,
         "parameters": net.parameter_count,
         "config": asdict(net.config), "sample": asdict(sample), "step": asdict(step),
         "report": report or {},
@@ -199,13 +212,18 @@ def write_set_generator(directory: str | Path, net: SetGenerator, *, sample: Sam
     return {"weights": weights, "card": card}
 
 
-def load_set_generator(path: str | Path, *, device: str = "cpu") -> LoadedSetGenerator:
+def load_set_generator(path: str | Path, *, device: str = "cpu",
+                       data_dir: str | Path | None = None) -> LoadedSetGenerator:
     """Read an artifact back, refusing anything it cannot decode correctly.
 
     Four refusals, each for a way a load would otherwise go wrong silently: the wrong `kind` (a
     binned artifact in a set decoder), a newer `artifact_version` than this build knows, a gripper
     this build cannot resolve to a vector, and a state dict that does not fit the config it
     travelled with.
+
+    ``data_dir`` is the config tree whose gripper registry resolves the hands, ``None`` the
+    repository's. A hand the artifact stored numbers for must still resolve to those numbers there,
+    or the artifact refuses.
     """
     file = Path(path)
     # `weights_only=True`. `False` hands `pickle` the whole file and executes whatever is in it,
@@ -242,10 +260,28 @@ def load_set_generator(path: str | Path, *, device: str = "cpu") -> LoadedSetGen
                          f"{SET_ARTIFACT_VERSION}. Refusing rather than reading a newer format "
                          f"through an older decoder.")
     gripper = str(payload.get("gripper", ""))
-    if gripper not in JAW_GEOMETRY:
+    try:
+        resolve_hand(gripper, data_dir=data_dir)
+    except ValueError as exc:
         raise ValueError(f"{file.name} was trained for gripper {gripper!r}, which this build cannot "
-                         f"resolve. A wrong conditioning vector produces grasps that read as a bad "
-                         f"model rather than as a wrong hand.")
+                         f"resolve ({exc}). A wrong conditioning vector produces grasps that read as a bad "
+                         f"model rather than as a wrong hand.") from exc
+    # A hand re-measured since the run refuses: a registry that now gives other numbers would
+    # condition the net on a hand it was not trained for. An artifact written before the numbers
+    # were stored is not checked.
+    for hand, numbers in (payload.get("hand_numbers") or {}).items():
+        try:
+            current = resolve_hand(str(hand), data_dir=data_dir).numbers
+        except ValueError as exc:
+            raise ValueError(f"{file.name} was trained across the hand {hand!r}, which this build cannot "
+                             f"resolve ({exc})") from exc
+        changed = sorted(key for key, value in numbers.items()
+                         if key not in current or float(current[key]) != float(value))
+        if changed:
+            raise ValueError(
+                f"{file.name} was trained with {hand!r} measured as {dict(numbers)}, and the registry now gives "
+                f"different {', '.join(changed)}. Refusing to condition on a hand the model was not trained for: "
+                f"retrain on the re-measured hand, or restore its numbers.")
     config = _model_config(payload["config"])
     net = SetGenerator(config).to(device)
     net.load_state_dict(payload["state_dict"])

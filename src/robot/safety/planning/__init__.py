@@ -36,6 +36,7 @@ from .curobo_client import (
     CuroboPlanClient,
     CuroboUnavailableError,
     JointCheckVerdict,
+    SceneRegistration,
     curobo_env_available,
 )
 from .environment import (
@@ -52,6 +53,7 @@ from .stack import ModelSource, MotionStack, MotionStackReport
 __all__ = [
     "CuroboPlanClient",
     "JointCheckVerdict",
+    "SceneRegistration",
     "MAX_CHECK_CONFIGURATIONS",
     "ModelSource",
     "MotionStack",

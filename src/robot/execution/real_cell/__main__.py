@@ -142,8 +142,9 @@ def main(argv: "list[str] | None" = None) -> int:
     # one is a bench.
     # `app_cfg` goes only to the real branch: a rehearsal opens no camera, so the camera half of the
     # tree is not consulted at all there and passing it would suggest otherwise.
-    cell = (Cell.rehearsal(robot_cfg) if args.rehearse
-            else Cell.from_robot_config(robot_cfg, prompt=args.prompt, app_config=app_cfg))
+    cell = (Cell.rehearsal(robot_cfg, data_dir=args.data_dir) if args.rehearse
+            else Cell.from_robot_config(robot_cfg, prompt=args.prompt, app_config=app_cfg,
+                                        data_dir=args.data_dir))
     vendor = "dummy (rehearsal)" if args.rehearse else cell.vendor
     print(f"\n=== 1. CONFIG === vendor={vendor} profile={_profile_banner(args.profile)}", flush=True)
 

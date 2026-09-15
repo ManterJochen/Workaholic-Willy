@@ -48,7 +48,9 @@ class MeasuredValuesSurviveCompositionTests(unittest.TestCase):
         """Adding ur3e/tiltcam files must leave the plain `sim` load exactly as it was."""
         sim = require_robot(_load())
         self.assertEqual(sim.sim.robot_model, "ur5e")
-        self.assertIsNone(sim.sim.gripper_mount)
+        from src.willy_sim.grippers import sim_mount_for
+
+        self.assertIsNone(sim_mount_for(sim.sim.robot_model, sim.gripper.model), "the ur5e asset bakes the sim hand")
         self.assertEqual(sim.safety.self_collision.kinematics_model, "ur5e")
         self.assertEqual(tuple(sim.sim.scene_setup.object.position_mm), (450.0, 0.0, 25.0))
         self.assertIsNone(sim.sim.cameras["overhead"].mount_aim_mm)  # still the nadir camera
@@ -68,7 +70,9 @@ class UR3eLayerTests(unittest.TestCase):
     def test_bare_ur3e_asset_gets_a_mounted_gripper(self) -> None:
         """Isaac's ur3e.usd bakes in NO gripper (unlike ur5e/ur10e). Without a mount the cell would come
         up as a bare 6-DoF arm and only fail later, at gripper connect."""
-        self.assertEqual(self.robot.sim.gripper_mount, "robotiq_2f85")
+        from src.willy_sim.grippers import ROBOTIQ_2F85_MOUNT, sim_mount_for
+
+        self.assertIs(sim_mount_for(self.robot.sim.robot_model, self.robot.gripper.model), ROBOTIQ_2F85_MOUNT)
 
     def test_every_configured_position_is_within_the_ur3e_working_sphere(self) -> None:
         """The whole point of the layer. On the UR5e-tuned scene the UR3e misses `safe_pose` by 95 mm

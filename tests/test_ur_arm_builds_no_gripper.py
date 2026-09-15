@@ -45,13 +45,13 @@ class TheArmBuildsNoGripperTests(unittest.TestCase):
 
     def test_constructing_a_ur_arm_constructs_no_gripper(self) -> None:
         with _controllers_built() as built:
-            arm = URRobotArm(RobotConfig.model_validate({"vendor": "ur"}))
+            arm = URRobotArm(RobotConfig.model_validate({"vendor": "ur", "gripper": {"model": "robotiq_2f85"}}))
         self.assertEqual(built, [])
         self.assertFalse(hasattr(arm, "gripper"))
 
     def test_a_ur_cell_built_from_config_holds_exactly_one_controller(self) -> None:
         calculator, perception = _calc_and_perception()
-        tree = {"vendor": "ur", "ur": {"ip": "10.9.9.9"}, "gripper": {"vendor": "robotiq"}}
+        tree = {"vendor": "ur", "ur": {"ip": "10.9.9.9"}, "gripper": {"vendor": "robotiq", "model": "robotiq_2f85"}}
         with _controllers_built() as built, patch(_READY):
             service = RuntimePickService.from_robot_config(
                 RobotConfig.model_validate(tree),

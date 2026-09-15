@@ -258,6 +258,63 @@ def run_config_preflight(
             f"planner margin {getattr(sc, 'planner_margin_mm', '?')} mm",
         ))
 
+    # ---- the hand ------------------------------------------------------------------------------
+    # The one name the guard takes its hand from. A cell whose guard reads hand geometry refuses to
+    # build without it, so this row is that refusal met at a desk, with the same sentence.
+    from src.config.loader import ConfigError
+    from src.robot.safety.planning.hand import (
+        approach_refusal,
+        hand_geometry_model,
+        planner_hand,
+        unset_hand_refusal,
+    )
+
+    reads = hand_geometry_model(sc, robot_cfg.ur.model if vendor == "ur" else UNSET)
+    try:
+        hand = planner_hand(robot_cfg)
+    except ConfigError as exc:
+        checks.append(PreflightCheck(
+            "hand", CheckStatus.BLOCK, str(exc),
+            "the cell refuses to build until robot.gripper.model resolves to a hand it can model",
+        ))
+    else:
+        disagreement = approach_refusal(hand) if chosen(hand) else None
+        if chosen(hand) and reads is not None and disagreement is not None:
+            checks.append(PreflightCheck(
+                "hand", CheckStatus.BLOCK, disagreement,
+                "measure which way the hand approaches on this cell's flange, then bake and commit a hand model "
+                "that holds it; declaring the model's axis instead would describe a hand this cell does not have",
+            ))
+        elif chosen(hand):
+            bundle = "the arm's own" if hand.guard_variant is None else hand.guard_variant
+            if hand.declared_approach is None:
+                axis = "tool frame undeclared"
+            elif disagreement is None:
+                axis = "approach agrees with the declared tool frame"
+            else:
+                axis = (f"approach {hand.approach_disagreement_deg:.0f} degrees from the declared tool frame, "
+                        f"which no exact mesh guard on this cell reads")
+            from src.robot.drivers.sim.robot_models import curobo_robot_yml
+
+            descriptor = (
+                f"cuRobo descriptor {curobo_robot_yml(str(robot_cfg.ur.model), hand.model)}" if vendor == "ur"
+                else "no UR descriptor on this vendor"
+            )
+            checks.append(PreflightCheck(
+                "hand", CheckStatus.OK,
+                f"{hand.model}: sphere map {hand.sphere_map.name}, origin {hand.origin}, coupling "
+                f"{hand.coupling_mm:g} mm, guard bundle {bundle}, {descriptor}, {axis}",
+            ))
+        elif reads is not None:
+            what, fix = unset_hand_refusal(reads)
+            checks.append(PreflightCheck("hand", CheckStatus.BLOCK, what, fix))
+        else:
+            checks.append(PreflightCheck(
+                "hand", CheckStatus.OK,
+                "robot.gripper.model is unset, and this cell reads no hand geometry: no exact mesh guard "
+                "places a hand on a known arm",
+            ))
+
     # ---- fixtures ------------------------------------------------------------------------------
     # The list lives under the self-collision guard, not on `robot`. Read from the wrong place it
     # reports "none declared" on every cell, which is how a warning stops being read.
@@ -275,12 +332,17 @@ def run_config_preflight(
     # A different question from the one above, with a different answer. The guard checks one
     # commanded configuration; the planner shapes the whole path. Without this block the planner
     # knows its own robot model and a generic table, and routes through everything else.
+    from src.robot.safety.planning.reservation import PlannerReservation
     from src.robot.safety.planning.world import PlanningWorldError, build_planner_cuboids
 
     world_cfg = getattr(robot_cfg.safety, "planning_world", None)
     planner_in_use = str(getattr(robot_cfg.ur, "motion_planner", "ik")) == "curobo"
+    reservation: PlannerReservation | None = None
     try:
-        cuboids = build_planner_cuboids(world_cfg, fixtures)
+        # The slot count comes from the reservation the arm starts its planner with, so this row and
+        # the cell cannot disagree about whether a world fits.
+        reservation = PlannerReservation.from_config(robot_cfg=robot_cfg)
+        cuboids = build_planner_cuboids(world_cfg, fixtures, max_cuboids=reservation.cuboid_slots)
     except PlanningWorldError as exc:
         checks.append(PreflightCheck(
             "planning world", CheckStatus.BLOCK, str(exc),
@@ -301,6 +363,12 @@ def run_config_preflight(
                 "the planner will route through your bench, bin and fixtures; declare them under "
                 "safety.planning_world" if planner_in_use else "",
             ))
+
+    # ---- what the planner allocates ------------------------------------------------------------
+    # Printed rather than budgeted: nothing measures planner VRAM yet, and a budget that counted the
+    # grid and the slots alone would claim more than it checks.
+    if planner_in_use and reservation is not None:
+        checks.append(PreflightCheck("planner reservation", CheckStatus.OK, reservation.render()))
 
     # ---- record logging ------------------------------------------------------------------------
     path = getattr(robot_cfg.grasping, "record_log_path", None)

@@ -8,7 +8,10 @@ connects, which :mod:`.session` handles.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.robot.safety.planning.reservation import PlannerReservation
 
 __all__ = [
     "SimCameraConfig",
@@ -86,7 +89,7 @@ class SimRobotConfig:
     backend: Literal["isaac"] = "isaac"
     enabled: bool = False
     # Which UR model this sim cell drives. The key selects the Lula solver config, the
-    # Isaac USD, the cuRobo {key}.yml and the safety kinematics_model, which
+    # Isaac USD, with the cell's hand the cuRobo {key}_{hand}.yml, and the safety kinematics_model, which
     # src.robot.drivers.sim.robot_models sets out. The default "ur5e" leaves an existing
     # cell unchanged.
     robot_model: str = "ur5e"
@@ -104,7 +107,7 @@ class SimRobotConfig:
     #
     # It is one transform in one field on purpose. Two values describing one transform,
     # with one of them invisible to config, is how a cell silently inherits the wrong
-    # tool: `gripper_mount` selects the width profile of a different gripper while the
+    # tool: a mounted gripper selects a different width profile while the
     # arm keeps the 2F-85 offset, which measures 8 mm out on an EZU-35 and 17 mm on an
     # EGU-50. Both halves come from `robot.gripper.tool_frame`, which the real drivers
     # read too.
@@ -140,3 +143,8 @@ class SimRobotConfig:
     motion_planner: Literal["ik", "rmpflow", "curobo"] = "curobo"
     headless: bool = True
     mock_mode: bool = False
+    # What the cuRobo sidecar allocates when this arm starts it: box slots, mesh slots, the live
+    # scene grid and payload spheres. PlannerReservation.from_config derives it from the whole robot
+    # config, which is why the converter takes it from its caller. None starts the sidecar with its
+    # defaults.
+    planner_reservation: "PlannerReservation | None" = None

@@ -146,8 +146,8 @@ class Robot:
                 robot.arm.move(pose)
 
         Bound to this robot's arm, so another robot in the same process plans as it would without it,
-        and a blank reason is refused here. A motion no planner plans still says UNPLANNED, and on an arm
-        whose live camera world is wired a declined planned motion is refused. An arm that does not stamp
-        its motions ignores the block. The block does not follow into a thread started inside it.
+        and a blank reason is refused here. A motion no planner plans or checks still says UNPLANNED, and on
+        an arm whose live camera world is wired a declined planned or checked motion is refused. An arm that
+        does not stamp its motions ignores the block. The block does not follow into a thread started inside it.
         """
         return _without_camera_world(self.arm, reason)

@@ -18,8 +18,11 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
+from src.config import ConfigError
+from src.config.schema.robot import RobotConfig
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.drivers.sim.arm import IsaacRobotArm
+from src.robot.drivers.sim.robot_models import ur_model_spec
 from src.utility.log_cfg import create_logger
 from src.willy_sim.config import (
     load_sim_config,
@@ -28,13 +31,13 @@ from src.willy_sim.config import (
     sim_safety_preflight,
 )
 from src.willy_sim.constants import BOOTSTRAP_LOG_FILE, WILLY_SIM_LOG_DIR
+from src.willy_sim.grippers import MOUNTED_GRIPPERS, MountedGripperSpec, sim_mount_for
 from src.willy_sim.harness.coverage import warn_if_out_of_frame
 from src.willy_sim.harness.reach import warn_if_unreachable
 from src.willy_sim.scene import SceneHandles, build_combined_scene
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.app import AppConfig
-    from src.config.schema.robot import RobotConfig
     from src.config.schema.robot.safety_schema import DwellSafetyConfig
     from src.config.schema.robot.sim_schema import SimConfig
     from src.robot.grippers.sim import IsaacGripper
@@ -253,6 +256,9 @@ class SimCell:
     #: when the operator explicitly opted into a degraded run; carried so a runner can stamp it onto its
     #: results, because a pick rate measured without them describes a different system.
     degraded_engines: tuple[str, ...] = ()
+    #: The standalone gripper Isaac mounted, derived from the hand and the arm asset, or ``None`` where
+    #: the asset's baked variant carries the hand. A record stamps its name (``cell_identity``).
+    mount: MountedGripperSpec | None = None
 
 
 def bootstrap_sim_cell(
@@ -261,7 +267,7 @@ def bootstrap_sim_cell(
     headless: bool,
     safety: bool = True,
     scene_kwargs: Mapping[str, Any] | None = None,
-    gripper_mount: str | None = None,
+    hand: str | None = None,
     robot_model: str | None = None,
     extra_profiles: Sequence[str] | None = None,
     post_scene_hook: Callable[[Any], None] | None = None,
@@ -274,9 +280,12 @@ def bootstrap_sim_cell(
     pushes the asset root into Kit's settings, authors the combined scene (``scene_kwargs`` go
     verbatim to :func:`build_combined_scene`: ``objects_override``, ``camera_position_mm``, the
     ArUco marker kwargs), connects the arm, then constructs and connects the gripper. Returns a
-    :class:`SimCell`. Left at the defaults the cell is a UR5e carrying the asset's baked Robotiq
-    2F-85; ``robot_model`` stacks the matching robot layer and ``gripper_mount`` mounts a standalone
-    gripper in place of the baked one.
+    :class:`SimCell`. Left at the defaults the cell is a UR5e carrying the hand the tree names;
+    ``robot_model`` stacks the matching robot layer.
+
+    ``hand`` runs this hand, a registry name, instead of the one the tree names: the robot is
+    revalidated with it, and the mount and the tool frame follow from it. ``None`` keeps the tree's
+    hand.
 
     ``post_scene_hook`` is a callback ``(stage) -> None`` invoked after the scene is built and
     before ``arm.connect()``, which is the first play. A runner uses it to author extra physics
@@ -289,8 +298,8 @@ def bootstrap_sim_cell(
     started = time.perf_counter()
     _LOG.info(
         "booting sim cell: data_dir=%s robot_model=%s profiles=%s headless=%s safety=%s "
-        "gripper_mount=%s",
-        data_dir, robot_model, list(extra_profiles or ()), headless, safety, gripper_mount,
+        "hand=%s",
+        data_dir, robot_model, list(extra_profiles or ()), headless, safety, hand,
     )
     cfg = load_sim_config(data_dir, robot_model=robot_model, extra_profiles=extra_profiles)
     robot = require_robot(cfg)
@@ -302,27 +311,43 @@ def bootstrap_sim_cell(
             f"profile layer {robot_model!r} does not set robot.sim.robot_model={robot_model!r} "
             f"(config says {robot.sim.robot_model!r}). Fix config/robot/robot.{robot_model}.yaml."
         )
-    # Per-run override through ``model_copy``, so driving a different end-effector needs no YAML
-    # edit.
-    if gripper_mount is not None:  # opt-in standalone-gripper mount (overrides the baked Gripper variant)
-        robot = robot.model_copy(update={"sim": robot.sim.model_copy(update={"gripper_mount": gripper_mount})})
-        # A different gripper is a different tool frame, not only a different width profile, so the
-        # mount also overrides the flange-to-TCP translation with the spec's own
-        # ``flange_to_tcp_offset_mm``. The rotation is shared: every mounted spec's
-        # ``mount_rotation_matrix`` puts its approach on wrist +Y, so only the translation differs.
-        from src.willy_sim.grippers import resolve_mounted_gripper
-
-        # ⛔ WAS `.get()`, WHICH MEANT AN UNKNOWN MOUNT SKIPPED THIS CORRECTION IN SILENCE and the
-        # cell went on composing the 2F-85's 132 mm flange->TCP for whatever was actually bolted on.
-        # Resolving refuses the name here instead, before any geometry is derived from it.
-        _spec = resolve_mounted_gripper(gripper_mount)
-        if _spec is not None:
-            robot = robot.model_copy(update={"gripper": robot.gripper.model_copy(
-                update={"tool_frame": robot.gripper.tool_frame.model_copy(
-                    update={"offset_mm": _spec.flange_to_tcp_offset_mm}
-                )}
-            )})
-        cfg = cfg.model_copy(update={"robot": robot})
+    # A per-run hand, validated. The robot is rebuilt through the schema rather than with
+    # ``model_copy``, which validates nothing and would let a name no registry holds reach the Isaac
+    # boot. The camera section is untouched, so the one cross-section rule on AppConfig, the primary
+    # camera calibrated in one place, cannot change here.
+    if hand is not None:
+        merged = robot.model_dump()
+        merged["gripper"]["model"] = hand
+        robot = RobotConfig.model_validate(merged)
+    # Which gripper Isaac puts on the arm, derived rather than configured: a second key for it could
+    # name another hand than robot.gripper.model. Refuses, before the boot, a cell that names no hand,
+    # a name the cell's own registry does not hold, and a hand the sim has no mount for.
+    mount = sim_mount_for(robot.sim.robot_model, robot.gripper.model, data_dir=data_dir)
+    hand_spec = mount if mount is not None else MOUNTED_GRIPPERS.get(str(robot.gripper.model))
+    if hand_spec is None:
+        raise ConfigError(
+            f"the {robot.sim.robot_model!r} asset bakes the hand {robot.gripper.model!r}, and the sim holds no "
+            f"measured tool frame for it: add its MountedGripperSpec to willy_sim.grippers"
+        )
+    # A different gripper is a different tool frame, not only a different width profile: a mount that
+    # swapped only the profile would leave the arm composing flange->TCP with the 2F-85's 132 mm, 12.1 mm
+    # out for a mounted EGU-50 and 18.0 mm for an EZU-35. The rotation is shared: every mount spec puts
+    # its approach on wrist +Y, so only the translation differs. A hand passed here writes the frame its
+    # mount composes, and a frame the tree declares has to agree with it.
+    expected = tuple(float(v) for v in hand_spec.flange_to_tcp_offset_mm)
+    if hand is not None:
+        merged = robot.model_dump()
+        merged["gripper"]["tool_frame"]["offset_mm"] = list(expected)
+        robot = RobotConfig.model_validate(merged)
+    declared = tuple(float(v) for v in (robot.gripper.tool_frame.offset_mm or ()))
+    if len(declared) != len(expected) or any(abs(a - b) > 1e-6 for a, b in zip(declared, expected)):
+        raise ConfigError(
+            f"the sim cell declares robot.gripper.tool_frame.offset_mm {list(declared)}, and the hand "
+            f"{robot.gripper.model!r} on the {robot.sim.robot_model!r} asset puts its grasp centre at "
+            f"{list(expected)} mm from the flange. Declare {list(expected)}, or pass the hand to the bootstrap "
+            f"with hand=, which writes it."
+        )
+    cfg = cfg.model_copy(update={"robot": robot})
     # Geometry sanity before the roughly 60 s Isaac boot: every scene position here was authored for
     # a UR5e (850 mm reach). On a shorter arm the same numbers are physically untouchable, and the
     # symptom is an opaque IK or plan failure, or a run that reads as bad grasping but is geometry.
@@ -340,7 +365,13 @@ def bootstrap_sim_cell(
     # start-up and a run whose numbers describe a different motion stack.
     from src.robot.drivers.sim.robot_models import curobo_robot_yml
 
-    _robot_yml = curobo_robot_yml(sim.robot_model)
+    # The descriptor the arm loads, by arm and hand. With no hand named there is none, and the banner
+    # says so rather than falling back to the environment's ur5e.yml.
+    from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR
+
+    _robot_yml = (
+        curobo_robot_yml(sim.robot_model, robot.gripper.model) if robot.gripper.model else NO_DESCRIPTOR
+    )
     # kinematics_model is optional in the schema; an unset one means the guard has no DH chain
     # configured at all, so report the bundle for the robot the cell actually drives.
     _kin_model = robot.safety.self_collision.kinematics_model or sim.robot_model
@@ -367,36 +398,39 @@ def bootstrap_sim_cell(
     # The cell's own geometry, underneath whatever the runner registers. ``set_world`` replaces the
     # planner's world, so a runner that declares its bin walls would drop the bench with them. The
     # declaration is the one the guard reads, so a cell has a single description of its furniture.
-    from src.robot.safety.planning.world import build_planner_cuboids
+    from src.robot.safety.planning.world import build_planner_cuboids, build_planner_meshes
 
+    _world_cfg = getattr(robot.safety, "planning_world", None)
+    _reservation = driver_cfg.planner_reservation
     _base_world = build_planner_cuboids(
-        getattr(robot.safety, "planning_world", None), robot.safety.self_collision.fixtures
+        _world_cfg, robot.safety.self_collision.fixtures,
+        **({"max_cuboids": _reservation.cuboid_slots} if _reservation is not None else {}),
     )
+    _base_meshes = build_planner_meshes(_world_cfg)
     if _base_world:
-        arm.set_planner_base_world(_base_world)
-        _LOG.info("planner base world: %d obstacle(s) from config", len(_base_world))
+        arm.set_planner_base_world(_base_world, _base_meshes)
+        _LOG.info(
+            "planner base world: %d obstacle(s) and %d mesh(es) from config",
+            len(_base_world), len(_base_meshes),
+        )
     arm.session.start()
     import carb  # type: ignore[import-not-found]
 
     if sim.assets_root:
         carb.settings.get_settings().set("/persistent/isaac/asset_root/default", sim.assets_root)
-    handles = build_combined_scene(arm.session, sim, **(scene_kwargs or {}))
+    handles = build_combined_scene(arm.session, sim, mount=mount, **(scene_kwargs or {}))
     if post_scene_hook is not None:  # author extra prims (e.g. the surface gripper) before the first play
         import omni.usd  # type: ignore[import-not-found]
 
         post_scene_hook(omni.usd.get_context().get_stage())
     arm.connect()
 
-    from src.robot.grippers.sim import ROBOTIQ_2F85_PROFILE, IsaacGripper
+    from src.robot.grippers.sim import IsaacGripper
 
-    # A mounted standalone gripper drives its own GripperProfile, with its driven joint merged into
-    # the arm's articulation. Without ``gripper_mount`` the baked Robotiq 2F-85 is used instead.
-    if sim.gripper_mount:
-        from src.willy_sim.grippers import resolve_mounted_gripper
-
-        gripper_profile = resolve_mounted_gripper(sim.gripper_mount).profile
-    else:
-        gripper_profile = ROBOTIQ_2F85_PROFILE
+    # The hand's own GripperProfile, mounted or baked. A mounted gripper drives its joint merged into
+    # the arm's articulation; a baked hand is the one its mount spec describes, the 2F-85 spec
+    # reproducing the baked variant's joint frame, so the baked 2F-85 keeps ROBOTIQ_2F85_PROFILE.
+    gripper_profile = hand_spec.profile
     gripper = IsaacGripper(
         session=arm.session, gripper_prim_path=sim.gripper_prim_path, profile=gripper_profile,
     )
@@ -413,11 +447,12 @@ def bootstrap_sim_cell(
     _LOG.info(
         "sim cell up in %.1f s: robot=%s gripper=%s planner=%s objects=%d camera_to_base=%s%s",
         time.perf_counter() - started, sim.robot_model,
-        sim.gripper_mount or f"baked:{sim.gripper_variant}", driver_cfg.motion_planner,
+        mount.name if mount is not None else f"baked:{ur_model_spec(sim.robot_model).baked_gripper_variant}",
+        driver_cfg.motion_planner,
         len(handles.object_specs), "SET" if handles.camera_to_base is not None else "NONE",
         f" degraded={list(degraded)}" if degraded else "",
     )
     return SimCell(
         arm=arm, gripper=gripper, handles=handles, cfg=cfg, robot=robot, sim=sim, dwell=dwell,
-        degraded_engines=degraded,
+        degraded_engines=degraded, mount=mount,
     )

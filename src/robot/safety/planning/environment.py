@@ -41,6 +41,8 @@ __all__ = [
     "ENV_CUROBO_PYTHON",
     "ENV_CUROBO_ROBOT",
     "ENV_CUROBO_CUBOID_CACHE",
+    "ENV_CUROBO_MESH_CACHE",
+    "ENV_CUROBO_VOXEL_GRID",
     "ENV_CUROBO_STDERR",
     "ENV_CUROBO_MAX_ATTEMPTS",
     "ENV_CUROBO_GRAPH_FROM_ATTEMPT",
@@ -49,6 +51,8 @@ __all__ = [
     "curobo_python_path",
     "curobo_robot_config",
     "curobo_cuboid_cache",
+    "curobo_mesh_cache",
+    "curobo_voxel_grid",
     "curobo_env_available",
     "collision_mesh_bundle",
     "inject_coal_prefix",
@@ -70,9 +74,10 @@ __all__ = [
 logger = create_robot_logger("PlanningEnvironment", PLANNING_ENVIRONMENT_LOG_FILE)
 
 # --- cuRobo planner sidecar -----------------------------------------------------------------------
-# The client reads the first four. The python 3.10 sidecar ``curobo_planner_server.py``
-# reads the last two and cannot import this module, so they are named here to keep every
-# knob discoverable in one place.
+# The client reads the first six, and a cell's own reservation (``reservation.py``) wins
+# over the three slot variables when it has one. The python 3.10 sidecar
+# ``curobo_planner_server.py`` reads the last two and cannot import this module, so they
+# are named here to keep every knob discoverable in one place.
 ENV_CUROBO_PYTHON = "WILLY_CUROBO_PYTHON"              #: interpreter of the cuRobo env
 ENV_CUROBO_ROBOT = "WILLY_CUROBO_ROBOT"               #: cuRobo robot descriptor (default ``ur5e.yml``)
 ENV_CUROBO_CUBOID_CACHE = "WILLY_CUROBO_CUBOID_CACHE"  #: reserved collision-world cuboid slots
@@ -170,7 +175,7 @@ def collision_mesh_bundle(model: str = "ur5e", variant: str | None = None) -> Pa
     # there is nothing to compare, so that check returns False, and a cell would run the geometry
     # of a different arm under a status of ``ok``.
     #
-    # Measured before this line existed: ur10e with ``collision_mesh_variant: schunk_egu50``
+    # Measured before this line existed: ur10e with the ``schunk_egu50`` hand's bundle
     # reported ``ok`` and checked a UR10e against UR5e arm meshes, while the same variant on a
     # ur3e correctly reported ``variant_model_mismatch``. The difference was only that ur3e has a
     # bundle to be compared with. The question is unanswerable exactly when an arm is new, which

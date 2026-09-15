@@ -38,12 +38,14 @@ def _named(report, name):
 
 
 class PreflightTests(unittest.TestCase):
-    def test_the_shipped_config_as_a_real_cell_blocks_on_the_three_known_traps(self) -> None:
+    def test_the_shipped_config_as_a_real_cell_blocks_on_its_known_traps(self) -> None:
         """This is the whole point of the runner: the DEFAULT state of a freshly configured real cell
-        is not runnable, and each reason is one an operator would otherwise meet as a separate crash."""
+        is not runnable, and each reason is one an operator would otherwise meet as a separate crash.
+        Since Step 4f the hand is one of them: the base tree names none, on purpose, and its guard
+        reads hand geometry, so the arm refuses to build."""
         report = run_config_preflight(RobotConfig(vendor="ur"), curobo_available=True)
         blocking = {c.name for c in report.blocking}
-        self.assertEqual(blocking, {"tool frame", "payload", "camera -> base"})
+        self.assertEqual(blocking, {"tool frame", "payload", "camera -> base", "hand"})
         self.assertFalse(report.ok)
 
     def test_a_curobo_cell_without_the_environment_blocks(self) -> None:
@@ -60,7 +62,7 @@ class PreflightTests(unittest.TestCase):
         )
         blocking = {c.name for c in report.blocking}
         self.assertEqual(
-            blocking, {"tool frame", "payload", "camera -> base", "cuRobo environment"}
+            blocking, {"tool frame", "payload", "camera -> base", "cuRobo environment", "hand"}
         )
         self.assertIn("--doctor", _named(report, "cuRobo environment").fix)
 
@@ -116,7 +118,7 @@ class PreflightTests(unittest.TestCase):
             # refuses the mismatch, because a UR3e driven against UR5e link lengths computes every
             # self-collision verdict against the wrong arm.
             "ur": {"model": "ur3e"},
-            "gripper": {"tool_frame": _GOOD_TOOL},
+            "gripper": {"model": "robotiq_2f85", "tool_frame": _GOOD_TOOL},
             "safety": {"payload": {"enforce": True, "mass_kg": 1.1, "cog_mm": (0.0, 0.0, 55.0)},
                        "self_collision": {"kinematics_model": "ur3e"}},
             "grasping": {"fusion": {"enabled": True, "extrinsics_artifact_path": "logs/eth.json"}},

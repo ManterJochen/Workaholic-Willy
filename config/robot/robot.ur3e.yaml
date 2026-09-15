@@ -45,14 +45,10 @@ robot:
     model: "ur3e"
   sim:
     robot_model: "ur3e"
-    # The Isaac ur3e asset ships bare: unlike ur5e and ur10e it bakes in no Robotiq variant, so
-    # a UR3e cell has to name a mount. The scene builder refuses one that does not, rather than
-    # let it come up as a bare 6-DoF arm and fail much later on a missing finger joint. This
-    # mounts the 2F-85 as a standalone USD on the wrist, merged
-    # into the arm articulation. It is the same physical gripper as the UR5e cell, so the
-    # `gripper` block carries over unchanged, its 132 mm `tool_frame.offset_mm` included. There
-    # is no `tcp_offset_mm` config key; 132 is also the mount constant in `willy_sim/grippers.py`.
-    gripper_mount: "robotiq_2f85"
+    # The Isaac ur3e asset ships bare: unlike ur5e and ur10e it bakes in no Robotiq variant. So
+    # the sim mounts the hand the cell names as a standalone USD on the wrist, merged into the arm
+    # articulation, derived from robot.gripper.model and this robot_model. No key here says so,
+    # because this layer is also the real UR3e overlay, which names no hand.
 
     # Where the arm parks, swung clear of the overhead camera, before the scene is perceived.
     # The UR5e layer's [3.14, -1.0, 0.9, 0, 0, 0] puts a UR3e grasp-centre TCP at r = 489 mm,

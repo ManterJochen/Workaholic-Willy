@@ -66,7 +66,7 @@ def _ur_arm(preflight):
     # GATE, not the planner: left on the default they reach for a GPU sidecar and fail on a box that
     # has none, which says nothing about whether move_to consults its guards.
     arm = URRobotArm(RobotConfig.model_validate(
-        {"vendor": "ur", "ur": {"motion_planner": "ik"},
+        {"vendor": "ur", "ur": {"motion_planner": "ik"}, "gripper": {"model": "robotiq_2f85"},
          "safety": {"payload": {"enforce": False}}}
     ))
     conn = MagicMock()
@@ -258,6 +258,7 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
             "vendor": "ur",
             "ur": {"motion_planner": "curobo"},
             "safety": {"payload": {"enforce": False}},
+            "gripper": {"model": "robotiq_2f85"},
         }))
         conn = MagicMock()
         conn.is_connected = True

@@ -35,6 +35,10 @@ except ConfigError as no_cell:
           f"profile that carries one: WILLY_PROFILE=ur5e")
     raise SystemExit
 print(f"gripper.vendor {robot.gripper.vendor} on a {robot.vendor} arm")
+# The base tree names no hand, on purpose, and a UR arm's guard refuses to build without one. The
+# Robotiq this vendor drives is the 2F-85 here; a profile that names its hand keeps its own.
+robot = robot.model_copy(update={"gripper": robot.gripper.model_copy(
+    update={"model": robot.gripper.model or "robotiq_2f85"})})
 
 # 2. Which gripper drivers are registered in this checkout. None of them needs a pip package, so
 #    `pip install` fixes nothing here: what is missing on a bring-up is a URCap, a Compute Box or a

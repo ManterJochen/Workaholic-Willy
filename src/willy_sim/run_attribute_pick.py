@@ -394,7 +394,7 @@ def run_grounding(
 
 def _service_for(
     cell: Any, backend: Any, prompt: str, *, extrinsic: Any,
-    standoff_mm: float, close_width_mm: float,
+    standoff_mm: float, close_width_mm: float, data_dir: str | None = None,
 ) -> Any:
     """One perception source and one service per prompt, over the same already loaded backend.
 
@@ -419,6 +419,7 @@ def _service_for(
     )
     calculator = build_calculator(
         cell.robot,
+        data_dir=data_dir,
         camera_matrix=np.asarray(cell.handles.camera.get_intrinsics_matrix(), dtype=np.float64),
         max_grip_width_mm=cell.robot.gripper.max_width_mm,
         min_grip_width_mm=cell.robot.gripper.min_width_mm,
@@ -489,7 +490,7 @@ def run_picks(
     extrinsic = _true_overhead_extrinsic(cell.handles.camera, arm.session, warmup_steps=warmup)
     backend = build_perception(models_for_route(cell.cfg.models, route))
     service = _service_for(cell, backend, prompt, extrinsic=extrinsic,
-                           standoff_mm=standoff_mm, close_width_mm=close_width_mm)
+                           standoff_mm=standoff_mm, close_width_mm=close_width_mm, data_dir=data_dir)
 
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]
 

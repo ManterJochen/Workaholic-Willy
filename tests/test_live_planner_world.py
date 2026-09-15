@@ -23,7 +23,12 @@ from src.robot.safety.planning.live_world import (
     WorldVerdict,
     refresh_planner_world,
 )
-from src.robot.safety.planning.perceived import WorldBuildLimits, WorldBuildTuning
+from src.robot.safety.planning.perceived import (
+    LinkCapsule,
+    SelfEnvelope,
+    WorldBuildLimits,
+    WorldBuildTuning,
+)
 from src.robot.safety.planning.world import planner_cuboid
 
 _FX = _FY = 500.0
@@ -45,8 +50,12 @@ _LIMITS = WorldBuildLimits(
 )
 #: A declared bench, exactly as `build_planner_cuboids` would emit it.
 _DECLARED = (planner_cuboid("support_plane", (0.0, 0.0, -25.0), (1600.0, 1600.0, 50.0)),)
-#: The arm, standing out of the way of the scene these tests build.
-_LINKS = [(0.0, 0.0, 0.0), (0.0, -350.0, 300.0)]
+#: The arm, standing out of the way of the scene these tests build: one capsule of 135 mm, which with the
+#: world's 15 mm padding is the 150 mm the single polyline segment carried before Step 4h.
+_SELF = SelfEnvelope(
+    frames_mm=(np.eye(4),),
+    capsules=(LinkCapsule(frame=0, start_mm=(0.0, 0.0, 0.0), end_mm=(0.0, -350.0, 300.0), radius_mm=135.0),),
+)
 
 
 def _scene_with_a_block(*, at_mm: tuple[float, float] = (150.0, 0.0)) -> tuple[np.ndarray, np.ndarray]:
@@ -94,7 +103,7 @@ class FreshWorldTests(unittest.TestCase):
         depth, _ = _scene_with_a_block()
         camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
 
-        snapshot = _world(camera).world_for(link_origins_mm=_LINKS, now=100.1)
+        snapshot = _world(camera).world_for(self_envelope=_SELF, now=100.1)
 
         self.assertIs(snapshot.verdict, WorldVerdict.FRESH)
         self.assertTrue(snapshot.usable)
@@ -111,12 +120,50 @@ class FreshWorldTests(unittest.TestCase):
         camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
         world = _world(camera)
 
-        world.world_for(link_origins_mm=_LINKS, now=100.1)
-        world.world_for(link_origins_mm=_LINKS, now=100.2)
+        world.world_for(self_envelope=_SELF, now=100.1)
+        world.world_for(self_envelope=_SELF, now=100.2)
         self.assertEqual(camera.grabs, 1)
 
-        world.world_for(link_origins_mm=_LINKS, now=101.0)
+        world.world_for(self_envelope=_SELF, now=101.0)
         self.assertEqual(camera.grabs, 2, "past the age limit the camera has to be asked again")
+
+    @staticmethod
+    def _moved(envelope: SelfEnvelope, by_mm: float) -> SelfEnvelope:
+        """The same body, every frame of it carried ``by_mm`` along base X."""
+        shift = np.eye(4)
+        shift[0, 3] = by_mm
+        return SelfEnvelope(frames_mm=tuple(shift @ frame for frame in envelope.frames_mm), capsules=envelope.capsules)
+
+    def test_a_frame_taken_before_the_arm_moved_is_not_served_again(self) -> None:
+        """Step 4h.3. The frame shows the arm where it stood; filtered with the arm where it stands now, the arm it
+        shows would be registered as an obstacle beside the arm. So a body that moved asks the camera again."""
+        depth, _ = _scene_with_a_block()
+        camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
+        world = _world(camera)
+
+        world.world_for(self_envelope=_SELF, now=100.1)
+        world.world_for(self_envelope=self._moved(_SELF, 50.0), now=100.2)
+        self.assertEqual(camera.grabs, 2, "a reading taken before the arm moved 50 mm was served again")
+
+    def test_two_questions_with_the_arm_still_share_one_reading(self) -> None:
+        """The control, green before and after: what the cache is for."""
+        depth, _ = _scene_with_a_block()
+        camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
+        world = _world(camera)
+
+        world.world_for(self_envelope=_SELF, now=100.1)
+        world.world_for(self_envelope=_SELF, now=100.2)
+        self.assertEqual(camera.grabs, 1)
+
+    def test_a_body_that_moved_less_than_a_millimetre_keeps_the_reading(self) -> None:
+        """Bound, green before and after: joint encoder noise is not a motion."""
+        depth, _ = _scene_with_a_block()
+        camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
+        world = _world(camera)
+
+        world.world_for(self_envelope=_SELF, now=100.1)
+        world.world_for(self_envelope=self._moved(_SELF, 0.5), now=100.2)
+        self.assertEqual(camera.grabs, 1)
 
     def test_the_arm_is_taken_out_of_what_the_camera_saw(self) -> None:
         """One scene, two arm poses. What changes is which points are the robot itself."""
@@ -124,17 +171,23 @@ class FreshWorldTests(unittest.TestCase):
         frame = DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0)
 
         over_the_block = _world(_Camera(frame)).world_for(
-            link_origins_mm=[(150.0, 0.0, 0.0), (150.0, 0.0, 400.0)], now=100.1
+            self_envelope=SelfEnvelope(
+                frames_mm=(np.eye(4),),
+                capsules=(
+                    LinkCapsule(frame=0, start_mm=(150.0, 0.0, 0.0), end_mm=(150.0, 0.0, 400.0), radius_mm=135.0),
+                ),
+            ),
+            now=100.1,
         )
         self.assertEqual(over_the_block.perceived_count, 0, over_the_block.render())
 
-        elsewhere = _world(_Camera(frame)).world_for(link_origins_mm=_LINKS, now=100.1)
+        elsewhere = _world(_Camera(frame)).world_for(self_envelope=_SELF, now=100.1)
         self.assertEqual(elsewhere.perceived_count, 1, elsewhere.render())
 
 
 class RefusalTests(unittest.TestCase):
     def test_no_frame_is_not_planned_against_and_keeps_the_declared_world(self) -> None:
-        snapshot = _world(_Camera(None)).world_for(link_origins_mm=_LINKS, now=100.0)
+        snapshot = _world(_Camera(None)).world_for(self_envelope=_SELF, now=100.0)
 
         self.assertIs(snapshot.verdict, WorldVerdict.NO_FRAME)
         self.assertFalse(snapshot.usable)
@@ -146,7 +199,7 @@ class RefusalTests(unittest.TestCase):
         depth, _ = _scene_with_a_block()
         camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=None))
 
-        snapshot = _world(camera).world_for(link_origins_mm=_LINKS, now=100.0)
+        snapshot = _world(camera).world_for(self_envelope=_SELF, now=100.0)
 
         self.assertIs(snapshot.verdict, WorldVerdict.STALE)
         self.assertIn("no capture time", snapshot.reason)
@@ -155,7 +208,7 @@ class RefusalTests(unittest.TestCase):
         depth, _ = _scene_with_a_block()
         camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
 
-        snapshot = _world(camera).world_for(link_origins_mm=_LINKS, now=102.0)
+        snapshot = _world(camera).world_for(self_envelope=_SELF, now=102.0)
 
         self.assertIs(snapshot.verdict, WorldVerdict.STALE)
         self.assertIn("2000 ms old", snapshot.reason)
@@ -165,7 +218,7 @@ class RefusalTests(unittest.TestCase):
         depth, _ = _scene_with_a_block()
         camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
 
-        snapshot = _world(camera).world_for(link_origins_mm=None, now=100.1)
+        snapshot = _world(camera).world_for(self_envelope=None, now=100.1)
 
         self.assertIs(snapshot.verdict, WorldVerdict.UNUSABLE)
         self.assertIn("its own links", snapshot.reason)
@@ -180,7 +233,7 @@ class RefusalTests(unittest.TestCase):
             support_plane_top_mm=None,
         )
 
-        snapshot = _world(camera, limits=limits).world_for(link_origins_mm=_LINKS, now=100.1)
+        snapshot = _world(camera, limits=limits).world_for(self_envelope=_SELF, now=100.1)
 
         self.assertIs(snapshot.verdict, WorldVerdict.UNUSABLE)
         self.assertIn("support_plane", snapshot.reason)
@@ -194,13 +247,13 @@ class SegmentationTests(unittest.TestCase):
         camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
         world = _world(camera)
 
-        both = world.world_for(link_origins_mm=_LINKS, now=100.1)
+        both = world.world_for(self_envelope=_SELF, now=100.1)
         self.assertEqual(both.perceived_count, 2, both.render())
 
         world.offer_segmentation(
             labelled_masks=(("red cube", far_mask),), exclude_masks=(mask,), timestamp=100.0
         )
-        one = world.world_for(link_origins_mm=_LINKS, now=100.1)
+        one = world.world_for(self_envelope=_SELF, now=100.1)
         self.assertEqual(one.perceived_count, 1, one.render())
         self.assertEqual(one.cuboids[1]["name"], "seen_00_red_cube")
 
@@ -211,20 +264,20 @@ class SegmentationTests(unittest.TestCase):
         world = _world(camera)
         world.offer_segmentation(exclude_masks=(mask,), timestamp=100.0)
 
-        self.assertEqual(world.world_for(link_origins_mm=_LINKS, now=100.1).perceived_count, 0)
+        self.assertEqual(world.world_for(self_envelope=_SELF, now=100.1).perceived_count, 0)
 
         camera.snapshot = DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=102.0)
-        self.assertEqual(world.world_for(link_origins_mm=_LINKS, now=102.1).perceived_count, 1)
+        self.assertEqual(world.world_for(self_envelope=_SELF, now=102.1).perceived_count, 1)
 
     def test_forgetting_the_segmentation_puts_the_object_back_in_the_world(self) -> None:
         depth, mask = _scene_with_a_block()
         camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
         world = _world(camera)
         world.offer_segmentation(exclude_masks=(mask,), timestamp=100.0)
-        self.assertEqual(world.world_for(link_origins_mm=_LINKS, now=100.1).perceived_count, 0)
+        self.assertEqual(world.world_for(self_envelope=_SELF, now=100.1).perceived_count, 0)
 
         world.forget_segmentation()
-        self.assertEqual(world.world_for(link_origins_mm=_LINKS, now=100.1).perceived_count, 1)
+        self.assertEqual(world.world_for(self_envelope=_SELF, now=100.1).perceived_count, 1)
 
 
 class _Planner:
@@ -274,7 +327,7 @@ class RefreshTests(unittest.TestCase):
     def test_a_good_refresh_registers_the_world_and_reports_its_price(self) -> None:
         planner = _Planner()
         refresh = refresh_planner_world(
-            source=self._source(), client=planner, link_origins_mm=_LINKS, now=100.1
+            source=self._source(), client=planner, self_envelope=_SELF, now=100.1
         )
 
         self.assertTrue(refresh.ok, refresh.render())
@@ -289,7 +342,7 @@ class RefreshTests(unittest.TestCase):
         source = self._source(tuning=WorldBuildTuning(max_boxes=4, voxel_field_mm=30.0))
 
         refresh = refresh_planner_world(
-            source=source, client=planner, link_origins_mm=_LINKS, now=100.1
+            source=source, client=planner, self_envelope=_SELF, now=100.1
         )
 
         self.assertTrue(refresh.ok, refresh.render())
@@ -311,7 +364,7 @@ class RefreshTests(unittest.TestCase):
         source = self._source(tuning=WorldBuildTuning(max_boxes=4, voxel_field_mm=30.0))
 
         refresh = refresh_planner_world(
-            source=source, client=planner, link_origins_mm=_LINKS, now=100.1
+            source=source, client=planner, self_envelope=_SELF, now=100.1
         )
 
         self.assertFalse(refresh.ok)
@@ -323,7 +376,7 @@ class RefreshTests(unittest.TestCase):
         planner = _OldPlanner()
 
         refresh = refresh_planner_world(
-            source=self._source(), client=planner, link_origins_mm=_LINKS, now=100.1
+            source=self._source(), client=planner, self_envelope=_SELF, now=100.1
         )
 
         self.assertTrue(refresh.ok, refresh.render())
@@ -336,7 +389,7 @@ class RefreshTests(unittest.TestCase):
         source = self._source(tuning=WorldBuildTuning(max_boxes=4, voxel_field_mm=30.0))
 
         refresh = refresh_planner_world(
-            source=source, client=planner, link_origins_mm=_LINKS, now=100.1
+            source=source, client=planner, self_envelope=_SELF, now=100.1
         )
 
         self.assertFalse(refresh.ok)
@@ -358,7 +411,7 @@ class RefreshTests(unittest.TestCase):
         )
 
         refresh = refresh_planner_world(
-            source=source, client=planner, link_origins_mm=_LINKS, now=100.1
+            source=source, client=planner, self_envelope=_SELF, now=100.1
         )
 
         self.assertTrue(refresh.ok, refresh.render())
@@ -372,7 +425,7 @@ class RefreshTests(unittest.TestCase):
         planner = _OldPlanner()
 
         refresh = refresh_planner_world(
-            source=self._source(), client=planner, link_origins_mm=_LINKS, now=100.1
+            source=self._source(), client=planner, self_envelope=_SELF, now=100.1
         )
 
         self.assertTrue(refresh.ok, refresh.render())
@@ -380,7 +433,7 @@ class RefreshTests(unittest.TestCase):
     def test_a_partial_registration_refuses_and_says_the_two_counts(self) -> None:
         planner = _Planner(confirm_all=False)
         refresh = refresh_planner_world(
-            source=self._source(), client=planner, link_origins_mm=_LINKS, now=100.1
+            source=self._source(), client=planner, self_envelope=_SELF, now=100.1
         )
 
         self.assertFalse(refresh.ok)
@@ -388,15 +441,428 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(refresh.guard_boxes, ())
 
     def test_a_stale_frame_never_reaches_the_planner_at_all(self) -> None:
+        """A frame past the age limit is asked again and then raises, registering nothing.
+
+        Until Step 4e this returned a refused refresh. It raises now, after the camera's fresh-frame
+        attempts (owner, Step 4), and what it pinned still holds: nothing reached the planner.
+        """
+        from src.robot.core.errors import CameraWorldUnavailable
+
         planner = _Planner()
+        with self.assertRaises(CameraWorldUnavailable) as caught:
+            refresh_planner_world(
+                source=self._source(), client=planner, self_envelope=_SELF, now=102.0
+            )
+
+        self.assertEqual(planner.worlds, [], "nothing is registered from a world nobody can vouch for")
+        self.assertIs(caught.exception.verdict, WorldVerdict.STALE)
+        self.assertIn("NOT refreshed", caught.exception.refresh.render())
+
+
+class _ScenePlanner(_Planner):
+    """A planner client that registers a whole scene in one request, as the sidecar does from Step 4 on.
+
+    It keeps the two older methods from `_Planner`, so a refresh that still reaches for them shows up
+    in `worlds` and `voxel_calls` rather than passing by accident.
+    """
+
+    def __init__(self, *, confirm_all: bool = True, voxels_reason: str = "") -> None:
+        import tempfile
+        from pathlib import Path
+
+        super().__init__(confirm_all=confirm_all, take_voxels=not voxels_reason)
+        self.scene_calls: list[dict] = []
+        self.voxels_reason = voxels_reason
+        self.live_scene_path = str(Path(tempfile.gettempdir()) / f"willy_test_scene_{id(self)}.npy")
+
+    def set_scene(self, cuboids, meshes, voxels):  # noqa: ANN001, ANN201
+        from types import SimpleNamespace
+
+        self.scene_calls.append(
+            {
+                "cuboids": list(cuboids),
+                "meshes": list(meshes or ()),
+                "voxels": None if voxels is None else dict(voxels),
+            }
+        )
+        total = len(cuboids) + len(meshes or ())
+        registered = total if self.confirm_all else max(0, total - 1)
+        if self.voxels_reason:
+            return SimpleNamespace(world_set=registered, voxels_set=None, reason=self.voxels_reason)
+        count = None if voxels is None else int(np.load(voxels["path"]).shape[0])
+        return SimpleNamespace(world_set=registered, voxels_set=count, reason="")
+
+
+class OneRegistrationTests(unittest.TestCase):
+    """A field and the declared world reach the planner in ONE request, and its reason reaches the refusal.
+
+    The defect behind the first test: the world went as one request and the field as a second, and the
+    sidecar's field branch rebuilt its scene from the cuboids it remembered. A declared mesh therefore
+    vanished the moment a camera produced a field, and nothing refused, because both requests reported
+    success. The defect behind the other two: the sidecar says exactly why it would not take a field,
+    and the operator was told "the planner refused it", or, when the counts also disagreed, only that.
+    """
+
+    _TOTE = {
+        "name": "tote",
+        "file_path": "assets/tote.obj",
+        "pose": [0.5, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        "scale": [0.001, 0.001, 0.001],
+    }
+    _NO_STORAGE = (
+        "this planner was started with no voxel storage; set WILLY_CUROBO_VOXEL_GRID before it starts"
+    )
+
+    def _source(self, **kwargs: object) -> LivePlannerWorld:
+        depth, _ = _scene_with_a_block()
+        camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
+        settings: dict[str, object] = {
+            "tuning": WorldBuildTuning(max_boxes=4, voxel_field_mm=30.0),
+            "declared_meshes": (self._TOTE,),
+        }
+        settings.update(kwargs)
+        return _world(camera, **settings)
+
+    def test_a_field_and_the_declared_meshes_go_in_one_registration(self) -> None:
+        planner = _ScenePlanner()
+
         refresh = refresh_planner_world(
-            source=self._source(), client=planner, link_origins_mm=_LINKS, now=102.0
+            source=self._source(), client=planner, self_envelope=_SELF, now=100.1
+        )
+
+        self.assertTrue(refresh.ok, refresh.render())
+        self.assertEqual(
+            len(planner.scene_calls), 1, "the field and the world must reach the planner in one request"
+        )
+        self.assertEqual(planner.worlds, [], "a separate world request leaves the field to replace it")
+        self.assertEqual(planner.voxel_calls, [], "a separate field request drops the declared meshes")
+        (call,) = planner.scene_calls
+        self.assertEqual(call["cuboids"][0]["name"], "support_plane")
+        self.assertEqual([m["name"] for m in call["meshes"]], ["tote"])
+        self.assertEqual(
+            call["voxels"]["path"], planner.live_scene_path,
+            "the field goes to the file this client owns, so two arms cannot overwrite each other",
+        )
+        self.assertAlmostEqual(call["voxels"]["voxel_size_m"], 0.03)
+        self.assertEqual(len(call["voxels"]["pose"]), 7)
+        self.assertGreater(refresh.voxels_registered or 0, 0)
+
+    def test_the_sidecar_reason_reaches_the_refusal(self) -> None:
+        planner = _ScenePlanner(voxels_reason=self._NO_STORAGE)
+
+        refresh = refresh_planner_world(
+            source=self._source(), client=planner, self_envelope=_SELF, now=100.1
         )
 
         self.assertFalse(refresh.ok)
-        self.assertEqual(planner.worlds, [], "nothing is registered from a world nobody can vouch for")
-        self.assertEqual(refresh.registered, 0)
-        self.assertIn("NOT refreshed", refresh.render())
+        self.assertIn("started with no voxel storage", refresh.reason)
+        self.assertEqual(refresh.guard_boxes, (), "a refused refresh must not leave the guard armed")
+
+    def test_a_count_refusal_does_not_hide_a_field_refusal(self) -> None:
+        planner = _ScenePlanner(confirm_all=False, voxels_reason=self._NO_STORAGE)
+
+        refresh = refresh_planner_world(
+            source=self._source(), client=planner, self_envelope=_SELF, now=100.1
+        )
+
+        self.assertFalse(refresh.ok)
+        self.assertIn("confirmed", refresh.reason)
+        self.assertIn("started with no voxel storage", refresh.reason)
+
+    def test_a_scene_with_no_field_still_goes_as_a_world(self) -> None:
+        """The control, green before and after: no field configured, nothing changes on the wire."""
+        planner = _ScenePlanner()
+
+        refresh = refresh_planner_world(
+            source=self._source(tuning=WorldBuildTuning(max_boxes=4)),
+            client=planner, self_envelope=_SELF, now=100.1,
+        )
+
+        self.assertTrue(refresh.ok, refresh.render())
+        self.assertEqual(planner.scene_calls, [])
+        self.assertEqual(len(planner.worlds), 1)
+        self.assertIsNone(refresh.voxels_registered)
+
+
+class TheFieldOnTheWireTests(unittest.TestCase):
+    """The file the planner reads holds metres, negative inside an obstacle.
+
+    Measured on this box on 2026-09-13 (tests/test_voxel_field_sign.py carries the numbers): the planner
+    reads the field in metres and negative inside. The code wrote millimetres, positive inside, so every
+    voxel that was not an obstacle read as hundreds of metres inside one.
+    """
+
+    def test_the_block_is_negative_and_the_values_are_metres(self) -> None:
+        depth, _ = _scene_with_a_block()
+        camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
+        source = _world(camera, tuning=WorldBuildTuning(max_boxes=4, voxel_field_mm=30.0))
+        planner = _Planner()
+
+        refresh = refresh_planner_world(source=source, client=planner, self_envelope=_SELF, now=100.1)
+
+        self.assertTrue(refresh.ok, refresh.render())
+        values = np.load(planner.voxel_calls[0]["path"]).astype(np.float64)
+        shape = (27, 27, 30)  # 800 x 800 x 900 mm at 30 mm, as the grid is cut from _LIMITS
+        self.assertEqual(values.size, int(np.prod(shape)))
+        grid = values.reshape(shape)
+        # The block stands at x 150, y 0 with its top 80 mm up; the grid is indexed from (-400, -400, 0).
+        self.assertLess(grid[18, 13, 1], 0.0, "the block must read negative, as the planner reads inside")
+        self.assertGreater(grid[1, 1, 28], 0.0, "far free space must read positive")
+        self.assertLess(
+            float(np.abs(values).max()), 2.0,
+            "a field over a two metre cell in metres stays under two; millimetres read hundreds",
+        )
+
+
+def _blind() -> DepthSnapshot:
+    return DepthSnapshot(
+        depth_mm=np.zeros(_SHAPE, dtype=np.float64), intrinsics=_INTRINSICS, timestamp=100.0
+    )
+
+
+class BlindFrameTests(unittest.TestCase):
+    """A camera that sees nothing is blind, and a blind camera is not an empty cell.
+
+    A frame with no valid depth converted into an empty perceived world and came back FRESH, so a
+    covered lens, a dead emitter or a frame of zeros read exactly like a bench with nothing on it.
+    """
+
+    def test_a_frame_with_no_valid_pixel_is_blind_and_names_the_camera(self) -> None:
+        cases = {
+            "zeros": np.zeros(_SHAPE, dtype=np.float64),
+            "not a number": np.full(_SHAPE, np.nan, dtype=np.float64),
+            "negative": np.full(_SHAPE, -1.0, dtype=np.float64),
+        }
+        for label, depth in cases.items():
+            with self.subTest(label):
+                camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
+
+                snapshot = _world(camera).world_for(self_envelope=_SELF, now=100.1)
+
+                self.assertIs(snapshot.verdict, WorldVerdict.BLIND)
+                self.assertFalse(snapshot.usable)
+                self.assertEqual(snapshot.camera, "overhead")
+                self.assertIn("overhead", snapshot.reason)
+                self.assertEqual([box["name"] for box in snapshot.cuboids], ["support_plane"])
+
+    def test_one_blind_camera_beside_a_sighted_one_is_blind(self) -> None:
+        """Fused, the sighted camera's points hid the blind one: the cloud was not empty."""
+        depth, _ = _scene_with_a_block()
+        sighted = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
+        world = _world(
+            sighted,
+            cameras=(
+                CameraView(name="overhead", depth_source=sighted, camera_to_base=_CAMERA_TO_BASE),
+                CameraView(name="side", depth_source=_Camera(_blind()), camera_to_base=_CAMERA_TO_BASE),
+            ),
+        )
+
+        snapshot = world.world_for(self_envelope=_SELF, now=100.1)
+
+        self.assertIs(snapshot.verdict, WorldVerdict.BLIND)
+        self.assertEqual(snapshot.camera, "side")
+        self.assertIn("side", snapshot.reason)
+
+    def test_a_blind_frame_is_asked_again(self) -> None:
+        """A young blind frame used to be cached like any other, so the camera was not asked again."""
+        camera = _Camera(_blind())
+        world = _world(camera)
+
+        world.world_for(self_envelope=_SELF, now=100.1)
+        world.world_for(self_envelope=_SELF, now=100.2)
+
+        self.assertEqual(camera.grabs, 2)
+
+    def test_a_bench_with_nothing_on_it_stays_fresh(self) -> None:
+        """The control, green before and after: valid depth that shows no obstacle is a real answer."""
+        bench = np.full(_SHAPE, _CAMERA_HEIGHT_MM, dtype=np.float64)
+        camera = _Camera(DepthSnapshot(depth_mm=bench, intrinsics=_INTRINSICS, timestamp=100.0))
+
+        snapshot = _world(camera).world_for(self_envelope=_SELF, now=100.1)
+
+        self.assertIs(snapshot.verdict, WorldVerdict.FRESH)
+        self.assertEqual(snapshot.perceived_count, 0)
+
+    def test_the_sim_refusal_names_blindness(self) -> None:
+        """A non-UR double: the sim refreshes through the same call and must say the same thing."""
+        import time
+
+        from src.robot.drivers.sim.arm import IsaacRobotArm
+        from src.robot.drivers.sim.config import SimRobotConfig
+
+        arm = IsaacRobotArm(SimRobotConfig(enabled=True, scene="placeholder.usd", robot_prim_path="/World/Robot"))
+        arm._get_curobo_client = lambda: _Planner()  # type: ignore[method-assign]  # noqa: SLF001
+        arm._self_envelope = lambda: _SELF  # type: ignore[method-assign]  # noqa: SLF001
+        # Stamped now: the sim refreshes on the real clock, and a frame from t=100 would be refused as
+        # stale before anybody looked at whether it holds any depth.
+        blind_now = DepthSnapshot(
+            depth_mm=np.zeros(_SHAPE, dtype=np.float64), intrinsics=_INTRINSICS, timestamp=time.time()
+        )
+        arm.set_live_planner_world(_world(_Camera(blind_now)))
+
+        from src.robot.core.errors import CameraWorldUnavailable
+
+        # A blind camera stays blind through its fresh-frame attempts, and from Step 4e that raises
+        # rather than returning a reason (owner, Step 4). The sentence still names the blindness.
+        with self.assertRaises(CameraWorldUnavailable) as caught:
+            arm._refresh_planner_world()  # noqa: SLF001
+
+        self.assertIn("blind", str(caught.exception))
+        self.assertIn("overhead", str(caught.exception))
+
+
+class SlotOverflowTests(unittest.TestCase):
+    """An obstacle the cameras saw and the planner has no slot for is a hole in the world."""
+
+    def test_an_obstacle_without_a_slot_refuses_the_refresh(self) -> None:
+        near, _ = _scene_with_a_block(at_mm=(150.0, 0.0))
+        far, _ = _scene_with_a_block(at_mm=(-150.0, 0.0))
+        camera = _Camera(
+            DepthSnapshot(depth_mm=np.minimum(near, far), intrinsics=_INTRINSICS, timestamp=100.0)
+        )
+        source = _world(camera, tuning=WorldBuildTuning(max_boxes=1))
+
+        refresh = refresh_planner_world(source=source, client=_Planner(), self_envelope=_SELF, now=100.1)
+
+        self.assertFalse(refresh.ok, refresh.render())
+        self.assertIn("1 perceived obstacle(s) did not fit", refresh.reason)
+        self.assertEqual(refresh.guard_boxes, (), "a refused refresh must not leave the guard armed")
+
+    def test_a_world_that_fits_still_registers(self) -> None:
+        """The control: the same scene with room for both boxes is an ordinary refresh."""
+        near, _ = _scene_with_a_block(at_mm=(150.0, 0.0))
+        far, _ = _scene_with_a_block(at_mm=(-150.0, 0.0))
+        camera = _Camera(
+            DepthSnapshot(depth_mm=np.minimum(near, far), intrinsics=_INTRINSICS, timestamp=100.0)
+        )
+
+        refresh = refresh_planner_world(
+            source=_world(camera), client=_Planner(), self_envelope=_SELF, now=100.1
+        )
+
+        self.assertTrue(refresh.ok, refresh.render())
+
+
+class _SequenceCamera:
+    """A camera that answers each grab with the next reading, and with the last one from then on."""
+
+    def __init__(self, *snapshots: "DepthSnapshot | None") -> None:
+        self.snapshots = list(snapshots)
+        self.grabs = 0
+
+    def grab_surface_depth(self) -> "DepthSnapshot | None":
+        index = min(self.grabs, len(self.snapshots) - 1)
+        self.grabs += 1
+        return self.snapshots[index]
+
+
+class FreshFrameAttemptsTests(unittest.TestCase):
+    """A camera that cannot vouch for the cell is asked again, and after that the motion raises.
+
+    Owner, Step 4: a camera that stays missing, blind or stale after its fresh-frame attempts is not an
+    ordinary refusal. The refresh raises `CameraWorldUnavailable`, every verb lets it out, and a pick
+    campaign stops. Everything else a refresh can refuse for stays a refusal: a partial registration, a
+    refused field, an obstacle without a slot, an arm that cannot place its own links.
+    """
+
+    @staticmethod
+    def _fresh() -> DepthSnapshot:
+        depth, _ = _scene_with_a_block()
+        return DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0)
+
+    def test_a_silent_camera_is_asked_n_more_times_then_the_refresh_raises(self) -> None:
+        from src.robot.core.errors import CameraWorldUnavailable
+
+        camera = _Camera(None)
+        planner = _Planner()
+
+        with self.assertRaises(CameraWorldUnavailable) as caught:
+            refresh_planner_world(
+                source=_world(camera, fresh_frame_attempts=3), client=planner,
+                self_envelope=_SELF, now=100.1,
+            )
+
+        self.assertEqual(camera.grabs, 4, "the first reading and three more")
+        self.assertEqual(planner.worlds, [], "nothing is registered from a camera nobody can vouch for")
+        error = caught.exception
+        self.assertEqual((error.camera, error.verdict, error.attempts), ("overhead", WorldVerdict.NO_FRAME, 4))
+        self.assertIn("overhead", str(error))
+        self.assertIn("no_frame", str(error))
+
+    def test_a_stale_camera_that_recovers_plans(self) -> None:
+        stale = DepthSnapshot(depth_mm=self._fresh().depth_mm, intrinsics=_INTRINSICS, timestamp=90.0)
+        camera = _SequenceCamera(stale, self._fresh())
+
+        refresh = refresh_planner_world(
+            source=_world(camera), client=_Planner(), self_envelope=_SELF, now=100.1
+        )
+
+        self.assertTrue(refresh.ok, refresh.render())
+        self.assertEqual(camera.grabs, 2)
+
+    def test_a_blind_camera_raises_after_its_attempts(self) -> None:
+        from src.robot.core.errors import CameraWorldUnavailable
+
+        camera = _Camera(_blind())
+
+        with self.assertRaises(CameraWorldUnavailable) as caught:
+            refresh_planner_world(
+                source=_world(camera, fresh_frame_attempts=1), client=_Planner(),
+                self_envelope=_SELF, now=100.1,
+            )
+
+        self.assertEqual(camera.grabs, 2)
+        self.assertIs(caught.exception.verdict, WorldVerdict.BLIND)
+
+    def test_zero_attempts_raises_on_the_first_failure(self) -> None:
+        from src.robot.core.errors import CameraWorldUnavailable
+
+        camera = _Camera(None)
+
+        with self.assertRaises(CameraWorldUnavailable):
+            refresh_planner_world(
+                source=_world(camera, fresh_frame_attempts=0), client=_Planner(),
+                self_envelope=_SELF, now=100.1,
+            )
+
+        self.assertEqual(camera.grabs, 1)
+
+    def test_a_refusal_that_is_not_the_camera_stays_a_refusal(self) -> None:
+        """The control, green before and after: an arm that cannot place its links asks nobody again."""
+        camera = _Camera(self._fresh())
+
+        refresh = refresh_planner_world(
+            source=_world(camera), client=_Planner(), self_envelope=None, now=100.1
+        )
+
+        self.assertFalse(refresh.ok)
+        self.assertIs(refresh.verdict, WorldVerdict.UNUSABLE)
+        self.assertEqual(camera.grabs, 1)
+
+    def test_the_key_reaches_the_world_source(self) -> None:
+        from src.config.schema.robot import RobotConfig
+        from src.config.schema.robot.safety_schema import PerceivedWorldConfig
+        from src.robot.execution.autonomous_grasp.live_world import build_live_planner_world
+
+        self.assertEqual(PerceivedWorldConfig().fresh_frame_attempts, 3)
+        cfg = RobotConfig.model_validate({
+            "vendor": "ur",
+            "safety": {
+                "payload": {"enforce": False},
+                "planning_world": {
+                    "enabled": True,
+                    "require_registration": False,
+                    "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
+                    "perceived": {"fresh_frame_attempts": 5},
+                },
+            },
+        })
+
+        world = build_live_planner_world(cfg, [("overhead", _Camera(None), _CAMERA_TO_BASE)])
+
+        assert world is not None
+        self.assertEqual(world.fresh_frame_attempts, 5)
+        self.assertFalse(world.require_registration)
 
 
 class LoopHandsOverItsMasksTests(unittest.TestCase):

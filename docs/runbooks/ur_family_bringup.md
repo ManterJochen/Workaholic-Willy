@@ -41,6 +41,9 @@ Any of:
 Every "yes" was measured by loading it, not by finding the file:
 `ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py` builds a planner for each
 descriptor and plans a real motion with it. **Six of six plan, 21 waypoints each**, 2.7 s to 4.6 s.
+Those six descriptors were built before a descriptor's name and `_provenance` carried its hand, and
+both drivers refuse every one of them now: the descriptor column reads yes again for an arm once its
+`{model}_{hand}.yml` is rebuilt (step 4 below) and the check has planned with it.
 
 ### ⚠ ur10 needed four repairs the other five did not
 
@@ -97,12 +100,15 @@ a descriptor proved by planning rather than by existing.
 Set the profile and go:
 
 ```bash
-WILLY_PROFILE=ur5 python -m backend.config --print          # validates the tree
-python -m src.robot.safety.planning --doctor        # bundle, gripper, descriptor
+WILLY_PROFILE=ur5 python -m src.config --print          # validates the tree
+python -m src.robot.safety.planning --doctor --profile ur5 --hand robotiq_2f85   # bundle, gripper, descriptor
 ```
 
 The doctor prints three separate probes and they mean three different things: the arm bundle,
-the gripper geometry and the cuRobo descriptor. All three read `ok` on all six models today.
+the gripper geometry and the cuRobo descriptor. The planning CLI takes the hand from `--hand` or
+`robot.gripper.model`, and an arm profile names no hand, so without one `--check` exits 1 and the
+doctor reports the descriptor MISSING, both naming `robot.gripper.model`. The descriptor reads `ok`
+once `{model}_{hand}.yml` is rebuilt for that hand.
 
 ### Adding an arm that does not exist yet
 
@@ -139,7 +145,7 @@ The order matters, because each step is gated on the one before it.
 
 4. **Build the cuRobo descriptor** (cuRobo sidecar interpreter):
    ```bash
-   ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py <model>
+   ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py <model> --gripper <hand>
    ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py <model>
    ```
    The build refuses rather than writing a file that fails later: if a link the template guards has
@@ -156,8 +162,8 @@ The order matters, because each step is gated on the one before it.
 Three checks, in this order, and each one asks a different question:
 
 ```bash
-WILLY_PROFILE=<model> python -m backend.config --print              # does the tree validate
-python -m src.robot.safety.planning --doctor                 # are the three artifacts there
+WILLY_PROFILE=<model> python -m src.config --print              # does the tree validate
+python -m src.robot.safety.planning --doctor --profile <model> --hand <hand>   # are the three artifacts there
 ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py  # does it actually PLAN
 ```
 
@@ -182,9 +188,11 @@ Everything here is additive and reversible without touching a running cell:
 - **A profile**: stop setting `WILLY_PROFILE`. The base tree is unchanged and is still a UR5e.
 - **A bundle**: delete `src/robot/safety/data/{model}_collision_meshes.npz`. The guard reports
   `no_bundle` and drops to the capsule proxy, which is coarser and fail-closed, not unsafe.
-- **A gripper variant**: unset `safety.self_collision.collision_mesh_variant`. The cell then plans
-  against whatever hand the arm bundle carries, and the doctor says so in a `warn`.
-- **A descriptor**: delete `{model}.yml` from the cuRobo content directory. Nothing else reads it.
+- **A hand**: name the previous one in `robot.gripper.model`. The guard derives its bundle from that
+  name, so there is no second key to unset, and a cell that names no hand refuses to build rather than
+  planning against whatever hand the arm bundle carries; the doctor reports it `missing`.
+- **A descriptor**: delete `{model}_{hand}.yml` from the cuRobo content directory. Nothing else reads it,
+  and a cell whose descriptor is missing refuses to plan rather than loading another hand's.
   The shared scaffolding lives in `_ur_template.yml`, which builds never overwrite.
 
 No step here can leave a cell in a state where it plans against wrong geometry: every artifact is

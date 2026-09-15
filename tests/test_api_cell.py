@@ -396,7 +396,10 @@ class DiagnosticsTests(CellLifecycleTests):
         stack = body["motion_stack"]
         self.assertTrue(stack["model"])
         self.assertNotEqual(stack["model_source"], "", "a reading must say where its model came from")
-        self.assertIn(str(stack["model"]), str(stack["curobo_robot_config"]))
+        # The dummy tree names no hand (the base robot.yaml leaves robot.gripper.model unset, owner Q5), so from Step
+        # 4i the reading names no descriptor and says which key is missing, rather than a descriptor for a hand
+        # nobody named.
+        self.assertIn("robot.gripper.model", str(stack["curobo_robot_config"]))
 
     def test_the_curobo_reading_states_its_own_limit(self) -> None:
         """'available' means a Python interpreter exists on disk. It is not a planning guarantee."""

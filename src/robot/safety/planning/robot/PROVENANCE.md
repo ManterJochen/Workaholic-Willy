@@ -34,7 +34,7 @@ a = [0, -0.24355, -0.2132, 0, 0, 0]              m
 d = [0.15185, 0, 0, 0.13105, 0.08535, 0.0921]    m
 ```
 
-Its planner descriptor `ur3e.yml` is assembled on the box by the same script.
+Its planner descriptors, one per hand (`ur3e_<hand>.yml`), are assembled on the box by the same script.
 
 Its collision geometry is [`../../data/ur3e_collision_meshes.npz`](../../data/ur3e_collision_meshes.npz),
 baked from the simulator's UR3e collision meshes by
@@ -94,11 +94,13 @@ source of truth shared by the exact-mesh self-collision guard in `safety/self_co
 the planner's collision-sphere fit. The keys `gripper__v`, `lfinger__v` and `rfinger__v` are in the
 `tool0` frame in millimetres; every `<arm-link>__v` key is in its own DH frame.
 
-The committed sphere map is [`ur5e_gripper_spheres.yml`](ur5e_gripper_spheres.yml), the 2F-85 `tool0`
-collision spheres grid-fit from that bundle by
+The committed sphere map is [`robotiq_2f85_gripper_spheres.yml`](robotiq_2f85_gripper_spheres.yml),
+the 2F-85 `tool0` collision spheres grid-fit from that bundle by
 [`build_gripper_spheres.py`](build_gripper_spheres.py). That generator needs no simulator and no GPU:
 it reads the committed bundle and writes the map beside itself, so the gripper exists as a labelled,
 regenerable file in this repository. The spheres are frame-correct and directly usable by the planner.
+The map is named after the hand's registry name, as every map is, so the guard and the planner find a
+hand's files from `robot.gripper.model` alone ([`../hand.py`](../hand.py)).
 
 ## The hand is not the arm
 
@@ -110,7 +112,7 @@ one, 46 spheres against the Robotiq's 36.
 This mattered more than it looks. `scripts/curobo/build_ur_config.py` carried its own copy of the fit
 and always used the Robotiq bundle, under a comment calling it model independent. It is independent
 of the ARM and not of the HAND, so a cell running the Schunk had a safety guard that read the right
-bundle through `collision_mesh_variant` and a planner that modelled a Robotiq. The on-box script now
+bundle through its variant key and a planner that modelled a Robotiq. The on-box script now
 reads the committed map for the gripper it is told about:
 
 ```
@@ -157,9 +159,10 @@ compares one arm link against the model's own bundle, and a mismatch drops the w
 capsule proxy, so the arm loses exact-mesh checking as well as the hand. Measured: `schunk_egu50` on
 a ur3e does exactly that today, because only a ur5e bundle was ever baked for it.
 
-`collision_mesh_variant` therefore names the hand, and `collision_mesh_bundle` composes the arm in:
-`robotiq_hande` finds the ur3e file on a UR3e and the ur5e file on a UR5e. Writing the arm into the
-config key is how a cell that changes arms keeps the bundle for the old one.
+The guard's bundle is therefore named by the hand, derived from `robot.gripper.model`, and
+`collision_mesh_bundle` composes the arm in: `robotiq_hande` finds the ur3e file on a UR3e and the ur5e
+file on a UR5e. Writing the arm into a config key is how a cell that changes arms keeps the bundle for
+the old one.
 
 ### The coupling, and why a map says where it starts
 
@@ -194,13 +197,14 @@ cannot drift apart.
 
 ## The planner robot config
 
-The complete descriptor the planner loads, named by `WILLY_CUROBO_ROBOT` and defaulting to
-`ur5e.yml`, bundles the URDF, the `tool0` gripper spheres from this folder, the arm-link spheres,
+The complete descriptor the planner loads, named by the cell's arm and hand (`{arm}_{hand}.yml`),
+bundles the URDF, the `tool0` gripper spheres from this folder, the arm-link spheres,
 joint limits, `default_q` and the self-collision ignore set. The arm-link spheres and the exact
 schema are produced on the target box by `scripts/curobo/build_ur_config.py`, which needs the
 simulator's own kinematic description and the planner environment, and written into the ignored
 content directory under `ext_deps/`. That is where the descriptor physically lives at runtime; this
-folder is its committed geometry authority and label.
+folder is its committed geometry authority and label. The descriptor records its arm, hand and plate
+under `_provenance`, and a planner refuses one built for another arm, hand or plate.
 
 The arm-link surface augmentation is ur5e only. The meshes and the DH chain it uses are
 ur5e-specific, so every other model keeps its own model-tuned arm spheres, which are correct for its

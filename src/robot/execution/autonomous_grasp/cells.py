@@ -32,6 +32,8 @@ from typing import TYPE_CHECKING, Any
 from src.contracts import UNSET, Maybe, chosen
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from pathlib import Path
+
     from src.config.schema import AppConfig
     from src.config.schema.robot import RobotConfig
 
@@ -58,11 +60,14 @@ class CellBuildRefused(RuntimeError):
     """
 
 
-def build_rehearsal_components(robot_cfg: "RobotConfig") -> tuple[Any, Any, Any, Any, Any]:
+def build_rehearsal_components(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,
+                               ) -> tuple[Any, Any, Any, Any, Any]:
     """``(calculator, perception, frame_resolver, multi_camera, camera_calculators)`` for a desk.
 
     Kept as its own function beside the cell builder so a caller that wants the pieces, to swap
     one or to inspect one, does not have to take the whole service to get them.
+
+    ``data_dir`` is the config tree the cell came from, whose gripper registry answers for its hand.
     """
     import numpy as np
 
@@ -80,6 +85,7 @@ def build_rehearsal_components(robot_cfg: "RobotConfig") -> tuple[Any, Any, Any,
     # being inert as a switch.
     calculator = build_calculator(
         robot_cfg,
+        data_dir=data_dir,
         camera_matrix=rehearsal_intrinsics(),
         max_grip_width_mm=robot_cfg.gripper.max_width_mm,
         min_grip_width_mm=robot_cfg.gripper.min_width_mm,
@@ -106,6 +112,7 @@ def build_rehearsal_components(robot_cfg: "RobotConfig") -> tuple[Any, Any, Any,
 
 def build_real_components(robot_cfg: "RobotConfig", prompt: str, *,
                           app_config: "Maybe[AppConfig]" = UNSET,
+                          data_dir: "str | Path | None" = None,
                           ) -> tuple[Any, Any, Any, Any, Any]:
     """``(calculator, perception, frame_resolver=None, multi_camera, camera_calculators)``.
 
@@ -194,7 +201,7 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str, *,
     provider.open_rig(rig_id)
     try:
         return _build_on_open_cameras(
-            robot_cfg, app_cfg, prompt=prompt, provider=provider, rig_id=rig_id, np=np,
+            robot_cfg, app_cfg, prompt=prompt, provider=provider, rig_id=rig_id, np=np, data_dir=data_dir,
             perception_spec=PerceptionSpec, build_calculator=build_calculator,
             vision_source=RealSenseVisionPerceptionSource,
         )
@@ -211,7 +218,8 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str, *,
 
 def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: str, provider: Any,
                            rig_id: str, np: Any, perception_spec: Any, build_calculator: Any,
-                           vision_source: Any) -> tuple[Any, Any, Any, Any, Any]:
+                           vision_source: Any, data_dir: "str | Path | None" = None,
+                           ) -> tuple[Any, Any, Any, Any, Any]:
     """The half of :func:`build_real_components` that runs with a device already held.
 
     Split out for the `try` above rather than for its own sake: wrapping the tail in place would
@@ -246,6 +254,7 @@ def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: st
     # stack's numbers under the learned generator's name.
     calculator = build_calculator(
         robot_cfg,
+        data_dir=data_dir,
         camera_matrix=intrinsics,
         max_grip_width_mm=robot_cfg.gripper.max_width_mm,
         min_grip_width_mm=robot_cfg.gripper.min_width_mm,
@@ -268,14 +277,14 @@ def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: st
         _preload()
     calculators = _build_camera_calculators(
         robot_cfg, app_cfg, provider=provider, primary_rig_id=rig_id, primary=calculator,
-        multi_camera=multi_camera,
+        multi_camera=multi_camera, data_dir=data_dir,
     )
     return calculator, perception, None, multi_camera, calculators
 
 
 def _build_camera_calculators(
     robot_cfg: "RobotConfig", app_cfg: Any, *, provider: Any, primary_rig_id: str,
-    primary: Any, multi_camera: Any,
+    primary: Any, multi_camera: Any, data_dir: "str | Path | None" = None,
 ) -> "dict[str, Any] | None":
     """One calculator per camera, or None when one is enough.
 
@@ -320,6 +329,7 @@ def _build_camera_calculators(
             )
         calculators[cam_id] = build_calculator(
             robot_cfg,
+            data_dir=data_dir,
             camera_matrix=np.asarray(matrix, dtype=np.float64),
             max_grip_width_mm=robot_cfg.gripper.max_width_mm,
             min_grip_width_mm=robot_cfg.gripper.min_width_mm,
@@ -396,6 +406,7 @@ def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, provider:
 
 def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
                     app_config: "Maybe[AppConfig]" = UNSET,
+                    data_dir: "str | Path | None" = None,
                     **overrides: Any) -> "AutonomousGraspService":
     """A complete cell for physical hardware, from config, in one call.
 
@@ -408,6 +419,9 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
 
     ``app_config`` is the camera half's tree, and it must be the tree ``robot_cfg`` came from. See
     :func:`build_real_components` for what happened while the two could disagree.
+
+    ``data_dir`` is that tree's root, whose gripper registry answers for the cell's hand; ``None``
+    is the repository's tree.
     """
     from src.config import load_config
 
@@ -419,7 +433,7 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
     # other says nothing about whether either is the tree the caller asked for, and they were not.
     app_cfg = app_config if chosen(app_config) else load_config()
     calculator, perception, resolver, multi_camera, calculators = build_real_components(
-        robot_cfg, prompt, app_config=app_cfg)
+        robot_cfg, prompt, app_config=app_cfg, data_dir=data_dir)
     rig_id = app_cfg.camera.cameras.primary_rig_id
     service = AutonomousGraspService.from_robot_config(
         robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
@@ -479,8 +493,19 @@ def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception:
     )
     if world is None:
         return
-    setter(world)
     log = logging.getLogger(__name__)
+    if _answers_with_a_stereo_pair(streamer):
+        # A stereo pair has no depth of its own, so every refresh would answer no frame and every
+        # planned motion would raise after its fresh-frame attempts. Said once, here, the way a wrist
+        # camera is, and the cell plans against its declared world.
+        log.warning(
+            "no live planner world for this cell: camera %r answers with a stereo pair, which carries no "
+            "depth of its own, so a world built on it would stop every planned motion. Wire an RGB-D "
+            "camera, or turn safety.planning_world.perceived off",
+            getattr(streamer, "rig_id", "camera"),
+        )
+        return
+    setter(world)
     planner = getattr(getattr(robot_cfg, "ur", None), "motion_planner", None)
     if planner != "curobo":
         # The UR arm reads this world only inside its cuRobo planner, so on any other
@@ -495,7 +520,23 @@ def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception:
     )
 
 
-def build_rehearsal_cell(robot_cfg: "RobotConfig",
+def _answers_with_a_stereo_pair(streamer: Any) -> bool:
+    """Whether one grab from this rig is a stereo pair. A grab that fails says nothing.
+
+    A rig that cannot answer while the cell is built is judged at the motion, where the refresh asks
+    it again and raises if it stays silent. Only a rig that did answer, with two images and no depth,
+    is known here never to be able to carry a world.
+    """
+    from src.camera.setup.image_taking.frames import StereoFrame
+
+    try:
+        frame = streamer.grab()
+    except Exception:  # noqa: BLE001 (judged at the motion instead, see above)
+        return False
+    return isinstance(frame, StereoFrame)
+
+
+def build_rehearsal_cell(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,
                          **overrides: Any) -> "AutonomousGraspService":
     """A complete cell for a desk rehearsal: no camera, no models, and a dummy arm.
 
@@ -516,7 +557,7 @@ def build_rehearsal_cell(robot_cfg: "RobotConfig",
 
     robot_cfg = robot_cfg.model_copy(update={"vendor": "dummy"})
     calculator, perception, resolver, _no_cameras, _one_lens = (
-        build_rehearsal_components(robot_cfg))
+        build_rehearsal_components(robot_cfg, data_dir=data_dir))
     return AutonomousGraspService.from_robot_config(
         robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
         **overrides,

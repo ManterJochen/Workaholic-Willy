@@ -255,14 +255,15 @@ class TheCellNamesItsHandTests(unittest.TestCase):
         self.assertEqual(cfg.gripper.model, "robotiq_2f85")
 
     def test_a_name_no_registry_file_defines_still_passes_the_schema(self) -> None:
-        """Today's state, pinned so the step that reads the key flips it on purpose.
+        """Pinned so the step that reads the key flips it on purpose.
 
         The schema cannot see the registry: which files exist depends on the data directory a caller
-        loads, and a schema is validated without one. So `robotiq_hande` passes here although no file
-        describes it yet. The build that takes the hand from this key has to refuse such a name."""
-        cfg = RobotConfig.model_validate({"gripper": {"model": "robotiq_hande"}})
-        self.assertEqual(cfg.gripper.model, "robotiq_hande")
-        self.assertNotIn("robotiq_hande", available_grippers())
+        loads, and a schema is validated without one. So a name no file describes passes here, and the
+        build that takes the hand from this key has to refuse it. The name was `robotiq_hande` until lane
+        (i) shipped that hand's file."""
+        cfg = RobotConfig.model_validate({"gripper": {"model": "no_such_hand"}})
+        self.assertEqual(cfg.gripper.model, "no_such_hand")
+        self.assertNotIn("no_such_hand", available_grippers())
 
     def test_the_short_name_still_passes_the_schema(self) -> None:
         """Today's state, pinned for the same reason: the schema checks the name's shape only, and the build

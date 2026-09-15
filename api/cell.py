@@ -182,8 +182,8 @@ class Console:
             # One call, and the same one the CLI runner makes. Building the perception and grasp
             # side here and then calling `from_robot_config` separately is how a browser and a
             # terminal come to disagree about what "the cell" is.
-            service = (build_rehearsal_cell(robot) if rehearse
-                       else build_real_cell(robot, prompt=self.prompt, app_config=app_cfg))
+            service = (build_rehearsal_cell(robot, data_dir=self.root) if rehearse
+                       else build_real_cell(robot, prompt=self.prompt, app_config=app_cfg, data_dir=self.root))
             # Record logging is off in the shipped config (`grasping.record_log_path: null`), so a
             # console-driven cell would keep no history at all and a bring-up that goes wrong would
             # leave nothing to diagnose from afterwards. The console therefore turns it on itself,

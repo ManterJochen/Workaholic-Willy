@@ -8,8 +8,8 @@ The canonical model key, "ur5e" or "ur3e", is the one string the whole stack sha
 
   * the safety self-collision DH table, ``UR_DH_TABLES_M`` in
     :mod:`src.robot.safety._ur_kinematics`;
-  * the cuRobo robot config filename, ``{key}.yml``, built on-box by
-    ``scripts/curobo/build_{key}_config.py``;
+  * the cuRobo robot config filename, ``{key}_{hand}.yml`` with the cell's hand, built on-box
+    by ``scripts/curobo/build_ur_config.py``;
   * the ``kinematics_model`` of the safety config.
 
 This registry adds the two Isaac-specific parts that key cannot express: the Lula
@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 __all__ = [
+    "NO_DESCRIPTOR",
     "URModelSpec",
     "curobo_robot_yml",
     "ur_model_spec",
@@ -85,10 +86,15 @@ class URModelSpec:
     #:     ur10e            Gripper: [None, Robotiq_2f_140, Robotiq_2f_85] ships selected None
     #:
     #: So the variant exists and ships de-selected, and this field is what selects it. Four
-    #: of the six cannot offer a Robotiq, and those require ``SimConfig.gripper_mount``, or
-    #: the cell comes up as a bare 6-DoF arm and fails much later with a driven joint
-    #: 'finger_joint' missing from the gripper dof_names.
+    #: of the six cannot offer a Robotiq, and on those the sim mounts the hand standalone
+    #: (``sim_mount_for``), or the cell comes up as a bare 6-DoF arm and fails much later
+    #: with a driven joint 'finger_joint' missing from the gripper dof_names.
     baked_gripper_variant: str | None = None
+    #: The registry name of the hand ``baked_gripper_variant`` selects, or ``None`` where
+    #: nothing is baked. The sim mount is derived from it
+    #: (``willy_sim.grippers.sim_mount_for``): a cell whose hand is the one this asset bakes
+    #: selects the variant, and any other hand is mounted standalone.
+    baked_hand: str | None = None
     #: The link the eye-in-hand camera and the tool hang from, relative to the robot root
     #: prim. Every UR e-series shares ``wrist_3_link``. It is a field rather than a
     #: constant because the wrist link is the first thing a non-UR arm changes, and a
@@ -104,14 +110,14 @@ class URModelSpec:
 # drift in either direction. ur16e, ur20 and ur30 are deliberately absent: Isaac ships assets
 # and this repository has no DH row for them, so admitting them would invent kinematics.
 _UR_MODELS: dict[str, URModelSpec] = {
-    # UR3, CB-series. Bare asset, with no Gripper variant set at all, so a cell sets gripper_mount.
+    # UR3, CB-series. Bare asset, with no Gripper variant set at all, so the sim mounts the hand standalone.
     "ur3": URModelSpec(
         "ur3", "UR3", "/Isaac/Robots/UniversalRobots/ur3/ur3.usd",
         max_reach_mm=500.0, max_payload_kg=3.0,
         # Derived, not measured: the UR5e patch scaled by 500/850. The far corner sits at
         # 361.4 mm against a 434.2 mm horizontal radius at table height, so 72.8 mm of margin.
         workspace_center_mm=(260.0, 0.0), workspace_half_extents_mm=(90.0, 90.0)),
-    # ur3e ships bare, with no Gripper variant set, so a ur3e cell sets gripper_mount.
+    # ur3e ships bare, with no Gripper variant set, so the sim mounts the hand standalone.
     "ur3e": URModelSpec(
         "ur3e", "UR3e", "/Isaac/Robots/UniversalRobots/ur3e/ur3e.usd",
         max_reach_mm=500.0, max_payload_kg=3.0,
@@ -135,9 +141,9 @@ _UR_MODELS: dict[str, URModelSpec] = {
         # Measured: the validated pick patch the sim runners use, and the reference every
         # derived patch is scaled from. Far corner 618.5 mm against 793.5 mm of radius.
         workspace_center_mm=(450.0, 0.0), workspace_half_extents_mm=(150.0, 150.0),
-        baked_gripper_variant="Robotiq_2f_85"),
+        baked_gripper_variant="Robotiq_2f_85", baked_hand="robotiq_2f85"),
     # UR10, CB-series. Its Gripper variant set holds only suction tools and no Robotiq, so a jaw
-    # cell sets gripper_mount exactly as the bare models do.
+    # hand is mounted standalone exactly as on the bare models.
     "ur10": URModelSpec(
         "ur10", "UR10", "/Isaac/Robots/UniversalRobots/ur10/ur10.usd",
         max_reach_mm=1300.0, max_payload_kg=10.0,
@@ -152,7 +158,7 @@ _UR_MODELS: dict[str, URModelSpec] = {
         # then inherited the UR5e patch by default, so it claimed a 618 mm corner on an arm that
         # reaches 1247 mm. Far corner 948.3 mm now, against 1247.0 mm of radius.
         workspace_center_mm=(690.0, 0.0), workspace_half_extents_mm=(230.0, 230.0),
-        baked_gripper_variant="Robotiq_2f_85"),
+        baked_gripper_variant="Robotiq_2f_85", baked_hand="robotiq_2f85"),
 }
 
 
@@ -167,6 +173,25 @@ def ur_model_spec(model: str) -> URModelSpec:
     return spec
 
 
-def curobo_robot_yml(model: str) -> str:
-    """The cuRobo robot-config filename for ``model``, built on-box by ``scripts/curobo/build_{key}_config.py``."""
-    return f"{ur_model_spec(model).key}.yml"
+#: What a reading names as the descriptor of a cell that names no hand: no file, and the key to set.
+NO_DESCRIPTOR = "<none: robot.gripper.model is unset>"
+
+
+def curobo_robot_yml(model: str, hand: str) -> str:
+    """The cuRobo descriptor for ``model`` carrying ``hand``: ``{key}_{hand}.yml``.
+
+    Built on the box by ``scripts/curobo/build_ur_config.py {key} --gripper {hand}``. A descriptor
+    is the arm and the hand the planner routes, and a file named by the arm alone would be the same
+    name for every hand, so a cell that changed hands would keep planning the old one with nothing
+    on the box saying so. ``hand`` is ``robot.gripper.model``; a name the registry does not hold
+    names no file and raises, so a typo cannot point the planner at a descriptor nobody built.
+    """
+    from src.config.grippers import available_grippers
+
+    known = available_grippers()
+    if hand not in known:
+        raise ValueError(
+            f"no cuRobo descriptor is named for hand {hand!r}: the gripper registry holds {', '.join(known) or 'none'}, "
+            f"and a descriptor is named by robot.gripper.model"
+        )
+    return f"{ur_model_spec(model).key}_{hand}.yml"

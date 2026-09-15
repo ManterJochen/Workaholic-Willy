@@ -51,9 +51,10 @@ MARKER = "SPLIT_VIEW.json"
 
 #: Copied into each part. These are per-dataset files the extractor reads beside the scenes. The
 #: grasp table matters most: it is joined by `(file, row_index)`, so every part must see the whole
-#: of it, because a part's scenes carry row indices into the shared file.
+#: of it, because a part's scenes carry row indices into the shared file. Every jaw's label file and
+#: report go too, so the entries are glob patterns; a plain name matches itself.
 _SIDECARS = ("grasps.jsonl", "index.jsonl", "provenance.json", "ATTRIBUTION",
-             "grasp_label_report.json")
+             "grasp_label_report.json", "grasps_jaw_*.jsonl", "grasp_label_report_jaw_*.json")
 
 
 def _scene_names(dataset: Path) -> list[str]:
@@ -121,8 +122,9 @@ def split_dataset(dataset: Path, parts: int, *, out_root: Path | None = None) ->
             _remove_view(view, dataset)
         (view / "scenes").mkdir(parents=True)
         for sidecar in _SIDECARS:
-            if (dataset / sidecar).is_file():
-                shutil.copy(dataset / sidecar, view / sidecar)
+            for path in sorted(dataset.glob(sidecar)):
+                if path.is_file():
+                    shutil.copy(path, view / path.name)
         _link_scenes([((view / "scenes" / name).resolve(), (dataset / "scenes" / name).resolve())
                       for name in mine])
         linked = len(_scene_names(view))

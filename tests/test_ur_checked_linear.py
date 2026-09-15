@@ -56,7 +56,7 @@ class _RecordingPlanner:
         self._verdict = verdict
         self.checked: list[list[float]] | None = None
 
-    def check_joint_path(self, samples):
+    def check_joint_path(self, samples, *, refresh=True):
         self.checked = [list(s) for s in samples]
         if isinstance(self._verdict, Exception):
             raise self._verdict
@@ -81,10 +81,13 @@ def _arm(
         # The guards this file is not about: the fake controller answers every sample with the
         # same clear configuration, whose Jacobian a real cell would never see.
         "safety": {"payload": {"enforce": False}, "ik_quality": {"enforce": False}},
-        "gripper": {"tool_frame": {
+        # The frame of the one hand model this tree holds, approaching along flange +Y: a UR declaring the real
+        # flange's +Z refuses to build until a model of that hand exists (Step 4g). The line tests read the source
+        # and the turn, not the axis the offset runs along.
+        "gripper": {"model": "robotiq_2f85", "tool_frame": {
             "source": tool_source,
-            "offset_mm": (0.0, 0.0, 132.0),
-            "rotation_quat_xyzw": (0.0, 0.0, 0.0, 1.0),
+            "offset_mm": (0.0, 132.0, 0.0),
+            "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476),
         }},
     })
     arm = URRobotArm(config)
@@ -109,10 +112,13 @@ def _arm(
     arm.ik = fake_ik  # type: ignore[method-assign]
     arm._motion = MagicMock()
     arm._motion.move_to.return_value = True
-    # Where the arm is standing, in the frame the controller reports: 300 mm out, 300 mm up.
-    arm._motion.get_current_pose.return_value = URPose.from_ur_list(
-        [0.3, 0.0, 0.3, 0.0, 3.14159265, 0.0]
-    )
+    # Where the arm is standing, in the frame the controller reports: 300 mm out, 300 mm up, tool down. In polyscope
+    # mode the controller holds the tool and reports the grasp centre's rotation, (0, pi, 0); in willy mode it runs a
+    # bare flange, which the declared frame's -90 degrees about X turns back to tool down, so it reports the flange at
+    # (0, pi/sqrt(2), -pi/sqrt(2)). Both put the tool where every goal below starts, so a line that keeps (0, pi, 0)
+    # does not turn.
+    rotation = (0.0, 3.14159265, 0.0) if tool_source == "polyscope" else (0.0, 2.221441469079183, -2.221441469079183)
+    arm._motion.get_current_pose.return_value = URPose.from_ur_list([0.3, 0.0, 0.3, *rotation])
     if planner_kind == "curobo":
         arm._curobo_ur = planner if planner is not None else _RecordingPlanner()
     return arm

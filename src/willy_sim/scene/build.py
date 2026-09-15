@@ -210,6 +210,7 @@ def build_combined_scene(
     session: object,
     sim_cfg: SimConfig,
     *,
+    mount: MountedGripperSpec | None,
     marker_kind: str | None = None,
     aruco_length_mm: float | None = None,
     aruco_dict_name: str | None = None,
@@ -225,7 +226,8 @@ def build_combined_scene(
     ``sim_cfg`` is ``cfg.robot.sim``, a :class:`SimConfig`: scene geometry comes from
     ``sim_cfg.scene_setup`` (object, table and marker), the overhead camera from
     ``sim_cfg.cameras['overhead']``, the asset root from ``sim_cfg.assets_root`` and the gripper
-    variant from ``sim_cfg.gripper_variant``. Returns the overhead camera handle, one (prim path,
+    from ``mount``: ``None`` selects the asset's baked variant, a spec mounts that standalone gripper
+    (``willy_sim.grippers.sim_mount_for`` derives it). Returns the overhead camera handle, one (prim path,
     label) pair per authored object, the calibrated ``CAMERA -> BASE`` transform, and the marker prim
     path when a marker was authored.
 
@@ -254,34 +256,32 @@ def build_combined_scene(
     root = (sim_cfg.assets_root or get_assets_root_path()).rstrip("/")
 
     # 1) Combined robot: reference the configured UR model's USD, where robot_model selects the Isaac
-    # asset relpath, then select the gripper. The default is the baked Gripper USD variant, a Robotiq
-    # 2F-85. When sim_cfg.gripper_mount names a spec, select the "None" variant instead and mount a
-    # standalone vendor gripper on the wrist, which merges into the arm articulation.
+    # asset relpath, then put the hand on it. `mount` is derived from the hand and the asset by
+    # `willy_sim.grippers.sim_mount_for`: None selects the asset's baked Gripper variant, a spec selects
+    # the "None" variant and mounts that standalone vendor gripper on the wrist, which merges into the
+    # arm articulation.
     from src.robot.drivers.sim.robot_models import ur_model_spec
 
     _model = ur_model_spec(sim_cfg.robot_model)
-    # A model whose USD bakes no gripper, such as ur3e, must name a gripper_mount. Without this check
-    # the variant selection below silently no-ops, because SetVariantSelection returns False on a
-    # missing variant set, the cell comes up as a bare 6-DoF arm, and the first symptom is an
-    # IsaacGripper.connect() failure ("driven joint 'finger_joint' not in gripper dof_names") long
+    # A model whose USD bakes no gripper, such as ur3e, needs a mount. The derivation never hands this
+    # function None for such an asset; the check stays because without it the variant selection below
+    # silently no-ops, because SetVariantSelection returns False on a missing variant set, the cell
+    # comes up as a bare 6-DoF arm, and the first symptom is an IsaacGripper.connect() failure long
     # after the scene was built.
-    if _model.baked_gripper_variant is None and not sim_cfg.gripper_mount:
+    if _model.baked_gripper_variant is None and mount is None:
         raise ValueError(
-            f"robot_model={_model.key!r} ships NO baked gripper variant, so sim.gripper_mount must name a "
-            f"standalone gripper (e.g. 'robotiq_2f85'; the same 2F-85 the ur5e asset bakes in). "
-            f"Set robot.sim.gripper_mount in the config."
+            f"robot_model={_model.key!r} ships NO baked gripper variant, so the hand has to be mounted "
+            f"standalone: derive the mount from robot.gripper.model with willy_sim.grippers.sim_mount_for."
         )
     add_reference_to_stage(root + _model.usd_relpath, arm_prim_path)
     stage = omni.usd.get_context().get_stage()
     arm_prim = stage.GetPrimAtPath(arm_prim_path)
-    if sim_cfg.gripper_mount:
-        from src.willy_sim.grippers import resolve_mounted_gripper
-
+    if mount is not None:
         arm_prim.GetVariantSets().GetVariantSet("Gripper").SetVariantSelection("None")
         stage.Load(Sdf.Path(arm_prim_path))
-        _mount_standalone_gripper(stage, arm_prim_path, resolve_mounted_gripper(sim_cfg.gripper_mount), root)
+        _mount_standalone_gripper(stage, arm_prim_path, mount, root)
     else:
-        arm_prim.GetVariantSets().GetVariantSet("Gripper").SetVariantSelection(sim_cfg.gripper_variant)
+        arm_prim.GetVariantSets().GetVariantSet("Gripper").SetVariantSelection(_model.baked_gripper_variant)
         stage.Load(Sdf.Path(arm_prim_path))
 
     # 2) Table (static) + object (dynamic, graspable).
@@ -630,7 +630,7 @@ def build_combined_scene(
         "scene built: robot=%s(%s) gripper=%s objects=%d %s walls=%d klt=%s marker=%s "
         "camera=%s res=%dx%d pos=%s mm camera_to_base=%s",
         sim_cfg.robot_model, arm_prim_path,
-        sim_cfg.gripper_mount or f"baked:{sim_cfg.gripper_variant}",
+        mount.name if mount is not None else f"baked:{_model.baked_gripper_variant}",
         len(object_specs), [label for _, label in object_specs], len(bin_walls or []),
         real_klt_bin is not None, marker_kind, cam_prim, cam_res[0], cam_res[1],
         np.round(np.asarray(cam_pos, dtype=np.float64) * 1000.0, 1).tolist(),

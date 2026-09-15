@@ -44,6 +44,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from src.contracts import UNSET, Maybe, chosen
+
 from ._capsule import (
     AxisAlignedBox,
     Capsule,
@@ -56,6 +58,8 @@ from .guard import SafetyContext
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import SelfCollisionSafetyConfig
+
+    from .planning.hand import PlannerHand
 
 __all__ = ["SelfCollisionGuard"]
 
@@ -80,8 +84,16 @@ class SelfCollisionGuard:
 
     name = "self_collision"
 
-    def __init__(self, config: "SelfCollisionSafetyConfig") -> None:
+    def __init__(
+        self, config: "SelfCollisionSafetyConfig", *, hand: "Maybe[PlannerHand]" = UNSET,
+    ) -> None:
         self._config = config
+        # The hand this guard models, resolved from robot.gripper.model: its variant picks
+        # the mesh bundle and its coupling moves a mounting-face hand onto the flange.
+        # UNSET where the guard is built directly, which keeps the arm bundle's own hand;
+        # SafetyPreflight.from_safety_config refuses to build a guard that reads hand
+        # geometry with no hand named.
+        self._hand = hand
         self._min_distance_mm = float(config.min_distance_mm)
         # What the planner keeps clear, so it stops proposing configurations this guard
         # rejects. It is separate from _min_distance_mm on purpose; SelfCollisionConfig
@@ -359,6 +371,16 @@ class SelfCollisionGuard:
         """
         return float(self._min_distance_mm)
 
+    @property
+    def hand(self) -> "Maybe[PlannerHand]":
+        """The hand this guard models, or ``UNSET`` where it keeps the arm bundle's own."""
+        return self._hand
+
+    @property
+    def base_yaw_deg(self) -> float:
+        """The yaw, in degrees, this guard turns the bundled DH base by to place the arm."""
+        return float(self._config.kinematics_base_yaw_deg)
+
     def model_for(self, arm: "object | None") -> str | None:
         """The robot model this guard judges ``arm`` as, or ``None`` if none derives.
 
@@ -385,10 +407,11 @@ class SelfCollisionGuard:
         """Build the exact-mesh backend once for ``model`` and cache it, ``None`` included."""
         if not self._fcl_backend_built:  # build the BVH models once, caching None too
             from ._fcl_self_collision import make_backend, mesh_backend_status
-            variant = getattr(self._config, "collision_mesh_variant", None)
+            hand = self._hand
+            variant = hand.guard_variant if chosen(hand) else None
+            coupling_mm = hand.coupling_mm if chosen(hand) else 0.0
             self._fcl_backend = make_backend(
-                model, self._config.mesh_dir, variant,
-                coupling_mm=float(getattr(self._config, "coupling_mm", 0.0) or 0.0),
+                model, self._config.mesh_dir, variant, coupling_mm=coupling_mm,
             )
             self._fcl_backend_built = True
             # The config asked for the exact-mesh backend. Falling back to the coarser

@@ -143,9 +143,9 @@ class EveryWorkspaceFitsItsOwnArmTests(unittest.TestCase):
 
 
 class TheAssetSaysWhetherAGripperHasToBeMountedTests(unittest.TestCase):
-    """MEASURED across the six assets: four of them offer no Robotiq at all, and a cell on one of
-    those without `gripper_mount` comes up as a bare arm and fails much later inside the gripper
-    driver rather than at build."""
+    """MEASURED across the six assets: four of them offer no Robotiq at all, so on those the sim
+    mounts the hand standalone (`sim_mount_for`). A cell that got no mount there would come up as a
+    bare arm and fail much later inside the gripper driver rather than at build."""
 
     #: The models whose Isaac asset carries no Robotiq variant. `ur10`'s Gripper set holds only
     #: suction tools, which is why it is here despite having a set at all.
@@ -172,7 +172,7 @@ class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
     that catches a mismatch compares one arm link against the model's OWN bundle.
 
     ⛔ So the check is blind exactly when an arm is new. MEASURED on 2026-09-09, before the fix:
-    `ur10e` with `collision_mesh_variant: schunk_egu50` reported `ok` and checked a UR10e against
+    `ur10e` with the `schunk_egu50` hand's bundle reported `ok` and checked a UR10e against
     UR5e arm meshes, while the same variant on a `ur3e` correctly reported `variant_model_mismatch`.
     The only difference was that ur3e has a bundle to be compared with.
 

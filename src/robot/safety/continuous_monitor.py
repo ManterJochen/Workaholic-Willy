@@ -113,6 +113,7 @@ class ContinuousCollisionMonitor:
         profile: ContinuousGuardProfile,
         mesh_dir: str | None = None,
         variant: str | None = None,
+        coupling_mm: float = 0.0,
     ) -> ContinuousCollisionMonitor | None:
         """Build the monitor, or ``None`` where the mesh backend has no engine or no bundle.
 
@@ -120,15 +121,15 @@ class ContinuousCollisionMonitor:
         A caller whose profile asked for the guard warns rather than running unguarded
         in silence.
 
-        ``model``, ``yaw_deg`` and ``variant`` are the ones the one-shot guard uses. A
-        monitor built on different geometry from the guard beside it is two opinions
-        about the same arm.
+        ``model``, ``yaw_deg``, ``variant`` and ``coupling_mm`` are the ones the one-shot
+        guard uses. A monitor built on different geometry from the guard beside it is two
+        opinions about the same arm.
         """
         # The variant matters as much as the model. Without it, a cell running a
         # mounted gripper has the one-shot guard on that gripper meshes and the
         # in-motion monitor on the baked 2F-85 meshes, so the two disagree about the
         # shape of the thing at the end of the arm.
-        backend = make_backend(model, mesh_dir, variant)
+        backend = make_backend(model, mesh_dir, variant, coupling_mm=coupling_mm)
         if backend is None:
             return None
         return cls(backend, model, yaw_deg, fixtures, profile)

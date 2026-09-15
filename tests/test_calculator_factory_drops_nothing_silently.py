@@ -48,7 +48,8 @@ def _config(choice: str, artifact: str = ""):
     """A stand-in for RobotConfig carrying only what the factory reads."""
     from types import SimpleNamespace
 
-    return SimpleNamespace(grasping=SimpleNamespace(
+    # The hand, since lane (i) D2: the factory refuses a deep cell that names none, or one its artifact never saw.
+    return SimpleNamespace(gripper=SimpleNamespace(model="robotiq_2f85"), grasping=SimpleNamespace(
         calculator=choice,
         deep_generator=SimpleNamespace(artifact_path=artifact, device="cpu", minimum_score=0.5),
         support=SimpleNamespace(height_mm=0.0)))
@@ -56,7 +57,8 @@ def _config(choice: str, artifact: str = ""):
 
 def _artifact(directory: Path) -> str:
     path = directory / "generator.pt"
-    torch.save({"kind": ARTIFACT_KIND, "artifact_version": ARTIFACT_VERSION}, path)
+    torch.save({"kind": ARTIFACT_KIND, "artifact_version": ARTIFACT_VERSION,
+                "gripper": "2f85", "trained_grippers": ["2f85"]}, path)
     return str(path)
 
 

@@ -1689,21 +1689,10 @@ class GraspingDeepGeneratorConfig(StrictModel):
             "explicitly only by a cell that has a reason: a second GPU, or a deliberate CPU run."
         ),
     )
-    #: Which hand this cell has, for a model fitted across several (`narrow_55`, `slim_pad`,
-    #: `wide_140`). The choice is not cosmetic: measured on `arm_gripper`, mean proposed width
-    #: is 32.69 mm for the 55 mm hand, 43.31 for 85 and 70.46 for 140.
-    #:
-    #: `None` keeps the artifact's stamp, so an existing cell is byte-identical. Naming a hand the
-    #: artifact never trained across is refused rather than served, because a conditioning vector the
-    #: model has not seen produces grasps that read as a bad model rather than as a wrong hand.
-    #: Names come from `deep/net/gripper.py::JAW_GEOMETRY`.
-    gripper: str | None = Field(
-        default=None,
-        description=(
-            "Which JAW_GEOMETRY hand this cell has, for the deep generator's conditioning vector. "
-            "None uses the hand the artifact was stamped for. A hand the artifact never trained "
-            "across is refused."),
-    )
+    #: No field here names the hand. The generator conditions on the cell's hand,
+    #: `robot.gripper.model`, the one name a hand has, which the calculator factory checks against the
+    #: artifact's trained hands at build. `schema/_removed.py` refuses a tree that still writes
+    #: `gripper` here.
     minimum_score: float = Field(
         default=0.5, ge=0.0, le=1.0,
         description=(

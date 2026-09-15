@@ -111,12 +111,12 @@ class ErrorMessageTests(_Tree):
         self.assertIn(f"robot.sim.yaml:{line}", msg)
 
     def test_it_names_the_layer_the_file_belongs_to(self) -> None:
-        self._break("robot/robot.ur3e.yaml", 'gripper_mount: "robotiq_2f85"', 'gripper_mnt: "robotiq_2f85"')
+        self._break("robot/robot.ur3e.yaml", 'robot_model: "ur3e"', 'robot_mdl: "ur3e"')
         msg = self._load_error("sim,ur3e")
         self.assertIn("[layer: ur3e]", msg)
 
     def test_it_reports_the_whole_chain(self) -> None:
-        self._break("robot/robot.ur3e.yaml", 'gripper_mount: "robotiq_2f85"', 'gripper_mnt: "robotiq_2f85"')
+        self._break("robot/robot.ur3e.yaml", 'robot_model: "ur3e"', 'robot_mdl: "ur3e"')
         self.assertIn("sim -> ur3e", self._load_error("sim,ur3e"))
 
     def test_it_suggests_the_key_the_user_meant(self) -> None:

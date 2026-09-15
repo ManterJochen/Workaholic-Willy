@@ -690,15 +690,19 @@ def label_scene(
     parts: "Mapping[str, Sequence[Any]] | None" = None,
     mesh_paths: "Mapping[str, str] | None" = None,
     density: LabelDensity = DEFAULT_DENSITY,
+    suction: bool = True,
 ) -> tuple[list[GraspLabel], dict[str, int]]:
-    """All grasp labels for one scene, jaw and suction, with the pooled rejection histogram."""
+    """All grasp labels for one scene, jaw and suction, with the pooled rejection histogram.
+
+    ``suction=False`` labels the jaw alone, for a per-jaw run: suction does not depend on the hand.
+    """
     geometry = scene_geometry(payload, extents, scene_id, parts=parts, mesh_paths=mesh_paths)
     labels: list[GraspLabel] = []
     rejected: dict[str, int] = {}
     for instance_id in sorted(geometry.objects):
         for produced, refused in (
             label_jaw_grasps(geometry, instance_id, model=model, density=density),
-            label_suction_grasps(geometry, instance_id, density=density),
+            label_suction_grasps(geometry, instance_id, density=density) if suction else ([], {}),
         ):
             labels.extend(produced)
             for reason, count in refused.items():
@@ -730,12 +734,37 @@ def _scene_order(directories: list[Path], *, balanced: bool) -> list[Path]:
     return out
 
 
+def jaw_model_for(name: str, *, data_dir: "str | Path | None" = None) -> JawModel:
+    """The jaw a label run is made for: a procedural jaw by name, else a registry hand by model name.
+
+    A registry hand's file builds the jaw with the labeller's policy at its defaults
+    (:meth:`JawModel.from_spec`), read from ``data_dir``'s registry (``None`` is the repository's) with
+    its model name only, so a short name such as ``2f85`` refuses: the output file is named after the
+    jaw, and one hand under two names is two files. Raises ``ValueError`` saying "unknown jaw" for a
+    name neither knows, before anything is written.
+    """
+    if name in PROCEDURAL_JAWS:
+        return PROCEDURAL_JAWS[name]
+    from src.config.grippers import available_grippers, load_gripper  # noqa: PLC0415
+    from src.config.loader import ConfigError  # noqa: PLC0415
+
+    try:
+        spec = load_gripper(name, data_dir=data_dir, aliases=False)
+    except ConfigError as exc:
+        raise ValueError(
+            f"unknown jaw {name!r}; choose from {', '.join(sorted(PROCEDURAL_JAWS))} or a registry hand "
+            f"({', '.join(available_grippers(data_dir))}): {exc}") from exc
+    return JawModel.from_spec(spec.jaw)
+
+
 def label_dataset(root: Path, *, limit: int | None = None, label_budget: int | None = None,
                   density: LabelDensity = DEFAULT_DENSITY, jaw: str | None = None) -> dict:
     """Write ``root/grasps.jsonl``. Pure geometry, no GPU, no Isaac, re-runnable in minutes.
 
-    ``jaw`` names an entry of :data:`PROCEDURAL_JAWS` and labels the scenes for that gripper instead
-    of the 2F-85. It exists for one job: the learned generator takes a gripper description as an
+    ``jaw`` names an entry of :data:`PROCEDURAL_JAWS` or a registry hand (config/grippers, by model
+    name, see :func:`jaw_model_for`) and labels the scenes for that gripper instead of the 2F-85, into
+    its own file and with jaw rows only: suction does not depend on the hand, and ``grasps.jsonl``
+    already carries it. It exists for one job: the learned generator takes a gripper description as an
     input, and with a single gripper that input is constant across every sample, carries no
     gradient, and leaves a seam that looks wired while doing nothing.
 
@@ -746,12 +775,8 @@ def label_dataset(root: Path, *, limit: int | None = None, label_budget: int | N
     input, so a non-default gripper writes ``grasps_jaw_<name>.jsonl`` and cannot reach the corpus
     labels at all.
     """
-    model = None
-    if jaw is not None:
-        if jaw not in PROCEDURAL_JAWS:
-            raise ValueError(f"unknown jaw {jaw!r}; choose from "
-                             f"{', '.join(sorted(PROCEDURAL_JAWS))}")
-        model = PROCEDURAL_JAWS[jaw]
+    # Resolved before anything is opened, so a name nobody knows truncates nothing.
+    model = None if jaw is None else jaw_model_for(jaw)
     stem = "grasps" if jaw is None else f"grasps_jaw_{jaw}"
     report_name = ("grasp_label_report.json" if jaw is None
                    else f"grasp_label_report_jaw_{jaw}.json")
@@ -794,7 +819,7 @@ def label_dataset(root: Path, *, limit: int | None = None, label_budget: int | N
             logger.info("labelling %s: %d scene(s), %d label(s) so far (%d jaw, %d suction) in "
                         "%.0f s", root.name, scenes, counts["rows"], counts["jaw"],
                         counts["suction"], time.perf_counter() - started)
-        labels, refused = assets.label(payload, scene_dir.name, model=model)
+        labels, refused = assets.label(payload, scene_dir.name, model=model, suction=jaw is None)
         family = str(payload["spec"].get("family", ""))
         bucket = per_family.setdefault(family, {"scenes": 0, "objects": 0, "jaw": 0, "suction": 0,
                                                 "objects_with_jaw": 0, "objects_with_suction": 0})
@@ -890,12 +915,12 @@ class SceneAssets:
             payload, self.extents, scene_id, parts=self.parts, mesh_paths=self.mesh_paths)
 
     def label(
-        self, payload: dict, scene_id: str, *, model: JawModel | None = None,
+        self, payload: dict, scene_id: str, *, model: JawModel | None = None, suction: bool = True,
     ) -> tuple[list[GraspLabel], dict[str, int]]:
         """Every label for one scene. The counterpart of :meth:`geometry`, same guarantee."""
         return label_scene(
             payload, self.extents, scene_id, model=model,
-            parts=self.parts, mesh_paths=self.mesh_paths, density=self.density)
+            parts=self.parts, mesh_paths=self.mesh_paths, density=self.density, suction=suction)
 
 
 #: What the asset cache is written to, inside the dataset it describes.

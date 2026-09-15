@@ -41,7 +41,7 @@ def _cfg(source="willy", **tool):
     return RobotConfig.model_validate({
         "vendor": "ur",
         "safety": {"payload": {"enforce": False}},
-        "gripper": {"tool_frame": {
+        "gripper": {"model": "robotiq_2f85", "tool_frame": {
             "source": source, "offset_mm": _2F85_OFFSET, "rotation_quat_xyzw": _2F85_QUAT, **tool,
         }},
     })
@@ -116,7 +116,7 @@ class ConnectGateTests(unittest.TestCase):
     def test_undeclared_refuses_before_the_socket_opens(self):
         """Silence is an unmeasured cell, not a default."""
         arm = URRobotArm(RobotConfig.model_validate(
-            {"vendor": "ur", "safety": {"payload": {"enforce": False}}}))
+            {"vendor": "ur", "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"}}))
         arm._conn = _conn(None)
         with self.assertRaises(RobotConnectionError) as ctx:
             arm.connect()
@@ -260,11 +260,11 @@ class SchemaTests(unittest.TestCase):
         flange face -- an unmeasured cell wearing a measured cell's clothes."""
         for source in ("willy", "polyscope"):
             with self.subTest(source=source), self.assertRaises(ValueError):
-                RobotConfig.model_validate({"gripper": {"tool_frame": {"source": source}}})
+                RobotConfig.model_validate({"gripper": {"model": "robotiq_2f85", "tool_frame": {"source": source}}})
 
     def test_an_unnormalised_quaternion_is_rejected(self):
         with self.assertRaises(ValueError):
-            RobotConfig.model_validate({"gripper": {"tool_frame": {
+            RobotConfig.model_validate({"gripper": {"model": "robotiq_2f85", "tool_frame": {
                 "source": "willy", "offset_mm": (0.0, 132.0, 0.0),
                 "rotation_quat_xyzw": (0.0, 0.0, 0.0, 0.5),
             }}})
@@ -305,7 +305,7 @@ class PlannerAndGuardConsumeTheTruthTests(unittest.TestCase):
             "vendor": "ur",
             "ur": {"motion_planner": "curobo"},
             "safety": {"payload": {"enforce": False}},
-            "gripper": {"tool_frame": {
+            "gripper": {"model": "robotiq_2f85", "tool_frame": {
                 "source": source, "offset_mm": _2F85_OFFSET, "rotation_quat_xyzw": _2F85_QUAT,
             }},
         })
@@ -359,7 +359,7 @@ class PlannerAndGuardConsumeTheTruthTests(unittest.TestCase):
     def test_an_undeclared_tool_frame_leaves_curobo_untouched(self):
         """Undeclared never reaches motion (connect() refuses), so the conversion must be a no-op there
         rather than silently applying a zero transform that looks like a real one."""
-        cfg = RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "curobo"}})
+        cfg = RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "curobo"}, "gripper": {"model": "robotiq_2f85"}})
         arm = URRobotArm(cfg)
         tcp = self._tcp()
         np.testing.assert_allclose(arm._pose_to_flange(tcp).position_mm, tcp.position_mm, atol=0.0)
@@ -396,7 +396,7 @@ class EveryControllerCommandIsTheFlangeInWillyModeTests(unittest.TestCase):
             "vendor": "ur",
             "ur": {"motion_planner": "ik"},
             "safety": {"payload": {"enforce": False}},
-            "gripper": {"tool_frame": {
+            "gripper": {"model": "robotiq_2f85", "tool_frame": {
                 "source": source, "offset_mm": _2F85_OFFSET, "rotation_quat_xyzw": _2F85_QUAT,
             }},
         })
@@ -498,7 +498,7 @@ class TheControllerBoxJudgesTheGraspCentreTests(unittest.TestCase):
             "vendor": "ur",
             "ur": {"motion_planner": "ik"},
             "safety": {"payload": {"enforce": False}},
-            "gripper": {"tool_frame": {
+            "gripper": {"model": "robotiq_2f85", "tool_frame": {
                 "source": "willy", "offset_mm": _2F85_OFFSET, "rotation_quat_xyzw": _2F85_QUAT,
             }},
         })

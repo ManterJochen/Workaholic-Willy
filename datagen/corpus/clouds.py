@@ -82,11 +82,13 @@ logger = create_logger("CloudCorpus", CORPUS_GATE_LOG_FILE, log_dir=DATAGEN_LOG_
 #:   3  + grasp_asset_id, object_instance, object_asset_id  (asset-disjoint splits)
 #:   4  + engine
 #:   5  + gripper, which jaw the labels were written for
+#:   6  + another hand's grasp table beside the cloud, `<scene>.<model>.grasps`
+#:        (`datagen.corpus.tables`); the cloud's own arrays are unchanged
 #:
-#: 4 and 5 are stamps, not arrays a sample is built from, so `sample._MINIMUM_CORPUS_VERSION` stays
-#: at 3 for both. Raising the floor for a key the reader does not consume would invalidate every
-#: corpus already extracted, over nothing.
-CORPUS_VERSION = 5
+#: 4, 5 and 6 add no array a sample is built from, so `sample._MINIMUM_CORPUS_VERSION` stays at 3 for
+#: all three. Raising the floor for a key the reader does not consume would invalidate every corpus
+#: already extracted, over nothing.
+CORPUS_VERSION = 6
 
 #: What the engine stamp says for a corpus built before the stamp existed. Not "isaac": a corpus whose
 #: engine nobody recorded is a corpus whose engine nobody knows, and guessing the majority case is
@@ -151,7 +153,8 @@ _HELD_UNMEASURED = -1
 #: `finger_behind_mm` 33.37 and `approach_clearance_mm` 80.0; the sum is where the corridor starts,
 #: and `check_jaw_grasp` refuses a grasp whose start is under the support plane. Duplicated here as a
 #: number rather than imported as a model, because this is a filter over labels that already exist:
-#: the authority is `verdict.py`, and if the two ever disagree that file wins.
+#: the authority is `verdict.py`, and if the two ever disagree that file wins. It is the 2F-85's: a
+#: table made for another jaw takes that jaw's corridor (`scene_grasp_table`).
 _APPROACH_START_MM = 113.37
 
 
@@ -376,8 +379,14 @@ def _suction_table(rows: list[dict]) -> dict[str, np.ndarray]:
 def scene_grasp_table(rows: list[dict], geometry: Any = None,
                       held: dict[tuple[str, int], bool] | None = None,
                       assets: dict[int, str] | None = None,
-                      kinds: Sequence[str] = ("jaw",)) -> dict[str, np.ndarray]:
+                      kinds: Sequence[str] = ("jaw",), *, origin: str = "grasps",
+                      model: Any = None) -> dict[str, np.ndarray]:
     """Every label of the requested kinds on one scene, with physics, part role and contacts.
+
+    ``origin`` is the stem of the label file the rows were read from, the first half of the join key,
+    and ``model`` the ``JawModel`` those labels were made for, whose pads the contacts are taken from
+    (``None`` is the 2F-85). A per-jaw extraction passes both, so it joins its own verdicts onto its
+    own rows and takes its own contacts.
 
     ``held`` is keyed ``(origin, row_index)`` exactly as the shake writes it, so a verdict reaches
     its label by file and line. A pose join is ambiguous by construction, because a label row and the
@@ -419,11 +428,15 @@ def scene_grasp_table(rows: list[dict], geometry: Any = None,
 
     verdicts = []
     for row in keep:
-        key = ("grasps", int(row["_row_index"]))
+        key = (origin, int(row["_row_index"]))
         verdicts.append(int(held[key]) if key in held else _HELD_UNMEASURED)
     approach = np.asarray([r["approach"] for r in keep], dtype=np.float64)
     position = np.asarray([r["position_mm"] for r in keep], dtype=np.float64)
     axis = np.asarray([r["closing_axis"] for r in keep], dtype=np.float64)
+    # Where the corridor starts for the jaw these labels were made for: its measured reach plus the
+    # approach clearance. Without a jaw it is the 2F-85's constant, so an earlier table is unchanged.
+    corridor = (_APPROACH_START_MM if model is None
+                else float(model.finger_behind_mm + model.approach_clearance_mm))
 
     contacts: list[np.ndarray] = []
     owners: list[np.ndarray] = []
@@ -436,7 +449,7 @@ def scene_grasp_table(rows: list[dict], geometry: Any = None,
                 continue
             patch = jaw_contact_patch(
                 JawGrasp(position[index], approach[index], axis[index], float(row["width_mm"])),
-                target)
+                target, model=model)
             if len(patch):
                 contacts.append(patch)
                 owners.append(np.full(len(patch), index, dtype=np.int32))
@@ -454,7 +467,7 @@ def scene_grasp_table(rows: list[dict], geometry: Any = None,
         # holds grasps reached from underneath, and it cannot be re-labelled without shifting every
         # row index the shake's verdicts join by, which is (file, line). Training on those would
         # teach a generator to propose them.
-        "grasp_approach_admissible": (position[:, 2] - approach[:, 2] * _APPROACH_START_MM > 0.0),
+        "grasp_approach_admissible": (position[:, 2] - approach[:, 2] * corridor > 0.0),
         # `handle`, `body`, `grip`, `neck`, `head`, or "" for a single-primitive object. The only
         # supervision an affordance head can have, and it is already in the label record.
         "grasp_part_role": np.asarray([str(r.get("part_role", "")) for r in keep], dtype="<U8"),
@@ -526,6 +539,18 @@ def _gripper_of(root: Path, labels: str) -> str:
     return expected
 
 
+def _jaw_model_of(gripper: str) -> Any:
+    """The ``JawModel`` a label file's gripper names, through the lookup `label_dataset` uses.
+
+    ``None`` is the 2F-85.
+
+    Raises ``ValueError`` for a name that lookup does not know, in its words.
+    """
+    from datagen.grasps.labels import jaw_model_for  # noqa: PLC0415 (heavy import chain)
+
+    return None if gripper == "2f85" else jaw_model_for(gripper)
+
+
 def _refuse_foreign_overwrite(target: Path, dataset: str) -> None:
     """Refuse to write over a scene that came from a different dataset.
 
@@ -577,6 +602,9 @@ def build_cloud_corpus(root: str | Path, out_dir: str | Path, *, scenes: int | N
     # the extracted clouds are concerned, even though the scenes are the same files.
     identity = root.name if labels == "grasps.jsonl" else f"{root.name}::{Path(labels).stem}"
     gripper = _gripper_of(root, labels)
+    # The jaw these labels were made for, so a per-jaw table takes its contacts from its own pads, and
+    # the file they came from, so its verdicts are the ones keyed by that file.
+    jaw_model = _jaw_model_of(gripper)
     label_path = root / labels
     # A dataset with no labels is a legitimate one (a freshly rendered corpus, or scenes extracted
     # for inference) and the clouds are exactly as valid without them. Refusing here would make the
@@ -619,7 +647,8 @@ def build_cloud_corpus(root: str | Path, out_dir: str | Path, *, scenes: int | N
         assets_by_instance = {index: str(entry.get("asset_id") or "")
                               for index, entry in enumerate(spec_objects)}
         table = scene_grasp_table(by_scene.get(scene_dir.name, []), geometry, verdicts,
-                                  assets_by_instance, kinds=kinds)
+                                  assets_by_instance, kinds=kinds, origin=Path(labels).stem,
+                                  model=jaw_model)
         # One dict and an ignore, the same shape `write_corpus` uses: `savez_compressed`'s stub types
         # its second positional as `allow_pickle`, so every array beyond the path trips the checker.
         engine = _engine_of(root)

@@ -46,11 +46,12 @@ class URModelRegistryTests(unittest.TestCase):
         self.assertIn("ur5e", str(ctx.exception))  # the message lists what IS supported
 
     def test_curobo_robot_yml_round_trip(self) -> None:
-        self.assertEqual(curobo_robot_yml("ur3e"), "ur3e.yml")
-        self.assertEqual(curobo_robot_yml("ur5e"), "ur5e.yml")
-        self.assertEqual(curobo_robot_yml("UR3e"), "ur3e.yml")
+        """Named by arm and hand from Step 4i (owner Q5): a descriptor for one hand is not another hand's."""
+        self.assertEqual(curobo_robot_yml("ur3e", "robotiq_2f85"), "ur3e_robotiq_2f85.yml")
+        self.assertEqual(curobo_robot_yml("ur5e", "robotiq_hande"), "ur5e_robotiq_hande.yml")
+        self.assertEqual(curobo_robot_yml("UR3e", "robotiq_2f85"), "ur3e_robotiq_2f85.yml")
         with self.assertRaises(ValueError):
-            curobo_robot_yml("nope")
+            curobo_robot_yml("nope", "robotiq_2f85")
 
     def test_registry_and_schema_key_sets_match(self) -> None:
         """Drift guard: the config layer cannot import the driver package (it is the bottom of the dependency

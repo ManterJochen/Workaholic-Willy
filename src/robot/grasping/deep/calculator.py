@@ -109,6 +109,12 @@ class DeepCalculatorConfig:
     #: stack filters at generation for the same reason.
     min_grip_width_mm: float = 0.0
     max_grip_width_mm: float = 0.0
+    #: The hand this cell has, by registry model name, or ``None`` for the hand the artifact was
+    #: stamped for. The factory checks it against the artifact's trained hands at build, and the
+    #: loader again.
+    gripper: str | None = None
+    #: The config tree whose gripper registry resolves that hand, or ``None`` for the repository's.
+    data_dir: str | None = None
 
 
 def _resolve_device(preference: str | None) -> "torch.device":
@@ -150,7 +156,7 @@ class DeepGraspCalculator:
         # The protocol requires an implementation to ignore arguments it does not understand rather
         # than crash, so a new config block cannot break a second implementation.
         known = {"artifact_path", "camera_matrix", "max_candidates", "device", "minimum_score",
-                 "support_height_mm"}
+                 "support_height_mm", "gripper", "data_dir"}
         if config is None:
             config = DeepCalculatorConfig(**{k: v for k, v in overrides.items() if k in known})
         self.config = config
@@ -226,30 +232,34 @@ class DeepGraspCalculator:
         )
 
         device = _resolve_device(self.config.device)
-        loaded = load_set_generator(path, device=str(device))
+        loaded = load_set_generator(path, device=str(device), data_dir=self.config.data_dir)
         self._model = loaded.net
         self._net_config = loaded.net.config
         self._family = "set"
-        # The artifact's stamp conditions the net, and the cell's hand cannot override it.
-        # `DeepCalculatorConfig` has no `gripper` field and `build_calculator` passes none, so
-        # `wanted` is always None, the refusal below is unreachable, and `loaded.gripper` is what
-        # the net is conditioned on. `robot.grasping.deep_generator.gripper` is a schema key with
-        # no reader. A model fitted across `narrow_55`, `slim_pad` and `wide_140` therefore
-        # proposes for the stamped hand alone, and the difference is not cosmetic: the width it
-        # proposes follows the hand it is conditioned on.
+        # The cell's hand, where the config names one, conditions the net instead of the artifact's
+        # stamp. Conditioning on the stamp alone makes a model fitted across `narrow_55`, `slim_pad`
+        # and `wide_140` propose for the stamped hand whatever is bolted on, and the difference is
+        # not cosmetic: the width it proposes follows the hand it is conditioned on.
         #
-        # The rule the refusal states: a hand the artifact never trained across is refused, not
-        # served, because a conditioning vector the model has not seen produces grasps that read as
-        # a bad model rather than as a wrong hand, which is the hardest failure in this stack to
-        # attribute.
-        wanted = getattr(self.config, "gripper", None)
-        if wanted is not None and wanted not in loaded.grippers:
-            raise ValueError(
-                f"robot.grasping.deep.gripper is {wanted!r}, and {path.name} was trained across "
-                f"{', '.join(loaded.grippers)}. Refusing to condition on a hand this model has never "
-                f"seen: the grasps would read as a bad model rather than as a wrong gripper. Train "
-                f"an artifact whose corpus carries {wanted!r}, or leave the field unset to use the "
-                f"hand the artifact was stamped for ({loaded.gripper}).")
+        # A hand the artifact never trained across is refused, not served, because a conditioning
+        # vector the model has not seen produces grasps that read as a bad model rather than as a
+        # wrong hand, which is the hardest failure in this stack to attribute.
+        #
+        # One name on both sides. The cell names its hand by registry model, `robotiq_2f85`, and an
+        # artifact written before the registry is stamped with its alias, `2f85`, so both are
+        # compared canonically.
+        wanted = self.config.gripper
+        if wanted is not None:
+            from src.robot.grasping.deep.hands import canonical_hand  # noqa: PLC0415
+
+            wanted = canonical_hand(wanted, data_dir=self.config.data_dir)
+            seen = sorted({canonical_hand(name, data_dir=self.config.data_dir) for name in loaded.grippers})
+            if wanted not in seen:
+                raise ValueError(
+                    f"robot.gripper.model is {wanted!r}, and {path.name} was trained across {', '.join(seen)}. "
+                    f"Refusing to condition on a hand this model has never seen: the grasps would read as a bad "
+                    f"model rather than as a wrong gripper. Train an artifact whose corpus carries {wanted!r}, or "
+                    f"name the hand this cell actually has.")
         self._set_gripper = wanted or loaded.gripper
         # The spec the artifact was fitted with. Serving a net a different sample than it was
         # trained on is skew that reads as a bad model.
@@ -298,9 +308,9 @@ class DeepGraspCalculator:
         import numpy as np  # noqa: PLC0415
         import torch  # noqa: PLC0415
 
-        from src.robot.grasping.deep.net.gripper import (  # noqa: PLC0415
-            JAW_GEOMETRY,
-            gripper_vector,
+        from src.robot.grasping.deep.hands import (  # noqa: PLC0415
+            hand_vector,
+            resolve_hand,
         )
         from src.robot.grasping.deep.net.set_targets import (  # noqa: PLC0415
             sample_seeds,
@@ -317,7 +327,7 @@ class DeepGraspCalculator:
         features = torch.as_tensor(np.asarray(sample["features"])[None], dtype=torch.float32,
                                    device=device)
         features = features[..., :net.backbone.config.in_features]
-        gripper = gripper_vector(self._set_gripper).to(device)
+        gripper = hand_vector(self._set_gripper, data_dir=self.config.data_dir).to(device)
         generator = torch.Generator().manual_seed(0)
         with torch.no_grad():
             encoded = net.encode(cloud, features)
@@ -350,7 +360,7 @@ class DeepGraspCalculator:
             f.name: getattr(prediction, f.name).cpu()
             for f in dataclasses.fields(prediction)
             if isinstance(getattr(prediction, f.name), torch.Tensor)})
-        aperture = float(JAW_GEOMETRY[self._set_gripper]["aperture_mm"])
+        aperture = float(resolve_hand(self._set_gripper, data_dir=self.config.data_dir).numbers["aperture_mm"])
         grasps = decode_set_prediction(
             prediction, picks.cpu(), cloud[0].cpu(),
             centre_xy_mm=np.asarray(sample["centre_xy_mm"], dtype=np.float64),

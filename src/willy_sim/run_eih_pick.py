@@ -297,10 +297,13 @@ def build_service(
     _dwell = cell.dwell  # steady-state dwell gate
     # Opt-in natural-aim IK seed + continuous collision-avoidance guard (default-off byte-identical). When a
     # bin is wired, its walls become the guard fixtures so an in-motion approach into a wall is caught too.
+    from src.robot.safety.planning.hand import planner_hand
     from src.willy_sim.run_dense_pick import wire_safety_guards
     _fixtures = list(bin_walls) if bin_walls else []
+    _guard_hand = planner_hand(cell.robot)  # the hand the cell names, as the arm's own preflight has it
     wire_safety_guards(arm, natural_aim=natural_aim, continuous_guard=continuous_guard,
-                       continuous_guard_margin_mm=continuous_guard_margin_mm, fixtures=_fixtures)
+                       continuous_guard_margin_mm=continuous_guard_margin_mm, fixtures=_fixtures,
+                       guard_hand=_guard_hand)
     if bin_walls:
         # Make the bin "really real" for the whole stack: (1) inject the walls into the SafetyPreflight so a
         # static approach into a wall is self-collision-rejected, and (2) register them in cuRobo's collision
@@ -309,7 +312,7 @@ def build_service(
 
         _bin_sc = cell.robot.safety.self_collision.model_copy(update={"fixtures": _fixtures})
         _safety = cell.robot.safety.model_copy(update={"self_collision": _bin_sc})
-        arm._preflight = SafetyPreflight.from_safety_config(_safety, cell.robot.workspace_limits)
+        arm._preflight = SafetyPreflight.from_safety_config(_safety, cell.robot.workspace_limits, hand=_guard_hand)
         if curobo_bin_world:
             _cuboids = [
                 planner_cuboid(
@@ -456,6 +459,7 @@ def build_service(
                       "candidates that fail IK are now discarded, and feasibility can re-rank")
     calculator = build_calculator(
         cell.robot,
+        data_dir=data_dir,
         camera_matrix=np.asarray(wrist_cam.get_intrinsics_matrix(), dtype=np.float64),
         max_grip_width_mm=cell.robot.gripper.max_width_mm,
         min_grip_width_mm=cell.robot.gripper.min_width_mm,

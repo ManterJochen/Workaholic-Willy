@@ -39,6 +39,9 @@ def test_bootstrap_module_imports_without_isaac() -> None:
         # non-empty only when the operator explicitly opted into a degraded one, so a runner can stamp
         # it onto its results rather than letting those numbers pass as the configured system's.
         "degraded_engines",
+        # The standalone gripper Isaac mounted, derived from the hand and the arm asset, or None where the asset's
+        # baked variant carries the hand; the record stamp reads it (lane (i) i4).
+        "mount",
     }
 
 

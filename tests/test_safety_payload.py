@@ -157,7 +157,7 @@ class URConnectPayloadRefuseTests(unittest.TestCase):
             "vendor": "ur", "safety": {"payload": payload},
             # A real cell must declare its tool frame before connect() lets it move; these tests are
             # about the PAYLOAD gates, so declare a valid one and let them exercise what they mean to.
-            "gripper": {"tool_frame": {
+            "gripper": {"model": "robotiq_2f85", "tool_frame": {
                 "source": "willy", "offset_mm": (0.0, 132.0, 0.0),
                 "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476),
             }},

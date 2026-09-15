@@ -68,11 +68,14 @@ class _Case:
 
 
 _UR = {"vendor": "ur", "ur": {"ip": "10.9.9.9"}}
+#: The hand a UR tree names so its arm builds (Step 4f). The suction and I/O jaw cases name it too: their exact
+#: mesh guard checks the 2F-85 every arm bundle carries, and the registry holds no suction hand yet.
+_HAND = "robotiq_2f85"
 
 _TABLE: tuple[_Case, ...] = (
     _Case(
         name="robotiq on a UR arm",
-        tree={**_UR, "gripper": {"vendor": "robotiq"}},
+        tree={**_UR, "gripper": {"vendor": "robotiq", "model": _HAND}},
         handle=None, gated=True,
         arm="URRobotArm", gripper="GripperController",
         attributes={"ip": "10.9.9.9", "port": 63352},
@@ -111,7 +114,7 @@ _TABLE: tuple[_Case, ...] = (
     ),
     _Case(
         name="vacuum on a UR arm",
-        tree={**_UR, "gripper": {"vendor": "vacuum", "vacuum": {"vacuum_output_pin": 2}}},
+        tree={**_UR, "gripper": {"vendor": "vacuum", "model": _HAND, "vacuum": {"vacuum_output_pin": 2}}},
         handle=None, gated=True,
         arm="URRobotArm", gripper="VacuumGripper",
         attributes={"_pin": 2}, io_is_arm=True,
@@ -132,7 +135,7 @@ _TABLE: tuple[_Case, ...] = (
     ),
     _Case(
         name="jaw_io on a UR arm",
-        tree={**_UR, "gripper": {"vendor": "jaw_io", "jaw_io": {"close_output_pin": 3}}},
+        tree={**_UR, "gripper": {"vendor": "jaw_io", "model": _HAND, "jaw_io": {"close_output_pin": 3}}},
         handle=None, gated=True,
         arm="URRobotArm", gripper="JawIOGripper",
         attributes={"_close_pin": 3}, io_is_arm=True,

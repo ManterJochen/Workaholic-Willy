@@ -404,6 +404,11 @@ def build_parser() -> argparse.ArgumentParser:
                                 "today and silently wrong the first time anybody trains on a varied "
                                 "corpus. Without an artifact a trained model cannot be loaded by "
                                 "anything, because the fold checkpoint is refused by kind")
+    train_set.add_argument("--hands", default=None, metavar="NAMES",
+                           help="train across these hands on the same clouds, comma separated. "
+                                "A hand other than the one a cloud was extracted for is read from its "
+                                "grasp table beside the cloud, written by `python -m datagen "
+                                "build-grasp-tables`. Default: the hand each cloud was extracted for")
     train_set.add_argument("--init-from", default=None, metavar="PATH",
                            help="start from the weights in this checkpoint instead of from random. "
                                 "THIS IS FINE-TUNING AND IT IS NOT A RESUME: a new run, with its "
@@ -782,7 +787,9 @@ def _cmd_train_set(args: argparse.Namespace) -> int:
         run = GeneratorTraining.from_recipe(
             corpus=args.clouds, recipe=args.recipe, tier=args.tier, overrides=overrides,
             out_dir=args.out, init_from=args.init_from, freeze_backbone=args.freeze_backbone,
-            resume=args.resume, artifact_gripper=args.artifact_gripper)
+            resume=args.resume, artifact_gripper=args.artifact_gripper,
+            hands=(tuple(hand.strip() for hand in args.hands.split(",") if hand.strip())
+                   if args.hands else None))
     except FileNotFoundError as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return _EXIT_PROBLEM

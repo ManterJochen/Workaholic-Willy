@@ -32,11 +32,8 @@ from src.robot.safety.planning.live_world import (
     DepthSnapshot,
     LivePlannerWorld,
 )
-from src.robot.safety.planning.perceived import (
-    WorldBuildLimits,
-    WorldBuildTuning,
-    voxel_grid_extent,
-)
+from src.robot.safety.planning.perceived import WorldBuildTuning
+from src.robot.safety.planning.reservation import PlannerReservation, planner_world_limits
 from src.robot.safety.planning.world import build_planner_cuboids, build_planner_meshes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -46,7 +43,6 @@ __all__ = [
     "LiveWorldUnavailable",
     "RigDepthSource",
     "build_live_planner_world",
-    "planner_voxel_reservation",
     "static_camera_to_base_mm",
 ]
 
@@ -109,26 +105,6 @@ class RigDepthSource:
         )
 
 
-def planner_voxel_reservation(robot_cfg: "RobotConfig") -> str:
-    """The grid the planner must allocate at boot, as ``x,y,z,voxel`` in metres, or empty.
-
-    The planner allocates its voxel storage when it starts and never again, so this has to be
-    settled before the sidecar spawns and then not change. The same numbers are what the field is
-    built into, from :func:`voxel_grid_extent`, so a reservation and a field cannot describe
-    different grids: one that did would register without an error and put the geometry somewhere the
-    cell is not.
-    """
-    limits = _world_limits(robot_cfg)
-    perceived = getattr(getattr(robot_cfg.safety, "planning_world", None), "perceived", None)
-    if limits is None or perceived is None or not bool(getattr(perceived, "enabled", False)):
-        return ""
-    extent = voxel_grid_extent(limits, float(getattr(perceived, "voxel_field_mm", 0.0)))
-    if extent is None:
-        return ""
-    dims, voxel = extent
-    return ",".join(f"{v / 1000.0:.4f}" for v in (*dims, voxel))
-
-
 def build_live_planner_world(
     robot_cfg: "RobotConfig",
     cameras: "Sequence[tuple[str, Any, np.ndarray]]",
@@ -151,7 +127,7 @@ def build_live_planner_world(
     perceived = getattr(world_cfg, "perceived", None)
     if perceived is None or not bool(getattr(perceived, "enabled", False)) or not cameras:
         return None
-    limits = _world_limits(robot_cfg)
+    limits = planner_world_limits(robot_cfg)
     if limits is None:
         return None
 
@@ -168,7 +144,10 @@ def build_live_planner_world(
             for name, source, transform in cameras
         ),
         declared=tuple(
-            build_planner_cuboids(world_cfg, robot_cfg.safety.self_collision.fixtures)
+            build_planner_cuboids(
+                world_cfg, robot_cfg.safety.self_collision.fixtures,
+                max_cuboids=PlannerReservation.from_config(robot_cfg=robot_cfg).cuboid_slots,
+            )
         ),
         limits=limits,
         declared_meshes=tuple(build_planner_meshes(world_cfg)),
@@ -183,31 +162,8 @@ def build_live_planner_world(
             floor_to_plane=bool(perceived.floor_to_plane),
         ),
         max_age_ms=float(perceived.max_age_ms),
-        self_radius_mm=float(perceived.self_radius_mm),
-        tool_radius_mm=float(perceived.tool_radius_mm),
-    )
-
-
-def _world_limits(robot_cfg: "RobotConfig") -> "WorldBuildLimits | None":
-    """Where an obstacle may be, from the same declaration the workspace guard reads.
-
-    One source for the reach, so a perceived box can never appear somewhere the arm was already
-    forbidden to go, and the support plane from the planner block, because a bench registered as a
-    hundred small obstacles is a bench that fills the planner slots and duplicates a box the
-    operator already wrote down.
-    """
-    world_cfg = getattr(robot_cfg.safety, "planning_world", None)
-    plane = getattr(world_cfg, "support_plane", None) if world_cfg is not None else None
-    if plane is None:
-        return None
-    workspace = robot_cfg.workspace_limits
-    perceived = getattr(world_cfg, "perceived", None)
-    return WorldBuildLimits(
-        x_mm=(float(workspace.x_min), float(workspace.x_max)),
-        y_mm=(float(workspace.y_min), float(workspace.y_max)),
-        z_mm=(float(workspace.z_min), float(workspace.z_max)),
-        support_plane_top_mm=float(plane.height_mm),
-        plane_clearance_mm=float(getattr(perceived, "plane_clearance_mm", 5.0)),
+        fresh_frame_attempts=int(perceived.fresh_frame_attempts),
+        require_registration=bool(getattr(world_cfg, "require_registration", True)),
     )
 
 

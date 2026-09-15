@@ -20,18 +20,20 @@ import math
 import os
 import queue
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.robot.constants import CUROBO_CLIENT_LOG_FILE, create_robot_logger
 
 from ._curobo_attach import ENV_ATTACH_SPHERES
 from ._curobo_margin import ENV_SELF_COLLISION_MARGIN_MM
 from .environment import (
+    ENV_CUROBO_CUBOID_CACHE,
     ENV_CUROBO_MESH_CACHE,
     ENV_CUROBO_STDERR,
     ENV_CUROBO_VOXEL_GRID,
@@ -43,11 +45,15 @@ from .environment import (
     curobo_voxel_grid,
 )
 
+if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from .reservation import PlannerReservation
+
 __all__ = [
     "CuroboPlanClient",
     "CuroboUnavailableError",
     "JointCheckVerdict",
     "MAX_CHECK_CONFIGURATIONS",
+    "SceneRegistration",
     "curobo_env_available",
 ]
 
@@ -122,6 +128,22 @@ class JointCheckVerdict:
     valid: bool
     first_invalid: int | None
     checked: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class SceneRegistration:
+    """What the sidecar did with one scene request.
+
+    ``world_set`` is how many boxes and meshes it holds now, 0 when it confirmed nothing.
+    ``voxels_set`` is how many field values it took, or None when it took no field.
+    ``reason`` is the sidecar's own sentence when it refused the field, word for word,
+    because "started with no voxel storage" points an operator at the one setting that
+    matters where "the planner refused it" points nowhere.
+    """
+
+    world_set: int
+    voxels_set: int | None
     reason: str
 
 
@@ -212,6 +234,15 @@ class CuroboPlanClient:
         # planner that reserved none has nowhere to go. 0 and empty leave the sidecar as it was.
         self._mesh_cache = max(0, int(mesh_cache if mesh_cache is not None else curobo_mesh_cache()))
         self._voxel_grid = str(voxel_grid if voxel_grid is not None else curobo_voxel_grid()).strip()
+        #: Where this client writes the live scene's field. The name carries the process and
+        #: this client, because two arms in one process would otherwise write one file and
+        #: each could register the other's scene.
+        self._live_scene_path = str(
+            Path(tempfile.gettempdir()) / f"willy_live_scene_{os.getpid()}_{id(self)}.npy"
+        )
+        #: True once a reservation decided the slots: from then on the config, not the shell,
+        #: sizes the sidecar. A client nobody reserved for inherits the shell.
+        self._reserved = False
         # The server stderr, carrying cuRobo warmup and plan diagnostics, goes to a log
         # file where one is requested through the parameter or WILLY_CUROBO_STDERR, and
         # is discarded otherwise. It is what makes the isolated server debuggable on-box.
@@ -229,6 +260,15 @@ class CuroboPlanClient:
         self._reader: threading.Thread | None = None
         self.joint_names: list[str] = []
         self.dt: float = 0.0
+        #: The ``_provenance`` of the descriptor the sidecar loaded, from its ready line:
+        #: which arm, which hand, which plate. ``None`` when the sidecar reported none. The
+        #: drivers refuse on it; the client only keeps it.
+        self.descriptor_provenance: dict[str, object] | None = None
+
+    @property
+    def live_scene_path(self) -> str:
+        """The file this client's live scene field is written to before it is registered."""
+        return self._live_scene_path
 
     # --- lifecycle ---------------------------------------------------------
     def start(self) -> None:
@@ -238,20 +278,14 @@ class CuroboPlanClient:
         if not Path(self._python).exists():
             raise CuroboUnavailableError(f"cuRobo env python not found: {self._python}")
         logger.info(
-            "spawning the cuRobo sidecar: python=%s robot=%s cuboid_cache=%s self_collision_margin=%.3f mm",
-            self._python, self._robot, self._scene, self._self_collision_margin_mm,
+            "spawning the cuRobo sidecar: python=%s robot=%s cuboid_cache=%s mesh_cache=%d voxel_grid=%s "
+            "self_collision_margin=%.3f mm",
+            self._python, self._robot, self._scene, self._mesh_cache, self._voxel_grid or "none",
+            self._self_collision_margin_mm,
         )
         started = time.monotonic()
         stderr = open(self._stderr_log, "w") if self._stderr_log else subprocess.DEVNULL  # noqa: SIM115
-        env = dict(os.environ)
-        if self._self_collision_margin_mm > 0.0:
-            env[ENV_SELF_COLLISION_MARGIN_MM] = repr(self._self_collision_margin_mm)
-        if self._attach_spheres > 0:
-            env[ENV_ATTACH_SPHERES] = str(self._attach_spheres)
-        if self._mesh_cache > 0:
-            env[ENV_CUROBO_MESH_CACHE] = str(self._mesh_cache)
-        if self._voxel_grid:
-            env[ENV_CUROBO_VOXEL_GRID] = self._voxel_grid
+        env = self._sidecar_env()
         self._alive = True
         self._proc = subprocess.Popen(
             [self._python, "-u", self._script, self._robot, self._scene],
@@ -274,6 +308,8 @@ class CuroboPlanClient:
             raise CuroboUnavailableError(f"cuRobo server did not become ready: {reason}")
         self.joint_names = list(msg["joint_names"])
         self.dt = float(msg.get("dt", 0.0))
+        descriptor = msg.get("descriptor")
+        self.descriptor_provenance = dict(descriptor) if isinstance(descriptor, dict) else None
         # The warm-up cost is worth recording: about 25 s cold against about 8 s with a
         # warm kernel cache is the difference between a slow planner and a kernel cache
         # that was thrown away.
@@ -624,12 +660,11 @@ class CuroboPlanClient:
         grid over a 2 m cell is 179,560 values, which is not something to send down this
         pipe before every motion.
 
-        ⛔ The field is positive INSIDE an obstacle and negative in free space. That is the
-        opposite of the distance-to-obstacle a person would write, and the wrong sign fails
-        silently: measured on this repository, a wall written the intuitive way registered
-        without an error, reported success, and the planner drove straight through it.
-        :mod:`src.robot.safety.planning.perceived` builds the field, and builds it in this
-        sign.
+        The field is a signed distance in metres, negative inside an obstacle and positive
+        in free space. Written positive inside, every voxel that is not an obstacle reads as
+        inside one and the whole grid blocks, so a wall looks seen when the cell is, as
+        ``scripts/curobo/probe_live_world.py`` measures.
+        :mod:`src.robot.safety.planning.live_world` writes the file in this sign.
 
         It returns the number of values registered, or ``None`` where the sidecar refused,
         which is the state a caller must treat as no world at all.
@@ -652,6 +687,116 @@ class CuroboPlanClient:
         )
         return None
 
+    def set_scene(
+        self,
+        cuboids: "Sequence[dict]",
+        meshes: "Sequence[dict] | None",
+        voxels: "dict | None",
+    ) -> SceneRegistration:
+        """Replace the collision world with boxes, meshes and a field in one request.
+
+        ``voxels`` is ``{"path", "dims_m", "voxel_size_m", "pose"}`` for a field on disk, in
+        the sign and unit :meth:`set_voxels` states, or None for a world with no field.
+
+        It is one request because two are not atomic: the field request rebuilds the world
+        from the boxes the sidecar remembered, so a declared mesh vanished every time a
+        camera produced a field, and both requests reported success. A field the sidecar
+        cannot hold comes back with its reason while the boxes and meshes stay registered.
+        """
+        if self._proc is None:
+            self.start()
+        request: dict[str, Any] = {
+            "cmd": "set_world",
+            "cuboids": list(cuboids),
+            "meshes": list(meshes or ()),
+            "voxels": None if voxels is None else dict(voxels),
+        }
+        want = self._send(request)
+        msg = self._recv(_PLAN_TIMEOUT_S, want=want)
+        if not msg or msg.get("world_set") is None:
+            why = (msg or {}).get("reason") or "no reply"
+            logger.error(
+                "the cuRobo sidecar did not confirm the scene (%s); planning continues against the "
+                "PREVIOUS world", why,
+            )
+            return SceneRegistration(
+                world_set=0, voxels_set=None, reason=f"the sidecar did not confirm the scene ({why})"
+            )
+        count = int(msg["world_set"])
+        taken = msg.get("voxels_set")
+        voxels_set = None if taken is None else int(taken)
+        reason = str(msg.get("reason") or "")
+        if voxels is not None and voxels_set is None and not reason:
+            reason = "the sidecar did not say whether it took the field"
+        field_word = "none" if voxels is None else (
+            "REFUSED" if voxels_set is None else f"{voxels_set} value(s)"
+        )
+        logger.info(
+            "scene set: %d of %d obstacle(s) registered, field %s",
+            count, len(cuboids) + len(meshes or ()), field_word,
+        )
+        return SceneRegistration(world_set=count, voxels_set=voxels_set, reason=reason)
+
+    def reserve_world(self, reservation: "PlannerReservation") -> None:
+        """Reserve what the planner allocates at start: box slots, mesh slots, grid, spheres.
+
+        It takes effect only before :meth:`start`, because cuRobo allocates its collision
+        storage once. The reservation is derived from the cell's config and wins over the
+        three environment variables a shell can set, and a disagreeing one is named and
+        ignored: a sidecar sized by a stale exported variable refuses the cell's own world
+        with nothing in the config to explain why.
+        """
+        if self._proc is not None:
+            logger.warning(
+                "reserve_world after the sidecar started: its collision storage is already allocated, "
+                "so this has no effect until the next start"
+            )
+            return
+        wanted = {
+            ENV_CUROBO_CUBOID_CACHE: str(reservation.cuboid_slots),
+            ENV_CUROBO_MESH_CACHE: str(reservation.mesh_slots),
+            ENV_CUROBO_VOXEL_GRID: reservation.voxel_grid,
+        }
+        for name, value in wanted.items():
+            shell = (os.environ.get(name) or "").strip()
+            if shell and shell != value:
+                logger.warning(
+                    "%s=%r disagrees with this cell's planner reservation (%r) and is ignored: the config "
+                    "decides what the planner allocates", name, shell, value or "none",
+                )
+        self._scene = str(reservation.cuboid_slots)
+        self._mesh_cache = int(reservation.mesh_slots)
+        self._voxel_grid = reservation.voxel_grid
+        if reservation.sphere_slots > 0:
+            self._attach_spheres = int(reservation.sphere_slots)
+        self._reserved = True
+
+    def _sidecar_env(self) -> dict[str, str]:
+        """The environment the sidecar is spawned with.
+
+        The sidecar reads the mesh and grid variables itself. Once a reservation decided
+        them, both are written here whatever the shell holds, a mesh count of 0 and the
+        absence of a grid included, because an inherited stale variable would size the
+        planner behind the config's back.
+        """
+        env = dict(os.environ)
+        if self._self_collision_margin_mm > 0.0:
+            env[ENV_SELF_COLLISION_MARGIN_MM] = repr(self._self_collision_margin_mm)
+        if self._attach_spheres > 0:
+            env[ENV_ATTACH_SPHERES] = str(self._attach_spheres)
+        if self._reserved:
+            env[ENV_CUROBO_MESH_CACHE] = str(self._mesh_cache)
+            if self._voxel_grid:
+                env[ENV_CUROBO_VOXEL_GRID] = self._voxel_grid
+            else:
+                env.pop(ENV_CUROBO_VOXEL_GRID, None)
+            return env
+        if self._mesh_cache > 0:
+            env[ENV_CUROBO_MESH_CACHE] = str(self._mesh_cache)
+        if self._voxel_grid:
+            env[ENV_CUROBO_VOXEL_GRID] = self._voxel_grid
+        return env
+
     def reserve_attach_spheres(self, slots: int) -> None:
         """Reserve payload collision spheres. Only takes effect before :meth:`start`."""
         if self._proc is not None:
@@ -673,9 +818,10 @@ class CuroboPlanClient:
         """Hang a box on the tool so later plans route the carried part around the world too.
 
         ``dims_m`` are full side lengths, and ``pose`` is ``[x, y, z, qw, qx, qy, qz]``
-        in the tool frame, so ``[0, 0, h/2, 1, 0, 0, 0]`` is a part sitting half its
-        height beyond the flange. ``joints`` is the configuration the part was grasped
-        in, which is where the attachment is fitted.
+        in the tool frame. A UR hand approaches along tool0 +Y, so a part in its jaws sits
+        at ``[0, y, 0, 1, 0, 0, 0]`` with ``y`` past the fingertips
+        (``self_envelope.carried_part_box``). ``joints`` is the configuration the part was
+        grasped in, which is where the attachment is fitted.
 
         It returns ``False`` where the sidecar could not attach, including the case of a
         sidecar started without a sphere budget, which therefore has no link to hang

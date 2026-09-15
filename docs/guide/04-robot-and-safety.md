@@ -184,14 +184,15 @@ jaws holds no Robotiq object anywhere, and a Robotiq cell holds exactly one `Gri
 
 [`src/robot/drivers/sim/robot_models.py`](../../src/robot/drivers/sim/robot_models.py) maps one model key to a
 simulator USD, a baked gripper variant, a reach and a payload for `ur3e`, `ur5e` and `ur10e`, and
-`curobo_robot_yml(model)` turns the same key into `{key}.yml`. One key drives the DH table, the
+`curobo_robot_yml(model, hand)` turns the same key and the hand into `{key}_{hand}.yml`. One key drives the DH table, the
 exact-mesh bundle, the planner descriptor and the simulator asset selection, which is why the schema
 cross-validates it (4.8).
 
-A `ur3e` simulation cell requires `robot.sim.gripper_mount`, because the shipped `ur3e.usd` bakes no
-gripper variant. Without the mount the cell comes up as a bare 6-DoF arm and the first symptom is a
-late, cryptic gripper connect failure naming a driven joint that is not in the articulation's degrees
-of freedom. The `ur3e` config layer sets it.
+A simulation cell names its hand in `robot.gripper.model`, and the mount follows from it. The shipped
+`ur3e.usd` bakes no gripper variant, so the simulator mounts the named hand standalone, while the
+`ur5e` and `ur10e` assets bake the 2F-85 as a variant. A hand the simulator has no mount for is
+refused by name before the simulator boots, instead of surfacing as a late gripper connect failure
+on a bare 6-DoF arm.
 
 ---
 
@@ -201,14 +202,16 @@ of freedom. The `ur3e` config layer sets it.
 are the physical opening floor and ceiling. `GripperVendor` has eight members: `robotiq`, `onrobot`,
 `vacuum`, `jaw_io`, `dummy` and `none` have drivers, and `franka_hand` and `schunk` are reserved names
 with none. Two sub-blocks configure the digital-I/O end-effectors, `robot.gripper.vacuum.*` and
-`robot.gripper.jaw_io.*`, and one configures the Modbus one, `robot.gripper.onrobot.*`. Simulation
-end-effector selection lives in `robot.sim.*` instead, as `gripper_variant`, `gripper_mount` and
-`suction_cup`.
+`robot.gripper.jaw_io.*`, and one configures the Modbus one, `robot.gripper.onrobot.*`. In
+simulation, the gripper on the arm is derived from `robot.gripper.model` and `robot.sim.robot_model`,
+and `robot.sim.suction_cup` picks a suction cup.
 
-`robot.gripper.model` names the hand by its registry file, `config/grippers/<model>.yaml` (`robotiq_2f85`
-today, read by `src.config.grippers.load_gripper`). Nothing reads the key, and a name no registry file
-defines still passes the schema: the steps that take the labeller, the network conditioning and the
-planner descriptor from the key are the ones that refuse an unknown name.
+`robot.gripper.model` names the hand by its registry file, `config/grippers/<model>.yaml`
+(`robotiq_2f85`, `robotiq_hande` and `schunk_egu50` today, read by `src.config.grippers.load_gripper`).
+Nothing on the pick path reads the key. The schema cannot see the registry, so a name no file defines
+passes it, but `python -m src.config` does not: it refuses that name, a short name such as `2f85`, and
+a registry file it cannot read. The steps that take the labeller, the network conditioning and the
+planner descriptor from the key are the ones that refuse such a name at build.
 
 Three things belong here rather than in [06](06-grippers.md), because they are properties of the
 composition rather than of a gripper:
@@ -535,7 +538,7 @@ configured system and must not be reported as one. It is scoped honestly, since 
 held to cuRobo. Reproduce it off-box:
 
 ```powershell
-python -c "from src.willy_sim.harness.bootstrap import require_motion_stack; require_motion_stack('curobo', robot_config='ur5e.yml', kinematics_model='ur5e', exact_mesh_collision=True)"
+python -c "from src.willy_sim.harness.bootstrap import require_motion_stack; require_motion_stack('curobo', robot_config='ur5e_robotiq_2f85.yml', kinematics_model='ur5e', exact_mesh_collision=True)"
 ```
 
 **The planner-margin handshake.** cuRobo plans against spheres; the guard re-checks exact meshes.

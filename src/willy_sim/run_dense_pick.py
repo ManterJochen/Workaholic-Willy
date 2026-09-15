@@ -25,9 +25,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from src.contracts import UNSET, Maybe, chosen
+from src.robot.safety.planning.hand import planner_hand
 from src.robot.safety.planning.world import planner_cuboid
 
 if TYPE_CHECKING:
+    from src.robot.safety.planning.hand import PlannerHand
     from src.willy_sim.harness.depth_noise import DepthNoiseConfig
     from src.robot.grasping.geometry.filters import CloudOutlierConfig
 
@@ -484,7 +487,7 @@ def wire_safety_guards(
     fixtures: Sequence[object] = (),
     kinematics_model: str = "ur5e",
     kinematics_base_yaw_deg: float = 180.0,
-    collision_mesh_variant: str | None = None,
+    guard_hand: "Maybe[PlannerHand]" = UNSET,
 ) -> None:
     """Owner-set the safety guards onto a sim arm; every runner's build calls this.
 
@@ -514,15 +517,16 @@ def wire_safety_guards(
     )
 
     _fix = list(fixtures) if fixtures else []
-    # Pass the model, yaw and gripper variant the one-shot guard was built with. Hard-coded values would
-    # watch a --gripper-mount run with the baked 2F-85 meshes while the guard used the mounted gripper's,
+    # Pass the model, yaw and hand the one-shot guard was built with. Hard-coded values would watch a
+    # run on a mounted gripper with the baked 2F-85 meshes while the guard used the mounted gripper's,
     # and would watch a ur3e cell with ur5e link lengths.
     mon = ContinuousCollisionMonitor.from_model(
         kinematics_model,
         kinematics_base_yaw_deg,
         _fix,
         ContinuousGuardProfile(enabled=True, margin_mm=continuous_guard_margin_mm),
-        variant=collision_mesh_variant,
+        variant=guard_hand.guard_variant if chosen(guard_hand) else None,
+        coupling_mm=guard_hand.coupling_mm if chosen(guard_hand) else 0.0,
     )
     if mon is None:  # requested but no mesh backend (set WILLY_COAL_PREFIX): guard off, warn
         # The run continues unguarded with everything else identical, so this line is the only
@@ -649,8 +653,8 @@ def build_service(
     retreat_mm: float = 100.0,
     retreat_steps: int = 1,                 # chunk the post-close lift into N settled steps, which damps
     #                                         the retreat pendulum on wide or heavy boxes. Default 1 is one lift.
-    gripper_mount: "str | None" = None,     # mount a standalone vendor gripper (e.g. "schunk_egu50")
-    #                                         on the wrist instead of the baked 2F-85. None keeps the 2F-85.
+    hand: "str | None" = None,              # run this hand, a registry name (e.g. "schunk_egu50"), instead
+    #                                         of the sim profile's; the mount follows from it. None keeps it.
     depth_source: str = "gt",               # "rendered" feeds the calculator real, non-uniform depth
     grasp_depth_reference: str = "centre",  # calculator depth reference (centre|top)
     depth_noise: "DepthNoiseConfig | None" = None,            # synthetic sensor depth noise on the sim
@@ -749,7 +753,7 @@ def build_service(
         _scene_walls.append(FixtureBoxConfig(name="overhang_shelf",
                             center_mm=overhang_shelf[0], half_extents_mm=overhang_shelf[1]))
     cell = bootstrap_sim_cell(
-        data_dir, headless=headless, gripper_mount=gripper_mount, scene_kwargs={
+        data_dir, headless=headless, hand=hand, scene_kwargs={
             "objects_override": specs, "camera_position_mm": _cam_override, "appearance": _appearance,
             # Diagnostic: WILLY_BIN_NO_PRIMS skips the physical wall prims while keeping the safety
             # fixtures, which separates a physical arm-versus-wall collision from a preflight cause.
@@ -791,13 +795,15 @@ def build_service(
     _cg_fix = (list(_bin_fixtures) if (_bin_fixtures is not None
                and not os.getenv("WILLY_BIN_NO_FIXTURES")) else [])
     # The monitor is built with the same geometry the one-shot guard gets below. Hard-coded values would
-    # watch a --gripper-mount run with the baked 2F-85 meshes while the guard used the mounted gripper's,
-    # and would watch a ur3e cell with ur5e link lengths.
+    # watch a run on a mounted gripper with the baked 2F-85 meshes while the guard used the mounted
+    # gripper's, and would watch a ur3e cell with ur5e link lengths. The hand comes from the one name the
+    # cell gives it, the one the bootstrap built the arm's preflight with.
+    _guard_hand = planner_hand(cell.robot)
     wire_safety_guards(arm, natural_aim=natural_aim, continuous_guard=continuous_guard,
                        continuous_guard_margin_mm=continuous_guard_margin_mm, fixtures=_cg_fix,
                        kinematics_model="ur5e",  # must track the _sc_update below
                        kinematics_base_yaw_deg=180.0,
-                       collision_mesh_variant=gripper_mount or None)
+                       guard_hand=_guard_hand)
     # Owner-set the SelfCollisionGuard fixtures onto the arm preflight. `bootstrap_sim_cell` built the
     # preflight from the config, which ships an empty fixtures list, so the bin walls are injected here and
     # an approach into a wall is self-collision-rejected. Without --bin the preflight is unchanged.
@@ -805,8 +811,7 @@ def build_service(
     _sc_update: dict[str, object] = {}
     if _bin_fixtures is not None and _wire_bin:
         _sc_update["fixtures"] = list(_bin_fixtures)
-    if gripper_mount:  # a mounted gripper makes the Coal guard load that gripper's collision meshes,
-        _sc_update["collision_mesh_variant"] = gripper_mount  # not the baked 2F-85's (the variant npz)
+    # A mounted gripper needs no update here: the guard loads its meshes from the hand, passed below.
     if self_collision_arm:
         # Opt the sim cell, a UR5e whose vendor is not 'ur', into the bundled UR-DH arm-link capsules and
         # the 180 deg base-frame reconcile, so the guard checks the arm links against the bin-wall fixtures
@@ -824,7 +829,7 @@ def build_service(
 
         _bin_sc = cell.robot.safety.self_collision.model_copy(update=_sc_update)
         _safety = cell.robot.safety.model_copy(update={"self_collision": _bin_sc})
-        arm._preflight = SafetyPreflight.from_safety_config(_safety, cell.robot.workspace_limits)
+        arm._preflight = SafetyPreflight.from_safety_config(_safety, cell.robot.workspace_limits, hand=_guard_hand)
         print(f"[self-collision] arm_capsules={self_collision_arm} tool_model={'finger' if finger_tool else 'capsule'} "
               f"bin_walls={'yes' if _wire_bin else 'no'} (half_width_x={bin_half_width_mm:.0f} "
               f"half_width_y={bin_half_width_y_mm if bin_half_width_y_mm is not None else bin_half_width_mm:.0f}mm, "
@@ -972,6 +977,7 @@ def build_service(
               flush=True)
     calculator = build_calculator(
         cell.robot,
+        data_dir=data_dir,
         camera_matrix=np.asarray(overhead_cam.get_intrinsics_matrix(), dtype=np.float64),
         max_grip_width_mm=cell.robot.gripper.max_width_mm,
         min_grip_width_mm=cell.robot.gripper.min_width_mm,
@@ -1359,7 +1365,7 @@ def run_gate(runs: int = 10, *, prompt: str = "the red cube", headless: bool = T
              depth_source: str = "gt", grasp_depth_reference: str = "centre",
              depth_band_mm: float = 0.0,
              motion_planner: "str | None" = None, planner_owns_approach: bool = False,
-             mask_completion: "str | None" = None) -> GateResult:
+             mask_completion: "str | None" = None, hand: "str | None" = None) -> GateResult:
     """Run ``runs`` native dense picks.
 
     A pick passes only when the prompted object lifts at least the gate threshold and no distractor does.
@@ -1382,7 +1388,7 @@ def run_gate(runs: int = 10, *, prompt: str = "the red cube", headless: bool = T
         recovery=recovery,
         depth_source=depth_source, grasp_depth_reference=grasp_depth_reference,
         depth_band_mm=depth_band_mm,
-        motion_planner=motion_planner, planner_owns_approach=planner_owns_approach,
+        motion_planner=motion_planner, planner_owns_approach=planner_owns_approach, hand=hand,
     )
     env = RunnerEnv.from_env(vision=vision, view_height_mm=0.0)  # the WILLY_* knobs, parsed once
     calc = service.runtime.orchestrator.calculator  # read the corridor telemetry after each pick
@@ -2058,6 +2064,10 @@ def main() -> None:
     ap.add_argument("--planner-owns-approach", action="store_true",
                     help="with --motion-planner curobo: drive ONLY the grasp goal so cuRobo plans the full "
                          "collision-aware approach (no blind straight-line pre-grasp). Default-off.")
+    ap.add_argument("--hand", type=str, default=None, metavar="NAME",
+                    help="run this hand, a registry name (e.g. schunk_egu50), instead of the sim profile's "
+                         "robot.gripper.model; the mount, the tool frame and the guard's meshes follow from it. "
+                         "Default: the profile's hand.")
     args = ap.parse_args()
     if args.build_stack:  # pick-and-place assembly, separate from the per-run pick gate
         _hl, _dd = not (args.gui or args.no_headless), args.data_dir
@@ -2090,7 +2100,8 @@ def main() -> None:
                       redistribute_offset_mm=args.redistribute_offset_mm,
                       depth_source=args.depth_source, grasp_depth_reference=args.grasp_depth_reference,
                       depth_band_mm=args.depth_band_mm,
-                      motion_planner=args.motion_planner, planner_owns_approach=args.planner_owns_approach)
+                      motion_planner=args.motion_planner, planner_owns_approach=args.planner_owns_approach,
+                      hand=args.hand)
     write_run_result(args.result_json, result.to_dict(), scene="dense", mode=args.mode, prompt=args.prompt)
 
 

@@ -65,6 +65,9 @@ class TrainingContext:
     resume: bool = False
     artifact_gripper: str | None = None
     probe_units: int = 256
+    #: Train across these hands on the same clouds, each read with its grasp table. None is the hand
+    #: each cloud was extracted for.
+    hands: tuple[str, ...] | None = None
 
 
 def _corpus_paths(corpus: Sequence[str | Path] | str | Path) -> tuple[Path, ...]:
@@ -102,7 +105,8 @@ class GeneratorTraining:
                   freeze_backbone: bool = False,
                   resume: bool = False,
                   artifact_gripper: str | None = None,
-                  probe_units: int = 256) -> "GeneratorTraining":
+                  probe_units: int = 256,
+                  hands: Sequence[str] | None = None) -> "GeneratorTraining":
         """Raw handles, no recipe resolution. The `from_components` analogue.
 
         `corpus` takes a directory to walk or an explicit sequence, so a notebook can hand in
@@ -120,7 +124,8 @@ class GeneratorTraining:
                 device=device,
                 init_from=Path(init_from) if init_from is not None else None,
                 freeze_backbone=freeze_backbone, resume=resume,
-                artifact_gripper=artifact_gripper, probe_units=probe_units))
+                artifact_gripper=artifact_gripper, probe_units=probe_units,
+                hands=tuple(hands) if hands is not None else None))
 
     @classmethod
     def from_recipe(cls, *, corpus: Sequence[str | Path] | str | Path,
@@ -134,7 +139,8 @@ class GeneratorTraining:
                     freeze_backbone: bool = False,
                     resume: bool = False,
                     artifact_gripper: str | None = None,
-                    probe_units: int = 256) -> "GeneratorTraining":
+                    probe_units: int = 256,
+                    hands: Sequence[str] | None = None) -> "GeneratorTraining":
         """Resolve a named bundle plus explicit overrides into a plan. The `from_robot_config` analogue.
 
         Fails closed with `ValueError`: an unknown recipe or tier refuses rather than falling back to
@@ -145,7 +151,7 @@ class GeneratorTraining:
         built = cls.from_plan(
             corpus=corpus, plan=plan, out_dir=out_dir, device=device, init_from=init_from,
             freeze_backbone=freeze_backbone, resume=resume, artifact_gripper=artifact_gripper,
-            probe_units=probe_units)
+            probe_units=probe_units, hands=hands)
         built.recipe_notes = notes
         return built
 
@@ -184,6 +190,8 @@ class GeneratorTraining:
             f"  schedule   {self.plan.epochs} epoch(s), {self.plan.run_folds} of "
             f"{self.plan.folds} fold(s), refit {'on' if self.plan.refit else 'off'}",
         ]
+        if self.context.hands:
+            lines.append(f"  hands      {', '.join(self.context.hands)}")
         if self.plan.recipe or self.plan.tier:
             lines.append(f"  recipe     {self.plan.recipe or 'none'}"
                          + (f"  tier {self.plan.tier}" if self.plan.tier else ""))
@@ -215,7 +223,7 @@ class GeneratorTraining:
             context.corpus, self.plan, out_dir=context.out_dir, device=context.device,
             init_from=context.init_from, freeze_backbone=context.freeze_backbone,
             resume=context.resume, artifact_gripper=context.artifact_gripper,
-            probe_units=context.probe_units, on_epoch=self._on_epoch)
+            probe_units=context.probe_units, on_epoch=self._on_epoch, hands=context.hands)
         return TrainingRunReport.from_trainer(raw, self.plan)
 
     def write_report(self, report: TrainingRunReport, path: str | Path | None = None) -> Path:

@@ -123,6 +123,54 @@ class ThePolicyCarriesOneStampPerMotionTests(unittest.TestCase):
         self.assertEqual(report.camera_worlds, stamps[:3])
         self.assertEqual(report.camera_world, _UNPLANNED)
 
+
+class _RaisingArm(_StampingArm):
+    """A typed arm that raises ``error`` from its ``after``-th motion on, and moves normally before."""
+
+    def __init__(self, error: Exception, *, after: int = 0) -> None:
+        super().__init__(every=_UNPLANNED)
+        self.error, self.after = error, after
+
+    def move(self, pose: Pose, **kwargs: object) -> MotionResult:
+        if self.calls >= self.after:
+            self.calls += 1
+            raise self.error
+        return super().move(pose, **kwargs)
+
+
+class ThePolicyLetsACameraFailureThroughTests(unittest.TestCase):
+    """Owner, Step 4 Q1: a camera failure leaves ``pick()``, and ``PickRun`` stops the campaign.
+
+    The policy caught every exception a motion raised and turned it into MOTION_FAILED, so a camera that
+    stayed dead would have been retried attempt after attempt as though a grasp had missed.
+    """
+
+    @staticmethod
+    def _camera_failure() -> Exception:
+        from src.robot.core.errors import CameraWorldUnavailable
+
+        return CameraWorldUnavailable(camera="overhead", verdict="no_frame", attempts=4, reason="no depth")
+
+    def test_a_camera_failure_on_the_approach_is_raised_out_of_the_policy(self) -> None:
+        error = self._camera_failure()
+
+        with self.assertRaises(type(error)):
+            GraspExecutionPolicy(arm=_RaisingArm(error), approach_steps=4).execute(_grasp())
+
+    def test_a_camera_failure_on_the_retreat_is_raised_out_of_the_policy(self) -> None:
+        error = self._camera_failure()
+        arm = _RaisingArm(error, after=4)
+
+        with self.assertRaises(type(error)):
+            GraspExecutionPolicy(arm=arm, approach_steps=4).execute(_grasp())
+        self.assertEqual(arm.calls, 5, "the four approach motions ran and the retreat raised")
+
+    def test_any_other_exception_is_still_a_failed_motion(self) -> None:
+        """The control, green before and after."""
+        report = GraspExecutionPolicy(arm=_RaisingArm(RuntimeError("boom")), approach_steps=4).execute(_grasp())
+
+        self.assertIs(report.outcome, PolicyOutcome.MOTION_FAILED)
+
     def test_the_weakest_of_no_stamp_is_none(self) -> None:
         self.assertIsNone(execution_policy.weakest_camera_world(()))
 

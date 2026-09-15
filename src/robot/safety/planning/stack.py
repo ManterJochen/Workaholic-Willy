@@ -8,7 +8,7 @@ a model was chosen. On a UR3e cell that is a green light for a robot nobody conf
 The model and its source are therefore part of the reading rather than decoration on
 it. A `fully_anchored` with no model attached cannot be acted on, because the mesh
 bundle ships as ``{model}_collision_meshes.npz`` and the cuRobo descriptor as
-``{model}.yml``, so a present `ur5e` bundle says nothing about a UR3e cell.
+``{model}_{hand}.yml``, so a present `ur5e` bundle says nothing about a UR3e cell.
 `MotionStackReport` carries both and `render()` prints them, which is what makes
 `render()` return a whole object rather than a fragment its caller completes.
 
@@ -123,6 +123,11 @@ class MotionStackReport:
         """
         if self.stack.config_error:
             return 1
+        # A cell that names no hand is not anchored: its descriptor is named by the arm and
+        # the hand, and a reading about a hand nobody named would be a reading about an
+        # implied 2F-85.
+        if not chosen(self.stack.hand):
+            return 1
         return 0 if self.fully_anchored else 1
 
     def render(self) -> str:
@@ -138,6 +143,12 @@ class MotionStackReport:
         cell.
         """
         lines = [self.environment.render(), f"  (model: {self.model}, from {self.model_source})"]
+        if not chosen(self.stack.hand):
+            lines.append(
+                "  !! no hand named: robot.gripper.model is unset, so no cuRobo descriptor is named. "
+                "Descriptors are {arm}_{hand}.yml and a cell plans only against the hand it names: "
+                "set robot.gripper.model in the cell profile, or pass --hand."
+            )
         if self.stack.config_error:
             lines.append(
                 f"  !! not a reading about this cell: {self.stack.config_error}. The engines above "
@@ -153,6 +164,7 @@ class MotionStackReport:
         return {
             "model": self.model,
             "model_source": self.model_source,
+            "hand": self.stack.hand if chosen(self.stack.hand) else None,
             "fully_anchored": self.fully_anchored,
             # A consumer reading `fully_anchored` alone is reading about the fallback robot
             # where this is non-empty. Empty is the normal case and means the tree loaded.
@@ -201,6 +213,9 @@ class MotionStack:
     #: nobody chose. It is what makes `MotionStackReport.exit_code` fail closed, while
     #: `detail` stays the short provenance parenthesis a person reads at the end of the line.
     config_error: str = ""
+    #: The hand the cell names, ``robot.gripper.model`` or ``--hand``. The descriptor is
+    #: named by it.
+    hand: "Maybe[str]" = UNSET
 
     @property
     def model_source(self) -> str:
@@ -219,7 +234,7 @@ class MotionStack:
     @classmethod
     def from_model(
         cls, *, model: str, source: ModelSource = ModelSource.CALLER, detail: str = "",
-        config_error: str = "",
+        config_error: str = "", hand: "Maybe[str]" = UNSET,
     ) -> "MotionStack":
         """A named robot. The plain-Python door, and the only one that constructs.
 
@@ -227,11 +242,11 @@ class MotionStack:
         reading taken from config and a reading taken from an argument cannot be
         assembled differently.
         """
-        return cls(model=model, source=source, detail=detail, config_error=config_error)
+        return cls(model=model, source=source, detail=detail, config_error=config_error, hand=hand)
 
     @classmethod
     def from_robot_config(
-        cls, robot_config: "RobotConfig", *, model: "Maybe[str]" = UNSET
+        cls, robot_config: "RobotConfig", *, model: "Maybe[str]" = UNSET, hand: "Maybe[str]" = UNSET,
     ) -> "MotionStack":
         """The robot this validated config describes.
 
@@ -244,18 +259,22 @@ class MotionStack:
         loaded would give this class a second way to fail and would hide the profile
         chain from the caller.
         """
+        if not chosen(hand):
+            named = getattr(getattr(robot_config, "gripper", None), "model", None)
+            hand = str(named) if named else UNSET
         if chosen(model):
-            return cls.from_model(model=model)
+            return cls.from_model(model=model, hand=hand)
         declared = getattr(getattr(robot_config.safety, "self_collision", None), "kinematics_model", None)
         if declared:
-            return cls.from_model(model=str(declared), source=ModelSource.SELF_COLLISION)
+            return cls.from_model(model=str(declared), source=ModelSource.SELF_COLLISION, hand=hand)
         vendor_model = getattr(getattr(robot_config, "ur", None), "model", None)
         if vendor_model:
-            return cls.from_model(model=str(vendor_model), source=ModelSource.VENDOR_BLOCK)
+            return cls.from_model(model=str(vendor_model), source=ModelSource.VENDOR_BLOCK, hand=hand)
         return cls.from_model(
             model=FALLBACK_MODEL,
             source=ModelSource.FALLBACK,
             detail="no model declared in this config",
+            hand=hand,
         )
 
     @classmethod
@@ -265,6 +284,7 @@ class MotionStack:
         profile: "Maybe[str | None]" = UNSET,
         data_dir: "Maybe[str | None]" = UNSET,
         model: "Maybe[str]" = UNSET,
+        hand: "Maybe[str]" = UNSET,
     ) -> "MotionStack":
         """Whatever config this box would load, tolerating a tree that does not load at all.
 
@@ -274,8 +294,8 @@ class MotionStack:
         never do is answer for the wrong robot in silence, so every way of not knowing
         produces its own `detail` and that string is printed on the reading.
         """
-        if chosen(model):
-            return cls.from_model(model=model)
+        if chosen(model) and chosen(hand):
+            return cls.from_model(model=model, hand=hand)
 
         from src.config.loader import ConfigError, load_config  # noqa: PLC0415
 
@@ -289,28 +309,41 @@ class MotionStack:
             # it was printed after a green verdict and dropped from the exit code entirely,
             # so a script pointed at a broken tree was told the cell was anchored. Kept, it
             # is the one field that makes this reading fail closed.
+            if chosen(model):
+                return cls.from_model(model=model, hand=hand)
             return cls.from_model(
                 model=FALLBACK_MODEL,
                 source=ModelSource.FALLBACK,
                 detail=f"the config did not load: {type(exc).__name__}",
                 config_error=f"{type(exc).__name__}: {exc}",
+                hand=hand,
             )
         robot = getattr(config, "robot", None)
         if robot is None:
+            if chosen(model):
+                return cls.from_model(model=model, hand=hand)
             return cls.from_model(
                 model=FALLBACK_MODEL,
                 source=ModelSource.FALLBACK,
                 detail="this config tree configures no robot",
+                hand=hand,
             )
-        return cls.from_robot_config(robot)
+        return cls.from_robot_config(robot, model=model, hand=hand)
 
     # --- the verb ------------------------------------------------------------------------------
 
     def probe(self) -> MotionStackReport:
         """Ask both engines whether they are present for this model. Spawn-free."""
+        from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR, curobo_robot_yml
+
+        descriptor = NO_DESCRIPTOR
+        if chosen(self.hand):
+            try:
+                descriptor = curobo_robot_yml(self.model, self.hand)
+            except ValueError as exc:
+                # A model or hand nobody built a descriptor for is named as such, not as a file.
+                descriptor = f"<none: {exc}>"
         return MotionStackReport(
             stack=self,
-            environment=probe_planning_environment(
-                robot_config=f"{self.model}.yml", kinematics_model=self.model
-            ),
+            environment=probe_planning_environment(robot_config=descriptor, kinematics_model=self.model),
         )

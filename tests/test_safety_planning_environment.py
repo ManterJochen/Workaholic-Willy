@@ -105,7 +105,15 @@ class CheckCliTests(unittest.TestCase):
             CuroboStatus("/py", True, "ur5e.yml"), CollisionEngineStatus("coal", True, None)
         )
         with mock.patch.object(stack_mod, "probe_planning_environment", return_value=anchored):
-            self.assertEqual(cli.main(["--check"]), 0)
+            self.assertEqual(cli.main(["--check", "--hand", "robotiq_2f85"]), 0)
+
+    def test_exit_one_when_no_hand_is_named(self) -> None:
+        """Step 4i: the shipped base tree names no hand, so no descriptor is named and the reading is not anchored."""
+        anchored = PlanningEnvironment(
+            CuroboStatus("/py", True, "ur5e.yml"), CollisionEngineStatus("coal", True, None)
+        )
+        with mock.patch.object(stack_mod, "probe_planning_environment", return_value=anchored):
+            self.assertEqual(cli.main(["--check"]), 1)
 
     def test_exit_one_when_partially_anchored(self) -> None:
         partial = PlanningEnvironment(

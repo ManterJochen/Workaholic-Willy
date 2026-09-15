@@ -44,8 +44,8 @@ a different motion stack.
 
 ```bash
 # both engines install into ext_deps/ via scripts/ext_deps/install.ps1
-python -m src.robot.safety.planning --check --model ur3e    # exit 0 means fully anchored
-python -m src.robot.safety.planning --doctor --model ur3e   # and that they actually load
+python -m src.robot.safety.planning --check --model ur3e --hand robotiq_2f85    # exit 0 means fully anchored
+python -m src.robot.safety.planning --doctor --model ur3e --hand robotiq_2f85   # and that they actually load
 ```
 
 `WILLY_ALLOW_DEGRADED_MOTION=1` proceeds anyway. Numbers from such a run describe a different
@@ -55,13 +55,13 @@ configured cell's later.
 **2. Does the boot banner name the robot you think it does?**
 
 ```
-cuRobo planner: AVAILABLE  (python=..., robot=ur3e.yml not verified: ...)
+cuRobo planner: AVAILABLE  (python=..., robot=ur3e_robotiq_2f85.yml not verified: ...)
 exact-mesh collision engine: coal  (ur3e mesh bundle present, ...)
 => fully anchored
 ```
 
 Both halves are per robot: the mesh bundle ships as `{model}_collision_meshes.npz` and the cuRobo
-descriptor is `{model}.yml`, so a present `ur5e` bundle says nothing about a UR3e cell. The reading
+descriptor is `{model}_{hand}.yml`, so a present `ur5e` bundle says nothing about a UR3e cell. The reading
 carries the model and the key that chose it, rather than leaving it to be assumed. What
 `AVAILABLE` still does not mean is that the descriptor was built; that is a separate check, and
 [real_cell_first_pick.md](real_cell_first_pick.md) Diagnose 6 is where it lives.
@@ -139,7 +139,7 @@ matching profile layers.
 **2. Build the robot's cuRobo configuration and its collision-mesh bundle.**
 
 ```bash
-python scripts/curobo/build_ur_config.py ur3e            # -> {curobo content}/configs/robot/ur3e.yml
+python scripts/curobo/build_ur_config.py ur3e --gripper robotiq_2f85   # -> {curobo content}/configs/robot/ur3e_robotiq_2f85.yml
 
 # the bake runs under Isaac's own interpreter, on the box that has Isaac
 python.bat scripts/isaac/bake_ur_collision_meshes.py ur5e            # validate, write nothing
@@ -232,7 +232,7 @@ The bring-up is additive and every step is reversible without touching the UR5e 
    returns the planner's own configuration untouched. Both revert to the previously validated
    behaviour with no code change.
 3. **Restore a mesh bundle.** The bundles are committed, so check the previous
-   `{model}_collision_meshes.npz` back out. A cuRobo `{model}.yml` lives in the external cuRobo
+   `{model}_collision_meshes.npz` back out. A cuRobo `{model}_{hand}.yml` lives in the external cuRobo
    install; re-run the builder rather than hand-editing it.
 4. **Restore calibration.** Copy back the artifacts saved in Mitigate 7, then re-verify.
 5. **If the motion stack is the problem, do not work around it.** Removing the fail-closed check

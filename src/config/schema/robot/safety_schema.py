@@ -158,32 +158,10 @@ class SelfCollisionSafetyConfig(StrictModel):
     # checks alone.
     kinematics_model: str | None = Field(default=None)
 
-    # Names the per-gripper fcl/Coal mesh bundle the backend loads (``{variant}_collision_meshes.npz``)
-    # in place of ``{kinematics_model}_...``, for a mounted gripper whose collision geometry differs
-    # from the baked Robotiq 2F-85. The arm kinematics stay ``kinematics_model``: the variant bundle
-    # copies the arm-link meshes and swaps only the gripper meshes. The default ``None`` is the
-    # kinematics_model bundle, the 2F-85. The sim threads this from ``robot.sim.gripper_mount``.
-    collision_mesh_variant: str | None = Field(default=None)
-
-    # The coupling plate between the ARM FLANGE and the gripper's own MOUNTING FACE, millimetres.
-    #
-    # ⛔ ONLY A VARIANT BUNDLE NEEDS IT, AND ONLY THE GUARD WAS NEVER TOLD. A bundle baked from a
-    # composed arm asset already sits where the hand is bolted (`gripper__origin` absent, or
-    # "flange"). A bundle read from a standalone vendor asset starts at the hand's own mounting face
-    # and stamps `gripper__origin = "mounting_face"`, which the bake module documents as "whatever
-    # plate sits between that face and the flange has to be added before the planner sees it". The
-    # sphere fit reads that stamp and the on-box cuRobo builder adds the plate via `--coupling-mm`;
-    # the exact-mesh guard read neither and had no parameter that could carry the number, so a
-    # Hand-E cell ran two collision models of the same hand that differed by one plate.
-    #
-    # ⚠ Default 0.0 is exactly the previous behaviour, byte-identical for every existing cell, and
-    # it is NOT a safe guess: it is the absence of a measurement. A cell that leaves it at 0.0 with a
-    # mounting-face bundle is told so once, loudly, at guard construction.
-    #
-    # It is the SAME bench measurement as the plate term in `robot.gripper.tool_frame.offset_mm` and
-    # `build_ur_config.py --coupling-mm`. Measure it once and write it in all three, or the three
-    # descriptions of one hand disagree, which is the family of defect this cell has already had.
-    coupling_mm: float = Field(default=0.0, ge=0.0)
+    # The hand's mesh bundle and its coupling plate are not keys here. The guard derives both from
+    # the hand the cell names, robot.gripper.model and robot.gripper.coupling_plates_mm, through
+    # ``safety.planning.hand.planner_hand``; ``schema/_removed.py`` refuses a tree that still writes
+    # ``collision_mesh_variant`` or ``coupling_mm``.
 
     # Yaw (degrees) of the bundled-DH base frame relative to the robot/system base frame that poses and
     # fixtures are expressed in. The official UR DH (``_ur_kinematics.py``) base is rotated 180 deg
@@ -413,6 +391,16 @@ class PerceivedWorldConfig(StrictModel):
     #: as too old: a producer that does not stamp its frames has to be fixed, not trusted.
     max_age_ms: float = Field(default=500.0, gt=0.0, le=60_000.0)
 
+    #: How many more times a camera is asked for a fresh frame after a reading it cannot vouch for,
+    #: before the motion raises instead of being refused.
+    #:
+    #: A frame that is missing, blind or older than ``max_age_ms`` is a camera problem rather than a
+    #: fact about the cell, so it is not an ordinary refusal: after this many further readings every
+    #: verb raises ``CameraWorldUnavailable`` and a pick campaign stops. 3 means a dead camera is asked
+    #: four times; 0 raises on the first failure. A RealSense grab that blocks costs one grab timeout
+    #: per reading, so a dead camera is found after that many timeouts.
+    fresh_frame_attempts: int = Field(default=3, ge=0, le=10)
+
     #: Read every nth pixel of every frame. 1 reads all of them.
     #:
     #: The cheapest lever there is, and not an approximation while it stays under the voxel size in
@@ -448,7 +436,8 @@ class PerceivedWorldConfig(StrictModel):
     min_points: int = Field(default=12, ge=1, le=100_000)
 
     #: Grown on every side of every box, millimetres. A box that is exactly the measured hull is a
-    #: box the planner will graze, and depth noise at an edge is one-sided.
+    #: box the planner will graze, and depth noise at an edge is one-sided. The same padding is added
+    #: around the robot's own body when the cameras' view of it is taken back out.
     margin_mm: float = Field(default=15.0, ge=0.0, le=500.0)
 
     #: How many perceived boxes there is room for beside the declared ones.
@@ -471,15 +460,9 @@ class PerceivedWorldConfig(StrictModel):
     #: How far above the declared plane a point still counts as the plane, millimetres.
     plane_clearance_mm: float = Field(default=5.0, ge=0.0, le=200.0)
 
-    #: Radius of the capsules that stand for the arm's own links, millimetres.
-    #:
-    #: A fixed camera sees the robot, and a robot registered as an obstacle cannot move at all. The
-    #: capsules are deliberately generous: a point wrongly kept is an obstacle that is not there, and
-    #: a point wrongly dropped is a hole exactly where the arm is.
-    self_radius_mm: float = Field(default=90.0, ge=0.0, le=1000.0)
-
-    #: Radius of the last capsule, which covers the gripper and whatever it is holding, millimetres.
-    tool_radius_mm: float = Field(default=150.0, ge=0.0, le=1000.0)
+    # The robot's own body is not a pair of radii here. The self filter fits one capsule per link to
+    # the committed arm bundle and takes the hand's sphere map, padded by ``margin_mm``;
+    # ``schema/_removed.py`` refuses a tree that still writes ``self_radius_mm`` or ``tool_radius_mm``.
 
     @model_validator(mode="after")
     def _check_grids(self) -> PerceivedWorldConfig:

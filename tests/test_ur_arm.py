@@ -70,7 +70,7 @@ def _pose(frame: Frame = Frame.BASE) -> Pose:
 
 
 def _arm(motion_planner: str = "ik", *, connected: bool = True) -> URRobotArm:
-    cfg = RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": motion_planner}})
+    cfg = RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": motion_planner}, "gripper": {"model": "robotiq_2f85"}})
     arm = URRobotArm(cfg)
     arm._conn = MagicMock()
     arm._conn.is_connected = connected
@@ -184,6 +184,10 @@ class _FakePlanner:
             raise self._plan_result
         return self._plan_result
 
+    def refresh_world(self, *, near_point_mm: object = None) -> None:
+        """Asked before a judged joint move or line on a live camera world. The double has no world."""
+        return None
+
     def execute(self, traj: object, pose: Pose, *, vel: object = None, acc: object = None) -> MotionResult:
         assert self._execute_result is not None
         return self._execute_result
@@ -245,7 +249,7 @@ class ConnectPayloadRollbackTests(unittest.TestCase):
             "vendor": "ur",
             "safety": {"payload": {"enforce": True, "mass_kg": mass_kg, "cog_mm": (0.0, 0.0, 60.0)}},
             # a real cell must declare its tool frame too; these tests are about the PAYLOAD gates
-            "gripper": {"tool_frame": {"source": "willy", "offset_mm": (0.0, 132.0, 0.0), "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476)}},
+            "gripper": {"model": "robotiq_2f85", "tool_frame": {"source": "willy", "offset_mm": (0.0, 132.0, 0.0), "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476)}},
         })
         arm = URRobotArm(cfg)
         arm._conn = _fake_bare_flange_conn()
@@ -291,7 +295,7 @@ class ConnectPayloadRollbackTests(unittest.TestCase):
         whatever the pendant has alone."""
         cfg = RobotConfig.model_validate({
             "vendor": "ur", "safety": {"payload": {"enforce": False, "mass_kg": 0.0}},
-            "gripper": {"tool_frame": {"source": "willy", "offset_mm": (0.0, 132.0, 0.0), "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476)}},
+            "gripper": {"model": "robotiq_2f85", "tool_frame": {"source": "willy", "offset_mm": (0.0, 132.0, 0.0), "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476)}},
         })
         arm = URRobotArm(cfg)
         arm._conn = _fake_bare_flange_conn()
@@ -319,7 +323,7 @@ class ConnectPayloadCogGateTests(unittest.TestCase):
     @staticmethod
     def _arm(**payload):
         cfg = RobotConfig.model_validate(
-            {"vendor": "ur", "safety": {"payload": payload}, "gripper": {"tool_frame": {"source": "willy", "offset_mm": (0.0, 132.0, 0.0), "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476)}}}
+            {"vendor": "ur", "safety": {"payload": payload}, "gripper": {"model": "robotiq_2f85", "tool_frame": {"source": "willy", "offset_mm": (0.0, 132.0, 0.0), "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476)}}}
         )
         arm = URRobotArm(cfg)
         arm._conn = _fake_bare_flange_conn()
@@ -388,7 +392,7 @@ class MoveHomeIsGatedTests(unittest.TestCase):
         cfg = RobotConfig.model_validate({
             "vendor": "ur", "safety": {"payload": {"enforce": False}},
             "ur": {"motion_planner": "ik"},
-            "gripper": {"tool_frame": {
+            "gripper": {"model": "robotiq_2f85", "tool_frame": {
                 "source": "willy", "offset_mm": (0.0, 132.0, 0.0),
                 "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476),
             }},
@@ -476,6 +480,6 @@ class MoveHomeIsGatedTests(unittest.TestCase):
         self.assertEqual(tuple(arm._home_joints), measured_ur3e_home)
 
     def test_an_explicit_argument_still_wins_over_config(self) -> None:
-        cfg = RobotConfig.model_validate({"vendor": "ur", "home_joint_positions": (1.0,) * 6})
+        cfg = RobotConfig.model_validate({"vendor": "ur", "home_joint_positions": (1.0,) * 6, "gripper": {"model": "robotiq_2f85"}})
         arm = URRobotArm(cfg, home_joints=[0.5] * 6)
         self.assertEqual(list(arm._home_joints), [0.5] * 6)

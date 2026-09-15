@@ -62,19 +62,19 @@ class TheCouplingIsRefusedRatherThanAssumedTests(unittest.TestCase):
         self.assertIn("tool_frame.offset_mm", message, "the operator has to know it is one measurement")
 
     def test_a_hand_already_at_the_flange_needs_nothing(self) -> None:
-        placed = place(_spheres("ur5e"), origin=FLANGE, coupling_mm=None)
-        self.assertEqual(placed, _spheres("ur5e"))
+        placed = place(_spheres("robotiq_2f85"), origin=FLANGE, coupling_mm=None)
+        self.assertEqual(placed, _spheres("robotiq_2f85"))
 
     def test_a_coupling_on_a_flange_map_is_a_contradiction_not_a_refinement(self) -> None:
         """⭐ The other direction, and it is the one an operator reaches for when a plan looks short.
         The 2F-85's map already includes wherever the arm put it, so adding a plate moves the hand
         away from where it was measured. Refused rather than added."""
         with self.assertRaises(PlacementError):
-            place(_spheres("ur5e"), origin=FLANGE, coupling_mm=12.0)
+            place(_spheres("robotiq_2f85"), origin=FLANGE, coupling_mm=12.0)
 
     def test_an_unknown_origin_is_refused(self) -> None:
         with self.assertRaises(PlacementError):
-            place(_spheres("ur5e"), origin="somewhere", coupling_mm=None)
+            place(_spheres("robotiq_2f85"), origin="somewhere", coupling_mm=None)
 
     def test_a_negative_plate_would_put_the_hand_inside_the_wrist(self) -> None:
         with self.assertRaises(PlacementError):
@@ -139,7 +139,7 @@ class TheShippedMapsSayWhereTheyStartTests(unittest.TestCase):
         """The pair that makes the field mean something. MEASURED: reading the standalone 2F-85 in
         its own root frame reproduces the committed bundle to 0.00 mm on all six corners of the palm,
         which is what says that asset root IS the flange."""
-        self.assertEqual(_origin("ur5e"), FLANGE)
+        self.assertEqual(_origin("robotiq_2f85"), FLANGE)
 
 
 if __name__ == "__main__":  # pragma: no cover

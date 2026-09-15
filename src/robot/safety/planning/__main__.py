@@ -30,8 +30,8 @@ subprocess and a few seconds, so it stays opt-in rather than folded into ``--che
 See :mod:`.doctor` and ``docs/code-integrity.md``.
 
 Both readings are per-robot. The mesh bundle ships as
-``{model}_collision_meshes.npz`` and the cuRobo descriptor as ``{model}.yml``, so a
-present ``ur5e`` bundle says nothing about a UR3e cell. This entry point reads the
+``{model}_collision_meshes.npz`` and the cuRobo descriptor as ``{model}_{hand}.yml``,
+so a present ``ur5e`` bundle says nothing about a UR3e cell. This entry point reads the
 model from the config the cell will load, and ``--model`` overrides it for a box with
 no config tree.
 """
@@ -64,6 +64,10 @@ def main(argv: list[str] | None = None) -> int:
         "--model", default=None,
         help="robot model to probe (e.g. ur3e). Default: read from the config this box would load.",
     )
+    parser.add_argument(
+        "--hand", default=None,
+        help="the hand on the flange, a gripper registry name (e.g. robotiq_2f85). Default: robot.gripper.model.",
+    )
     parser.add_argument("--profile", default=None, help="profile chain to read the model from")
     parser.add_argument("--data", default=None, help="config data directory")
     parser.add_argument(
@@ -80,24 +84,26 @@ def main(argv: list[str] | None = None) -> int:
         profile=UNSET if args.profile is None else args.profile,
         data_dir=UNSET if args.data is None else args.data,
         model=args.model if args.model else UNSET,
+        hand=args.hand if args.hand else UNSET,
     )
     model, source = stack.model, stack.model_source
 
     if args.doctor:
         from .doctor import run_doctor
 
-        # The hand comes from the same key the guard selects its bundle with, so the doctor and
-        # the guard cannot be asked about different grippers.
-        gripper = None
-        try:
-            from src.config.loader import load_config
+        # The hand comes from the one name the guard takes it from, robot.gripper.model, so the
+        # doctor and the guard cannot be asked about different grippers.
+        from src.contracts import chosen
+        from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR, curobo_robot_yml
 
-            robot = load_config().robot
-            if robot is not None:
-                gripper = robot.safety.self_collision.collision_mesh_variant
-        except Exception:  # noqa: BLE001 - a doctor that cannot read config still reports engines
-            pass
-        report = run_doctor(model=model, robot_config=f"{model}.yml", gripper=gripper)
+        gripper = stack.hand if chosen(stack.hand) else None
+        descriptor = NO_DESCRIPTOR
+        if gripper:
+            try:
+                descriptor = curobo_robot_yml(model, gripper)
+            except ValueError as exc:
+                descriptor = f"<none: {exc}>"
+        report = run_doctor(model=model, robot_config=descriptor, gripper=gripper)
         if args.json:
             print(json.dumps(
                 {
