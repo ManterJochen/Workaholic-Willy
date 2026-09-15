@@ -250,17 +250,19 @@ def main(argv: list[str] | None = None) -> int:
 
     # Deferred: config is light, but the streamer pulls pyrealsense2 and the factory pulls torch.
     from src.config import load_config
-    from src.camera.orchestration.frame_provider import FrameProvider
+    from src.camera.orchestration.camera import Camera
     from src.models.factory import build_object_detector, build_segmenter
     from src.robot.perception import RealSenseVisionPerceptionSource
 
     cfg = load_config()
     rig = _find_rgbd_rig(cfg.camera, args.rig)
-    # Through the frame provider, exactly as `build_real_components` does. This exerciser exists to
+    # Through the camera noun, exactly as `build_real_components` does. This exerciser exists to
     # prove the same chain the cell runs before a robot is involved: if the two acquire their frames
-    # differently, a green bench run stops being evidence about the cell.
-    provider = FrameProvider(list(cfg.camera.cameras.rigs))
-    handle = provider.rig(rig.rig_id)
+    # differently, a green bench run stops being evidence about the cell. `open_disabled`, because
+    # checking a rig before switching it on is what this tool is for; it is the only caller that
+    # lifts that refusal, and it says so once the device is open.
+    camera = Camera.from_config(cfg.camera, rig_id=rig.rig_id, open_disabled=True)
+    handle = camera.handle()
     # See `_RawDepthTap`: the adapter overwrites the depth inside every mask before returning the
     # frame, so counting holes on `frame.depth_map` yields 0.0 % or 100.0 % and nothing else. The
     # tap keeps the depth of the frame the masks were cut from, and costs no extra device frame.
@@ -276,7 +278,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"opening rig {rig.rig_id!r} ...", flush=True)
     if backend_note:
         print(backend_note, flush=True)
-    provider.open_rig(rig.rig_id)
+    camera.open()
+    if not camera.enabled:
+        print(f"opened rig {camera.rig_id!r} although it has `enabled: false`, for this bench check "
+              f"only: {camera.render()}", flush=True)
     try:
         frame = source.acquire()
     finally:

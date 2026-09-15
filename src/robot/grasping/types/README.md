@@ -85,10 +85,12 @@ Segmentations need only satisfy `SegmentationLike`, which is a `.mask` attribute
 does not care which model produced them, which is what lets a simulated ground-truth source and a
 real detector-plus-segmenter source be interchangeable.
 
-`camera_id` is a contract, not a label. It must match an entry in `robot.grasping.fusion.cameras`,
-which is where that camera's own CAMERA to BASE calibration artifact is declared. A frame whose id
-has no calibration entry cannot be placed in BASE, so it cannot be fused; the orchestrator drops it
-and names the id, rather than guessing at a default extrinsic and fusing a cloud into the wrong place.
+`camera_id` is a contract, not a label. It must match a camera the orchestrator holds a resolver
+for. On a config-built cell that is a rig id `robot.grasping.fusion.cameras` fuses, and that
+camera's own CAMERA to BASE calibration artifact is declared on its rig,
+`camera.cameras.rigs[<id>].extrinsics`. A frame whose id has no resolver cannot be placed in BASE, so
+it cannot be fused; the orchestrator drops it and names the id, rather than guessing at a default
+extrinsic and fusing a cloud into the wrong place.
 
 The two Protocols are separate on purpose. The single-camera one answers what the camera sees now;
 the multi-camera one answers what the cameras see at the same moment, and that simultaneity is what

@@ -54,20 +54,30 @@ if it differs from every stored pose by more than the distance or the angle thre
 
 ## Multi-camera: one calibration per camera
 
-A multi-view cell calibrates each camera individually and declares them in one map under
-`robot.grasping.fusion`, keyed by camera id:
+A multi-view cell calibrates each camera individually and declares each calibration on the camera's
+own rig, under `camera.cameras.rigs[<id>].extrinsics`. `robot.grasping.fusion.cameras` names which
+cameras are fused, keyed by the same rig id, and holds nothing else:
 
 ```yaml
+camera:
+  cameras:
+    primary_rig_id: cam_left
+    rigs:
+      - rig_id: cam_left
+        extrinsics:
+          mounting_mode: eye_to_hand
+          artifact_path: "calibration/real/eth_cam_left.json"
+      - rig_id: cam_right
+        extrinsics:
+          mounting_mode: eye_to_hand
+          artifact_path: "calibration/real/eth_cam_right.json"
 robot:
   grasping:
     fusion:
       enabled: true
-      extrinsics_artifact_path: "calibration/real/eth_cam_left.json"   # the primary camera
-      cameras:                                                        # every camera except the primary
-        cam_right:
-          enabled: true
-          mounting_mode: "eye_to_hand"
-          extrinsics_artifact_path: "calibration/real/eth_cam_right.json"
+      cameras:
+        cam_left: {enabled: true}
+        cam_right: {enabled: true}
 ```
 
 | `mounting_mode` | The artifact holds | Written and read with |
@@ -75,10 +85,15 @@ robot:
 | `eye_to_hand` | a CAMERA to BASE `Extrinsics` | `save_extrinsics`, `load_extrinsics` |
 | `eye_in_hand` | a CAMERA to TOOL `Transform` | `save_cam_to_tool`, `load_cam_to_tool` |
 
-`build_config_frame_resolvers` in `src/robot/execution/autonomous_grasp/builders.py` turns that map
-into `{camera_id -> FrameResolver}`. A disabled camera is skipped; an enabled camera whose artifact
-is missing, stale or invalid raises at construction, because an incomplete resolver map must not run
-silently as a smaller rig than was asked for.
+An `eye_in_hand` rig also declares `shutter_motion_tolerance_mm` and `shutter_motion_tolerance_deg`,
+how far the arm may move while a frame is taken, and an `eye_to_hand` rig declares neither.
+
+Every reader loads an artifact through `RigCalibration.from_config` in
+`src/calibration/rig_calibration.py`. `build_config_frame_resolvers` in
+`src/robot/execution/autonomous_grasp/builders.py` builds `{camera_id -> FrameResolver}` from the rigs
+of the enabled `fusion.cameras` entries. A disabled camera is skipped; an enabled camera whose rig
+declares no calibration, or whose artifact is missing, stale or invalid, raises at construction,
+because an incomplete resolver map must not run silently as a smaller rig than was asked for.
 
 ## The traps
 
@@ -101,10 +116,9 @@ entirely by the `A` and `B` the caller builds. `HandEyeAXXB` names the two pairi
 diverse enough. A routine that raised on a bad viewpoint would abort a twenty-pose sweep at pose
 three. Check the return value, and read the log line for the reason.
 
-**The primary camera's artifact does not live in the `cameras` map.** It is the separate
-`fusion.extrinsics_artifact_path` key, and it is the only one that satisfies the CAMERA to BASE
-refusal when a real cell is built. A cell can be fully calibrated, load every artifact in the map,
-and still be refused at build because that key is null.
+**A rig without `extrinsics` is not calibrated.** Writing the artifact is half the job: until the rig
+declares it, the cell has no CAMERA to BASE for that camera, and a real cell whose primary rig
+declares none is refused when it is built.
 
 **The RGB-D marker source has never run against a physical camera.** `RGBDArucoMarkerSource` fills
 the hand-eye routine's `marker_source` seam for a cell whose camera is RGB-D rather than a stereo

@@ -30,11 +30,11 @@ The one side effect that is allowed, named explicitly: on a real camera, peeking
 frameset from the device. There is no way to look at a stream without taking a frame from it, and it
 is harmless here for a measured reason: the real source discards ``warmup_grabs`` (default 5) frames
 at the top of every ``acquire()``, because the first frames after an idle period are not to be
-trusted, so a frame taken by a viewer lands in that discarded prefix. What is not safe is peeking
-while a pick is mid-acquire, because both would then call ``grab()`` on one unsynchronised
-``rs.pipeline``; the camera package holds no lock (measured: ``grep -ri thread src/camera/`` is
-empty), so the exclusion has to be enforced by the caller. :mod:`api.viewfinder` is that caller, and
-it excludes on run state.
+trusted, so a frame taken by a viewer lands in that discarded prefix. Two grabs never interleave on
+one device: every grab goes through the rig's owner, ``src.camera.orchestration.camera.Camera``,
+under the rig's lock, so a peek during an ``acquire()`` waits its turn instead of splitting the
+stream. :mod:`api.viewfinder` still stands down while a run is active, because during a pick the
+grasp overlay is the more informative picture.
 """
 
 from __future__ import annotations

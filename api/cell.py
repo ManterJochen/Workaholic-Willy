@@ -288,7 +288,8 @@ class Console:
         """The same checklist the CLI prints, from the same function. Not a second opinion."""
         from src.robot.execution.real_cell.preflight import run_config_preflight
 
-        return run_config_preflight(self.robot())
+        config, robot = self.resolved()
+        return run_config_preflight(robot, camera=config.camera)
 
     def require_idle(self) -> None:
         """Guard for anything that changes the cell. Raises :class:`RunLocked`, never queues."""

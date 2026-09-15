@@ -128,16 +128,21 @@ def release_perception(service: Any) -> StepOutcome:
     the Isaac sources belong to a simulator this process does not own, and only the RealSense adapter
     has a streamer to hand back. A source without ``close()`` is not an error, it is the normal case.
 
-    Every camera, not the primary one. A fused cell opens one device per camera in
-    ``grasping.fusion.cameras``, so both the ``perception`` and ``multi_camera_perception`` slots
-    are walked. On real hardware a second ``pipeline.start()`` on a streaming device fails, so a
-    camera left open makes the next build of a multi-camera cell impossible without a restart.
+    Every camera, not the primary one. A fused cell also opens a device for every other rig
+    ``grasping.fusion.cameras`` names, each held by its ``Camera`` owner, so both the
+    ``perception`` and ``multi_camera_perception`` slots are walked. On real hardware a second
+    ``pipeline.start()`` on a streaming device fails, so a camera left open makes the next build of
+    a multi-camera cell impossible without a restart.
+
+    A cell whose live planner world takes a rig that neither of those holds opens it for the world
+    alone and keeps it in ``planner_world_cameras``, the third slot, so a rebuild meets none of
+    them still held.
     """
     if service is None:
         return StepOutcome.ABSENT
     orchestrator = getattr(getattr(service, "runtime", None), "orchestrator", None)
     outcome = StepOutcome.ABSENT
-    for slot in ("perception", "multi_camera_perception"):
+    for slot in ("perception", "multi_camera_perception", "planner_world_cameras"):
         holder = getattr(orchestrator, slot, None)
         close = getattr(holder, "close", None)
         if not callable(close):

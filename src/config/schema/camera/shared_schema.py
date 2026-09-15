@@ -117,6 +117,36 @@ class CalibrationConfig(StrictModel):
         return self
 
 
+class RigExtrinsicsConfig(StrictModel):
+    """Where a rig's calibration is: its mounting, its artifact and, for a wrist camera, how far the
+    arm may move while a frame is taken.
+
+    Declared on the rig in the camera section, the one key every reader of CAMERA to BASE takes it
+    from. A rig without the block is not calibrated, which is a stated state and not a default
+    transform.
+    """
+
+    mounting_mode: Literal["eye_to_hand", "eye_in_hand"]
+    artifact_path: str = Field(min_length=1)
+    shutter_motion_tolerance_mm: float | None = Field(default=None, gt=0.0)
+    shutter_motion_tolerance_deg: float | None = Field(default=None, gt=0.0)
+
+    @model_validator(mode="after")
+    def _tolerances_follow_the_mounting(self) -> RigExtrinsicsConfig:
+        tolerances = (self.shutter_motion_tolerance_mm, self.shutter_motion_tolerance_deg)
+        if self.mounting_mode == "eye_in_hand" and None in tolerances:
+            raise ValueError(
+                "an eye_in_hand rig needs shutter_motion_tolerance_mm and shutter_motion_tolerance_deg, each "
+                "above 0: a depth frame the planner world takes from it while the arm moved further than they "
+                "allow is no frame, and "
+                "there is no default, because how still the arm must be is a fact about the cell")
+        if self.mounting_mode == "eye_to_hand" and any(t is not None for t in tolerances):
+            raise ValueError(
+                "shutter_motion_tolerance_mm and shutter_motion_tolerance_deg bound a wrist camera's motion "
+                "at the shutter, and an eye_to_hand rig does not move with the arm, so it takes neither")
+        return self
+
+
 class BaseRigConfig(StrictModel):
     """Fields common to every camera rig variant."""
 
@@ -128,3 +158,6 @@ class BaseRigConfig(StrictModel):
     backend: int = Field(default=0, ge=0)
 
     quality: QualityConfig = Field(default_factory=QualityConfig)
+
+    #: The rig's calibration, declared on the rig. None is a rig that is not calibrated.
+    extrinsics: RigExtrinsicsConfig | None = None

@@ -93,38 +93,28 @@ class PerceptionModelsConfig(StrictModel):
     pipeline: PipelineConfig | None = None
 
 
-def primary_camera_calibration_conflict(camera: CameraConfig, robot: RobotConfig | None) -> str | None:
-    """The refusal when the primary camera is calibrated twice and the two artifacts disagree, else None.
+def camera_calibration_conflict(camera: CameraConfig, robot: RobotConfig | None) -> str | None:
+    """The refusal when ``robot.grasping.fusion.cameras`` names a camera that is not a rig, else None.
 
-    ``robot.grasping.fusion.cameras`` lists every camera that takes part in fusion, the primary
-    included, each with its own artifact. ``fusion.extrinsics_artifact_path`` beside it is the
-    primary's, and it stays: it is the key ``from_robot_config`` names when it refuses a cell with no
-    CAMERA to BASE transform, and the key ``real_cell --check`` reports on. So a cell that lists its
-    primary in the map has written the same fact down twice, and two artifacts for one camera is a cell
-    that is calibrated differently depending on which loader ran.
+    A fused camera's calibration is declared on its rig, ``camera.cameras.rigs[<id>].extrinsics``, so
+    an id in the map that names no rig is a camera whose calibration has nowhere to be. Whether that
+    rig declares ``extrinsics`` is decided when the cell is built and in the preflight, not at load: a
+    profile that is not ready to run is not a malformed file.
 
-    The rule needs both sections: which rig is primary is ``camera.cameras.primary_rig_id`` and the map
-    is under ``robot``, so a validator on the fusion block cannot see the camera section.
-    :class:`AppConfig` runs it for the whole tree. A section loader sees one half and cannot run it, so a
-    door that combines a camera section with a robot section loaded apart calls this function.
+    The rule needs both sections, the rigs under ``camera`` and the map under ``robot``, so
+    :class:`AppConfig` runs it for the whole tree. A section loader sees one half and cannot run it, so
+    a door that combines a camera section with a robot section loaded apart calls this function.
     """
     fusion = getattr(getattr(robot, "grasping", None), "fusion", None)
-    if fusion is None:
-        return None
-    entry = (getattr(fusion, "cameras", None) or {}).get(camera.cameras.primary_rig_id)
-    scalar = getattr(fusion, "extrinsics_artifact_path", None)
-    if entry is None or scalar is None:
-        return None
-    mapped = getattr(entry, "extrinsics_artifact_path", None)
-    if mapped is not None and str(mapped) != str(scalar):
-        return (
-            f"the primary camera {camera.cameras.primary_rig_id!r} is calibrated twice "
-            f"and the two disagree: robot.grasping.fusion.extrinsics_artifact_path is "
-            f"{scalar!r} and its entry in robot.grasping.fusion.cameras is {mapped!r}. Both "
-            "must name the same artifact. Which of the two a cell ends up using depends on "
-            "which loader ran, so a cell configured this way is calibrated differently on two "
-            "code paths."
-        )
+    cameras = getattr(fusion, "cameras", None) or {}
+    rigs = sorted(rig.rig_id for rig in camera.cameras.rigs)
+    for cam_id in sorted(cameras):
+        if cam_id not in rigs:
+            return (
+                f"robot.grasping.fusion.cameras names {cam_id!r}, which is not a rig in camera.cameras.rigs "
+                f"({rigs}). A fused camera's calibration is declared on its rig, so this camera's calibration "
+                "has nowhere to be."
+            )
     return None
 
 
@@ -137,13 +127,13 @@ class AppConfig(StrictModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
     @model_validator(mode="after")
-    def _the_primary_camera_is_calibrated_in_one_place(self) -> AppConfig:
-        """The primary camera's calibration may be stated twice, and then it must say one thing.
+    def _every_fused_camera_is_a_rig(self) -> AppConfig:
+        """Every camera the fusion map names is a rig, where its calibration is declared.
 
-        The rule is :func:`primary_camera_calibration_conflict`; this validator runs it for the whole
-        tree, the one place both halves are visible at load.
+        The rule is :func:`camera_calibration_conflict`; this validator runs it for the whole tree,
+        the one place both halves are visible at load.
         """
-        conflict = primary_camera_calibration_conflict(self.camera, self.robot)
+        conflict = camera_calibration_conflict(self.camera, self.robot)
         if conflict is not None:
             raise ValueError(conflict)
         return self

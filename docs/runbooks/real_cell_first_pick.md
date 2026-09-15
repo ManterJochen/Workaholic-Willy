@@ -211,20 +211,16 @@ The sweep takes the cell lock and connects the arm alone, with no gripper. While
 holds this cell the sweep exits 1 and names the holder, so end the console's session first. A refused
 connect exits 1 as well, and exit 3 is a sweep that raised.
 
-It writes `eth_<rig_id>.json` under `calibration/real` and prints the
-`robot.grasping.fusion.cameras` entry to paste. Run it once per camera. Until a camera is in that
-map it does not reach the pick path at all: geometry fusion stands down to a single view and says so
-only in telemetry.
+It writes `eth_<rig_id>.json` under `calibration/real` and prints the rig block to paste into the
+camera section, `camera.cameras.rigs[<rig_id>].extrinsics`. Run it once per camera. Until the primary
+rig declares its block the cell has no camera-to-base transform, and a real cell is refused at build,
+naming that key. A second camera also needs an entry naming its rig in
+`robot.grasping.fusion.cameras`. Without one it never reaches the pick path: geometry fusion stands
+down to a single view, and the build says so in one warning.
 
-Two traps around it:
-
-* Measure the printed ArUco board before the first sweep. A wrong `--marker-length-mm` scales every
-  sample uniformly, so the solve converges and is uniformly wrong, which no residual will tell you.
-  It is the edge of the black square in millimetres, not the white border and not what the PDF was
-  called.
-* The primary camera's artifact also has to be named in
-  `robot.grasping.fusion.extrinsics_artifact_path`. The pasted `cameras` block alone leaves that key
-  null, and a cell can be fully calibrated, hold both artifacts, and still be refused at build.
+Measure the printed ArUco board before the first sweep. A wrong `--marker-length-mm` scales every
+sample uniformly, so the solve converges and is uniformly wrong, which no residual will tell you. It
+is the edge of the black square in millimetres, not the white border and not what the PDF was called.
 
 The sanity check that beats any residual: command a known TCP pose, detect the marker, and confirm
 that the camera-to-base transform predicts the arm's own forward kinematics to within a few
@@ -264,8 +260,10 @@ one session, because three of them share the same setup.
      verifies it. Either way `connect()` derives what the controller is actually running and refuses
      a mismatch. The schema also rejects a declared source left at identity, so half a declaration
      does not pass either.
-4. **Calibrate eye-to-hand**, point `grasping.fusion.extrinsics_artifact_path` at the primary
-   camera's artifact, list every other camera under `grasping.fusion.cameras`, and set
+4. **Calibrate eye-to-hand** and declare the primary camera's artifact on its rig,
+   `camera.cameras.rigs[<primary rig id>].extrinsics`, by pasting the block the calibration command
+   prints; it is read whether or not `grasping.fusion.enabled` is on. To fuse every other camera,
+   declare each on its own rig, name it under `grasping.fusion.cameras`, and set
    `grasping.fusion.enabled: true`. That key also arms the shadow voxel substrate, which ingests
    perception frames and emits telemetry. It changes no grasp and no motion, because the gate that
    would let fused evidence decide is `fusion.commit_policy.enabled` and that stays off, but it is
@@ -326,9 +324,9 @@ rule; 3 an exception escaped a pick.
   connection back on a failed push, so a failed push never leaves a half-set payload behind.
 * **The tool frame**: `source: "undeclared"` returns the cell to refusing to connect, which is the
   safe state rather than a broken one.
-* **A bad calibration**: point `extrinsics_artifact_path` back at the previous file. The real-cell
-  calibration writes under `calibration/real` keyed by `rig_id`, and the simulator runners write
-  under `logs/calibration/<robot_model>/`, so the two cannot overwrite each other and one arm's
+* **A bad calibration**: point the rig's `extrinsics.artifact_path` back at the previous file. The
+  real-cell calibration writes under `calibration/real` keyed by `rig_id`, and the simulator runners
+  write under `logs/calibration/<robot_model>/`, so the two cannot overwrite each other and one arm's
   simulated run cannot overwrite another's. Copy an artifact aside before moving a camera.
 * **Everything else**: `--rehearse` still runs with no hardware attached, so you can always get back
   to a known-good software baseline without the robot.

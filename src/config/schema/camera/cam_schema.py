@@ -34,6 +34,15 @@ def _check_positive_pair(pair: tuple[int, int], name: str) -> None:
         raise ValueError(f"{name} must contain two positive values")
 
 
+def _refuse_stereo_extrinsics(rig: BaseRigConfig) -> None:
+    """Refuse a calibration on a stereo rig. The planner world and the pick path take depth from
+    RGB-D rigs only, so a calibrated stereo rig would be a camera every reader refuses later."""
+    if rig.extrinsics is not None:
+        raise ValueError(
+            f"camera.cameras.rigs[{rig.rig_id!r}] is a {rig.source!r} rig; stereo rigs carry no extrinsics "
+            "until their own step, because the planner world and the pick path take depth from RGB-D rigs only")
+
+
 # ---------------------------------------------------------------------------
 # Webcam pair
 # ---------------------------------------------------------------------------
@@ -60,6 +69,7 @@ class WebcamPairRigConfig(BaseRigConfig):
 
     @model_validator(mode="after")
     def _validate_capture_settings(self) -> WebcamPairRigConfig:
+        _refuse_stereo_extrinsics(self)
         _check_positive_pair(self.frame_size, "frame_size")
         if self.min_pairs > self.max_pairs:
             raise ValueError("min_pairs must be <= max_pairs")
@@ -107,6 +117,7 @@ class SingleDeviceRigConfig(BaseRigConfig):
 
     @model_validator(mode="after")
     def _validate_capture_settings(self) -> SingleDeviceRigConfig:
+        _refuse_stereo_extrinsics(self)
         _check_positive_pair(self.device_frame_size, "device_frame_size")
         _check_positive_pair(self.per_eye_frame_size, "per_eye_frame_size")
         if self.min_pairs > self.max_pairs:

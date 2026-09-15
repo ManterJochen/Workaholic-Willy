@@ -68,9 +68,10 @@ robot:
     # [default: null]
     home_joint_positions: null
 
-    # The cameras authored into the sim scene, keyed by YOUR name for each one. The same name is
-    # what `grasping.fusion.cameras` calibrates, so a two-camera cell uses one name per camera in
-    # both places.
+    # The cameras authored into the sim scene, keyed by YOUR name for each one. They are not rigs
+    # of the camera section, so they declare no calibration in config and cannot be named in
+    # `grasping.fusion.cameras`, which takes rig ids: `run_multiview_pick --calibrated` reads each
+    # fixed camera's `eth_<name>.json`, written by `run_eth_calibrate --camera <name>`, in code.
     # [default: {}]
     #
     #   cameras:
@@ -1646,28 +1647,17 @@ robot:
       # [default: false]
       active_perception_use_fusion: false
 
-      # Path to a persisted eye-to-hand Extrinsics JSON artifact (CAMERA -> BASE), as written by
-      # ``src.calibration.serialization.save_extrinsics``.
-      # [default: null]
-      extrinsics_artifact_path: null
-
-      # One calibration entry per camera, keyed by the same name the camera has elsewhere: a
-      # `robot.sim.cameras` key in sim, a rig id on real hardware. Every camera in a multi-view cell
-      # is calibrated and loaded on its own, so each one names its own artefact.
+      # Which cameras this cell fuses, one entry per camera keyed by its rig id in
+      # `camera.cameras.rigs`. An entry holds `enabled` only: each camera's calibration is declared
+      # on its rig, `camera.cameras.rigs[<id>].extrinsics`, and loaded at construction, fail-closed.
+      # An id that names no rig is refused at load.
       # Only active when robot.grasping.fusion.enabled is true.
       # [default: {}]
       #
       #   cameras:
-      #     overhead:
+      #     realsense_d435:
       #       # Whether this camera takes part. False leaves it configured and unused.
       #       enabled: true
-      #       # How it is mounted, which decides what its artefact means: CAMERA to BASE for a fixed
-      #       # camera, CAMERA to TOOL for one on the flange.
-      #       # [one of: eye_to_hand | eye_in_hand]
-      #       mounting_mode: eye_to_hand
-      #       # Where this camera's persisted extrinsics live. Required: a camera in this map with no
-      #       # artefact is a camera nothing can place.
-      #       extrinsics_artifact_path: logs/calibration/ur5e/eth_overhead.json
       cameras: {}
 
       # Fuse each object's SURFACE across the fixed cameras, and feed that to the grasp generator.

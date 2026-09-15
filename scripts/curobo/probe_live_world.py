@@ -55,6 +55,19 @@ And three where a camera cannot vouch for the cell and the refresh raises instea
   4e.3  A camera silent once and then sighted plans, after two readings, and the refresh names the
         camera and the capture time a PLANNED stamp carries. REQUIRED.
 
+And one where the camera rides on the wrist:
+
+  5e.1  A camera on the wrist sees the wall from two tool poses 60 mm apart, each frame placed by the
+        tool pose it was stamped with, and both refreshes stop the plan. The same camera over the
+        empty bench plans, and a wrist frame with no tool pose is refused before anything is
+        registered. REQUIRED.
+
+And one where a world has two cameras:
+
+  5f.1  Two fixed cameras 100 mm apart both see the wall: the refresh names both and vouches PLANNED,
+        and the plan stops. The second camera blind raises naming it after its fresh-frame attempts,
+        and registers nothing. REQUIRED.
+
 A recorded step prints its numbers and the decision it feeds, and never changes the exit code: its
 answer is a measurement, not a pass.
 """
@@ -599,6 +612,183 @@ def _step_camera_faults(
     return steps
 
 
+#: A camera on the wrist, looking along the tool's approach: the mast camera's rotation, carried by
+#: the tool (5e.1).
+_CAMERA_TO_TOOL = np.diag([1.0, -1.0, -1.0, 1.0])
+#: The two tool poses 5e.1 sees the wall from, along base X at the mast camera's height. 60 mm is 40
+#: pixels at the wall's top, so the wall lands in two places in the two images and in one place in
+#: the cell.
+_WRIST_TOOL_X_MM = (_CAMERA_X_MM, _CAMERA_X_MM + 60.0)
+
+
+class _WristCamera:
+    """A depth camera on the tool, over the bench or the wall, stamping each frame with the tool pose."""
+
+    def __init__(self, tool_x_mm: float, *, wall: bool, stamped: bool = True) -> None:
+        self.tool_x_mm = tool_x_mm
+        self.wall = wall
+        self.stamped = stamped
+
+    def _tool_to_base(self) -> np.ndarray:
+        pose = np.eye(4)
+        pose[0, 3] = self.tool_x_mm
+        pose[2, 3] = _CAMERA_HEIGHT_MM
+        return pose
+
+    def grab_surface_depth(self) -> DepthSnapshot:
+        depth = _Camera._bench()
+        if self.wall:
+            rows, cols = np.mgrid[0 : _SHAPE[0], 0 : _SHAPE[1]]
+            top_depth = _CAMERA_HEIGHT_MM - _WALL_HEIGHT_MM
+            scale = top_depth / _FX
+            centre_col = _CX + (_WALL_X_MM - self.tool_x_mm) / scale
+            mask = (np.abs(cols - centre_col) <= _WALL_THICKNESS_MM / 2.0 / scale) & (
+                np.abs(rows - _CY) <= _WALL_WIDTH_MM / 2.0 / scale
+            )
+            depth[mask] = top_depth
+        return DepthSnapshot(
+            depth_mm=depth, intrinsics=_INTRINSICS, timestamp=time.time(),
+            tool_to_base_mm=self._tool_to_base() if self.stamped else None,
+        )
+
+
+def _step_wrist_camera(client: CuroboPlanClient, tuning: WorldBuildTuning) -> dict[str, Any]:
+    """5e.1: a camera on the wrist is placed by the tool pose its frame was stamped with.
+
+    The wall is seen from two tool poses 60 mm apart, and both refreshes must stop the plan; a wall
+    placed where the mast camera stands would land 60 mm off in one of them. The empty bench seen from
+    the moved pose is the control that the wall stops the plan and the wrist view alone does not. A
+    frame with no tool pose must be refused before anything is registered, so a wall box registered
+    first still stops the plan.
+    """
+
+    def world(camera: _WristCamera) -> LivePlannerWorld:
+        return LivePlannerWorld(
+            cameras=(CameraView(name="wrist", depth_source=camera, camera_to_tool=_CAMERA_TO_TOOL),),
+            declared=(_BENCH,),
+            limits=_LIMITS,
+            tuning=tuning,
+            max_age_ms=5000.0,
+        )
+
+    client.set_voxels(None)
+    client.set_world([_BENCH])
+    entry: dict[str, Any] = {"tool_x_mm": list(_WRIST_TOOL_X_MM)}
+    stopped: list[bool] = []
+    for tool_x_mm in _WRIST_TOOL_X_MM:
+        refresh = refresh_planner_world(
+            source=world(_WristCamera(tool_x_mm, wall=True)), client=client, self_envelope=_SELF,
+        )
+        held = refresh.ok and not _plan(client)
+        entry[f"wall_from_{tool_x_mm:.0f}_mm"] = {"refresh": refresh.render(), "plan_stopped": held}
+        stopped.append(held)
+    bench = refresh_planner_world(
+        source=world(_WristCamera(_WRIST_TOOL_X_MM[1], wall=False)), client=client, self_envelope=_SELF,
+    )
+    entry["bench_plans"] = bool(bench.ok and _plan(client))
+
+    client.set_voxels(None)
+    client.set_world([_BENCH, _wall_cuboid()])
+    unstamped = refresh_planner_world(
+        source=world(_WristCamera(_WRIST_TOOL_X_MM[1], wall=False, stamped=False)), client=client,
+        self_envelope=_SELF,
+    )
+    entry["unstamped"] = {"verdict": str(unstamped.verdict), "reason": unstamped.reason}
+    entry["unstamped_registered_nothing"] = not unstamped.ok and not _plan(client)
+    entry["passed"] = (
+        all(stopped)
+        and entry["bench_plans"]
+        and str(unstamped.verdict) == "unusable"
+        and entry["unstamped_registered_nothing"]
+    )
+    client.set_voxels(None)
+    client.set_world([_BENCH])
+    return entry
+
+
+#: A second fixed camera beside the mast camera, 100 mm further along base X, looking down the same
+#: way (5f.1).
+_SIDE_CAMERA_X_MM = _CAMERA_X_MM + 100.0
+
+
+def _camera_to_base_at(x_mm: float) -> np.ndarray:
+    """The mast camera's CAMERA to BASE, carried to ``x_mm`` along base X."""
+    placed = _CAMERA_TO_BASE.copy()
+    placed[0, 3] = x_mm
+    return placed
+
+
+class _FixedCamera:
+    """A fixed depth camera at ``x_mm`` along base X that sees the wall, or a blind one: every pixel zero."""
+
+    def __init__(self, x_mm: float, *, blind: bool = False) -> None:
+        self.x_mm = x_mm
+        self.blind = blind
+
+    def grab_surface_depth(self) -> DepthSnapshot:
+        if self.blind:
+            return DepthSnapshot(depth_mm=np.zeros(_SHAPE, dtype=np.float64), intrinsics=_INTRINSICS,
+                                 timestamp=time.time())
+        # The wrist camera's rendering from a camera at `x_mm`, with no tool pose: this camera does not move.
+        return _WristCamera(self.x_mm, wall=True, stamped=False).grab_surface_depth()
+
+
+def _step_two_cameras(client: CuroboPlanClient, tuning: WorldBuildTuning) -> dict[str, Any]:
+    """5f.1: a world from two fixed cameras names both, and one of them blind stops the refresh naming it.
+
+    Both cameras see the wall from 100 mm apart. The refresh must vouch for both, with a PLANNED stamp
+    naming the two, and the plan must stop. With the second camera blind the refresh raises naming it
+    after its fresh-frame attempts, and a wall box registered first still stops the plan, so the raise
+    registered nothing.
+    """
+
+    def world(side: _FixedCamera) -> LivePlannerWorld:
+        return LivePlannerWorld(
+            cameras=(
+                CameraView(name="overhead", depth_source=_FixedCamera(_CAMERA_X_MM), camera_to_base=_CAMERA_TO_BASE),
+                CameraView(name="side", depth_source=side, camera_to_base=_camera_to_base_at(_SIDE_CAMERA_X_MM)),
+            ),
+            declared=(_BENCH,),
+            limits=_LIMITS,
+            tuning=tuning,
+            max_age_ms=5000.0,
+        )
+
+    client.set_voxels(None)
+    client.set_world([_BENCH])
+    entry: dict[str, Any] = {}
+    sighted = refresh_planner_world(source=world(_FixedCamera(_SIDE_CAMERA_X_MM)), client=client, self_envelope=_SELF)
+    stamp = sighted.camera_world()
+    entry["sighted"] = {"refresh": sighted.render(), "cameras": list(sighted.cameras),
+                        "stamp": None if stamp is None else stamp.render()}
+    entry["sighted_plan_stopped"] = sighted.ok and not _plan(client)
+
+    client.set_voxels(None)
+    client.set_world([_BENCH, _wall_cuboid()])
+    source = world(_FixedCamera(_SIDE_CAMERA_X_MM, blind=True))
+    try:
+        refresh_planner_world(source=source, client=client, self_envelope=_SELF)
+    except CameraWorldUnavailable as exc:
+        entry["blind"] = {"raised": True, "camera": exc.camera, "attempts": exc.attempts, "verdict": str(exc.verdict)}
+        entry["blind_registered_nothing"] = not _plan(client)
+    else:
+        entry["blind"] = {"raised": False}
+        entry["blind_registered_nothing"] = False
+    entry["passed"] = (
+        bool(entry["sighted_plan_stopped"])
+        and entry["sighted"]["cameras"] == ["overhead", "side"]
+        and stamp is not None
+        and stamp.use.name == "PLANNED"
+        and entry["blind"].get("raised") is True
+        and entry["blind"].get("camera") == "side"
+        and entry["blind"].get("attempts") == 1 + source.fresh_frame_attempts
+        and bool(entry["blind_registered_nothing"])
+    )
+    client.set_voxels(None)
+    client.set_world([_BENCH])
+    return entry
+
+
 def _step_sign(
     client: CuroboPlanClient, extent: "tuple[tuple[float, float, float], float]"
 ) -> dict[str, Any]:
@@ -882,12 +1072,14 @@ def main(argv: "list[str] | None" = None) -> int:
             steps["4a.4"] = {k: v for k, v in sweep.items() if k not in production}
             steps["4a.5"] = {k: sweep[k] for k in ("voxel_mm", "grid_half_width_x_mm", *production)}
         steps.update(_step_camera_faults(client, tuning))
+        steps["5e.1"] = _step_wrist_camera(client, tuning)
+        steps["5f.1"] = _step_two_cameras(client, tuning)
         steps["4a.7"] = _step_hand(client)
     finally:
         logging.getLogger("CuroboPlanClient").setLevel(logging.INFO)
         client.close()
 
-    required = ("4a.1", "4a.2", "4a.3", "4a.6", "4a.9", "4e.1", "4e.2", "4e.3")
+    required = ("4a.1", "4a.2", "4a.3", "4a.6", "4a.9", "4e.1", "4e.2", "4e.3", "5e.1", "5f.1")
     report["steps"] = steps
     failing = [k for k in required if steps[k].get("passed") is False]
     report["required_failing"] = failing

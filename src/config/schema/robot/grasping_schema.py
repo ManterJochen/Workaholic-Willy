@@ -1132,30 +1132,17 @@ class RobotGraspingApproachValidationConfig(StrictModel):
         return self
 
 
-class CameraExtrinsicsConfig(StrictModel):
-    """One camera's calibration entry in the central ``fusion.cameras`` map.
+class FusionCameraConfig(StrictModel):
+    """One camera's entry in ``fusion.cameras``: whether it takes part in fusion.
 
-    Keyed by a camera id (the same name used elsewhere for the camera, e.g. a sim
-    ``robot.sim.cameras`` key or a production rig id). Each camera declares how it is
-    mounted and where its persisted calibration artifact lives, so every camera in a
-    multi-view rig is calibrated + loaded individually.
+    Keyed by the camera's rig id in ``camera.cameras.rigs``. Its calibration is not here: it is
+    declared on its rig, ``camera.cameras.rigs[<id>].extrinsics``, and loaded through
+    ``RigCalibration``.
     """
 
     enabled: bool = Field(
         default=True,
         description="Whether this camera participates. Disabled cameras are skipped by the resolver map.",
-    )
-    mounting_mode: Literal["eye_to_hand", "eye_in_hand"] = Field(
-        default="eye_to_hand",
-        description=(
-            "eye_to_hand = fixed camera; the artifact is a CAMERA->BASE Extrinsics "
-            "(``save_extrinsics``) -> a StaticCameraToBaseResolver. eye_in_hand = wrist "
-            "camera; the artifact is a CAMERA->TOOL transform (``save_cam_to_tool``) -> an "
-            "EyeInHandFrameResolver that composes the live TCP each frame."
-        ),
-    )
-    extrinsics_artifact_path: str = Field(
-        description="Path to this camera's persisted calibration JSON (per mounting_mode).",
     )
 
 
@@ -1411,41 +1398,20 @@ class RobotGraspingFusionConfig(StrictModel):
             "byte-identical, so the commit gate can be armed on its own."
         ),
     )
-    extrinsics_artifact_path: str | None = Field(
-        default=None,
-        description=(
-            "Path to a persisted eye-to-hand Extrinsics JSON artifact (CAMERA -> BASE), as written "
-            "by ``src.calibration.serialization.save_extrinsics``. When set and ``enabled`` is "
-            "True, ``AutonomousGraspService.from_robot_config`` builds a StaticCameraToBaseResolver from "
-            "the loaded transform so the multi-view fusion substrate + the commit gate become "
-            "reachable in production. ``None`` (default) builds no resolver (byte-identical). "
-            "Fail-closed: a set-but-unloadable path raises at construction (a misconfigured fusion "
-            "deployment must not silently run with an unreachable gate). Eye-in-hand cells leave this "
-            "None and pass a ``frame_resolver`` kwarg in code (the live TCP-composed resolver cannot be "
-            "serialized)."
-        ),
-    )
-    cameras: dict[str, CameraExtrinsicsConfig] = Field(
+    cameras: dict[str, FusionCameraConfig] = Field(
         default_factory=dict,
         description=(
             "Every camera this cell fuses, keyed by the id it has in ``camera.cameras.rigs``, "
             "INCLUDING the primary. One list answers 'how many cameras does this cell have', and a "
-            "simulator and a real cell mean the same thing by it. Each entry carries {enabled, "
-            "mounting_mode, extrinsics_artifact_path}, so every camera is calibrated and loaded on "
-            "its own. ``build_config_frame_resolvers`` turns it into a {camera_id -> FrameResolver} "
-            "map (eye_to_hand -> StaticCameraToBaseResolver, eye_in_hand -> EyeInHandFrameResolver). "
-            "Empty (default) is a single-camera cell using the ``extrinsics_artifact_path`` key "
-            "beside this one. Fail-closed: an enabled camera with a missing or invalid artifact "
-            "raises at construction. "
-            "The primary used to be excluded, and the exclusion cost two things. The boot banner "
-            "counts this map, so a correctly configured two-camera cell was told it had one and "
-            "advised to add a second. And ``robot.sim.yaml`` listed its own primary while a real "
-            "cell was documented not to, so the two profiles taught opposite shapes. The primary is "
-            "still left out of the extra-camera rig, because it already streams through the cell's "
-            "main perception source and fusing a second copy of it costs a full detect and segment "
-            "pass for a view already present. If the primary is listed here, its artifact must be "
-            "the same one ``fusion.extrinsics_artifact_path`` names; a disagreement is refused at "
-            "load."
+            "simulator and a real cell mean the same thing by it. Each entry carries ``enabled``. "
+            "Each camera's calibration is declared on its rig, "
+            "``camera.cameras.rigs[<id>].extrinsics``, and loaded through ``RigCalibration`` at "
+            "construction, fail-closed; an id that names no rig is refused at load. "
+            "``build_config_frame_resolvers`` turns the enabled entries into a {camera_id -> "
+            "FrameResolver} map (eye_to_hand -> StaticCameraToBaseResolver, eye_in_hand -> "
+            "EyeInHandFrameResolver). The primary is left out of the extra-camera rig, because it "
+            "already streams through the cell's main perception source and fusing a second copy of "
+            "it costs a full detect and segment pass for a view already present."
         ),
     )
     geometry: FusionGeometryConfig = Field(

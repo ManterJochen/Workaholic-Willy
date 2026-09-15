@@ -238,13 +238,14 @@ a sentence saying "at least this old, possibly much older". Once the server has 
 replace another the age is real to within a poll. `WS /v1/overlay` does not make this distinction: it
 seeds its clock when the socket is accepted.
 
-**The pick owns the camera, and this endpoint stands down.** The camera package holds no lock and a
-pick runs on its own thread, so two grabs on one device pipeline would split the frame stream between
-the viewer and the robot. While a run is active the viewfinder never touches the device and serves the
-overlay instead, which during a pick is the more informative picture anyway. The exclusion is by run
-state and not a mutex, because a correct mutex would have to live inside the camera package on the
-pick's own hot path. One frame can still land in the viewer instead of the pick; the pick opens every
-acquisition by discarding warm-up frames, so nothing it relies on changes.
+**The pick owns the camera, and this endpoint stands down.** A pick runs on its own thread, and while
+a run is active the viewfinder never touches the device and serves the overlay instead, which during a
+pick is the more informative picture anyway. The exclusion is by run state. Below it, every grab from a
+camera goes through its rig's owner (`Camera`, in `src/camera/orchestration/camera.py`) under the rig's
+lock, so a peek outside a run waits for a planner world's depth grab on the same rig, and two browser
+tabs queue on that lock instead of interleaving. One frame can still land in the viewer between the
+pick's grabs; the pick opens every acquisition by discarding warm-up frames, so nothing it relies on
+changes.
 
 **Every camera this server opens, it closes.** Building twice is a normal thing to do: build, read the
 refusal, fix a key, build again. Two rules make the second build survive the first. The session state

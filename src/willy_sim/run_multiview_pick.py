@@ -49,6 +49,7 @@ from src.robot.grasping.multiview.localize import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from collections.abc import Iterable
     from src.geometry import Transform
     from src.robot.grasping.types.grasp_point import GraspPoint
 
@@ -295,6 +296,31 @@ def _scene_specs(scene: str) -> list[SimObjectConfig]:
         else:
             specs.append(SimObjectConfig(name=n, color=c, position_mm=p))
     return specs
+
+
+def calibrated_camera_resolvers(cameras: "Iterable[str]", *, robot_model: str | None = None,
+                                artifact_dir: str | None = None) -> dict[str, Any]:
+    """Each fixed sim camera's CAMERA->BASE resolver, from its own eye-to-hand artifact, through the one rig loader.
+
+    Under the sim profile the Isaac cameras are not rigs of the camera section, so no rig declares their
+    calibration and ``--calibrated`` names each artifact in code: ``eth_<id>.json`` in ``artifact_dir``,
+    which defaults to ``calibration_dir(robot_model)``, the directory ``run_eth_calibrate`` writes for that
+    robot model. A camera whose artifact does not load raises ``RigCalibrationError`` naming the file.
+    """
+    from pathlib import Path
+
+    from src.config.schema.camera.shared_schema import RigExtrinsicsConfig
+    from src.calibration.rig_calibration import RigCalibration
+    from src.robot.grasping.motion.frame_resolver import StaticCameraToBaseResolver
+    from src.willy_sim.calibration.paths import calibration_dir
+
+    root = Path(artifact_dir) if artifact_dir is not None else calibration_dir(robot_model)
+    resolvers: dict[str, Any] = {}
+    for name in cameras:
+        declared = RigExtrinsicsConfig(mounting_mode="eye_to_hand", artifact_path=str(root / f"eth_{name}.json"))
+        resolvers[name] = StaticCameraToBaseResolver(
+            transform=RigCalibration.from_config(name, declared).camera_to_base())
+    return resolvers
 
 
 def _select_by_prompt(labels: list[str], prompt: str) -> int:
@@ -717,41 +743,28 @@ def run_multiview_gate(
 
     # Build the active fixed-camera localizers. The overhead uses a small near clip so a reaching arm
     # is rendered; the obliques are authored world-fixed and their CAMERA->BASE is fit against the sim
-    # ground truth. Under --calibrated the active fixed cameras and their CAMERA->BASE come from the
-    # central config, from grasping.fusion.cameras through build_config_frame_resolvers, and each
-    # camera uses its own persisted eye-to-hand calibration, written by
-    # `run_eth_calibrate --camera <id>`, rather than the sim ground-truth oracle. With the flag off
-    # the path is the byte-identical ground-truth path keyed by --mode.
+    # ground truth. Under --calibrated each active fixed camera's CAMERA->BASE comes from its own
+    # persisted eye-to-hand calibration, written by `run_eth_calibrate --camera <id>` and read through
+    # the one rig loader, rather than from the sim ground-truth oracle. With the flag off the path is
+    # the byte-identical ground-truth path keyed by --mode.
     resolvers: dict[str, Any] = {}
     if calibrated:
-        from src.robot.execution.autonomous_grasp.builders import build_config_frame_resolvers
-        from src.robot.grasping.motion.frame_resolver import StaticCameraToBaseResolver
+        from src.calibration.rig_calibration import RigCalibrationError
 
-        # --calibrated is an explicit opt-in, so fusion.enabled is forced for the resolver build: the
-        # config only needs to declare grasping.fusion.cameras, and fusion stays off by default for
-        # every other runner.
-        gr = cfg.robot.grasping
-        if gr is not None:
-            gr = gr.model_copy(update={"fusion": gr.fusion.model_copy(update={"enabled": True})})
-        resolvers = build_config_frame_resolvers(gr)
-        # --calibrated keeps --mode's camera-set semantics and only swaps the extrinsics source, using
-        # each camera's persisted calibration instead of the sim ground-truth oracle. So `active` still
-        # comes from --mode, the header and summary labels stay accurate, and a calibrated subset such
-        # as eth1, eth2 or sides is runnable. Fail closed when a camera the mode needs has no
-        # calibrated eye_to_hand resolver: never silently run a smaller rig than was requested.
+        # --calibrated keeps --mode's camera-set semantics and only swaps the extrinsics source, so
+        # `active` still comes from --mode and a calibrated subset such as eth1, eth2 or sides is
+        # runnable. Fail closed when a camera the mode needs has no artifact that loads: never silently
+        # run a smaller rig than was requested.
         wanted = MODE_CAMERAS[mode]
-        missing = [n for n in wanted if not isinstance(resolvers.get(n), StaticCameraToBaseResolver)]
-        if missing:
+        try:
+            resolvers = calibrated_camera_resolvers(wanted, robot_model=sim.robot_model)
+        except RigCalibrationError as exc:
             raise SystemExit(
-                f"--calibrated --mode {mode} needs a calibrated eye_to_hand camera for {missing} in "
-                "grasping.fusion.cameras. Calibrate each (run_eth_calibrate --camera <id>) and point the "
-                "config at the eth_<id>.json artifacts, or pick a --mode whose cameras are all calibrated.")
+                f"--calibrated --mode {mode} needs each of {list(wanted)} calibrated eye_to_hand: {exc} "
+                "Calibrate it (run_eth_calibrate --camera <id>), or pick a --mode whose cameras are all "
+                "calibrated.") from exc
         active = list(wanted)
-        unused = [n for n in resolvers if n not in wanted]
-        if unused:  # no silent surprises: a calibrated camera this --mode doesn't use is called out.
-            print(f"[calibrated] note: config declares calibrated cameras not used by --mode {mode}: "
-                  f"{unused} (ignored)", flush=True)
-        print(f"[calibrated] active cameras from config fusion.cameras: {active}", flush=True)
+        print(f"[calibrated] active cameras, each from its own eth_<id>.json: {active}", flush=True)
     else:
         active = MODE_CAMERAS[mode]
 
@@ -1610,8 +1623,8 @@ def main() -> int:
     ap.add_argument("--stale-baseline", action="store_true",
                     help="H5.2: open-loop baseline; grasp the STALE first-guess (ignores the disturbance -> misses)")
     ap.add_argument("--calibrated", action="store_true",
-                    help="use the per-camera CALIBRATED extrinsics from grasping.fusion.cameras (each camera's "
-                         "eth_<id>.json via build_config_frame_resolvers) instead of --mode + the sim GT oracle")
+                    help="use each camera's own CALIBRATED extrinsics, the eth_<id>.json run_eth_calibrate wrote "
+                         "for this robot model, read through the rig loader, instead of --mode + the sim GT oracle")
     ap.add_argument("--collect-perception", action="store_true",
                     help="C: emit a NON-DEGENERATE perception-budget STOP/CONTINUE corpus (needs --mode eth3 + "
                          "--record-log). STOP=overhead-only, CONTINUE=genuine oblique fusion; occlusion-driven "

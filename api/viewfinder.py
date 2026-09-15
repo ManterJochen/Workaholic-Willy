@@ -13,18 +13,20 @@ three very different things, and an operator who cannot tell them apart is being
 So every answer carries its `source`, its `age_s`, and a sentence saying which of the three it is. The
 UI is not trusted to remember; the payload says it.
 
-Why the pick wins the camera. The camera package holds no lock (measured: ``grep -ri thread
-src/camera/`` is empty), and a pick runs on its own daemon thread. Two threads calling ``grab()`` on
-one ``rs.pipeline`` split the frame stream between them. So while a run owns the cell, this module
-does not touch the camera at all; it falls back to the overlay, which is both safe (it is a bytes
-attribute) and better, because during a pick what the robot decided is more informative than the raw
-scene. The exclusion is by run state rather than by mutex because a mutex would have to live inside
-the camera package, on the pick's own hot path, to be correct.
+Why the pick wins the camera. A pick runs on its own daemon thread, and while a run owns the cell this
+module does not touch the camera at all; it falls back to the overlay, which is both safe (it is a
+bytes attribute) and better, because during a pick what the robot decided is more informative than the
+raw scene. That exclusion is by run state.
+
+Below it, every grab from a camera goes through its rig's owner,
+``src.camera.orchestration.camera.Camera``, under the rig's lock. A peek outside a run therefore waits
+for a planner world's depth grab on the same rig, and two browser tabs queue on that lock instead of
+interleaving, so this module keeps no lock of its own.
 
 There is one narrow race left and it is named rather than hidden: a run can start between the state
-check and the grab. Its cost is that one frameset lands in the viewer instead of the pick, and the
-pick's next ``acquire()`` opens by discarding ``warmup_grabs`` frames, five by default, so nothing it
-relies on changes.
+check and the grab. Its cost is that one frameset lands in the viewer instead of the pick, taken in
+turn under the rig's lock, and the pick's next ``acquire()`` opens by discarding ``warmup_grabs``
+frames, five by default, so nothing it relies on changes.
 """
 
 from __future__ import annotations
@@ -46,11 +48,6 @@ __all__ = ["ViewfinderFrame", "read_viewfinder"]
 #: the same thing. The overlay digest below is already change-detected, so it is the one place in this
 #: module where something actually happens.
 logger = create_logger("Viewfinder", VIEWFINDER_LOG_FILE, log_dir=API_LOG_DIR)
-
-#: Serialises browser tabs against each other. Two consoles open on one cell would otherwise both call
-#: ``grab()``; this makes them queue instead of interleave. It does not protect against the pick; see
-#: the module docstring for why that exclusion is by run state.
-_PEEK_LOCK = threading.Lock()
 
 #: ``(digest, first-seen monotonic, exact)`` for the overlay.
 #:
@@ -202,8 +199,10 @@ def _peek(service: Any) -> tuple[Any, str]:
     perception = getattr(perception, "perception", None)
     if perception is None:
         return None, "unknown"
-    with _PEEK_LOCK:
-        return peek_color_of(perception), colour_source_kind(perception)
+    # No lock of this module's own: a camera owner serialises every grab on its rig, a peek included,
+    # so two tabs queue on the rig's lock and a peek waits for a planner world's depth grab on the same
+    # device.
+    return peek_color_of(perception), colour_source_kind(perception)
 
 
 def _overlay_frame(service: Any, overlay_on: bool) -> ViewfinderFrame | None:

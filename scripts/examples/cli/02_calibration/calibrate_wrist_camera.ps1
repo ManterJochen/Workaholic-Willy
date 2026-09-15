@@ -23,8 +23,8 @@ if ($LASTEXITCODE -ne 0) {
     $global:LASTEXITCODE = 0
 }
 
-# 3. The sweep. It writes eih_<rig>.json, which fusion.extrinsics_artifact_path refuses by schema:
-#    wire it under fusion.cameras.<rig> with mounting_mode eye_in_hand instead. This moves the arm.
+# 3. The sweep. It writes eih_<rig>.json and prints the rig block to paste, mounting_mode eye_in_hand,
+#    with the two shutter motion tolerances as comments to measure and fill in. This moves the arm.
 #    python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --mode eye_in_hand --poses 22
 
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

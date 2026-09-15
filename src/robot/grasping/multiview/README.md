@@ -109,27 +109,21 @@ uses is `fuse_scene_geometry`.
 ## Configuring a two-camera cell
 
 The worked example is `config/robot/robot.eth2.yaml`, loaded as `WILLY_PROFILE=ur5e,eth2`, with its
-camera inventory in `config/camera/cam.eth2.yaml`. Read that file before wiring one: it carries the
-bring-up order and the two traps below. No physical multi-camera cell has been built by this code.
+camera inventory in `config/camera/cam.eth2.yaml`. Read those files before wiring one: they carry the
+bring-up order. No physical multi-camera cell has been built by this code.
 
-`fusion.extrinsics_artifact_path` is the calibration of the primary camera, and it is the only key
-that satisfies the CAMERA to BASE refusal in `AutonomousGraspService.from_robot_config`. It is easy
-to miss, because the calibration runner prints a `fusion.cameras` block to paste after each camera
-and that block alone leaves this key null. A cell can be fully calibrated, load both artifacts, and
-still be refused at build. Point it at the artifact for the first `source: rgbd` rig in
-`camera.cameras.rigs`.
+Each camera's calibration is declared on its rig, `camera.cameras.rigs[<id>].extrinsics`, and the
+primary rig's block is what satisfies the CAMERA to BASE refusal in
+`AutonomousGraspService.from_robot_config`. The calibration runner prints that block after each camera.
+`fusion.cameras` names which rigs are fused, one `enabled` entry each, keyed by rig id. An id that
+names no rig is refused at load, and a fused camera whose rig declares no calibration is refused when
+the cell is built.
 
-The primary camera does not belong in `fusion.cameras`. That map is every camera except the primary,
-one entry per camera with its own artifact. List the primary there and two readers disagree about it:
-the rig builder filters the primary out, because it already streams through the main perception
-source, while `configured_camera_ids` keeps every enabled entry and the loop then reports each
-configured camera that delivered no frame. The primary is then permanently among the missing, which
-is a warning on every pick under `on_camera_unavailable: degrade` and a raised error on every pick
-under `refuse`. The simulation profile lists all three of its cameras including its primary, and that
-is correct there, because the simulation runner builds a rig that includes the primary. Do not copy
-the shape of that block. The cost of leaving the primary out is one false line at construction: the
-counter that warns about a single-view cell reads the same map, so it reports one calibrated camera
-and recommends adding a second while the cell is fusing two.
+The primary may be listed in `fusion.cameras`. The rig builder leaves it out, because it already
+streams through the main perception source, and so does `configured_camera_ids`, the list a pick waits
+for; both decide it from `camera.cameras.primary_rig_id`. Listing it keeps the counter that warns about
+a single-view cell accurate, since that counter reads the same map and counts the mapped cameras whose
+rig declares a calibration.
 
 ## See also
 
@@ -137,4 +131,4 @@ and recommends adding a second while the cell is fusing two.
 - [`../generation/README.md`](../generation/README.md) for the seam these clouds arrive through
 - [`../loop/README.md`](../loop/README.md) for the orchestrator that observes the rig and applies the policy
 - [`../collision/README.md`](../collision/README.md) for the declared container walls that fusion cannot supply
-- [`../../../calibration/README.md`](../../../calibration/README.md) for the one calibration per camera
+- [`../../../calibration/README.md`](../../../calibration/README.md) for the one calibration per camera, declared on its rig, and `fusion.cameras` naming which rigs are fused

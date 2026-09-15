@@ -37,13 +37,30 @@ def _named(report, name):
     return next(c for c in report.checks if c.name == name)
 
 
+def _calibrated_camera(artifact_path: str):
+    """The shipped camera section whose RGB-D rig is the primary and declares its calibration,
+    `camera.cameras.rigs[<id>].extrinsics`. The preflight reads the declaration and opens no file."""
+    from src.config import load_config
+
+    shipped = load_config().camera
+    data = shipped.model_dump(mode="json")
+    rig = next(r for r in data["cameras"]["rigs"] if r["source"] == "rgbd")
+    rig.update({"enabled": True, "extrinsics": {"mounting_mode": "eye_to_hand", "artifact_path": artifact_path}})
+    data["cameras"]["primary_rig_id"] = rig["rig_id"]
+    return type(shipped).model_validate(data)
+
+
 class PreflightTests(unittest.TestCase):
     def test_the_shipped_config_as_a_real_cell_blocks_on_its_known_traps(self) -> None:
         """This is the whole point of the runner: the DEFAULT state of a freshly configured real cell
         is not runnable, and each reason is one an operator would otherwise meet as a separate crash.
         Since Step 4f the hand is one of them: the base tree names none, on purpose, and its guard
-        reads hand geometry, so the arm refuses to build."""
-        report = run_config_preflight(RobotConfig(vendor="ur"), curobo_available=True)
+        reads hand geometry, so the arm refuses to build. The camera section is the shipped one, whose
+        primary rig declares no calibration, so the camera row blocks for that and not for a missing
+        argument."""
+        from src.config import load_config
+
+        report = run_config_preflight(RobotConfig(vendor="ur"), camera=load_config().camera, curobo_available=True)
         blocking = {c.name for c in report.blocking}
         self.assertEqual(blocking, {"tool frame", "payload", "camera -> base", "hand"})
         self.assertFalse(report.ok)
@@ -121,9 +138,9 @@ class PreflightTests(unittest.TestCase):
             "gripper": {"model": "robotiq_2f85", "tool_frame": _GOOD_TOOL},
             "safety": {"payload": {"enforce": True, "mass_kg": 1.1, "cog_mm": (0.0, 0.0, 55.0)},
                        "self_collision": {"kinematics_model": "ur3e"}},
-            "grasping": {"fusion": {"enabled": True, "extrinsics_artifact_path": "logs/eth.json"}},
         })
-        report = run_config_preflight(cfg, curobo_available=True)
+        # The primary camera's calibration is declared on its rig, in the camera section of the same tree.
+        report = run_config_preflight(cfg, camera=_calibrated_camera("logs/eth.json"), curobo_available=True)
         self.assertTrue(report.ok, report.render())
 
     def test_sim_and_dummy_are_never_blocked(self) -> None:

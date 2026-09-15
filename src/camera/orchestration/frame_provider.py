@@ -6,24 +6,15 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:                                    # pragma: no cover (typing only)
     import numpy as np
 
-from src.config.schema.camera import (
-    RGBDDeviceRigConfig,
-    SingleDeviceRigConfig,
-    WebcamPairRigConfig,
-)
+from src.config.schema.camera import RGBDDeviceRigConfig
 from src.calibration.stereo.manager import StereoCam3D
+from src.camera.orchestration.camera import (
+    AnyStreamer,
+    Camera,
+    CameraRigConfig,
+    create_streamer,
+)
 from src.camera.setup.image_taking.frames import AnyFrame, StereoFrame
-from src.camera.setup.image_taking.rgbd import (
-    OpenCvRGBDStreamer,
-    RealSenseRGBDStreamer,
-)
-from src.camera.setup.image_taking.single import SingleDeviceStreamer
-from src.camera.setup.image_taking.webcam import WebcamPairStreamer
-
-CameraRigConfig = WebcamPairRigConfig | SingleDeviceRigConfig | RGBDDeviceRigConfig
-AnyStreamer = (
-    WebcamPairStreamer | SingleDeviceStreamer | OpenCvRGBDStreamer | RealSenseRGBDStreamer
-)
 
 __all__ = [
     "FrameProvider",
@@ -42,12 +33,18 @@ class FrameProviderStateError(RuntimeError):
 
 
 class FrameProvider:
-    """Frame provider keyed by rig id, over stereo, single-device and RGB-D rigs.
+    """The multi-rig catalogue: frames keyed by rig id, over stereo, single-device and RGB-D rigs.
 
-    It owns lifecycle and rig indexing only. Acquisition, splitting, cropping,
-    resizing and quality setup stay in the streamers under ``camera.setup``, and
-    :meth:`rig` hands one rig to a consumer as a `RigHandle`.
+    It owns rig indexing and which rigs it holds. Every rig it opens is held by a
+    :class:`~src.camera.orchestration.camera.Camera` owner, so the catalogue and a camera owner
+    elsewhere in the process never both open one device, and every grab through the catalogue runs
+    under that rig's lock. Acquisition, splitting, cropping, resizing and quality setup stay in the
+    streamers under ``camera.setup``, and :meth:`rig` hands one rig to a consumer as a `RigHandle`.
     """
+
+    #: The streamer a rig names, built in the camera owner's module, the one module that constructs
+    #: device streamers. A class attribute, so device doubles can stand behind the catalogue.
+    _create_streamer = staticmethod(create_streamer)
 
     def __init__(
         self,
@@ -66,6 +63,8 @@ class FrameProvider:
         #: single rig gives that one back without closing devices it never held. See
         #: `RigHandle.release`.
         self._open_rigs: set[str] = set()
+        #: The owner holding each open rig.
+        self._cameras: dict[str, Camera] = {}
 
         stereo_idx = 0
         for rig in rigs:
@@ -92,25 +91,20 @@ class FrameProvider:
         return bool(self._rigs) and self._open_rigs == set(self._rigs)
 
     def open(self) -> None:
-        """Open every streamer, rolling back already-opened ones on failure."""
+        """Open every rig, rolling back the ones this call opened on failure."""
         if self.is_open:
             return
         opened: list[str] = []
         try:
-            for rig_id, streamer in self._streamers.items():
+            for rig_id in self._rigs:
                 if rig_id in self._open_rigs:
                     continue
-                streamer.open()
+                self.open_rig(rig_id)
                 opened.append(rig_id)
-                self._open_rigs.add(rig_id)
         except Exception:
             self.logger.exception("Failed to open rig; rolling back opened streamers")
             for rig_id in opened:
-                try:
-                    self._streamers[rig_id].release()
-                except Exception as exc:  # pragma: no cover (defensive logging)
-                    self.logger.warning("Rollback release of %s failed: %s", rig_id, exc)
-                self._open_rigs.discard(rig_id)
+                self.release_rig(rig_id)
             raise
 
     def open_rig(self, rig_id: str) -> None:
@@ -120,11 +114,16 @@ class FrameProvider:
         `open()` claims every configured one. No ``__init__`` under
         `camera.setup.image_taking` touches a device, it only stores config, so a provider
         knows every rig while holding open only the ones it was asked for.
+
+        The rig is held by a camera owner, so a device that another owner in this process
+        holds refuses here with ``CameraBusy``, naming the holder, and nothing is marked open.
         """
         streamer = self._require_streamer(rig_id)
         if rig_id in self._open_rigs:
             return
-        streamer.open()
+        camera = Camera.from_rig(self._rigs[rig_id], streamer=streamer)
+        camera.open()
+        self._cameras[rig_id] = camera
         self._open_rigs.add(rig_id)
 
     def release(self) -> None:
@@ -140,16 +139,16 @@ class FrameProvider:
         here, through a built service: ``api/lifecycle.release_perception`` ->
         ``perception.close()``.
 
-        Teardown must not be stopped by a camera that will not close, so a failure is logged
-        rather than raised. The log is where the reason for the next failed open shows up.
+        Teardown must not be stopped by a camera that will not close, so the rig's owner logs
+        a failure rather than raising it. The log is where the reason for the next failed open
+        shows up.
         """
         self._require_rig(rig_id)
         if rig_id not in self._open_rigs:
             return
-        try:
-            self._streamers[rig_id].release()
-        except Exception as exc:  # noqa: BLE001 (teardown reports, it does not propagate)
-            self.logger.warning("Release of rig %s failed: %s", rig_id, exc)
+        camera = self._cameras.pop(rig_id, None)
+        if camera is not None:
+            camera.release()
         self._open_rigs.discard(rig_id)
 
     def __enter__(self) -> FrameProvider:
@@ -161,12 +160,9 @@ class FrameProvider:
         return False
 
     def grab(self, rig_id: str) -> AnyFrame:
-        """Grab a raw frame from ``rig_id`` (a StereoFrame or RGBDFrame per the rig kind)."""
-        streamer = self._require_streamer(rig_id)
-        # Per rig, not for the provider as a whole: a rig that was handed back fails here
-        # rather than reaching a released device, and the rest stay reachable.
-        self._require_open(rig_id)
-        return streamer.grab()
+        """Grab a raw frame from ``rig_id`` (a StereoFrame or RGBDFrame per the rig kind), stamped
+        with its capture time by the rig's owner."""
+        return self.camera(rig_id).grab()
 
     def grab_rectified(self, rig_id: str) -> StereoFrame:
         """Grab a stereo frame and rectify it with ``StereoCam3D``."""
@@ -181,7 +177,7 @@ class FrameProvider:
             raise TypeError(f"Rig {rig_id!r} returned {type(frame).__name__}, expected StereoFrame")
         index = self._stereo_rig_index[rig_id]
         left_rectified, right_rectified = self._stereo.rectify(frame.left, frame.right, rig=index)
-        return StereoFrame(left=left_rectified, right=right_rectified)
+        return StereoFrame(left=left_rectified, right=right_rectified, captured_at_s=frame.captured_at_s)
 
     @property
     def rig_ids(self) -> list[str]:
@@ -218,10 +214,7 @@ class FrameProvider:
         opening a `RealSenseRGBDStreamer` of their own. A stereo rig answers ``None``, its
         geometry living in `StereoCam3D` rather than in a single pinhole matrix.
         """
-        streamer = self._require_streamer(rig_id)
-        self._require_open(rig_id)
-        read = getattr(streamer, "get_intrinsics", None)
-        return read() if callable(read) else None
+        return self.camera(rig_id).get_intrinsics()
 
     def open_rig_ids(self) -> frozenset[str]:
         """Which rigs are streaming right now."""
@@ -236,10 +229,14 @@ class FrameProvider:
         ``get_intrinsics`` and ``get_distortion``; a rig serving only the first two is
         addressable but cannot be calibrated.
         """
-        streamer = self._require_streamer(rig_id)
+        return self.camera(rig_id).get_distortion()
+
+    def camera(self, rig_id: str) -> Camera:
+        """The owner holding ``rig_id`` while it is open. A rig that is not open refuses here
+        rather than reaching a device that was never opened or was already given back."""
+        self._require_rig(rig_id)
         self._require_open(rig_id)
-        read = getattr(streamer, "get_distortion", None)
-        return read() if callable(read) else None
+        return self._cameras[rig_id]
 
     def rig(self, rig_id: str) -> "RigHandle":
         """A :class:`RigHandle` to one rig, shaped like the streamer its consumer expects.
@@ -271,46 +268,53 @@ class FrameProvider:
         self._require_rig(rig_id)
         return self._streamers[rig_id]
 
-    @staticmethod
-    def _create_streamer(rig: CameraRigConfig) -> AnyStreamer:
-        if isinstance(rig, WebcamPairRigConfig):
-            return WebcamPairStreamer(rig)
-        if isinstance(rig, SingleDeviceRigConfig):
-            return SingleDeviceStreamer(rig)
-        if isinstance(rig, RGBDDeviceRigConfig):
-            if rig.rgbd_backend == "realsense":
-                return RealSenseRGBDStreamer(rig)
-            return OpenCvRGBDStreamer(rig)
-        raise ValueError(f"Unsupported rig type: {type(rig)!r}")
-
 
 class RigHandle:
-    """One rig of a :class:`FrameProvider`, shaped like the streamer its consumer expects.
+    """One rig, shaped like the streamer its consumer expects.
 
     The robot pick path consumes a duck-typed streamer, ``grab()``, ``get_intrinsics()`` and
     ``release()``, and so does `datagen`'s camera probe, which passes a shim and runs with no
     hardware present. A handle serves that surface, so neither learns about camera
-    orchestration while every frame goes through the class that owns rig identity and lifecycle.
+    orchestration while every frame goes through the one owner of the rig's device.
 
-    A handle reaches one rig. ``release()`` gives that rig back and leaves the others streaming.
+    A handle reaches its rig through the catalogue that handed it out (`FrameProvider.rig`) or
+    through the owner itself (`Camera.handle`). Either way ``camera`` is that owner, and every
+    call runs under its lock. A handle reaches one rig. ``release()`` gives that rig back and
+    leaves the others streaming.
     """
 
-    __slots__ = ("_provider", "rig_id")
+    __slots__ = ("_camera", "_provider", "rig_id")
 
-    def __init__(self, provider: FrameProvider, rig_id: str) -> None:
+    def __init__(self, provider: FrameProvider | None, rig_id: str, *, camera: Camera | None = None) -> None:
+        if (provider is None) == (camera is None):
+            raise ValueError("a RigHandle reaches its rig through a provider or through a camera, exactly one")
         self._provider = provider
+        self._camera = camera
         self.rig_id = rig_id
+
+    @classmethod
+    def of_camera(cls, camera: Camera) -> RigHandle:
+        """A handle that reaches ``camera`` directly."""
+        return cls(None, camera.rig_id, camera=camera)
 
     def __repr__(self) -> str:
         return f"RigHandle({self.rig_id!r})"
 
+    @property
+    def camera(self) -> Camera:
+        """The owner of this rig's device. Through a catalogue, only while the rig is open."""
+        if self._provider is not None:
+            return self._provider.camera(self.rig_id)
+        assert self._camera is not None  # one of the two, checked at construction
+        return self._camera
+
     def grab(self) -> AnyFrame:
         """One frame from this rig."""
-        return self._provider.grab(self.rig_id)
+        return self.camera.grab()
 
     def get_intrinsics(self) -> "np.ndarray | None":
         """This rig's camera matrix, or ``None`` where the rig has no single pinhole matrix."""
-        return self._provider.get_intrinsics(self.rig_id)
+        return self.camera.get_intrinsics()
 
     def get_distortion(self) -> "np.ndarray | None":
         """This rig's distortion coefficients, or ``None`` where the rig reports none.
@@ -318,12 +322,19 @@ class RigHandle:
         Completes the surface hand-eye calibration duck-types against, so a handle can be
         calibrated and not only read.
         """
-        return self._provider.get_distortion(self.rig_id)
+        return self.camera.get_distortion()
 
     def release(self) -> None:
         """Give this rig back. Idempotent, never raises, and it touches no other rig."""
-        self._provider.release_rig(self.rig_id)
+        if self._provider is not None:
+            self._provider.release_rig(self.rig_id)
+            return
+        assert self._camera is not None  # one of the two, checked at construction
+        self._camera.release()
 
     @property
     def is_open(self) -> bool:
-        return self.rig_id in self._provider.open_rig_ids()
+        if self._provider is not None:
+            return self.rig_id in self._provider.open_rig_ids()
+        assert self._camera is not None  # one of the two, checked at construction
+        return self._camera.is_open

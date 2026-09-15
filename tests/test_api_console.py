@@ -68,7 +68,8 @@ class ConsoleApiTests(unittest.TestCase):
         for profile in (None, "ur3e"):
             with self.subTest(profile=profile):
                 self.cell.profile = profile
-                expected = run_config_preflight(self.cell.config().robot)
+                config = self.cell.config()
+                expected = run_config_preflight(config.robot, camera=config.camera)
                 body = self.client.get("/v1/preflight").json()
 
                 self.assertEqual(

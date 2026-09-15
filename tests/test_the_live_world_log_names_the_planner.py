@@ -7,49 +7,66 @@ announced a protection that never runs, which is exactly the kind of sentence th
 A stereo rig is told at the same place (Step 4e). It has no depth of its own, so a world built on it would
 answer no frame to every refresh and every planned motion would raise; the cell gets no world and a
 warning that names the rig instead.
+
+The sentences are `CameraWorldWiring.render()`, logged once by the cell. The rig here is a calibrated
+RGB-D rig of a cell that enables the world, and for the stereo row its owner answers a real `StereoFrame`.
 """
 
 from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 
 from src.config.schema.robot import RobotConfig
 from src.camera.setup.image_taking.frames import StereoFrame
+from src.geometry import Frame, Transform
 from src.robot.execution.autonomous_grasp import cells
 
-_LIVE = "src.robot.execution.autonomous_grasp.live_world"
+_RIG = "realsense_d435"
 
 
-def _cell(planner: str):
-    cfg = RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"motion_planner": planner}, "safety": {"payload": {"enforce": False}},
+def _cell(planner: str) -> RobotConfig:
+    return RobotConfig.model_validate({
+        "vendor": "ur", "ur": {"motion_planner": planner},
+        "safety": {"payload": {"enforce": False}, "planning_world": {
+            "enabled": True,
+            "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
+        }},
     })
-    arm = SimpleNamespace(set_live_planner_world=MagicMock())
-    orchestrator = SimpleNamespace(arm=arm, frame_resolver=object())
-    service = SimpleNamespace(runtime=SimpleNamespace(orchestrator=orchestrator))
-    # An RGB-D rig: the wiring grabs one frame to tell a stereo pair from a camera with depth.
-    streamer = SimpleNamespace(rig_id="realsense_d435", grab=lambda: SimpleNamespace(depth=np.ones((4, 4))))
-    perception = SimpleNamespace(streamer=streamer)
-    return cfg, service, perception, arm
+
+
+class _Owner:
+    """The rig's open camera: its handle answers ``frame``, and its calibration is a fixed CAMERA to BASE."""
+
+    def __init__(self, frame: object) -> None:
+        self.rig_id = _RIG
+        self._frame = frame
+
+    def handle(self) -> SimpleNamespace:
+        return SimpleNamespace(rig_id=_RIG, grab=lambda: self._frame, get_intrinsics=lambda: np.eye(3))
+
+    def calibration(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            mounting_mode="eye_to_hand",
+            camera_to_base=lambda: Transform.identity(from_frame=Frame.CAMERA, to_frame=Frame.BASE),
+        )
 
 
 class TheWiringLogNamesThePlannerTests(unittest.TestCase):
     def _wire(self, planner: str, *, frame: object = None) -> tuple[str, SimpleNamespace]:
-        cfg, service, perception, arm = _cell(planner)
-        if frame is not None:
-            perception.streamer.grab = lambda: frame
-        world = SimpleNamespace(cameras=("realsense_d435",))
-        with (
-            patch(f"{_LIVE}.static_camera_to_base_mm", return_value=np.eye(4)),
-            patch(f"{_LIVE}.RigDepthSource", side_effect=lambda streamer: streamer),
-            patch(f"{_LIVE}.build_live_planner_world", return_value=world),
-            self.assertLogs(cells.__name__, level="INFO") as logs,
-        ):
-            cells._wire_live_planner_world(cfg, service, perception)
+        arm = SimpleNamespace(set_live_planner_world=MagicMock())
+        service = SimpleNamespace(runtime=SimpleNamespace(orchestrator=SimpleNamespace(arm=arm)))
+        # An RGB-D rig: the wiring grabs one frame to tell a stereo pair from a camera with depth.
+        owner = _Owner(SimpleNamespace(depth=np.ones((4, 4))) if frame is None else frame)
+        perception = SimpleNamespace(streamer=SimpleNamespace(camera=owner))
+        rig = SimpleNamespace(rig_id=_RIG, enabled=True, source="rgbd",
+                              extrinsics=SimpleNamespace(mounting_mode="eye_to_hand"))
+        app = SimpleNamespace(camera=SimpleNamespace(cameras=SimpleNamespace(rigs=[rig], primary_rig_id=_RIG)))
+        with self.assertLogs(cells.__name__, level="INFO") as logs:
+            cells._wire_live_planner_world(_cell(planner), service, perception, app_cfg=app)
         return "\n".join(logs.output), arm
 
     def test_an_ik_cell_is_not_told_its_world_is_read_before_every_plan(self) -> None:

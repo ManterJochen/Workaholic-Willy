@@ -87,8 +87,10 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
 
     ``camera_id`` names the camera (``overhead`` = the built-in overhead; any other = a fixed camera
     from ``robot.sim.cameras``). The artifact is saved keyed by camera id (``eth_<camera>.json``,
-    ``rig_id=<camera>``) so a multi-view rig's per-camera calibrations coexist + drop into the central
-    ``grasping.fusion.cameras`` map.
+    ``rig_id=<camera>``) so a multi-view rig's per-camera calibrations coexist. A rig declares one as its
+    calibration, ``camera.cameras.rigs[<id>].extrinsics`` with ``mounting_mode: eye_to_hand``; under the
+    sim profile ``run_multiview_pick --calibrated`` reads ``eth_<id>.json`` from the per-robot directory
+    this runner writes by default, ``calibration_dir(sim.robot_model)``.
     """
     import dataclasses
 
@@ -285,15 +287,16 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     )
 
     # Persist keyed by camera id as a schema-versioned Extrinsics (eye-to-hand CAMERA->BASE). rig_id
-    # is stamped to the camera id so the artifact and the central grasping.fusion.cameras map agree.
+    # is stamped to the camera id so the artifact and the rig that declares it,
+    # camera.cameras.rigs[<id>].extrinsics, agree.
     if result.extrinsics is not None:
         ext = dataclasses.replace(result.extrinsics, rig_id=camera_id)
         ext_path = save_extrinsics(f"{save_dir}/eth_{camera_id}.json", ext)
         _LOG.info("saved extrinsics %s (rig_id=%s) + dataset %s", ext_path, camera_id, result.dataset_path)
         print(f"\n  saved {ext_path} (rig_id={camera_id}) and {result.dataset_path}", flush=True)
     else:
-        # Without a carrier nothing lands in grasping.fusion.cameras, so the run looks done and the
-        # cell keeps using whatever extrinsic it had. Silent everywhere else.
+        # Without a carrier there is no eth_<camera>.json for a rig to declare, so the run looks done
+        # and the cell keeps using whatever extrinsic it had. Silent everywhere else.
         _LOG.error(
             "no Extrinsics carrier on the result: eth_%s.json was not written; this camera keeps "
             "its previous calibration", camera_id,

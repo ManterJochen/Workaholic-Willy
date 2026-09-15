@@ -97,6 +97,9 @@ cameras:
         warmup_frames: 15
         fps_tolerance: 3.0
 
+      # No `extrinsics` block, so this camera is not calibrated. The calibration command
+      # (python -m src.robot.execution.real_cell.calibrate --rig oblique_L) writes the artifact
+      # such a block names: `extrinsics: {mounting_mode: eye_to_hand, artifact_path: <that file>}`.
       calibration_paths:
         base_dir: calibration/oblique_L
 
@@ -132,5 +135,8 @@ cameras:
         warmup_frames: 15
         fps_tolerance: 3.0
 
+      # No `extrinsics` block, so this camera is not calibrated. The calibration command
+      # (python -m src.robot.execution.real_cell.calibrate --rig oblique_R) writes the artifact
+      # such a block names: `extrinsics: {mounting_mode: eye_to_hand, artifact_path: <that file>}`.
       calibration_paths:
         base_dir: calibration/oblique_R

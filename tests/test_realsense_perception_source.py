@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from src.camera.setup.image_taking.frames import RGBDFrame
+from src.geometry import Frame, Pose
 from src.robot.perception import RealSenseVisionPerceptionSource
 
 
@@ -287,6 +288,42 @@ class WarmupTests(unittest.TestCase):
             prompt="x", warmup_grabs=3)
         s.acquire()
         self.assertEqual(st.grabs, 4)   # 3 warmup + 1 real
+
+
+class AWristSourceStampsTheToolPoseTests(unittest.TestCase):
+    """A source handed the arm's reader reads the TCP after its warm-ups, just before the real grab."""
+
+    def test_the_pose_is_read_after_the_warm_ups_and_immediately_before_the_real_grab(self) -> None:
+        events: list[str] = []
+        streamer = _FakeStreamer(_color(), np.full((64, 64), 500, np.uint16), _K)
+        grab = streamer.grab
+
+        def logged_grab() -> RGBDFrame:
+            events.append("grab")
+            return grab()
+
+        pose = Pose(position_mm=np.array([400.0, 0.0, 300.0]), quaternion_xyzw=np.array([0.0, 0.0, 0.0, 1.0]),
+                    frame=Frame.BASE)
+
+        def reader() -> Pose:
+            events.append("pose")
+            return pose
+
+        streamer.grab = logged_grab  # type: ignore[method-assign]
+        s = RealSenseVisionPerceptionSource(
+            streamer=streamer, detector=_FakeDetector([]), segmenter=_FakeSegmenter(), prompt="x", warmup_grabs=2)
+        s.stamp_tool_pose_with(reader)
+        frame = s.acquire()
+
+        self.assertEqual(events, ["grab", "grab", "pose", "grab"])
+        self.assertEqual(frame.tool_pose, pose)
+
+    def test_a_source_nobody_stamps_carries_no_pose(self) -> None:
+        """The control: a fixed camera's source, handed no reader, carries no tool pose."""
+        s = RealSenseVisionPerceptionSource(
+            streamer=_FakeStreamer(_color(), np.full((64, 64), 500, np.uint16), _K),
+            detector=_FakeDetector([]), segmenter=_FakeSegmenter(), prompt="x", warmup_grabs=0)
+        self.assertIsNone(s.acquire().tool_pose)
 
 
 if __name__ == "__main__":

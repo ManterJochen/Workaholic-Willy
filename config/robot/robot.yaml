@@ -274,6 +274,8 @@ robot:
     # invisible to the planner while looking exactly like empty space in every log there is. It
     # has a price and the block states it. A camera that still cannot vouch for the cell after
     # `perceived.fresh_frame_attempts` more readings stops the motion with an error, not a refusal.
+    # Every enabled RGB-D rig that declares its calibration feeds that world, the primary first, so
+    # a second calibrated camera that cannot answer stops every planned motion too.
     planning_world:
       enabled: false
       # Measure three things at the bench and this block is done. `height_mm` is the top surface of

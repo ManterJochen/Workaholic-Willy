@@ -1,7 +1,18 @@
-"""Entry point for the rig-keyed frame provider and the errors it raises."""
+"""Entry points for the owner of one camera rig, the rig-keyed catalogue over those owners, and the
+errors they raise."""
 
 from __future__ import annotations
 
-from .frame_provider import FrameProvider, FrameProviderStateError, UnknownCameraRigError
+from .camera import Camera, CameraBusy, CameraNotOpen, CameraRefused
+from .frame_provider import FrameProvider, FrameProviderStateError, RigHandle, UnknownCameraRigError
 
-__all__ = ["FrameProvider", "FrameProviderStateError", "UnknownCameraRigError"]
+__all__ = [
+    "Camera",
+    "CameraBusy",
+    "CameraNotOpen",
+    "CameraRefused",
+    "FrameProvider",
+    "FrameProviderStateError",
+    "RigHandle",
+    "UnknownCameraRigError",
+]

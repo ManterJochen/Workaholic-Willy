@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from .orchestration import FrameProvider, FrameProviderStateError, UnknownCameraRigError
+from .orchestration import (
+    Camera,
+    CameraBusy,
+    FrameProvider,
+    FrameProviderStateError,
+    UnknownCameraRigError,
+)
 from .pipeline import StereoCapturePipeline
 from .setup.image_taking import AnyFrame, RGBDFrame, StereoFrame
 
 __all__ = [
     "AnyFrame",
+    "Camera",
+    "CameraBusy",
     "FrameProvider",
     "FrameProviderStateError",
     "RGBDFrame",

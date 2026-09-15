@@ -840,9 +840,12 @@ class FreshFrameAttemptsTests(unittest.TestCase):
         self.assertEqual(camera.grabs, 1)
 
     def test_the_key_reaches_the_world_source(self) -> None:
+        from types import SimpleNamespace
+
         from src.config.schema.robot import RobotConfig
         from src.config.schema.robot.safety_schema import PerceivedWorldConfig
-        from src.robot.execution.autonomous_grasp.live_world import build_live_planner_world
+        from src.geometry import Frame, Transform
+        from src.robot.execution.camera_world_wiring import CameraWorldPlan, CameraWorldWiring
 
         self.assertEqual(PerceivedWorldConfig().fresh_frame_attempts, 3)
         cfg = RobotConfig.model_validate({
@@ -857,8 +860,21 @@ class FreshFrameAttemptsTests(unittest.TestCase):
                 },
             },
         })
+        # The wiring builds the world from a rig that declares its calibration and from its open owner.
+        rig = SimpleNamespace(rig_id="overhead", enabled=True, source="rgbd",
+                              extrinsics=SimpleNamespace(mounting_mode="eye_to_hand"))
+        owner = SimpleNamespace(
+            rig_id="overhead",
+            handle=lambda: SimpleNamespace(grab=lambda: None, get_intrinsics=lambda: None),
+            calibration=lambda: SimpleNamespace(
+                mounting_mode="eye_to_hand",
+                camera_to_base=lambda: Transform.from_matrix(
+                    _CAMERA_TO_BASE, from_frame=Frame.CAMERA, to_frame=Frame.BASE),
+            ),
+        )
+        plan = CameraWorldPlan.from_config(cfg, [rig], primary_rig_id="overhead")
 
-        world = build_live_planner_world(cfg, [("overhead", _Camera(None), _CAMERA_TO_BASE)])
+        world = CameraWorldWiring.from_cameras(cfg, plan=plan, cameras={"overhead": owner}).world
 
         assert world is not None
         self.assertEqual(world.fresh_frame_attempts, 5)
@@ -942,6 +958,78 @@ class LoopHandsOverItsMasksTests(unittest.TestCase):
 
         self._offer(SimpleNamespace(live_planner_world=None), self._frame(("x",)), 0)
         self._offer(SimpleNamespace(), self._frame(("x",)), 0)
+
+
+#: A camera bolted to the tool and looking along its approach: the fixed camera's rotation, carried by the tool.
+_CAMERA_TO_TOOL = np.diag([1.0, -1.0, -1.0, 1.0])
+
+
+def _tool_at(x_mm: float) -> np.ndarray:
+    """The TCP in BASE, at the fixed camera's height above the bench and ``x_mm`` along base X."""
+    pose = np.eye(4)
+    pose[0, 3] = x_mm
+    pose[2, 3] = _CAMERA_HEIGHT_MM
+    return pose
+
+
+def _wrist_world(camera: _Camera) -> LivePlannerWorld:
+    return _world(
+        camera, cameras=(CameraView(name="wrist", depth_source=camera, camera_to_tool=_CAMERA_TO_TOOL),),
+    )
+
+
+class _NoPlanner:
+    """A planner that must not be reached: a world nobody can place is refused before it is registered."""
+
+    def set_world(self, *_args: object) -> int:
+        raise AssertionError("a world with an unplaced wrist camera reached the planner")
+
+
+class AWristCameraTests(unittest.TestCase):
+    """A camera on the wrist is placed by where the tool was when its shutter opened, frame by frame."""
+
+    def test_a_wrist_frame_is_placed_by_the_pose_it_was_taken_at(self) -> None:
+        """One block, seen from two tool poses 92 mm apart, registers at one place in BASE.
+
+        92 mm is 50 pixels at the block's top (920 mm deep at a 500 px focal length), so the two images are the
+        same pixels shifted, and what is compared is the placement rather than the rasterisation.
+        """
+        centres = []
+        for tool_x_mm in (0.0, 92.0):
+            depth, _ = _scene_with_a_block(at_mm=(150.0 - tool_x_mm, 0.0))
+            camera = _Camera(DepthSnapshot(
+                depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0, tool_to_base_mm=_tool_at(tool_x_mm),
+            ))
+            snapshot = _wrist_world(camera).world_for(self_envelope=_SELF, now=100.1)
+            self.assertIs(snapshot.verdict, WorldVerdict.FRESH, snapshot.render())
+            self.assertEqual(snapshot.perceived_count, 1, snapshot.render())
+            assert snapshot.perceived is not None
+            centres.append(np.asarray(snapshot.perceived.boxes[0].center_mm, dtype=np.float64))
+        np.testing.assert_allclose(centres[0], centres[1], atol=1.0)
+        self.assertAlmostEqual(float(centres[0][0]), 150.0, delta=15.0)
+
+    def test_a_view_needs_exactly_one_transform(self) -> None:
+        camera = _Camera(None)
+        with self.assertRaises(ValueError):
+            CameraView(name="both", depth_source=camera, camera_to_base=_CAMERA_TO_BASE,
+                       camera_to_tool=_CAMERA_TO_TOOL)
+        with self.assertRaises(ValueError):
+            CameraView(name="neither", depth_source=camera)
+
+    def test_a_wrist_frame_without_a_pose_is_unusable_and_not_asked_again(self) -> None:
+        """Where the tool stood is not something a second reading of the camera can supply."""
+        depth, _ = _scene_with_a_block()
+        camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
+
+        refresh = refresh_planner_world(
+            source=_wrist_world(camera), client=_NoPlanner(), self_envelope=_SELF, now=100.1,
+        )
+
+        self.assertIs(refresh.verdict, WorldVerdict.UNUSABLE)
+        self.assertFalse(refresh.ok)
+        self.assertIn("'wrist'", refresh.reason)
+        self.assertIn("tool pose", refresh.reason)
+        self.assertEqual(camera.grabs, 1)
 
 
 if __name__ == "__main__":

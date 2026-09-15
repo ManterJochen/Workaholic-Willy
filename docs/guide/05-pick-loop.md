@@ -416,7 +416,7 @@ attempts each carry an index, an action and typed reasons.
 | `mode_not_available`, reason `per_call_mode_requires_different_sampling_mode` | `pick(mode=...)` asked for a different sampler | rebuild with that mode, or stay inside the pairs in 6.2 |
 | `mode_not_available`, phase gate on refinement or verification | the mode needs a refiner or verifier object | enable the block *and* check the object landed (7.3) |
 | `no_target` | the frame carried no segmentations | perception, not grasping. Check the prompt, and that the camera is not returning black ([02](02-models.md)) |
-| `missing_camera_frame` | a valid candidate existed, in the camera frame, and the policy refused | wire a `frame_resolver`. This is the fail-closed frame contract working ([03](03-calibration.md)) |
+| `missing_camera_frame` | a valid candidate existed, in the camera frame, and the policy refused | declare the primary rig's `camera.cameras.rigs[<id>].extrinsics`, or wire a `frame_resolver`. This is the fail-closed frame contract working ([03](03-calibration.md)) |
 | `decision_fail_closed`, `uncertainty_fail_closed` | the decision gate refused | wire a viewpoint planner, or lower the thresholds knowingly |
 | `no_commit_insufficient_fusion` | there was a candidate, not enough fused evidence, and the budget is gone | check `scene_fusion` is wired; the commit policy alone is inert |
 | `drift_blocked_auto`, `ood_blocked_auto` | the watchdog locked autonomous operation | inspect the drift and out-of-distribution telemetry. Do not bypass |
@@ -431,9 +431,10 @@ the honest answer rather than a fault. On a cuRobo cell with no camera world wir
 `move_to_joints`, or a `with arm.without_camera_world(reason):` block. On a cell whose live camera
 world is wired (`safety.planning_world.enabled`), a declined planned motion is refused before
 planning: the pick ends `execution_failed`, status `unsupported`, with a message starting
-`Refused before planning`. Nothing reads `PLANNED`. The console names `MISSING` and `DECLINED` in the
-event sentence and carries every other use only in the payload, and the grasp record does not carry
-the stamp.
+`Refused before planning`. Such a world is built from every enabled RGB-D rig that declares its
+calibration, the primary first, and one of them that cannot answer stops every planned motion.
+Nothing reads `PLANNED`. The console names `MISSING` and `DECLINED` in the event sentence and carries
+every other use only in the payload, and the grasp record does not carry the stamp.
 
 **The arm refused.** A safety rejection surfaces as `execution_failed` with a motion message prefixed
 `[safety:<guard>/<reason>]`. Guard order and verdicts: [04](04-robot-and-safety.md). Two things belong

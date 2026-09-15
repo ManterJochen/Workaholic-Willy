@@ -640,11 +640,15 @@ class BinPickingOrchestrator:
     #
     # All three ``None`` (default) means the keys are never added and the single-view path is
     # byte-identical. ``multi_camera_perception`` supplies the other cameras' frames,
-    # ``camera_frame_resolvers`` maps each camera id to its own CAMERA->BASE (built from
-    # ``grasping.fusion.cameras``, one persisted calibration per camera), and
+    # ``camera_frame_resolvers`` maps each camera id to its own CAMERA->BASE (built for each camera
+    # ``grasping.fusion.cameras`` fuses, from the calibration declared on its rig,
+    # ``camera.cameras.rigs[<id>].extrinsics``, one persisted calibration per camera), and
     # ``fusion_geometry_config`` carries the metric, the match threshold and the missing-camera
     # posture.
     multi_camera_perception: "MultiCameraPerceptionSource | None" = None
+    #: The cameras a real cell opened for its live planner world alone, given back on teardown
+    #: beside `perception` and `multi_camera_perception`. `None` on every other cell.
+    planner_world_cameras: "object | None" = None
     camera_frame_resolvers: "dict[str, FrameResolver] | None" = None
     #: Which cameras the config asked for, which is not the same as which ones built.
     #:
@@ -1988,8 +1992,10 @@ class BinPickingOrchestrator:
                 # extrinsic would fuse a real surface into the wrong place, which is worse than
                 # not fusing it at all.
                 _LOG.warning(
-                    "grasping.fusion.geometry: camera %r has no entry in fusion.cameras; its view "
-                    "is dropped (no CAMERA->BASE calibration)",
+                    "grasping.fusion.geometry: camera %r has no CAMERA->BASE resolver, so its view "
+                    "is dropped: a fused camera needs grasping.fusion.enabled, an enabled entry in "
+                    "fusion.cameras and its calibration declared on its rig, "
+                    "camera.cameras.rigs[<id>].extrinsics",
                     observation.camera_id,
                 )
                 continue

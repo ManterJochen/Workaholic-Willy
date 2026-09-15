@@ -19,10 +19,11 @@ It lives under `robot/` and not under `camera/` because the dependency edge only
 
 Its streamer, detector and segmenter are injected and duck-typed, exactly like the sim source, so
 this module imports with neither `pyrealsense2` nor torch present. In a real cell what gets injected
-as the streamer is a `RigHandle` from the camera package's `FrameProvider`: the handle answers the
-same `grab()`, `get_intrinsics()` and `release()`, so the adapter did not have to change, and every
-camera in the process has exactly one owner. A consumer can give back the rig it was handed without
-touching any other.
+as the streamer is a `RigHandle` from the rig's `Camera` owner in the camera package: the handle
+answers the same `grab()`, `get_intrinsics()` and `release()`, so the adapter did not have to change.
+Every camera in the process has one owner: a second opener is refused naming the holder, every grab
+runs under the rig's lock, and a consumer can give back the rig it was handed without touching any
+other.
 
 ## Contents
 
@@ -128,10 +129,11 @@ and is described neutrally; only a source that says `camera` earns the word.
 **The one allowed side effect, named.** On a real device, peeking consumes one frameset, because
 there is no way to look at a stream without taking a frame from it. It is harmless here because
 `acquire()` opens by discarding `warmup_grabs` frames, five by default, so a viewer's frame lands in
-that discarded prefix. What is not safe is peeking while a pick is mid-acquire: both would call
-`grab()` on one unsynchronised pipeline, and the camera package holds no lock.
-[`api/viewfinder.py`](../../../api/viewfinder.py) enforces that exclusion on run state, and while a
-run owns the cell it serves the pick's own overlay render instead of touching the camera.
+that discarded prefix. Two grabs never interleave on one device: every grab goes through the rig's
+owner, `Camera`, under the rig's lock, so a peek during an `acquire()` waits its turn.
+[`api/viewfinder.py`](../../../api/viewfinder.py) still stands down while a run is active: while a run
+owns the cell it serves the pick's own overlay render instead of touching the camera, because that
+overlay is the more informative picture then.
 
 ## Honesty
 

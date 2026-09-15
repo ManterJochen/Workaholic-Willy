@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -32,6 +32,11 @@ from src.robot.perception.mask_completion import (
     MaskCompletion,
     complete_mask,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from src.geometry import Pose
 
 __all__ = ["RealSenseVisionPerceptionSource"]
 
@@ -110,6 +115,10 @@ class RealSenseVisionPerceptionSource:
         self._mask_completion = MaskCompletion(mask_completion)
         #: "override" if a calibrated K was supplied, else "factory". D1 provenance.
         self.intrinsics_source = "override" if intrinsics is not None else "factory"
+        #: The arm's TCP reader for a camera on the wrist, `None` for a fixed camera. Bound late,
+        #: through `stamp_tool_pose_with`, because the arm does not exist yet when this source is
+        #: built.
+        self._tool_pose_reader: Callable[[], Pose] | None = None
 
     # ------------------------------------------------------------------ label canonicalisation
     def _canonical_label(self, gdino_label: str) -> str:
@@ -153,8 +162,10 @@ class RealSenseVisionPerceptionSource:
         source owns an open streamer. It takes one frameset and no warm-up prefix: a viewer that
         discarded five frames per tick would pull the device at six times the rate it displays.
 
-        Not safe to call concurrently with :meth:`acquire`: both reach the same unsynchronised
-        pipeline. The caller enforces that; see the module docstring in ``viewfinder.py``.
+        Beside :meth:`acquire` it takes its turn: a cell hands this source a camera owner's handle,
+        whose grabs run under the rig's lock. A raw streamer handed in directly has no such lock, and
+        then the caller keeps the two apart; ``api/viewfinder.py`` stands down during a run either
+        way.
         """
         grabbed = self._streamer.grab()
         colour = getattr(grabbed, "color", None)
@@ -197,10 +208,25 @@ class RealSenseVisionPerceptionSource:
             except Exception:  # noqa: BLE001 (teardown reports nothing it can fix)
                 pass
 
+    def stamp_tool_pose_with(self, reader: Callable[[], Pose]) -> None:
+        """Stamp every frame from now on with the TCP, read by ``reader`` just before the real grab.
+
+        For a camera on the wrist, whose grasp is placed by where the tool was when the shutter
+        opened. With an unstamped frame the eye-in-hand resolver reads the arm when the grasp is
+        resolved, and every millimetre the tool travelled in between goes into the grasp.
+        ``reader`` is the arm's own ``get_tcp_pose``. No check that the tool held still across the
+        grab runs here.
+        """
+        if not callable(reader):
+            raise TypeError(f"stamp_tool_pose_with takes the arm's TCP reader, not {type(reader).__name__}")
+        self._tool_pose_reader = reader
+
     def acquire(self) -> PerceptionFrame:
         for _ in range(self._warmup_grabs):
             self._streamer.grab()  # discard: let auto-exposure / white-balance settle on real hardware
 
+        # After the warm-ups and immediately before the real grab, the read nearest the shutter.
+        tool_pose = None if self._tool_pose_reader is None else self._tool_pose_reader()
         rgbd = self._streamer.grab()
         bgr = np.ascontiguousarray(np.asarray(rgbd.color))          # detector/segmenter take OpenCV BGR
         depth_mm = np.asarray(rgbd.depth, dtype=np.float64)         # uint16 mm as float; 0 == hole
@@ -252,5 +278,5 @@ class RealSenseVisionPerceptionSource:
         # own wall clock to decide whether the world is too old to plan against.
         return PerceptionFrame(
             depth_map=depth_mm, intrinsics=intrinsics, segmentations=tuple(segmentations), rgb=rgb,
-            timestamp=time.time(), surface_depth_map=rendered_depth_mm,
+            timestamp=time.time(), surface_depth_map=rendered_depth_mm, tool_pose=tool_pose,
         )

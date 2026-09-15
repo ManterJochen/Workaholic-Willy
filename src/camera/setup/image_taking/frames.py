@@ -21,10 +21,13 @@ class StereoFrame:
     """A left and a right BGR frame from a stereo rig.
 
     Both eyes must be non-empty numeric image arrays of the same height and width.
+    ``captured_at_s`` is the host time the camera owner read just before the device grab, or None
+    for a frame that did not come through an owner, such as one from a streamer used directly.
     """
 
     left: np.ndarray
     right: np.ndarray
+    captured_at_s: float | None = None
 
     def __post_init__(self) -> None:
         left = _validate_frame_array(self.left, name="left")
@@ -40,11 +43,14 @@ class RGBDFrame:
     """Colour (BGR uint8) and depth (uint16, millimetres) from an RGB-D camera.
 
     Depth may be an empty array when the device delivered none. A depth array that is not
-    empty must match the colour frame in height and width.
+    empty must match the colour frame in height and width. ``captured_at_s`` is the host time the
+    camera owner read just before the device grab, or None for a frame that did not come through an
+    owner, such as one from a streamer used directly.
     """
 
     color: np.ndarray
     depth: np.ndarray
+    captured_at_s: float | None = None
 
     def __post_init__(self) -> None:
         color = _validate_frame_array(self.color, name="color")

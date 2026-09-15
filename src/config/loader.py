@@ -197,11 +197,10 @@ def load_robot_section(
     model file is broken, which :func:`load_robot_config` does not: that one validates the whole tree
     first. The U11 adaptation overlay is applied here exactly as the whole-tree load applies it, or the
     two doors would describe different cells whenever ``WILLY_ADAPTATION_OVERLAY`` is set. The
-    cross-section rule on :class:`AppConfig` (the primary camera calibrated in one place) needs the
-    camera section and does not run here; a caller that combines this section with
-    :func:`load_camera_section` runs it through
-    :func:`~src.config.schema.app.primary_camera_calibration_conflict`. A schema failure names each key
-    with its ``robot.`` prefix and the file and line it was written on, as the whole-tree load does.
+    cross-section rule on :class:`AppConfig` (every fused camera is a rig) needs the camera section
+    and does not run here; a caller that combines this section with :func:`load_camera_section` runs
+    it through :func:`~src.config.schema.app.camera_calibration_conflict`. A schema failure names each
+    key with its ``robot.`` prefix and the file and line it was written on, as the whole-tree load does.
 
     Not cached. A section is cheap to read, and a cached one would outlive the file edit that
     :func:`reload_config` is documented to cover. The other side of that: after a change and before
@@ -237,7 +236,7 @@ def load_camera_section(
     It equals ``load_config(...).camera`` on a tree that loads, and it reads neither the robot nor the
     models. The cross-section rule on :class:`AppConfig` does not run, for the reason given on
     :func:`load_robot_section`; a caller combining both sections runs
-    :func:`~src.config.schema.app.primary_camera_calibration_conflict`. Not cached.
+    :func:`~src.config.schema.app.camera_calibration_conflict`. Not cached.
     """
     root, chain = _root_and_chain(data_dir, profile)
     return _validate_section(
@@ -445,8 +444,18 @@ def _describe_validation_error(
             # cross-field rule, or a required field nobody wrote.
             lines.append("      (not written in any YAML: a default or a cross-field rule)")
         lines.append(f"      {err['msg']}")
-        if err["type"] == "extra_forbidden" and dotted in REMOVED_KEYS:
-            lines.append(f"      removed on purpose: {REMOVED_KEYS[dotted]}")
+        removed = None
+        if err["type"] == "extra_forbidden":
+            # A `*` segment in a removed key stands for one map key, such as a camera id.
+            parts = dotted.split(".")
+            removed = REMOVED_KEYS.get(dotted) or next(
+                (text for key, text in REMOVED_KEYS.items()
+                 if "*" in key and len(key.split(".")) == len(parts)
+                 and all(k in ("*", p) for k, p in zip(key.split("."), parts))),
+                None,
+            )
+        if removed is not None:
+            lines.append(f"      removed on purpose: {removed}")
         elif err["type"] == "extra_forbidden" and err["loc"]:
             siblings = [
                 key.rsplit(".", 1)[-1]

@@ -67,8 +67,10 @@ cameras:
 
       # The name you use to address this camera everywhere else: `camera.cameras.primary_rig_id`
       # selects it, `python -m src.robot.perception --rig <id>` opens it,
-      # `FrameProvider.grab(rig_id)` keys on it, and if you omit `calibration_paths.base_dir` the schema
-      # invents `calibration/<rig_id>` from it.
+      # `Camera.from_config(camera, rig_id=<id>)` makes it the one owner of that device, and if you
+      # omit `calibration_paths.base_dir` the schema invents `calibration/<rig_id>` from it. It is
+      # the key a fused camera takes in `robot.grasping.fusion.cameras`; the calibration itself is
+      # declared on the rig, under `extrinsics`.
       # [REQUIRED - no default]
     - rig_id: webcam_main
 
@@ -179,8 +181,10 @@ cameras:
 
       # The name you use to address this camera everywhere else: `camera.cameras.primary_rig_id`
       # selects it, `python -m src.robot.perception --rig <id>` opens it,
-      # `FrameProvider.grab(rig_id)` keys on it, and if you omit `calibration_paths.base_dir` the schema
-      # invents `calibration/<rig_id>` from it.
+      # `Camera.from_config(camera, rig_id=<id>)` makes it the one owner of that device, and if you
+      # omit `calibration_paths.base_dir` the schema invents `calibration/<rig_id>` from it. It is
+      # the key a fused camera takes in `robot.grasping.fusion.cameras`; the calibration itself is
+      # declared on the rig, under `extrinsics`.
       # [REQUIRED - no default]
     - rig_id: stereo_dev0
       enabled: false
@@ -298,10 +302,14 @@ cameras:
 
     # --- entry 3: realsense_d435 ---
 
-      # (RGB-D rig.) The name you use to address this camera everywhere else: `camera.cameras.primary_rig_id`
-      # selects it, `python -m backend.src.robot.perception --rig <id>` opens it,
-      # `FrameProvider.grab(rig_id)` keys on it, and if you omit `calibration_paths.base_dir` the schema
-      # invents `calibration/<rig_id>` from it
+      # (RGB-D rig.) The name you use to address this camera everywhere else:
+      # `camera.cameras.primary_rig_id` selects it, `python -m src.robot.perception --rig <id>` opens
+      # it, `Camera.from_config(camera, rig_id=<id>)` makes it the one owner of that device, and if you
+      # omit `calibration_paths.base_dir` the schema invents `calibration/<rig_id>` from it. It is
+      # the key a fused camera takes in `robot.grasping.fusion.cameras` and the id the calibration
+      # command stamps into this rig's artifact, so renaming a rig orphans its calibration folder and
+      # every fusion entry that names it. The calibration itself is declared on the rig, under
+      # `extrinsics`.
       # [REQUIRED - no default]
     - rig_id: realsense_d435
       enabled: false
@@ -430,3 +438,41 @@ cameras:
       calibration_paths:
         base_dir: calibration/realsense_d435
         intrinsics_file: calibration/realsense_d435/intrinsics.json
+
+      # (RGB-D rig.) The rig's calibration, declared on the rig: how the camera is mounted, which
+      # artifact holds its transform and, for a wrist camera, how far the arm may move while a frame
+      # is taken. Null is a rig that is not calibrated, a stated state rather than a default
+      # transform. `python -m src.robot.execution.real_cell.calibrate --rig <rig_id>` prints the
+      # block to write here. Every reader of a camera's transform (fusion, the planner world, the
+      # preflight, `from_robot_config`) takes it from this block. A stereo rig refuses the block at
+      # load.
+      # [default: null]
+      #
+      #   extrinsics:
+      #     # eye_to_hand for a camera fixed in the cell, whose artifact is CAMERA to BASE;
+      #     # eye_in_hand for a camera the arm carries, whose artifact is CAMERA to TOOL and is
+      #     # composed with the tool pose at the shutter. There is no default: an unset mounting
+      #     # refuses rather than implying a fixed camera, because a wrist camera read as fixed
+      #     # places every point where the arm stood when it was calibrated.
+      #     # [REQUIRED - no default] [one of: eye_to_hand | eye_in_hand]
+      #     mounting_mode: eye_to_hand
+      #     # The calibration artifact this rig's transform is read from: `eth_<rig_id>.json`,
+      #     # CAMERA to BASE, for an eye_to_hand rig, and `eih_<rig_id>.json`, CAMERA to TOOL, for an
+      #     # eye_in_hand rig, as the calibration command writes them. Loaded through
+      #     # `RigCalibration.from_config`, which refuses a file that does not load and names this
+      #     # key and the path. Pointing it at another file moves this camera in every world it is
+      #     # placed in.
+      #     # [REQUIRED - no default]
+      #     artifact_path: calibration/real/eth_realsense_d435.json
+      #     # (eye_in_hand rig.) How far, in millimetres, the tool may travel while a wrist frame is
+      #     # taken before that frame is refused. Required and above 0 on an eye_in_hand rig, with
+      #     # no default, because how still the arm must be is a fact about the cell; refused on an
+      #     # eye_to_hand rig, which does not move with the arm.
+      #     # [default: null]
+      #     shutter_motion_tolerance_mm: null
+      #     # (eye_in_hand rig.) How far, in degrees, the tool may turn while a wrist frame is taken
+      #     # before that frame is refused. Required and above 0 on an eye_in_hand rig, with no
+      #     # default, because how still the arm must be is a fact about the cell; refused on an
+      #     # eye_to_hand rig, which does not move with the arm.
+      #     # [default: null]
+      #     shutter_motion_tolerance_deg: null

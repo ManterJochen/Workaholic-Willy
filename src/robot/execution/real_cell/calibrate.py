@@ -5,8 +5,8 @@
 
 `grasping.fusion.geometry`, the biggest measured lever this stack has (top-1 43.50 % single-view
 -> 55.93 % fused on the datagen reference, n=354), states its own precondition: ``cameras`` must be
-populated, each camera individually calibrated. The consuming side is complete: the per-camera map
-`grasping.fusion.cameras`, `build_config_frame_resolvers` turning it into
+populated, each camera individually calibrated. The consuming side is complete: each rig's declared
+calibration, `build_config_frame_resolvers` turning the fused cameras into
 `{camera_id -> FrameResolver}`, the pick loop reading that map, the schema-versioned `Extrinsics`
 artifact keyed by `rig_id`, and `CalibrationRoutine` itself. `real_cell/preflight.py` only checks
 for an artifact and refuses without one; it cannot make one. This command makes one.
@@ -18,8 +18,8 @@ It follows the simulated runner's path: the same `CalibrationRoutine`, the same 
   truth,
 * the arm is the configured vendor driver, built alone through
   `Robot.from_config(robot_config, gripper=None)`, instead of a simulated one,
-* and the frames come from `FrameProvider.rig(rig_id)`, so this holds exactly one camera and gives
-  it back, the same seam the pick path uses.
+* and the frames come from the rig's `Camera` owner, so this holds exactly one camera and gives it
+  back, the same owner the pick path uses.
 
 This moves the robot. `run_auto` drives the arm to N generated poses. `--check` validates everything
 and touches nothing. `--dry-run` additionally runs the arm-vendor readiness gate, builds the arm,
@@ -93,44 +93,42 @@ def _pick_rig(camera_cfg: Any, rig_id: str) -> Any:
     only caller, passing `cfg.camera` from exactly that loader. So the branch could fire for a
     hand-built object and nothing else, and its only witness was the test written to cover it.
     An empty list still refuses here, one line down, naming the rig it could not find.
-    """
-    from src.config.schema.camera import RGBDDeviceRigConfig
 
-    rigs = list(getattr(getattr(camera_cfg, "cameras", None), "rigs", []) or [])
-    by_id = {r.rig_id: r for r in rigs}
-    if rig_id not in by_id:
-        raise SystemExit(
-            f"no rig {rig_id!r} in camera.cameras.rigs. Configured: {', '.join(sorted(by_id))}")
-    rig = by_id[rig_id]
-    if not isinstance(rig, RGBDDeviceRigConfig):
-        raise SystemExit(
-            f"rig {rig_id!r} is {getattr(rig, 'source', '?')!r}, not an RGB-D device. This runner "
-            f"calibrates an RGB-D camera against the robot with an ArUco board; a stereo pair goes "
-            f"through the routine's own stereo path.")
-    if not rig.enabled:
-        raise SystemExit(
-            f"rig {rig_id!r} is configured with `enabled: false`, so this cell does not run it. "
-            f"Set camera.cameras.rigs[{rig_id!r}].enabled: true before calibrating it. A sweep "
-            f"against a camera the cell will not open produces an artifact nothing consumes.")
-    return rig
+    The refusals are the camera noun's (`select_rig`), so this runner and the cell say one thing
+    about a rig. The sentence about the artifact is added to the disabled refusal, because that is
+    the case an operator is most likely to meet here.
+    """
+    from src.camera.orchestration.camera import CameraRefused, select_rig
+
+    try:
+        return select_rig(camera_cfg, rig_id=rig_id)
+    except CameraRefused as refused:
+        tail = (" A sweep against a camera the cell will not open produces an artifact nothing consumes."
+                if refused.reason == "disabled" else "")
+        raise SystemExit(f"{refused}{tail}") from refused
 
 
 def _snippet(camera_id: str, mode: str, path: str) -> str:
-    """The exact YAML an operator must paste for this camera to reach the pick path.
+    """The rig block an operator pastes into the camera section so this camera's calibration is read.
 
-    Writing the artifact is only half the job. `grasping.fusion.geometry` stands down to the
-    single-view path when `cameras` is empty and stamps why in telemetry, quietly enough that a
-    cell can be calibrated, look calibrated, and still be planning on one view.
+    Writing the artifact is only half the job. Until the rig declares it, the cell has no CAMERA to
+    BASE for this camera. A fixed camera's block is complete as printed. A wrist camera's shutter
+    motion tolerances are a fact of the cell that is not measured here, so its block names them as
+    comments to fill in, and the loader refuses the block until they are written.
     """
+    tolerances = "" if mode == "eye_to_hand" else (
+        "          # shutter_motion_tolerance_mm: <measure: how far the tool may travel while a frame is taken>\n"
+        "          # shutter_motion_tolerance_deg: <measure: how far the tool may turn while a frame is taken>\n"
+    )
     return (
-        "robot:\n"
-        "  grasping:\n"
-        "    fusion:\n"
-        "      cameras:\n"
-        f"        {camera_id}:\n"
-        "          enabled: true\n"
+        "camera:\n"
+        "  cameras:\n"
+        "    rigs:\n"
+        f"      - rig_id: {camera_id}\n"
+        "        extrinsics:\n"
         f"          mounting_mode: {mode}\n"
-        f"          extrinsics_artifact_path: {path}\n"
+        f"          artifact_path: {path}\n"
+        + tolerances
     )
 
 
@@ -140,8 +138,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Calibrate one camera of a real cell against the robot. This moves the robot.")
     ap.add_argument("--rig", required=True,
                     help="rig_id of the RGB-D camera to calibrate (must be in camera.cameras.rigs). "
-                         "The artifact is keyed by this id, which is also the key it takes in "
-                         "grasping.fusion.cameras")
+                         "The artifact is keyed by this id, and the rig block it prints declares "
+                         "it on that rig")
     ap.add_argument("--mode", choices=("eye_to_hand", "eye_in_hand"), default="eye_to_hand",
                     help="eye_to_hand = a fixed camera; the artifact is CAMERA->BASE and this is what "
                          "multi-view fusion consumes. eye_in_hand = a wrist camera; the artifact is "
@@ -197,12 +195,12 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
 
     # ---- 2. Build -------------------------------------------------------------------------------
     print("\n=== 2. BUILD === the arm alone, and one camera", flush=True)
-    provider = handle = None
+    handle = None
     try:
         import numpy as np
 
         from src.calibration.rgbd_marker_source import RGBDArucoMarkerSource
-        from src.camera.orchestration.frame_provider import FrameProvider
+        from src.camera.orchestration.camera import Camera
         from src.calibration.eye_hand import MountingMode
         from src.robot.execution.calibration import CalibrationRoutine
         from src.robot.execution.robot import Robot
@@ -211,11 +209,12 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
         # `gripper=None` builds no gripper: a sweep needs none, and one this tree cannot build is
         # not a reason to refuse calibrating a camera.
         robot = Robot.from_config(robot_cfg, gripper=None)
-        # Through the frame provider, and it opens exactly one rig. A calibration sweep that
-        # claimed every configured camera would fight the console for devices it does not need.
-        provider = FrameProvider(list(cfg.camera.cameras.rigs))
-        provider.open_rig(rig.rig_id)
-        handle = provider.rig(rig.rig_id)
+        # Through the camera noun, and it opens exactly one rig. A calibration sweep that claimed
+        # every configured camera would fight the console for devices it does not need, and a rig
+        # the console already holds is refused here naming the holder.
+        camera = Camera.from_config(cfg.camera, rig_id=rig.rig_id)
+        handle = camera.handle()
+        camera.open()
         marker_source = RGBDArucoMarkerSource(
             streamer=handle, marker_length_mm=marker_mm,
             dict_name=args.dict_name, target_id=args.marker_id,
@@ -340,8 +339,7 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
     from src.calibration.serialization import save_cam_to_tool, save_extrinsics
 
     if args.mode == "eye_to_hand":
-        # rig_id is stamped to the camera id so the artifact and the central fusion.cameras map
-        # line up.
+        # rig_id is stamped to the camera id so the artifact and the rig that declares it line up.
         assert result.extrinsics is not None                    # guarded by `carrier` above
         extrinsics = dataclasses.replace(result.extrinsics, rig_id=rig.rig_id)
         written = save_extrinsics(f"{out_dir}/eth_{rig.rig_id}.json", extrinsics)
@@ -351,8 +349,8 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
                                    rig_id=rig.rig_id)
     print(f"  written           {written}", flush=True)
     print(f"  dataset           {result.dataset_path}", flush=True)
-    print("\nPaste this so the camera reaches the pick path. Until it is in `fusion.cameras`, the\n"
-          "geometry fusion stands down to a single view and only says so in telemetry:\n", flush=True)
+    print("\nPaste this into the camera section so the camera reaches the pick path. Until its rig\n"
+          "declares it, the cell has no CAMERA->BASE for this camera:\n", flush=True)
     print(_snippet(rig.rig_id, args.mode, str(written)), flush=True)
     return _EXIT_OK
 

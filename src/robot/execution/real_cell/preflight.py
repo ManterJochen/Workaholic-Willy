@@ -21,6 +21,7 @@ from src.contracts import UNSET, Maybe, chosen
 from src.robot.safety.planning import curobo_env_available
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.config.schema import CameraConfig
     from src.config.schema.robot import RobotConfig
 
 __all__ = ["CheckStatus", "PreflightCheck", "PreflightReport", "run_config_preflight"]
@@ -128,9 +129,13 @@ def _vendor(robot_cfg: "RobotConfig") -> str:
 
 
 def run_config_preflight(
-    robot_cfg: "RobotConfig", *, curobo_available: Maybe[bool] = UNSET
+    robot_cfg: "RobotConfig", *, camera: "Maybe[CameraConfig]" = UNSET, curobo_available: Maybe[bool] = UNSET
 ) -> PreflightReport:
     """Check a ``RobotConfig`` for everything that stops a real pick, without touching hardware.
+
+    ``camera`` is the camera section of the same tree. The camera to base row reads the primary
+    rig's declared calibration there and opens nothing; left unset, the row says it was not handed
+    one.
 
     ``curobo_available`` left unset asks this box, through ``curobo_env_available()``. It is
     a keyword so a caller can state the answer instead: a check that must not depend on what
@@ -195,21 +200,35 @@ def run_config_preflight(
         ))
 
     # ---- the camera -> base frame ---------------------------------------------------------------
-    fusion = getattr(robot_cfg.grasping, "fusion", None)
-    artifact = getattr(fusion, "extrinsics_artifact_path", None) if fusion else None
-    if artifact and getattr(fusion, "enabled", False):
-        checks.append(PreflightCheck(
-            "camera -> base", CheckStatus.OK, f"from the calibration artifact {artifact}",
-        ))
-    else:
+    # Declared on the primary rig, camera.cameras.rigs[<id>].extrinsics. Read, not opened: loading
+    # the artifact is the build's job, and the build refuses a file that does not load.
+    if not chosen(camera):
         checks.append(PreflightCheck(
             "camera -> base", CheckStatus.BLOCK if is_real else CheckStatus.WARN,
-            "no CAMERA->BASE resolver in config (grasping.fusion is off or has no artifact path)",
-            "perception reports grasps in the CAMERA frame; without a resolver the driver refuses "
-            "every motion as INVALID_TARGET, which looks like a broken cell. Run the eye-to-hand "
-            "calibration and point grasping.fusion.extrinsics_artifact_path at what it wrote, or "
-            "pass a resolver in code (the eye-in-hand route)",
+            "this checklist was not handed the camera section, so it cannot vouch for CAMERA->BASE; a cell's "
+            "calibration is declared on its primary rig, camera.cameras.rigs[<id>].extrinsics",
+            "run it with the camera section of the same tree, as Cell.preflight and the operator console do",
         ))
+    else:
+        primary = camera.cameras.primary_rig_id
+        key = f"camera.cameras.rigs[{primary!r}].extrinsics"
+        rig = next((r for r in camera.cameras.rigs if r.rig_id == primary), None)
+        extrinsics = getattr(rig, "extrinsics", None)
+        if extrinsics is not None:
+            checks.append(PreflightCheck(
+                "camera -> base", CheckStatus.OK,
+                f"{key}: {extrinsics.mounting_mode} from {extrinsics.artifact_path}; the build loads it "
+                "and refuses a file that does not load",
+            ))
+        else:
+            checks.append(PreflightCheck(
+                "camera -> base", CheckStatus.BLOCK if is_real else CheckStatus.WARN,
+                f"{key} is not declared, so the primary camera has no CAMERA->BASE transform",
+                "perception reports grasps in the CAMERA frame; without a resolver the driver refuses every "
+                "motion as INVALID_TARGET, which looks like a broken cell. Calibrate the camera (python -m "
+                f"src.robot.execution.real_cell.calibrate --rig {primary}) and paste the rig block it "
+                "prints (a wrist camera prints one too), or pass frame_resolver= in code",
+            ))
 
     # ---- the cuRobo environment -----------------------------------------------------------------
     # Only a real arm has this row. A sim cell reaches cuRobo through its own driver and a dummy

@@ -31,6 +31,7 @@
             "warmup_frames": 5,
             "fps_tolerance": 3.0
           },
+          "extrinsics": null,
           "frame_size": [
             1280,
             720
@@ -64,6 +65,7 @@
             "warmup_frames": 5,
             "fps_tolerance": 3.0
           },
+          "extrinsics": null,
           "device_index": 0,
           "device_frame_size": [
             2560,
@@ -106,6 +108,7 @@
             "warmup_frames": 30,
             "fps_tolerance": 3.0
           },
+          "extrinsics": null,
           "device_index": 3,
           "device_frame_size": [
             2560,
@@ -148,6 +151,7 @@
             "warmup_frames": 15,
             "fps_tolerance": 3.0
           },
+          "extrinsics": null,
           "device_index": 0,
           "serial_number": null,
           "color_resolution": [
@@ -835,7 +839,6 @@
           ]
         },
         "active_perception_use_fusion": false,
-        "extrinsics_artifact_path": null,
         "cameras": {},
         "geometry": {
           "enabled": false,

@@ -18,12 +18,14 @@ Calibration produces the transform between the two.
 connects, and then rejects every motion with `MotionStatus.INVALID_TARGET`. At the bench that looks
 like a broken robot, not a missing file.
 
-The shipped `config/robot/robot.yaml` declares no fusion block, so `grasping.fusion.enabled` is
-`false` and no artifact path is set. That is the default state of a fresh cell. Check yours:
+No shipped camera section declares a rig's calibration: every rig's `extrinsics` is unset, so the
+primary camera has no `CAMERA->BASE`. That is the default state of a fresh cell. Check yours:
 
 ```bash
-python -m src.config explain robot.grasping.fusion.enabled
+python -m src.robot.execution.real_cell --check
 ```
+
+Its `camera -> base` row names the primary rig's key, `camera.cameras.rigs[<id>].extrinsics`.
 
 ## 1. Pick the mounting mode
 
@@ -35,8 +37,8 @@ python -m src.config explain robot.grasping.fusion.enabled
 | Written by | `save_extrinsics` | `save_cam_to_tool` |
 | At runtime | used as it is | composed with the live TCP on every frame |
 
-A multi-camera rig calibrates each camera on its own and declares them all in one map. Run this whole
-procedure once per camera.
+A multi-camera cell calibrates each camera on its own and declares each calibration on that camera's
+rig. Run this whole procedure once per camera.
 
 ## 2. Connect the camera
 
@@ -47,7 +49,7 @@ Declare the rig in [`config/camera/cam.yaml`](../config/camera/cam.yaml) under `
 shipped tree already carries one such rig, `realsense_d435`, with `enabled: false`:
 
 ```yaml
-- rig_id: realsense_d435   # this id keys the artifact AND the fusion map. Keep them equal.
+- rig_id: realsense_d435   # keys the artifact; fusion.cameras names the rig by this id too
   enabled: true
   source: rgbd
   rgbd_backend: realsense  # the schema default is `opencv`, which returns empty depth on a D435
@@ -61,9 +63,9 @@ Three things bite here. `serial_number: null` opens the first RealSense the SDK 
 `RealSenseRGBDStreamer` reads only the serial, never `device_index`, so a two-camera cell must give
 each rig its own serial; the schema refuses two enabled RGB-D rigs where either lacks one, or where
 both carry the same one. Two identical cameras that swap identity do not fail, they return a
-complete and plausible scene with the views exchanged. And the real pick path takes the **first** rig
-whose `source` is `rgbd` as the cell's primary camera, in list order and without consulting
-`enabled`, so put the camera the single-view path should use first and leave no stale rig above it.
+complete and plausible scene with the views exchanged. And the real pick path opens the rig
+`camera.cameras.primary_rig_id` names (`build_real_components` in `cells.py`), whose calibration is
+the one a single-view pick uses, so point `primary_rig_id` at the camera the grasp should come from.
 
 Validate the tree, then open the device without moving anything:
 
@@ -73,7 +75,7 @@ python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --dry-run
 ```
 
 `--dry-run` runs the arm-vendor readiness gate, builds the arm alone with no gripper, opens exactly
-that one rig through `FrameProvider.rig`, and prints the arm, the cell lock the sweep will take,
+that one rig through its `Camera` owner, and prints the arm, the cell lock the sweep will take,
 whether the camera answered with intrinsics, and what the arm's safety pipeline refuses. Then it
 stops, before any motion and without taking the lock. On a host without the arm vendor's SDK it
 refuses at the build, as a pick run on the same tree does. For the detector and segmenter on
@@ -180,11 +182,15 @@ healthy because it is internally consistent, and nothing downstream can tell. Ve
 the controller before the first pose, not after a bad result.
 
 Plan well above `min_samples`. The runner writes `eth_<rig_id>.json` (or `eih_<rig_id>.json`) plus
-the sample dataset under `calibration/real` unless `--out` says otherwise, and prints a YAML snippet.
+the sample dataset under `calibration/real` unless `--out` says otherwise, and prints the rig block
+that declares it in the camera section.
 
-**That snippet is the `cameras:` sub-block only.** It carries neither `fusion.enabled` nor
-`fusion.geometry.enabled` nor the top-level `extrinsics_artifact_path`, and without them the map is
-ignored without a word. Paste it, then add the rest from section 7.
+**That block is the `extrinsics` of the rig you declared in section 2.** Copy its `extrinsics:` lines
+under that rig's entry rather than pasting a second `- rig_id: realsense_d435`, because a duplicate
+rig id is a load error. After an `eye_in_hand` sweep the block ends in two commented lines,
+`shutter_motion_tolerance_mm` and `shutter_motion_tolerance_deg`: measure them and write them,
+because the loader refuses an `eye_in_hand` block without both and there is no default. The block
+alone does not fuse a second camera; section 7 says what does.
 
 Exit codes: `0` done, `1` configuration or build refused, the cell held by another process, or the
 connect refused, `2` it ran but wrote no artifact, `3` the sweep raised. Exit `2` is loud on purpose,
@@ -229,42 +235,71 @@ grep -rn "raise CalibrationDataError\|raise ExtrinsicsError" src
 
 ## 7. Wire the artifact into the pick path
 
-Writing the file is half the job. The shipped worked example for a two-camera cell is
-`config/robot/robot.eth2.yaml` with `config/camera/cam.eth2.yaml`, loaded as
-`WILLY_PROFILE=ur5e,eth2`. Its shape, for a primary camera `cam_left` and a second camera
-`cam_right`:
+Writing the file is half the job. Declare it on the rig, in the camera section:
+
+```yaml
+camera:
+  cameras:
+    primary_rig_id: realsense_d435
+    rigs:
+      - rig_id: realsense_d435
+        # ... the rest of the rig from section 2
+        extrinsics:
+          mounting_mode: eye_to_hand
+          artifact_path: calibration/real/eth_realsense_d435.json
+```
+
+That alone gives a one-camera cell its `CAMERA->BASE`. The primary rig's `extrinsics` is read
+whether or not `grasping.fusion.enabled` is on, and it is what the real-cell preflight's
+`camera -> base` row and `from_robot_config` look for. `build_real_cell` hands the camera section to
+`from_robot_config`, and a real cell built without one is refused, naming
+`camera.cameras.rigs[<primary rig id>].extrinsics`.
+
+A wrist camera is declared the same way, with its `eih_<rig_id>.json` and the two tolerances the
+calibration command prints as comments:
+
+```yaml
+        extrinsics:
+          mounting_mode: eye_in_hand
+          artifact_path: calibration/real/eih_wrist.json
+          # shutter_motion_tolerance_mm: <measure: how far the tool may travel while a frame is taken>
+          # shutter_motion_tolerance_deg: <measure: how far the tool may turn while a frame is taken>
+```
+
+Uncomment both with the values you measured. Each is required and above 0 on an `eye_in_hand` rig,
+with no default, and refused on an `eye_to_hand` one. The resolver built from this block composes the
+artifact with the live tool pose on every frame, so a wrist primary needs no `frame_resolver=` in
+code.
+
+A second camera takes its own rig with its own `extrinsics`, an entry naming it in `fusion.cameras`,
+and two flags. The shipped worked example for a two-camera cell is `config/robot/robot.eth2.yaml`
+with `config/camera/cam.eth2.yaml`, loaded as `WILLY_PROFILE=ur5e,eth2`. Its robot half, for a
+primary camera `cam_left` and a second camera `cam_right`:
 
 ```yaml
 robot:
   grasping:
     fusion:
-      enabled: true                                                # the line that makes all of it live
-      extrinsics_artifact_path: "calibration/real/eth_cam_left.json"   # the PRIMARY camera
+      enabled: true              # the line that makes the per-camera map live
       geometry:
-        enabled: true                                              # what makes a second view reach the grasp
+        enabled: true            # what makes a second view reach the grasp
       cameras:
-        cam_right:                                                 # every camera EXCEPT the primary
-          enabled: true
-          mounting_mode: eye_to_hand
-          extrinsics_artifact_path: "calibration/real/eth_cam_right.json"
+        cam_right:
+          enabled: true          # keyed by rig id; the calibration stays on the rig
 ```
 
-`fusion.enabled` is the switch everything hangs off. With it `false` the resolver builders return
-nothing and your whole `cameras` block is ignored without a word. The map then reaches the pick loop
-only when `fusion.geometry.enabled` is true as well. Set the single top-level
-`extrinsics_artifact_path` even on a one-camera cell: it is the only key that satisfies the
-`CAMERA->BASE` refusal in `from_robot_config`, and the snippet the calibration runner prints leaves
-it null.
+`fusion.cameras` names which rigs are fused and holds nothing else, and an id in it that names no
+rig in `camera.cameras.rigs` is refused at load. `fusion.enabled` is the switch the per-camera map
+hangs off: with it `false` the map builder returns nothing and your whole `cameras` block is ignored
+without a word. The map then reaches the pick loop only when `fusion.geometry.enabled` is true as
+well.
 
-**The primary camera does not belong in `fusion.cameras`.** `_build_multi_camera_rig` in
-`src/robot/execution/autonomous_grasp/cells.py` builds the extra-camera rig from that map with the
-primary filtered out, because the primary already streams through the main perception source; but
-the orchestrator's `configured_camera_ids` comes from the same map with only disabled entries
-dropped, and the pick loop then reports every configured camera that delivered no frame. List the
-primary there and it is permanently among the missing: a warning on every pick under
-`on_camera_unavailable: degrade`, and a raised error on every pick under `refuse`. The Isaac
-simulator tree lists all three of its cameras including its primary, which is correct there because
-that runner builds its own rig; do not copy the shape of that block onto a real cell.
+**The primary camera may be listed in `fusion.cameras`.** `_build_multi_camera_rig` in
+`src/robot/execution/autonomous_grasp/cells.py` leaves it out of the extra-camera rig, because the
+primary already streams through the main perception source, and the orchestrator's
+`configured_camera_ids`, the cameras a pick waits for, leaves it out as well. Both are decided in code
+from `camera.cameras.primary_rig_id`, so listing the primary costs nothing, and a two-camera cell can
+name both of its cameras.
 
 Turning `fusion.enabled` on does one thing the name does not advertise. Alongside the resolvers it
 constructs the multi-view voxel substrate, which then ingests each view on every pick. Nothing reads
@@ -273,18 +308,20 @@ its output in the default path, because the gate that would let fused evidence d
 is on.
 
 Three consequences of how the multi-camera path is built. Each camera named in the map must also be
-an RGB-D rig in `camera.cameras.rigs`, and one that is not is refused at build time rather than
-warned about on every pick. The two perception models are loaded once and shared, so a four-camera
+an RGB-D rig in `camera.cameras.rigs` that declares its `extrinsics`: an id that names no rig is
+refused at load, and a rig that is not RGB-D or declares no calibration is refused at build time,
+rather than warned about on every pick. The two perception models are loaded once and shared, so a four-camera
 cell costs four inference passes and one set of weights. And the counter that warns about a
 single-view cell reads the same map, so it reports one calibrated camera and recommends adding a
 second while the cell is in fact fusing two.
 
-An enabled camera whose artifact is missing, stale or invalid raises at construction rather than
-degrading to one view in silence. An eye-in-hand cell leaves the path unset and passes
-`frame_resolver=` in code, because a live TCP-composed resolver cannot be serialized.
+A declared artifact that is missing, stale or invalid raises at construction, naming its rig key,
+rather than degrading to one view in silence. That holds for the primary rig and for every enabled
+fused camera.
 
-This multi-camera path has never run on hardware. The wiring has been proven against a fake provider
-and fake models; no physical camera has been opened by it.
+This multi-camera path has never run on hardware. `build_real_components` opens each other enabled
+camera in `fusion.cameras` through its `Camera` owner, and the wiring has been proven against fake
+cameras and fake models; no physical camera has been opened by it.
 
 ## 8. Verify, and what to do when it is bad
 
@@ -305,7 +342,7 @@ Aim at a known object and measure where the TCP actually lands.
 | Residual is `marginal` or `poor` | marker size, flexing mount, motion blur, too few tilts, wrong dictionary | fix the physical cause, do not add poses to average it away |
 | Far fewer accepted samples than poses | marker not found, or poses too similar | check lighting and framing, widen the pose spread |
 | Solve refuses with "two independent axes" | the sweep only rotated about one axis | raise `orientation_spread_deg` above 30 and tilt in more directions. The runner floors it at 30, so a smaller value changes nothing |
-| Cell refuses every motion, or still behaves single-view | no resolver, or `fusion.enabled` still false | section 7, then `real_cell --check` |
+| Cell refuses every motion, or still behaves single-view | the primary rig declares no `extrinsics`, or `fusion.enabled` still false | section 7, then `real_cell --check` |
 
 ## 9. When to recalibrate
 

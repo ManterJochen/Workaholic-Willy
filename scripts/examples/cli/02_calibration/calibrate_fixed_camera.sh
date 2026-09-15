@@ -2,8 +2,8 @@
 # Calibrate a camera bolted in the cell: the CAMERA->BASE transform, from the command line.
 #
 # The Python twin of this file is scripts/examples/api/02_calibration/calibrate_fixed_camera.py and
-# it drives the same CalibrationRoutine with the same MountingMode. The runner is the only half that
-# writes the artifact keyed by rig id, which is the id `grasping.fusion.cameras` is keyed by too.
+# it drives the same CalibrationRoutine with the same MountingMode. The runner writes the artifact
+# keyed by rig id and prints the rig block, camera.cameras.rigs[<id>].extrinsics, that declares it.
 set -euo pipefail
 
 # 1. Validate the config and the rig. Touches no hardware. It refuses when the tree ships

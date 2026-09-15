@@ -48,9 +48,9 @@ class BothHalvesComeFromTheSuppliedTreeTests(unittest.TestCase):
         # Patched at the module that owns it, so a builder importing it by any route is covered.
         with mock.patch("src.config.load_config", side_effect=watched):
             with mock.patch(
-                "src.camera.orchestration.frame_provider.FrameProvider"
-            ) as provider:
-                provider.side_effect = RuntimeError("stop before the device")
+                "src.camera.orchestration.camera.Camera"
+            ) as camera:
+                camera.from_config.side_effect = RuntimeError("stop before the device")
                 with self.assertRaises(Exception):
                     cells.build_real_components(robot, "a box", app_config=app_cfg)
 
@@ -107,9 +107,9 @@ class NoCallerHadToChangeTests(unittest.TestCase):
 
         with mock.patch("src.config.load_config", side_effect=watched):
             with mock.patch(
-                "src.camera.orchestration.frame_provider.FrameProvider"
-            ) as provider:
-                provider.side_effect = RuntimeError("stop before the device")
+                "src.camera.orchestration.camera.Camera"
+            ) as camera:
+                camera.from_config.side_effect = RuntimeError("stop before the device")
                 with self.assertRaises(Exception):
                     cells.build_real_components(robot, "a box")
         self.assertTrue(seen, "the default path must still read the tree")

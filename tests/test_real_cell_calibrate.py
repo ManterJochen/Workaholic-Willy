@@ -23,7 +23,6 @@ from unittest import mock
 import yaml
 
 from src.config.schema.robot import RobotConfig
-from src.config.schema.robot.grasping_schema import CameraExtrinsicsConfig
 from src.robot.execution.real_cell import calibrate
 
 
@@ -165,40 +164,51 @@ class CheckTouchesNothingTests(unittest.TestCase):
 
 
 class ThePrintedYamlActuallyValidatesTests(unittest.TestCase):
-    """⭑ THE OPERATOR-FACING GUARANTEE. Writing the artifact is only half the job: until the camera is
-    in `fusion.cameras`, geometry fusion stands down to a single view and says so only in telemetry.
-    So the runner prints the YAML to paste — and a snippet that does not parse, or parses into
-    something the schema rejects, would send an operator hunting for a typo we shipped."""
+    """The operator-facing guarantee. Writing the artifact is only half the job: until the camera's rig
+    declares it in `camera.cameras.rigs[<id>].extrinsics`, the cell has no CAMERA to BASE transform for
+    that camera. So the runner prints the rig block to paste, and a block that does not parse, or parses
+    into something the schema rejects, would send an operator hunting for a typo in the shipped snippet."""
 
-    def _parsed(self, mode: str = "eye_to_hand"):
+    def _block(self, mode: str = "eye_to_hand") -> dict:
         text = calibrate._snippet("overhead", mode, "calibration/real/eth_overhead.json")
-        return yaml.safe_load(text)
+        rigs = yaml.safe_load(text)["camera"]["cameras"]["rigs"]
+        self.assertEqual(len(rigs), 1)
+        return rigs[0]
 
-    def test_it_is_valid_yaml_with_the_path_the_schema_expects(self) -> None:
-        data = self._parsed()
-        entry = data["robot"]["grasping"]["fusion"]["cameras"]["overhead"]
-        self.assertEqual(entry["enabled"], True)
-        self.assertEqual(entry["mounting_mode"], "eye_to_hand")
-        self.assertEqual(entry["extrinsics_artifact_path"], "calibration/real/eth_overhead.json")
+    def test_the_snippet_is_the_rig_block(self) -> None:
+        block = self._block()
+        self.assertEqual(block["rig_id"], "overhead")
+        self.assertEqual(block["extrinsics"], {"mounting_mode": "eye_to_hand",
+                                               "artifact_path": "calibration/real/eth_overhead.json"})
 
-    def test_the_entry_VALIDATES_against_CameraExtrinsicsConfig(self) -> None:
-        """The schema is `extra='forbid'`, so a stray key here would raise -- which is exactly the
-        failure this catches before an operator meets it."""
-        entry = self._parsed()["robot"]["grasping"]["fusion"]["cameras"]["overhead"]
-        built = CameraExtrinsicsConfig(**entry)
-        self.assertTrue(built.enabled)
-        self.assertEqual(built.mounting_mode, "eye_to_hand")
+    def test_the_fixed_block_VALIDATES_against_RigExtrinsicsConfig(self) -> None:
+        """The schema is `extra='forbid'`, so a stray key here would raise, which is exactly the failure
+        this catches before an operator meets it."""
+        from src.config.schema.camera.shared_schema import RigExtrinsicsConfig
 
-    def test_the_eye_in_hand_snippet_validates_too(self) -> None:
-        entry = self._parsed("eye_in_hand")["robot"]["grasping"]["fusion"]["cameras"]["overhead"]
-        self.assertEqual(CameraExtrinsicsConfig(**entry).mounting_mode, "eye_in_hand")
+        self.assertEqual(RigExtrinsicsConfig(**self._block()["extrinsics"]).mounting_mode, "eye_to_hand")
 
-    def test_the_camera_key_is_the_RIG_ID(self) -> None:
-        """The artifact stamps `rig_id` to the camera id and the map is keyed by the same string --
-        that alignment is what lets `build_config_frame_resolvers` find the file. A snippet keyed by
-        anything else would load a resolver for a camera the perception source never names."""
-        data = yaml.safe_load(calibrate._snippet("wrist_d435", "eye_to_hand", "x.json"))
-        self.assertEqual(list(data["robot"]["grasping"]["fusion"]["cameras"]), ["wrist_d435"])
+    def test_the_wrist_block_names_the_two_tolerances_it_cannot_measure(self) -> None:
+        """A wrist camera's shutter motion tolerances are a fact of the cell, so the block names them and
+        leaves them for the operator, and the schema refuses the block until they are written."""
+        from pydantic import ValidationError
+
+        from src.config.schema.camera.shared_schema import RigExtrinsicsConfig
+
+        text = calibrate._snippet("overhead", "eye_in_hand", "calibration/real/eih_overhead.json")
+        self.assertIn("shutter_motion_tolerance_mm", text)
+        self.assertIn("shutter_motion_tolerance_deg", text)
+        extrinsics = self._block("eye_in_hand")["extrinsics"]
+        self.assertEqual(extrinsics["mounting_mode"], "eye_in_hand")
+        with self.assertRaises(ValidationError):
+            RigExtrinsicsConfig(**extrinsics)
+        RigExtrinsicsConfig(**extrinsics, shutter_motion_tolerance_mm=2.0, shutter_motion_tolerance_deg=0.5)
+
+    def test_the_block_is_keyed_by_the_RIG_ID(self) -> None:
+        """The artifact stamps `rig_id` to the camera id, and the block names the same rig, which is what
+        lets the loader find the file for the camera the perception source opens."""
+        block = yaml.safe_load(calibrate._snippet("wrist_d435", "eye_to_hand", "x.json"))["camera"]["cameras"]["rigs"][0]
+        self.assertEqual(block["rig_id"], "wrist_d435")
 
 
 class ContractTests(unittest.TestCase):
@@ -217,8 +227,10 @@ class ContractTests(unittest.TestCase):
         rejected by the config loader."""
         import typing
 
+        from src.config.schema.camera.shared_schema import RigExtrinsicsConfig
+
         schema = typing.get_args(
-            CameraExtrinsicsConfig.model_fields["mounting_mode"].annotation)
+            RigExtrinsicsConfig.model_fields["mounting_mode"].annotation)
         modes = next(a for a in calibrate.build_parser()._actions   # noqa: SLF001
                      if a.dest == "mode").choices
         self.assertEqual(set(modes), set(schema))

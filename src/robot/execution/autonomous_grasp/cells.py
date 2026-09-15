@@ -143,7 +143,7 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str, *,
     import numpy as np
 
     from src.config import load_config
-    from src.camera.orchestration.frame_provider import FrameProvider
+    from src.camera.orchestration.camera import Camera, CameraRefused
     from src.models.perception_spec import PerceptionSpec
     from src.robot.grasping.calculator_factory import build_calculator
     from src.robot.perception import RealSenseVisionPerceptionSource
@@ -155,68 +155,47 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str, *,
     # over one list, disagreeing. On the shipped base profile the consequence was concrete: its only
     # RGB-D rig ships `enabled: false`, and this opened it anyway, so the failure arrived at the
     # device instead of at the config that caused it.
-    rigs = list(app_cfg.camera.cameras.rigs)
-    rig_id = app_cfg.camera.cameras.primary_rig_id
-    primary = next((r for r in rigs if r.rig_id == rig_id), None)
-    if primary is None:  # the schema checks this, so reaching it means the config was built by hand
-        raise CellBuildRefused(
-            f"camera.cameras.primary_rig_id names {rig_id!r}, which is not in camera.cameras.rigs "
-            f"({sorted(r.rig_id for r in rigs)})."
-        )
-    if not getattr(primary, "enabled", True):
-        raise CellBuildRefused(
-            f"camera.cameras.primary_rig_id names {rig_id!r} and that rig has `enabled: false`. A "
-            "cell cannot run on a camera its own config declares off. Switch it on, or name a rig "
-            "that is on."
-        )
-    if getattr(primary, "source", None) != "rgbd":
-        # The RGB-D rigs are named, not just demanded. Telling someone to "name the RGB-D rig" is
-        # telling them to supply the one fact they have just demonstrated they do not have, and this
-        # function is holding the list while it says it.
-        depth_rigs = sorted(r.rig_id for r in rigs if getattr(r, "source", None) == "rgbd")
-        raise CellBuildRefused(
-            f"camera.cameras.primary_rig_id names {rig_id!r}, a {getattr(primary, 'source', '?')!r} "
-            "rig. A grasp cell needs an RGB-D primary: the grasp is synthesised from its depth. "
-            + (f"The RGB-D rigs here are {depth_rigs}. Name one of those instead, and prove it "
-               "standalone with `python -m src.robot.perception`."
-               if depth_rigs else
-               "There is no RGB-D rig in camera.cameras.rigs at all, so this profile cannot build a "
-               "grasp cell until one is added.")
-        )
-    # Every camera goes through the frame provider, the one class that owns rig identity, per-rig
-    # lifecycle and open/release bookkeeping. The provider is told about every rig and opens
-    # exactly one: constructing a streamer touches no device, so knowing a rig costs nothing and
-    # holding it is a deliberate act.
     #
-    # `provider.rig(...)` hands back a `RigHandle` shaped exactly like the streamer this adapter
-    # duck-types against, so nothing in `robot.perception` has to know about camera orchestration,
-    # and the handle can reach this rig and no other. `handle.release()` gives back this rig only,
-    # so the console's teardown (`execution.lifecycle.release_perception` calling
-    # `perception.close()`) closes exactly the device it opened.
+    # The refusals (a rig the section does not configure, one switched off, one with no depth) are
+    # the camera noun's, so the cell, the calibration CLI and the exerciser say one thing.
     #
-    # Which rig is primary: whichever `camera.cameras.primary_rig_id` names, checked above. The
-    # grasp is synthesised from this camera and every other camera confirms what it sees, so moving
-    # the primary moves every measured number this cell has.
-    provider = FrameProvider(rigs)
-    provider.open_rig(rig_id)
+    # Which rig is primary: whichever `camera.cameras.primary_rig_id` names. The grasp is
+    # synthesised from this camera and every other camera confirms what it sees, so moving the
+    # primary moves every measured number this cell has.
+    try:
+        primary = Camera.from_config(app_cfg.camera)
+    except CameraRefused as refused:
+        raise CellBuildRefused(str(refused)) from refused
+    rig_id = primary.rig_id
+    # Every camera has one owner. A `Camera` is the only opener of its device in this process: a
+    # second opener is refused naming the holder, and every grab through any of its handles runs
+    # under the rig's lock. `camera.handle()` is shaped exactly like the streamer the perception
+    # adapter duck-types against, so nothing in `robot.perception` has to know about camera
+    # orchestration, and `handle.release()` gives back this rig only, so the console's teardown
+    # (`execution.lifecycle.release_perception` calling `perception.close()`) closes exactly the
+    # device it opened.
+    cameras: dict[str, Any] = {rig_id: primary}
+    primary.open()
     try:
         return _build_on_open_cameras(
-            robot_cfg, app_cfg, prompt=prompt, provider=provider, rig_id=rig_id, np=np, data_dir=data_dir,
+            robot_cfg, app_cfg, prompt=prompt, cameras=cameras, rig_id=rig_id, np=np, data_dir=data_dir,
             perception_spec=PerceptionSpec, build_calculator=build_calculator,
             vision_source=RealSenseVisionPerceptionSource,
         )
     except BaseException:
-        # A refused build gives the camera back. Everything below the open can raise, and one of
+        # A refused build gives the cameras back. Everything below the open can raise, and one of
         # those raises is deliberate: `_preload()` exists so a corrupt artifact is refused at build
         # time rather than at 3 a.m. Without this, the refusal it was added to produce left the
         # RealSense claimed by a dead process, and the operator who fixed the artifact and ran again
         # met "device busy", which names neither the cause nor the first failure. `release` never
         # raises and is idempotent, so it cannot replace the exception being reported.
-        provider.release()
+        for camera in cameras.values():  # every camera this build opened, extras included
+            camera.release()
         raise
 
 
-def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: str, provider: Any,
+def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: str,
+                           cameras: "dict[str, Any]",
                            rig_id: str, np: Any, perception_spec: Any, build_calculator: Any,
                            vision_source: Any, data_dir: "str | Path | None" = None,
                            ) -> tuple[Any, Any, Any, Any, Any]:
@@ -227,7 +206,7 @@ def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: st
     whose one real change nobody can see. The imports are passed in because they are function-local
     by design, so that a rehearsal, a test or a sim runner never pays for torch.
     """
-    handle = provider.rig(rig_id)
+    handle = cameras[rig_id].handle()
     # The stack is built once and shared by every camera. It is the expensive part of a cell (two
     # models on the GPU) and it is stateless per call, so a four-camera rig costs four inference
     # passes and one set of weights, not four sets.
@@ -246,7 +225,7 @@ def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: st
     )
     intrinsics = np.asarray(handle.get_intrinsics(), dtype=np.float64)
     multi_camera = _build_multi_camera_rig(
-        robot_cfg, app_cfg, provider=provider, primary_rig_id=rig_id,
+        robot_cfg, app_cfg, cameras=cameras, primary_rig_id=rig_id,
         backend=backend, prompt=prompt,
     )
     # Through the factory, as in `build_rehearsal_components`. This is the path a physical cell
@@ -276,14 +255,14 @@ def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: st
     if callable(_preload):
         _preload()
     calculators = _build_camera_calculators(
-        robot_cfg, app_cfg, provider=provider, primary_rig_id=rig_id, primary=calculator,
+        robot_cfg, app_cfg, cameras=cameras, primary_rig_id=rig_id, primary=calculator,
         multi_camera=multi_camera, data_dir=data_dir,
     )
     return calculator, perception, None, multi_camera, calculators
 
 
 def _build_camera_calculators(
-    robot_cfg: "RobotConfig", app_cfg: Any, *, provider: Any, primary_rig_id: str,
+    robot_cfg: "RobotConfig", app_cfg: Any, *, cameras: "dict[str, Any]", primary_rig_id: str,
     primary: Any, multi_camera: Any, data_dir: "str | Path | None" = None,
 ) -> "dict[str, Any] | None":
     """One calculator per camera, or None when one is enough.
@@ -314,7 +293,7 @@ def _build_camera_calculators(
 
     calculators: dict[str, Any] = {primary_rig_id: primary}
     for cam_id in getattr(multi_camera, "sources", {}):
-        handle = provider.rig(cam_id)
+        handle = cameras[cam_id].handle()
         matrix = handle.get_intrinsics()
         if matrix is None:
             # Refused rather than defaulted. A camera whose intrinsics are unknown can still fuse a
@@ -340,7 +319,7 @@ def _build_camera_calculators(
     return calculators
 
 
-def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, provider: Any,
+def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, cameras: "dict[str, Any]",
                             primary_rig_id: str, backend: Any,
                             prompt: str) -> Any:
     """The other cameras of a fused cell, as a `MultiCameraPerceptionSource`, or None.
@@ -362,6 +341,7 @@ def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, provider:
 
     Never run on hardware. No physical multi-camera cell has been built by this function.
     """
+    from src.camera.orchestration.camera import Camera, CameraRefused
     from src.robot.grasping.types.perception import MappedCameraRig
     from src.robot.perception import RealSenseVisionPerceptionSource
 
@@ -370,18 +350,19 @@ def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, provider:
     geometry_cfg = getattr(fusion_cfg, "geometry", None)
     if geometry_cfg is None or not bool(getattr(geometry_cfg, "enabled", False)):
         return None
-    cameras = getattr(fusion_cfg, "cameras", None) or {}
-    wanted = [cam_id for cam_id, cam in sorted(cameras.items())
+    # Named apart from `cameras`, the owners this build opened: this is the config's map of fused
+    # cameras.
+    configured = getattr(fusion_cfg, "cameras", None) or {}
+    wanted = [cam_id for cam_id, cam in sorted(configured.items())
               if bool(getattr(cam, "enabled", True)) and cam_id != primary_rig_id]
     if not wanted:
         return None
 
-    # Fail-closed, and at build time. A camera named in `fusion.cameras` with no matching RGB-D rig
-    # still gets a resolver, because its artifact loads, and therefore joins
-    # `configured_camera_ids`; at runtime it is a camera that was expected and delivered nothing,
-    # which under `refuse` stops every pick and under `degrade` warns on every pick. This says it
-    # once instead, while an operator is watching.
-    known = {r.rig_id for r in app_cfg.camera.cameras.rigs
+    # Fail-closed, at build time and before a device is opened. A camera named in `fusion.cameras`
+    # with no matching RGB-D rig, or whose rig declares no calibration, is a camera every pick
+    # expects and none can place: under `refuse` that stops every pick, and under `degrade` it warns
+    # on every pick. This says it once instead, while an operator is watching.
+    known = {r.rig_id: r for r in app_cfg.camera.cameras.rigs
              if getattr(r, "source", None) == "rgbd"}
     unknown = [cam_id for cam_id in wanted if cam_id not in known]
     if unknown:
@@ -390,12 +371,29 @@ def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, provider:
             f"that id (known: {sorted(known)}). A fused cell expects every configured camera to "
             "deliver a frame, so this would refuse or warn on every pick instead of once here."
         )
+    uncalibrated = [cam_id for cam_id in wanted if getattr(known[cam_id], "extrinsics", None) is None]
+    if uncalibrated:
+        raise CellBuildRefused(
+            f"grasping.fusion.cameras names {uncalibrated} and those rigs declare no calibration. A fused "
+            "camera is placed by its own CAMERA to BASE, declared on its rig as "
+            "camera.cameras.rigs[<id>].extrinsics: calibrate it and paste the block the calibration CLI "
+            "prints, or set the camera enabled: false in grasping.fusion.cameras."
+        )
 
     sources = {}
     for cam_id in wanted:
-        provider.open_rig(cam_id)
+        # Through the camera noun, which refuses a rig switched off. The check above asks only
+        # whether the id names an RGB-D rig, so a camera its own config declares off would
+        # otherwise be opened and fused here. An opened camera joins `cameras`, so a later refusal
+        # gives it back too.
+        try:
+            camera = Camera.from_config(app_cfg.camera, rig_id=cam_id)
+        except CameraRefused as refused:
+            raise CellBuildRefused(f"grasping.fusion.cameras names {cam_id!r}: {refused}") from refused
+        camera.open()
+        cameras[cam_id] = camera
         sources[cam_id] = RealSenseVisionPerceptionSource(
-            streamer=provider.rig(cam_id),
+            streamer=camera.handle(),
             # The same backend object, not a second build. Every camera in a fused cell grounds
             # with one set of weights; the cost of an extra camera is an inference pass.
             backend=backend,
@@ -410,7 +408,8 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
                     **overrides: Any) -> "AutonomousGraspService":
     """A complete cell for physical hardware, from config, in one call.
 
-    Opens one RGB-D camera and loads two models onto the GPU. It does not connect the arm: the
+    Opens the primary RGB-D camera, every fused camera and every other calibrated rig a live
+    planner world takes, and loads two models onto the GPU. It does not connect the arm: the
     caller owns that lifecycle, deliberately, because connecting a gripper drives digital I/O and
     the order matters (arm first).
 
@@ -435,105 +434,138 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
     calculator, perception, resolver, multi_camera, calculators = build_real_components(
         robot_cfg, prompt, app_config=app_cfg, data_dir=data_dir)
     rig_id = app_cfg.camera.cameras.primary_rig_id
-    service = AutonomousGraspService.from_robot_config(
-        robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
-        multi_camera_perception=multi_camera,
-        camera_calculators=calculators,
-        # Which camera is the primary, told to the root rather than inferred there. It cannot read
-        # it: the key lives in the camera section and the root is handed a `RobotConfig`. Without it
-        # the primary is expected among the cameras a fused pick waits for, and it delivers through
-        # `perception` instead, so it would be missing on every pick.
-        primary_camera_id=rig_id,
-        **overrides,
-    )
-    _wire_live_planner_world(robot_cfg, service, perception)
+    try:
+        service = AutonomousGraspService.from_robot_config(
+            robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
+            multi_camera_perception=multi_camera,
+            camera_calculators=calculators,
+            # Which camera is the primary, told to the root rather than inferred there. It cannot
+            # read it: the key lives in the camera section and the root is handed a `RobotConfig`.
+            # Without it the primary is expected among the cameras a fused pick waits for, and it
+            # delivers through `perception` instead, so it would be missing on every pick.
+            primary_camera_id=rig_id,
+            # Each camera's calibration is declared on its rig, so the root reads the camera section
+            # of the same tree for the primary's resolver and a fused cell's resolver map.
+            camera=app_cfg.camera,
+            **overrides,
+        )
+        _stamp_wrist_pick_frames(service, perception)
+        _wire_live_planner_world(robot_cfg, service, perception, app_cfg=app_cfg)
+    except BaseException:
+        # A refused build gives the cameras back past the components as well.
+        # `build_real_components` gives back what it opened when it fails itself, but the root, the
+        # stamp and the world wiring all run afterwards with every camera held, and a refusal there
+        # would leave the devices claimed until the objects were collected, so the next build would
+        # meet a busy device. The wiring gives back the cameras it opened before it raises.
+        _give_back(perception, multi_camera)
+        raise
     return service
 
 
-def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception: Any) -> None:
-    """Give the arm something that can say what the cell looks like right now, if it asked for one.
+def _stamp_wrist_pick_frames(service: Any, perception: Any) -> None:
+    """Give a wrist camera's pick source the arm's TCP reader, so frames carry the shutter pose.
+
+    Decided by the resolver the root built, because the resolver is what reads the tool pose: an
+    eye-in-hand resolver composes it into every grasp, and a fixed camera's resolver never asks. A
+    wrist cell whose frames go unstamped places each grasp by where the tool is when the grasp is
+    resolved, not by where it was when the camera saw the part.
+    """
+    from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver
+
+    orchestrator: Any = getattr(getattr(service, "runtime", None), "orchestrator", None)
+    if not isinstance(getattr(orchestrator, "frame_resolver", None), EyeInHandFrameResolver):
+        return
+    perception.stamp_tool_pose_with(orchestrator.arm.get_tcp_pose)
+
+
+def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception: Any, *, app_cfg: Any) -> None:
+    """Give the arm a world built from every camera that can say what the cell looks like, if asked.
 
     Here rather than inside the service, because this is the only place that holds all three
-    pieces: the camera the components builder opened, the transform the calibration produced,
-    and the arm the service built. The layers below cannot reach across those and are not
-    supposed to.
+    pieces: the cameras the components builder opened, the calibration each rig declares, and the
+    arm the service built. The layers below cannot reach across those and are not supposed to.
 
-    A cell that did not ask gets nothing and behaves exactly as before. A cell that asked and
-    cannot have it, which today means a wrist camera, is told at build time rather than at the
-    first motion: an eye-in-hand transform changes between the shutter and the moment the
-    geometry is built, and a world displaced by the arm travel is worse than no world at all.
+    Which rigs feed the world is `CameraWorldPlan`'s answer: every enabled RGB-D rig that declares
+    its calibration, the primary first. The primary and the fused cameras are already open and are
+    taken as they are. Every other planned rig is opened here, held on the orchestrator as
+    `planner_world_cameras`, and given back with the rest on teardown. A cell that did not ask
+    opens nothing more and logs nothing. A camera that cannot be opened or placed refuses the build
+    naming it, after the cameras opened here are given back.
     """
     import logging
 
-    from .live_world import (
-        LiveWorldUnavailable,
-        RigDepthSource,
-        build_live_planner_world,
-        static_camera_to_base_mm,
-    )
+    from src.camera.orchestration.camera import Camera
+    from src.robot.execution.camera_world_wiring import CameraWorldPlan, CameraWorldWiring, OpenedCameras
 
-    arm = getattr(getattr(service, "runtime", None), "orchestrator", None)
-    arm = getattr(arm, "arm", None)
-    setter = getattr(arm, "set_live_planner_world", None)
-    streamer = getattr(perception, "streamer", None)
-    resolver = getattr(getattr(service, "runtime", None), "orchestrator", None)
-    resolver = getattr(resolver, "frame_resolver", None)
-    if not callable(setter) or streamer is None or resolver is None:
-        return
-
-    try:
-        transform = static_camera_to_base_mm(resolver)
-    except LiveWorldUnavailable as exc:
-        logging.getLogger(__name__).warning("no live planner world for this cell: %s", exc)
-        return
-
-    world = build_live_planner_world(
-        robot_cfg,
-        [(getattr(streamer, "rig_id", "camera"), RigDepthSource(streamer), transform)],
-    )
-    if world is None:
-        return
     log = logging.getLogger(__name__)
-    if _answers_with_a_stereo_pair(streamer):
-        # A stereo pair has no depth of its own, so every refresh would answer no frame and every
-        # planned motion would raise after its fresh-frame attempts. Said once, here, the way a wrist
-        # camera is, and the cell plans against its declared world.
-        log.warning(
-            "no live planner world for this cell: camera %r answers with a stereo pair, which carries no "
-            "depth of its own, so a world built on it would stop every planned motion. Wire an RGB-D "
-            "camera, or turn safety.planning_world.perceived off",
-            getattr(streamer, "rig_id", "camera"),
-        )
+    orchestrator: Any = getattr(getattr(service, "runtime", None), "orchestrator", None)
+    arm = getattr(orchestrator, "arm", None)
+    setter = getattr(arm, "set_live_planner_world", None)
+    if not callable(setter):
         return
-    setter(world)
-    planner = getattr(getattr(robot_cfg, "ur", None), "motion_planner", None)
-    if planner != "curobo":
-        # The UR arm reads this world only inside its cuRobo planner, so on any other
-        # planner the world is handed over and never consulted.
-        log.warning(
-            "live planner world wired: %d camera(s), but robot.ur.motion_planner is %r, so no planner "
-            "runs on this cell and nothing reads it", len(world.cameras), planner,
-        )
+    section = app_cfg.camera.cameras
+    plan = CameraWorldPlan.from_config(robot_cfg, section.rigs, primary_rig_id=section.primary_rig_id)
+    if not plan.rig_ids:
+        if plan.asked:
+            log.warning("no live planner world for this cell: %s", plan.render())
         return
-    log.info(
-        "live planner world wired: %d camera(s), refreshed before every plan", len(world.cameras)
-    )
 
-
-def _answers_with_a_stereo_pair(streamer: Any) -> bool:
-    """Whether one grab from this rig is a stereo pair. A grab that fails says nothing.
-
-    A rig that cannot answer while the cell is built is judged at the motion, where the refresh asks
-    it again and raises if it stays silent. Only a rig that did answer, with two images and no depth,
-    is known here never to be able to carry a world.
-    """
-    from src.camera.setup.image_taking.frames import StereoFrame
-
+    fused = getattr(getattr(orchestrator, "multi_camera_perception", None), "sources", None) or {}
+    owners: dict[str, Any] = {}
+    opened: list[Any] = []
+    for rig_id in plan.rig_ids:
+        try:
+            if rig_id == section.primary_rig_id:
+                owners[rig_id] = perception.streamer.camera
+            elif rig_id in fused:
+                owners[rig_id] = fused[rig_id].streamer.camera
+            else:
+                camera = Camera.from_config(app_cfg.camera, rig_id=rig_id)
+                camera.open()
+                opened.append(camera)
+                owners[rig_id] = camera
+        except Exception as exc:
+            _give_back(OpenedCameras(tuple(opened)))
+            raise CellBuildRefused(
+                f"the live planner world cannot open camera {rig_id!r}: {exc}. A cell that enables "
+                "safety.planning_world takes every enabled RGB-D rig that declares its calibration, so free that "
+                "camera, switch its rig off, or turn safety.planning_world.perceived off"
+            ) from exc
+    reader = getattr(arm, "get_tcp_pose", None)
     try:
-        frame = streamer.grab()
-    except Exception:  # noqa: BLE001 (judged at the motion instead, see above)
-        return False
-    return isinstance(frame, StereoFrame)
+        wiring = CameraWorldWiring.from_cameras(
+            robot_cfg, plan=plan, cameras=owners, tool_pose=reader if callable(reader) else UNSET)
+    except Exception as exc:
+        _give_back(OpenedCameras(tuple(opened)))
+        raise CellBuildRefused(f"the live planner world cannot place its cameras: {exc}") from exc
+
+    if wiring.world is None:
+        _give_back(OpenedCameras(tuple(opened)))
+        log.warning("%s", wiring.render())
+        return
+    if opened:
+        orchestrator.planner_world_cameras = OpenedCameras(tuple(opened))
+    setter(wiring.world)
+    if wiring.planner == "curobo":
+        log.info("%s", wiring.render())
+    else:
+        log.warning("%s", wiring.render())
+
+
+def _give_back(*holders: Any) -> None:
+    """Close every holder that can be closed, and never raise.
+
+    This runs while a refusal is on its way out, so a camera that would not close must not replace
+    the exception being reported.
+    """
+    for holder in holders:
+        close = getattr(holder, "close", None)
+        if not callable(close):
+            continue
+        try:
+            close()
+        except Exception:  # noqa: BLE001 (the refusal being reported outranks a camera that would not close)
+            pass
 
 
 def build_rehearsal_cell(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,

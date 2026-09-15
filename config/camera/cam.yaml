@@ -203,10 +203,11 @@ cameras:
     # eye-to-hand cell needs two rigs here, each with its own serial, so each opens the right
     # physical device; `cam.eth2.yaml` with `robot.eth2.yaml` ships that cell as a worked example.
     # Serials are a bench fact of the specific cameras, so a second rig is filled in at bring-up
-    # rather than shipped with a placeholder. The per-camera extrinsics are separate: they live in
-    # `robot.grasping.fusion.cameras`, keyed by the `rig_id` set here, and a key with no matching
-    # RGB-D rig stops the cell at build time. A real cell needs at least one RGB-D rig in this
-    # list, and the first of them is its primary camera.
+    # rather than shipped with a placeholder. Each rig declares its own calibration under
+    # `extrinsics` (see the end of this rig); `robot.grasping.fusion.cameras` only names which of
+    # these rigs are fused, by `rig_id`. A fusion entry that names no rig is refused at load, and a
+    # fused rig that is not RGB-D or declares no calibration stops the cell at build time. A real
+    # cell needs at least one RGB-D rig in this list, and `primary_rig_id` names its primary camera.
     - rig_id: realsense_d435
       enabled: false
       source: rgbd
@@ -261,6 +262,9 @@ cameras:
         warmup_frames: 15
         fps_tolerance: 3.0
 
+      # No `extrinsics` block, so this camera is not calibrated. The calibration command
+      # (python -m src.robot.execution.real_cell.calibrate --rig realsense_d435) writes the artifact
+      # such a block names: `extrinsics: {mounting_mode: eye_to_hand, artifact_path: <that file>}`.
       calibration_paths:
         # `intrinsics_file` derives from this as `<base_dir>/intrinsics.json`, which
         # `export_intrinsics` writes. Nothing reads it back from config: `load_intrinsics` takes

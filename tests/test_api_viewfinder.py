@@ -20,10 +20,9 @@ kind is now DECLARED by the source (`colour_source_kind`) rather than inferred, 
 source is described as unknown, never as a camera.
 
 The second property, and the reason this endpoint refuses rather than tries: **the pick owns the
-camera.** ``backend/src/camera/`` holds no lock (measured: ``grep -ri thread`` there is empty) and a
-pick runs on its own daemon thread, so two ``grab()`` calls on one ``rs.pipeline`` would split the
-frame stream between the viewer and the robot. While a run is active the viewfinder does not touch the
-device at all.
+camera.** A pick runs on its own daemon thread, and while a run is active the viewfinder does not touch
+the device at all. Below that, the rig's owner serialises every grab, a peek included, so a peek outside
+a run takes its turn behind a planner world's depth grab, and two tabs queue on the rig's lock.
 
 Honesty bucket ②: a real console, a real rehearsal cell, real HTTP. No camera has ever been attached
 to this path -- ``RehearsalPerceptionSource`` stands in, and it is deliberately obvious about it.
@@ -283,6 +282,155 @@ class TheTwoPicturesAreNeverBlurredTests(unittest.TestCase):
         high = read_viewfinder(console, jpeg_quality=95)
         assert low.image is not None and high.image is not None
         self.assertLess(len(low.image), len(high.image))
+
+
+class _SlowDevice:
+    """One RGB-D device that counts the grabs inside it at once, and holds the first one until told to let go."""
+
+    def __init__(self) -> None:
+        import threading
+
+        self.inside = 0
+        self.most_inside = 0
+        self.grabs = 0
+        self.first_inside = threading.Event()
+        self.let_go = threading.Event()
+        self._count = threading.Lock()
+
+    def open(self) -> None:
+        return None
+
+    def release(self) -> None:
+        return None
+
+    def get_intrinsics(self) -> np.ndarray:
+        return np.eye(3)
+
+    def grab(self):  # noqa: ANN201 (an RGB-D frame)
+        from src.camera.setup.image_taking.frames import RGBDFrame
+
+        with self._count:
+            self.inside += 1
+            self.grabs += 1
+            self.most_inside = max(self.most_inside, self.inside)
+            first = self.grabs == 1
+        if first:
+            self.first_inside.set()
+            self.let_go.wait(timeout=5.0)
+        with self._count:
+            self.inside -= 1
+        return RGBDFrame(color=np.zeros((4, 6, 3), dtype=np.uint8), depth=np.full((4, 6), 500, dtype=np.uint16))
+
+
+def _owner(device: _SlowDevice):  # noqa: ANN202 (the rig's camera owner)
+    from src.config.schema.camera import RGBDDeviceRigConfig
+    from src.camera.orchestration.camera import Camera
+
+    rig = RGBDDeviceRigConfig(rig_id="viewfinder_5g", enabled=True, source="rgbd", fps=30,
+                              rgbd_backend="realsense", serial_number="5g-viewfinder")
+    return Camera.from_rig(rig, streamer=device)
+
+
+def _camera_source(streamer: object):  # noqa: ANN202 (the pick's perception source)
+    from src.robot.perception import RealSenseVisionPerceptionSource
+
+    return RealSenseVisionPerceptionSource(streamer=streamer, backend=object(), prompt="x")
+
+
+class APeekTakesItsTurnOnTheRigTests(unittest.TestCase):
+    """The console keeps no lock of its own: the rig's owner serialises every grab, a peek included.
+
+    Outside a run a peek can meet a planner world's depth grab on the same rig, because a motion refreshes the
+    world whether or not a pick is running. The owner's lock keeps the two from interleaving on one device, and
+    it is the lock two browser tabs queue on.
+    """
+
+    def test_a_peek_waits_for_a_depth_grab_on_the_same_rig(self) -> None:
+        import threading
+
+        from src.robot.safety.planning.depth_source import RigDepthSource
+
+        device = _SlowDevice()
+        camera = _owner(device)
+        camera.open()
+        self.addCleanup(camera.release)
+        handle = camera.handle()
+        depth = threading.Thread(target=RigDepthSource(handle).grab_surface_depth)
+        depth.start()
+        self.assertTrue(device.first_inside.wait(timeout=5.0))
+        answers: list[ViewfinderFrame] = []
+        peek = threading.Thread(
+            target=lambda: answers.append(read_viewfinder(_Console(_Service(_camera_source(handle))))))
+        peek.start()
+        peek.join(timeout=0.3)
+        waited = peek.is_alive()
+        device.let_go.set()
+        depth.join(timeout=5.0)
+        peek.join(timeout=5.0)
+
+        self.assertTrue(waited, "the peek reached the device while a depth grab held it")
+        self.assertEqual((device.most_inside, device.grabs), (1, 2))
+        self.assertEqual(answers[0].source, "camera")
+
+    def test_two_tabs_queue_on_the_rigs_lock(self) -> None:
+        import threading
+
+        device = _SlowDevice()
+        camera = _owner(device)
+        camera.open()
+        self.addCleanup(camera.release)
+        console = _Console(_Service(_camera_source(camera.handle())))
+        first = threading.Thread(target=read_viewfinder, args=(console,))
+        first.start()
+        self.assertTrue(device.first_inside.wait(timeout=5.0))
+        second = threading.Thread(target=read_viewfinder, args=(console,))
+        second.start()
+        second.join(timeout=0.3)
+        waited = second.is_alive()
+        device.let_go.set()
+        first.join(timeout=5.0)
+        second.join(timeout=5.0)
+
+        self.assertTrue(waited, "a second tab reached the device while the first one held it")
+        self.assertEqual((device.most_inside, device.grabs), (1, 2))
+
+    def test_without_an_owner_the_same_two_grabs_overlap(self) -> None:
+        """The self-failing control: the same two threads on the raw device, with no owner between them."""
+        import threading
+
+        from src.robot.safety.planning.depth_source import RigDepthSource
+
+        device = _SlowDevice()
+        depth = threading.Thread(target=RigDepthSource(device).grab_surface_depth)
+        depth.start()
+        self.assertTrue(device.first_inside.wait(timeout=5.0))
+        peek = threading.Thread(target=_camera_source(device).peek_color)
+        peek.start()
+        peek.join(timeout=5.0)
+        device.let_go.set()
+        depth.join(timeout=5.0)
+
+        self.assertEqual(device.most_inside, 2)
+
+    def test_a_rebuilt_cell_opens_its_rig_again(self) -> None:
+        from src.robot.execution.lifecycle import release_perception
+
+        for build in range(2):
+            with self.subTest(build=build):
+                camera = _owner(_SlowDevice())
+                camera.open()
+                release_perception(_Service(_camera_source(camera.handle())))
+                self.assertFalse(camera.is_open)
+
+    def test_a_rig_not_given_back_refuses_the_next_open(self) -> None:
+        """The control for the row above: without the release, the second build meets the first one's claim."""
+        from src.camera.orchestration.camera import CameraBusy
+
+        first = _owner(_SlowDevice())
+        first.open()
+        self.addCleanup(first.release)
+        with self.assertRaises(CameraBusy):
+            _owner(_SlowDevice()).open()
 
 
 @unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")

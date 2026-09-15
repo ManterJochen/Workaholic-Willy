@@ -11,7 +11,7 @@ from .app import (
     CameraConfig,
     ModelsConfig,
     PerceptionModelsConfig,
-    primary_camera_calibration_conflict,
+    camera_calibration_conflict,
 )
 from .camera import (
     ArucoDictName,
@@ -101,6 +101,6 @@ __all__ = [
     "WebcamPairRigConfig",
     "WlsFilterConfig",
     "WorkspaceLimitsConfig",
-    "primary_camera_calibration_conflict",
+    "camera_calibration_conflict",
     "validate_aruco_dict_name",
 ]

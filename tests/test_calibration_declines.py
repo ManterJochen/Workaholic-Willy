@@ -180,7 +180,7 @@ class TheRoutineDeclinesTests(unittest.TestCase):
 
 _READY = "src.robot.drivers.doctor.require_arm_vendor_ready"
 _CREATE_ARM = "src.robot.drivers.create_arm"
-_FRAME_PROVIDER = "src.camera.orchestration.frame_provider.FrameProvider"
+_CAMERA = "src.camera.orchestration.camera.Camera"
 
 
 def _tree(ip: str) -> SimpleNamespace:
@@ -213,16 +213,16 @@ class TheCliConnectsTheArmThroughRobotTests(unittest.TestCase):
         ``sweep`` is what ``run_auto`` raises. Returns the exit code, what was printed, the arm factory
         and the camera handle, whose release is recorded on ``self.order``.
         """
-        provider = MagicMock(name="FrameProvider")
-        provider.return_value.rig.return_value.release.side_effect = (
+        camera_cls = MagicMock(name="Camera")
+        camera_cls.from_config.return_value.handle.return_value.release.side_effect = (
             lambda: self.order.append("camera released"))
         printed = io.StringIO()
         with patch.object(calibrate, "_load", return_value=_tree(self.IP)), patch(_READY), \
-                patch(_CREATE_ARM, return_value=arm) as create_arm, patch(_FRAME_PROVIDER, provider), \
+                patch(_CREATE_ARM, return_value=arm) as create_arm, patch(_CAMERA, camera_cls), \
                 patch.object(CalibrationRoutine, "run_auto", side_effect=sweep), \
                 redirect_stdout(printed):
             code = calibrate.main(["--rig", "overhead", "--out", self._out.name, *argv])
-        return code, printed.getvalue(), create_arm, provider.return_value.rig.return_value
+        return code, printed.getvalue(), create_arm, camera_cls.from_config.return_value.handle.return_value
 
     def test_a_held_cell_exits_config_and_names_the_holder(self) -> None:
         arm = DummyRobotArm()

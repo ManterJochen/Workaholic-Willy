@@ -262,19 +262,28 @@ rather than be trusted, so do not hand-edit a stale schema string to get past it
 
 ### 4.2 The config keys
 
-Two keys point at calibration artifacts, and different builders read them. Both builders live in
-[`src/robot/execution/autonomous_grasp/builders.py`](../../src/robot/execution/autonomous_grasp/builders.py).
+A camera's calibration is declared on its rig, in the camera section, and one loader opens every
+artifact: `RigCalibration.from_config` in
+[`src/calibration/rig_calibration.py`](../../src/calibration/rig_calibration.py). Which cameras are
+fused is a second key, in the robot section. Both resolver builders live in
+[`src/robot/execution/autonomous_grasp/builders.py`](../../src/robot/execution/autonomous_grasp/builders.py)
+and load through that one loader.
 
 | Key | Shape | Read by |
 |---|---|---|
-| `robot.grasping.fusion.extrinsics_artifact_path` | one path, eye-to-hand only | `build_config_frame_resolver` (singular) |
-| `robot.grasping.fusion.cameras.<id>` | per-camera map: `mounting_mode`, `extrinsics_artifact_path`, `enabled` | `build_config_frame_resolvers` (plural) |
+| `camera.cameras.rigs[<id>].extrinsics` | per rig: `mounting_mode`, `artifact_path`, and on an `eye_in_hand` rig `shutter_motion_tolerance_mm` and `shutter_motion_tolerance_deg`, required there with no default and refused on `eye_to_hand` | `build_config_frame_resolver` (singular, the primary rig) and `build_config_frame_resolvers` (plural) |
+| `robot.grasping.fusion.cameras.<id>` | which rigs are fused, keyed by rig id: `enabled` only | `build_config_frame_resolvers` (plural) |
 
-The primary camera's artifact is the singular key and is never an entry in the `cameras` map. It is
-also the only one that satisfies the CAMERA to BASE refusal when a real cell is built, so a cell can
-load every artifact in the map and still be refused at build because that key is null.
+The mounting picks the resolver: `eye_to_hand` gives a `StaticCameraToBaseResolver` holding the
+`CAMERA -> BASE` artifact, and `eye_in_hand` an `EyeInHandFrameResolver` that composes the
+`CAMERA -> TOOL` artifact with the tool pose. The robot section carries no calibration:
+`robot.grasping.fusion.extrinsics_artifact_path`, and a `fusion.cameras` entry's `mounting_mode` and
+`extrinsics_artifact_path`, are refused at load with a sentence naming the rig key, and so is a
+`fusion.cameras` id that names no rig (`camera_calibration_conflict`).
 
-Both builders gate on `robot.grasping.fusion.enabled`. With it false they return `None` and `{}`
+The two builders gate differently. The singular one does not wait for `robot.grasping.fusion.enabled`:
+it returns `None` only when no camera section was handed in or the primary rig declares no
+`extrinsics`. The plural one gates on `robot.grasping.fusion.enabled`, and with it false returns `{}`
 before reading anything, and without a warning. Silence in a YAML file means the schema default is in
 force, not that the feature is absent, so check any key you rely on:
 
@@ -294,28 +303,34 @@ answer.
 [`scripts/examples/api/01_first_cell/one_pick_end_to_end.py`](../../scripts/examples/api/01_first_cell/one_pick_end_to_end.py) all reach through `Cell`; plus
 `src/willy_sim/run_multiview_pick.py` and `run_eih_pick.py`, and `datagen/rl/occupancy.py`.
 
-Inside that path, `from_robot_config` builds the singular resolver from
-`fusion.extrinsics_artifact_path` when the caller passed none, then fails closed on a real vendor
-that still has no resolver (section 4.4). It then applies the orchestrator overlays, which reach the
-plural per-camera builder. That one takes two flags, not one: `fusion.geometry.enabled` to reach the
-call and `fusion.enabled` for the call to return anything.
+Inside that path, `from_robot_config` builds the singular resolver from the primary rig's
+`extrinsics` when the caller passed none, reading the camera section it is handed as `camera=`
+(`build_real_cell` passes it), then fails closed on a real vendor that still has no resolver (section
+4.4). It then applies the orchestrator overlays, which reach the plural per-camera builder. That one
+takes two flags, not one: `fusion.geometry.enabled` to reach the call and `fusion.enabled` for the
+call to return anything.
 
-Two things to carry away. No shipped YAML declares an `eye_in_hand` camera in `fusion.cameras`, so
-that schema branch has no camera exercising it. And the default pick is **open-loop** whatever the
-calibration says: the decision gate, closed-loop refinement, verification, recovery, fusion with its
-commit gate, the learned ranker and the learned success model all ship `enabled: false` in
+Two things to carry away. No shipped camera section declares a rig's `extrinsics`, of either
+mounting, so a freshly configured real cell is refused at build until one is declared. And the
+default pick is **open-loop** whatever the calibration says: the decision gate, closed-loop
+refinement, verification, recovery, fusion with its commit gate, the learned ranker and the learned
+success model all ship `enabled: false` in
 [`config/robot/robot.yaml`](../../config/robot/robot.yaml). See [05](05-pick-loop.md).
 
 ### 4.4 Where it fails closed
 
 | Refusal | Meaning |
 |---|---|
-| `ValueError: no CAMERA->BASE frame resolver for a '<vendor>' cell` | `from_robot_config` on a real cell with nothing wired. Set the artifact path, or pass `frame_resolver=`. |
-| `RuntimeError: grasping.fusion.cameras['x'] (<mode>) failed to load ...` | an enabled camera's artifact is missing, stale or invalid. An incomplete resolver map must not run silently as a smaller rig than was asked for. |
+| `ValueError: no CAMERA->BASE frame resolver for a '<vendor>' cell` | `from_robot_config` on a real cell with nothing wired. Declare the primary camera's calibration on its rig, `camera.cameras.rigs[<primary rig id>].extrinsics`, and hand the root the camera section, or pass `frame_resolver=`. |
+| `RuntimeError: camera.cameras.rigs['x'].extrinsics names <path> (<mode>), which does not load: ...` | a declared artifact is missing, stale or invalid, on the primary rig or on an enabled fused camera. The cell is refused at construction rather than run with a camera it cannot place. |
+| `RuntimeError: grasping.fusion.cameras names 'x' and camera.cameras.rigs['x'].extrinsics is not declared ...` | an enabled fused camera whose rig declares no calibration. An incomplete resolver map must not run silently as a smaller rig than was asked for, and `build_real_cell` refuses the same camera earlier, before a device is opened. |
 | `PickOutcome.CAMERA_FRAME_REJECTED` at pick time | a valid candidate existed but was in the camera frame while `require_base_frame_grasp` was on. The calibration is not reaching the pick path. See [05](05-pick-loop.md). |
 
-And the one that is **not** fail-closed: `fusion.enabled: false` with a perfectly good artifact
-configured. Nothing loads, nothing warns, and the pick runs single-view.
+And the one that is **not** fail-closed: `fusion.enabled: false` with second cameras named in
+`fusion.cameras` and calibrated on their rigs. The primary's resolver still loads and the others'
+never do, so the pick runs single-view. Nothing refuses: with `fusion.geometry.enabled` on, the loop
+warns on every pick that each other camera's view was dropped, and with it off the map is never asked
+for.
 
 ---
 
@@ -332,7 +347,7 @@ configured. Nothing loads, nothing warns, and the pick runs single-view.
 | A result rotated by a right angle or by 180 degrees | check what it is being compared against before touching the solve. A wrong reference is a harder bug than a wrong solver. |
 | Eye-to-hand expected, a `CAMERA -> TOOL` result arrived | the settings object has no `mode` attribute, so `CalibrationRoutine` fell back to eye-in-hand. Always pass `calibration_mode=` explicitly. |
 | Grasps went bad after a **gripper change**, camera untouched | eye-in-hand only, and it bites hard because nothing about it looks like a camera problem. The TCP definition moved, so `CAMERA` to `TOOL` is stale. |
-| Fusion configured, artifact present, nothing happens, no error | `fusion.enabled` is false. Section 4.2. |
+| Second cameras named in `fusion.cameras` and calibrated on their rigs, the pick stays single-view, no refusal | `fusion.enabled` is false. Section 4.2. |
 
 **One physical spec is written in more than one place.** `marker_length_mm` and `aruco_dict_name`
 exist under `camera.hand_eye.eye_to_hand`, under `camera.hand_eye.eye_in_hand`, and again under

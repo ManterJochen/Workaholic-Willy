@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.cell import Console, RunLocked, console
 from api.constants import API_LOG_DIR, ROUTER_CONFIG_LOG_FILE
-from api.routers.preflight import to_wire_for
+from api.routers.preflight import to_wire_for_console
 from api.schemas import ConfigPatchOut, ConfigValueOut, LayerOut, WritableOut
 from src.utility.log_cfg import create_logger
 
@@ -185,5 +185,5 @@ def patch_config(
         files=[str(path) for path in result.files],
         # Re-rendered because one measurement routinely clears more than one checklist row, and an
         # operator working down that list needs to see it move rather than remember to refresh.
-        preflight=to_wire_for(cell.robot(), profile=cell.profile),
+        preflight=to_wire_for_console(cell),
     )

@@ -70,6 +70,15 @@ cameras:
       calibration_paths:
         base_dir: calibration/cam_left
 
+      # This camera's CAMERA to BASE, measured against the robot by the eye-to-hand calibration
+      # (`python -m src.robot.execution.real_cell.calibrate --rig cam_left`, which prints this block).
+      # A fixed camera: the artifact is one transform, and the resolver built from it never consults
+      # the arm. The file is loaded when the cell is built, and one that does not load refuses the
+      # build naming this key.
+      extrinsics:
+        mounting_mode: eye_to_hand
+        artifact_path: calibration/real/eth_cam_left.json
+
     # --- the second view ---
     - rig_id: cam_right
       enabled: true
@@ -85,14 +94,17 @@ cameras:
           hole_filling: false
       calibration_paths:
         base_dir: calibration/cam_right
+      extrinsics:
+        mounting_mode: eye_to_hand
+        artifact_path: calibration/real/eth_cam_right.json
 
 # ============================================================================
 # Where the two cameras stand is not configured here.
 #
 # There are no mounting angles or standoff distances in this file, because the pick path
 # never reads a mounting pose: it reads the CAMERA to BASE transform the eye-to-hand
-# calibration measured, one artifact per camera, named in
-# `robot.grasping.fusion` over in robot.eth2.yaml. Wherever the cameras end up bolted, the
+# calibration measured, one artifact per camera, declared on each rig above under
+# `extrinsics`. Wherever the cameras end up bolted, the
 # calibration is what tells the cell.
 #
 # What the placement has to achieve is a geometric argument rather than a configured one.

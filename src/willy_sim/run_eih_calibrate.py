@@ -219,9 +219,9 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
         encoding="utf-8",
     )
     print(f"\n  saved {cal_path} and {result.dataset_path}", flush=True)
-    # Also persist the typed, camera-id-keyed CAMERA->TOOL artifact so this wrist camera drops straight
-    # into the central grasping.fusion.cameras map (mounting_mode: eye_in_hand). The custom dict above is
-    # kept for its richer validation metadata; this one is what the resolver-map builder loads.
+    # Also persist the typed, camera-id-keyed CAMERA->TOOL artifact, the file a wrist rig declares as its
+    # calibration (camera.cameras.rigs[<id>].extrinsics, mounting_mode: eye_in_hand). The custom dict above
+    # is kept for its richer validation metadata; this one is what the one rig loader, RigCalibration, reads.
     try:
         from src.calibration.serialization import save_cam_to_tool
 
@@ -231,10 +231,11 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
         print(f"  saved typed {typed_path} (rig_id={camera_id})", flush=True)
     except Exception as exc:  # noqa: BLE001 (typed save is a bonus; a frame mismatch must not fail the run)
         # The run reads as successful and the rich JSON exists, but the keyed artifact, the one the
-        # resolver-map builder loads, does not, so this camera never reaches grasping.fusion.cameras.
+        # rig loader reads, does not, so a rig that declares it as its calibration is refused at build.
         _LOG.warning(
-            "typed cam_to_tool save skipped (%s): eih_%s.json was not written, so this camera will "
-            "not appear in the resolver map; %s still holds the transform", exc, camera_id, cal_path,
+            "typed cam_to_tool save skipped (%s): eih_%s.json was not written, so a rig that "
+            "declares it as its calibration is refused at build; %s still holds the transform",
+            exc, camera_id, cal_path,
         )
         print(f"  (typed cam_to_tool save skipped: {exc})", flush=True)
     print("========== END EIH CALIBRATION ==========", flush=True)

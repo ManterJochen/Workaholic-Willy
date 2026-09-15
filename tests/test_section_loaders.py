@@ -332,31 +332,30 @@ class ASectionNamesWhatItRefusesTests(_ScratchTree):
 
 
 class TheCalibrationRuleSpansTwoSectionsTests(_ScratchTree):
-    """The one rule on `AppConfig` reads the camera section and the robot section together: the primary
-    camera may be calibrated in two places, and then both must name one artifact. Each section loader
-    sees only its half, so the rule is also a function every door that combines two sections calls."""
+    """The one rule on `AppConfig` reads the camera section and the robot section together: every camera
+    `robot.grasping.fusion.cameras` names must be a rig in `camera.cameras.rigs`, because its calibration
+    is declared on that rig. Each section loader sees only its half, so the rule is also a function every
+    door that combines two sections calls."""
 
     def test_the_whole_tree_refuses_the_sections_load_and_the_function_names_the_conflict(self) -> None:
-        from src.config.schema import primary_camera_calibration_conflict
+        from src.config.schema import camera_calibration_conflict
 
         camera = load_camera_section(self.root, profile=None)
-        primary = camera.cameras.primary_rig_id
-        self.assertIsNone(
-            primary_camera_calibration_conflict(camera, load_robot_section(self.root, profile=None)))
+        self.assertIsNone(camera_calibration_conflict(camera, load_robot_section(self.root, profile=None)))
+        ghost = "no_such_rig"
+        self.assertNotIn(ghost, {rig.rig_id for rig in camera.cameras.rigs})
         path = self.root / "robot" / "robot.yaml"
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         fusion = data["robot"].setdefault("grasping", {}).setdefault("fusion", {})
-        fusion["extrinsics_artifact_path"] = "calibration/primary_a.json"
-        fusion["cameras"] = {primary: {"extrinsics_artifact_path": "calibration/primary_b.json"}}
+        fusion["cameras"] = {ghost: {"enabled": True}}
         path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
         with self.assertRaises(ConfigError):
             load_config(self.root, profile=None)
         robot = load_robot_section(self.root, profile=None)
         self._assert_loads(load_camera_section)
-        conflict = primary_camera_calibration_conflict(camera, robot)
+        conflict = camera_calibration_conflict(camera, robot)
         self.assertIsNotNone(conflict)
-        self.assertIn(primary, conflict)
-        self.assertIn("calibration/primary_b.json", conflict)
+        self.assertIn(ghost, conflict)
 
 
 class TheRobotSectionSeesTheAdaptationOverlayTests(_ScratchTree):
@@ -396,6 +395,26 @@ class TheRobotSectionSeesTheAdaptationOverlayTests(_ScratchTree):
         whole = load_config(self.root, profile=None).robot
         self.assertIsNotNone(whole, "the premise: the whole tree builds a robot from the overlay alone")
         self.assertEqual(load_robot_section(self.root, profile=None), whole)
+
+
+class TheCameraSectionCarriesARigCalibrationTests(_ScratchTree):
+    """`camera.cameras.rigs[<id>].extrinsics` is a camera section key, so the camera section loader alone reads it."""
+
+    def test_the_camera_section_loader_carries_the_key(self) -> None:
+        cam = self.root / "camera" / "cam.yaml"
+        text = cam.read_text(encoding="utf-8").replace("\r\n", "\n")
+        # The rig's own list item, so the block lands among that rig's keys at their indentation,
+        # whatever comments sit between its other keys.
+        marker = "    - rig_id: realsense_d435\n"
+        self.assertEqual(text.count(marker), 1)
+        block = ("      extrinsics:\n        mounting_mode: eye_to_hand\n"
+                 "        artifact_path: calibration/eth_realsense_d435.json\n")
+        cam.write_text(text.replace(marker, marker + block), encoding="utf-8")
+        camera = load_camera_section(self.root, profile=None)
+        rig = next(r for r in camera.cameras.rigs if r.rig_id == "realsense_d435")
+        assert rig.extrinsics is not None
+        self.assertEqual((rig.extrinsics.mounting_mode, rig.extrinsics.artifact_path),
+                         ("eye_to_hand", "calibration/eth_realsense_d435.json"))
 
 
 if __name__ == "__main__":

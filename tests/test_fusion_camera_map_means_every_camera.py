@@ -16,11 +16,10 @@ So the map is the whole inventory now, and the two things that must NOT follow f
 here: the primary stays out of the list a pick waits for, and it stays out of the extra-camera rig,
 because it is already open.
 
-⚠ The primary's calibration can now be written twice, once in the map and once in the
-`extrinsics_artifact_path` key beside it. That key stays, because it is the one
-`from_robot_config` names when it refuses a cell with no CAMERA to BASE transform. Two artifacts for
-one camera means the cell is calibrated differently depending on which loader ran, so the root
-refuses it.
+Listing the primary cannot state its calibration twice. Every camera's calibration is declared once,
+on its rig, `camera.cameras.rigs[<id>].extrinsics`, and a map entry carries `enabled` only, so an
+entry that writes an artifact path is refused at load. What the root refuses across the two sections
+is an id in the map that names no rig, because that camera's calibration would have nowhere to be.
 """
 
 from __future__ import annotations
@@ -36,64 +35,59 @@ from src.robot.execution.autonomous_grasp.builders import apply_orchestrator_ove
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator
 
 
-def _tree(*, primary: str, cameras: dict[str, str], scalar: str | None) -> dict:
+def _tree(*, primary: str, cameras: list[str], calibrated: bool = True) -> dict:
     """The SHIPPED tree with the two halves of the question replaced.
 
     Built from the real config rather than by hand, because a hand-built AppConfig needs two dozen
     required fields that have nothing to do with cameras, and because starting from what ships means
     these tests fail if the shipped tree ever stops satisfying the rule they describe.
+
+    The primary and every mapped camera become RGB-D rigs. With ``calibrated`` each rig declares its
+    calibration where it lives, ``camera.cameras.rigs[<id>].extrinsics``; the map entries carry
+    ``enabled`` only.
     """
     from src.config import load_config
 
     tree = load_config().model_dump(mode="json")
-    tree["camera"]["cameras"]["primary_rig_id"] = primary
+    cameras_block = tree["camera"]["cameras"]
+    template = next(rig for rig in cameras_block["rigs"] if rig["source"] == "rgbd")
+    for cam_id in dict.fromkeys([primary, *cameras]):
+        extrinsics = {"mounting_mode": "eye_to_hand", "artifact_path": f"cal/{cam_id}.json"} if calibrated else None
+        cameras_block["rigs"].append({**template, "rig_id": cam_id, "enabled": True,
+                                      "serial_number": f"serial_{cam_id}", "extrinsics": extrinsics})
+    cameras_block["primary_rig_id"] = primary
     fusion = tree["robot"]["grasping"]["fusion"]
     fusion["enabled"] = True
-    fusion["extrinsics_artifact_path"] = scalar
-    fusion["cameras"] = {
-        cam_id: {"enabled": True, "mounting_mode": "eye_to_hand",
-                 "extrinsics_artifact_path": path}
-        for cam_id, path in cameras.items()
-    }
+    fusion["cameras"] = {cam_id: {"enabled": True} for cam_id in cameras}
     return tree
 
 
 class TheCalibrationIsStatedOnceTests(unittest.TestCase):
-    def test_the_primary_may_be_listed_when_both_names_agree(self) -> None:
-        AppConfig.model_validate(_tree(
-            primary="webcam_main",
-            cameras={"webcam_main": "cal/left.json", "cam_right": "cal/right.json"},
-            scalar="cal/left.json",
-        ))
+    def test_the_primary_may_be_listed_beside_another_camera(self) -> None:
+        AppConfig.model_validate(_tree(primary="cam_left", cameras=["cam_left", "cam_right"]))
 
-    def test_two_artifacts_for_the_primary_are_REFUSED_at_load(self) -> None:
+    def test_a_second_artifact_for_a_listed_camera_is_REFUSED_at_load(self) -> None:
         """The failure this catches is not a typo, it is a cell that is calibrated differently on two
-        code paths and gives no sign of it."""
+        code paths and gives no sign of it. The map entry has no key that could hold a second
+        artifact."""
+        tree = _tree(primary="cam_left", cameras=["cam_left", "cam_right"])
+        tree["robot"]["grasping"]["fusion"]["cameras"]["cam_left"]["extrinsics_artifact_path"] = "cal/OTHER.json"
+
         with self.assertRaises(ValidationError) as caught:
-            AppConfig.model_validate(_tree(
-                primary="webcam_main",
-                cameras={"webcam_main": "cal/OTHER.json", "cam_right": "cal/right.json"},
-                scalar="cal/left.json",
-            ))
+            AppConfig.model_validate(tree)
 
         message = str(caught.exception)
-        self.assertIn("webcam_main", message)
-        self.assertIn("cal/OTHER.json", message)
-        self.assertIn("cal/left.json", message)
+        self.assertIn("cam_left", message)
+        self.assertIn("extrinsics_artifact_path", message)
 
     def test_a_map_without_the_primary_is_still_fine(self) -> None:
         """Nothing forces a cell to list its primary; a single-camera cell has no map at all."""
-        AppConfig.model_validate(_tree(
-            primary="webcam_main", cameras={"cam_right": "cal/right.json"}, scalar="cal/left.json",
-        ))
+        AppConfig.model_validate(_tree(primary="cam_left", cameras=["cam_right"]))
 
-    def test_a_cell_with_no_scalar_is_not_second_guessed(self) -> None:
-        """An eye-in-hand cell leaves the scalar unset and passes a resolver in code."""
-        AppConfig.model_validate(_tree(
-            primary="webcam_main",
-            cameras={"webcam_main": "cal/left.json", "cam_right": "cal/right.json"},
-            scalar=None,
-        ))
+    def test_a_listed_rig_that_declares_no_calibration_is_not_second_guessed_at_load(self) -> None:
+        """A profile that is not ready to run is not a malformed file. Whether each rig declares its
+        calibration is decided when the cell is built and in the preflight, not at load."""
+        AppConfig.model_validate(_tree(primary="cam_left", cameras=["cam_left", "cam_right"], calibrated=False))
 
 
 class ThePrimaryIsNotWAITED_ForTests(unittest.TestCase):
@@ -110,7 +104,7 @@ class ThePrimaryIsNotWAITED_ForTests(unittest.TestCase):
             "fusion": {
                 "enabled": True,
                 "geometry": {"enabled": True},
-                "cameras": {c: {"extrinsics_artifact_path": f"{c}.json"} for c in cameras},
+                "cameras": {c: {"enabled": True} for c in cameras},
             },
         })
         # A real orchestrator, because the overlay writes a dozen of its attributes on the way to
@@ -121,7 +115,7 @@ class ThePrimaryIsNotWAITED_ForTests(unittest.TestCase):
             perception=SimpleNamespace(),  # type: ignore[arg-type]
         )
         runtime = SimpleNamespace(orchestrator=orchestrator)
-        # The resolver builder is stubbed because it LOADS each camera's calibration artifact and
+        # The resolver builder is stubbed because it loads each camera's calibration from its rig and
         # refuses fail-closed when one is missing, which is right and is a different test. What is
         # under test here is which ids a pick is told to expect, and that is derived from the config
         # map rather than from what loaded: deriving it from what loaded is the defect

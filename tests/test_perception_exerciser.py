@@ -318,5 +318,43 @@ class TheRenderedBlockTests(unittest.TestCase):
         self.assertNotIn("no real depth at all", out.getvalue())
 
 
+class TheExerciserOpensThroughTheNounTests(unittest.TestCase):
+    """The camera noun refuses a disabled rig everywhere; only this bench tool lifts that, and it says
+    so once the device is open. The note `_find_rgbd_rig` prints before the open stays the control
+    (`test_a_disabled_rig_is_opened_with_a_note_rather_than_refused`)."""
+
+    def test_the_exerciser_says_it_opened_a_disabled_rig(self) -> None:
+        from src.robot.perception import __main__ as exerciser
+
+        rig = SimpleNamespace(rig_id="oblique_L", source="rgbd", enabled=False, rgbd_backend="realsense")
+        cfg = SimpleNamespace(
+            camera=SimpleNamespace(cameras=SimpleNamespace(primary_rig_id="oblique_L", rigs=[rig])),
+            models=SimpleNamespace())
+        owner = mock.MagicMock(name="Camera")
+        owner.rig_id = "oblique_L"
+        owner.enabled = False
+        owner.render.return_value = "camera 'oblique_L'"
+        camera_cls = mock.MagicMock(name="Camera class")
+        camera_cls.from_config.return_value = owner
+        source = mock.MagicMock(name="source")
+        source.acquire.return_value = SimpleNamespace(
+            intrinsics=np.eye(3), depth_map=np.zeros((2, 2)), segmentations=[])
+        source.intrinsics_source = "device"
+        out = io.StringIO()
+        with mock.patch("src.config.load_config", return_value=cfg), \
+                mock.patch("src.camera.orchestration.camera.Camera", camera_cls), \
+                mock.patch("src.models.factory.build_object_detector"), \
+                mock.patch("src.models.factory.build_segmenter"), \
+                mock.patch("src.robot.perception.RealSenseVisionPerceptionSource",
+                           return_value=source), \
+                redirect_stdout(out):
+            code = exerciser.main([])
+        self.assertEqual(code, 0)
+        camera_cls.from_config.assert_called_once_with(cfg.camera, rig_id="oblique_L", open_disabled=True)
+        owner.open.assert_called_once_with()
+        self.assertIn("opened rig 'oblique_L' although it has `enabled: false`", out.getvalue())
+        owner.handle.return_value.release.assert_called_once_with()
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

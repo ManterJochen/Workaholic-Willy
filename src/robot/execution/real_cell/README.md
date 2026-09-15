@@ -122,13 +122,14 @@ finished: the per-camera map, `build_config_frame_resolvers` turning it into res
 loop reading that map, the versioned extrinsics artifact keyed by `rig_id`, and `CalibrationRoutine`
 itself. The preflight can only check for an artifact and refuse without one. This command makes one.
 
-Run it once per rig. Each run holds exactly that camera through `FrameProvider.rig(rig_id)` and
-gives it back, so it does not fight the console for devices it does not need. `--check` refuses a rig
+Run it once per rig. Each run holds exactly that camera through its `Camera` owner and gives it
+back, so it does not fight the console for devices it does not need, and a rig the console holds is
+refused naming the holder. `--check` refuses a rig
 that is `enabled: false` and names the key: measured 2026-09-10 it called such a rig usable, and the
 next command in the sequence moves the arm to 22 poses in front of a camera the cell will not open.
-The artifact is keyed
-by `rig_id`, which is also its key in `fusion.cameras`, and that alignment is what lets
-`build_config_frame_resolvers` find the file.
+The artifact is keyed by `rig_id`, the id of the rig that declares it
+(`camera.cameras.rigs[<rig_id>].extrinsics`) and of its entry in `fusion.cameras` when the camera is
+fused, so the file, the rig and the fusion map name one camera.
 
 It builds the arm through `Robot.from_config(robot_config, gripper=None)`. The arm-vendor readiness
 gate runs first, and no gripper is built or connected: a Robotiq does not run its activation stroke
@@ -140,9 +141,17 @@ controller the sweep is refused and names the holder. On the way out the arm com
 is given back before the camera is. Every move declines the camera world with a reason naming the
 mounting, because the sweep produces the transform a camera world needs.
 
-Writing the artifact is half the job. Until the camera is listed in `grasping.fusion.cameras`,
-geometry fusion stands down to a single view and says so only in telemetry. The runner prints the
-exact YAML to paste.
+Writing the artifact is half the job. Until its rig declares it, in
+`camera.cameras.rigs[<rig_id>].extrinsics`, the cell has no CAMERA->BASE for that camera: a real
+cell whose primary rig declares none is refused at build, and a second camera also needs its entry
+in `grasping.fusion.cameras` before geometry fusion uses it. The runner prints the exact rig block to
+paste, with a wrist camera's two shutter motion tolerances as comments to measure and fill in; the
+loader refuses a wrist block until they are written.
+
+A cell that enables `safety.planning_world` builds that world from every enabled RGB-D rig that
+declares its calibration, the primary first, and opens the ones the pick does not already hold. One
+of them that cannot answer stops every planned motion, so calibrating a second camera on such a cell
+is also a decision about what stops it.
 
 | Flag | Why |
 | --- | --- |
@@ -168,5 +177,5 @@ exercised in simulation only, and the marker source has never seen a physical RG
 - [autonomous_grasp](../autonomous_grasp/README.md), where `build_real_cell` lives
 - [drivers/ur](../../drivers/ur/README.md), the UR driver and its bring-up checklist
 - [robot/perception](../../perception/README.md), the live-camera source this runner consumes
-- [camera](../../../camera/README.md), `FrameProvider` and the `rig(rig_id)` handle both runners take
+- [camera](../../../camera/README.md), `Camera`, the one owner per rig, and the handle both runners take from it
 - `scripts/examples/api/01_first_cell/one_pick_end_to_end.py`, the same composition driven from Python

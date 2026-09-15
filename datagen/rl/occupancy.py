@@ -57,9 +57,10 @@ def build_service(robot_cfg: Any, rig: Any) -> Any:
 
     ``from_robot_config`` is deliberately the same entry point a real cell uses, so the features
     come from the actual stack rather than from a reimplementation of it. The two orchestrator
-    fields set afterwards are the documented seam for a rig that is not built from
-    ``fusion.cameras``: datagen's extrinsics live per scene, and the wrist camera moves with the
-    posed arm, so they are not a cell constant and cannot be a calibration artifact.
+    fields set afterwards are the documented seam for cameras whose calibration is not declared
+    on a rig, ``camera.cameras.rigs[<id>].extrinsics``: datagen's extrinsics live per scene, and
+    the wrist camera moves with the posed arm, so they are not a cell constant and cannot be a
+    calibration artifact.
     """
     from src.robot.execution.autonomous_grasp import AutonomousGraspService
     from src.robot.execution.autonomous_grasp.config import GraspMode

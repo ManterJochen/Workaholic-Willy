@@ -50,8 +50,10 @@ from typing import Any, Iterator
 import numpy as np
 from pydantic import BaseModel
 
+from src.config.schema import CameraConfig
 from src.config.schema.robot import RobotConfig
 from src.config.schema.robot.grasping_schema import RobotGraspingConfig
+from src.contracts import UNSET, Maybe
 from src.robot.execution.autonomous_grasp import AutonomousGraspService
 from src.robot.grasping.types.feedback import GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
@@ -110,11 +112,28 @@ def _prerequisites(flag: str, tmpdir: Path) -> dict[str, Any]:
         # wired (builders.py:1078) and would still look inert here. Supply a real artifact, the
         # same way `fusion.enabled` supplies real extrinsics, so the switch has something to load.
         return {"deep_ranker": {"artifact_dir": _write_ranker_artifact(tmpdir)}}
-    if flag == "fusion.enabled":
-        # The fusion substrate enforces a strict frame contract, so the overlay refuses
-        # to wire without a CAMERA->BASE resolver. Supply a real persisted artifact.
-        return {"fusion": {"extrinsics_artifact_path": _write_identity_extrinsics(tmpdir)}}
     return {}
+
+
+def _camera_prerequisite(flag: str, tmpdir: Path) -> Maybe[CameraConfig]:
+    """The camera section a flag needs before it can act, or UNSET when it needs none.
+
+    The fusion substrate enforces a strict frame contract, so the overlay refuses to wire
+    without a CAMERA->BASE resolver. That resolver is built from the primary rig's declared
+    calibration, ``camera.cameras.rigs[<id>].extrinsics``, which lives in the camera section
+    rather than under ``grasping``. Supply a real persisted artifact there.
+    """
+
+    if flag != "fusion.enabled":
+        return UNSET
+    from src.config import load_config
+
+    data = load_config().camera.model_dump(mode="json")
+    rig = next(r for r in data["cameras"]["rigs"] if r["source"] == "rgbd")
+    rig.update({"enabled": True, "extrinsics": {
+        "mounting_mode": "eye_to_hand", "artifact_path": _write_identity_extrinsics(tmpdir)}})
+    data["cameras"]["primary_rig_id"] = rig["rig_id"]
+    return CameraConfig.model_validate(data)
 
 
 def _write_ranker_artifact(directory: Path) -> str:
@@ -329,7 +348,7 @@ def _nest(dotted: str, value: object) -> dict[str, Any]:
     return root
 
 
-def _build(grasping: dict[str, Any]) -> AutonomousGraspService:
+def _build(grasping: dict[str, Any], camera: Maybe[CameraConfig] = UNSET) -> AutonomousGraspService:
     config = RobotConfig(
         vendor="dummy",
         gripper={"vendor": "none"},
@@ -339,6 +358,7 @@ def _build(grasping: dict[str, Any]) -> AutonomousGraspService:
         config,
         calculator=_ScriptedCalculator(),  # type: ignore[arg-type]
         perception=_FakePerception(),
+        camera=camera,
     )
 
 
@@ -388,11 +408,12 @@ class GraspingFlagsReachTheRuntimeTests(unittest.TestCase):
             for flag in _iter_flags():
                 with self.subTest(flag=flag):
                     prereq = _prerequisites(flag, tmpdir)
+                    camera = _camera_prerequisite(flag, tmpdir)
                     if flag in unwired:
                         # Declared unwired -> the schema must refuse it, and the refusal
                         # must SAY SO. A silent acceptance here is the failure mode.
                         with self.assertRaises(Exception) as ctx:
-                            _build(_merge(prereq, _nest(flag, True)))
+                            _build(_merge(prereq, _nest(flag, True)), camera)
                         # grasping_schema.py:2075 now says "... never reaches the pick path.";
                         # the migration lower-cased the shout, the refusal is unchanged.
                         self.assertIn(
@@ -402,8 +423,8 @@ class GraspingFlagsReachTheRuntimeTests(unittest.TestCase):
                             "not explain itself to the operator who hit it.",
                         )
                         continue
-                    before = _observe(_build(prereq))
-                    after = _observe(_build(_merge(prereq, _nest(flag, True))))
+                    before = _observe(_build(prereq, camera))
+                    after = _observe(_build(_merge(prereq, _nest(flag, True)), camera))
                     changed = sorted(
                         key
                         for key in set(before) | set(after)

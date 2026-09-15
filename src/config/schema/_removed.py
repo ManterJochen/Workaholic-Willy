@@ -3,7 +3,8 @@
 A tree that still writes one of these keys is refused at load by ``extra='forbid'``, which names
 the file, the line and the layer (``loader._describe_validation_error``). This table adds the
 sentence that sends the reader to what replaced the key. Only keys removed on purpose belong here;
-a typo gets the nearest-key suggestion instead.
+a typo gets the nearest-key suggestion instead. A ``*`` segment in a key stands for one map key,
+such as a camera id.
 """
 
 from __future__ import annotations
@@ -44,5 +45,18 @@ REMOVED_KEYS: Final[dict[str, str]] = {
         "the hand in the self filter is its sphere map and a carried part a capsule sized from "
         "planning_world.payload, padded by perceived.margin_mm. Set the padding there and delete "
         "this key."
+    ),
+    "robot.grasping.fusion.extrinsics_artifact_path": (
+        "a camera's calibration is declared on its rig, camera.cameras.rigs[<id>].extrinsics, with "
+        "its mounting_mode and artifact_path, and the primary's resolver is built from there. Move "
+        "the path there and delete this key."
+    ),
+    "robot.grasping.fusion.cameras.*.mounting_mode": (
+        "the mounting is declared on the rig, camera.cameras.rigs[<id>].extrinsics.mounting_mode. "
+        "Move it there; an entry in fusion.cameras keeps enabled only."
+    ),
+    "robot.grasping.fusion.cameras.*.extrinsics_artifact_path": (
+        "the artifact is declared on the rig, camera.cameras.rigs[<id>].extrinsics.artifact_path. "
+        "Move it there; an entry in fusion.cameras keeps enabled only."
     ),
 }

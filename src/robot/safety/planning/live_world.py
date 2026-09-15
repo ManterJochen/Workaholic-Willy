@@ -109,6 +109,10 @@ class DepthSnapshot:
     intrinsics: np.ndarray
     #: Shutter time on the same clock as `time.time`, or `None` when the producer did not stamp it.
     timestamp: float | None = None
+    #: Where the tool stood when the shutter opened: the TCP in BASE, 4x4, millimetres. Only a
+    #: camera on the wrist needs it, and `None` means the producer did not stamp it. A wrist view
+    #: refuses such a frame rather than place it by where the tool is now.
+    tool_to_base_mm: np.ndarray | None = None
 
 
 class SurfaceDepthSource(Protocol):
@@ -132,14 +136,28 @@ class CameraView:
     A cell with two fixed cameras registers one world, not two. The second camera is there because
     the first cannot see behind the arm or into the far side of a tote, so the points are combined
     before anything is clustered and a part both cameras see half of comes out as one obstacle.
+
+    A view is either fixed or on the wrist, and says which by the one transform it carries. A fixed
+    camera is placed by its CAMERA to BASE. A camera on the wrist is placed frame by frame, by its
+    CAMERA to TOOL composed with the tool pose its frame was stamped with, because it moves with the
+    arm between one frame and the next.
     """
 
     #: How this camera is named in a refusal an operator has to act on.
     name: str
     #: Where its depth comes from.
     depth_source: "SurfaceDepthSource"
-    #: CAMERA to BASE for this camera, 4x4, millimetres.
-    camera_to_base: np.ndarray
+    #: CAMERA to BASE for a fixed camera, 4x4, millimetres. `None` for a camera on the wrist.
+    camera_to_base: np.ndarray | None = None
+    #: CAMERA to TOOL for a camera on the wrist, 4x4, millimetres. `None` for a fixed camera.
+    camera_to_tool: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        if (self.camera_to_base is None) == (self.camera_to_tool is None):
+            raise ValueError(
+                f"camera {self.name!r} needs exactly one of camera_to_base, for a fixed camera, and "
+                "camera_to_tool, for a camera on the wrist"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,6 +402,26 @@ class LivePlannerWorld:
             )
 
         oldest = self._oldest_age_ms(frames, clock)
+        placed: dict[str, np.ndarray] = {}
+        for camera in self.cameras:
+            if camera.camera_to_base is not None:
+                placed[camera.name] = camera.camera_to_base
+                continue
+            tool_to_base = frames[camera.name].tool_to_base_mm
+            if tool_to_base is None or camera.camera_to_tool is None:
+                # Decided on the first reading and not asked again: where the tool stood is not
+                # something another reading of the camera can supply.
+                return PlannerWorldSnapshot(
+                    verdict=WorldVerdict.UNUSABLE, cuboids=declared, perceived=None, age_ms=oldest,
+                    reason=(
+                        f"camera {camera.name!r} is on the wrist and its depth frame carries no tool pose, so "
+                        "where it stood when the shutter opened is unknown and nothing it saw can be placed"
+                    ),
+                    meshes=meshes, declared_count=len(declared), camera=camera.name,
+                )
+            placed[camera.name] = (
+                np.asarray(tool_to_base, dtype=np.float64) @ np.asarray(camera.camera_to_tool, dtype=np.float64)
+            )
         if self_envelope is None:
             return PlannerWorldSnapshot(
                 verdict=WorldVerdict.UNUSABLE, cuboids=declared, perceived=None, age_ms=oldest,
@@ -400,7 +438,7 @@ class LivePlannerWorld:
             DepthView(
                 surface_depth_mm=frames[camera.name].depth_mm,
                 intrinsics=frames[camera.name].intrinsics,
-                camera_to_base=camera.camera_to_base,
+                camera_to_base=placed[camera.name],
                 exclude_masks=self._exclude.get(camera.name, ()) if fresh_masks else (),
                 labelled_masks=self._labels.get(camera.name, ()) if fresh_masks else (),
                 name=camera.name,

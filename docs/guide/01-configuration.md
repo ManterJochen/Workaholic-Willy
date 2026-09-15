@@ -143,20 +143,18 @@ operator widens it. A wrong value that fails open does not ship at all: a tool f
 that is merely plausible drives the arm into the bench and logs a success, so those are written out
 as commented blocks and the refusals in `run_config_preflight` and `URRobotArm.connect` stay armed.
 
-**Two traps live in the two-camera cell**, both documented in place in
-[`config/robot/robot.eth2.yaml`](../../config/robot/robot.eth2.yaml), and both produce a cell that
-looks like it works.
+**Two things decide the two-camera cell**, both documented in place in
+[`config/robot/robot.eth2.yaml`](../../config/robot/robot.eth2.yaml) and
+[`config/camera/cam.eth2.yaml`](../../config/camera/cam.eth2.yaml).
 
-- **The primary camera does not go in `fusion.cameras`.** That map is every camera except the
-  primary, which already streams through the main perception source. Four places read the map and
-  two read it differently, so a primary listed there is permanently among the cameras that delivered
-  no frame: a warning on every pick under `on_camera_unavailable: degrade`, and a raised error under
-  `refuse`. `robot.sim.yaml` does list all of its cameras including the primary, which is right there
-  and wrong here.
-- **The primary camera's own artifact is a separate key.** `fusion.extrinsics_artifact_path` is what
-  `AutonomousGraspService.from_robot_config` checks for a CAMERA to BASE transform. The calibration
-  runner prints a `fusion.cameras` block to paste after each camera, and that block alone leaves this
-  key null, so a cell can be fully calibrated, load both artifacts, and still be refused at build.
+- **`fusion.cameras` names every camera the cell fuses, the primary included**, keyed by rig id, and an
+  entry holds `enabled` only. The primary is left out of the cameras a pick waits for in code, from
+  `camera.cameras.primary_rig_id`, so listing it costs nothing. A fused id that names no rig in
+  `camera.cameras.rigs` is refused when the config loads.
+- **Each camera's calibration is declared on its rig.** `camera.cameras.rigs[<id>].extrinsics` is what
+  `AutonomousGraspService.from_robot_config` reads for the primary's CAMERA to BASE transform, and what
+  the second camera's resolver reads. The calibration CLI prints that block after each camera, and a
+  fused camera whose rig declares none is refused when the cell is built.
 
 **Prefer the flag, because the variable is sticky and silent.** `WILLY_PROFILE` lives for the whole
 shell session and `load_config()` honours it everywhere. A forgotten `sim` changes safety thresholds
@@ -282,7 +280,9 @@ reload_config()                          # drop the (directory, profile) cache
 `load_camera_section`, `load_speech_section` and `load_perception_section`. Each reads and validates one
 section through the same profile chain, so a broken camera file does not refuse an arm; they are not
 cached, and a caller that combines the camera and robot sections runs
-`src.config.schema.primary_camera_calibration_conflict`, the one rule that spans both.
+`src.config.schema.camera_calibration_conflict`, the one rule that spans both: every camera
+`robot.grasping.fusion.cameras` names must be a rig in `camera.cameras.rigs`, where its calibration is
+declared.
 
 For a simulated cell use `load_sim_config` in
 [`src/willy_sim/config.py`](../../src/willy_sim/README.md), which builds the chain, forces it for the

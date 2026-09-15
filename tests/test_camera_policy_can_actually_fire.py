@@ -26,7 +26,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from src.config.schema.robot.grasping_schema import (
-    CameraExtrinsicsConfig,
+    FusionCameraConfig,
     FusionGeometryConfig,
     RobotGraspingFusionConfig,
 )
@@ -61,12 +61,13 @@ class _Rig:
         return (CameraObservation(camera_id="left", frame=_frame()),)
 
 
-def _fusion(*, enabled: bool, cameras: dict[str, CameraExtrinsicsConfig]):
+def _fusion(*, enabled: bool, cameras: dict[str, FusionCameraConfig]):
     return RobotGraspingFusionConfig(enabled=enabled, cameras=cameras)
 
 
-def _camera(*, enabled: bool = True) -> CameraExtrinsicsConfig:
-    return CameraExtrinsicsConfig(enabled=enabled, extrinsics_artifact_path="nowhere.json")
+def _camera(*, enabled: bool = True) -> FusionCameraConfig:
+    """A map entry carries `enabled` only; the camera's calibration is declared on its rig."""
+    return FusionCameraConfig(enabled=enabled)
 
 
 def _orchestrator(**kwargs) -> BinPickingOrchestrator:

@@ -20,32 +20,57 @@ import logging
 import unittest
 from types import SimpleNamespace
 
+from src.config import load_config
 from src.config.schema.robot import RobotConfig
 from src.robot.execution.autonomous_grasp import builders
 from src.robot.execution.autonomous_grasp.config import GraspMode
 
 
-def _grasping(cameras: dict[str, str], *, fusion_enabled: bool = False):  # noqa: ANN202
-    """A REAL validated grasping config, because a namespace would not prove the keys exist."""
+def _grasping(cameras: dict[str, str | None], *, fusion_enabled: bool = False):  # noqa: ANN202
+    """A REAL validated grasping config, because a namespace would not prove the keys exist.
+
+    A map entry carries `enabled` only: the map names who takes part, and the calibration is
+    declared on the rig.
+    """
     return RobotConfig.model_validate({
         "vendor": "dummy",
         "grasping": {
             "fusion": {
                 "enabled": fusion_enabled,
-                "cameras": {
-                    name: {"enabled": True, "mounting_mode": mode,
-                           "extrinsics_artifact_path": f"{name}.json"}
-                    for name, mode in cameras.items()
-                },
+                "cameras": {name: {"enabled": True} for name in cameras},
             },
         },
     }).grasping
 
 
-def _lines(cameras: dict[str, str], **kwargs) -> list[tuple[str, str]]:  # noqa: ANN003
+def _camera(cameras: dict[str, str | None]):  # noqa: ANN202
+    """The shipped camera section with one RGB-D rig per camera, each declaring its calibration
+    where the count reads it, `camera.cameras.rigs[<id>].extrinsics`. A mounting of None leaves that
+    rig uncalibrated.
+
+    The artifacts are never opened: the count reads what each rig declares, and the resolvers that
+    load an artifact are built only under `fusion.geometry.enabled`, which stays off here.
+    """
+    shipped = load_config().camera
+    data = shipped.model_dump(mode="json")
+    template = next(rig for rig in data["cameras"]["rigs"] if rig["source"] == "rgbd")
+    for name, mode in cameras.items():
+        extrinsics: dict | None = None
+        if mode is not None:
+            extrinsics = {"mounting_mode": mode, "artifact_path": f"{name}.json"}
+            if mode == "eye_in_hand":
+                extrinsics.update(shutter_motion_tolerance_mm=2.0, shutter_motion_tolerance_deg=0.5)
+        # Enabled with a serial each, as a real cell of several RGB-D cameras has to be.
+        data["cameras"]["rigs"].append({**template, "rig_id": name, "enabled": True,
+                                        "serial_number": f"serial_{name}", "extrinsics": extrinsics})
+    return type(shipped).model_validate(data)
+
+
+def _lines(cameras: dict[str, str | None], **kwargs) -> list[tuple[str, str]]:  # noqa: ANN003
     # `frame_resolver=None` on purpose: with fusion enabled the overlay builds the voxel substrate
     # only when a resolver exists, and this test is about the CAMERA COUNT line, not that substrate.
     runtime = SimpleNamespace(orchestrator=SimpleNamespace(frame_resolver=None))
+    grasping, camera = _grasping(cameras, **kwargs), _camera(cameras)
     captured: list[tuple[str, str]] = []
 
     handler = logging.Handler()
@@ -53,7 +78,7 @@ def _lines(cameras: dict[str, str], **kwargs) -> list[tuple[str, str]]:  # noqa:
     builders.logger.addHandler(handler)
     try:
         builders.apply_orchestrator_overlays(
-            runtime, _grasping(cameras, **kwargs), resolved_mode=GraspMode.EASY)
+            runtime, grasping, resolved_mode=GraspMode.EASY, camera=camera)
     finally:
         builders.logger.removeHandler(handler)
     return [(level, message) for level, message in captured if "calibrated camera" in message]
@@ -86,6 +111,14 @@ class ItWarnsBelowTwoTests(unittest.TestCase):
         self.assertTrue(lines)
         self.assertEqual(lines[0][0], "WARNING")
         self.assertIn("0 calibrated camera", lines[0][1])
+
+    def test_a_listed_camera_whose_rig_declares_no_calibration_is_not_counted(self) -> None:
+        """The count reads the rig key, not the map: a camera listed for fusion whose rig declares no
+        `extrinsics` is not calibrated, so this cell is still single-view."""
+        level, message = _lines({"overhead": "eye_to_hand", "wrist": None})[0]
+
+        self.assertEqual(level, "WARNING")
+        self.assertIn("1 calibrated camera", message)
 
 
 class ItIsQuietWhenTheCellIsFineTests(unittest.TestCase):

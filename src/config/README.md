@@ -182,25 +182,20 @@ Prefer a new profile layer over an edit to `robot.yaml` when you are measuring s
 has not been measured on your cell does not belong in the default, and a block being measured should be
 the only thing that changed.
 
-### Two traps in the two-camera cell
+### The two-camera cell
 
-[`config/robot/robot.eth2.yaml`](../../config/robot/robot.eth2.yaml) documents both in place, and both
-are the kind that produce a working-looking cell.
+[`config/robot/robot.eth2.yaml`](../../config/robot/robot.eth2.yaml) and
+[`config/camera/cam.eth2.yaml`](../../config/camera/cam.eth2.yaml) document it in place.
 
-**The primary camera does not go in `fusion.cameras`.** That map is every camera except the primary,
-because the primary already streams through the main perception source. Four places read the map and
-two of them read it differently: the extra-camera rig builder filters the primary out, while the
-orchestrator's configured-camera list does not, so a primary listed there is permanently among the
-cameras that delivered no frame. That is a warning on every pick under
-`on_camera_unavailable: degrade` and a raised error on every pick under `refuse`. Note that
-`robot.sim.yaml` does list all of its cameras including the primary, which is correct there and wrong
-here; do not copy the shape of that block.
+**Each camera's calibration is declared on its rig.** `camera.cameras.rigs[<id>].extrinsics` is what
+`AutonomousGraspService.from_robot_config` reads for the primary camera's CAMERA to BASE transform, and
+the calibration runner prints that block to paste after each camera. `fusion.cameras` names which rigs
+are fused and holds `enabled` only; a `mounting_mode` or an artifact path written there is refused at
+load.
 
-**The primary camera's own artifact is a separate key, and it is the one that satisfies the refusal.**
-`fusion.extrinsics_artifact_path` is what `AutonomousGraspService.from_robot_config` checks for a
-CAMERA to BASE transform. The calibration runner prints a `fusion.cameras` block to paste after each
-camera, and that block alone leaves this key null, so a cell can be fully calibrated, load both
-artifacts, and still be refused at build.
+**The primary camera may be listed in `fusion.cameras`.** The extra-camera rig builder and the
+orchestrator's configured-camera list both leave it out, decided from `camera.cameras.primary_rig_id`,
+so listing it costs nothing.
 
 ### Merge rules, the reset sentinel, and environment substitution
 
@@ -355,7 +350,8 @@ file that cannot be read is tolerated only when every key the section reads was 
 could, and a top-level models key the schema does not know refuses the section it may belong to. They
 are not cached, the adaptation overlay reaches the robot section as it reaches the whole tree, and the
 cross-section rule on `AppConfig` does not run: a caller that combines the camera and robot sections
-runs it through `src.config.schema.primary_camera_calibration_conflict`. `load_config()` still
+runs it through `src.config.schema.camera_calibration_conflict`, which refuses a
+`robot.grasping.fusion.cameras` id that names no rig in `camera.cameras.rigs`. `load_config()` still
 validates everything.
 
 **Validation you can rely on.** `numDisparities` must be a positive multiple of 16 and `blockSize`

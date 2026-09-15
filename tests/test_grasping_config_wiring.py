@@ -912,8 +912,9 @@ class FromRobotConfigApproachValidationOverlayTests(unittest.TestCase):
 class FromRobotConfigFusionCommitOverlayTests(unittest.TestCase):
     """H2.3a — the U5 multi-view fusion substrate (``orch.scene_fusion``) + the U6 commit-gate policy
     (``orch.commit_policy``) are WIRED onto the orchestrator through from_robot_config when
-    ``grasping.fusion.enabled`` (+ a loadable ``extrinsics_artifact_path`` so the CAMERA→BASE frame resolver
-    auto-builds) and ``grasping.fusion.commit_policy.enabled``. Like the H2.1/H2.2 overlays this config-plumb
+    ``grasping.fusion.enabled`` (+ a primary rig whose ``camera.cameras.rigs[<id>].extrinsics`` names a loadable
+    artifact, so the CAMERA->BASE frame resolver auto-builds) and ``grasping.fusion.commit_policy.enabled``. Like
+    the H2.1/H2.2 overlays this config-plumb
     is reachable ONLY via from_robot_config (no live caller), AND it is **structurally inert on a fixed camera**
     — the commit gate needs a MOVING (eye-in-hand) camera to accumulate diverse-viewpoint evidence, so the
     on-box diverse-vs-duplicate proof is ``run_commit_gate`` (EIH), NOT the fixed-overhead H2 gate. The helper
@@ -922,15 +923,26 @@ class FromRobotConfigFusionCommitOverlayTests(unittest.TestCase):
     (the orch carriers) — the one seam none of those cover. Mirrors the H2.1a / H2.2a overlay-fires tests."""
 
     @staticmethod
-    def _cfg(*, fusion_enabled: bool, extrinsics_path: str | None, commit_enabled: bool) -> RobotConfig:
+    def _cfg(*, fusion_enabled: bool, commit_enabled: bool) -> RobotConfig:
         fusion: dict = {"enabled": fusion_enabled, "commit_policy": {"enabled": commit_enabled}}
-        if extrinsics_path is not None:
-            fusion["extrinsics_artifact_path"] = extrinsics_path
         return RobotConfig(
             vendor="dummy",
             gripper={"vendor": "none"},
             grasping={"default_mode": "dense_clutter", "fusion": fusion},
         )
+
+    @staticmethod
+    def _camera(extrinsics_path: str):
+        """The shipped camera section whose RGB-D rig is the primary and declares its calibration on the rig,
+        ``camera.cameras.rigs[<id>].extrinsics``, eye_to_hand from ``extrinsics_path``."""
+        from src.config import load_config
+
+        shipped = load_config().camera
+        data = shipped.model_dump(mode="json")
+        rig = next(r for r in data["cameras"]["rigs"] if r["source"] == "rgbd")
+        rig.update({"enabled": True, "extrinsics": {"mounting_mode": "eye_to_hand", "artifact_path": extrinsics_path}})
+        data["cameras"]["primary_rig_id"] = rig["rig_id"]
+        return type(shipped).model_validate(data)
 
     @staticmethod
     def _write_extrinsics(directory: str) -> str:
@@ -963,13 +975,10 @@ class FromRobotConfigFusionCommitOverlayTests(unittest.TestCase):
         calc, perception = _calc_and_perception()
         with tempfile.TemporaryDirectory() as tmp:
             svc = AutonomousGraspService.from_robot_config(
-                self._cfg(
-                    fusion_enabled=True,
-                    extrinsics_path=self._write_extrinsics(tmp),
-                    commit_enabled=True,
-                ),
+                self._cfg(fusion_enabled=True, commit_enabled=True),
                 calculator=calc,  # type: ignore[arg-type]
                 perception=perception,
+                camera=self._camera(self._write_extrinsics(tmp)),
             )
         orch = svc.runtime.orchestrator
         self.assertIsNotNone(orch.scene_fusion, "U5 fusion substrate not wired via from_robot_config")
@@ -979,7 +988,7 @@ class FromRobotConfigFusionCommitOverlayTests(unittest.TestCase):
         # Default-off -> both carriers None -> byte-identical pre-U5/U6 path.
         calc, perception = _calc_and_perception()
         svc = AutonomousGraspService.from_robot_config(
-            self._cfg(fusion_enabled=False, extrinsics_path=None, commit_enabled=False),
+            self._cfg(fusion_enabled=False, commit_enabled=False),
             calculator=calc,  # type: ignore[arg-type]
             perception=perception,
         )
@@ -988,20 +997,18 @@ class FromRobotConfigFusionCommitOverlayTests(unittest.TestCase):
         self.assertIsNone(orch.commit_policy)
 
     def test_fail_closed_bad_extrinsics_raises_end_to_end(self) -> None:
-        # FAIL-CLOSED end-to-end: fusion enabled + a set-but-unloadable extrinsics path must RAISE through the
-        # whole from_robot_config composition (not just the build_config_frame_resolver helper) -- the operator
-        # must not get a silently-unreachable commit gate while believing fusion is on.
+        # Fail-closed end to end: fusion enabled and a primary rig that declares an unloadable artifact must
+        # raise through the whole from_robot_config composition (not only the build_config_frame_resolver
+        # helper), so the operator does not get a silently unreachable commit gate while believing fusion is on.
         calc, perception = _calc_and_perception()
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(RuntimeError) as caught:
             AutonomousGraspService.from_robot_config(
-                self._cfg(
-                    fusion_enabled=True,
-                    extrinsics_path="/definitely/not/a/real/extrinsics_artifact.json",
-                    commit_enabled=True,
-                ),
+                self._cfg(fusion_enabled=True, commit_enabled=True),
                 calculator=calc,  # type: ignore[arg-type]
                 perception=perception,
+                camera=self._camera("/definitely/not/a/real/extrinsics_artifact.json"),
             )
+        self.assertIn("].extrinsics", str(caught.exception))
 
 
 if __name__ == "__main__":

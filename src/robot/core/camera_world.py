@@ -27,7 +27,7 @@ it is held in a :class:`~contextvars.ContextVar`, so it does not follow into a t
 it.
 
 ``captured_at_s`` is seconds on the wall clock, ``time.time()``, which is the clock the live planner
-world stamps its frames with in ``src/robot/execution/autonomous_grasp/live_world.py``. A world built
+world stamps its frames with in ``src/robot/safety/planning/depth_source.py``. A world built
 from several cameras carries the capture time of its oldest image, because a world is as stale as the
 stalest image in it.
 

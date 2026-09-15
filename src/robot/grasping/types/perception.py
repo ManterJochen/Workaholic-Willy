@@ -50,8 +50,8 @@ class PerceptionFrame:
     #: reading the arm, so an existing source is unchanged. It is not a default pose:
     #: inventing one would turn a missing measurement into a wrong one.
     #:
-    #: This has never run on hardware. It is bucket 3 until an eye-in-hand cell stamps
-    #: one.
+    #: A real wrist cell stamps it: `build_real_cell` hands the pick source the arm's
+    #: `get_tcp_pose` through `stamp_tool_pose_with`. This has never run on hardware.
     tool_pose: "Pose | None" = None
     #: The depth the camera measured, before any grasp-referenced overwrite.
     #:
@@ -80,11 +80,12 @@ class CameraObservation:
     """The frame of one named camera, from a rig of several.
 
     ``camera_id`` is the join key, and it is a contract rather than a label: it matches
-    an entry in ``robot.grasping.fusion.cameras``, which is where the CAMERA to BASE
-    calibration artifact of that camera is declared. A frame whose id has no calibration
-    entry cannot be placed in BASE and so cannot be fused, and the orchestrator drops it
-    and names the id rather than guessing at a default extrinsic and fusing a cloud into
-    the wrong place.
+    a camera the orchestrator holds a resolver for. On a config-built cell that is a rig
+    id ``robot.grasping.fusion.cameras`` fuses, and the CAMERA to BASE calibration
+    artifact of that camera is declared on its rig, ``camera.cameras.rigs[<id>].extrinsics``.
+    A frame whose id has no resolver cannot be placed in BASE and so cannot be fused, and
+    the orchestrator drops it and names the id rather than guessing at a default
+    extrinsic and fusing a cloud into the wrong place.
     """
 
     camera_id: str

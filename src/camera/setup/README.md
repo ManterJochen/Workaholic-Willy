@@ -2,9 +2,9 @@
 
 Camera configuration and frame acquisition: the raw pixels every perception stage starts from.
 
-This package sits at the bottom of the perception layer. It hands frames up to `FrameProvider` and
-`StereoCapturePipeline`, and deliberately does not own stereo or hand-eye calibration math,
-geometry transforms, model inference, or robot APIs.
+This package sits at the bottom of the perception layer. It hands frames up to the rig owners
+(`Camera`), `FrameProvider` and `StereoCapturePipeline`, and deliberately does not own stereo or
+hand-eye calibration math, geometry transforms, model inference, or robot APIs.
 
 ## What this package guarantees
 
@@ -46,8 +46,9 @@ with WebcamPairStreamer(config) as streamer:
 | `RealSenseRGBDStreamer` | `RGBDDeviceRigConfig` with `rgbd_backend: realsense` | `RGBDFrame` |
 
 Both RGB-D streamers implement `RGBDStreamerProtocol` (`open` / `release` / `is_opened` / `grab`),
-and `FrameProvider` picks between them from config. Build them through the provider rather than
-directly: it is the one owner of rig identity and device lifecycle.
+and `create_streamer` in `orchestration/camera.py` picks between them from config. Build them
+through a `Camera` owner rather than directly: it is the one owner of a rig's device identity and
+lifecycle.
 
 ## Notes and traps
 
@@ -85,7 +86,8 @@ supplies it. No robotics transforms live here.
 
 ## See also
 
-- [`src/camera/`](../README.md), the `FrameProvider` and `StereoCapturePipeline` above this layer
+- [`src/camera/`](../README.md), the `Camera` owner, `FrameProvider` and `StereoCapturePipeline`
+  above this layer
 - [`src/calibration/`](../../calibration/README.md), for stereo and hand-eye calibration math
 - [`src/geometry/`](../../geometry/README.md), for millimetre transforms and pose math
 - [`src/robot/perception/`](../../robot/perception/README.md), the adapter that turns these frames

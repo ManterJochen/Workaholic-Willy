@@ -130,8 +130,8 @@ class RealCellFrameResolverGateTests(unittest.TestCase):
     Without one, `require_base_frame_grasp` is never switched on, the grasp stays `frame=camera`, and
     `URRobotArm.move` rejects EVERY motion as INVALID_TARGET. Safe -- and indistinguishable at the bench
     from a broken cell: 100% rejection with no hint that the cause is a missing calibration artifact.
-    The shipped robot.yaml has `fusion.enabled: false` and no artifact path, so this is the DEFAULT
-    state of a freshly configured real cell, which is exactly why it has to be loud.
+    No shipped camera section declares a rig's calibration, `camera.cameras.rigs[<id>].extrinsics`, so
+    this is the default state of a freshly configured real cell, which is why it has to be loud.
     """
 
     def test_a_real_cell_without_any_resolver_refuses_to_build(self) -> None:
@@ -142,7 +142,9 @@ class RealCellFrameResolverGateTests(unittest.TestCase):
             )
         msg = str(ctx.exception)
         self.assertIn("INVALID_TARGET", msg)                    # names the symptom the operator sees
-        self.assertIn("extrinsics_artifact_path", msg)          # and both concrete fixes
+        self.assertIn("camera.cameras.rigs[", msg)              # and both concrete fixes: the rig key
+        self.assertIn("].extrinsics", msg)
+        self.assertNotIn("extrinsics_artifact_path", msg)
         self.assertIn("frame_resolver", msg)
 
     def test_an_in_code_resolver_satisfies_it(self) -> None:

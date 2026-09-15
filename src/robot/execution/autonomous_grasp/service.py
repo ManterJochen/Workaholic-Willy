@@ -157,6 +157,7 @@ from src.robot.grasping.rl.router import (
 )
 
 if TYPE_CHECKING:
+    from src.config.schema import CameraConfig
     from src.config.schema.robot import RobotConfig
     from src.robot.grasping.loop.progress import (
         PickProgressListener,
@@ -567,6 +568,11 @@ class AutonomousGraspService:
         #: primary's: it would not fail, it would place a plausible grasp in the wrong lens.
         #: `None` is every cell that cannot promote, which is every cell by default.
         camera_calculators: "dict[str, Any] | None" = None,
+        #: The camera section of the tree `robot_cfg` came from. Each camera's calibration is
+        #: declared on its rig there, `camera.cameras.rigs[<id>].extrinsics`, so the primary's
+        #: resolver and a fused cell's resolver map are built from it. `UNSET` builds no resolver
+        #: from config, which a real vendor refuses below unless `frame_resolver` is passed.
+        camera: "Maybe[CameraConfig]" = UNSET,
     ) -> "AutonomousGraspService":
         """Build the service from a validated ``RobotConfig`` tree.
 
@@ -706,35 +712,35 @@ class AutonomousGraspService:
             resolved_max_attempts=resolved_max_attempts,
         )
 
-        # Auto-build a static camera-to-base resolver from the configured calibration artifact when
-        # the caller did not supply one. This is what makes the fusion substrate + the commit gate
-        # reachable from production config. A caller-supplied frame_resolver (sim / eye-in-hand)
-        # wins; fusion-disabled / no-artifact returns None (byte-identical); a set-but-unloadable
-        # path raises (fail-closed).
+        # Build the primary camera's resolver from its rig's declared calibration when the caller
+        # did not supply one. This is what makes the fusion substrate + the commit gate reachable
+        # from production config. A caller-supplied frame_resolver (sim) wins; no camera section,
+        # or a primary rig with no calibration, returns None; a declared artifact that does not
+        # load raises (fail-closed).
         if frame_resolver is None:
-            frame_resolver = build_config_frame_resolver(grasping_cfg)
+            frame_resolver = build_config_frame_resolver(grasping_cfg, camera=camera)
 
         # Fail closed on a real cell with no resolver at all. Without one, `require_base_frame_grasp`
         # is never switched on, the grasp stays `frame=camera`, and every single motion comes back
         # `MotionStatus.INVALID_TARGET` (`URRobotArm.move` requires `Frame.BASE`). That is safe, and
         # it is also indistinguishable at the bench from "the cell is broken": 100% rejection, no
-        # hint that the cause is a missing calibration artifact. The shipped
-        # `config/robot/robot.yaml` enables no fusion and names no artifact path, so this is the
-        # default state of a freshly configured real cell. Sim/dummy are exempt: they legitimately
-        # pass a live resolver in code (an eye-in-hand cell's TCP-composed resolver cannot be
-        # serialized to an artifact).
+        # hint that the cause is a missing calibration artifact. No shipped camera section declares
+        # a rig's calibration, so this is the default state of a freshly configured real cell. Sim
+        # and dummy are exempt: they pass their resolver in code, or run without one on purpose. A
+        # real wrist camera needs no resolver in code: its CAMERA to TOOL is declared on its rig and
+        # built into an eye-in-hand resolver above.
         vendor_name = str(getattr(getattr(robot_cfg, "vendor", ""), "value", getattr(robot_cfg, "vendor", "")))
         if frame_resolver is None and vendor_name.lower() not in ("sim", "dummy"):
+            key = (f"camera.cameras.rigs[{camera.cameras.primary_rig_id!r}].extrinsics" if chosen(camera)
+                   else "camera.cameras.rigs[<primary rig id>].extrinsics")
             raise ValueError(
                 f"no CAMERA->BASE frame resolver for a {vendor_name!r} cell. Perception reports grasps "
                 "in the camera frame; without a resolver they are never transformed into the robot's "
                 "base frame, so the driver refuses every motion as INVALID_TARGET, which at the bench "
-                "looks like a broken cell, not a missing calibration. Fix it one of two ways: (1) set "
-                "grasping.fusion.enabled: true + grasping.fusion.extrinsics_artifact_path to the "
-                "artifact your eye-to-hand calibration wrote (run_eth_calibrate writes "
-                "logs/calibration/<robot_model>/eth_<camera>.json), or (2) pass frame_resolver= "
-                "explicitly, which is what an eye-in-hand cell does because a live TCP-composed "
-                "resolver cannot be serialized."
+                "looks like a broken cell, not a missing calibration. Fix it one of two ways: (1) declare "
+                f"the primary camera's calibration on its rig, {key}, with the mounting_mode and the "
+                "artifact_path the calibration CLI wrote, and hand this root the camera section "
+                "(build_real_cell does), or (2) pass frame_resolver= explicitly."
             )
 
         # Auto-build a viewpoint planner so the commit-gate reobserve relocates the
@@ -764,7 +770,7 @@ class AutonomousGraspService:
         # Orchestrator overlays applied in place.
         apply_orchestrator_overlays(
             runtime, grasping_cfg, resolved_mode=resolved_mode,
-            primary_camera_id=primary_camera_id,
+            primary_camera_id=primary_camera_id, camera=camera,
         )
 
         # The half of multi-camera fusion that config cannot carry. The overlays above wire

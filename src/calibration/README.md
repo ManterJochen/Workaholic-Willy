@@ -28,6 +28,7 @@ from src.calibration.stereo import StereoCam3D, StereoRigConfig
 | [`stereo/`](stereo/) | Stereo calibration, rectification, disparity, reconstruction and ArUco marker pose: `StereoCam3D`, `StereoRigConfig`, `CalibrationResult`. OpenCV use is isolated here |
 | [`quality.py`](quality.py) | `classify_rmse` plus `QualityBandsMm` and `QualityBandsPx` |
 | [`serialization.py`](serialization.py) | Deterministic JSON persistence for extrinsics and for camera-to-tool transforms |
+| [`rig_calibration.py`](rig_calibration.py) | `RigCalibration`, the one loader of a rig's declared calibration, `camera.cameras.rigs[<id>].extrinsics`: CAMERA to BASE for an eye-to-hand rig, CAMERA to TOOL for an eye-in-hand rig. A rig that declares none raises `RigNotCalibrated`, and an artifact that does not load raises `RigCalibrationError` naming the key and the path |
 | [`rgbd_marker_source.py`](rgbd_marker_source.py) | An RGB-D ArUco marker source for the hand-eye routine's injected `marker_source` seam |
 | [`helpers.py`](helpers.py) | `unit_scaling`, `proj_to_K`, stereo image-pair shape validation |
 | [`exceptions.py`](exceptions.py) | `CalibrationError` and its subclasses |

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional, cast
 
+from src.contracts import UNSET, Maybe, chosen
 from src.robot.constants import GRASP_BUILDERS_LOG_FILE, create_robot_logger
 from src.robot.execution.runtime_pick import RuntimePickService
 from src.robot.grasping.collision import (
@@ -61,6 +62,7 @@ from .config import (
 )
 
 if TYPE_CHECKING:
+    from src.config.schema import CameraConfig
     from src.config.schema.robot import RobotConfig, RobotGraspingConfig
     from src.config.schema.robot.grasping_schema import GraspingGripperGeometryConfig
     from src.robot.core import Gripper, RobotArm
@@ -841,50 +843,72 @@ def build_effective_config(
     )
 
 
-def build_config_frame_resolver(grasping_cfg: Optional[RobotGraspingConfig]) -> Optional["FrameResolver"]:
-    """Build a static CAMERA->BASE resolver from ``grasping.fusion.extrinsics_artifact_path``.
+def _resolver_for_rig(rig_id: str, extrinsics: Any) -> "FrameResolver":
+    """The resolver a rig's declared calibration gives, loaded through the one loader.
 
-    Returns ``None`` (byte-identical) when ``grasping_cfg`` is ``None``, fusion is disabled,
-    or no artifact path is configured. Fail-closed: a configured-but-unloadable path raises, so a fusion
-    deployment with a missing/stale/invalid calibration artifact cannot silently run with an unreachable
-    commit gate. Eye-in-hand cells leave the path unset and pass a ``frame_resolver`` in code (the
-    live TCP-composed resolver cannot be serialized).
+    A calibration that does not load is refused with a ``RuntimeError`` naming the rig key.
     """
-    if grasping_cfg is None:
-        return None
-    fusion_cfg = getattr(grasping_cfg, "fusion", None)
-    if fusion_cfg is None or not bool(getattr(fusion_cfg, "enabled", False)):
-        return None
-    path = getattr(fusion_cfg, "extrinsics_artifact_path", None)
-    if not path:
-        return None
-    from src.calibration.serialization import load_extrinsics
-    from src.robot.grasping.motion.frame_resolver import StaticCameraToBaseResolver
+    from src.calibration.rig_calibration import RigCalibration, RigCalibrationError
+    from src.robot.grasping.motion.frame_resolver import (
+        EyeInHandFrameResolver,
+        StaticCameraToBaseResolver,
+    )
 
     try:
-        ext = load_extrinsics(path)
-    except Exception as exc:  # noqa: BLE001 (re-raised as a fail-closed config error)
+        calibration = RigCalibration.from_config(rig_id, extrinsics)
+    except RigCalibrationError as exc:
         raise RuntimeError(
-            f"grasping.fusion.extrinsics_artifact_path {path!r} failed to load: {exc}. Fusion is "
-            "enabled but the calibration artifact is missing/stale/invalid -> the U6 commit gate would "
-            "be unreachable. Fix the path or set grasping.fusion.enabled: false."
+            f"{exc} The cell is refused at construction rather than run with a camera it cannot place: fix the "
+            "artifact, or remove the rig's extrinsics block until the camera is calibrated."
         ) from exc
-    return StaticCameraToBaseResolver(transform=ext.transform)
+    if calibration.mounting_mode == "eye_in_hand":
+        return EyeInHandFrameResolver(t_cam_to_tool=calibration.camera_to_tool())
+    return StaticCameraToBaseResolver(transform=calibration.camera_to_base())
+
+
+def build_config_frame_resolver(
+    grasping_cfg: Optional[RobotGraspingConfig],
+    *,
+    camera: "Maybe[CameraConfig]" = UNSET,
+) -> Optional["FrameResolver"]:
+    """The primary camera's frame resolver, built from its rig's calibration.
+
+    The calibration is declared on the rig, ``camera.cameras.rigs[<primary>].extrinsics``. An
+    eye_to_hand rig gives a :class:`StaticCameraToBaseResolver`; an eye_in_hand rig gives an
+    :class:`EyeInHandFrameResolver`, which composes the tool pose. It does not wait for
+    ``fusion.enabled``: this resolver is what turns every grasp into the base frame, and fusion
+    gates only the fusion substrate. ``grasping_cfg`` is kept for its callers and not read, because
+    the calibration is not declared in the grasping block.
+
+    Returns ``None`` when no camera section is handed in or the primary rig declares no
+    calibration. Fail-closed: a declared artifact that does not load raises at construction, naming
+    the rig key.
+    """
+    if not chosen(camera):
+        return None
+    primary = camera.cameras.primary_rig_id
+    rig = next((r for r in camera.cameras.rigs if r.rig_id == primary), None)
+    extrinsics = getattr(rig, "extrinsics", None)
+    if extrinsics is None:
+        return None
+    return _resolver_for_rig(primary, extrinsics)
 
 
 def build_config_frame_resolvers(
     grasping_cfg: Optional[RobotGraspingConfig],
+    *,
+    camera: "Maybe[CameraConfig]" = UNSET,
 ) -> dict[str, "FrameResolver"]:
-    """Build a ``{camera_id -> FrameResolver}`` map from the multi-camera ``grasping.fusion.cameras`` map.
+    """A ``{camera_id -> FrameResolver}`` map for every camera ``grasping.fusion.cameras`` fuses.
 
-    The multi-view counterpart of :func:`build_config_frame_resolver`: each enabled camera is loaded
-    and resolved individually. Returns ``{}`` (byte-identical) when ``grasping_cfg`` is ``None``,
-    fusion is disabled, or the ``cameras`` map is empty, which leaves the single
-    ``extrinsics_artifact_path`` path unchanged. Disabled cameras are skipped. By ``mounting_mode``:
-    ``eye_to_hand`` loads the CAMERA->BASE :class:`Extrinsics` into a
-    :class:`StaticCameraToBaseResolver`; ``eye_in_hand`` loads the CAMERA->TOOL transform into an
-    :class:`EyeInHandFrameResolver`. Fail-closed: an enabled camera with a missing, stale or invalid
-    artifact raises, because an incomplete multi-view resolver map must not run silently.
+    Each enabled camera's resolver is built from its rig's calibration,
+    ``camera.cameras.rigs[<id>].extrinsics``, through the one loader and by mounting, as
+    :func:`build_config_frame_resolver` does. Returns ``{}`` (byte-identical) when ``grasping_cfg``
+    is ``None``, fusion is disabled, or the map is empty; disabled cameras are skipped.
+
+    Fail-closed, because an incomplete multi-view map must not run silently: a map that names
+    cameras with no camera section handed in raises, and so do an id that names no rig, a rig that
+    declares no calibration, and an artifact that does not load.
     """
     if grasping_cfg is None:
         return {}
@@ -894,29 +918,30 @@ def build_config_frame_resolvers(
     cameras = getattr(fusion_cfg, "cameras", None) or {}
     if not cameras:
         return {}
-    from src.calibration.serialization import load_cam_to_tool, load_extrinsics
-    from src.robot.grasping.motion.frame_resolver import (
-        EyeInHandFrameResolver,
-        StaticCameraToBaseResolver,
-    )
-
+    if not chosen(camera):
+        raise RuntimeError(
+            f"grasping.fusion.cameras names {sorted(cameras)} and no camera section was handed in, so their "
+            "calibrations, declared on their rigs as camera.cameras.rigs[<id>].extrinsics, cannot be read. "
+            "Pass camera= the camera section of the same tree."
+        )
+    rigs = {rig.rig_id: rig for rig in camera.cameras.rigs}
     resolvers: dict[str, "FrameResolver"] = {}
     for cam_id, cam_cfg in cameras.items():
         if not bool(getattr(cam_cfg, "enabled", True)):
             continue
-        path = cam_cfg.extrinsics_artifact_path
-        mode = cam_cfg.mounting_mode
-        try:
-            if mode == "eye_in_hand":
-                resolvers[cam_id] = EyeInHandFrameResolver(t_cam_to_tool=load_cam_to_tool(path))
-            else:
-                resolvers[cam_id] = StaticCameraToBaseResolver(transform=load_extrinsics(path).transform)
-        except Exception as exc:  # noqa: BLE001 (re-raised as a fail-closed per-camera config error)
+        if cam_id not in rigs:
             raise RuntimeError(
-                f"grasping.fusion.cameras[{cam_id!r}] ({mode}) failed to load {path!r}: {exc}. Fusion is "
-                "enabled but this camera's calibration is missing/stale/invalid -> the multi-view resolver "
-                "map would be incomplete. Fix the artifact, set the camera enabled:false, or fusion.enabled:false."
-            ) from exc
+                f"grasping.fusion.cameras names {cam_id!r}, which is not a rig in camera.cameras.rigs "
+                f"({sorted(rigs)}), so its calibration has nowhere to be declared."
+            )
+        extrinsics = getattr(rigs[cam_id], "extrinsics", None)
+        if extrinsics is None:
+            raise RuntimeError(
+                f"grasping.fusion.cameras names {cam_id!r} and camera.cameras.rigs[{cam_id!r}].extrinsics is not "
+                "declared, so the multi-view resolver map would be incomplete. Calibrate the camera and paste the "
+                "block the calibration CLI prints, or set the camera enabled: false in grasping.fusion.cameras."
+            )
+        resolvers[cam_id] = _resolver_for_rig(cam_id, extrinsics)
     return resolvers
 
 
@@ -1045,6 +1070,8 @@ def apply_orchestrator_overlays(
     *,
     resolved_mode: "GraspMode",
     primary_camera_id: str | None = None,
+    #: The camera section of the same tree, whose rigs declare each fused camera's calibration.
+    camera: "Maybe[CameraConfig]" = UNSET,
 ) -> None:
     """Apply the orchestrator overlays in place.
 
@@ -1169,7 +1196,7 @@ def apply_orchestrator_overlays(
     geometry_cfg = getattr(fusion_cfg, "geometry", None)
     if geometry_cfg is not None and bool(getattr(geometry_cfg, "enabled", False)):
         runtime.orchestrator.fusion_geometry_config = geometry_cfg
-        runtime.orchestrator.camera_frame_resolvers = build_config_frame_resolvers(grasping_cfg)
+        runtime.orchestrator.camera_frame_resolvers = build_config_frame_resolvers(grasping_cfg, camera=camera)
         # What the config asked for, separately from what resolved. See
         # `BinPickingOrchestrator.configured_camera_ids`: the refusal policy needs the requested
         # set, not the resolver map, which is empty whenever `fusion.enabled` is false. Enabled
@@ -1199,18 +1226,23 @@ def apply_orchestrator_overlays(
     # the case of fusion enabled with no second camera is named.
     _fusion_all = getattr(grasping_cfg, "fusion", None)
     _all_cameras = getattr(_fusion_all, "cameras", None) or {}
+    # A camera counts when its rig declares a calibration: the map names which cameras take part,
+    # and the calibration is declared on the rig. With no camera section handed in, no camera can be
+    # counted as calibrated.
+    _rigs = {rig.rig_id: rig for rig in camera.cameras.rigs} if chosen(camera) else {}
     _calibrated = sorted(cam_id for cam_id, cam in _all_cameras.items()
-                         if bool(getattr(cam, "enabled", True)))
+                         if bool(getattr(cam, "enabled", True))
+                         and getattr(_rigs.get(cam_id), "extrinsics", None) is not None)
     # An eye-in-hand rig is a second viewpoint from one device, so it counts. The wrist camera sees
     # the far side of a part the fixed camera cannot, which is the whole reason fusion helps.
     _eih = sorted(cam_id for cam_id in _calibrated
-                  if str(getattr(_all_cameras[cam_id], "mounting_mode", "")) == "eye_in_hand")
+                  if str(getattr(getattr(_rigs[cam_id], "extrinsics", None), "mounting_mode", "")) == "eye_in_hand")
     if len(_calibrated) < 2:
         logger.warning(
             "this cell has %d calibrated camera(s) (%s) and will grasp SINGLE-VIEW. MEASURED on the "
             "datagen reference, fusing a second view moves top-1 from 43.50 %% to 55.93 %%. Add a "
-            "camera to grasping.fusion.cameras with its own calibration artifact, or accept "
-            "single-view deliberately.",
+            "camera to grasping.fusion.cameras and declare its calibration on its rig, "
+            "camera.cameras.rigs[<id>].extrinsics, or accept single-view deliberately.",
             len(_calibrated), ", ".join(_calibrated) or "none")
     else:
         logger.info("this cell has %d calibrated camera(s): %s (%d eye-in-hand)",

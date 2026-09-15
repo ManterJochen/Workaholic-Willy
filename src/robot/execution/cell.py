@@ -133,7 +133,12 @@ class Cell:
 
         Touches no hardware and needs no build, which is what makes it the first step.
         """
-        return run_config_preflight(self.robot_config)
+        # The camera half of the same tree, because a cell's CAMERA to BASE is declared on its
+        # primary rig. With no tree supplied it is the default tree, the one `build` would open.
+        from src.config import load_config  # noqa: PLC0415
+
+        app_config = self.app_config if chosen(self.app_config) else load_config()
+        return run_config_preflight(self.robot_config, camera=app_config.camera)
 
     def build(self) -> Any:
         """Construct the service: drivers, perception, the grasp stack. Idempotent.

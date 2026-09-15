@@ -70,7 +70,10 @@ class FakeStreamer:
 
 
 def _provider(*, intrinsics: np.ndarray | None = None) -> tuple[FrameProvider, dict[str, FakeStreamer]]:
-    rigs = [_rgbd_rig("overhead"), _rgbd_rig("wrist"), _webcam_rig("stereo")]
+    # Two RGB-D rigs on one device index are one device, and the camera owner refuses the second
+    # opener, so the wrist rig sits at index 4 rather than at the helper's index 3.
+    rigs = [_rgbd_rig("overhead"), _rgbd_rig("wrist").model_copy(update={"device_index": 4}),
+            _webcam_rig("stereo")]
     provider = FrameProvider(rigs)
     fakes = {rig.rig_id: FakeStreamer(rig, intrinsics if rig.rig_id == "overhead" else None)
              for rig in rigs}
@@ -232,8 +235,8 @@ class NoOneBypassesTheProviderTests(unittest.TestCase):
 
     _STREAMERS = {"RealSenseRGBDStreamer", "OpenCvRGBDStreamer",
                   "WebcamPairStreamer", "SingleDeviceStreamer"}
-    #: The one module allowed to construct a device streamer: the provider is what owns them.
-    _ALLOWED = {Path("src/camera/orchestration/frame_provider.py")}
+    #: The one module allowed to construct a device streamer: the camera owner.
+    _ALLOWED = {Path("src/camera/orchestration/camera.py")}
 
     def test_only_the_frame_provider_constructs_a_device_streamer(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -256,7 +259,8 @@ class NoOneBypassesTheProviderTests(unittest.TestCase):
                     if name in self._STREAMERS:
                         offenders.append(f"{relative.as_posix()}:{node.lineno} builds {name}")
         self.assertEqual(offenders, [], "\n".join(
-            ["these bypass FrameProvider -- take a `provider.rig(rig_id)` handle instead:", *offenders]))
+            ["these bypass the camera owner; open the rig with `Camera.from_config` and take "
+             "`camera.handle()` instead:", *offenders]))
 
     def test_the_guard_can_actually_FAIL(self) -> None:
         """A guard nobody has seen fail is a guard nobody can trust. This asserts the detector fires on
@@ -272,8 +276,8 @@ class NoOneBypassesTheProviderTests(unittest.TestCase):
         for relative in ("src/robot/execution/autonomous_grasp/cells.py",
                          "src/robot/perception/__main__.py"):
             text = (root / relative).read_text(encoding="utf-8")
-            self.assertIn("FrameProvider(", text, relative)
-            self.assertIn(".rig(", text, relative)
+            self.assertIn("Camera.from_config(", text, relative)
+            self.assertIn(".handle(", text, relative)
 
 
 if __name__ == "__main__":
