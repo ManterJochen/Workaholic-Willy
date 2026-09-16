@@ -33,7 +33,20 @@ transformers==5.5.4
 # Scene generation
 # ---------------------------------------------------------------------------
 trimesh==5.0.0
+
+# trimesh's nearest-surface query builds an R-tree and imports this at the call rather than at the
+# import, so a box without it raises ModuleNotFoundError inside the query. That query is the sphere map
+# ruler: it asks how far every surface sample of a link lies from the nearest sphere, which is what says
+# a planner's collision model has no hole in it. It went undeclared until a box without it ran the suite.
+rtree==1.4.1
+
 mujoco==3.12.0
+
+# Convex decomposition for the scene generator's collision shapes. Like MuJoCo above it is reached only on
+# the datagen path, and like it, the SUITE asks for it: the mesh service tests separate absent from
+# unloadable and need the package present to prove the second. It went undeclared until a box without it
+# ran the suite, which is the same way the R-tree above was found.
+coacd==1.0.14
 
 # ---------------------------------------------------------------------------
 # Safety collision backend

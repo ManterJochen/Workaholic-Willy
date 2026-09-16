@@ -677,7 +677,7 @@
         "enforce": true,
         "backend": "fcl",
         "min_distance_mm": 10.0,
-        "planner_margin_mm": 10.0,
+        "planner_margin_mm": 4.0,
         "link_radii_mm": null,
         "fixtures": [],
         "mesh_dir": null,

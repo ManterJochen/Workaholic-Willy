@@ -248,6 +248,11 @@ robot:
       # vendor reaches it only by naming kinematics_model, as robot.sim.yaml does with ur5e.
       backend: "fcl"
       min_distance_mm: 10.0
+      # planner_margin_mm is deliberately absent here, in the manner of robot.gripper.model. It is
+      # the clearance the planner keeps, and how much of it an arm can absorb depends on the arm
+      # and the hand: a UR5e plans fine at 10, a UR3e finds no plan at all at 10 and is fine at 4.
+      # A UR cell that plans with cuRobo declares it in its own profile, or it refuses to start a
+      # planner rather than inheriting a number nobody measured for that pair.
       link_radii_mm: null
       mesh_dir: null
       fixtures: []

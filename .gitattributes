@@ -14,3 +14,8 @@ docs/baselines/** -text
 # once this line lands, because git stops converting. Restore them once and the tree matches the
 # blobs again.
 tests/data/replay/** -text
+
+# Universal Robots' description config, vendored byte for byte as its pinned commit holds it and
+# held by scripts/curobo/ur_ros2_description.sha256. A CRLF checkout would change every YAML's
+# bytes and fail that pin.
+scripts/curobo/ur_ros2_description/** -text

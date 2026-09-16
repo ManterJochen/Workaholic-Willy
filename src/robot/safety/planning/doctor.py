@@ -220,13 +220,12 @@ def _probe_coal(blocks: tuple[str, ...]) -> Probe:
     whole path.
 
     The refusal is read from the resolution rather than from an exception this frame
-    catches. Measured 2026-09-10: with ``coal.dll`` refused by an application-control
-    policy, this probe reported ``[ok] fcl 0.7.0.11, box<->sphere = 2.000000`` and
-    ``--doctor`` exited 0 with ``policy_blocked=false``. ``import_collision_engine``
-    swallows Coal's exception and substitutes python-fcl, so nothing ever raised here and
-    the blocked verdict below was unreachable from the command line. The substitution is
-    right for the guard and wrong for the doctor, which exists to say what this box
-    refused.
+    catches. With ``coal.dll`` refused by an application-control policy, this probe
+    reported ``[ok] fcl 0.7.0.11, box<->sphere = 2.000000`` and ``--doctor`` exited 0
+    with ``policy_blocked=false``. ``import_collision_engine`` swallows Coal's exception
+    and substitutes python-fcl, so nothing ever raised here and the blocked verdict below
+    was unreachable from the command line. The substitution is right for the guard and
+    wrong for the doctor, which exists to say what this box refused.
 
     The verdict is blocked even where python-fcl carries the guard, and that differs from
     the kernel-backend probe on purpose. There, two backends are installed as a redundancy
@@ -297,9 +296,8 @@ def _probe_coal(blocks: tuple[str, ...]) -> Probe:
 def _probe_mesh_bundle(model: str) -> Probe:
     """The per-link collision meshes the guard and the cuRobo sphere fit both key on this robot name.
 
-    ⚠ A third state lived here briefly on 2026-09-09, for an arm believed unbakeable because its
-    USD collides with primitives. Retracted the next day: that arm bakes from its URDF package, so
-    the state could never be reached and a probe state nothing reaches is worse than absent.
+    There are two states and not three: every arm bakes from its URDF package, so there is no arm
+    this could report as unbakeable, and a probe state nothing reaches is worse than absent.
     """
     bundle = collision_mesh_bundle(model)
     if bundle.is_file():
@@ -423,7 +421,7 @@ def _kernel_backend_probe(payload: dict[str, object], blocks: tuple[str, ...]) -
     )
 
 
-def _probe_curobo(blocks: tuple[str, ...], robot_config: str) -> tuple[Probe, ...]:
+def _probe_curobo(blocks: tuple[str, ...], robot_config: str, *, gripper: str | None = None) -> tuple[Probe, ...]:
     """Spawn the sidecar interpreter and report what it can import.
 
     This is the check ``--check`` cannot make: the descriptor lives inside a separate
@@ -484,7 +482,7 @@ def _probe_curobo(blocks: tuple[str, ...], robot_config: str) -> tuple[Probe, ..
             "cuRobo robot descriptor",
             ProbeStatus.MISSING,
             f"no descriptor is named: {robot_config}" if robot_config != NO_DESCRIPTOR else (
-                "robot.gripper.model is unset, so no descriptor is named: descriptors are {arm}_{hand}.yml"
+                "robot.gripper.model is unset, so the planner has no hand to add to its arm and no descriptor is named"
             ),
             "name the hand in the cell profile, robot.gripper.model: <registry name>, or pass --hand",
         ))
@@ -492,10 +490,12 @@ def _probe_curobo(blocks: tuple[str, ...], robot_config: str) -> tuple[Probe, ..
     if "descriptor_present" in payload:
         present = bool(payload["descriptor_present"])
         where = str(payload.get("descriptor", "?"))
+        # The file and the hand are two fields: the descriptor carries no hand, and the planner adds it.
+        added = f", with {gripper} added as the body link 'hand' when the planner starts" if gripper else ""
         probes.append(Probe(
             f"cuRobo robot descriptor ({robot_config})",
             ProbeStatus.OK if present else ProbeStatus.MISSING,
-            where,
+            f"{where}{added}",
             "" if present else "build it: ext_deps/README.md section 3 (it lives inside the clone, "
                                "so a fresh clone needs this again)",
         ))
@@ -505,12 +505,12 @@ def _probe_curobo(blocks: tuple[str, ...], robot_config: str) -> tuple[Probe, ..
 def _probe_gripper(model: str, gripper: str | None) -> tuple[Probe, ...]:
     """Whether the planner and the guard have geometry for the hand this cell names.
 
-    Until this existed the doctor probed only the arm bundle, so it reported ok on a cell whose
-    gripper bundle was never baked and whose sphere map was never written. That is the failure
-    the live world work is most exposed to: the scene is registered faithfully before every
-    plan, and the plan is made against the wrong end effector. A correct mechanism serving a
-    wrong model is worse than the defect that work fixed, and "the planner sees the cell it is
-    in" is true of the arm and not of the hand.
+    The hand is probed as well as the arm bundle, because a cell whose gripper bundle was never
+    baked and whose sphere map was never written otherwise reports ok. That is the failure a live
+    camera world is most exposed to: the scene is registered faithfully before every plan, and the
+    plan is made against the wrong end effector. A correct mechanism serving a wrong model is worse
+    than a mechanism that is plainly missing, and "the planner sees the cell it is in" is true of
+    the arm and not of the hand.
 
     ``gripper`` is ``robot.gripper.model``, the only name a hand has. An unset one is MISSING
     rather than a warning about the arm bundle's 2F-85, because a cell whose guard reads hand
@@ -538,15 +538,18 @@ def _probe_gripper(model: str, gripper: str | None) -> tuple[Probe, ...]:
         return (Probe("gripper geometry", ProbeStatus.MISSING, str(exc),
                       "name a hand the registry holds in robot.gripper.model"),)
 
+    from .environment import hand_mesh_bundle
+
     probes: list[Probe] = []
-    bundle = collision_mesh_bundle(model, guard_variant_for(gripper))
+    # The 2F-85 rides in every arm bundle, and any other hand is its own bundle, composed onto the arm at load.
+    bundle = collision_mesh_bundle(model) if guard_variant_for(gripper) is None else hand_mesh_bundle(gripper)
     if not bundle.is_file():
         return (Probe(
             f"gripper bundle ({gripper} on {model})",
             ProbeStatus.MISSING,
             f"absent: {bundle}",
-            f"a variant bundle is an arm plus a hand, so it is one file per arm. Bake it: "
-            f"python scripts/grippers/bake_gripper_variant.py {gripper} --arm {model} --write",
+            f"a hand is its own bundle, composed onto every arm when the guard loads. Bake it: "
+            f"python scripts/grippers/bake_gripper_variant.py {gripper} --write",
         ),)
     probes.append(Probe(f"gripper bundle ({gripper} on {model})", ProbeStatus.OK, str(bundle)))
 
@@ -556,28 +559,28 @@ def _probe_gripper(model: str, gripper: str | None) -> tuple[Probe, ...]:
             f"gripper sphere map ({gripper})",
             ProbeStatus.MISSING,
             f"absent: {spheres}",
-            "the on-box descriptor builder reads this file, so this hand cannot be planned "
-            "with. Write it: python -m src.robot.safety.planning.robot.build_gripper_spheres "
-            f"--variant {bundle.name.replace('_collision_meshes.npz', '')} --out {spheres.name}",
+            "the planner adds this hand as a body link from this map, so this hand cannot be planned with. "
+            "Write it: python -m src.robot.safety.planning.robot.build_gripper_spheres "
+            f"--variant {gripper} --out {spheres.name}",
         ))
         return tuple(probes)
 
+    detail = str(spheres)
     try:
         origin = bundle_origin(bundle)
-    except SphereFitError as exc:  # pragma: no cover - an unreadable bundle is the probe above
+    except SphereFitError as exc:  # pragma: no cover (an unreadable bundle is the probe above)
         origin = f"unreadable ({exc})"
     if origin == MOUNTING_FACE:
         probes.append(Probe(
             f"gripper sphere map ({gripper})",
             ProbeStatus.WARN,
-            f"{spheres.name} holds the hand from its own mounting face, so the descriptor is "
-            f"only right if it was built with the coupling thickness",
-            "check the descriptor was built with --coupling-mm, and that the number is the "
-            "plate on this cell: the sum of robot.gripper.coupling_plates_mm, which the guard "
-            "adds.",
+            f"{spheres.name} holds the hand from its own mounting face, so where it sits depends on the "
+            f"coupling plate this cell declares",
+            "check that robot.gripper.coupling_plates_mm is the plate measured on this cell: the planner "
+            "places its hand link by that sum, and the exact mesh guard shifts the same hand by it.",
         ))
     else:
-        probes.append(Probe(f"gripper sphere map ({gripper})", ProbeStatus.OK, str(spheres)))
+        probes.append(Probe(f"gripper sphere map ({gripper})", ProbeStatus.OK, detail))
     return tuple(probes)
 
 
@@ -596,7 +599,7 @@ def run_doctor(
         _probe_coal(blocks),
         _probe_mesh_bundle(model),
         *_probe_gripper(model, gripper),
-        *_probe_curobo(blocks, robot_config or curobo_robot_config()),
+        *_probe_curobo(blocks, robot_config or curobo_robot_config(), gripper=gripper),
     )
     # The levels follow what the operator has to do. A BLOCKED or BROKEN engine is a
     # returned failure, since nothing raises here, and MISSING or WARN means a documented

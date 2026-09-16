@@ -33,7 +33,8 @@ class TheBedLayersComposeTests(unittest.TestCase):
         self.assertEqual("ur", robot.vendor)
         self.assertEqual("127.0.0.1", robot.ur.ip)
         self.assertEqual("curobo", robot.ur.motion_planner)
-        self.assertEqual(10.0, robot.safety.self_collision.planner_margin_mm)
+        # 4.0 family-wide since B6: at 10 the refitted sphere map leaves a UR5 no pose at all.
+        self.assertEqual(4.0, robot.safety.self_collision.planner_margin_mm)
 
     def test_the_ur3e_bed_is_the_same_bed_on_the_smaller_arm(self) -> None:
         robot = _robot("ursim,ursim_curobo,ursim_ur3")

@@ -133,6 +133,7 @@ class TheHandIsItsSphereMapTests(unittest.TestCase):
         16.26 and 4.45 mm out. The Hand-E's was past the 15 mm padding too, so a camera point on its body stayed an
         obstacle touching the hand.
         """
+        from src.robot.safety.planning.environment import hand_mesh_bundle
         from src.robot.safety.planning.perceived import SelfBody
         from src.robot.safety.planning.self_envelope import hand_spheres
 
@@ -145,7 +146,7 @@ class TheHandIsItsSphereMapTests(unittest.TestCase):
                     spheres = hand_spheres(hand, model)
                     assert spheres is not None
                     self.assertTrue(all(s.frame == 6 for s in spheres))
-                    with np.load(collision_mesh_bundle(model, hand.guard_variant)) as data:
+                    with np.load(hand_mesh_bundle(name)) as data:
                         vertices = np.vstack([np.asarray(data[f"{p}__v"], dtype=np.float64) for p in _HAND_PARTS])
                     if hand.origin == "mounting_face":
                         vertices = vertices + np.array([0.0, hand.coupling_mm, 0.0])
@@ -264,7 +265,7 @@ class APartInTheGripperIsFilteredWhileAttachedTests(unittest.TestCase):
 
         spheres = _spheres()
         capsule = payload_capsule(_hand(), spheres, length_mm=120.0, lateral_margin_mm=10.0)
-        dims, centre = carried_part_box(spheres, grip_width_mm=60.0, length_mm=120.0, lateral_margin_mm=10.0)
+        dims, centre = carried_part_box(_hand(), spheres, grip_width_mm=60.0, length_mm=120.0, lateral_margin_mm=10.0)
         start, end = np.asarray(capsule.start_mm), np.asarray(capsule.end_mm)
         np.testing.assert_allclose(centre, (start + end) / 2.0, atol=1e-9)
         axis = (end - start) / np.linalg.norm(end - start)

@@ -184,8 +184,11 @@ class _FakeClient:
         self._confirm = confirm
         self.worlds: list[list[dict]] = []
         self.started = False
-        # What a descriptor built for this arm and hand says of itself (Step 4i): a planner refuses one that says nothing.
-        self.descriptor_provenance = {"arm": "ur5e", "gripper_key": "robotiq_2f85", "coupling_mm": None}
+        # What a sidecar on this arm's descriptor with the hand added says of itself (Step 4i, UM lane S12): a planner
+        # refuses one that says nothing.
+        from tests._sidecar_identity import arm_identity
+
+        self.identity = arm_identity()
 
     def start(self) -> None:
         self.started = True
@@ -737,12 +740,12 @@ def test_a_partial_registration_is_reported_not_swallowed(caplog) -> None:
 
 
 def test_a_gripper_variant_may_not_be_paired_with_another_robot() -> None:
-    """The variant bundle carries the ARM meshes of the robot it was baked from.
+    """A hand is composed only onto the arms its bundle was proven on.
 
-    MEASURED: `schunk_egu50_collision_meshes.npz` holds the ur5e arm links byte-for-byte
-    (`forearm__v` is array-equal to ur5e's and not to ur3e's), and the status token used to be `ok`
-    for a ur3e cell. That cell would have checked UR5e arm geometry on UR3e DH frames with the guard
-    reporting itself healthy. The module docstring already stated the rule; nothing enforced it.
+    MEASURED before UM lane S05: the EGU-50's file held the ur5e arm links byte-for-byte, and the status token used to
+    be `ok` for a ur3e cell, which would have checked UR5e arm geometry on UR3e DH frames with the guard reporting
+    itself healthy. Its hand bundle now records ur5e as the one arm it was proven on, and every other arm keeps the
+    refusal until evidence admits the pairing.
     """
     from src.robot.safety._fcl_self_collision import make_backend, mesh_backend_status
 
@@ -754,14 +757,15 @@ def test_a_gripper_variant_may_not_be_paired_with_another_robot() -> None:
 
 
 def test_the_bundles_the_mismatch_check_relies_on_really_do_differ() -> None:
-    """If this ever fails, the check above is testing nothing."""
+    """If this ever fails, the check above is testing nothing: the EGU-50's hand bundle records ur5e as the one arm it
+    was proven on, and the ur3e arm it would be composed onto is not ur5e's."""
     import numpy as np
 
     root = pathlib.Path("src/robot/safety/data")
     if not (root / "ur3e_collision_meshes.npz").is_file():
         pytest.skip("no ur3e bundle on this box")
-    with np.load(root / "schunk_egu50_collision_meshes.npz") as variant, \
+    with np.load(root / "schunk_egu50_hand_meshes.npz") as hand, \
             np.load(root / "ur5e_collision_meshes.npz") as ur5e, \
             np.load(root / "ur3e_collision_meshes.npz") as ur3e:
-        assert np.array_equal(variant["forearm__v"], ur5e["forearm__v"])
-        assert not np.array_equal(variant["forearm__v"], ur3e["forearm__v"])
+        assert [str(arm) for arm in np.asarray(hand["hand__admitted_arms"]).reshape(-1)] == ["ur5e"]
+        assert not np.array_equal(ur5e["forearm__v"], ur3e["forearm__v"])

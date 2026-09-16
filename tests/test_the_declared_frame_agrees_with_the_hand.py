@@ -56,18 +56,18 @@ class TheCommittedHandsApproachAlongTheModelAxisTests(unittest.TestCase):
     """The constant the check compares against is a property of the files, held for every registry hand."""
 
     def test_every_bundle_the_guard_reads_holds_its_fingers_along_the_model_axis(self) -> None:
-        from src.robot.safety.planning.environment import collision_mesh_bundle
+        from src.robot.safety.planning.environment import hand_mesh_bundle
         from src.robot.safety.planning.hand import (
             APPROACH_TOLERANCE_DEG,
             HAND_APPROACH_IN_TOOL0,
-            guard_variant_for,
         )
 
         hands = available_grippers()
         self.assertGreaterEqual(len(hands), 3, hands)
         for name in hands:
             with self.subTest(hand=name):
-                bundle = collision_mesh_bundle("ur5e", guard_variant_for(name))
+                # The hand's own bundle, the one the guard composes onto every arm (UM lane S08).
+                bundle = hand_mesh_bundle(name)
                 with np.load(bundle) as data:
                     fingers = (np.asarray(data["lfinger__v"]).mean(axis=0) + np.asarray(data["rfinger__v"]).mean(axis=0)) / 2
                 self.assertLess(

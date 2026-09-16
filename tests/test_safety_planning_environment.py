@@ -44,10 +44,9 @@ class EnvVarResolutionTests(unittest.TestCase):
 
     def test_collision_mesh_bundle_names(self) -> None:
         self.assertEqual(env.collision_mesh_bundle().name, "ur5e_collision_meshes.npz")
-        self.assertEqual(
-            env.collision_mesh_bundle("ur5e", "schunk_egu50").name,
-            "schunk_egu50_collision_meshes.npz",
-        )
+        self.assertEqual(env.collision_mesh_bundle("ur3e").name, "ur3e_collision_meshes.npz")
+        # A hand is its own bundle since UM lane S05, and no longer an arm plus a hand.
+        self.assertEqual(env.hand_mesh_bundle("schunk_egu50").name, "schunk_egu50_hand_meshes.npz")
 
 
 class StatusSnapshotTests(unittest.TestCase):

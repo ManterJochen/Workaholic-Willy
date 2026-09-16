@@ -7,8 +7,8 @@ a model was chosen. On a UR3e cell that is a green light for a robot nobody conf
 
 The model and its source are therefore part of the reading rather than decoration on
 it. A `fully_anchored` with no model attached cannot be acted on, because the mesh
-bundle ships as ``{model}_collision_meshes.npz`` and the cuRobo descriptor as
-``{model}_{hand}.yml``, so a present `ur5e` bundle says nothing about a UR3e cell.
+bundle ships as ``{model}_collision_meshes.npz`` and the cuRobo descriptor is named by
+the arm, so a present `ur5e` bundle says nothing about a UR3e cell.
 `MotionStackReport` carries both and `render()` prints them, which is what makes
 `render()` return a whole object rather than a fragment its caller completes.
 
@@ -112,20 +112,18 @@ class MotionStackReport:
         and a second derivation is how a terminal and a service start disagreeing about
         whether the same box is ready.
 
-        It answered 0 for a cell nothing was known about. Measured 2026-09-10:
-        ``--check --data <a directory with no config in it>`` printed "=> fully anchored"
-        and exited 0, because `for_this_box` had fallen back to ur5e and this rule read
-        only the engine probe. The fallback is correct and deliberate, and reporting
-        success about it is not, because the exit code is what a bring-up script branches
-        on and it said "this cell is anchored" about a config that never loaded. A tree
-        that did not load is a partially anchored answer at best, which is exactly what 1
-        means here.
+        A reading taken against the ``ur5e`` fallback is not a reading about this cell, so
+        a config tree that did not load answers 1 even where both engines are present. The
+        fallback is correct and deliberate, and reporting success about it is not, because
+        the exit code is what a bring-up script branches on and it would say "this cell is
+        anchored" about a config that never loaded. A tree that did not load is a partially
+        anchored answer at best, which is exactly what 1 means here.
         """
         if self.stack.config_error:
             return 1
-        # A cell that names no hand is not anchored: its descriptor is named by the arm and
-        # the hand, and a reading about a hand nobody named would be a reading about an
-        # implied 2F-85.
+        # A cell that names no hand is not anchored: the planner adds the hand a cell names
+        # to the arm's descriptor and plans only with that hand, so a reading about a hand
+        # nobody named would be a reading about an implied 2F-85.
         if not chosen(self.stack.hand):
             return 1
         return 0 if self.fully_anchored else 1
@@ -145,9 +143,9 @@ class MotionStackReport:
         lines = [self.environment.render(), f"  (model: {self.model}, from {self.model_source})"]
         if not chosen(self.stack.hand):
             lines.append(
-                "  !! no hand named: robot.gripper.model is unset, so no cuRobo descriptor is named. "
-                "Descriptors are {arm}_{hand}.yml and a cell plans only against the hand it names: "
-                "set robot.gripper.model in the cell profile, or pass --hand."
+                "  !! no hand named: robot.gripper.model is unset, so no cuRobo descriptor is named. A planner "
+                "adds the hand a cell names to its arm's descriptor and plans only with that hand: set "
+                "robot.gripper.model in the cell profile, or pass --hand."
             )
         if self.stack.config_error:
             lines.append(
@@ -213,8 +211,8 @@ class MotionStack:
     #: nobody chose. It is what makes `MotionStackReport.exit_code` fail closed, while
     #: `detail` stays the short provenance parenthesis a person reads at the end of the line.
     config_error: str = ""
-    #: The hand the cell names, ``robot.gripper.model`` or ``--hand``. The descriptor is
-    #: named by it.
+    #: The hand the cell names, ``robot.gripper.model`` or ``--hand``. The planner adds it
+    #: to the arm's descriptor as a body link.
     hand: "Maybe[str]" = UNSET
 
     @property
@@ -334,14 +332,15 @@ class MotionStack:
 
     def probe(self) -> MotionStackReport:
         """Ask both engines whether they are present for this model. Spawn-free."""
-        from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR, curobo_robot_yml
+        from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR, curobo_arm_descriptor
 
         descriptor = NO_DESCRIPTOR
         if chosen(self.hand):
             try:
-                descriptor = curobo_robot_yml(self.model, self.hand)
+                # The arm's descriptor; the hand is added to it as a body link when the planner starts.
+                descriptor = curobo_arm_descriptor(self.model)
             except ValueError as exc:
-                # A model or hand nobody built a descriptor for is named as such, not as a file.
+                # A model nobody built a descriptor for is named as such, not as a file.
                 descriptor = f"<none: {exc}>"
         return MotionStackReport(
             stack=self,

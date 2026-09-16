@@ -3081,11 +3081,18 @@
           "type": "number"
         },
         "planner_margin_mm": {
-          "default": 0.0,
-          "maximum": 100.0,
-          "minimum": 0.0,
-          "title": "Planner Margin Mm",
-          "type": "number"
+          "anyOf": [
+            {
+              "maximum": 100.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Planner Margin Mm"
         },
         "tool_finger_radius_mm": {
           "default": 16.0,

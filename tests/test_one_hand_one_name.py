@@ -72,6 +72,7 @@ class _Captured:
 
     def __call__(
         self, model: str, mesh_dir: str | None = None, mesh_name: str | None = None, coupling_mm: float = 0.0,
+        *, placement: Any = None,
     ) -> None:
         self.calls.append({"model": model, "mesh_name": mesh_name, "coupling_mm": coupling_mm})
         return None
@@ -129,9 +130,8 @@ class PlannerHandTests(unittest.TestCase):
 
     def test_the_bundle_the_guard_reads_carries_the_hand_the_planner_map_describes(self) -> None:
         """The property behind the derivation: guard and planner model one hand, for every registry hand."""
-        from src.robot.safety.planning.environment import collision_mesh_bundle
+        from src.robot.safety.planning.environment import hand_mesh_bundle
         from src.robot.safety.planning.hand import planner_hand
-        from src.robot.safety.planning.robot.gripper_spheres import fit_gripper_spheres
 
         hands = available_grippers()
         self.assertGreaterEqual(len(hands), 3, hands)
@@ -139,12 +139,19 @@ class PlannerHandTests(unittest.TestCase):
             with self.subTest(hand=name):
                 plates = [20.0] if _origin(name) == "mounting_face" else None
                 hand = planner_hand(_robot(name, plates=plates))
-                bundle = collision_mesh_bundle("ur5e", hand.guard_variant)
+                bundle = hand_mesh_bundle(hand.model)
                 committed = yaml.safe_load(hand.sphere_map.read_text(encoding="utf-8"))
+                # Matched by what the map SAYS it was fitted from, not by re-running a fit: the committed
+                # maps are cover fits since B6 and refitting one costs minutes. The property is unchanged,
+                # and the `source` field is itself held to the bundle being present by test_gripper_spheres.
+                source = committed["_provenance"]["source"]
                 self.assertEqual(
-                    fit_gripper_spheres(bundle).to_dict()["tool0"], committed["collision_spheres"]["tool0"],
-                    f"the guard would read {bundle.name} for {name}, and its hand is not {hand.sphere_map.name}",
+                    bundle.name, source,
+                    f"the guard composes {bundle.name} for {name} and {hand.sphere_map.name} was fitted from "
+                    f"{source}, so the guard and the planner model different hands",
                 )
+                self.assertTrue(committed["collision_spheres"]["tool0"],
+                                f"{hand.sphere_map.name} holds no spheres at all, so the planner models no hand")
 
 
 class TheCouplingPlatesTests(unittest.TestCase):
@@ -371,12 +378,12 @@ class TheDoctorAsksForTheHandTests(unittest.TestCase):
         self.assertTrue(any(d.endswith("robotiq_2f85_gripper_spheres.yml") for d in details), details)
         self.assertTrue(all(p.status is doctor.ProbeStatus.OK for p in probes), probes)
 
-    def test_the_hande_is_probed_on_its_per_arm_bundle(self) -> None:
+    def test_the_hande_is_probed_on_its_own_hand_bundle(self) -> None:
         from src.robot.safety.planning import doctor
 
         probes = doctor._probe_gripper("ur5e", "robotiq_hande")
         details = [p.detail for p in probes]
-        self.assertTrue(any(d.endswith("robotiq_hande_ur5e_collision_meshes.npz") for d in details), details)
+        self.assertTrue(any(d.endswith("robotiq_hande_hand_meshes.npz") for d in details), details)
 
 
 class EveryPreflightBuildNamesTheHandTests(unittest.TestCase):

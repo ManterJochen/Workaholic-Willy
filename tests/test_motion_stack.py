@@ -85,13 +85,15 @@ class ReadingTests(unittest.TestCase):
             stack_mod, "probe_planning_environment", return_value=ANCHORED
         ) as probe:
             MotionStack.from_robot_config(_Robot(ur_model="ur3e")).probe()
-        probe.assert_called_once_with(robot_config="ur3e_robotiq_2f85.yml", kinematics_model="ur3e")
+        probe.assert_called_once_with(robot_config="willy_ur3e.yml", kinematics_model="ur3e")
 
-    def test_the_descriptor_is_named_by_the_arm_and_the_hand(self) -> None:
-        """Step 4i, owner Q5: a UR3e with a Hand-E plans against ur3e_robotiq_hande.yml, not against ur3e.yml."""
-        with mock.patch.object(stack_mod, "probe_planning_environment", return_value=ANCHORED) as probe:
-            MotionStack.from_robot_config(_Robot(ur_model="ur3e", hand="robotiq_hande")).probe()
-        probe.assert_called_once_with(robot_config="ur3e_robotiq_hande.yml", kinematics_model="ur3e")
+    def test_the_descriptor_is_named_by_the_arm_whatever_the_hand(self) -> None:
+        """UM lane S11: one descriptor per arm, and the hand is a body link the planner adds to it when it starts."""
+        for hand in ("robotiq_2f85", "robotiq_hande"):
+            with self.subTest(hand=hand), \
+                    mock.patch.object(stack_mod, "probe_planning_environment", return_value=ANCHORED) as probe:
+                MotionStack.from_robot_config(_Robot(ur_model="ur3e", hand=hand)).probe()
+            probe.assert_called_once_with(robot_config="willy_ur3e.yml", kinematics_model="ur3e")
 
     def test_a_cell_that_names_no_hand_names_no_descriptor_and_is_not_anchored(self) -> None:
         """No implied 2F-85 (owner Q5): the reading says which key is missing, and exit 1 is its refusal."""

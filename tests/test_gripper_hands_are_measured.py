@@ -25,7 +25,7 @@ from types import ModuleType
 from src.config import load_config
 from src.config.grippers import available_grippers, load_gripper
 from src.robot.grippers.sim.gripper import ROBOTIQ_HANDE_PROFILE, SCHUNK_EGU50_PROFILE
-from src.robot.safety.planning.environment import collision_mesh_bundle
+from src.robot.safety.planning.environment import hand_mesh_bundle
 
 _ROOT = Path(__file__).resolve().parents[1]
 _MEASURE = _ROOT / "scripts" / "grippers" / "measure_jaw_from_bundle.py"
@@ -105,7 +105,7 @@ class TheNumbersAreTheBundlesTests(unittest.TestCase):
     def test_the_measurement_reproduces_the_committed_hande_numbers(self) -> None:
         """The control: every number the Hand-E layer already carried, at the centre it already declared."""
         measured = _measurement().measure_parallel_jaw(
-            collision_mesh_bundle("ur5e", "robotiq_hande"), centre_mm=135.75,
+            hand_mesh_bundle("robotiq_hande"), centre_mm=135.75,
         )
         jaw = load_gripper("robotiq_hande", aliases=False).jaw
         for field in self._MEASURED:
@@ -117,14 +117,14 @@ class TheNumbersAreTheBundlesTests(unittest.TestCase):
     def test_the_hande_patch_is_its_flat_face_and_a_chamfer(self) -> None:
         """Pinned, not fixed: the owner kept the committed patch (lane-i-decisions, Asked while building i1)."""
         measured = _measurement().measure_parallel_jaw(
-            collision_mesh_bundle("ur5e", "robotiq_hande"), centre_mm=135.75,
+            hand_mesh_bundle("robotiq_hande"), centre_mm=135.75,
         )
         jaw = load_gripper("robotiq_hande", aliases=False).jaw
         self.assertAlmostEqual(measured.face_length_mm, 20.00, delta=_TOLERANCE_MM)
         self.assertAlmostEqual(jaw.pad_length_mm - measured.face_length_mm, 0.91, delta=_TOLERANCE_MM)
 
     def test_the_egu50_file_is_its_bundle_around_the_face_midpoint(self) -> None:
-        measured = _measurement().measure_parallel_jaw(collision_mesh_bundle("ur5e", "schunk_egu50"))
+        measured = _measurement().measure_parallel_jaw(hand_mesh_bundle("schunk_egu50"))
         jaw = load_gripper("schunk_egu50", aliases=False).jaw
         for field in (*self._MEASURED, "pad_length_mm", "pad_ahead_mm", "pad_behind_mm"):
             with self.subTest(field=field):
@@ -135,7 +135,7 @@ class TheNumbersAreTheBundlesTests(unittest.TestCase):
         """The EGU-50's old sim centre, 144.1 mm from the flange, is 7.5 mm below its face."""
         module = _measurement()
         with self.assertRaises(ValueError) as caught:
-            module.measure_parallel_jaw(collision_mesh_bundle("ur5e", "schunk_egu50"), centre_mm=144.1)
+            module.measure_parallel_jaw(hand_mesh_bundle("schunk_egu50"), centre_mm=144.1)
         self.assertIn("face", str(caught.exception))
 
 
@@ -143,7 +143,7 @@ class TheMountGraspsAtItsFaceTests(unittest.TestCase):
     def test_the_egu50_mount_grasps_at_its_jaw_face_midpoint(self) -> None:
         from src.willy_sim.grippers import SCHUNK_EGU50_MOUNT
 
-        measured = _measurement().measure_parallel_jaw(collision_mesh_bundle("ur5e", "schunk_egu50"))
+        measured = _measurement().measure_parallel_jaw(hand_mesh_bundle("schunk_egu50"))
         self.assertEqual(measured.origin, "flange")
         self.assertAlmostEqual(
             SCHUNK_EGU50_MOUNT.flange_to_tcp_offset_mm[1], measured.centre_mm, delta=_TOLERANCE_MM,

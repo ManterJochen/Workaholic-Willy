@@ -23,8 +23,10 @@ robot:
 
   safety:
     self_collision:
-      # A UR3e is a smaller arm, and the 10 mm margin the `ursim_curobo` layer sets for a
-      # UR5e leaves it no plan at all. Inert while this layer runs over plain `ursim`, which
+      # 4.0, the same value the `ursim_curobo` layer above declares: with the planner's
+      # spheres fitted to the meshes no arm absorbs 10 mm. Kept here rather than deleted
+      # because the key is a declaration, and a bed chain that declared nothing would be
+      # refused for saying nothing. Inert while this layer runs over plain `ursim`, which
       # plans nothing; it bites on the bed chain `ursim,ursim_curobo,ursim_ur3`, where the
       # layer order puts this one last.
       planner_margin_mm: 4.0

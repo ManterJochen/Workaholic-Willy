@@ -9,12 +9,15 @@ So the body is built from the files the guard and the planner check against:
 
 * the arm, one capsule per link, fitted once to the committed bundle in the link's own DH frame so
   that it holds every vertex of that link;
-* the hand, the spheres of its resolved sphere map on the flange frame, which is the model the planner
-  checks against, each grown just enough to hold the hand's committed mesh as the guard places it. As
-  fitted, the maps leave up to 9.55 mm (2F-85), 16.26 mm (Hand-E) and 4.45 mm (EGU-50) of their hands
-  outside, the Hand-E's past the padding as well. One capsule for the whole hand does not work: its end
-  cap reaches 54 to 77 mm past the fingertips on the approach, where it would take real obstacles out;
-* a part in the gripper, one capsule from the fingertips while it is attached;
+* the hand, the spheres of its resolved sphere map, each grown just enough to hold the hand's
+  committed mesh, placed on the flange frame the way the guard places the hand: one plate out along
+  the model's approach where the hand starts at its mounting face, then turned by the rotation the
+  declared tool frame derives. As fitted, the maps leave up to 9.55 mm (2F-85), 16.26 mm (Hand-E) and
+  4.45 mm (EGU-50) of their hands outside, the Hand-E's past the padding as well. One capsule for the
+  whole hand does not work: its end cap reaches 54 to 77 mm past the fingertips on the approach, where
+  it would take real obstacles out;
+* a part in the gripper, one capsule from the fingertips along the hand's approach while it is
+  attached;
 * all of it placed with the model and the base yaw the self-collision guard uses, so the filter and
   the guard stand the arm in one place.
 
@@ -34,8 +37,8 @@ import yaml
 from src.contracts import chosen
 
 from .._ur_kinematics import ur_link_transforms_mm
-from .environment import collision_mesh_bundle
-from .hand import HAND_APPROACH_IN_TOOL0, approach_refusal
+from .environment import collision_mesh_bundle, hand_mesh_bundle
+from .hand import approach_refusal
 from .perceived import LinkCapsule, SelfEnvelope
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
@@ -62,6 +65,10 @@ _ROUNDING_MM: Final = 1e-6
 _HAND_PARTS: Final = ("gripper", "lfinger", "rfinger")
 _ORIGIN_KEY: Final = "gripper__origin"
 _MOUNTING_FACE: Final = "mounting_face"
+#: The approach of every committed hand model in its own axes (model y), along which a coupling plate
+#: stacks.
+_MODEL_APPROACH: Final = (0.0, 1.0, 0.0)
+_IDENTITY_ROWS: Final = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
 
 
 def _point(vector: np.ndarray) -> tuple[float, float, float]:
@@ -122,9 +129,15 @@ def _map_spheres(path: str) -> tuple[tuple[tuple[float, float, float], float], .
 
 @lru_cache(maxsize=16)
 def _held_spheres(
-    sphere_map: str, bundle: str, coupling_mm: float,
+    sphere_map: str, bundle: str, coupling_mm: float, rotation: tuple[tuple[float, float, float], ...],
 ) -> tuple[tuple[tuple[float, float, float], float], ...] | None:
-    """The map's spheres, one plate out where the hand has one, each grown to hold its nearest vertices."""
+    """The map's spheres on the flange, placed as the guard places the hand, each grown to hold the hand's vertices.
+
+    In the hand model's own axes first: one plate out along its approach where the bundle starts at
+    the mounting face, and each sphere grown to hold the vertices nearest it. Then the placement's
+    rotation turns the centres; distances do not change under a rotation, so the radii are the
+    model's. The identity turns nothing.
+    """
     path = Path(bundle)
     if not path.is_file():
         return None
@@ -133,7 +146,7 @@ def _held_spheres(
             return None
         vertices = np.vstack([np.asarray(data[f"{part}__v"], dtype=np.float64) for part in _HAND_PARTS])
         origin = str(np.asarray(data[_ORIGIN_KEY]).reshape(-1)[0]) if _ORIGIN_KEY in data.files else ""
-    shift = np.asarray(HAND_APPROACH_IN_TOOL0, dtype=np.float64) * coupling_mm
+    shift = np.asarray(_MODEL_APPROACH, dtype=np.float64) * coupling_mm
     if origin == _MOUNTING_FACE:
         vertices = vertices + shift
     spheres = _map_spheres(sphere_map)
@@ -148,13 +161,29 @@ def _held_spheres(
         held = distance[nearest == index, index]
         if held.size and float(held.max()) > grown[index]:
             grown[index] = float(held.max()) + _ROUNDING_MM
+    if rotation != _IDENTITY_ROWS:
+        centres = centres @ np.asarray(rotation, dtype=np.float64).T
     return tuple((_point(centre), float(radius)) for centre, radius in zip(centres, grown, strict=True))
 
 
+def _approach(hand: PlannerHand) -> tuple[float, float, float]:
+    """The hand's approach in tool0 axes, as its placement derives it. A refused placement has none."""
+    if not chosen(hand.placement):
+        raise ValueError(f"{hand.model} has no placement on the flange: {hand.placement_refusal}")
+    return hand.placement.approach_in_tool0
+
+
 def hand_spheres(hand: PlannerHand, model: str) -> tuple[LinkCapsule, ...] | None:
-    """The hand on the flange frame as its map's spheres, grown to hold its mesh, or ``None`` without its bundle."""
+    """The hand on the flange frame as its map's spheres, placed and grown to hold its mesh, or ``None``.
+
+    ``None`` comes back without the hand's bundle, and where the declared tool frame places no hand: a
+    body nobody can place is not filtered. ``model`` is the arm the hand hangs from, and the hand's own
+    bundle is the same on every arm.
+    """
+    if not chosen(hand.placement):
+        return None
     held = _held_spheres(
-        str(hand.sphere_map), str(collision_mesh_bundle(model, hand.guard_variant)), float(hand.coupling_mm),
+        str(hand.sphere_map), str(hand_mesh_bundle(hand.model)), float(hand.coupling_mm), hand.placement.rotation,
     )
     if held is None:
         return None
@@ -163,18 +192,18 @@ def hand_spheres(hand: PlannerHand, model: str) -> tuple[LinkCapsule, ...] | Non
     )
 
 
-def _tip_mm(spheres: tuple[LinkCapsule, ...]) -> float:
-    """How far the hand reaches along its approach from the flange, millimetres."""
-    approach = np.asarray(HAND_APPROACH_IN_TOOL0, dtype=np.float64)
-    return max(float(np.dot(np.asarray(s.start_mm), approach)) + s.radius_mm for s in spheres)
+def _tip_mm(spheres: tuple[LinkCapsule, ...], approach: tuple[float, float, float]) -> float:
+    """How far the hand reaches along ``approach`` from the flange, millimetres."""
+    axis = np.asarray(approach, dtype=np.float64)
+    return max(float(np.dot(np.asarray(s.start_mm), axis)) + s.radius_mm for s in spheres)
 
 
 def payload_capsule(
     hand: PlannerHand, spheres: tuple[LinkCapsule, ...], *, length_mm: float, lateral_margin_mm: float,
 ) -> LinkCapsule:
-    """A carried part: from the tip of ``spheres`` along the approach, as wide as the jaws open plus the margin."""
-    approach = np.asarray(HAND_APPROACH_IN_TOOL0, dtype=np.float64)
-    tip = _tip_mm(spheres)
+    """A carried part: from the tip of ``spheres`` along the hand's approach, as wide as the jaws open plus the margin."""
+    approach = np.asarray(_approach(hand), dtype=np.float64)
+    tip = _tip_mm(spheres, _approach(hand))
     return LinkCapsule(
         frame=_FLANGE_FRAME,
         start_mm=_point(approach * tip),
@@ -184,19 +213,21 @@ def payload_capsule(
 
 
 def carried_part_box(
-    spheres: tuple[LinkCapsule, ...], *, grip_width_mm: float, length_mm: float, lateral_margin_mm: float,
+    hand: PlannerHand, spheres: tuple[LinkCapsule, ...], *, grip_width_mm: float, length_mm: float,
+    lateral_margin_mm: float,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """The box the planner hangs on tool0 for a carried part, as ``(dims_mm, centre_mm)`` in tool0's axes.
 
     It is the part :func:`payload_capsule` takes out of the camera's view: ``length_mm`` along the
     hand's approach from the tip of ``spheres``, and on the two other axes the width the jaws closed to
-    plus the lateral margin, the one measurement of the part there is. A box hung ``length_mm`` along
-    tool0 +Z from the flange would sit 90 degrees off the measured hand and inside the wrist.
+    plus the lateral margin, the one measurement of the part there is. The approach follows the hand's
+    placement: a box hung ``length_mm`` along tool0 +Z from the flange would sit 90 degrees off the
+    measured hand and inside the wrist.
     """
-    approach = np.asarray(HAND_APPROACH_IN_TOOL0, dtype=np.float64)
+    approach = np.asarray(_approach(hand), dtype=np.float64)
     lateral = max(1.0, float(grip_width_mm) + float(lateral_margin_mm))
     dims = np.where(np.abs(approach) > 0.5, float(length_mm), lateral)
-    return _point(dims), _point(approach * (_tip_mm(spheres) + float(length_mm) / 2.0))
+    return _point(dims), _point(approach * (_tip_mm(spheres, _approach(hand)) + float(length_mm) / 2.0))
 
 
 def yawed_link_transforms_mm(model: str, joints: Any, yaw_deg: float) -> list[np.ndarray] | None:

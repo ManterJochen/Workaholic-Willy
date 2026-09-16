@@ -16,7 +16,7 @@ from __future__ import annotations
 
 __all__ = ["UR_MODEL_KEYS"]
 
-#: Every UR from the UR3 to the UR10, both series. The CB-series arms joined on 2026-09-09.
+#: Every UR from the UR3 to the UR10, both series.
 #:
 #: Four registries answer "which UR can this stack drive", and until then none checked another:
 #: this gate, the DH table, the joint limits and the sim spec registry. Measured before they were
@@ -28,10 +28,13 @@ __all__ = ["UR_MODEL_KEYS"]
 #: row degrades without an error: the exact-mesh guard reports ``unknown_model`` and drops to the
 #: capsule proxy, the arm-against-arm capsules disappear, and ``reach.shoulder_height_mm`` returns
 #: 0.0, over-stating the working sphere by the shoulder height. A cell in that state plans and
-#: picks and reports nothing. ``tests/test_ur_model_family.py`` compares all four.
+#: picks and reports nothing. The four key sets are compared against one another, so neither
+#: direction can open again.
 #:
-#: ur16e, ur20 and ur30 are deliberately absent: Isaac ships assets and this repository has no DH
-#: row for them, so admitting them would be inventing kinematics.
+#: ``ur16e`` is not admitted although it has a DH row, joint limits and a buildable descriptor: it
+#: has no exact-mesh bundle and no ``URModelSpec``, and a key admitted before those exist
+#: validates at load and then degrades in the silent direction above. ur7e, ur8long, ur12e,
+#: ur15, ur18, ur20 and ur30 have no DH row here. Each is admitted once its evidence passes.
 UR_MODEL_KEYS: tuple[str, ...] = (
     "ur3", "ur3e",
     "ur5", "ur5e",

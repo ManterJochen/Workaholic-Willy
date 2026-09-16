@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import math
 import unittest
+from pathlib import Path
 
 from src.config.schema.robot._ur_models import UR_MODEL_KEYS
 from src.robot.drivers.sim.robot_models import _UR_MODELS
@@ -183,41 +184,54 @@ class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
     be checked.
     """
 
-    def _status(self, model: str, variant: str | None) -> str:
+    def _status(self, model: str, variant: "str | None", folder: "Path | None" = None) -> str:
         from src.robot.safety._fcl_self_collision import mesh_backend_status
 
-        return mesh_backend_status(model, None, variant)
+        return mesh_backend_status(model, str(folder) if folder is not None else None, variant)
 
-    @staticmethod
-    def _models_without_a_bundle() -> list[str]:
-        """Every configurable model carrying no bundle of its own, whatever the reason.
+    def _without_one_arm(self, missing: str) -> "Path":
+        """A mesh directory holding every bundle except ``missing``, so a NEW arm can be asked about.
 
-        DERIVED, and widened TWICE by its own failures. It first named ur3, ur5, ur10 and
-        ur10e, true for the few hours between the fallback hole being closed and those arms
-        being baked. It then read UR_MODEL_KEYS, which held until ur10 was baked on
-        2026-09-10 and every configurable model had one, leaving the loop empty. It reads the
-        DH table now, which is wider than the config gate on purpose: ur16e has kinematics
-        and no bundle, and a model in that state is what keeps this test able to fail.
+        This used to read the repository: an arm with kinematics and no bundle was taken from whatever the
+        tree happened to be missing, first ur3 and ur5, then ur10, then ur16e. Each time those were baked the
+        set emptied and the test could no longer fail, which is the failure mode the assertion below names out
+        loud. A bundle removed on purpose cannot empty.
         """
+        import shutil
+        import tempfile
+
+        from src.robot.safety.planning.environment import COLLISION_MESH_DIR
+
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder, True)
+        for source in COLLISION_MESH_DIR.glob("*.npz"):
+            if source.name != f"{missing}_collision_meshes.npz":
+                shutil.copy2(source, folder / source.name)
+        return folder
+
+    def test_a_model_with_no_bundle_is_told_so_rather_than_given_another_arms(self) -> None:
         from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
         from src.robot.safety.planning.environment import collision_mesh_bundle
 
-        return [m for m in sorted(UR_DH_TABLES_M) if not collision_mesh_bundle(m).is_file()]
-
-    def test_a_model_with_no_bundle_is_told_so_rather_than_given_another_arms(self) -> None:
-        without = self._models_without_a_bundle()
-        self.assertTrue(without, "every model has a bundle, so this test can no longer fail. "
-                                 "Delete it rather than let it pass over an empty set.")
-        for model in without:
+        present = [m for m in sorted(UR_DH_TABLES_M) if collision_mesh_bundle(m).is_file()]
+        self.assertTrue(present, "no arm has a bundle, so nothing here could be taken away")
+        for model in present:
+            folder = self._without_one_arm(model)
             with self.subTest(model=model):
-                self.assertIn(
-                    self._status(model, "schunk_egu50"),
-                    {"no_bundle"},
-                    f"{model} has no bundle of its own, so `ok` here would mean the guard is "
-                    f"checking this arm's joint angles against ANOTHER arm's link meshes. "
-                    f"`no_bundle` is the whole answer: a bundle can be baked for any arm this "
-                    f"stack knows, from its USD or from its URDF package.",
+                self.assertFalse((folder / f"{model}_collision_meshes.npz").is_file(),
+                                 "the copy still holds it")
+                self.assertEqual(
+                    self._status(model, "schunk_egu50", folder), "no_bundle",
+                    f"{model} has no bundle of its own here, so `ok` would mean the guard is checking this "
+                    f"arm's joint angles against ANOTHER arm's link meshes. `no_bundle` is the whole answer: "
+                    f"a bundle can be baked for any arm this stack knows, from its USD or from UR's own STLs.",
                 )
+
+    def test_taking_nothing_away_leaves_the_arm_answerable(self) -> None:
+        """⭐ THE CONTROL that the case above is made by the missing file and not by the copy itself."""
+        folder = self._without_one_arm("nothing_is_called_this")
+        self.assertTrue((folder / "ur5e_collision_meshes.npz").is_file())
+        self.assertEqual(self._status("ur5e", "schunk_egu50", folder), "ok")
 
     def test_the_two_cases_that_were_already_right_still_are(self) -> None:
         """⭐ THE CONTROL. Closing the hole must not turn every variant into `no_bundle`: a model
@@ -243,7 +257,6 @@ class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
             with self.subTest(model=model):
                 self.assertEqual(
                     self._status(model, "robotiq_hande"), "ok",
-                    f"{model} has exact arm geometry and no Hand-E on it. Bake it: "
-                    f"python scripts/grippers/bake_gripper_variant.py robotiq_hande "
-                    f"--arm {model} --write",
+                    f"{model} has exact arm geometry and the Hand-E is not proven on it: "
+                    f"robotiq_hande_hand_meshes.npz does not list {model} in hand__admitted_arms",
                 )

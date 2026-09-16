@@ -60,7 +60,8 @@ class PreflightTests(unittest.TestCase):
         argument."""
         from src.config import load_config
 
-        report = run_config_preflight(RobotConfig(vendor="ur"), camera=load_config().camera, curobo_available=True)
+        report = run_config_preflight(RobotConfig(vendor="ur"), camera=load_config().camera,
+                                      curobo_available=True, collision_engine="coal")
         blocking = {c.name for c in report.blocking}
         self.assertEqual(blocking, {"tool frame", "payload", "camera -> base", "hand"})
         self.assertFalse(report.ok)
@@ -75,13 +76,17 @@ class PreflightTests(unittest.TestCase):
         """
         report = run_config_preflight(
             RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "curobo"}}),
-            curobo_available=False,
+            curobo_available=False, collision_engine="coal",
         )
         blocking = {c.name for c in report.blocking}
         self.assertEqual(
             blocking, {"tool frame", "payload", "camera -> base", "cuRobo environment", "hand"}
         )
-        self.assertIn("--doctor", _named(report, "cuRobo environment").fix)
+        fix = _named(report, "cuRobo environment").fix
+        # The doctor lives on the planning CLI. `execution.real_cell --doctor` was named here for months and that
+        # CLI never had the flag, so the remedy exited 2 for the one operator who followed it.
+        self.assertIn("python -m src.robot.safety.planning --doctor", fix)
+        self.assertNotIn("execution.real_cell --doctor", fix)
 
     def test_an_ik_cell_is_warned_rather_than_blocked(self) -> None:
         """An ik cell plans nothing, so a missing sidecar stops nothing. What it loses is the check."""
@@ -122,9 +127,66 @@ class PreflightTests(unittest.TestCase):
                 "cuRobo environment", {c.name for c in run_config_preflight(cfg).blocking}
             )
 
+    def test_a_real_cell_learns_at_a_desk_that_it_could_not_judge_a_path(self) -> None:
+        """B1 S18. Every planned path on a real cell is re-judged on the exact meshes before the arm moves,
+        and with no engine on the box that gate refuses every one of them. The cell still comes up, connects,
+        and then refuses the first move: the right refusal in the wrong place.
+
+        The row says exactly what the gate would say, by calling the same function, so the two cannot drift.
+        """
+        from src.robot.safety.preflight import exact_mesh_path_refusal
+
+        cfg = RobotConfig.model_validate({
+            "vendor": "ur", "ur": {"motion_planner": "curobo"},
+            "safety": {"self_collision": {"planner_margin_mm": 4.0}},
+        })
+        row = _named(
+            run_config_preflight(cfg, curobo_available=True, collision_engine=None), "exact mesh engine")
+        self.assertIs(row.status, CheckStatus.BLOCK)
+        self.assertEqual(row.detail, exact_mesh_path_refusal())
+
+    def test_the_engine_this_box_has_is_named_with_the_bundle_it_would_load(self) -> None:
+        cfg = RobotConfig.model_validate({
+            "vendor": "ur", "ur": {"model": "ur3e"},
+            "gripper": {"model": "robotiq_2f85", "tool_frame": _GOOD_TOOL},
+            "safety": {"self_collision": {"kinematics_model": "ur3e", "planner_margin_mm": 4.0}},
+        })
+        row = _named(run_config_preflight(cfg, curobo_available=True, collision_engine="coal"),
+                     "exact mesh engine")
+        self.assertIs(row.status, CheckStatus.OK)
+        self.assertIn("coal", row.detail)
+        self.assertIn("ok", row.detail)
+
+    def test_an_ik_cell_is_warned_about_the_engine_rather_than_blocked(self) -> None:
+        """An ik cell plans no path, so the gate that needs the engine is not on its critical path."""
+        ik = RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "ik"}})
+        row = _named(run_config_preflight(ik, curobo_available=True, collision_engine=None),
+                     "exact mesh engine")
+        self.assertIs(row.status, CheckStatus.WARN)
+
+    def test_a_cell_that_enforces_nothing_is_told_the_other_sentence(self) -> None:
+        """⭐ THE CONTROL that the row reports the REASON and not one fixed sentence."""
+        from src.robot.safety.preflight import no_path_guard_refusal
+
+        cfg = RobotConfig.model_validate({
+            "vendor": "ur", "ur": {"motion_planner": "curobo"},
+            "safety": {"self_collision": {"enforce": False, "planner_margin_mm": 4.0}},
+        })
+        row = _named(run_config_preflight(cfg, curobo_available=True, collision_engine="coal"),
+                     "exact mesh engine")
+        self.assertIs(row.status, CheckStatus.BLOCK)
+        self.assertEqual(row.detail, no_path_guard_refusal())
+
+    def test_a_sim_cell_has_no_such_row(self) -> None:
+        """Only a real arm. A sim cell reaches its guard through its own driver."""
+        names = {c.name for c in run_config_preflight(RobotConfig(vendor="sim"),
+                                                     curobo_available=True).checks}
+        self.assertNotIn("exact mesh engine", names)
+
     def test_every_blocking_check_states_a_concrete_fix(self) -> None:
         """A checklist that says "wrong" without saying "do this" just moves the guessing."""
-        for c in run_config_preflight(RobotConfig(vendor="ur"), curobo_available=True).blocking:
+        for c in run_config_preflight(RobotConfig(vendor="ur"), curobo_available=True,
+                                      collision_engine="coal").blocking:
             with self.subTest(check=c.name):
                 self.assertTrue(c.fix.strip(), f"{c.name} blocks without naming a fix")
 
@@ -140,7 +202,10 @@ class PreflightTests(unittest.TestCase):
                        "self_collision": {"kinematics_model": "ur3e"}},
         })
         # The primary camera's calibration is declared on its rig, in the camera section of the same tree.
-        report = run_config_preflight(cfg, camera=_calibrated_camera("logs/eth.json"), curobo_available=True)
+        # States the engine instead of asking this box: a checklist test must not turn red because a machine
+        # has no Coal, and must not turn green because one has.
+        report = run_config_preflight(cfg, camera=_calibrated_camera("logs/eth.json"), curobo_available=True,
+                                      collision_engine="coal")
         self.assertTrue(report.ok, report.render())
 
     def test_sim_and_dummy_are_never_blocked(self) -> None:

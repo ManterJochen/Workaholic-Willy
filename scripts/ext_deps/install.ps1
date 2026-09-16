@@ -223,13 +223,34 @@ function Install-Curobo {
         }
     }
 
-    Write-Step 'robot descriptors (ur5e, ur3e)'
+    Write-Step 'UR arm meshes, pinned (Universal Robots ROS 2 description)'
+    # cuRobo ships meshes for ur5e and ur10e only, and Isaac's other UR descriptions reference files
+    # that exist nowhere else, so a descriptor for any other arm refuses without this step. Every
+    # file is held to scripts\curobo\ur_meshes.sha256, and nothing is written unless all of them
+    # verify.
+    & $python (Join-Path $repo 'scripts\curobo\fetch_ur_meshes.py') | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "fetching the pinned UR meshes failed (exit $LASTEXITCODE)" }
+
+    Write-Step 'robot descriptors: every UR arm, one descriptor each with no hand in it'
     # These live inside the content directory of the clone, so a fresh clone always needs this
     # step; it is not something the environment carries. The builder runs under the interpreter of
-    # the cuRobo env rather than the host one, because it imports curobo.sphere_fit.
-    foreach ($model in @('ur5e', 'ur3e')) {
-        & $python (Join-Path $repo 'scripts\curobo\build_ur_config.py') $model | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "building the $model descriptor failed" }
+    # the cuRobo env rather than the host one, because it imports curobo.sphere_fit. A descriptor
+    # carries no hand: the planner sidecar adds the hand a cell names as a body link when it starts,
+    # so no hand and no plate is built here. It does carry the retract the rule judged on the exact
+    # meshes with every hand (src/robot/safety/planning/robot/ur_retract.yaml), and the build refuses
+    # an arm with no row rather than falling back to Isaac's unjudged pose.
+    #
+    # Every arm with a bundle and a fit is built, with no exception. The spheres are fitted to each
+    # arm's own committed bundle (src/robot/safety/planning/robot/{arm}_arm_spheres.yml,
+    # scripts/curobo/fit_cover_spheres.py) rather than taken from the vendor's map, which describes a
+    # different arm for two of these: measured against their own bundles, the worst kept vendor
+    # sphere sits 60.8 mm outside the ur16e's upper arm and 75.9 mm outside the ur10's.
+    $UR_ARMS = @('ur3', 'ur3e', 'ur5', 'ur5e', 'ur10', 'ur10e', 'ur16e')
+    # The description every model is built from is Universal Robots' own, rendered from the vendored
+    # config.
+    foreach ($model in $UR_ARMS) {
+        & $python (Join-Path $repo 'scripts\curobo\build_ur_config.py') $model '--urdf-from' 'ur' | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "building the willy_${model} descriptor failed" }
     }
 }
 

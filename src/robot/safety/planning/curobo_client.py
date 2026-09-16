@@ -19,19 +19,32 @@ import json
 import math
 import os
 import queue
+import re
 import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from src.contracts import UNSET, Maybe, chosen
 from src.robot.constants import CUROBO_CLIENT_LOG_FILE, create_robot_logger
 
 from ._curobo_attach import ENV_ATTACH_SPHERES
+from ._curobo_body_links import ENV_BODY_LINKS, ENV_DEFAULT_Q
 from ._curobo_margin import ENV_SELF_COLLISION_MARGIN_MM
+from ._curobo_protocol import (
+    ENV_MEASURE_ONLY,
+    KIND_SELF_COLLISION,
+    KINDS,
+    WHERE_DEFAULT_Q,
+    WHERE_GOAL,
+    WHERE_START,
+    WHERES,
+)
 from .environment import (
     ENV_CUROBO_CUBOID_CACHE,
     ENV_CUROBO_MESH_CACHE,
@@ -49,11 +62,17 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from .reservation import PlannerReservation
 
 __all__ = [
+    "CuroboNotReady",
     "CuroboPlanClient",
     "CuroboUnavailableError",
     "JointCheckVerdict",
     "MAX_CHECK_CONFIGURATIONS",
     "SceneRegistration",
+    "SelfExplanation",
+    "SidecarIdentity",
+    "StateRefusal",
+    "StateRefusalKind",
+    "StateWhere",
     "curobo_env_available",
 ]
 
@@ -76,6 +95,136 @@ _PLAN_TIMEOUT_S = 30.0
 
 class CuroboUnavailableError(RuntimeError):
     """The cuRobo planning server could not be started or became ready (env missing, JIT/load failure)."""
+
+
+class StateWhere(StrEnum):
+    """Which configuration the sidecar judged: its own retract, the start of a move, or its goal."""
+
+    DEFAULT_Q = WHERE_DEFAULT_Q
+    START = WHERE_START
+    GOAL = WHERE_GOAL
+
+
+class StateRefusalKind(StrEnum):
+    """What it found there. ``WORLD`` is the planner's obstacles; the other two are the robot itself."""
+
+    SELF_COLLISION = KIND_SELF_COLLISION
+    JOINT_LIMIT = "joint_limit"
+    WORLD = "world"
+
+
+@dataclass(frozen=True, slots=True)
+class StateRefusal:
+    """Why the sidecar refused one configuration, in the terms an operator can act on.
+
+    ``link_a`` and ``link_b`` are the deepest overlapping pair, and ``depth_mm`` is how far
+    into one another they reach. Each is UNSET where the sidecar could not say it: a
+    descriptor that resolves its collision spheres from a file carries no per link
+    ownership, so the refusal is real and the pair has no name. That costs a name, never a
+    plan.
+    """
+
+    where: StateWhere
+    kind: StateRefusalKind
+    joints: tuple[float, ...]
+    link_a: Maybe[str] = UNSET
+    link_b: Maybe[str] = UNSET
+    depth_mm: Maybe[float] = UNSET
+
+    @classmethod
+    def from_reply(cls, block: object) -> StateRefusal:
+        """Read a sidecar ``refusal`` block, or raise: a half read refusal sends an operator to the wrong link.
+
+        It is strict on the two words that decide what this is, ``where`` and ``kind``, and
+        on the shape of anything it does carry. A missing pair or depth is not malformed, it
+        is a sidecar that could not name one.
+        """
+        if not isinstance(block, dict):
+            raise CuroboUnavailableError(f"the cuRobo sidecar sent a refusal that is not a block: {block!r}")
+        where, kind = block.get("where"), block.get("kind")
+        if where not in WHERES or kind not in KINDS:
+            raise CuroboUnavailableError(
+                f"the cuRobo sidecar refused a state in terms this client does not know (where={where!r}, "
+                f"kind={kind!r}): it is not the sidecar in this tree"
+            )
+        joints = block.get("joints") or ()
+        if not isinstance(joints, (list, tuple)) or not all(
+            isinstance(value, (int, float)) and math.isfinite(value) for value in joints
+        ):
+            raise CuroboUnavailableError(f"the cuRobo sidecar sent a refusal whose configuration is not joints: {joints!r}")
+        pair = block.get("pair")
+        link_a: Maybe[str] = UNSET
+        link_b: Maybe[str] = UNSET
+        if pair is not None:
+            if not (isinstance(pair, (list, tuple)) and len(pair) == 2 and all(isinstance(n, str) for n in pair)):
+                raise CuroboUnavailableError(f"the cuRobo sidecar sent a refusal whose pair is not two links: {pair!r}")
+            link_a, link_b = str(pair[0]), str(pair[1])
+        depth = block.get("depth_mm")
+        if depth is not None and not (isinstance(depth, (int, float)) and math.isfinite(depth)):
+            raise CuroboUnavailableError(f"the cuRobo sidecar sent a refusal whose depth is not a number: {depth!r}")
+        return cls(
+            where=StateWhere(where), kind=StateRefusalKind(kind),
+            joints=tuple(float(value) for value in joints),
+            link_a=link_a,
+            link_b=link_b,
+            depth_mm=float(depth) if depth is not None else UNSET,
+        )
+
+    def render(self) -> str:
+        """One sentence: what was judged, what it found, and where it reached that deep."""
+        where = {
+            StateWhere.DEFAULT_Q: "the descriptor's own retract (default_q)",
+            StateWhere.START: "the start of this move",
+            StateWhere.GOAL: "the goal of this move",
+        }[self.where]
+        depth = f"{self.depth_mm:.1f} mm" if chosen(self.depth_mm) else "an unreported depth"
+        if self.kind is StateRefusalKind.SELF_COLLISION:
+            found = (
+                f"{self.link_a} and {self.link_b} overlap by {depth}" if chosen(self.link_a) and chosen(self.link_b)
+                else f"a self collision of {depth} between an unnamed pair, because this descriptor does not say "
+                     "which link owns which collision sphere"
+            )
+        elif self.kind is StateRefusalKind.JOINT_LIMIT:
+            found = f"a joint sits outside the limits the planner was built with, by {depth}"
+        else:
+            found = f"it reaches {depth} into the world the planner holds"
+        joints = ", ".join(f"{value:.4f}" for value in self.joints)
+        return f"cuRobo refuses {where}: {found}. Joints (rad): [{joints}]"
+
+    def to_dict(self) -> dict[str, Any]:
+        """The same fields as plain data, ``null`` for each the sidecar did not report."""
+        return {
+            "where": str(self.where),
+            "kind": str(self.kind),
+            "joints": list(self.joints),
+            "link_a": self.link_a if chosen(self.link_a) else None,
+            "link_b": self.link_b if chosen(self.link_b) else None,
+            "depth_mm": self.depth_mm if chosen(self.depth_mm) else None,
+        }
+
+
+class CuroboNotReady(CuroboUnavailableError):
+    """The sidecar started, judged its own retract and refused it. :attr:`refusal` says which links touch."""
+
+    def __init__(self, message: str, *, refusal: StateRefusal) -> None:
+        super().__init__(message)
+        self.refusal = refusal
+
+
+def _refusal_or_logged(block: object, *, what: str) -> "StateRefusal | None":
+    """The refusal in a reply, or ``None`` with a warning where this client cannot read it.
+
+    A refusal is a diagnostic on a verdict that already stands. Raising here would turn "no
+    collision free plan" into "the planner is unavailable" over the spelling of a field, and
+    take a driver's status with it.
+    """
+    if block is None:
+        return None
+    try:
+        return StateRefusal.from_reply(block)
+    except CuroboUnavailableError as exc:
+        logger.warning("%s, so it is reported without a typed reason: %s (block: %r)", what, exc, block)
+        return None
 
 
 def _raise_if_call_failed(msg: dict) -> None:
@@ -129,6 +278,143 @@ class JointCheckVerdict:
     first_invalid: int | None
     checked: int
     reason: str
+    #: Why the sidecar refused ``first_invalid``, where it said. None when it passed, and
+    #: None when the sidecar is older than the typed reason or could not name one: the
+    #: verdict above stands either way.
+    refusal: "StateRefusal | None" = None
+
+
+@dataclass(frozen=True, slots=True)
+class SelfExplanation:
+    """What the sidecar found in each of a set of configurations, judged but not planned.
+
+    There is one entry per configuration sent, in that order: whether the robot's own
+    spheres overlap, whether every joint is inside the planner's bounds, and, where the
+    descriptor says which link owns which sphere, the deepest pair and its depth. ``pairs``
+    and ``depths_mm`` hold ``None`` per entry where there was nothing to name.
+
+    They are ``UNSET`` where nobody asked, which is a different thing from ``None`` and has
+    to stay different. Naming a pair is pairwise arithmetic over every sphere of the robot,
+    on the CPU, per configuration: on a ur5 with the EGU-50, at 590 spheres, that is
+    173,755 pairs and 8.29 ms a pose, which is 51 minutes over one candidate family of the
+    retract rule, and that rule reads the two verdicts and throws the names away. So a
+    caller may ask for the verdicts alone. Were not-asked also ``None``, an evidence file
+    would record that family as overlapping nothing, which is a sentence about the robot
+    nobody measured.
+
+    The matrix gate compares this against the exact meshes. A sample where the cuRobo term
+    says it collides and the pair says nothing, or the other way round, is an attribution
+    disagreement, and that is the number the evidence records.
+    """
+
+    self_collides: tuple[bool, ...]
+    bound_ok: tuple[bool, ...]
+    pairs: "Maybe[tuple[tuple[str, str] | None, ...]]"
+    depths_mm: "Maybe[tuple[float | None, ...]]"
+
+    @property
+    def pairs_named(self) -> bool:
+        """Whether the names were asked for at all. Everything that reports has to say which it is."""
+        return chosen(self.pairs)
+
+    def __len__(self) -> int:
+        return len(self.self_collides)
+
+    def joined(self, other: SelfExplanation) -> SelfExplanation:
+        """This explanation followed by ``other``: how a batched question becomes one answer, in order.
+
+        Two halves that were not asked the same question are refused rather than joined:
+        joining a named half onto an unnamed one would either invent names for the half that
+        has none or drop the half that has them, and both read as a measurement.
+        """
+        if self.pairs_named != other.pairs_named:
+            raise ValueError(
+                f"one half of this answer was asked for link names and the other was not "
+                f"({self.pairs_named} and {other.pairs_named}): there is no way to join them that is true"
+            )
+        if not self.pairs_named:
+            return SelfExplanation(
+                self_collides=self.self_collides + other.self_collides,
+                bound_ok=self.bound_ok + other.bound_ok, pairs=UNSET, depths_mm=UNSET,
+            )
+        assert chosen(self.pairs) and chosen(other.pairs)  # noqa: S101 (narrowed by pairs_named above)
+        assert chosen(self.depths_mm) and chosen(other.depths_mm)  # noqa: S101
+        return SelfExplanation(
+            self_collides=self.self_collides + other.self_collides,
+            bound_ok=self.bound_ok + other.bound_ok,
+            pairs=self.pairs + other.pairs,
+            depths_mm=self.depths_mm + other.depths_mm,
+        )
+
+    @classmethod
+    def from_reply(cls, msg: dict, *, sent: int, named: bool = True) -> SelfExplanation:
+        """Read an ``explain_js`` reply covering ``sent`` configurations, or raise: a partial answer is not an answer.
+
+        ``named`` is what the question asked for. A reply with no names to a question that
+        wanted them is a short answer and is refused; a reply with names to a question that
+        did not is read as the verdicts alone, because the caller said it would not look.
+        """
+        if not msg.get("success"):
+            _raise_if_call_failed(msg)
+            raise CuroboUnavailableError(
+                f"the cuRobo sidecar answered explain_js with an unlabelled failure: {msg.get('reason')}"
+            )
+        collides, bounds = msg.get("self_collides"), msg.get("bound_ok")
+        pairs, depths = msg.get("pairs"), msg.get("depths_mm")
+        rows = (collides, bounds) + ((pairs, depths) if named else ())
+        if not all(isinstance(row, list) and len(row) == sent for row in rows):
+            raise CuroboUnavailableError(
+                f"the cuRobo sidecar was asked about {sent} configuration(s) and answered for "
+                f"{[len(row) if isinstance(row, list) else None for row in rows]}: nothing here judged them all"
+            )
+        assert isinstance(collides, list) and isinstance(bounds, list)  # noqa: S101 (narrowed by the check above)
+        verdicts = {
+            "self_collides": tuple(bool(value) for value in collides),
+            "bound_ok": tuple(bool(value) for value in bounds),
+        }
+        if not named:
+            return cls(pairs=UNSET, depths_mm=UNSET, **verdicts)
+        assert isinstance(pairs, list) and isinstance(depths, list)  # noqa: S101
+        return cls(
+            pairs=tuple(
+                (str(pair[0]), str(pair[1])) if isinstance(pair, (list, tuple)) and len(pair) == 2 else None
+                for pair in pairs
+            ),
+            depths_mm=tuple(
+                float(depth) if isinstance(depth, (int, float)) and math.isfinite(depth) else None
+                for depth in depths
+            ),
+            **verdicts,
+        )
+
+    def render(self) -> str:
+        """How many of them collide with the robot itself, and the deepest pair among those that do."""
+        hits = sum(self.self_collides)
+        if not chosen(self.pairs) or not chosen(self.depths_mm):
+            named = ", which link pairs was not asked"
+        else:
+            deepest = max(
+                ((depth, pair) for depth, pair in zip(self.depths_mm, self.pairs) if depth is not None),
+                default=None,
+            )
+            named = (f", deepest {deepest[1][0]} and {deepest[1][1]} by {deepest[0]:.1f} mm"
+                     if deepest and deepest[1] else "")
+        outside = sum(not ok for ok in self.bound_ok)
+        return (f"{hits} of {len(self)} configuration(s) collide with the robot itself{named}; "
+                f"{outside} outside the planner's joint bounds")
+
+    def to_dict(self) -> dict[str, Any]:
+        """The same rows as plain data, ready for the evidence file."""
+        named = self.pairs_named
+        return {
+            "self_collides": list(self.self_collides),
+            "bound_ok": list(self.bound_ok),
+            # `pairs_named` is what keeps a null here from reading as "nothing overlapped".
+            "pairs_named": named,
+            "pairs": ([list(pair) if pair is not None else None for pair in self.pairs]
+                      if chosen(self.pairs) else None),
+            "depths_mm": list(self.depths_mm) if chosen(self.depths_mm) else None,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,10 +459,14 @@ def _verdict_from_reply(msg: dict, *, sent: int) -> JointCheckVerdict:
             reason=f"all {sent} samples pass the cuRobo check",
         )
     if counted and valid is False and type(first) is int and 0 <= first < sent:
+        refusal = _refusal_or_logged(
+            msg.get("refusal"), what=f"the cuRobo sidecar refused sample {first} in terms this client cannot read",
+        )
         return JointCheckVerdict(
             valid=False, first_invalid=first, checked=sent,
             reason=(f"the cuRobo check refuses sample {first} of {sent}, counted from 0: a joint "
                     f"limit, a self collision or the planner's world"),
+            refusal=refusal,
         )
     raise CuroboUnavailableError(
         f"the cuRobo sidecar answered check_js on {sent} samples with a reply that is not a whole "
@@ -198,6 +488,108 @@ def _log_at_exit(emit: "Callable[..., None]", message: str, *args: object) -> No
         pass
 
 
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def _reported_sha256(value: object) -> Maybe[str]:
+    return value if isinstance(value, str) and _SHA256_HEX.fullmatch(value) else UNSET
+
+
+@dataclass(frozen=True)
+class SidecarIdentity:
+    """Who a started sidecar says it is, read from its ready line.
+
+    ``provenance`` is the ``_provenance`` block of the descriptor, naming the arm, hand and
+    plate it was built for, and ``None`` where the sidecar reported none. The hashes are the
+    sidecar's own: ``arm_descriptor_sha256`` over the descriptor's ``robot_cfg`` and
+    ``composed_sha256`` over the config the planner loaded, both canonical JSON through
+    ``_curobo_body_links.canonical_sha256``, and ``urdf_sha256`` over the URDF its
+    kinematics resolved, line endings normalised. ``bodies`` names the body links composed
+    in.
+
+    Each is UNSET where the sidecar did not say it, never ``''`` or ``None``: a sidecar
+    older than these fields says nothing, and an empty value would read as one. The drivers
+    refuse on the provenance; nothing refuses on the hashes yet.
+    """
+
+    provenance: dict[str, object] | None = None
+    arm_descriptor_sha256: Maybe[str] = UNSET
+    urdf_sha256: Maybe[str] = UNSET
+    composed_sha256: Maybe[str] = UNSET
+    #: One row per body link the sidecar composed in, as ``_curobo_body_links.body_report``
+    #: builds it: link, parent, fixed transform, sphere and slot counts, the spheres' hash,
+    #: buffer and ignore list.
+    bodies: Maybe[tuple[dict[str, object], ...]] = UNSET
+
+    @property
+    def body_names(self) -> tuple[str, ...]:
+        """The links the sidecar added, in order; empty where it reported none or said nothing."""
+        return tuple(str(row.get("link")) for row in self.bodies) if chosen(self.bodies) else ()
+
+    @classmethod
+    def from_ready(cls, ready: Mapping[str, object]) -> SidecarIdentity:
+        """What a ready line says, field by field, and UNSET for every field it does not carry as a real value."""
+        descriptor = ready.get("descriptor")
+        bodies = ready.get("bodies")
+        well_formed = isinstance(bodies, list) and all(
+            isinstance(row, dict) and isinstance(row.get("link"), str) for row in bodies
+        )
+        return cls(
+            provenance=dict(descriptor) if isinstance(descriptor, dict) else None,
+            arm_descriptor_sha256=_reported_sha256(ready.get("arm_descriptor_sha256")),
+            urdf_sha256=_reported_sha256(ready.get("urdf_sha256")),
+            composed_sha256=_reported_sha256(ready.get("composed_sha256")),
+            bodies=tuple(dict(row) for row in bodies) if well_formed and isinstance(bodies, list) else UNSET,
+        )
+
+    @classmethod
+    def from_client(cls, client: object) -> SidecarIdentity:
+        """What any client says, an injected stub included: its identity, else its provenance alone, else nothing.
+
+        Nothing is an identity with no provenance, which the descriptor refusal refuses, so
+        a client that cannot say which descriptor it loaded never plans.
+        """
+        identity = getattr(client, "identity", None)
+        if isinstance(identity, SidecarIdentity):
+            return identity
+        provenance = getattr(client, "descriptor_provenance", None)
+        return cls(provenance=dict(provenance) if isinstance(provenance, dict) else None)
+
+    def render(self) -> str:
+        def said(value: object) -> str:
+            return str(value) if chosen(value) else "not reported"
+
+        if self.provenance is None:
+            descriptor = "no _provenance reported"
+        else:
+            descriptor = ", ".join(f"{key} {self.provenance[key]}" for key in sorted(self.provenance))
+        if chosen(self.bodies):
+            bodies = "; ".join(
+                f"{row.get('link')} under {row.get('parent')}, {row.get('spheres')} spheres" for row in self.bodies
+            ) if self.bodies else "none"
+        else:
+            bodies = "not reported"
+        lines = [
+            "cuRobo sidecar identity",
+            f"  descriptor: {descriptor}",
+            f"  arm descriptor sha256: {said(self.arm_descriptor_sha256)}",
+            f"  urdf sha256: {said(self.urdf_sha256)}",
+            f"  composed sha256: {said(self.composed_sha256)}",
+            f"  body links: {bodies}",
+        ]
+        return "\n".join(lines).encode("ascii", "backslashreplace").decode("ascii")
+
+    def to_dict(self) -> dict[str, Any]:
+        """The same fields as plain data, ``null`` for each the sidecar did not report."""
+        return {
+            "provenance": dict(self.provenance) if self.provenance is not None else None,
+            "arm_descriptor_sha256": self.arm_descriptor_sha256 if chosen(self.arm_descriptor_sha256) else None,
+            "urdf_sha256": self.urdf_sha256 if chosen(self.urdf_sha256) else None,
+            "composed_sha256": self.composed_sha256 if chosen(self.composed_sha256) else None,
+            "bodies": [dict(row) for row in self.bodies] if chosen(self.bodies) else None,
+        }
+
+
 class CuroboPlanClient:
     """Spawns + drives the warm cuRobo planning server. ``plan`` returns a joint trajectory or ``None``."""
 
@@ -213,6 +605,9 @@ class CuroboPlanClient:
         attach_spheres: int = 0,
         mesh_cache: int | None = None,
         voxel_grid: str | None = None,
+        body_links: Sequence[Mapping[str, Any]] = (),
+        measure_only: bool = False,
+        default_q: "Sequence[float] | None" = None,
     ) -> None:
         # Every path and knob resolves through safety.planning.environment, the single
         # anchor, so a caller overrides what it needs and the rest tracks the variables
@@ -229,6 +624,10 @@ class CuroboPlanClient:
         # Collision-sphere slots reserved for a carried payload. At 0 the sidecar robot
         # config is untouched and `attach_payload` refuses, which is the unchanged path.
         self._attach_spheres = max(0, int(attach_spheres))
+        #: The bodies the sidecar adds to the arm's descriptor when it starts: the hand a
+        #: cell names, placed by its declared tool frame. Empty adds nothing, and a driver
+        #: then refuses the sidecar for having no hand.
+        self._body_links = [dict(body) for body in body_links]
         # Slots for the two other kinds of obstacle. Both are reserved when the planner is
         # BUILT, so they are decided here and never again: a mesh or a voxel grid sent to a
         # planner that reserved none has nowhere to go. 0 and empty leave the sidecar as it was.
@@ -260,10 +659,41 @@ class CuroboPlanClient:
         self._reader: threading.Thread | None = None
         self.joint_names: list[str] = []
         self.dt: float = 0.0
-        #: The ``_provenance`` of the descriptor the sidecar loaded, from its ready line:
-        #: which arm, which hand, which plate. ``None`` when the sidecar reported none. The
-        #: drivers refuse on it; the client only keeps it.
-        self.descriptor_provenance: dict[str, object] | None = None
+        #: Who the sidecar said it is when it became ready: the provenance of the descriptor
+        #: and the hashes of what it loaded. Nothing is reported until then. The drivers
+        #: refuse on it; the client only keeps it.
+        self.identity = SidecarIdentity()
+        #: The retract this arm and hand were judged at, from the committed table. The
+        #: descriptor carries one per arm and it can only be right about a bare arm: the
+        #: ur3's own retract clears the Hand-E by 13.4 mm on the exact meshes and is a self
+        #: collision in the planner's sphere model, so the sidecar never becomes ready. None
+        #: leaves the descriptor's own pose, which is what a bare arm wants.
+        self._default_q = [float(value) for value in default_q] if default_q is not None else None
+        #: True for a caller that only wants to measure: it accepts a sidecar that reports a
+        #: refused retract instead of exiting, and refuses to plan. Only the matrix gate asks
+        #: for it, and a driver never does.
+        self._measure_only = bool(measure_only)
+        #: Why the sidecar refused the last thing it was asked, or None. It is set by
+        #: start(), plan and plan_joint, and cleared by the next plan that succeeds, so it
+        #: describes the last answer and not the history.
+        self.last_refusal: StateRefusal | None = None
+
+    @property
+    def measure_only(self) -> bool:
+        """True when this client asked for a sidecar that measures instead of planning."""
+        return self._measure_only
+
+    @property
+    def descriptor_provenance(self) -> dict[str, object] | None:
+        """The ``_provenance`` of the descriptor the sidecar loaded, a view of :attr:`identity`.
+
+        It is ``None`` where the sidecar said none.
+        """
+        return self.identity.provenance
+
+    @descriptor_provenance.setter
+    def descriptor_provenance(self, provenance: dict[str, object] | None) -> None:
+        self.identity = replace(self.identity, provenance=dict(provenance) if isinstance(provenance, dict) else None)
 
     @property
     def live_scene_path(self) -> str:
@@ -304,12 +734,31 @@ class CuroboPlanClient:
         msg = self._recv(_READY_TIMEOUT_S)          # the handshake carries no id
         if not msg or msg.get("status") != "ready":
             reason = (msg or {}).get("reason", "no ready signal (timeout or server died)")
+            # A refusal here is the sidecar judging its own retract and finding the arm
+            # inside itself or inside its hand. It is typed, because the next step for an
+            # operator is a geometry and not a restart.
+            refused = _refusal_or_logged(
+                (msg or {}).get("refusal"), what="the cuRobo sidecar refused to start in terms this client cannot read",
+            )
             self.close()
+            if refused is not None:
+                raise CuroboNotReady(f"cuRobo server did not become ready: {refused.render()}", refusal=refused)
             raise CuroboUnavailableError(f"cuRobo server did not become ready: {reason}")
+        if msg.get("measure_only") and not self._measure_only:
+            # A measuring sidecar answers every plan with a refusal. Planning against one
+            # would look like a cell whose every goal is blocked, which is exactly the
+            # diagnosis it would send an operator chasing.
+            self.close()
+            raise CuroboUnavailableError(
+                f"the cuRobo sidecar started to MEASURE, not to plan ({ENV_MEASURE_ONLY} is set in its environment), "
+                "and this client asked for a planner"
+            )
+        self.last_refusal = _refusal_or_logged(
+            msg.get("refusal"), what="the measuring sidecar reported a refusal this client cannot read",
+        )
         self.joint_names = list(msg["joint_names"])
         self.dt = float(msg.get("dt", 0.0))
-        descriptor = msg.get("descriptor")
-        self.descriptor_provenance = dict(descriptor) if isinstance(descriptor, dict) else None
+        self.identity = SidecarIdentity.from_ready(msg)
         # The warm-up cost is worth recording: about 25 s cold against about 8 s with a
         # warm kernel cache is the difference between a slow planner and a kernel cache
         # that was thrown away.
@@ -458,6 +907,7 @@ class CuroboPlanClient:
         """
         if self._proc is None:
             self.start()
+        self.last_refusal = None
         started = time.monotonic()
         want = self._send({"start_joints": list(start_joints), "goal_pos_m": list(goal_pos_m),
                            "goal_quat_wxyz": list(goal_quat_wxyz)})
@@ -475,10 +925,14 @@ class CuroboPlanClient:
         _raise_if_call_failed(msg)
         # A verdict rather than a failure, but the caller turns it into no motion, so the
         # reason a pick stopped is recoverable from here alone.
+        self.last_refusal = _refusal_or_logged(
+            msg.get("refusal"), what="the cuRobo sidecar refused this move in terms this client cannot read",
+        )
         logger.warning(
             "cuRobo found NO collision-free plan to (%.3f, %.3f, %.3f) m after %.0f ms: %s",
             goal_pos_m[0], goal_pos_m[1], goal_pos_m[2],
-            (time.monotonic() - started) * 1000.0, msg.get("reason", "no reason given"),
+            (time.monotonic() - started) * 1000.0,
+            self.last_refusal.render() if self.last_refusal is not None else msg.get("reason", "no reason given"),
         )
         return None
 
@@ -499,6 +953,7 @@ class CuroboPlanClient:
         """
         if self._proc is None:
             self.start()
+        self.last_refusal = None
         started = time.monotonic()
         want = self._send({"cmd": "plan_js", "start_joints": list(start_joints),
                            "goal_joints": list(goal_joints)})
@@ -513,9 +968,13 @@ class CuroboPlanClient:
             )
             return traj
         _raise_if_call_failed(msg)
+        self.last_refusal = _refusal_or_logged(
+            msg.get("refusal"), what="the cuRobo sidecar refused this joint move in terms this client cannot read",
+        )
         logger.warning(
             "cuRobo found NO collision-free joint plan after %.0f ms: %s",
-            (time.monotonic() - started) * 1000.0, msg.get("reason", "no reason given"),
+            (time.monotonic() - started) * 1000.0,
+            self.last_refusal.render() if self.last_refusal is not None else msg.get("reason", "no reason given"),
         )
         return None
 
@@ -589,11 +1048,17 @@ class CuroboPlanClient:
                         f"the cuRobo check refuses sample {first} of {len(rows)}, counted from 0: "
                         f"a joint limit, a self collision or the planner's world"
                     ),
+                    # Restated over the whole path, the verdict is a new object, so the typed
+                    # reason is carried over by name: it is the only thing here that says
+                    # which two links touched.
+                    refusal=verdict.refusal,
                 )
                 # A verdict, and the caller turns it into no motion, so this is where the
                 # reason stays.
-                logger.warning("the cuRobo check refused a joint path after %.0f ms: %s",
-                               took_ms, refused.reason)
+                logger.warning(
+                    "the cuRobo check refused a joint path after %.0f ms: %s%s", took_ms, refused.reason,
+                    f". {refused.refusal.render()}" if refused.refusal is not None else "",
+                )
                 return refused
         took_ms = (time.perf_counter() - started) * 1000.0
         logger.debug("checked %d joint configuration(s) in %.0f ms: all pass", checked, took_ms)
@@ -601,6 +1066,54 @@ class CuroboPlanClient:
             valid=True, first_invalid=None, checked=checked,
             reason=f"all {checked} samples pass the cuRobo check",
         )
+
+    def explain_joints(
+        self, configs: "Sequence[Sequence[float]]", *, name_pairs: bool = True,
+    ) -> SelfExplanation:
+        """Ask the sidecar what it finds in each configuration, without asking it to plan.
+
+        It is the same judgement as :meth:`check_joints`, reported per configuration instead
+        of as one verdict, and with the pair of links named where the loaded descriptor says
+        which link owns which sphere. It is batched at the cap of 1000, as a check is, and
+        joined in the order sent, so the matrix gate reads the row for a pose by its index.
+
+        ``name_pairs=False`` asks for the two verdicts alone. Naming a pair is pairwise
+        arithmetic over every sphere of the robot, per configuration, on the CPU: 8.29 ms a
+        pose on a ur5 with the EGU-50, at 590 spheres and 173,755 pairs, which is 51 minutes
+        over one candidate family of the retract rule. That rule reads ``self_collides`` and
+        ``bound_ok`` and nothing else. The answer then carries ``UNSET`` rather than a row of
+        ``None``, because a ``None`` there is a real answer.
+
+        Raises ``CuroboUnavailableError`` whenever any batch came back without judging every
+        configuration in it.
+        """
+        rows = [[float(value) for value in row] for row in configs]
+        if not rows:
+            raise ValueError("explain_joints was given no configuration, and there is nothing to explain")
+        for index, row in enumerate(rows):
+            if not all(math.isfinite(value) for value in row):
+                raise ValueError(f"configuration {index} holds a value that is not a finite number: {row}")
+        if self._proc is None:
+            self.start()
+        for index, row in enumerate(rows):
+            if len(row) != len(self.joint_names):
+                raise ValueError(
+                    f"configuration {index} has {len(row)} joints and the sidecar plans {len(self.joint_names)}"
+                )
+        empty: Any = () if name_pairs else UNSET
+        explained = SelfExplanation(self_collides=(), bound_ok=(), pairs=empty, depths_mm=empty)
+        for offset in range(0, len(rows), MAX_CHECK_CONFIGURATIONS):
+            batch = rows[offset : offset + MAX_CHECK_CONFIGURATIONS]
+            want = self._send({"cmd": "explain_js", "joints": batch, "name_pairs": name_pairs})
+            msg = self._recv(_PLAN_TIMEOUT_S, want=want)
+            if msg is None:
+                raise CuroboUnavailableError(
+                    "the cuRobo sidecar did not explain the configurations it was sent: it did not answer in time "
+                    "or it exited"
+                )
+            explained = explained.joined(
+                SelfExplanation.from_reply(msg, sent=len(batch), named=name_pairs))
+        return explained
 
     def set_world(self, cuboids: list[dict], meshes: "list[dict] | None" = None) -> int:
         """Replace cuRobo's collision world with these obstacles (the scene->planner world-model).
@@ -780,10 +1293,34 @@ class CuroboPlanClient:
         planner behind the config's back.
         """
         env = dict(os.environ)
+        # The margin and the payload slots are written from this client whatever the shell
+        # holds, and removed where it asked for neither: nothing in this repository sets
+        # either variable, so a value in the shell is a leftover, and inheriting one would
+        # give a cell a clearance or a payload its config never asked for.
         if self._self_collision_margin_mm > 0.0:
             env[ENV_SELF_COLLISION_MARGIN_MM] = repr(self._self_collision_margin_mm)
+        else:
+            env.pop(ENV_SELF_COLLISION_MARGIN_MM, None)
         if self._attach_spheres > 0:
             env[ENV_ATTACH_SPHERES] = str(self._attach_spheres)
+        else:
+            env.pop(ENV_ATTACH_SPHERES, None)
+        if self._measure_only:
+            env[ENV_MEASURE_ONLY] = "1"
+        else:
+            env.pop(ENV_MEASURE_ONLY, None)
+        # Written from this client whatever the shell holds, for the same reason as the
+        # bodies: an inherited pose would start the arm somewhere this cell never chose.
+        if self._default_q is not None:
+            env[ENV_DEFAULT_Q] = json.dumps(self._default_q)
+        else:
+            env.pop(ENV_DEFAULT_Q, None)
+        # Written from this client whatever the shell holds: an inherited value would add a
+        # hand nobody sent.
+        if self._body_links:
+            env[ENV_BODY_LINKS] = json.dumps(self._body_links, sort_keys=True)
+        else:
+            env.pop(ENV_BODY_LINKS, None)
         if self._reserved:
             env[ENV_CUROBO_MESH_CACHE] = str(self._mesh_cache)
             if self._voxel_grid:

@@ -17,8 +17,9 @@ command-line flag in runner code rather than through config. The safety layer is
 (section 4.1).
 
 **Prerequisites.** A virtual environment with `requirements.txt`; `python` means that interpreter
-throughout, and `python -m src.config` exits 0. Everything runs in the plain environment except the
-mesh-bundle bake (5.2) and any on-box simulation run, which need the simulator's own interpreter.
+throughout, and `python -m src.config` exits 0. Everything runs in the plain environment except any
+on-box simulation run, which needs the simulator's own interpreter. The mesh-bundle bake (5.2) is no
+longer one of them: it reads the vendor's own files and needs no simulator.
 
 Sibling guides: [01](01-configuration.md) . [02](02-models.md) . [03](03-calibration.md) . **04** .
 [05](05-pick-loop.md) . [06](06-grippers.md)
@@ -184,7 +185,9 @@ jaws holds no Robotiq object anywhere, and a Robotiq cell holds exactly one `Gri
 
 [`src/robot/drivers/sim/robot_models.py`](../../src/robot/drivers/sim/robot_models.py) maps one model key to a
 simulator USD, a baked gripper variant, a reach and a payload for `ur3e`, `ur5e` and `ur10e`, and
-`curobo_robot_yml(model, hand)` turns the same key and the hand into `{key}_{hand}.yml`. One key drives the DH table, the
+`curobo_arm_descriptor(model)` turns the same key into `willy_{key}.yml`, the arm's own descriptor. The hand
+`robot.gripper.model` names carries no descriptor of its own: the planner adds it to the arm as a body link when
+its sidecar starts, placed by the declared tool frame. One key drives the DH table, the
 exact-mesh bundle, the planner descriptor and the simulator asset selection, which is why the schema
 cross-validates it (4.8).
 
@@ -271,6 +274,14 @@ accept memoises the target for the next continuity check.
 | 4 | `self_collision` | `safety.self_collision.enforce` | `target_joints` and a resolvable kinematics model | any monitored pair closer than `min_distance_mm`, default 10.0 |
 | 5 | `payload` | `safety.payload.enforce` | config only | negative mass, mass over `max_mass_kg`, any negative inertia component |
 | 6 | `motion_continuity` | `safety.motion_continuity.enforce` | a previous **accepted** target | joint step, TCP step or orientation step over the caps |
+
+> **The envelope of the planner is narrower than the guard's, on purpose.** Guard 2 enforces the factory
+> limit of Universal Robots, 360 degrees per axis either way, less `margin_deg`. A planner descriptor holds
+> the elbow at the planning limit of 180 degrees that Universal Robots publishes and every other joint at
+> 360, and the planner then narrows all of them by `position_limit_clip`, 0.1 rad or 5.73 degrees, when it
+> loads. 5.73 degrees against 5.0 is what keeps the planner from proposing a configuration the guard
+> refuses, and `tests/test_planner_joint_envelope.py` asserts it for every bundled arm and for the
+> simulation cell. A cell that raises `margin_deg` above 5.73 breaks that relation, and the test says so.
 
 Every rejection becomes a typed `MotionResult`, prefixed `[safety:<guard>/<reason>]`, with one
 `MotionStatus` per `SafetyReason` from a closed table in
@@ -424,25 +435,29 @@ against a move.
 
 Bundles are per robot, `{model}_collision_meshes.npz`, and a present ur5e bundle says nothing about a
 UR3e cell. They ship in [`src/robot/safety/data/`](../../src/robot/safety/data/), one per
-arm plus one per arm-and-gripper pair, and that directory is the list. A new model gets exact meshes
-as soon as its bundle lands beside them, with no code change.
+arm, and that directory is the list. A new model gets exact meshes as soon as its bundle lands beside
+them, with no code change. A hand other than the 2F-85 the arm bundles carry is a bundle of its own,
+`{hand}_hand_meshes.npz`, composed onto the arm when the guard loads and placed on the flange by the
+rotation the declared tool frame derives, so one hand file serves every arm.
 
 Call `mesh_backend_status(model)` from `src.robot.safety._fcl_self_collision` for each model that
-matters. The tokens are `ok`, `unknown_model`, `no_bundle`,
+matters. The tokens are `ok`, `unknown_model`, `no_bundle`, `no_hand_bundle`,
 `variant_model_mismatch` and `no_engine`, and `tests/test_status_tokens_are_documented.py`
 fails if this sentence falls behind the code, in both directions: a token the guard can
 return that this sentence omits, and a token this sentence names that the guard cannot
-return. `unknown_model` means there is no bundled DH row for that key, so anything that is not a UR has no
+return. `no_hand_bundle` means the named hand has no bundle of its own, and `variant_model_mismatch`
+that its bundle records only other arms as proven, so composing it onto this one would be a guess.
+`unknown_model` means there is no bundled DH row for that key, so anything that is not a UR has no
 exact-mesh authority, ever. `no_bundle` is recoverable by baking one with
-[`scripts/isaac/bake_ur_collision_meshes.py`](../../scripts/isaac/bake_ur_collision_meshes.py) under
-the simulator's interpreter; it is self-validating, and that is the gate, so run it for a model whose
-bundle already ships, without writing, and only trust a new model if that reproduces the committed
-bundle.
-An arm whose USD carries no collision mesh is baked from its URDF package instead, with
-[scripts/isaac/bake_ur_meshes_from_urdf.py](../../scripts/isaac/bake_ur_meshes_from_urdf.py),
-which needs no simulator and proves itself on a known-good arm before every write. That is how
-`ur10` got its bundle. A sixth token asserting that this absence was permanent lived here for
-one day and was retracted, which is why the check above now runs both ways.
+[`scripts/isaac/bake_ur_meshes_from_urdf.py`](../../scripts/isaac/bake_ur_meshes_from_urdf.py) in the
+plain environment: no simulator, no GPU. It reads the collision STL files of Universal Robots, pinned
+to one upstream commit, and places them through a URDF rendered from the vendored config of Universal
+Robots, so a bundle is a function of pinned bytes rather than an artefact somebody produced once. Run
+it without `--write` first: it compares the bake with the bundle already committed for that model and
+refuses to write a difference nobody named. Every arm bundle in this repository was baked that way,
+which moved four links of the family by 0.5 to 2.0 mm and `ur10` by up to 65 mm, where the copies a
+simulator ships disagreed with the vendor. A sixth token asserting that an absence was permanent lived
+here for one day and was retracted, which is why the check above now runs both ways.
 
 ### 5.3 Asking for `fcl` does not guarantee getting it
 

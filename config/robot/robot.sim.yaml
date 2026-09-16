@@ -173,10 +173,26 @@ robot:
       min_distance_mm: 10.0
       # The same clearance handed to the trajectory planner, so it stops returning paths this guard
       # would then reject: cuRobo plans against a sphere model while the guard re-checks the exact
-      # meshes, and the two disagree by fractions of a millimetre. Not derived from
+      # meshes, and with no margin at all the two disagree by fractions of a millimetre and the
+      # plan loses. cuRobo returns UR5e plans at 9.44 to 9.47 mm against this 10.000 mm guard,
+      # costing 3 of 10 picks to what reads as bad grasping. It is not derived from
       # `min_distance_mm`, because how much margin a planner can absorb depends on how tightly its
-      # spheres fit that arm: a UR3e finds no plan at all at 10 mm (see robot.ur3e.yaml).
-      planner_margin_mm: 10.0
+      # spheres fit that arm carrying that hand.
+      #
+      # 4.0 is the value the whole arm family uses, and it is a measurement. The fitted sphere map
+      # is fatter where the arm is thin: the hand reaches 12 mm past its own geometry and wrist_1
+      # 8 mm, which is 20 mm across a pair whose real clearance on a UR5 is 13.8 mm. With 10 mm of
+      # margin on top, the UR5 and the UR10 have no pose at all: over the retract rule's own family
+      # of 371,293 candidates every single one is refused, with every hand. Measured on the UR5
+      # across all four arm and hand pairings, a retract is found at 4 mm and at 6 mm, and every
+      # candidate is refused at 8 mm and at 10 mm. 4 keeps four millimetres below that edge, and it
+      # is the number the UR3e measured for itself (see robot.ur3e.yaml), so the family shares one
+      # value instead of two.
+      #
+      # The guard below is untouched at 10.000 mm, fail-closed, and still the last word before any
+      # motion. What a smaller margin here can cost is a path the guard then rejects, which is a
+      # lost pick and is counted by running the cell.
+      planner_margin_mm: 4.0
 
   gripper:
     vendor: "robotiq"

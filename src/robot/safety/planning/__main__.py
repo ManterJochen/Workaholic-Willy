@@ -14,8 +14,7 @@ planner sidecar and the Coal or python-fcl exact-mesh collision engine, and exit
   is in force, meaning blind IK instead of cuRobo, the capsule proxy instead of exact
   meshes, or both. It is also the answer where the config tree this box would load did
   not load at all: the reading is then about the ``ur5e`` fallback and says so on its
-  last line. That case exited ``0`` until 2026-09-10, which is a green light for a robot
-  nobody configured.
+  last line. A ``0`` there would be a green light for a robot nobody configured.
 
 A development box without the GPU environment reports ``1`` by design. The check is
 meant to run on the target cell to confirm the anchoring.
@@ -30,8 +29,8 @@ subprocess and a few seconds, so it stays opt-in rather than folded into ``--che
 See :mod:`.doctor` and ``docs/code-integrity.md``.
 
 Both readings are per-robot. The mesh bundle ships as
-``{model}_collision_meshes.npz`` and the cuRobo descriptor as ``{model}_{hand}.yml``,
-so a present ``ur5e`` bundle says nothing about a UR3e cell. This entry point reads the
+``{model}_collision_meshes.npz`` and the cuRobo descriptor is named by the arm alone, so
+a present ``ur5e`` bundle says nothing about a UR3e cell. This entry point reads the
 model from the config the cell will load, and ``--model`` overrides it for a box with
 no config tree.
 """
@@ -94,13 +93,13 @@ def main(argv: list[str] | None = None) -> int:
         # The hand comes from the one name the guard takes it from, robot.gripper.model, so the
         # doctor and the guard cannot be asked about different grippers.
         from src.contracts import chosen
-        from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR, curobo_robot_yml
+        from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR, curobo_arm_descriptor
 
         gripper = stack.hand if chosen(stack.hand) else None
         descriptor = NO_DESCRIPTOR
         if gripper:
             try:
-                descriptor = curobo_robot_yml(model, gripper)
+                descriptor = curobo_arm_descriptor(model)
             except ValueError as exc:
                 descriptor = f"<none: {exc}>"
         report = run_doctor(model=model, robot_config=descriptor, gripper=gripper)

@@ -11,10 +11,19 @@ Run it with the project venv. No simulator, no GPU:
     .venv/Scripts/python.exe -m src.robot.safety.planning.robot.build_gripper_spheres \\
         --variant schunk_egu50
     .venv/Scripts/python.exe -m src.robot.safety.planning.robot.build_gripper_spheres \\
-        --mesh vendor/eoat.stl --gripper eoat --scale-to-mm 1000 --out eoat_gripper_spheres.yml
+        --mesh vendor/eoat.stl --gripper eoat --scale-to-mm 1000 --cell-mm 34 --rmax-mm 17 \\
+        --origin mounting_face --out eoat_gripper_spheres.yml
 
-With no arguments it regenerates the committed Robotiq 2F-85 map, which is what the reference cell
-plans with. A test compares the committed file against this fit, so the two cannot drift.
+This does not write the committed maps. It grid fits a bundle: a voxel grid over the vertices, one
+sphere per occupied cell, capped radius. Measured against the meshes they stand for, the three maps
+it produced left a hole of 16.5 to 19.0 mm and reached 22.9 to 24.7 mm past the hand. A hole is a
+false clear: the planner, and the perception self filter that reads the same map, do not see the
+hand there.
+
+The committed maps are cover fits, written by `scripts/curobo/fit_cover_spheres.py` with
+`--hand <name> --write`, which covers every surface sample by construction or writes nothing at all.
+What is live here is `--mesh`, the path for a gripper this repository has not baked a bundle for,
+and the grid fit behind it.
 
 Scope, stated honestly: this covers the `tool0` gripper spheres, which are frame-correct and
 directly usable by cuRobo. The arm-link spheres and the schema-complete robot descriptor are
@@ -93,9 +102,9 @@ def main(argv: "list[str] | None" = None) -> int:
         default=1.0,
         help="multiply mesh coordinates by this to get millimetres (1000 for a mesh in metres)",
     )
-    # No defaults. They used to be 34.0 and 24.0, which is the 2F-85 finger cell size paired with
-    # its palm radius cap, a combination describing no part of any gripper. A default that looks
-    # calibrated is worse than one that looks arbitrary.
+    # No defaults. The pairing of 34.0 with 24.0 is the 2F-85 finger cell size against its palm
+    # radius cap, a combination describing no part of any gripper. A default that looks calibrated
+    # is worse than one that looks arbitrary.
     parser.add_argument("--cell-mm", type=float, default=None,
                         help="voxel size of the fit, millimetres, mesh only (required with --mesh)")
     parser.add_argument("--rmax-mm", type=float, default=None,
@@ -135,8 +144,10 @@ def main(argv: "list[str] | None" = None) -> int:
             )
         else:
             variant = args.variant or _DEFAULT_VARIANT
+            # A hand other than the 2F-85 the arm bundles carry is its own bundle.
+            hand_bundle = _BUNDLE_DIR / f"{variant}_hand_meshes.npz"
             fitted = fit_gripper_spheres(
-                _BUNDLE_DIR / f"{variant}_collision_meshes.npz",
+                hand_bundle if hand_bundle.is_file() else _BUNDLE_DIR / f"{variant}_collision_meshes.npz",
                 gripper=args.gripper or ("Robotiq 2F-85" if variant == _DEFAULT_VARIANT else variant),
             )
     except SphereFitError as exc:

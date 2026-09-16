@@ -33,12 +33,12 @@ every section ran without a failed call, 1 otherwise; the JSON names each failur
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
 import statistics
 import sys
-import tempfile
 import time
 import traceback
 from pathlib import Path
@@ -48,8 +48,8 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 PLANNING_DIR = REPO / "src" / "robot" / "safety" / "planning"
-# The sidecar imports its two config transforms as plain sibling modules, because the client spawns it
-# by path. Putting the same directory first makes the same two functions derive the same files here.
+# The sidecar imports the module that composes its config as a plain sibling, because the client spawns
+# it by path. Putting the same directory first makes the same composition run here.
 sys.path.insert(0, str(PLANNING_DIR))
 
 #: The guard margin each model's cell config carries (robot.sim.yaml, robot.ur3e.yaml).
@@ -217,8 +217,9 @@ class Probe:
         from curobo.motion_planner import MotionPlanner, MotionPlannerCfg  # type: ignore[import-not-found]
         from curobo.types import JointState  # type: ignore[import-not-found]
 
-        from _curobo_attach import derive_attach_config_file  # type: ignore[import-not-found]
-        from _curobo_margin import derive_margin_config_file  # type: ignore[import-not-found]
+        from curobo._src.util.config_io import resolve_config  # type: ignore[import-not-found]
+
+        from _curobo_body_links import canonical_sha256, compose_with_counts  # type: ignore[import-not-found]
 
         self.torch = torch
         self.SceneCfg = SceneCfg
@@ -235,33 +236,25 @@ class Probe:
         robot = f"{self.model}.yml"
         raw = os.path.join(str(get_content_root()), "configs", "robot", robot)
         self.raw_descriptor = raw
-        in_use = robot
         info["descriptor"] = robot
         info["raw_descriptor_path"] = raw
-        # The same two derivations the sidecar runs in curobo_planner_server.py. The files get a
-        # probe prefix so a sidecar booting beside this run never reads a file this run is writing.
+        # The one dict the sidecar composes (curobo_planner_server.py, _curobo_body_links): the margin, then
+        # the payload link, with every consumer built from its own deep copy.
+        composed, adjusted, added = compose_with_counts(
+            resolve_config(raw), margin_mm=self.margin_mm, attach_spheres=self.attach_spheres,
+        )
         if self.margin_mm > 0.0:
-            dst = os.path.join(tempfile.gettempdir(),
-                               f"willy_probe_guard{self.margin_mm:g}mm_{os.path.basename(raw)}")
-            adjusted = derive_margin_config_file(raw, dst, self.margin_mm)
             info["margin_links_adjusted"] = adjusted
-            if adjusted:
-                in_use = dst
         if self.attach_spheres > 0:
-            asrc = in_use if os.path.isabs(in_use) else os.path.join(
-                str(get_content_root()), "configs", "robot", in_use)
-            adst = os.path.join(tempfile.gettempdir(),
-                                f"willy_probe_attach{self.attach_spheres}_{os.path.basename(asrc)}")
-            added = derive_attach_config_file(asrc, adst, spheres=self.attach_spheres)
             info["attach_link_added"] = bool(added)
-            if added:
-                in_use = adst
-        info["robot_in_use"] = in_use
-        self.robot_in_use = in_use
+        info["robot_in_use"] = f"{robot} composed in memory"
+        info["composed_sha256"] = canonical_sha256(composed)
+        self.robot_in_use = composed
+        self.robot_in_use_label = info["robot_in_use"]
 
         started = time.perf_counter()
         cfg = self.call("curobo.motion_planner.MotionPlannerCfg.create", MotionPlannerCfg.create,
-                        robot=in_use, scene_model={"cuboid": dict(BOOT_WORLD)},
+                        robot=copy.deepcopy(composed), scene_model={"cuboid": dict(BOOT_WORLD)},
                         collision_cache={"cuboid": CUBOID_CACHE})
         self.planner = self.call("curobo.motion_planner.MotionPlanner", MotionPlanner, cfg)
         self.call("MotionPlanner.warmup", self.planner.warmup, enable_graph=True, num_warmup_iterations=5)
@@ -277,7 +270,7 @@ class Probe:
         info["plan_before"] = self.plan_once()
 
         started = time.perf_counter()
-        self.checker = self.make_checker(in_use, collision_activation_distance=0.0)
+        self.checker = self.make_checker(self.robot_in_use, collision_activation_distance=0.0)
         info["checker_build_s"] = round(time.perf_counter() - started, 2)
         info["checker_joint_names_match_planner"] = (
             list(self.checker.kinematics.joint_names) == list(self.planner.joint_names))
@@ -290,9 +283,9 @@ class Probe:
         info["planner_total_spheres"] = int(self.planner.kinematics.total_spheres)
         return info
 
-    def make_checker(self, robot_config: str, **kwargs):
+    def make_checker(self, robot_config: "str | dict", **kwargs):
         cfg = self.call("curobo.collision_checking.RobotCollisionCheckerCfg.load_from_config",
-                        self.RobotCollisionCheckerCfg.load_from_config, robot_config=robot_config,
+                        self.RobotCollisionCheckerCfg.load_from_config, robot_config=copy.deepcopy(robot_config),
                         scene_collision_checker=self.planner.scene_collision_checker, **kwargs)
         return self.call("curobo.collision_checking.RobotCollisionChecker", self.RobotCollisionChecker, cfg)
 
@@ -646,7 +639,7 @@ class Probe:
         pads = {k: padding(v) for k, v in cfgs.items()}
         n = min(len(pads["checker"]), len(pads["raw_checker"]))
         out: dict = {
-            "robot_in_use": self.robot_in_use,
+            "robot_in_use": self.robot_in_use_label,
             "raw_descriptor": self.raw_descriptor,
             "sphere_count": {k: int(v.num_spheres) for k, v in cfgs.items()},
             "collision_pairs": {k: int(v.collision_pairs.shape[0]) for k, v in cfgs.items()},

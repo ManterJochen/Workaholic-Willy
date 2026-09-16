@@ -8,8 +8,8 @@ The canonical model key, "ur5e" or "ur3e", is the one string the whole stack sha
 
   * the safety self-collision DH table, ``UR_DH_TABLES_M`` in
     :mod:`src.robot.safety._ur_kinematics`;
-  * the cuRobo robot config filename, ``{key}_{hand}.yml`` with the cell's hand, built on-box
-    by ``scripts/curobo/build_ur_config.py``;
+  * the cuRobo robot config filename, ``willy_{key}.yml``, built on-box by
+    ``scripts/curobo/build_ur_config.py``;
   * the ``kinematics_model`` of the safety config.
 
 This registry adds the two Isaac-specific parts that key cannot express: the Lula
@@ -27,7 +27,7 @@ from dataclasses import dataclass
 __all__ = [
     "NO_DESCRIPTOR",
     "URModelSpec",
-    "curobo_robot_yml",
+    "curobo_arm_descriptor",
     "ur_model_spec",
 ]
 
@@ -54,9 +54,9 @@ class URModelSpec:
     #: the reach from 850 to 500 mm, which is why the UR5e-tuned scenes, with bins at 515
     #: to 644 mm, are unreachable and have to be re-anchored.
     #:
-    #: Required, where they used to default to the UR5e figures. An entry that omitted them
-    #: claimed an 850 mm sphere and a 5 kg payload in silence, which is generous for a UR3
-    #: and mean for a UR10. The loader cannot know an arm's envelope, so it demands it.
+    #: Required, with no default. An entry that omitted them would claim an 850 mm sphere and
+    #: a 5 kg payload in silence, which is generous for a UR3 and mean for a UR10. The loader
+    #: cannot know an arm's envelope, so it demands it.
     max_reach_mm: float
     max_payload_kg: float
     #: A workspace this model can reach, in BASE-frame mm as a centre and half-extents,
@@ -76,9 +76,9 @@ class URModelSpec:
     workspace_center_mm: tuple[float, float]
     workspace_half_extents_mm: tuple[float, float]
     #: The ``Gripper`` USD variant to select on the asset of this model, or ``None`` where
-    #: the asset offers no Robotiq at all. Measured across all six assets on 2026-09-09 by
-    #: opening each stage and listing its variant sets, because the comment that stood here
-    #: said the ur5e and ur10e assets bake in a 2F-85, and that is not what they do:
+    #: the asset offers no Robotiq at all. Measured across all six assets by opening each
+    #: stage and listing its variant sets, because neither the ur5e nor the ur10e asset bakes
+    #: a 2F-85 in:
     #:
     #:     ur3, ur3e, ur5   no Gripper variant set at all
     #:     ur5e             Gripper: [None, Robotiq_2f_85]                 ships selected None
@@ -106,9 +106,10 @@ class URModelSpec:
 # Every UR from the UR3 to the UR10, e-series and CB-series, verified on-box: each asset
 # directory exists under ``.../Isaac/Robots/UniversalRobots/``, each key has a DH row in
 # ``_ur_kinematics``, a joint-limit row, an entry in ``UR_MODEL_KEYS`` and a buildable
-# ``{key}.yml``. ``tests/test_ur_model_family.py`` compares all four key sets, so they cannot
-# drift in either direction. ur16e, ur20 and ur30 are deliberately absent: Isaac ships assets
-# and this repository has no DH row for them, so admitting them would invent kinematics.
+# ``{key}.yml``. All four key sets are compared against each other, so they cannot drift in
+# either direction. ur16e is not here although it has a DH row, joint limits and a buildable
+# descriptor: it has no exact-mesh bundle yet. ur20 and ur30 have Isaac assets and no DH row here.
+# Each is admitted once its evidence passes.
 _UR_MODELS: dict[str, URModelSpec] = {
     # UR3, CB-series. Bare asset, with no Gripper variant set at all, so the sim mounts the hand standalone.
     "ur3": URModelSpec(
@@ -154,9 +155,9 @@ _UR_MODELS: dict[str, URModelSpec] = {
     "ur10e": URModelSpec(
         "ur10e", "UR10e", "/Isaac/Robots/UniversalRobots/ur10e/ur10e.usd",
         max_reach_mm=1300.0, max_payload_kg=12.5,
-        # Derived, and it used to be worse than derived: this entry declared 1300 mm of reach and
-        # then inherited the UR5e patch by default, so it claimed a 618 mm corner on an arm that
-        # reaches 1247 mm. Far corner 948.3 mm now, against 1247.0 mm of radius.
+        # Derived, and not inherited: the UR5e patch on an entry declaring 1300 mm of reach would
+        # claim a 618 mm corner on an arm that reaches 1247 mm. Far corner 948.3 mm, against
+        # 1247.0 mm of radius.
         workspace_center_mm=(690.0, 0.0), workspace_half_extents_mm=(230.0, 230.0),
         baked_gripper_variant="Robotiq_2f_85", baked_hand="robotiq_2f85"),
 }
@@ -177,21 +178,13 @@ def ur_model_spec(model: str) -> URModelSpec:
 NO_DESCRIPTOR = "<none: robot.gripper.model is unset>"
 
 
-def curobo_robot_yml(model: str, hand: str) -> str:
-    """The cuRobo descriptor for ``model`` carrying ``hand``: ``{key}_{hand}.yml``.
+def curobo_arm_descriptor(model: str) -> str:
+    """The cuRobo descriptor for ``model``: ``willy_{key}.yml``.
 
-    Built on the box by ``scripts/curobo/build_ur_config.py {key} --gripper {hand}``. A descriptor
-    is the arm and the hand the planner routes, and a file named by the arm alone would be the same
-    name for every hand, so a cell that changed hands would keep planning the old one with nothing
-    on the box saying so. ``hand`` is ``robot.gripper.model``; a name the registry does not hold
-    names no file and raises, so a typo cannot point the planner at a descriptor nobody built.
+    Built on the box by ``scripts/curobo/build_ur_config.py {key}``. One per arm, and it carries no
+    hand: the hand a cell names is a body link the planner sidecar adds when it starts, placed by
+    the cell's declared tool frame (``safety/planning/body_link.py``). A descriptor that carries a
+    hand and is named by both still sits in the content directory, and a planner refuses one by the
+    hand its provenance names. An arm the registry does not hold names no file and raises.
     """
-    from src.config.grippers import available_grippers
-
-    known = available_grippers()
-    if hand not in known:
-        raise ValueError(
-            f"no cuRobo descriptor is named for hand {hand!r}: the gripper registry holds {', '.join(known) or 'none'}, "
-            f"and a descriptor is named by robot.gripper.model"
-        )
-    return f"{ur_model_spec(model).key}_{hand}.yml"
+    return f"willy_{ur_model_spec(model).key}.yml"

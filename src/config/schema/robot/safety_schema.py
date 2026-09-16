@@ -144,9 +144,13 @@ class SelfCollisionSafetyConfig(StrictModel):
     #: 3 of 10 picks to what reads as bad grasping. Not derived from ``min_distance_mm``: the margin a
     #: planner can absorb depends on how tightly its spheres fit that robot. A UR5e plans fine at
     #: 10 mm; a UR3e plans fine to 6 mm and finds no plan at all at 10 mm, its thinner links reading as
-    #: permanent self-collision, which takes a UR3e cell from 10/10 to 0/10. The default 0.0 leaves the
-    #: planner's own config untouched and is byte-identical.
-    planner_margin_mm: float = Field(default=0.0, ge=0.0, le=100.0)
+    #: permanent self-collision, which takes a UR3e cell from 10/10 to 0/10.
+    #:
+    #: The default ``None`` means undeclared, and a UR cell that plans with cuRobo then refuses to
+    #: start a planner, naming this key (``safety/planning/margin.py``). It is not 0.0: 0.0 is a cell
+    #: that measured this pair and chose no margin, and the two must not look the same. A consumer on
+    #: any other path reads ``None`` as 0.0.
+    planner_margin_mm: float | None = Field(default=None, ge=0.0, le=100.0)
     link_radii_mm: list[float] | None = Field(default=None)
     fixtures: list[FixtureBoxConfig] = Field(default_factory=list)
     mesh_dir: str | None = Field(default=None)

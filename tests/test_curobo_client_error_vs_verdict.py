@@ -125,6 +125,23 @@ def _check_branch_precedes_plan(source: str) -> bool:
     return 0 <= branch < plan
 
 
+def _def_block(source: str, name: str) -> list[str]:
+    """The lines of the function ``name`` at whatever depth it is defined; empty when absent."""
+    lines = source.splitlines()
+    start = next(
+        (i for i, line in enumerate(lines) if line.strip().startswith(f"def {name}(")), None
+    )
+    if start is None:
+        return []
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        block.append(line)
+    return block
+
+
 def _ends_with_continue(block: list[str]) -> bool:
     code = [line.strip() for line in block if line.strip() and not line.strip().startswith("#")]
     return bool(code) and code[-1] == "continue"
@@ -178,45 +195,53 @@ class TheBatchCheckBranchTests(unittest.TestCase):
                 with self.subTest(line=line.strip()):
                     self.assertIn("file=sys.stderr", line)
 
-    def test_the_branch_uses_the_variant_the_probe_selected(self) -> None:
-        text = "\n".join(self.block)
+    def test_the_judgement_uses_the_variant_the_probe_selected(self) -> None:
+        """The names moved into ``_terms`` (S16), which is the point: one judgement, asked by three callers.
+
+        So the scan follows them there rather than being deleted. The checker itself is built once at start,
+        before the judgement that uses it, because the ready gate cannot judge the retract without one.
+        """
+        terms = NL.join(_def_block(self.source, "_terms"))
+        self.assertTrue(terms, "the sidecar has no _terms: nothing here judges a configuration")
         for name in (
-            "RobotCollisionCheckerCfg.load_from_config(",
-            "robot_config=_ROBOT_IN_USE",
-            "scene_collision_checker=_planner.scene_collision_checker",
-            "collision_activation_distance=0.0",
             "_planner.compute_kinematics(",
             ".get_bound(",
             ".get_self_collision(",
             ".get_collision_constraint(",
-            "== 0.0",
         ):
             with self.subTest(present=name):
-                self.assertIn(name, text)
+                self.assertIn(name, terms)
         for name in (".validate(", "get_scene_self_collision_distance_from_joints", "_kin."):
             with self.subTest(absent=name):
-                self.assertNotIn(name, text)
+                self.assertNotIn(name, terms)
+
+        build = self.source[: self.source.find('def _terms(')]
+        for name in (
+            "RobotCollisionCheckerCfg.load_from_config(",
+            "robot_config=copy.deepcopy(_COMPOSED)",
+            "scene_collision_checker=_planner.scene_collision_checker",
+            "collision_activation_distance=0.0",
+        ):
+            with self.subTest(built=name):
+                self.assertIn(name, build)
+
+        # The pass rule stays where the verdict is formed.
+        self.assertIn("== 0.0", NL.join(self.block))
+
+    def test_the_scoped_judgement_scan_can_fail(self) -> None:
+        """The CONTROL: a source that calls the checker somewhere else leaves _terms empty of the names."""
+        elsewhere = NL.join((
+            "def _terms(rows):",
+            "    return 0, 0, 0, None",
+            "def other(rows):",
+            "    return _CHECKER.get_bound(rows)",
+        ))
+        self.assertIn(".get_bound(", elsewhere)
+        self.assertNotIn(".get_bound(", NL.join(_def_block(elsewhere, "_terms")))
 
 
 _SET_WORLD_HEAD = 'if cmd == "set_world":'
 _SET_VOXELS_HEAD = 'if cmd == "set_voxels":'
-
-
-def _def_block(source: str, name: str) -> list[str]:
-    """The lines of the function ``name`` at whatever depth it is defined; empty when absent."""
-    lines = source.splitlines()
-    start = next(
-        (i for i, line in enumerate(lines) if line.strip().startswith(f"def {name}(")), None
-    )
-    if start is None:
-        return []
-    indent = len(lines[start]) - len(lines[start].lstrip())
-    block = [lines[start]]
-    for line in lines[start + 1:]:
-        if line.strip() and len(line) - len(line.lstrip()) <= indent:
-            break
-        block.append(line)
-    return block
 
 
 class TheSceneBranchesTests(unittest.TestCase):
@@ -272,6 +297,93 @@ class TheSceneBranchesTests(unittest.TestCase):
         self.assertEqual(_def_block(synthetic, "_grid_refusal"), [])
         found = _def_block("try:\n    def _grid_refusal(req):\n        return ''\n    x = 1\n", "_grid_refusal")
         self.assertEqual(len(found), 2, "a helper defined inside the sidecar's try block must be found")
+
+
+_PLAN_JS_HEAD = 'if cmd == "plan_js":'
+_EXPLAIN_HEAD = 'if cmd == "explain_js":'
+_READY_EMIT = '_emit({"status": "ready"'
+NL = chr(10)
+
+
+def _precedes(text: str, first: str, second: str) -> bool:
+    """True when ``first`` appears in ``text`` and appears before ``second``."""
+    a, b = text.find(first), text.find(second)
+    return 0 <= a < b
+
+
+class TheSidecarJudgesBeforeItPlansTests(unittest.TestCase):
+    """Every configuration this sidecar accepts is one it judged first (B1, S16), read as source.
+
+    The whole point of B1 is that a cell is never told "no collision free plan" when the truth is "your arm starts
+    inside its own hand". The judgement has to happen BEFORE the planner is asked, and before the sidecar calls itself
+    ready, or the typed reason has nothing to describe.
+
+    Scoped scans with controls, because this file runs only in the cuRobo environment. What no scan can show is that
+    the judgement agrees with cuRobo: only the box gates can.
+    """
+
+    def setUp(self) -> None:
+        self.source = _SERVER.read_text(encoding="utf-8")
+
+    def test_the_retract_is_judged_before_the_sidecar_calls_itself_ready(self) -> None:
+        """The CALL on default_q, not the def: a definition alone sits before the ready emit by coincidence."""
+        self.assertTrue(
+            _precedes(self.source, "_judge_states([_default_q]", _READY_EMIT),
+            "the sidecar reports ready without judging its own retract",
+        )
+        # And it exits rather than carrying on: a judgement whose refusal nothing acts on is not a gate.
+        self.assertIn("sys.exit(1)", self.source[: self.source.find(_READY_EMIT)])
+
+    def test_the_start_and_the_goal_are_judged_before_each_kind_of_plan(self) -> None:
+        joint_plan = NL.join(_block(self.source, _PLAN_JS_HEAD))
+        self.assertTrue(joint_plan, "the plan_js branch is gone")
+        self.assertTrue(
+            _precedes(joint_plan, "_judge_states(", "_planner.plan_cspace("),
+            "plan_js plans without judging its start and goal",
+        )
+        tail = self.source[self.source.find(_EXPLAIN_HEAD):]
+        self.assertTrue(
+            _precedes(tail, "_judge_states(", "_planner.plan_pose("),
+            "the pose plan plans without judging its start",
+        )
+
+    def test_the_sidecar_names_the_pair_from_the_config_it_loaded(self) -> None:
+        self.assertIn("from _curobo_pairs import", self.source)
+        self.assertIn("SphereLayout.from_robot_config(_COMPOSED)", self.source)
+        self.assertIn("deepest_pairs(", self.source)
+
+    def test_the_explain_branch_fails_in_one_line_that_is_never_a_judgement(self) -> None:
+        block = _block(self.source, _EXPLAIN_HEAD)
+        self.assertTrue(block, "there is no explain_js branch")
+        failures = [line.strip() for line in block if '"success": False' in line]
+        self.assertTrue(failures, "the explain_js branch has no failure emission")
+        for line in failures:
+            with self.subTest(line=line):
+                self.assertIn('"planner_error": True', line)
+        self.assertTrue(_ends_with_continue(block))
+
+    def test_a_measuring_sidecar_says_so_and_refuses_to_plan(self) -> None:
+        self.assertIn("ENV_MEASURE_ONLY", self.source)
+        self.assertTrue(_precedes(self.source, "_MEASURE_ONLY", _READY_EMIT))
+        for head in (_PLAN_JS_HEAD, 'if cmd == "attach":'):
+            with self.subTest(branch=head):
+                self.assertIn("_MEASURE_ONLY", NL.join(_block(self.source, head)))
+
+    def test_these_order_scans_can_fail(self) -> None:
+        """⭐ THE CONTROLS, in the shape test_the_order_scan_can_fail uses: each scan read against a source that lies."""
+        defined_only = "def _judge_states(rows):" + NL + "    pass" + NL + _READY_EMIT
+        self.assertFalse(_precedes(defined_only,
+                                   "_judge_states([_default_q]", _READY_EMIT))
+        too_late = _READY_EMIT + NL + "_judge_states([_default_q], world=False)"
+        self.assertFalse(_precedes(too_late,
+                                   "_judge_states([_default_q]", _READY_EMIT))
+        after = NL.join((
+            'if cmd == "plan_js":',
+            "    _planner.plan_cspace(g, s)",
+            "    _judge_states([s])",
+            "    continue",
+        ))
+        self.assertFalse(_precedes(NL.join(_block(after, _PLAN_JS_HEAD)), "_judge_states(", "_planner.plan_cspace("))
 
 
 if __name__ == "__main__":

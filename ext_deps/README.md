@@ -336,31 +336,42 @@ rt.kernel_backend = 'pybind'
 ### 3. Robot configs (assembled, not shipped)
 
 cuRobo ships `ur10e` and `franka` but no `ur5e` or `ur3e`. One script assembles either from on-box
-ingredients, the canonical URDF of Isaac plus its Lula collision spheres, writing `<model>.urdf`
-and `<model>_<hand>.yml` into the content directory of the clone, one descriptor per arm and hand:
+ingredients, the URDF rendered from the vendored description of Universal Robots plus collision
+spheres fitted to that arm's own committed mesh bundle, writing `<model>.urdf` and
+`willy_<model>.yml` into the content directory of the clone, one descriptor per arm with no hand in
+it. The hand a cell names is added as a fixed link when its planner starts, so `--gripper` and
+`--coupling-mm` are refused here by name:
 
 ```bash
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e --gripper robotiq_2f85
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur3e --gripper robotiq_2f85
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e --gripper robotiq_hande --coupling-mm 20
-ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py
+ext_deps/curobo_env/python.exe scripts/curobo/fetch_ur_meshes.py
+ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e
+ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur3e
+ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py --hand robotiq_2f85
 ```
 
-The hand is the cell's `robot.gripper.model`. Each descriptor records its arm, hand and plate under
-`_provenance`, and the driver refuses one that does not match its cell or records none, so a box
-with descriptors built under the earlier per-arm names rebuilds them once.
+The hand is the cell's `robot.gripper.model`, and the check above is where a descriptor is asked
+whether it plans with one. Each descriptor records its arm under `_provenance`, together with
+`carries_hand: false`, and a planner refuses one built for another arm or one that carries a hand,
+so a box with descriptors built under the earlier arm-and-hand names rebuilds them once.
 
 The builder fixes an upstream `self_collision_ignore` typo, `forarm_link` for `forearm_link`. It is
 harmless with the sparse ur10e spheres, but with the dense Lula ur5e spheres it leaves
 `forearm` against `wrist_1` self-colliding in every configuration, so `plan_pose` returns `None`
 everywhere until the key is renamed.
 
-The arm-link surface augmentation is UR5e-only and the script says so: the fitted meshes and the DH
-chain are ur5e-specific, so any other model keeps its own model-tuned Lula arm spheres.
+An arm with a committed sphere fit is built from that fit alone, and with it the build needs no
+simulator at all: every surface sample of every link ends up inside a sphere, so there is nothing for
+a surface augmentation to add. An arm without one falls back to the Lula map of that model, which is
+measured to reach up to 61 mm past its own links and to leave gaps, and the build says so and names
+the fit to run. The surface augmentation exists for that fallback: it adds spheres fitted to the
+arm's own collision meshes, placed through its own DH chain, and it measured the false-clear rate of
+the ur5e down from 8.4 to 5.3 percent against the Lula spheres alone.
 
-The sphere fit is not deterministic, so two runs do not produce the same descriptor. Everything
-that is not a sphere centre is stable. Where a measured planner result depends on one specific
-descriptor, keep that file: a rebuild will not reproduce it. Full record:
+Where the arm spheres come from the committed fit, a rebuild reproduces the descriptor. On the Lula
+fallback the surface augmentation draws at random, so two unseeded runs do not produce the same
+descriptor, and `--seed` fixes the draw and is recorded in `_provenance`. Everything that is not a
+sphere centre is stable either way. Where a measured planner result depends on one specific
+descriptor, keep that file. Full record:
 [`src/robot/safety/planning/robot/PROVENANCE.md`](../src/robot/safety/planning/robot/PROVENANCE.md).
 
 > A robot config lives inside the clone, so a fresh clone needs this step again. The boot banner
@@ -392,7 +403,7 @@ configuration:
 | variable | default |
 |---|---|
 | `WILLY_CUROBO_PYTHON` | `ext_deps/curobo_env/python.exe` |
-| `WILLY_CUROBO_ROBOT` | `ur5e.yml`, read only by a client built without a descriptor: every cell names `{arm}_{hand}.yml` itself, and both drivers refuse a descriptor whose `_provenance` names another arm, hand or plate |
+| `WILLY_CUROBO_ROBOT` | `ur5e.yml`, read only by a client built without a descriptor: every cell names `willy_{arm}.yml` itself, and both drivers refuse a descriptor whose `_provenance` names another arm or records a hand |
 | `WILLY_CUROBO_CUBOID_CACHE` | `16` collision-world cuboid slots reserved at boot: a real table plus far-away placeholders that `set_world` later fills |
 | `WILLY_CUROBO_MAX_ATTEMPTS` | `16` plan attempts, each a fresh IK and trajopt seed batch, which is what finds a plan reliably on a tight query |
 | `WILLY_CUROBO_GRAPH_FROM_ATTEMPT` | `1`, which is the cuRobo default: the first attempt stays trajopt-only, because the graph seeder can return no seed for a tight final approach and would otherwise skip every attempt |
@@ -431,10 +442,10 @@ certified motion safety, and it has never planned for a physical arm.
 ### One geometry, two consumers
 
 [`src/robot/safety/data/ur5e_collision_meshes.npz`](../src/robot/safety/data/ur5e_collision_meshes.npz)
-holds the DH-baked per-link collision meshes, vertex-exact to under 0.15 mm against the Isaac USD.
-It lives in the repository rather than being generated per box, and it is the single source of
-truth for both the Coal self-collision backend and the cuRobo sphere fit that
-`scripts/curobo/build_ur_config.py` performs.
+holds the DH-baked per-link collision meshes, read from the collision STL files of Universal Robots
+and pinned to one upstream commit. It lives in the repository rather than being generated per box,
+and it is the single source of truth for both the Coal self-collision backend and the sphere fit
+that `scripts/curobo/fit_cover_spheres.py` writes for `scripts/curobo/build_ur_config.py` to read.
 
 That coupling is the point. The collision model of the planner and the safety gate that checks the
 answer of the planner derive from the same geometry, so the gate cannot disagree with the planner
@@ -451,9 +462,9 @@ together.
    the driver falls back to blind IK at both build time and move time; not optional on a real UR
    arm, which refuses to move without it.
 4. **Generate the robot configs**, which cuRobo does not ship. The install script does this, and by
-   hand it is `ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e --gripper robotiq_2f85`
-   and the same for every arm and hand the box runs, as in section 3. They are written inside the
-   cuRobo clone, so a fresh clone always needs this step again.
+   hand it is `ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e` and the same
+   for every arm the box runs, as in section 3. They are written inside the cuRobo clone, so a fresh
+   clone always needs this step again.
 5. **If your layout differs**, every path above is an environment variable and none of them is
    baked into the package. The `ISAAC_MODEL_DIR` and `CUROBO` constants of the generator are the
    last two.

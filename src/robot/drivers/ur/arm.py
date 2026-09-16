@@ -59,6 +59,7 @@ from .pose import URPose
 from .pose_adapter import pose_to_urpose, urpose_to_pose
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.robot.safety.planning.curobo_client import SidecarIdentity
     from src.robot.safety.planning.live_world import (
         LivePlannerWorld,
         WorldRefresh,
@@ -328,7 +329,7 @@ class URRobotArm(RobotArm):
             )
             return
         if declared == reported:
-            # ⚠ SAY WHAT WAS NOT CHECKED. A size class is not a model: a UR3 and a UR3e are both
+            # Say what was not checked. A size class is not a model: a UR3 and a UR3e are both
             # "UR3" to this comparison, on purpose, because the controller reports the same
             # string for both. Logging a bare "verified" for a pair this check cannot separate
             # reads as an all-clear it did not earn, and the separation is done further down by
@@ -435,16 +436,16 @@ class URRobotArm(RobotArm):
     def _refuse_if_the_series_twin_fits_better(
         self, joints: list[float], controller_tcp, expected, own_d_t: float
     ) -> None:
-        """Refuse when the OTHER series of this size explains the controller better than we do.
+        """Refuse where the other series of this size explains the controller better than this one does.
 
-        ⛔ **THE CHECK THE TOLERANCE CANNOT DO.** ``_verify_controller_model`` compares size
-        classes, because a controller reports ``UR3`` for a UR3e. ``_verify_tool_frame`` compares
-        a distance against a tolerance, and MEASURED over 20000 random joint vectors on
-        2026-09-09, a ur3/ur3e swap lands under the default 10 mm tolerance in 12.2 % of poses
-        (minimum separation 8.50 mm). So the two arms this cell is most likely to confuse are
-        the two arms neither check can separate.
+        The check the tolerance cannot do. ``_verify_controller_model`` compares size classes,
+        because a controller reports ``UR3`` for a UR3e. ``_verify_tool_frame`` compares a
+        distance against a tolerance, and over 20000 random joint vectors a ur3/ur3e swap lands
+        under the default 10 mm tolerance in 12.2 % of poses, with a minimum separation of
+        8.50 mm. So the two arms this cell is most likely to confuse are the two arms neither
+        check can separate.
 
-        This one is RELATIVE and therefore immune to the tolerance: the flange -> TCP transform
+        This one is relative and therefore immune to the tolerance: the flange -> TCP transform
         is one physical thing, and deriving it through the wrong DH table moves it. Whichever
         model puts it closer to what this cell expects is the arm on the other end. A correct
         cell reads about 0 mm for itself and 8.5 mm or more for the twin; a swapped one reverses
@@ -1168,14 +1169,15 @@ class URRobotArm(RobotArm):
         kinematics = self._preflight.self_kinematics(self)
         hand = self._preflight.planner_hand(self)
         spheres = hand_spheres(hand, kinematics[0]) if kinematics is not None and chosen(hand) else None
-        if spheres is None:
+        if spheres is None or not chosen(hand):
             self.logger.error(
                 "payload NOT attached: this cell's guard places no hand model on a known arm, so there is no "
                 "fingertip to hang the part from; the planner is routing as if the gripper were empty"
             )
             return False
         dims_mm, centre_mm = carried_part_box(
-            spheres, grip_width_mm=grip_width_mm, length_mm=length, lateral_margin_mm=float(cfg.lateral_margin_mm),
+            hand, spheres, grip_width_mm=grip_width_mm, length_mm=length,
+            lateral_margin_mm=float(cfg.lateral_margin_mm),
         )
         try:
             joints = self.get_joint_positions().tolist()
@@ -1287,7 +1289,7 @@ class URRobotArm(RobotArm):
 
         try:
             joints = np.asarray(self._conn.get_joint_positions(), dtype=np.float64)
-        except Exception:  # noqa: BLE001 - a cell that cannot say where it is has no self to filter
+        except Exception:  # noqa: BLE001 (a cell that cannot say where it is has no self to filter)
             return None
         return self_envelope(self._preflight, self, joints, payload=self._attached_payload)
 
@@ -1298,13 +1300,24 @@ class URRobotArm(RobotArm):
         SelfCollisionGuard will demand is handed to the planner, so it stops returning
         configurations the guard would reject.
         """
-        from src.robot.drivers.sim.robot_models import curobo_robot_yml
+        from src.robot.drivers.sim.robot_models import curobo_arm_descriptor
+        from src.robot.safety.planning._curobo_body_links import BodyLinkError
+        from src.robot.safety.planning.body_link import HandLink
+        from src.robot.safety.planning.margin import planner_margin_refusal
+        from src.robot.safety.planning.robot.retract_table import RetractMissing, read_retract
         from src.robot.safety.planning.reservation import PlannerReservation
 
+        # No implied margin. A UR cell that plans with cuRobo says what clearance its planner keeps,
+        # or it does not plan: an undeclared margin read as 0 lets the sidecar propose paths at
+        # 9.44 mm against a 10 mm guard. Read here and raised in build(), where a cell that never
+        # plans never pays for it.
+        margin_refusal = planner_margin_refusal(self.config)
+
         hand = self._preflight.planner_hand(self)
-        # Named by the arm and the hand. A cell that names no hand has no descriptor to name: the
-        # refusal is raised when the planner first starts, which a move reports as CONTROLLER_REJECTED.
-        robot_yml = curobo_robot_yml(self.config.ur.model, hand.model) if chosen(hand) else None
+        # One descriptor per arm, with the hand this cell names added as a body link when the sidecar
+        # starts. A cell that names no hand has no hand to add: the refusal is raised when the planner
+        # first starts, which a move reports as CONTROLLER_REJECTED.
+        robot_yml = curobo_arm_descriptor(self.config.ur.model) if chosen(hand) else None
         margin_mm = float(getattr(self.config.safety.self_collision, "planner_margin_mm", 0.0) or 0.0)
         # What the sidecar allocates, from this cell's own declaration. Without it the sidecar starts
         # with 16 boxes, no mesh and no grid whatever the cell declared, so a tote or a live scene meets
@@ -1312,28 +1325,54 @@ class URRobotArm(RobotArm):
         reservation = PlannerReservation.from_config(robot_cfg=self.config)
 
         def build() -> CuroboPlanClient:
-            if robot_yml is None:
+            if margin_refusal is not None:
+                raise CuroboUnavailableError(f"{margin_refusal[0]} {margin_refusal[1]}")
+            if robot_yml is None or not chosen(hand):
                 raise CuroboUnavailableError(
-                    "robot.gripper.model is unset, so this cell has no cuRobo descriptor to plan with: descriptors are "
-                    "named by the arm and the hand, and a planner is never started for a hand nobody named"
+                    "robot.gripper.model is unset, so this cell has no hand to add to the planner's robot, and a "
+                    "planner is never started for a hand nobody named"
                 )
-            client = CuroboPlanClient(robot_config=robot_yml, self_collision_margin_mm=margin_mm)
+            try:
+                link = HandLink.from_hand(hand)
+            except BodyLinkError as exc:
+                raise CuroboUnavailableError(str(exc)) from exc
+            # The pose this pair was judged at. The descriptor is per arm and carries a fallback, while
+            # the pose a cell plans from belongs to the arm and the hand on it, because a pose that
+            # clears the exact meshes with one hand can be a self collision in the planner's sphere
+            # model with another: on a ur3 the anchor works with the 2F-85 and refuses with the Hand-E.
+            try:
+                default_q = read_retract(str(self.config.ur.model), hand.model, float(hand.coupling_mm),
+                                        margin_mm)
+            except RetractMissing as exc:
+                raise CuroboUnavailableError(str(exc)) from exc
+            client = CuroboPlanClient(
+                robot_config=robot_yml, self_collision_margin_mm=margin_mm, body_links=[link.to_dict()],
+                default_q=default_q,
+            )
             client.reserve_world(reservation)
             return client
 
         return build
 
-    def _descriptor_check(self) -> "Callable[[object], str | None]":
-        """What the planner asks of the descriptor the sidecar loaded: this arm, the hand this cell names, its plate."""
+    def _descriptor_check(self) -> "Callable[[SidecarIdentity], str | None]":
+        """What the planner asks of the sidecar it started: this arm's descriptor, no hand in it, this cell's hand added."""
+        from src.robot.safety.planning._curobo_body_links import BodyLinkError
+        from src.robot.safety.planning.body_link import HandLink
         from src.robot.safety.planning.hand import descriptor_refusal
 
         hand = self._preflight.planner_hand(self)
         model = str(self.config.ur.model)
         if not chosen(hand):
-            return lambda provenance: (
-                "robot.gripper.model is unset, so no descriptor can be checked against the hand this cell carries"
+            return lambda identity: (
+                "robot.gripper.model is unset, so nothing the planner loaded can be checked against the hand this cell "
+                "carries"
             )
-        return lambda provenance: descriptor_refusal(provenance, hand, arm=model)
+        try:
+            link = HandLink.from_hand(hand)
+        except BodyLinkError as exc:
+            unplaced = str(exc)
+            return lambda identity: unplaced
+        return lambda identity: descriptor_refusal(identity, link, arm=model)
 
     async def amove_to(
         self,

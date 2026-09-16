@@ -41,9 +41,9 @@ Any of:
 Every "yes" was measured by loading it, not by finding the file:
 `ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py` builds a planner for each
 descriptor and plans a real motion with it. **Six of six plan, 21 waypoints each**, 2.7 s to 4.6 s.
-Those six descriptors were built before a descriptor's name and `_provenance` carried its hand, and
-both drivers refuse every one of them now: the descriptor column reads yes again for an arm once its
-`{model}_{hand}.yml` is rebuilt (step 4 below) and the check has planned with it.
+Those six descriptors were built under the earlier arm-and-hand names, and both drivers refuse every
+one of them now: the descriptor column reads yes again for an arm once its `willy_{model}.yml` is
+rebuilt (step 4 below) and the check has planned with it and a hand.
 
 ### ⚠ ur10 needed four repairs the other five did not
 
@@ -56,17 +56,16 @@ this, because every one of these presented as a property of the arm and was not.
    same robot. Pairing them puts 23 of 30 sphere centres off the arm, worst 341.5 mm, fail-open and
    silent. The builder now picks by a rule instead: *a description with no geometry describes no
    body*, which excludes it without naming ur10 and changes nothing for the other five.
-3. **Its USD collides the whole arm with thirteen cylinders**, so the Isaac bake cannot read it. But
-   Isaac's URDF-importer package ships seven `.obj` link meshes for the same robot, and
-   `scripts/isaac/bake_ur_meshes_from_urdf.py` bakes from those with no simulator at all. It gates
-   itself by baking ur10e through the same path and diffing against the bundle Isaac produced:
-   **0.000 mm**, two different readers, one answer.
-4. **Its Lula sphere map is wrong about all three wrists.** Measured: their spheres sit about 61 mm
-   from where the geometry is. Keeping them alongside the correct ones made each wrist a body twice
-   its size spanning two positions, and cuRobo returned None from every plan — including a plan from
-   a pose to itself — while loading perfectly. The builder drops a sphere whose centre lies further
-   outside its own link mesh than its own radius, which is where a sphere and a body stop
-   intersecting rather than a tuned threshold.
+3. **Its USD collides the whole arm with thirteen cylinders**, so the Isaac bake cannot read it. Its
+   bundle comes from the vendor path instead: `scripts/isaac/bake_ur_meshes_from_urdf.py` reads the
+   collision STL files of Universal Robots, pinned to one upstream commit, with no simulator at all,
+   and compares every bake with the bundle already committed for that model before it writes.
+4. **Its Lula sphere map describes a different arm.** Measured, those spheres sit about 61 mm from
+   where the geometry is, and the worst one kept sits 75.9 mm outside its own upper arm. Keeping them
+   alongside the correct ones made each wrist a body twice its size spanning two positions, and
+   cuRobo returned None from every plan, a plan from a pose to itself included, while loading
+   perfectly. This arm now plans against `ur10_arm_spheres.yml`, fitted to the same bundle the exact
+   mesh guard judges, and the vendor map is out of its path entirely.
 
 ⛔ **AND ONE THAT WAS NEVER TRUE.** From 2026-09-09 to 2026-09-10 this runbook said cuRobo could not
 load the importer description. It could not, because of **one stray `)` in an `xyz` attribute** on
@@ -75,21 +74,16 @@ robot. That is worse than a check that stays silent: it says something plausible
 plausible thing gets believed. The builder repairs the character in its own copy and says so, and
 never touches Isaac's tree.
 
-### What the ur10 still does differently
+### Where the ur10's geometry comes from
 
-Its collision bundle is baked from CONVEX HULLS of its visual meshes, because it declares no
-collision mesh anywhere. That is not a compromise, and the reason is a control on an arm where both
-halves exist: ur10e ships visual *and* collision geometry, its own collision meshes are **1.259x**
-the volume of its visuals and every one of them is **exactly convex**. The ur10 hulls come out at
-1.357x with the same per-link pattern — eight percentage points more conservative than what the
-vendor ships, which is the correct direction for a fail-closed guard.
+Nothing in the simulator's own copy of this arm is in its path any more. The bundle it once carried
+was convex hulls of the visual meshes of the importer asset, and those links sat 1.8 to 65.0 mm from
+where the description of Universal Robots puts them, the upper arm worst at 52.0 mm of centroid. The
+bundle it carries now is the vendor's own collision geometry, like every other arm in the family.
 
-Its `shoulder_link` spheres are AUTHORED, because Isaac's map has none for that link. They come from
-the two collision cylinders the description declares, and they cover **47.8 %** of that link's
-surface against **31.4 %** for ur10e's own shoulder and 10.2 % for the vendor's weakest link.
-
-**A `ur10` cell plans like any other now**, with exact mesh geometry, its own Hand-E variant and
-a descriptor proved by planning rather than by existing.
+**A `ur10` cell plans like any other now**, with exact mesh geometry, the spheres fitted to that
+geometry, the hand its cell names composed onto it, and a descriptor proved by planning rather than
+by existing.
 
 ---
 
@@ -107,8 +101,8 @@ python -m src.robot.safety.planning --doctor --profile ur5 --hand robotiq_2f85  
 The doctor prints three separate probes and they mean three different things: the arm bundle,
 the gripper geometry and the cuRobo descriptor. The planning CLI takes the hand from `--hand` or
 `robot.gripper.model`, and an arm profile names no hand, so without one `--check` exits 1 and the
-doctor reports the descriptor MISSING, both naming `robot.gripper.model`. The descriptor reads `ok`
-once `{model}_{hand}.yml` is rebuilt for that hand.
+doctor reports the descriptor MISSING, both naming `robot.gripper.model`. The descriptor itself is
+`willy_{model}.yml` and carries no hand, so naming one is what the probe was missing, not a rebuild.
 
 ### Adding an arm that does not exist yet
 
@@ -119,38 +113,41 @@ The order matters, because each step is gated on the one before it.
    with reach, payload and workspace patch. `tests/test_ur_model_family.py` will tell you what is
    missing; it compares all four registries and refuses a spec whose patch reaches past its own arm.
 
-2. **Bake the arm bundle** (needs Isaac):
-   ```bash
-   python.bat scripts/isaac/bake_ur_collision_meshes.py <model> --write
-   ```
-   It re-reads `ur5e` and diffs it against the committed bundle FIRST, every time, and stops before
-   writing if that drifts past 0.15 mm. Measured on the day the four new arms were baked: 0.000653 mm.
-
-   If it refuses with "carries N collision prims and not one of them is a mesh", that arm's USD has
-   no mesh to read. That is not the end: try the URDF path instead, which needs no simulator at all
-   and gates itself the same way.
+2. **Bake the arm bundle** (no simulator, no GPU):
    ```bash
    python scripts/isaac/bake_ur_meshes_from_urdf.py <model> --write
    ```
-   It bakes `ur10e` from its own collision files through the same code first and diffs against the
-   bundle Isaac produced; measured 0.000 mm. That is how `ur10` got its geometry.
+   It reads the collision STL files of Universal Robots, pinned to one upstream commit, and places
+   them through a URDF rendered from their vendored config. Before writing it compares the bake with
+   the bundle already committed for that model, in both directions and link by link, and refuses a
+   difference that `--expect-change=<reason>` has not named. Run it without `--write` first.
 
-3. **Bake the gripper variant** (no Isaac, no GPU):
+   The other reader takes the geometry out of a composed simulator articulation and needs the
+   simulator:
    ```bash
-   python scripts/grippers/bake_gripper_variant.py robotiq_hande --arm <model> --write
+   python.bat scripts/isaac/bake_ur_collision_meshes.py <model> --write
+   ```
+   It re-reads `ur5e` and diffs it against the committed bundle first, every time, and stops before
+   writing if that drifts past 0.15 mm; measured 0.000653 mm. An arm whose asset carries no collision
+   mesh cannot be read this way at all, which is what the vendor path above is for.
+
+3. **Bake the hand** (no simulator, no GPU), only for a hand nothing has baked yet:
+   ```bash
+   python scripts/grippers/bake_gripper_variant.py robotiq_hande --write
    ```
    Same shape of gate: it reads the standalone 2F-85 and diffs it against the committed `ur5e` bundle
-   before it writes anything (measured 0.05 mm against a 1.00 mm limit). A variant bundle is an ARM
-   PLUS A HAND, so every arm needs its own, and a mismatch drops the whole cell to capsules.
+   before it writes anything (measured 0.05 mm against a 1.00 mm limit). A hand bundle is a hand and
+   nothing else, composed onto whichever arm the cell has when the guard loads, and it records the
+   arms it was proven on; an arm outside that record still drops the cell to capsules.
 
-4. **Build the cuRobo descriptor** (cuRobo sidecar interpreter):
+4. **Build the cuRobo descriptor** (cuRobo sidecar interpreter), one per arm, with no hand in it:
    ```bash
-   ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py <model> --gripper <hand>
-   ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py <model>
+   ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py <model>
+   ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py willy_<model> --hand <hand>
    ```
    The build refuses rather than writing a file that fails later: if a link the template guards has
-   no spheres, nothing is written. The check is the one that matters — it loads the descriptor into
-   cuRobo and plans, because a yml that parses is not a robot that plans.
+   no spheres, nothing is written. The check is the one that matters: it loads the descriptor into
+   cuRobo, adds the named hand and plans, because a yml that parses is not a robot that plans.
 
 5. **Write the profile.** Copy the nearest `robot.<model>.yaml`. Every generated one is honest about
    what it does not know, and so should yours.
@@ -191,8 +188,8 @@ Everything here is additive and reversible without touching a running cell:
 - **A hand**: name the previous one in `robot.gripper.model`. The guard derives its bundle from that
   name, so there is no second key to unset, and a cell that names no hand refuses to build rather than
   planning against whatever hand the arm bundle carries; the doctor reports it `missing`.
-- **A descriptor**: delete `{model}_{hand}.yml` from the cuRobo content directory. Nothing else reads it,
-  and a cell whose descriptor is missing refuses to plan rather than loading another hand's.
+- **A descriptor**: delete `willy_{model}.yml` from the cuRobo content directory. Nothing else reads it,
+  and a cell whose descriptor is missing refuses to plan rather than loading another arm's.
   The shared scaffolding lives in `_ur_template.yml`, which builds never overwrite.
 
 No step here can leave a cell in a state where it plans against wrong geometry: every artifact is

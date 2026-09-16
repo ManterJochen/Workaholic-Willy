@@ -106,9 +106,12 @@ robot:
       # `src/robot/safety/data/ur5e_collision_meshes.npz`.
       kinematics_model: "ur5e"
 
-      # `planner_margin_mm` stays at its 0.0 default. A UR5e plans at the 10 mm
-      # `min_distance_mm` the base file sets; the per-robot margin exists for arms whose
-      # thinner links read as permanently self-colliding once every sphere is inflated.
+      # `planner_margin_mm` is not declared here. It is the clearance the trajectory planner
+      # keeps, a separate number from the 10 mm `min_distance_mm` the base file sets, and a UR
+      # cell that plans with cuRobo declares it in its own profile or refuses to start a planner
+      # rather than inherit a number nobody measured for this arm and this hand. Measured on a
+      # UR5 against the fitted spheres: a retract is found at 4 mm and at 6 mm, and all 371,293
+      # candidates are refused at 8 mm and at 10 mm. The profiles that declare one carry 4.0.
 
       # The bench, as a collision box the guard evaluates every configuration against.
       # With the shipped empty list there is no table in the collision world at all, so

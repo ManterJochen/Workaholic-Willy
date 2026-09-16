@@ -35,6 +35,7 @@ from src.robot.safety.planning import (
     CuroboUnavailableError,
     JointCheckVerdict,
 )
+from src.robot.safety.planning.curobo_client import SidecarIdentity, StateRefusal
 from src.robot.safety.planning.live_world import WorldRefresh, refresh_planner_world
 from src.robot.safety.planning.world import merge_planner_worlds
 
@@ -106,7 +107,7 @@ class CuroboUrPlanner:
         self_envelope: "Callable[[], SelfEnvelope | None] | None" = None,
         on_perceived_obstacles: "Callable[[Sequence[Any]], object] | None" = None,
         reservation: "PlannerReservation | None" = None,
-        descriptor_check: "Callable[[object], str | None] | None" = None,
+        descriptor_check: "Callable[[SidecarIdentity], str | None] | None" = None,
     ) -> None:
         self._conn = connection
         self._client_factory = client_factory
@@ -122,13 +123,13 @@ class CuroboUrPlanner:
         self._live_world = live_world
         #: This arm's own body now, so the camera's view of the robot can be taken back out.
         self._self_envelope = self_envelope
+        #: The last refresh, for a report and for an operator asking why a move was refused.
+        self._last_refresh: "WorldRefresh | None" = None
         #: Where the perceived obstacles go besides the planner. The path guard lives on the arm
         #: rather than here, and the two have to be looking at the same cell. Whatever it returns is
         #: ignored: the preflight answers how many guards took the boxes, which is a number for a
         #: report rather than a decision to make here.
         self._on_perceived_obstacles = on_perceived_obstacles
-        #: The last refresh, for a report and for an operator asking why a move was refused.
-        self._last_refresh: "WorldRefresh | None" = None
         #: Collision-sphere slots the sidecar reserves for a carried payload. At 0 the
         #: sidecar robot config is untouched and `attach_payload` refuses, which is the
         #: unchanged path.
@@ -187,7 +188,7 @@ class CuroboUrPlanner:
                     setter(self._attach_spheres)
             client.start()
             refusal = (
-                self._descriptor_check(getattr(client, "descriptor_provenance", None))
+                self._descriptor_check(SidecarIdentity.from_client(client))
                 if self._descriptor_check is not None else None
             )
             if refusal is not None:
@@ -202,11 +203,11 @@ class CuroboUrPlanner:
     def _register_world(self, client: CuroboPlanClient) -> None:
         """Hand the cell's obstacles to the planner, or refuse to plan at all.
 
-        The latch is set only after the planner confirmed the world in full. It used to be
-        set before the refusal was raised, so the first move refused and every later one
-        found the client already built, skipped this entirely, and planned against the
-        partial world the refusal was about. A guard that fires once and then waves
-        everything through afterwards is worse than either answer.
+        The latch is set only after the planner confirmed the world in full. Set before the
+        refusal is raised, it refuses the first move and lets every later one find the client
+        already built, skip this entirely, and plan against the partial world the refusal was
+        about. A guard that fires once and then waves everything through afterwards is worse
+        than either answer.
         """
         if self._world_registered or not (self._world_cuboids or self._world_meshes):
             return
@@ -349,11 +350,10 @@ class CuroboUrPlanner:
         """Register scene obstacles into the cuRobo collision world, or 0 where the planner is away.
 
         The declared world goes underneath. Registration replaces the planner's world
-        rather than extending it, so a caller sending its own boxes used to delete the
-        bench, the bin and every fixture this cell declared, with nothing logged and
-        nothing to notice it by. The simulator driver has merged like this since it was
-        written; this side did not, and the difference was that the arm which can hurt
-        someone was the one that could lose its bench.
+        rather than extending it, so without the merge a caller sending its own boxes
+        deletes the bench, the bin and every fixture this cell declared, with nothing
+        logged and nothing to notice it by. The simulator driver merges the same way, and
+        this is the side whose arm can hurt someone.
         """
         merged = merge_planner_worlds(self._world_cuboids, cuboids)
         try:
@@ -402,8 +402,22 @@ class CuroboUrPlanner:
         start = self._to_client_order(current_ur, client.joint_names)
         traj = client.plan(start, goal_pos_m, goal_quat_wxyz)
         if not traj:
+            # The caller turns this into one fail-safe sentence, so the pair of links the planner
+            # could not get past is recoverable from here alone. Nothing on the wire changes: the
+            # verdict is still no plan.
+            refusal = self.last_refusal
+            if refusal is not None:
+                self.logger.warning("cuRobo refused this move. %s", refusal.render())
             return None
         return [self._to_ur_order(list(wp), client.joint_names) for wp in traj]
+
+    @property
+    def last_refusal(self) -> "StateRefusal | None":
+        """Why the sidecar refused what it was last asked, or ``None``.
+
+        A client that does not carry the typed reason has none.
+        """
+        return getattr(self._client, "last_refusal", None)
 
     def check_joint_path(
         self, samples_ur: "Sequence[Sequence[float]]", *, refresh: bool = True

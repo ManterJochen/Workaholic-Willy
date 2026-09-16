@@ -35,9 +35,13 @@ class SchemaIndexTests(unittest.TestCase):
         self.assertIn("robot.sim.cameras.*.hfov_deg", schema_index())
 
     def test_constraints_and_defaults_are_carried(self) -> None:
+        """The planner margin has no default since B1 S17: undeclared is not zero, and the index says so."""
         field = schema_index()["robot.safety.self_collision.planner_margin_mm"]
-        self.assertEqual(field.default, 0.0)
+        self.assertIsNone(field.default)
         self.assertIn(">= 0.0", field.constraints)
+
+        guard = schema_index()["robot.safety.self_collision.min_distance_mm"]
+        self.assertEqual(guard.default, 10.0, "the guard's own margin still has one")
 
     def test_it_does_not_hang_on_the_real_schema(self) -> None:
         """Depth-capped and ref-cycle-guarded: a self-referencing model must not spin the CLI."""

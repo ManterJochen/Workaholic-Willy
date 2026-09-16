@@ -17,25 +17,40 @@ through the client, or standalone:
 
 Protocol, one JSON object per line:
   startup -> {"status":"ready","joint_names":[...],"default_q":[...],"dt":float,"start_pos_m":[...],
-              "start_quat_wxyz":[...]}   |   {"status":"error","reason":str}
+              "start_quat_wxyz":[...],"descriptor":{...}|null,"arm_descriptor_sha256":hex,
+              "urdf_sha256":hex|null,"composed_sha256":hex,"bodies":[...],"measure_only":true?,"refusal":{...}?}
+              |   {"status":"error","reason":str,"refusal":{...}?}
+
+The robot config is loaded once and composed as one dict by ``_curobo_body_links``: the
+descriptor named on the command line, the guard's margin, then a payload link. The two
+sha256 fields over configs are canonical JSON, and the URDF one is over the file the
+kinematics resolved with line endings normalised.
   request <- {"start_joints":[6 rad],"goal_pos_m":[x,y,z],"goal_quat_wxyz":[w,x,y,z]}
              {"cmd":"fk","joints":[6 rad]}   |   {"cmd":"shutdown"}
-             {"cmd":"check_js","joints":[[6 rad],...]}
+             {"cmd":"check_js","joints":[[6 rad],...]}   |   {"cmd":"explain_js","joints":[[6 rad],...]}
              {"cmd":"set_world","cuboids":[...],"meshes":[...],"voxels":{"path","dims_m","voxel_size_m","pose"}|null}
              {"cmd":"set_voxels","path":str|null,"dims_m":[...],"voxel_size_m":float,"pose":[...]}
   reply   -> {"success":bool,"trajectory":[[6 rad]...],"dt":float}  |  {"success":false,"reason":str}
              {"fk_pos_m":[...],"fk_quat_wxyz":[...]}
-             check_js: {"success":true,"valid":bool,"first_invalid":int|null,"checked":int}
+             check_js: {"success":true,"valid":bool,"first_invalid":int|null,"checked":int,"refusal":{...}?}
                        |  {"success":false,"planner_error":true,"reason":str}
+             explain_js: {"success":true,"self_collides":[bool],"bound_ok":[bool],"pairs":[[a,b]|null],
+                          "depths_mm":[float|null]}  |  {"success":false,"planner_error":true,"reason":str}
              set_world: {"world_set":int|null,"voxels_set":int|null,"reason":str}
              set_voxels: {"voxels_set":int|null,"reason":str}
-
-The ready line also carries "descriptor", the ``_provenance`` of the robot descriptor loaded, or null.
 
 A field is a signed distance in metres over the grid reserved at start, negative inside an
 obstacle and positive in free space, in the planner's voxel order. Written the other way
 round, every voxel that is not an obstacle reads as inside one and the whole grid blocks,
 as ``scripts/curobo/probe_live_world.py`` measures.
+
+A refusal block is {"where":"default_q"|"start"|"goal", "kind":"self_collision"|"joint_limit"|"world",
+"joints":[6 rad], "pair":[link,link]?, "depth_mm":float?}. The pair is named from sphere
+ownership in the config this sidecar loaded, through ``_curobo_pairs``; a descriptor that
+resolves its spheres from a file carries no ownership, and the refusal is then unnamed
+rather than absent. default_q is judged before the ready line and a refusal exits the
+process, unless WILLY_CUROBO_MEASURE_ONLY is set, which keeps a sidecar up to be questioned
+and refuses every plan.
 
 check_js judges every configuration of a joint path, in joint_names order, against the
 joint limits, the robot itself and the planner's world, on the planner's own collision
@@ -52,6 +67,8 @@ order.
 """
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import os
 import sys
@@ -107,12 +124,26 @@ _REQUEST_ID: object = None
 _LAST_CUBOIDS: dict = {}
 _LAST_MESHES: dict = {}
 
-#: The batch checker behind check_js, built on the first such request and kept for the session.
-#:
-#: It is built on the planner's own scene_collision_checker, the object update_world reloads,
-#: so it judges against whatever world was registered last without being rebuilt. It stays
-#: None until a build succeeds, so a build that raised is tried again by the next request.
+#: The checker behind every judgement, built once at start, as _terms uses it, and kept for
+#: the session. It stays None only while the sidecar is still loading: a build that fails is
+#: a sidecar that never becomes ready, because the ready gate cannot judge the retract
+#: without it.
 _CHECKER: Any = None
+
+
+#: What a measuring sidecar answers every command that would move something.
+_MEASURE_ONLY_REASON = (
+    "this cuRobo sidecar was started to MEASURE, not to plan: it reports what it finds in a configuration and "
+    "refuses every command that would move anything"
+)
+
+
+def _first_refusal(judged: list, wheres: tuple) -> "dict | None":
+    """The first refused configuration of a judged set, stamped with where it was, or None when all of them pass."""
+    for where, block in zip(wheres, judged):
+        if block is not None:
+            return dict(block, where=where)
+    return None
 
 
 def _emit(obj: dict) -> None:
@@ -163,7 +194,6 @@ def _field_block(voxels: dict) -> "tuple[dict[str, Any], int]":
 
 try:
     import torch  # type: ignore[import-not-found]
-    import yaml
     from curobo._src.geom.types import SceneCfg  # type: ignore[import-not-found]
     from curobo.content import get_content_root as _content_root  # type: ignore[import-not-found]
     from curobo.kinematics import Kinematics, KinematicsCfg  # type: ignore[import-not-found]
@@ -181,76 +211,99 @@ try:
     if VOXEL_GRID:
         _dx, _dy, _dz, _vs = (float(v) for v in VOXEL_GRID.split(","))
         _collision_cache["voxel"] = {"layers": 1, "dims": [_dx, _dy, _dz], "voxel_size": _vs}
-    # Teach the planner the clearance the safety guard will demand, so it stops
-    # returning paths the guard was always going to refuse: measured, 9.44 to 9.47 mm
-    # plans against a 10.000 mm guard margin. The transform lives in a sibling module,
-    # and this script own directory is first on sys.path because the client spawns it by
-    # path. Unset, or 0, leaves the config untouched.
-    from _curobo_attach import (  # type: ignore[import-not-found]
-        ATTACHED_LINK_NAME,
-        ENV_ATTACH_SPHERES,
-        derive_attach_config_file,
+    from curobo._src.util.config_io import resolve_config  # type: ignore[import-not-found]
+
+    # The composition lives in sibling modules, so it is importable from the python 3.11
+    # package as well as from here, and this script's own directory is first on sys.path
+    # because the client spawns it by path.
+    from _curobo_attach import ATTACHED_LINK_NAME, ENV_ATTACH_SPHERES  # type: ignore[import-not-found]
+    from _curobo_body_links import (  # type: ignore[import-not-found]
+        ENV_BODY_LINKS,
+        ENV_DEFAULT_Q,
+        body_report,
+        canonical_sha256,
+        compose_with_counts,
     )
-    from _curobo_margin import (  # type: ignore[import-not-found]
-        ENV_SELF_COLLISION_MARGIN_MM,
-        derive_margin_config_file,
+    from _curobo_margin import ENV_SELF_COLLISION_MARGIN_MM  # type: ignore[import-not-found]
+    from _curobo_pairs import SphereLayout, deepest_pairs  # type: ignore[import-not-found]
+    from _curobo_protocol import (  # type: ignore[import-not-found]
+        ENV_MEASURE_ONLY,
+        KIND_JOINT_LIMIT,
+        KIND_SELF_COLLISION,
+        KIND_WORLD,
+        WHERE_DEFAULT_Q,
+        WHERE_GOAL,
+        WHERE_START,
     )
 
-    _ROBOT_IN_USE = ROBOT
+    # The one config this planner loads. The descriptor is read once, with cuRobo's own
+    # loader, and composed in memory by _curobo_body_links: body links, then the guard's
+    # margin, then a payload link. The planner, the Kinematics and the check_js checker are
+    # each built from their own deep copy, because cuRobo's LinkParams.create rewrites the
+    # dict it is handed. cuRobo's loader and yaml.safe_load read all 33 installed
+    # descriptors alike.
+    _desc_path = ROBOT if os.path.isabs(ROBOT) else os.path.join(str(_content_root()), "configs", "robot", ROBOT)
+    _raw = resolve_config(_desc_path)
+    if not isinstance(_raw, dict):
+        raise ValueError(f"{_desc_path} holds no robot config")
+    # Teach the planner the clearance the safety guard will demand, so it stops returning
+    # paths the guard was always going to refuse: measured, 9.44 to 9.47 mm plans against a
+    # 10.000 mm guard margin. Unset, or 0, leaves the config untouched.
     _margin_mm = float(os.environ.get(ENV_SELF_COLLISION_MARGIN_MM, "0") or 0.0)
-    if _margin_mm > 0.0:
-        import tempfile
-
-        from curobo.content import get_content_root  # type: ignore[import-not-found]
-
-        _src = ROBOT if os.path.isabs(ROBOT) else os.path.join(
-            str(get_content_root()), "configs", "robot", ROBOT
-        )
-        _dst = os.path.join(tempfile.gettempdir(), f"willy_guard{_margin_mm:g}mm_{os.path.basename(_src)}")
-        _n = derive_margin_config_file(_src, _dst, _margin_mm)
-        print(f"[margin] +{_margin_mm:g} mm guard clearance on {_n} links -> {_dst}", file=sys.stderr, flush=True)
-        if _n:
-            _ROBOT_IN_USE = _dst
-        else:
-            # Said out loud, because the planner is about to run without the guard
-            # margin and can still hand back configurations the guard refuses.
-            print(f"[margin] !! {_src} has no self_collision_buffer block; margin not applied",
-                  file=sys.stderr, flush=True)
-    # A link to hang the grasped part from. Without it the planner model ends at the
-    # gripper and every move after a successful close is planned as if the hand were
-    # empty. `franka.yml` declares one and no UR config does, so it is derived here and
-    # chained onto whatever the margin step produced. Unset, or 0, leaves the config
+    # A link to hang the grasped part from. Without it the planner model ends at the gripper
+    # and every move after a successful close is planned as if the hand were empty.
+    # `franka.yml` declares one and no UR config does. Unset, or 0, leaves the config
     # untouched, and the attach command then refuses rather than pretending.
     _attach_spheres = int(os.environ.get(ENV_ATTACH_SPHERES, "0") or 0)
-    if _attach_spheres > 0:
-        import tempfile
-
-        from curobo.content import get_content_root  # type: ignore[import-not-found]
-
-        _asrc = _ROBOT_IN_USE if os.path.isabs(_ROBOT_IN_USE) else os.path.join(
-            str(get_content_root()), "configs", "robot", _ROBOT_IN_USE
-        )
-        _adst = os.path.join(tempfile.gettempdir(),
-                             f"willy_attach{_attach_spheres}_{os.path.basename(_asrc)}")
-        if derive_attach_config_file(_asrc, _adst, spheres=_attach_spheres):
-            print(f"[attach] payload link with {_attach_spheres} sphere slot(s) -> {_adst}",
-                  file=sys.stderr, flush=True)
-            _ROBOT_IN_USE = _adst
-        else:
-            print(f"[attach] {_asrc} already declares {ATTACHED_LINK_NAME}; using it as it is",
-                  file=sys.stderr, flush=True)
-
-    # Which arm and hand this descriptor models, said once in the ready line.
-    # build_ur_config.py writes it under _provenance, the margin and attach copies above
-    # keep it, and the drivers refuse a descriptor for another arm, hand or plate.
-    _desc_path = _ROBOT_IN_USE if os.path.isabs(_ROBOT_IN_USE) else os.path.join(
-        str(_content_root()), "configs", "robot", _ROBOT_IN_USE
+    # The bodies the client adds: the hand a cell names, placed by its declared tool frame,
+    # as a fixed link under tool0 (safety/planning/body_link.py). An empty list leaves the
+    # descriptor as it is, and the client refuses a sidecar that then reports no hand.
+    _bodies = json.loads(os.environ.get(ENV_BODY_LINKS) or "[]")
+    if not isinstance(_bodies, list) or not all(isinstance(_body, dict) for _body in _bodies):
+        raise ValueError(f"{ENV_BODY_LINKS} holds no JSON list of body links")
+    # The retract this arm and hand were judged at. The descriptor is per arm, so the pose
+    # in it can only be right about a bare arm; the pose for the pair comes from the client,
+    # out of the committed table. Unset leaves the descriptor's own, which is what a sidecar
+    # with no hand gets.
+    _default_q_env = os.environ.get(ENV_DEFAULT_Q)
+    _chosen_q = json.loads(_default_q_env) if _default_q_env else None
+    if _chosen_q is not None and not isinstance(_chosen_q, list):
+        raise ValueError(f"{ENV_DEFAULT_Q} holds no JSON list of joint values")
+    _COMPOSED, _margin_links, _attach_added = compose_with_counts(
+        _raw, bodies=_bodies, margin_mm=_margin_mm, attach_spheres=_attach_spheres, default_q=_chosen_q,
     )
-    with open(_desc_path, encoding="utf-8") as _desc_file:
-        _descriptor = (yaml.safe_load(_desc_file) or {}).get("_provenance")
+    if _chosen_q is not None:
+        print(f"[retract] {[round(float(v), 4) for v in _chosen_q]} from the cell, for this arm and "
+              f"hand", file=sys.stderr, flush=True)
+    _body_rows = body_report(_COMPOSED, [str(_body.get("link")) for _body in _bodies])
+    for _row in _body_rows:
+        print(f"[bodies] {_row['link']} under {_row['parent']}: {_row['spheres']} sphere(s) at "
+              f"{_row['fixed_transform']}", file=sys.stderr, flush=True)
+    if _margin_mm > 0.0:
+        if _margin_links:
+            print(f"[margin] +{_margin_mm:g} mm guard clearance on {_margin_links} links", file=sys.stderr, flush=True)
+        else:
+            # Said out loud, because the planner is about to run without the guard margin
+            # and can still hand back configurations the guard refuses.
+            print(f"[margin] !! {_desc_path} has no self_collision_buffer block; margin not applied",
+                  file=sys.stderr, flush=True)
+    if _attach_spheres > 0:
+        if _attach_added:
+            print(f"[attach] payload link with {_attach_spheres} sphere slot(s)", file=sys.stderr, flush=True)
+        else:
+            print(f"[attach] {_desc_path} already declares {ATTACHED_LINK_NAME}; using it as it is",
+                  file=sys.stderr, flush=True)
+
+    # Who this sidecar is, said once in the ready line. `_provenance` names the arm and hand
+    # the descriptor was built for, as build_ur_config.py writes it, and the client refuses a
+    # descriptor for another hand. The hashes name the bytes: the descriptor's robot_cfg and
+    # the composed config as canonical JSON, and the URDF the kinematics resolved.
+    _descriptor = _raw.get("_provenance")
+    _arm_descriptor_sha256 = canonical_sha256(_raw.get("robot_cfg", _raw))
+    _composed_sha256 = canonical_sha256(_COMPOSED)
     _planner = MotionPlanner(
         MotionPlannerCfg.create(
-            robot=_ROBOT_IN_USE,
+            robot=copy.deepcopy(_COMPOSED),
             scene_model={"cuboid": _world},
             collision_cache=_collision_cache,
         )
@@ -259,8 +312,14 @@ try:
     _planner.warmup(enable_graph=True, num_warmup_iterations=5)
     _DT = float(_planner.trajopt_solver.config.interpolation_dt)
     _N = len(_planner.joint_names)
-    _kin = Kinematics(KinematicsCfg.from_robot_yaml_file(_ROBOT_IN_USE))
+    _kin = Kinematics(KinematicsCfg.from_data_dict(copy.deepcopy(_COMPOSED)))
     _default_q = _planner.default_joint_state.position.squeeze().cpu().tolist()
+    # Line endings normalised, because a URDF written in text mode on Windows carries CRLF and is the same robot.
+    _urdf_path = getattr(_kin.config.generator_config, "urdf_path", None)
+    _urdf_sha256 = None
+    if isinstance(_urdf_path, str) and os.path.isfile(_urdf_path):
+        with open(_urdf_path, "rb") as _urdf_file:
+            _urdf_sha256 = hashlib.sha256(_urdf_file.read().replace(b"\r\n", b"\n")).hexdigest()
 
     def _fk(joints: list) -> tuple[list, list]:
         q = torch.tensor(joints, device="cuda", dtype=torch.float32).reshape(1, -1)
@@ -268,14 +327,150 @@ try:
         p = st.tool_poses.get_link_pose(_kin.tool_frames[0])
         return p.position.squeeze().cpu().tolist(), p.quaternion.squeeze().cpu().tolist()
 
+    # One judgement, asked three times: by the ready gate below, by the start and goal checks
+    # in front of each plan, and by check_js. Three separate copies of it would be three
+    # chances to disagree about what admissible means.
+    #
+    # The checker is built here rather than on the first check_js, because the ready gate
+    # needs it: a sidecar that cannot judge its own retract must not report itself ready. It
+    # costs start time and GPU memory. It is built on the planner's own
+    # scene_collision_checker, the object update_world reloads, so it judges against
+    # whatever world was registered last without being rebuilt.
+    from curobo.collision_checking import (  # type: ignore[import-not-found]
+        RobotCollisionChecker,
+        RobotCollisionCheckerCfg,
+    )
+
+    _CHECKER = RobotCollisionChecker(
+        RobotCollisionCheckerCfg.load_from_config(
+            robot_config=copy.deepcopy(_COMPOSED),
+            scene_collision_checker=_planner.scene_collision_checker,
+            collision_activation_distance=0.0,
+        )
+    )
+    # Who owns which collision sphere, so a refusal can name two links instead of a number.
+    # None for a descriptor that resolves its spheres from a file: the refusal is then just
+    # as real and the pair has no name.
+    _LAYOUT = SphereLayout.from_robot_config(_COMPOSED)
+
+    def _terms(rows: list) -> tuple:
+        """The three costs cuRobo's own validation adds up, per configuration, plus the spheres they were read from.
+
+        The spheres come from the planner's kinematics. A checker keeps a Kinematics of its
+        own, and that copy never sees a payload attached to the planner: a part 50 mm inside
+        a wall passes it. An activation distance of 0.0 makes a zero mean that the spheres do
+        not penetrate, not that they keep any clearance.
+        """
+        cq = torch.tensor(rows, device="cuda", dtype=torch.float32)
+        if cq.ndim != 2 or cq.shape[0] == 0 or cq.shape[1] != _N:
+            raise ValueError(f"joints must be a non-empty list of {_N} joint configurations, "
+                             f"got shape {tuple(cq.shape)}")
+        cq = cq.unsqueeze(0)
+        h = int(cq.shape[1])
+        spheres = _planner.compute_kinematics(
+            JointState.from_position(cq, joint_names=_planner.joint_names)
+        ).robot_spheres.reshape(1, h, -1, 4)
+        bound = _CHECKER.get_bound(cq).reshape(1, h, -1).sum(dim=-1).reshape(-1)
+        self_hit = _CHECKER.get_self_collision(spheres).reshape(1, h, -1).sum(dim=-1).reshape(-1)
+        world_hit = _CHECKER.get_collision_constraint(spheres).reshape(1, h, -1).sum(dim=-1).reshape(-1)
+        return bound, self_hit, world_hit, spheres.reshape(h, -1, 4)
+
+    def _named_pairs(spheres: Any, count: int) -> list:
+        """The deepest overlapping link pair per configuration, or a row of None where nothing can name one."""
+        if _LAYOUT is None:
+            return [None] * count
+        return list(deepest_pairs(spheres.detach().cpu().numpy().astype("float64"), _LAYOUT))
+
+    def _judge_states(rows: list, *, world: bool) -> list:
+        """One block per configuration saying what is wrong with it, or None where nothing is.
+
+        The self collision is reported first and named, because it is the one an operator
+        cannot see from the outside: it says this arm and this hand do not fit together in
+        this pose. The joint bound comes second and the world last, and the world is left out
+        where it is not a property of the robot, which is the ready gate.
+        """
+        bound, self_hit, world_hit, spheres = _terms(rows)
+        pairs = _named_pairs(spheres, len(rows))
+        found: list = []
+        for index, row in enumerate(rows):
+            joints = [float(value) for value in row]
+            if float(self_hit[index]) > 0.0:
+                block: dict = {"kind": KIND_SELF_COLLISION, "joints": joints}
+                pair = pairs[index]
+                if pair is not None:
+                    # Two arithmetics over one set of spheres. Where cuRobo says a pose
+                    # collides and this names no pair, the gate counts an attribution
+                    # disagreement; the refusal stands either way.
+                    block["pair"] = [pair.link_a, pair.link_b]
+                    block["depth_mm"] = pair.depth_mm
+                found.append(block)
+            elif float(bound[index]) > 0.0:
+                found.append({"kind": KIND_JOINT_LIMIT, "joints": joints})
+            elif world and float(world_hit[index]) > 0.0:
+                found.append({"kind": KIND_WORLD, "joints": joints, "depth_mm": float(world_hit[index]) * 1000.0})
+            else:
+                found.append(None)
+        return found
+
+    def _refusal_sentence(block: dict) -> str:
+        """The refusal as one line for an operator: what was judged, what it found, and under which margin."""
+        pair, depth = block.get("pair"), block.get("depth_mm")
+        if block.get("kind") == KIND_SELF_COLLISION:
+            reached = (
+                f"{pair[0]} and {pair[1]} overlap by {depth:.1f} mm" if pair and depth is not None
+                else "the robot's own collision spheres overlap, and this descriptor does not say which link owns "
+                     "which sphere, so the pair has no name"
+            )
+        elif block.get("kind") == KIND_JOINT_LIMIT:
+            reached = "a joint sits outside the limits this planner was built with"
+        else:
+            reached = f"it reaches {depth:.1f} mm into the world the planner holds" if depth is not None else (
+                "it reaches into the world the planner holds")
+        return (f"cuRobo refuses {block.get('where')}: {reached}. Descriptor {os.path.basename(_desc_path)}, "
+                f"planner margin {_margin_mm:g} mm.")
+
 except Exception as exc:  # noqa: BLE001 (any import/load/JIT failure -> a typed error line, then exit)
     _emit({"status": "error", "reason": f"{type(exc).__name__}: {exc}"})
     sys.exit(1)
 
 _sp, _sq = _fk(_default_q)
+
+# The ready gate. A planner whose own retract is inside the arm or inside the hand has
+# nothing safe to say about any other pose, and the escape it would otherwise plan is the
+# first motion of every pick. So it is judged here, and a sidecar that refuses it says which
+# links touch and exits instead of becoming ready. The world is left out: the boot table is
+# replaced by the cell's, and it is not a property of this arm and hand.
+#
+# Only the matrix gate sets MEASURE_ONLY, which keeps the sidecar up to be questioned and
+# never to plan. Without it an arm and hand that refuse at exactly this line could not be
+# measured at all.
+_MEASURE_ONLY = bool(os.environ.get(ENV_MEASURE_ONLY))
+try:
+    _READY_REFUSAL = _judge_states([_default_q], world=False)[0]
+except Exception as _exc:  # noqa: BLE001 (wrapped, because a traceback here is a client that says only "no signal")
+    _emit({"status": "error", "reason": f"the sidecar could not judge its own retract, so it cannot say whether this "
+                                        f"arm and hand fit together: {type(_exc).__name__}: {_exc}"})
+    sys.exit(1)
+if _READY_REFUSAL is not None:
+    _READY_REFUSAL = dict(_READY_REFUSAL, where=WHERE_DEFAULT_Q)
+    print(f"[ready] {_refusal_sentence(_READY_REFUSAL)}", file=sys.stderr, flush=True)
+    if not _MEASURE_ONLY:
+        _emit({"status": "error", "reason": _refusal_sentence(_READY_REFUSAL), "refusal": _READY_REFUSAL,
+               "descriptor": _descriptor if isinstance(_descriptor, dict) else None,
+               "arm_descriptor_sha256": _arm_descriptor_sha256, "composed_sha256": _composed_sha256})
+        sys.exit(1)
+#: Said in the ready line so a measuring client can read the refusal a driver would have
+#: been stopped by, and so a client that wanted a planner refuses this sidecar rather than
+#: reading every refusal as a blocked goal.
+_MEASURING: dict = {"measure_only": True} if _MEASURE_ONLY else {}
+if _MEASURE_ONLY and _READY_REFUSAL is not None:
+    _MEASURING["refusal"] = _READY_REFUSAL
+
 _emit({"status": "ready", "joint_names": list(_planner.joint_names), "default_q": _default_q,
        "dt": _DT, "start_pos_m": _sp, "start_quat_wxyz": _sq,
-       "descriptor": _descriptor if isinstance(_descriptor, dict) else None})
+       "descriptor": _descriptor if isinstance(_descriptor, dict) else None,
+       "arm_descriptor_sha256": _arm_descriptor_sha256, "urdf_sha256": _urdf_sha256,
+       "composed_sha256": _composed_sha256, "bodies": _body_rows, **_MEASURING})
 
 for _line in sys.stdin:
     _line = _line.strip()
@@ -308,7 +503,21 @@ for _line in sys.stdin:
         # the same tool pose, and a flipped elbow branch has put 43 mm of
         # self-penetration into a pose that looked fine. Planning in joint space asks
         # for the configuration that was meant.
+        if _MEASURE_ONLY:
+            _emit({"success": False, "planner_error": False, "reason": _MEASURE_ONLY_REASON})
+            continue
         try:
+            # Judged before it is planned. A start the planner cannot leave and a goal it
+            # cannot hold both come back as "no collision-free plan", which sends an
+            # operator looking at the scene for a reason that is in the arm.
+            _refused = _first_refusal(
+                _judge_states([req["start_joints"], req["goal_joints"]], world=True), (WHERE_START, WHERE_GOAL),
+            )
+            if _refused is not None:
+                print(f"[plan_js] {_refusal_sentence(_refused)}", file=sys.stderr, flush=True)
+                _emit({"success": False, "planner_error": False,
+                       "reason": _refusal_sentence(_refused), "refusal": _refused})
+                continue
             q0 = torch.tensor(req["start_joints"], device="cuda", dtype=torch.float32).unsqueeze(0)
             qg = torch.tensor(req["goal_joints"], device="cuda", dtype=torch.float32).unsqueeze(0)
             start = JointState.from_position(q0, joint_names=_planner.joint_names)
@@ -349,55 +558,65 @@ for _line in sys.stdin:
         # is held against the joint limits, the robot itself and the world this planner
         # holds, and the reply names the first one refused.
         #
-        # The spheres come from the planner's own kinematics. A checker keeps a Kinematics
-        # of its own, and that copy never sees a payload attached to the planner: a part
-        # 50 mm inside a wall passes the separate checker and is refused by this sum over
-        # the planner's spheres. The three terms are the ones the checker's own validation
-        # adds up, and a sample passes only when their sum is exactly 0.
-        #
-        # The robot in use is the derived one, so the guard margin is in its self collision
-        # padding. Activation distance 0.0 makes a pass mean that cuRobo's spheres do not
-        # penetrate, not that they keep any clearance.
+        # The three terms are _terms, the one judgement this sidecar makes, so a path
+        # checked here and a start judged before a plan cannot disagree. A sample passes
+        # only when their sum is exactly 0: the checker carries the guard margin in its self
+        # collision padding and an activation distance of 0.0, so a pass means cuRobo's
+        # spheres do not penetrate, not that they keep any clearance.
         try:
-            if _CHECKER is None:
-                from curobo.collision_checking import (  # type: ignore[import-not-found]
-                    RobotCollisionChecker,
-                    RobotCollisionCheckerCfg,
-                )
-
-                _CHECKER = RobotCollisionChecker(
-                    RobotCollisionCheckerCfg.load_from_config(
-                        robot_config=_ROBOT_IN_USE,
-                        scene_collision_checker=_planner.scene_collision_checker,
-                        collision_activation_distance=0.0,
-                    )
-                )
-            _cq = torch.tensor(req["joints"], device="cuda", dtype=torch.float32)
-            if _cq.ndim != 2 or _cq.shape[0] == 0 or _cq.shape[1] != _N:
-                raise ValueError(f"joints must be a non-empty list of {_N} joint configurations, "
-                                 f"got shape {tuple(_cq.shape)}")
-            _cq = _cq.unsqueeze(0)
-            _h = int(_cq.shape[1])
-            _spheres = _planner.compute_kinematics(
-                JointState.from_position(_cq, joint_names=_planner.joint_names)
-            ).robot_spheres.reshape(1, _h, -1, 4)
-            _terms = torch.cat(
-                [
-                    _CHECKER.get_bound(_cq).reshape(1, _h, -1).sum(dim=-1, keepdim=True),
-                    _CHECKER.get_self_collision(_spheres).reshape(1, _h, -1).sum(dim=-1, keepdim=True),
-                    _CHECKER.get_collision_constraint(_spheres).reshape(1, _h, -1).sum(dim=-1, keepdim=True),
-                ],
-                dim=-1,
-            )
-            _passes = (torch.sum(_terms, dim=-1) == 0.0).reshape(-1).cpu().tolist()
+            _bound, _self_hit, _world_hit, _spheres = _terms(req["joints"])
+            _passes = ((_bound + _self_hit + _world_hit) == 0.0).reshape(-1).cpu().tolist()
             _first = next((i for i, ok in enumerate(_passes) if not ok), None)
             _word = "valid" if _first is None else f"invalid from sample {_first}"
             print(f"[check_js] {len(_passes)} sample(s): {_word}", file=sys.stderr, flush=True)
-            _emit({"success": True, "valid": _first is None, "first_invalid": _first, "checked": len(_passes)})
+            _reply: dict = {"success": True, "valid": _first is None,
+                            "first_invalid": _first, "checked": len(_passes)}
+            if _first is not None:
+                # The same judgement again, for the one sample the verdict names: the client
+                # reports the pair beside the index, and an index alone points at a
+                # configuration nobody can picture.
+                _named = _judge_states([req["joints"][_first]], world=True)[0]
+                if _named is not None:
+                    _reply["refusal"] = dict(_named, where=WHERE_START)
+            _emit(_reply)
         except Exception as exc:  # noqa: BLE001
             # The call failed and nothing was judged: labelled planner_error so the client
             # can never read it as a verdict about the path.
             print(f"[check_js] CALL FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            _emit({"success": False, "planner_error": True, "reason": f"{type(exc).__name__}: {exc}"})
+        continue
+    if cmd == "explain_js":
+        # The matrix gate's question: judge these configurations and say what touched in
+        # each, rather than answering with one verdict over the path. It exists so the
+        # evidence is measured through the sidecar, loading the config exactly as a cell's
+        # planner loads it, instead of through a second implementation beside it.
+        try:
+            _bound, _self_hit, _world_hit, _spheres = _terms(req["joints"])
+            # Naming the pair is the expensive half, and not every caller reads it. `_terms`
+            # runs on the GPU; `_named_pairs` is pairwise arithmetic over every sphere of the
+            # robot, in numpy on the CPU, per configuration. On a ur5 with the EGU-50, at 590
+            # spheres, that is 173,755 pairs and 8.29 ms a pose, which is 51 minutes over one
+            # candidate family of the retract rule, whose judge reads the two verdicts and
+            # throws the names away. So the question says whether it wants them, and the
+            # default is yes for the gate that asked first.
+            #
+            # Where they are not wanted the reply carries a null rather than a row of nulls: a
+            # null per entry means there is nothing to name there, which is a statement about
+            # the robot, and this is not one.
+            _name_pairs = bool(req.get("name_pairs", True))
+            _pairs = _named_pairs(_spheres, len(req["joints"])) if _name_pairs else None
+            _emit({
+                "success": True,
+                "self_collides": [float(value) > 0.0 for value in _self_hit],
+                "bound_ok": [float(value) == 0.0 for value in _bound],
+                "pairs_named": _name_pairs,
+                "pairs": ([[pair.link_a, pair.link_b] if pair is not None else None for pair in _pairs]
+                          if _pairs is not None else None),
+                "depths_mm": ([pair.depth_mm if pair is not None else None for pair in _pairs]
+                              if _pairs is not None else None),
+            })
+        except Exception as exc:  # noqa: BLE001
+            print(f"[explain_js] CALL FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             _emit({"success": False, "planner_error": True, "reason": f"{type(exc).__name__}: {exc}"})
         continue
     if cmd == "attach":
@@ -405,6 +624,12 @@ for _line in sys.stdin:
         # the world as well. dims_m are full side lengths, and pose is
         # [x, y, z, qw, qx, qy, qz] in the tool frame. A UR hand approaches along tool0
         # +Y, so the client sends the part's centre past the fingertips on +Y.
+        #
+        # It is refused while measuring: a payload changes the robot the gate is measuring,
+        # and the evidence names none.
+        if _MEASURE_ONLY:
+            _emit({"success": False, "planner_error": False, "reason": _MEASURE_ONLY_REASON})
+            continue
         try:
             if _attach_spheres <= 0:
                 _emit({"attached": False,
@@ -477,7 +702,7 @@ for _line in sys.stdin:
             scene["voxel"], count = _field_block(req)
             _planner.update_world(SceneCfg.create(scene))
             _emit({"voxels_set": count})
-        except Exception as exc:  # noqa: BLE001 - report, never take the sidecar down mid-session
+        except Exception as exc:  # noqa: BLE001 (report, never take the sidecar down mid-session)
             print(f"[set_voxels] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             _emit({"voxels_set": None, "reason": f"{type(exc).__name__}: {exc}"})
         continue
@@ -532,7 +757,19 @@ for _line in sys.stdin:
         except Exception as exc:  # noqa: BLE001
             _emit({"world_set": None, "reason": f"{type(exc).__name__}: {exc}"})
         continue
+    if _MEASURE_ONLY:
+        _emit({"success": False, "planner_error": False, "reason": _MEASURE_ONLY_REASON})
+        continue
     try:
+        # The start, judged before the plan. There is no goal configuration here to judge:
+        # the goal is a tool pose, and which configuration would reach it is what the
+        # planner is being asked.
+        _refused = _first_refusal(_judge_states([req["start_joints"]], world=True), (WHERE_START,))
+        if _refused is not None:
+            print(f"[plan] {_refusal_sentence(_refused)}", file=sys.stderr, flush=True)
+            _emit({"success": False, "planner_error": False,
+                   "reason": _refusal_sentence(_refused), "refusal": _refused})
+            continue
         q0 = torch.tensor(req["start_joints"], device="cuda", dtype=torch.float32).unsqueeze(0)
         q_start = JointState.from_position(q0, joint_names=_planner.joint_names)
         goal = GoalToolPose(

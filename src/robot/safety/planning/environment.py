@@ -103,11 +103,6 @@ def curobo_robot_config() -> str:
     return os.environ.get(ENV_CUROBO_ROBOT, _DEFAULT_CUROBO_ROBOT)
 
 
-def curobo_cuboid_cache() -> str:
-    """How many collision-world cuboid slots the sidecar reserves at boot."""
-    return os.environ.get(ENV_CUROBO_CUBOID_CACHE, _DEFAULT_CUROBO_CUBOID_CACHE)
-
-
 def curobo_mesh_cache() -> str:
     """Mesh slots the planner reserves at boot. ``"0"`` means the mesh channel is not available.
 
@@ -124,6 +119,11 @@ def curobo_voxel_grid() -> str:
     are fixed when the planner starts, because the storage is allocated for exactly that many cells.
     """
     return os.environ.get(ENV_CUROBO_VOXEL_GRID, "")
+
+
+def curobo_cuboid_cache() -> str:
+    """How many collision-world cuboid slots the sidecar reserves at boot."""
+    return os.environ.get(ENV_CUROBO_CUBOID_CACHE, _DEFAULT_CUROBO_CUBOID_CACHE)
 
 
 def curobo_env_available() -> bool:
@@ -145,44 +145,53 @@ ENV_COAL_PREFIX = "WILLY_COAL_PREFIX"  #: conda env prefix that provides Coal (W
 COLLISION_MESH_DIR = Path(__file__).resolve().parents[1] / "data"
 
 
-def collision_mesh_bundle(model: str = "ur5e", variant: str | None = None) -> Path:
-    """Path to the mesh bundle for ``model``, or for ``variant`` mounted on ``model``.
+def collision_mesh_bundle(model: str = "ur5e") -> Path:
+    """Path to the arm bundle for ``model``: its six links, with the Robotiq 2F-85 its asset was baked with.
 
-    A variant bundle is an arm plus a hand, not a hand. It carries the arm meshes of the robot it
-    was baked from and swaps only the three gripper arrays, which is why
-    ``_variant_is_for_another_model`` exists and why a mismatch drops the whole cell to the capsule
-    proxy rather than only the hand: the arm loses exact-mesh checking too.
-
-    So ``variant`` names the hand and the arm is composed in here. ``robotiq_hande`` finds
-    ``robotiq_hande_ur3e_collision_meshes.npz`` on a UR3e and the ur5e file on a UR5e. Without
-    that the arm has to be written into the config key, and a cell that changes arms then keeps a
-    bundle for the old one. Measured: ``schunk_egu50`` on a ur3e does exactly that today.
-
-    The flat ``{variant}_collision_meshes.npz`` is still found when no per-arm file exists, which
-    is what ``schunk_egu50`` is: baked before this, and implicitly a UR5e.
+    No other hand is in here. Another hand is its own bundle, :func:`hand_mesh_bundle`, composed onto
+    the arm when the guard loads, through :func:`compose_collision_meshes`. A file per arm and hand
+    that carries a copy of the arm, and a flat one that carries whatever arm it was baked on, can
+    describe the wrong arm: a ur10e cell with the EGU-50 checked UR10e joint angles against UR5e arm
+    meshes and reported ``ok``. A hand bundle carries no arm to get wrong, and records the arms it
+    was proven on instead.
     """
-    model = model.lower()
-    own = COLLISION_MESH_DIR / f"{model}_collision_meshes.npz"
-    if not variant:
-        return own
-    variant = variant.lower()
-    per_arm = COLLISION_MESH_DIR / f"{variant}_{model}_collision_meshes.npz"
-    if per_arm.is_file():
-        return per_arm
-    # The flat name is offered only where its arm can be checked. A flat bundle carries the arm
-    # meshes of whatever robot it was baked from, and ``_variant_is_for_another_model`` catches
-    # that by comparing one arm link against the own bundle of this model. With no own bundle
-    # there is nothing to compare, so that check returns False, and a cell would run the geometry
-    # of a different arm under a status of ``ok``.
-    #
-    # Measured before this line existed: ur10e with the ``schunk_egu50`` hand's bundle
-    # reported ``ok`` and checked a UR10e against UR5e arm meshes, while the same variant on a
-    # ur3e correctly reported ``variant_model_mismatch``. The difference was only that ur3e has a
-    # bundle to be compared with. The question is unanswerable exactly when an arm is new, which
-    # is when the guard should be least willing to guess.
-    if not own.is_file():
-        return per_arm  # absent, so the caller reports no_bundle rather than a foreign arm
-    return COLLISION_MESH_DIR / f"{variant}_collision_meshes.npz"
+    return COLLISION_MESH_DIR / f"{model.lower()}_collision_meshes.npz"
+
+
+#: The arrays of an arm bundle that are the hand rather than the arm, and the prefix of the record
+#: keys of a hand bundle, which are never meshes: the guard takes every key not ending in
+#: ``__origin`` as a mesh name.
+_HAND_PARTS = ("gripper", "lfinger", "rfinger")
+_HAND_RECORD_PREFIX = "hand__"
+
+
+def hand_mesh_bundle(hand: str) -> Path:
+    """The guard bundle of the hand called ``hand``: its arrays alone, composed onto an arm at load.
+
+    A newly baked hand is written by ``scripts/grippers/bake_gripper_variant.py``, and every bundle
+    records the arms it was proven on under ``hand__admitted_arms``.
+    """
+    return COLLISION_MESH_DIR / f"{hand.lower()}_hand_meshes.npz"
+
+
+def compose_collision_meshes(model: str, hand: str | None, mesh_dir: str | Path | None = None) -> dict:
+    """The arrays the exact-mesh guard reads for ``hand`` on ``model``, composed at load.
+
+    The arm's own bundle without its hand arrays, plus every mesh array of the hand's bundle. A
+    ``hand`` of ``None`` gives the arm bundle as it is. The record keys of a hand bundle never reach
+    the result. ``mesh_dir`` reads both files from a folder other than the committed one.
+    """
+    import numpy as np
+
+    folder = Path(mesh_dir) if mesh_dir else COLLISION_MESH_DIR
+    with np.load(folder / f"{model.lower()}_collision_meshes.npz") as data:
+        arrays = {key: data[key] for key in data.files}
+    if hand is None:
+        return arrays
+    composed = {key: value for key, value in arrays.items() if key.split("__")[0] not in _HAND_PARTS}
+    with np.load(folder / f"{hand.lower()}_hand_meshes.npz") as data:
+        composed.update({key: data[key] for key in data.files if not key.startswith(_HAND_RECORD_PREFIX)})
+    return composed
 
 
 def inject_coal_prefix() -> None:
@@ -221,8 +230,8 @@ def inject_coal_prefix() -> None:
 class CollisionEngineResolution:
     """Which exact-mesh engine answered, and what the engines ahead of it said when they did not.
 
-    The reasons are kept because throwing them away produced a false green. Measured
-    2026-09-10: with an application-control policy refusing this repository's own
+    The reasons are kept because throwing them away produced a false green. With an
+    application-control policy refusing this repository's own
     ``ext_deps/coal_env/Library/bin/coal.dll``,
     ``python -m src.robot.safety.planning --doctor`` exited 0 with ``policy_blocked=false``
     and reported ``[ok] exact-mesh collision engine: fcl 0.7.0.11``. The resolution below

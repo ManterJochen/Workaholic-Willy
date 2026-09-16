@@ -363,15 +363,12 @@ def bootstrap_sim_cell(
     # Engine check before the boot as well: it is a filesystem probe, so an operator who has not
     # pointed at the cuRobo and Coal envs learns it in milliseconds rather than after the Isaac
     # start-up and a run whose numbers describe a different motion stack.
-    from src.robot.drivers.sim.robot_models import curobo_robot_yml
+    # The descriptor the arm loads: its arm's, with the hand added as a body link when the planner
+    # starts. With no hand named there is no planner to start, and the banner says so rather than
+    # falling back to the environment's ur5e.yml.
+    from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR, curobo_arm_descriptor
 
-    # The descriptor the arm loads, by arm and hand. With no hand named there is none, and the banner
-    # says so rather than falling back to the environment's ur5e.yml.
-    from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR
-
-    _robot_yml = (
-        curobo_robot_yml(sim.robot_model, robot.gripper.model) if robot.gripper.model else NO_DESCRIPTOR
-    )
+    _robot_yml = curobo_arm_descriptor(sim.robot_model) if robot.gripper.model else NO_DESCRIPTOR
     # kinematics_model is optional in the schema; an unset one means the guard has no DH chain
     # configured at all, so report the bundle for the robot the cell actually drives.
     _kin_model = robot.safety.self_collision.kinematics_model or sim.robot_model

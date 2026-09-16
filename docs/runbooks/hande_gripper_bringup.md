@@ -97,18 +97,24 @@ gripper one: the plate is a property of your cell and the gripper profile is sha
 
 ### 3. Give the planner the hand
 
-The guard reads config. **The planner reads a descriptor**, so it does not change until this is run,
-on the box, with the cuRobo environment's interpreter:
+The guard reads config, and so does the planner's hand. **The descriptor is the arm alone** and is built
+once per arm, on the box, with the cuRobo environment's interpreter:
 
 ```bash
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur3e     --gripper robotiq_hande --coupling-mm <the plate from step 1>
+ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur3e
 ```
 
-It refuses without `--coupling-mm`, because the Hand-E's spheres are measured from the gripper's own
-mounting face and assuming zero puts every one of them one plate too close to the flange. That is
-optimistic in the one direction a planner must not be, and the resulting file looks entirely
-reasonable. Passing `0` is a legitimate answer for a hand bolted straight to the flange; saying it
-out loud is the point.
+It refuses `--gripper` and `--coupling-mm` by name: the hand is not in the descriptor. When the planner
+starts, its sidecar adds the hand this cell names as a fixed link under `tool0`, placed from
+`robot.gripper.model`, `robot.gripper.coupling_plates_mm` and the declared tool frame. So the plate from
+step 1 goes into the cell profile and nowhere else, and a plate nobody measured leaves the cell refusing
+to build rather than modelling the hand one plate too close to the flange.
+
+Check that it plans with the hand added:
+
+```bash
+ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py willy_ur3e --hand robotiq_hande --coupling-mm <the plate from step 1>
+```
 
 ### 4. Declare the payload
 
@@ -116,7 +122,7 @@ out loud is the point.
 declares `mass_kg: 0.0`, which makes the payload guard's envelope check vacuous rather than wrong,
 and a heavier hand eats the arm's rated payload with nothing noticing.
 
-### 5. Declare the coupling plate, once, in three places
+### 5. Declare the coupling plate, once, in two places
 
 The plate between the arm flange and the gripper's own mounting face is a bench measurement, and it
 is the same number every time:
@@ -124,21 +130,17 @@ is the same number every time:
 ```
 robot.gripper.tool_frame.offset_mm            plate + 135.75 mm along the approach
 robot.gripper.coupling_plates_mm              [plate]
-scripts/curobo/build_ur_config.py --coupling-mm   plate
 ```
 
-⛔ **The third and second used to be the only two, and the guard was the one left out.** All six
-`robotiq_hande_ur*_collision_meshes.npz` are stamped `gripper__origin = "mounting_face"`, which the
-bake module defines as "whatever plate sits between that face and the flange has to be added before
-the planner sees it". The sphere fit read that stamp; the exact-mesh guard never did and had no key
-that could carry the number. A Hand-E cell therefore ran two collision models of the same hand
-differing by one plate: the planner's with it, the guard's without.
+Both are read at runtime, and both models of the hand are placed from them: the planner's hand link and
+the exact-mesh guard's composed hand bundle. The check in step 3 takes the same number as
+`--coupling-mm`, so a rehearsal models the cell being built rather than a bare flange.
 
-⚠ The guard's hand sat NEARER the arm than the real one, which is the conservative direction for
-arm-versus-hand, so this was a disagreement rather than a hole. The guard takes the plate
-from `robot.gripper.coupling_plates_mm`, and a Hand-E cell that writes none refuses to build: its sphere
-map starts at the mounting face, and no plate written is no measurement rather than zero.
-`robot.hande.yaml` writes `[20.0]`, an assumption to replace with this cell's bench number.
+`robotiq_hande_hand_meshes.npz` is stamped `gripper__origin = "mounting_face"`, which the bake module
+defines as "whatever plate sits between that face and the flange has to be added before the planner sees
+it". A Hand-E cell that writes no plate refuses to build: the hand's own arrays start at the mounting
+face, and no plate written is no measurement rather than zero. `robot.hande.yaml` writes `[20.0]`, an
+assumption to replace with this cell's bench number.
 
 ### 6. The planner does NOT know what it is carrying, and that is a decision
 
@@ -167,7 +169,7 @@ python -m src.robot.safety.planning --doctor
 ```
 
 Everything in the gripper block reads `ok`, and the `gripper sphere map` warning about the coupling
-is gone once the descriptor was built with one.
+is gone once the cell declares the plate.
 
 ```bash
 python -c "
@@ -187,14 +189,11 @@ driver: command a width, read it back, and confirm the two agree within a millim
 
 ## Rollback
 
-Set `WILLY_PROFILE` back to the cell profile without `hande` and re-run step 3 with the old hand:
+Set `WILLY_PROFILE` back to the cell profile without `hande`. Nothing is rebuilt: the descriptor carries
+no hand, so the planner adds whichever hand the profile then names.
 
-```bash
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur3e --gripper ur5e
-```
-
-The 2F-85's map is measured at the flange and takes no `--coupling-mm`; passing one is refused rather
-than applied, because that map already includes wherever the arm put the hand.
+The 2F-85's arrays are measured at the flange and need no plate, because they already include wherever
+the arm put the hand. A profile naming it writes no `coupling_plates_mm`.
 
 ---
 

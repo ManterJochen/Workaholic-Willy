@@ -183,7 +183,9 @@ robot:
       # permanently self-colliding once every sphere is inflated by half the margin, and it
       # finds no plan at all above roughly 6 mm. 4.0 keeps a clear gap under that ceiling while
       # still narrowing the disagreement between planner and guard that the margin exists to
-      # close.
+      # close. Every other layer declares 4.0 as well: this arm measured the number first, its
+      # thinner links being unable to absorb 10, and the fitted sphere map put the UR5 and the
+      # UR10 in the same position. robot.sim.yaml carries that measurement.
       planner_margin_mm: 4.0
     payload:
       # UR3e rated payload is 3 kg (UR5e: 5 kg). The schema refuses a `payload.mass_kg`

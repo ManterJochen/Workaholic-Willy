@@ -53,8 +53,11 @@ from typing import Any
 import numpy as np
 
 from ._ur_kinematics import UR_DH_TABLES_M
+from .planning._hand_placement import HandPlacement
 from .planning.environment import (
-    collision_mesh_bundle,
+    COLLISION_MESH_DIR,
+    compose_collision_meshes,
+    hand_mesh_bundle,
     import_collision_engine,
 )
 
@@ -74,11 +77,14 @@ _STATUS_HINTS = {
         "copied verbatim). Until then this cell has no exact-mesh self-collision authority."
     ),
     "no_engine": "Install Coal (WILLY_COAL_PREFIX) or python-fcl; expected/accepted on macOS + CI.",
+    "no_hand_bundle": (
+        "the hand robot.gripper.model names has no bundle of its own, safety/data/{hand}_hand_meshes.npz, to "
+        "compose onto this arm. Bake it: python scripts/grippers/bake_gripper_variant.py <hand> --write. "
+        "Until then this cell has no exact-mesh self-collision authority."
+    ),
     "variant_model_mismatch": (
-        "the hand's bundle, derived from robot.gripper.model, was baked from a different robot: its "
-        "arm meshes belong to that arm, and placing them on this one puts every link somewhere it is "
-        "not. Bake the hand for this model: python scripts/grippers/bake_gripper_variant.py <hand> "
-        "--arm <model> --write."
+        "the hand's bundle records only other arms as proven (hand__admitted_arms): nothing has shown that this "
+        "hand composed onto this arm is where the hand is. Prove the pairing before this arm is guarded with it."
     ),
 }
 
@@ -230,14 +236,18 @@ def mesh_backend_status(
 
     It returns ``"ok"``; ``"unknown_model"``, where there is no bundled DH chain and the
     link meshes cannot be placed; ``"no_bundle"``, where there is no
-    ``{model}_collision_meshes.npz``; ``"variant_model_mismatch"``, where the named
-    gripper variant was baked from a different robot so its arm meshes belong to
-    another arm; or ``"no_engine"``, where neither Coal nor python-fcl imports, which
-    is the accepted condition on a host without either.
+    ``{model}_collision_meshes.npz``; ``"no_hand_bundle"``, where the named hand has no
+    ``{hand}_hand_meshes.npz`` to compose onto the arm; ``"variant_model_mismatch"``,
+    where the hand's bundle records only other arms as proven; or ``"no_engine"``, where
+    neither Coal nor python-fcl imports, which is the accepted condition on a host
+    without either.
 
-    ⚠ A ``primitive_colliders`` token lived here for one day, for an arm whose USD collides
-    with primitives and was believed unbakeable. It was retracted when that arm was baked
-    from its URDF package instead: a state nothing can reach is a rule that can never fire.
+    ``mesh_name`` names the hand whose own bundle is composed onto the arm at load, and
+    ``None`` is the arm bundle as it stands, which carries the 2F-85.
+
+    There is deliberately no ``primitive_colliders`` token. The one arm whose USD collides
+    with primitives is baked from its URDF package instead, so nothing reaches that state
+    and a rule for it could never fire.
 
     The model and bundle checks come first and need no collision engine, which makes
     the answer deterministic and lets the caller tell a host that simply has no engine,
@@ -246,50 +256,39 @@ def mesh_backend_status(
     """
     if model.lower() not in UR_DH_TABLES_M:
         return "unknown_model"
-    default = collision_mesh_bundle(model, mesh_name)
-    path = (Path(mesh_dir) / default.name) if mesh_dir else default
-    if not path.exists():
+    folder = Path(mesh_dir) if mesh_dir else COLLISION_MESH_DIR
+    if not (folder / f"{model.lower()}_collision_meshes.npz").exists():
         return "no_bundle"
-    if mesh_name and _variant_is_for_another_model(model, path, mesh_dir):
-        return "variant_model_mismatch"
+    if mesh_name:
+        hand_path = folder / hand_mesh_bundle(mesh_name).name
+        if not hand_path.exists():
+            return "no_hand_bundle"
+        if model.lower() not in _admitted_arms(hand_path):
+            return "variant_model_mismatch"
     mod, kind = import_collision_engine()
     if mod is None or kind is None:
         return "no_engine"
     return "ok"
 
 
-#: One arm link is enough to tell two robots apart and is cheap to compare. The forearm
-#: differs most between UR sizes: the measured z spans are -19.6 to 77.3 mm on a ur3e
-#: and -49.5 to 60.4 mm on a ur5e.
-_VARIANT_PROBE_LINK = "forearm__v"
+#: The record a hand bundle carries of the arms it was proven on: for the three committed hands, the
+#: arms whose per arm file it reproduced when it was cut; for a freshly baked hand, none. Any other
+#: arm has nothing behind it.
+_ADMITTED_KEY = "hand__admitted_arms"
 
 
-def _variant_is_for_another_model(model: str, variant_path: "Path", mesh_dir: str | None) -> bool:
-    """Was this variant bundle baked from a robot other than ``model``?
-
-    A variant carries the arm meshes of its source robot and swaps the gripper alone,
-    so comparing one arm link against the model own bundle answers the question. An
-    unverifiable case returns ``False``: with no bundle for the model there is nothing
-    to compare against, and refusing on an unanswered question would send every cell to
-    the capsule proxy over a bundle that may be perfectly correct.
-    """
-    own = collision_mesh_bundle(model)
-    own_path = (Path(mesh_dir) / own.name) if mesh_dir else own
-    if not own_path.exists() or own_path == variant_path:
-        return False
+def _admitted_arms(hand_path: Path) -> frozenset[str]:
+    """The arms ``hand_path`` was proven on, lower case. An unreadable or unstamped bundle admits none."""
     try:
-        import numpy as np
-
-        with np.load(variant_path) as variant, np.load(own_path) as reference:
-            if _VARIANT_PROBE_LINK not in variant.files or _VARIANT_PROBE_LINK not in reference.files:
-                return False
-            a, b = variant[_VARIANT_PROBE_LINK], reference[_VARIANT_PROBE_LINK]
-            return a.shape != b.shape or not bool(np.array_equal(a, b))
-    except Exception:  # noqa: BLE001 (an unreadable bundle is `no_bundle`'s problem, not this check's)
-        return False
+        with np.load(hand_path) as data:
+            if _ADMITTED_KEY not in data.files:
+                return frozenset()
+            return frozenset(str(arm).lower() for arm in np.asarray(data[_ADMITTED_KEY]).reshape(-1))
+    except Exception:  # noqa: BLE001 (a bundle nobody can read proves no pairing)
+        return frozenset()
 
 
-#: The bundle arrays that belong to the HAND rather than the arm. `wrist_3` shares their frame and
+#: The bundle arrays that belong to the hand rather than the arm. `wrist_3` shares their frame and
 #: is arm, which is why this is a list of names and not "everything at frame 6".
 _HAND_PARTS = ("gripper", "lfinger", "rfinger")
 
@@ -307,6 +306,8 @@ def make_backend(
     mesh_dir: str | None = None,
     mesh_name: str | None = None,
     coupling_mm: float = 0.0,
+    *,
+    placement: HandPlacement | None = None,
 ) -> MeshSelfCollisionBackend | None:
     """Build the mesh backend for ``model``, Coal where available and python-fcl otherwise, or ``None``.
 
@@ -320,10 +321,14 @@ def make_backend(
 
     Any UR model with a bundled DH chain and a committed mesh bundle is accepted, so a
     model starts using exact meshes as soon as its
-    ``{model}_collision_meshes.npz`` lands, with no code change. ``mesh_name`` selects
-    a per-mounted-gripper variant bundle, ``{mesh_name}_collision_meshes.npz``, which
-    carries the arm meshes of the model it was baked from, so a variant is paired only
-    with that same model.
+    ``{model}_collision_meshes.npz`` lands, with no code change. ``mesh_name`` names the
+    hand whose own ``{hand}_hand_meshes.npz`` is composed onto the arm, and ``None``
+    keeps the arm bundle as it stands, which carries the 2F-85.
+
+    ``placement`` is where the resolved hand sits on the flange, as ``PlannerHand``
+    resolved it, and it is applied to the hand parts after the plate. ``None`` is a guard
+    built without a hand, on the hand models' own axes. A refused placement never reaches
+    here, because the cell refuses to build first.
     """
     status = mesh_backend_status(model, mesh_dir, mesh_name)
     if status != "ok":
@@ -337,38 +342,59 @@ def make_backend(
     mod, kind = import_collision_engine()
     if mod is None or kind is None:  # narrowing only; status "ok" already proved the import
         return None
-    default = collision_mesh_bundle(model, mesh_name)
-    fname = default.name
-    path = (Path(mesh_dir) / fname) if mesh_dir else default
-    data = np.load(path)
-    names = sorted({k.split("__")[0] for k in data.files if not k.endswith("__origin")})
-    # ⛔ A MOUNTING-FACE BUNDLE IS NOT WHERE THE HAND IS. It starts at the gripper's own mounting
-    # face, so the coupling plate between that face and the flange has to be added here; the bake
-    # module says exactly that. Until 2026-09-10 this loader never read the stamp, so a Hand-E cell
-    # ran the planner against a hand with the plate and the guard against one without it.
+    data = compose_collision_meshes(model, mesh_name, mesh_dir)
+    names = sorted({k.split("__")[0] for k in data if not k.endswith("__origin")})
+    # A mounting-face bundle is not where the hand is. It starts at the gripper's own mounting
+    # face, so the coupling plate between that face and the flange is added here, which is what
+    # the bake module stamps the origin for.
     origin = ""
-    if _ORIGIN_KEY in data.files:
+    if _ORIGIN_KEY in data:
         origin = str(np.asarray(data[_ORIGIN_KEY]).reshape(-1)[0])
-    shift = float(coupling_mm) if origin == _MOUNTING_FACE else 0.0
-    if origin == _MOUNTING_FACE and shift == 0.0:
+    if origin == _MOUNTING_FACE and float(coupling_mm) == 0.0:
         _LOGGER.warning(
             "%s is stamped origin=%r, so its gripper meshes start at the hand's MOUNTING FACE and a "
             "coupling plate has to be added before they are where the hand is. "
             "The coupling is 0.0 (robot.gripper.coupling_plates_mm sums to nothing, or the guard was "
             "built without a hand), so nothing was added and this guard models "
             "the hand one plate closer to the flange than it is. That is the conservative direction "
-            "for arm-versus-hand, but it disagrees with the cuRobo descriptor, which DOES add the "
-            "plate (build_ur_config.py --coupling-mm). Measure the plate once and set all three.",
-            path.name, origin,
+            "for arm-versus-hand, and the planner's hand link reads the same plates, so it models the "
+            "hand there too. Measure the plate once and set robot.gripper.coupling_plates_mm and "
+            "robot.gripper.tool_frame.offset_mm from it.",
+            f"{mesh_name}_hand_meshes.npz", origin,
         )
     meshes: dict[str, tuple[np.ndarray, np.ndarray, int]] = {}
     for n in names:
-        verts = data[f"{n}__v"]
-        if shift and n in _HAND_PARTS:
-            verts = verts.copy()
-            verts[:, _APPROACH_AXIS] += shift
+        verts = place_hand_vertices(n, data[f"{n}__v"], origin=origin, coupling_mm=coupling_mm, placement=placement)
         meshes[n] = (verts, data[f"{n}__f"], int(data[f"{n}__frame"][0]))
     try:
         return MeshSelfCollisionBackend(_EngineAdapter(mod, kind), meshes)
     except Exception:  # noqa: BLE001 (any engine construction failure falls back to capsules)
         return None
+
+
+def place_hand_vertices(
+    name: str, vertices: np.ndarray, *, origin: str, coupling_mm: float, placement: HandPlacement | None,
+) -> np.ndarray:
+    """Where one bundle part sits on the flange.
+
+    A hand part is shifted one plate along its model's approach where its bundle starts at
+    the mounting face, and is then turned by the placement. The plate goes on in model axes
+    and the rotation after it, because the plate stacks along the hand's approach wherever
+    the declared frame points that approach. An arm part comes back untouched, decided by
+    name and not by frame, because ``wrist_3`` shares frame 6 with the hand. A part that
+    needs neither a plate nor a turn comes back as the very array it was given, so a cell
+    that runs today keeps its bytes.
+    """
+    if name not in _HAND_PARTS:
+        return vertices
+    shift = float(coupling_mm) if origin == _MOUNTING_FACE else 0.0
+    turn = placement is not None and not placement.is_identity
+    if not shift and not turn:
+        return vertices
+    out = vertices.copy()
+    if shift:
+        out[:, _APPROACH_AXIS] += shift
+    if turn:
+        assert placement is not None  # narrowing only: turn is False without one
+        out = out @ np.asarray(placement.rotation, dtype=np.float64).T
+    return out

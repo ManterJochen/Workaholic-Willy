@@ -257,6 +257,43 @@ def test_fail_closed_when_no_plan() -> None:
     assert conn.moves == []
 
 
+def test_a_refused_plan_says_which_links_touched_and_still_fails_safe() -> None:
+    """B1 S15: the sidecar's typed reason reaches the UR planner's own log, and the verdict does not change.
+
+    A pick that stops here is a TIMEOUT with one fail safe sentence. Which two links the planner could not get past
+    was inside the sidecar, so an operator read "no plan" and had nowhere to go next.
+    """
+    from unittest import mock
+
+    from src.robot.safety.planning import StateRefusal, StateRefusalKind, StateWhere
+
+    client = _FakeClient(UR_ARM_JOINT_NAMES, None)
+    client.last_refusal = StateRefusal(
+        where=StateWhere.START, kind=StateRefusalKind.SELF_COLLISION, joints=(0.0,) * 6,
+        link_a="hand", link_b="wrist_1_link", depth_mm=12.2,
+    )
+    conn = _FakeConn([0] * 6)
+    planner = _planner(conn, client)
+
+    with mock.patch.object(planner.logger, "warning") as warned:
+        result = planner.move(_pose())
+
+    assert result.status is MotionStatus.TIMEOUT
+    assert conn.moves == []
+    assert planner.last_refusal is client.last_refusal
+    said = " ".join(str(call) for call in warned.call_args_list)
+    assert "wrist_1_link" in said and "12.2" in said, said
+
+
+def test_a_client_that_names_no_refusal_is_the_planner_it_always_was() -> None:
+    """The control: every injected client in this suite predates the typed reason, and none of them may break."""
+    client = _FakeClient(UR_ARM_JOINT_NAMES, None)
+    assert not hasattr(client, "last_refusal")
+    planner = _planner(_FakeConn([0] * 6), client)
+    assert planner.move(_pose()).status is MotionStatus.TIMEOUT
+    assert planner.last_refusal is None
+
+
 def test_fail_when_not_connected() -> None:
     client = _FakeClient(UR_ARM_JOINT_NAMES, [[0] * 6])
     conn = _FakeConn([0] * 6, connected=False)

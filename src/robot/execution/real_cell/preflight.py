@@ -123,13 +123,67 @@ class PreflightReport:
         return "\n".join(lines)
 
 
+def _planner_margin_phrase(self_collision: object) -> str:
+    """How much clearance this cell's planner keeps, said so that undeclared does not read as a number.
+
+    Undeclared is not zero: a UR cuRobo cell refuses to start a planner while it is, and printing
+    ``None mm`` here would read like a measurement.
+    """
+    from src.robot.safety.planning.margin import declared_planner_margin
+
+    declared = declared_planner_margin(self_collision)
+    return f"{declared:g} mm" if chosen(declared) else "undeclared"
+
+
+def _exact_mesh_engine_row(robot_cfg: "RobotConfig", collision_engine: "Maybe[str | None]") -> PreflightCheck:
+    """Whether this cell could judge a path at all, in the path gate's own words.
+
+    BLOCK on a cell that plans, because there every motion goes through a gate that would refuse.
+    WARN on an ik cell, which plans no path: it loses the check rather than every move.
+    """
+    from src.robot.safety._fcl_self_collision import mesh_backend_status
+    from src.robot.safety.planning.environment import import_collision_engine
+    from src.robot.safety.preflight import exact_mesh_path_refusal, no_path_guard_refusal
+
+    plans = str(getattr(robot_cfg.ur, "motion_planner", "ik")) == "curobo"
+    refused = CheckStatus.BLOCK if plans else CheckStatus.WARN
+    fix = (
+        "set safety.self_collision.backend: fcl, install Coal (or python-fcl) and bake this arm's mesh bundle "
+        "(scripts/isaac/bake_ur_collision_meshes.py). Until then no path on this cell is judged on the geometry it "
+        "actually has"
+    )
+
+    self_collision = robot_cfg.safety.self_collision
+    if not getattr(self_collision, "enforce", True):
+        return PreflightCheck("exact mesh engine", refused, no_path_guard_refusal(),
+                              "set safety.self_collision.enforce: true")
+    if str(getattr(self_collision, "backend", "capsule")) != "fcl":
+        return PreflightCheck("exact mesh engine", refused, exact_mesh_path_refusal(), fix)
+
+    engine = collision_engine if chosen(collision_engine) else import_collision_engine()[1]
+    model = getattr(self_collision, "kinematics_model", None) or getattr(robot_cfg.ur, "model", "")
+    hand = getattr(getattr(robot_cfg, "gripper", None), "model", None)
+    token = mesh_backend_status(str(model), getattr(self_collision, "mesh_dir", None), hand)
+    if engine is None or token != "ok":
+        return PreflightCheck("exact mesh engine", refused, exact_mesh_path_refusal(),
+                              f"{fix} (engine {engine or 'none'}, bundle {token})")
+    return PreflightCheck(
+        "exact mesh engine", CheckStatus.OK,
+        f"{engine} judges every path on the exact meshes, bundle {token} for {model} with {hand or 'the arm bundle'}",
+    )
+
+
 def _vendor(robot_cfg: "RobotConfig") -> str:
     v = getattr(robot_cfg, "vendor", "")
     return str(getattr(v, "value", v)).lower()
 
 
 def run_config_preflight(
-    robot_cfg: "RobotConfig", *, camera: "Maybe[CameraConfig]" = UNSET, curobo_available: Maybe[bool] = UNSET
+    robot_cfg: "RobotConfig",
+    *,
+    camera: "Maybe[CameraConfig]" = UNSET,
+    curobo_available: Maybe[bool] = UNSET,
+    collision_engine: "Maybe[str | None]" = UNSET,
 ) -> PreflightReport:
     """Check a ``RobotConfig`` for everything that stops a real pick, without touching hardware.
 
@@ -140,6 +194,11 @@ def run_config_preflight(
     ``curobo_available`` left unset asks this box, through ``curobo_env_available()``. It is
     a keyword so a caller can state the answer instead: a check that must not depend on what
     is installed, and a report written for a cell other than the one it runs on.
+
+    ``collision_engine`` is the same shape for the exact mesh engine: ``'coal'``, ``'fcl'`` or
+    ``None`` for a box with neither, and left unset it asks this one through
+    ``import_collision_engine()``. Only a real cell's row reads it, so a console serving a sim or
+    dummy profile never imports an engine to answer it.
     """
     checks: list[PreflightCheck] = []
     vendor = _vendor(robot_cfg)
@@ -230,6 +289,15 @@ def run_config_preflight(
                 "prints (a wrist camera prints one too), or pass frame_resolver= in code",
             ))
 
+    # ---- the exact mesh engine -----------------------------------------------------------------
+    # Every planned or sampled path on a real cell is re-judged on the exact meshes before the arm
+    # moves, and a box with no engine refuses every one of them. The cell would come up, connect and
+    # refuse the first move: the right refusal in the wrong place. The row states the gate's own
+    # sentence by calling the same function, so the two cannot drift into a desk check that promises
+    # what the arm then refuses.
+    if is_real:
+        checks.append(_exact_mesh_engine_row(robot_cfg, collision_engine))
+
     # ---- the cuRobo environment -----------------------------------------------------------------
     # Only a real arm has this row. A sim cell reaches cuRobo through its own driver and a dummy
     # plans nothing, so a missing environment there is not a fact about this checklist.
@@ -243,7 +311,7 @@ def run_config_preflight(
                 "every motion on this cell is planned or path checked, and both go through the "
                 "sidecar, so the cell would connect and then refuse the first move. Install the "
                 "environment (see ext_deps/README.md) or set robot.ur.motion_planner: ik, and run "
-                "`python -m src.robot.execution.real_cell --doctor` afterwards: a `--check` "
+                "`python -m src.robot.safety.planning --doctor` afterwards: a `--check` "
                 "that exits 0 says the config is sound, not that cuRobo runs here",
             ))
         elif planner == "curobo":
@@ -274,7 +342,7 @@ def run_config_preflight(
         checks.append(PreflightCheck(
             "self-collision", CheckStatus.OK,
             f"kinematics_model={sc.kinematics_model!r}, backend={getattr(sc, 'backend', '?')!r}, "
-            f"planner margin {getattr(sc, 'planner_margin_mm', '?')} mm",
+            f"planner margin {_planner_margin_phrase(sc)}",
         ))
 
     # ---- the hand ------------------------------------------------------------------------------
@@ -305,7 +373,8 @@ def run_config_preflight(
                 "that holds it; declaring the model's axis instead would describe a hand this cell does not have",
             ))
         elif chosen(hand):
-            bundle = "the arm's own" if hand.guard_variant is None else hand.guard_variant
+            bundle = ("the arm's own" if hand.guard_variant is None
+                      else f"{hand.guard_variant}_hand_meshes.npz composed onto the arm")
             if hand.declared_approach is None:
                 axis = "tool frame undeclared"
             elif disagreement is None:
@@ -313,11 +382,11 @@ def run_config_preflight(
             else:
                 axis = (f"approach {hand.approach_disagreement_deg:.0f} degrees from the declared tool frame, "
                         f"which no exact mesh guard on this cell reads")
-            from src.robot.drivers.sim.robot_models import curobo_robot_yml
+            from src.robot.drivers.sim.robot_models import curobo_arm_descriptor
 
             descriptor = (
-                f"cuRobo descriptor {curobo_robot_yml(str(robot_cfg.ur.model), hand.model)}" if vendor == "ur"
-                else "no UR descriptor on this vendor"
+                f"cuRobo descriptor {curobo_arm_descriptor(str(robot_cfg.ur.model))} with the hand added as a body link"
+                if vendor == "ur" else "no UR descriptor on this vendor"
             )
             checks.append(PreflightCheck(
                 "hand", CheckStatus.OK,
@@ -402,12 +471,12 @@ def run_config_preflight(
         checks.append(PreflightCheck(
             "controller state", CheckStatus.BENCH,
             "powered, brakes released, Remote Control active, no program running on the pendant",
-            # ⛔ THE TWO CASES BEHAVE DIFFERENTLY AND THIS LINE USED TO BUNDLE THEM UNDER "refuses".
-            # Local control: the upload IS refused (measured against URSim 5.26.0, see
-            # drivers/ur/connection.py). A pendant program in Remote: ur_rtde does NOT get refused,
-            # it STOPS that program and takes the robot, which the UR driver README states in this
-            # same tree ("A running program also stops the moment another is sent"). An operator
-            # told to expect a refusal waits for one that never comes.
+            # The two cases behave differently and the line says so rather than bundling them under
+            # "refuses". In local control the upload is refused, measured against URSim 5.26.0
+            # (drivers/ur/connection.py). With a pendant program running in remote, ur_rtde is not
+            # refused: it stops that program and takes the robot, which the UR driver README in this
+            # same tree states as well ("A running program also stops the moment another is sent").
+            # An operator told to expect a refusal waits for one that never comes.
             "ur_rtde uploads a control script. In LOCAL control the controller refuses it. In REMOTE "
             "with a pendant program running it is NOT refused: the upload STOPS that program and "
             "takes the robot. Confirm on the pendant; no API reports this",

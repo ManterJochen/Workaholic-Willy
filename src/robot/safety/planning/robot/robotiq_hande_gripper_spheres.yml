@@ -1,201 +1,413 @@
 _provenance:
+  what: robotiq_hande hand bodies
+  source: robotiq_hande_hand_meshes.npz
+  generated_by: scripts/curobo/fit_cover_spheres.py
+  recipe: 'cover fit: every surface sample inside a sphere, no sphere reaching further
+    past the body than the reach it was fitted at'
+  asked_for: scripts/curobo/fit_cover_spheres.py ARM_PLAN / HAND_PLAN, per body
+  overrides: null
+  seed: 0
+  bodies:
+  - body: gripper
+    frame: 6
+    why: the hand body nearest the arm at a retract pose
+    spheres: 53
+    reach_mm: 12.0
+    radius_min_mm: 12.0
+    radius_median_mm: 16.649280296483525
+    radius_max_mm: 36.90663285718429
+    uncovered_max_mm: -1.8761897070397553
+    rounds: 1
+    flat: 32
+    fresh_uncovered_max_mm: -1.5819629635825065
+    fresh_reach_max_mm: 11.982962373888785
+    fresh_samples: 60000
+    sample_spacing_mm: 1.869
+    seconds: 97.6
+  - body: lfinger
+    frame: 6
+    why: one jaw
+    spheres: 8
+    reach_mm: 12.0
+    radius_min_mm: 14.960377237176136
+    radius_median_mm: 15.340100904920375
+    radius_max_mm: 16.6670654762555
+    uncovered_max_mm: -0.6969094775379526
+    rounds: 1
+    flat: 24
+    fresh_uncovered_max_mm: -0.7122808819844222
+    fresh_reach_max_mm: 11.969423994890317
+    fresh_samples: 60000
+    sample_spacing_mm: 0.658
+    seconds: 11.3
+  - body: rfinger
+    frame: 6
+    why: the other jaw
+    spheres: 9
+    reach_mm: 12.0
+    radius_min_mm: 14.905996655765467
+    radius_median_mm: 14.96039726128429
+    radius_max_mm: 16.94598219881379
+    uncovered_max_mm: -0.71927269443277
+    rounds: 1
+    flat: 34
+    fresh_uncovered_max_mm: -0.7550254237596137
+    fresh_reach_max_mm: 11.93944836108508
+    fresh_samples: 60000
+    sample_spacing_mm: 0.658
+    seconds: 11.6
   gripper: Robotiq Hand-E
-  frame: tool0 (Y=approach, X=closing, Z=depth), metres
   origin: mounting_face
-  source: robotiq_hande_ur5e_collision_meshes.npz
-  generated_by: src/robot/safety/planning/robot/build_gripper_spheres.py
-  note: tool0 gripper spheres only, frame-correct and directly cuRobo-usable. The
-    arm-link spheres and the complete robot descriptor are produced on-box by scripts/curobo/build_ur_config.py,
-    which reads this file. See PROVENANCE.md.
+  frame: tool0 (Y=approach, X=closing, Z=depth), metres
 collision_spheres:
   tool0:
   - center:
-    - -0.0238
-    - -0.0036
-    - -0.0132
-    radius: 0.0233
+    - 0.000477
+    - 0.057341
+    - -0.000456
+    radius: 0.036859
   - center:
-    - -0.0238
-    - -0.0036
-    - 0.0132
-    radius: 0.0233
+    - -0.000678
+    - 0.025634
+    - 0.001539
+    radius: 0.036783
   - center:
-    - -0.0255
-    - 0.0194
-    - -0.0165
-    radius: 0.024
+    - 0.001763
+    - 0.01899
+    - -0.017837
+    radius: 0.030331
   - center:
-    - -0.0171
-    - 0.014
-    - 0.0273
-    radius: 0.024
+    - -0.017076
+    - 0.091857
+    - 0.000427
+    radius: 0.018623
   - center:
-    - -0.0148
-    - 0.0775
-    - -0.0182
-    radius: 0.024
+    - 0.007714
+    - 0.087359
+    - 0.025723
+    radius: 0.016673
   - center:
-    - -0.0157
-    - 0.0774
-    - 0.0177
-    radius: 0.024
+    - -0.021444
+    - 0.087242
+    - -0.024788
+    radius: 0.015739
   - center:
-    - -0.0212
-    - 0.0953
-    - -0.0177
-    radius: 0.022
+    - 0.022178
+    - 0.086077
+    - -0.024676
+    radius: 0.015738
   - center:
-    - -0.0209
-    - 0.0953
-    - 0.0181
-    radius: 0.024
+    - -0.022874
+    - 0.088729
+    - 0.024242
+    radius: 0.015192
   - center:
-    - 0.027
-    - -0.0047
-    - -0.016
-    radius: 0.006
+    - 0.003518
+    - 0.017208
+    - 0.019716
+    radius: 0.028634
   - center:
-    - 0.027
-    - -0.0047
-    - 0.016
-    radius: 0.006
+    - 0.02546
+    - 0.087838
+    - -0.003312
+    radius: 0.015486
   - center:
-    - 0.0356
-    - 0.0137
-    - -0.0072
-    radius: 0.024
+    - -0.020708
+    - 0.012149
+    - -0.002569
+    radius: 0.023178
   - center:
-    - 0.0325
-    - 0.0134
-    - 0.0105
-    radius: 0.024
+    - 0.025188
+    - 0.011615
+    - -0.002836
+    radius: 0.021547
   - center:
-    - 0.0151
-    - 0.0777
-    - -0.0178
-    radius: 0.024
+    - 0.000215
+    - 0.0891
+    - -0.025723
+    radius: 0.016673
   - center:
-    - 0.0152
-    - 0.0774
-    - 0.0179
-    radius: 0.024
+    - 0.023511
+    - 0.074072
+    - 0.012274
+    radius: 0.020128
   - center:
-    - 0.0211
-    - 0.0954
-    - -0.018
-    radius: 0.0218
+    - -0.033812
+    - 0.087004
+    - -0.00314
+    radius: 0.014804
   - center:
-    - 0.0209
-    - 0.0954
-    - 0.0181
-    radius: 0.024
+    - 0.010459
+    - 0.092658
+    - 0.000542
+    radius: 0.018508
   - center:
-    - -0.0352
-    - 0.0962
-    - -0.0117
+    - -0.014864
+    - 0.01068
+    - 0.016865
+    radius: 0.021525
+  - center:
+    - -0.018148
+    - 0.072051
+    - 0.013423
+    radius: 0.022149
+  - center:
+    - -0.00672
+    - 0.092215
+    - 0.026327
+    radius: 0.016649
+  - center:
+    - 0.021319
+    - 0.008811
+    - 0.006835
+    radius: 0.020301
+  - center:
+    - 0.024389
+    - 0.097162
+    - 0.020985
+    radius: 0.013869
+  - center:
+    - -0.019062
+    - 0.006476
+    - -0.021634
+    radius: 0.018076
+  - center:
+    - -0.015635
+    - 0.070985
+    - -0.013772
+    radius: 0.022845
+  - center:
+    - 0.02219
+    - 0.073789
+    - -0.014239
+    radius: 0.020287
+  - center:
+    - 0.030418
+    - 0.093828
+    - 0.000935
+    radius: 0.012937
+  - center:
+    - 0.028824
+    - 0.005788
+    - -0.020443
+    radius: 0.013869
+  - center:
+    - 0.016764
+    - 0.096839
+    - -0.019354
+    radius: 0.013639
+  - center:
+    - -0.031763
+    - 0.089843
+    - 0.004612
+    radius: 0.014438
+  - center:
+    - 0.002847
+    - 0.065378
+    - 0.010502
+    radius: 0.028822
+  - center:
+    - -0.009562
+    - 0.096396
+    - -0.017767
+    radius: 0.012519
+  - center:
+    - -0.028909
+    - 0.01048
+    - 0.00464
+    radius: 0.019912
+  - center:
+    - 0.020478
+    - 0.012958
+    - 0.023366
+    radius: 0.018325
+  - center:
+    - 0.032319
+    - 0.08849
+    - -0.004246
+    radius: 0.014689
+  - center:
+    - 0.005608
+    - 0.065378
+    - -0.012547
+    radius: 0.026113
+  - center:
+    - -0.031021
+    - 0.095811
+    - -0.01725
     radius: 0.012
   - center:
-    - -0.0355
-    - 0.1
-    - 0.0102
-    radius: 0.006
+    - -0.02614
+    - 0.073789
+    - -0.00738
+    radius: 0.019383
   - center:
-    - -0.0355
-    - 0.1098
-    - -0.0103
-    radius: 0.011
+    - -0.000126
+    - 0.023487
+    - -0.007324
+    radius: 0.034847
   - center:
-    - -0.035
-    - 0.1184
-    - 0.0102
-    radius: 0.006
+    - 0.020939
+    - 0.087734
+    - 0.025448
+    radius: 0.015738
   - center:
-    - -0.0195
-    - 0.0945
-    - -0.0118
-    radius: 0.017
+    - 0.000433
+    - 0.095138
+    - 0.000427
+    radius: 0.016062
   - center:
-    - -0.0299
-    - 0.0997
-    - 0.0096
-    radius: 0.006
+    - -0.026561
+    - 0.006315
+    - 0.016236
+    radius: 0.013984
   - center:
-    - -0.0264
-    - 0.1062
-    - -0.014
-    radius: 0.017
+    - 0.026584
+    - 0.092647
+    - 0.005181
+    radius: 0.013869
   - center:
-    - -0.0286
-    - 0.1155
-    - 0.008
-    radius: 0.0127
+    - 0.031285
+    - 0.097225
+    - -0.00881
+    radius: 0.013695
   - center:
-    - -0.0284
-    - 0.1449
-    - -0.0094
-    radius: 0.006
+    - 0.029263
+    - 0.009466
+    - -0.006195
+    radius: 0.01955
   - center:
-    - -0.0286
-    - 0.1449
-    - 0.0093
-    radius: 0.006
+    - -0.025226
+    - 0.020701
+    - -0.018777
+    radius: 0.012601
   - center:
-    - 0.0039
-    - 0.0934
-    - -0.0119
-    radius: 0.0116
+    - 0.029839
+    - 0.084935
+    - -1.6e-05
+    radius: 0.013822
   - center:
-    - -0.0039
-    - 0.0936
-    - 0.0119
-    radius: 0.0116
+    - -0.014078
+    - 0.091541
+    - -0.029067
+    radius: 0.013074
   - center:
-    - 0.0299
-    - 0.0997
-    - -0.0096
-    radius: 0.006
+    - -0.027317
+    - 0.002709
+    - -0.016076
+    radius: 0.014153
   - center:
-    - 0.0195
-    - 0.0945
-    - 0.0118
-    radius: 0.017
+    - 0.001435
+    - 0.030683
+    - 4.0e-06
+    radius: 0.036907
   - center:
-    - 0.0285
-    - 0.1149
-    - -0.0079
-    radius: 0.0133
+    - 0.026882
+    - -0.0029
+    - 0.016209
+    radius: 0.014001
   - center:
-    - 0.0264
-    - 0.1063
-    - 0.014
-    radius: 0.017
+    - -0.03566
+    - 0.081399
+    - 0.007906
+    radius: 0.012801
   - center:
-    - 0.0286
-    - 0.1449
-    - -0.0093
-    radius: 0.006
+    - -0.021599
+    - 0.096125
+    - 0.02347
+    radius: 0.014591
   - center:
-    - 0.0284
-    - 0.1449
-    - 0.0094
-    radius: 0.006
+    - 0.014937
+    - 0.091711
+    - 0.026107
+    radius: 0.013843
   - center:
-    - 0.0355
-    - 0.1
-    - -0.0102
-    radius: 0.006
+    - 0.001469
+    - 0.06967
+    - 0.013846
+    radius: 0.02453
   - center:
-    - 0.0352
-    - 0.0962
-    - 0.0117
-    radius: 0.012
+    - -0.022517
+    - 0.092782
+    - -0.014423
+    radius: 0.01572
   - center:
-    - 0.035
-    - 0.1184
-    - -0.0102
-    radius: 0.006
+    - -0.032836
+    - 0.112299
+    - 0.000788
+    radius: 0.01496
   - center:
-    - 0.0355
-    - 0.1098
-    - 0.0103
-    radius: 0.011
+    - -0.027957
+    - 0.135793
+    - -0.000799
+    radius: 0.01496
+  - center:
+    - -0.001387
+    - 0.090836
+    - -0.014176
+    radius: 0.016667
+  - center:
+    - -0.030861
+    - 0.104305
+    - -0.003787
+    radius: 0.016605
+  - center:
+    - -0.030784
+    - 0.121159
+    - -0.001064
+    radius: 0.01496
+  - center:
+    - -0.027688
+    - 0.089857
+    - -0.01437
+    radius: 0.015919
+  - center:
+    - -0.027957
+    - 0.135703
+    - 0.000484
+    radius: 0.01496
+  - center:
+    - 0.021316
+    - 0.091208
+    - 0.014331
+    radius: 0.016946
+  - center:
+    - 0.032618
+    - 0.1099
+    - 0.001277
+    radius: 0.01496
+  - center:
+    - 0.027957
+    - 0.134618
+    - -0.001031
+    radius: 0.01496
+  - center:
+    - 0.001426
+    - 0.091336
+    - 0.013524
+    radius: 0.016444
+  - center:
+    - 0.032757
+    - 0.112526
+    - 0.007405
+    radius: 0.01496
+  - center:
+    - 0.032757
+    - 0.112705
+    - -0.00681
+    radius: 0.01496
+  - center:
+    - 0.027903
+    - 0.135513
+    - 0.007522
+    radius: 0.014906
+  - center:
+    - 0.031179
+    - 0.103318
+    - 0.007123
+    radius: 0.015587
+  - center:
+    - 0.02426
+    - 0.090288
+    - 0.014371
+    radius: 0.016222

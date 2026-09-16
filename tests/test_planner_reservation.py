@@ -45,7 +45,10 @@ def _cell(
     enabled: bool = True,
     payload: bool = False,
     planner: str = "curobo",
+    planner_margin_mm: "float | None" = 4.0,
 ) -> RobotConfig:
+    """A UR cell. It declares a planner margin by default, because since B1 S17 a cuRobo cell that declares none
+    refuses to start a planner, and every case here is about the reservation rather than about the margin."""
     return RobotConfig.model_validate({
         "vendor": "ur",
         "ur": {"motion_planner": planner},
@@ -55,6 +58,7 @@ def _cell(
         "safety": {
             "payload": {"enforce": False},
             "self_collision": {
+                "planner_margin_mm": planner_margin_mm,
                 "fixtures": [
                     {"name": f"wall{i}", "center_mm": [400.0, -300.0 + 40.0 * i, 75.0],
                      "half_extents_mm": [10.0, 10.0, 75.0]}
@@ -153,7 +157,8 @@ class TheClientsCarryTheReservationTests(_NoPlannerEnvironment):
     def test_the_ur_default_factory_carries_the_reservation(self) -> None:
         from src.robot.drivers.ur.arm import URRobotArm
 
-        client = URRobotArm(_cell(fixtures=15, meshes=1, voxel_mm=30.0))._default_curobo_client_factory()()
+        # Declares its planner margin, as every UR cuRobo cell must since B1 S17: the factory refuses without it.
+        client = URRobotArm(_cell(fixtures=15, meshes=1, voxel_mm=30.0, planner_margin_mm=4.0))._default_curobo_client_factory()()
 
         self.assertEqual((client._scene, client._mesh_cache, client._voxel_grid), ("24", 1, _GRID))  # noqa: SLF001
 
@@ -161,7 +166,10 @@ class TheClientsCarryTheReservationTests(_NoPlannerEnvironment):
         """The control, green before and after: no planning world, the sidecar it always started."""
         from src.robot.drivers.ur.arm import URRobotArm
 
-        config = RobotConfig.model_validate({"vendor": "ur", "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"}})
+        config = RobotConfig.model_validate({"vendor": "ur",
+                                            "safety": {"payload": {"enforce": False},
+                                                       "self_collision": {"planner_margin_mm": 4.0}},
+                                            "gripper": {"model": "robotiq_2f85"}})
         client = URRobotArm(config)._default_curobo_client_factory()()
 
         self.assertEqual((client._scene, client._mesh_cache, client._voxel_grid), ("16", 0, ""))  # noqa: SLF001
@@ -186,7 +194,9 @@ class TheClientsCarryTheReservationTests(_NoPlannerEnvironment):
         )
 
         def started(client: CuroboPlanClient) -> None:
-            client.descriptor_provenance = {"arm": "ur5e", "gripper_key": "robotiq_2f85", "coupling_mm": None}
+            from tests._sidecar_identity import arm_identity
+
+            client.identity = arm_identity()
 
         with mock.patch.object(CuroboPlanClient, "start", autospec=True, side_effect=started):
             client = arm._get_curobo_client()  # noqa: SLF001
@@ -234,6 +244,25 @@ class TheConfigWinsTests(_NoPlannerEnvironment):
 
         # The control: a client nobody reserved for still inherits the shell, as it always did.
         self.assertEqual(CuroboPlanClient()._sidecar_env()["WILLY_CUROBO_MESH_CACHE"], "4")  # noqa: SLF001
+
+    def test_a_margin_and_a_payload_the_caller_did_not_ask_for_are_not_inherited(self) -> None:
+        """The same hole as the grid, in the two variables that decide how much room the planner keeps.
+
+        Nothing in this repo sets either variable: the client writes them and the sidecar reads them. So a value in
+        the shell can only be a leftover, and inheriting one gives a cell a margin or a payload its config never
+        asked for. The client's own numbers are the whole truth about them.
+        """
+        os.environ["WILLY_CUROBO_SELF_COLLISION_MARGIN_MM"] = "99.0"
+        os.environ["WILLY_CUROBO_ATTACH_SPHERES"] = "7"
+
+        env = CuroboPlanClient()._sidecar_env()  # noqa: SLF001
+        self.assertNotIn("WILLY_CUROBO_SELF_COLLISION_MARGIN_MM", env)
+        self.assertNotIn("WILLY_CUROBO_ATTACH_SPHERES", env)
+
+        # The control: what the caller DID ask for is written, whatever the shell holds.
+        asked = CuroboPlanClient(self_collision_margin_mm=10.0, attach_spheres=4)._sidecar_env()  # noqa: SLF001
+        self.assertEqual(asked["WILLY_CUROBO_SELF_COLLISION_MARGIN_MM"], repr(10.0))
+        self.assertEqual(asked["WILLY_CUROBO_ATTACH_SPHERES"], "4")
 
 
 class ThePreflightPrintsTheReservationTests(_NoPlannerEnvironment):

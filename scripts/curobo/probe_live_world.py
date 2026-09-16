@@ -187,9 +187,16 @@ _FIELD_FILE = Path(tempfile.gettempdir()) / "willy_probe_live_world_field.npy"
 
 
 def _probe_cell(voxel_mm: float) -> RobotConfig:
-    """This probe's cell as a robot config: its workspace, its bench, one declared mesh, its live scene."""
+    """This probe's cell as a robot config: workspace, bench, one declared mesh, live scene, and its hand."""
     return RobotConfig.model_validate({
         "vendor": "ur",
+        # The hand this cell carries, on the frame the Isaac cell declares, which places the hand model on the
+        # identity. Its planner gets it as a body link on the arm's descriptor, the way every cell starts one,
+        # so this probe measures the robot a cell actually plans with.
+        "gripper": {"model": "robotiq_2f85", "tool_frame": {
+            "source": "willy", "offset_mm": [0.0, 132.0, 0.0],
+            "rotation_quat_xyzw": [-0.7071067811865476, 0.0, 0.0, 0.7071067811865476],
+        }},
         "workspace_limits": {"x_min": _LIMITS.x_mm[0], "x_max": _LIMITS.x_mm[1],
                              "y_min": _LIMITS.y_mm[0], "y_max": _LIMITS.y_mm[1],
                              "z_min": _LIMITS.z_mm[0], "z_max": _LIMITS.z_mm[1]},
@@ -204,6 +211,14 @@ def _probe_cell(voxel_mm: float) -> RobotConfig:
             },
         },
     })
+
+
+def _probe_hand_link(voxel_mm: float) -> dict[str, Any]:
+    """The hand body this probe's planner starts with, derived from the probe cell's own gripper declaration."""
+    from src.robot.safety.planning.body_link import HandLink
+    from src.robot.safety.planning.hand import planner_hand
+
+    return HandLink.from_hand(planner_hand(_probe_cell(voxel_mm))).to_dict()
 
 
 class _Camera:
@@ -997,7 +1012,13 @@ def main(argv: "list[str] | None" = None) -> int:
     reservation = planned.voxel_grid
     print(f"planner reservation: {planned.render()}")
 
-    client = CuroboPlanClient()
+    # The planner a cell starts: this arm's own descriptor, with the cell's hand added as a body link when the
+    # sidecar comes up. Started bare, this probe would measure a robot no cell plans with.
+    from src.robot.drivers.sim.robot_models import curobo_arm_descriptor
+
+    client = CuroboPlanClient(
+        robot_config=curobo_arm_descriptor(_HAND_MODEL), body_links=[_probe_hand_link(args.voxel_mm)],
+    )
     client.reserve_world(planned)
     started = time.perf_counter()
     try:

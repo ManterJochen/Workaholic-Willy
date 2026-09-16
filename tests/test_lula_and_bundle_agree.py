@@ -21,10 +21,27 @@ is the most expensive shape of failure: everything upstream reports healthy.
 its own RADIUS, which is the point where a sphere and a body stop intersecting rather than a tuned
 number. So this file checks the spheres the BUILDER KEEPS, because those are what plans.
 
-MEASURED across the six models, as the worst distance a KEPT sphere centre sits outside the mesh
-bounding box for its own link::
+MEASURED again on 2026-09-16, after every arm bundle was re-baked from Universal Robots' own collision STLs
+(B5 S6 to S8), as the worst distance a KEPT sphere centre sits outside the mesh bounding box for its own
+link. The numbers are in :data:`WORST_KEPT_MM` and are asserted against a recomputation, so a bundle or a
+map that moves fails here rather than drifting::
 
-    ur3 0.0    ur3e 0.0    ur5 0.0    ur5e 0.0    ur10 0.0    ur10e 13.0 mm
+    ur3 0.0   ur3e 0.0   ur5 0.0   ur5e 0.0   ur10 75.9   ur10e 13.0   ur16e 60.8 mm
+
+⛔ **TWO ARMS ARE OVER THE RULE, AND BOTH SAY THE SAME THING: THAT MAP IS NOT THAT ARM.**
+
+ur10 was 0.0 while its bundle was itself built from Isaac's importer asset, so the two halves agreed with
+each other and with nothing else. Against UR's own geometry its worst KEPT sphere sits **75.9 mm** outside
+its own upper arm, and 63.7 mm outside wrist_2. And ur16e keeps all ten upper arm spheres with the worst
+60.8 mm out: that map describes the LONGER ur10e upper arm. Both are over the 60 mm rule, so
+``build_ur_config.py`` refuses to build either arm from the vendor map.
+
+⚠ **AND SINCE B6 NO ARM IS BUILT FROM THAT MAP AT ALL.** Every arm here has a committed cover fit
+(`{arm}_arm_spheres.yml`) fitted to the same bundle this file measures against, and the builder reads Isaac's
+family only where there is no fit, which is nowhere. So what this file now holds is the reason the vendor map
+is a FALLBACK and not the source: it is the measurement that says the fallback would be wrong for two of the
+seven arms, and by how much. ur10 and ur16e are exactly the two arms that had no descriptor at all until the
+fit gave them one.
 
 The 13 mm on ur10e is expected and small: Lula spheres are fitted to the VISUAL hull, the bundle
 holds the COLLISION meshes, and the collision hull of that arm is slightly the tighter of the two.
@@ -56,6 +73,16 @@ _LINKS = {"shoulder": ("shoulder_link", 1), "upper_arm": ("upper_arm_link", 2),
 #: A frame error puts a sphere a LINK LENGTH away, so this is set an order of magnitude below the
 #: shortest UR link and an order above the 13 mm hull difference that is real and expected.
 _TOLERANCE_MM = 60.0
+
+#: The worst distance a KEPT vendor sphere sits outside the mesh baked for its own link, in millimetres,
+#: measured 2026-09-16. A record, recomputed here every run: this is the number, not a ceiling.
+WORST_KEPT_MM = {
+    "ur3": 0.0, "ur3e": 0.0, "ur5": 0.0, "ur5e": 0.0, "ur10": 75.9, "ur10e": 13.0, "ur16e": 60.8,
+}
+
+#: The arms whose vendor map is over the rule, so ``build_ur_config.py`` refuses to build them from it. Derived
+#: from the record above rather than listed, so an arm cannot be quietly excused by being named twice.
+_REFUSED = frozenset(model for model, mm in WORST_KEPT_MM.items() if mm > _TOLERANCE_MM)
 
 
 def _urdf_frames(text: str):
@@ -128,6 +155,8 @@ class TheTwoGeometriesLandInOneFrameTests(unittest.TestCase):
     def test_every_lula_sphere_sits_inside_its_own_link_mesh(self) -> None:
         import yaml
 
+        worst: dict = {}
+
         for model in _comparable():
             mesh = np.load(collision_mesh_bundle(model), allow_pickle=True)
             urdf = _urdf_frames((_URDF_DIR / f"{model}.urdf").read_text(encoding="utf-8"))
@@ -166,12 +195,32 @@ class TheTwoGeometriesLandInOneFrameTests(unittest.TestCase):
                     )
                     kept = np.asarray([sp["center"] for sp in keep], dtype=np.float64)
                     gap = float(np.max(np.maximum(np.maximum(lo - kept, kept - hi), 0.0).sum(axis=1)))
+                    worst[model] = max(worst.get(model, 0.0), gap * 1000.0)
                     self.assertLess(
-                        gap * 1000.0, _TOLERANCE_MM,
+                        gap * 1000.0, _TOLERANCE_MM if model not in _REFUSED else 200.0,
                         f"{model}/{link}: a sphere the builder KEEPS sits {gap * 1000.0:.1f} mm "
                         f"outside the mesh baked for the same link. The descriptor would guard two "
                         f"geometries in two places and report nothing.",
                     )
+
+        for model, measured in sorted(worst.items()):
+            with self.subTest(recorded=model):
+                self.assertAlmostEqual(measured, WORST_KEPT_MM[model], delta=0.1,
+                                       msg=f"{model} now measures {measured:.1f} mm, and the record says "
+                                           f"{WORST_KEPT_MM[model]:.1f} mm: a bundle or a map moved.")
+
+    def test_the_builder_refuses_exactly_the_arms_over_the_rule(self) -> None:
+        """A number in a test is a note unless something acts on it. The builder is what acts.
+
+        Read as source, because building a descriptor needs the cuRobo environment and a GPU. What it holds is
+        that the limit the builder enforces IS this file's rule, and that the arms over it are refused rather
+        than filtered down to whatever survived.
+        """
+        source = (_REPO / "scripts" / "curobo" / "build_ur_config.py").read_text(encoding="utf-8")
+        self.assertIn(f"VENDOR_SPHERE_LIMIT_MM = {_TOLERANCE_MM:g}", source,
+                      "the builder's limit and this file's rule are two numbers again")
+        self.assertIn("does not describe this arm", source)
+        self.assertTrue(_REFUSED, "no arm is over the rule, so this assertion has nothing to check")
 
 
 if __name__ == "__main__":  # pragma: no cover

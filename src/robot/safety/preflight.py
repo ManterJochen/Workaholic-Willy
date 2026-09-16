@@ -117,6 +117,30 @@ class WorkspaceSafetyGuard:
         return SafetyDecision.accept(self.name)
 
 
+def no_path_guard_refusal() -> str:
+    """Why every planned or sampled path is refused where no self-collision guard is wired.
+
+    One home for the sentence, so the real cell checklist tells an operator exactly what
+    the gate would say.
+    """
+    return ("no self_collision guard is wired, so nothing here can judge a path: "
+            "safety.self_collision.enforce is false in this cell. A planned path is "
+            "refused rather than executed unexamined")
+
+
+def exact_mesh_path_refusal() -> str:
+    """Why every planned or sampled path is refused where the guard would answer with the proxy.
+
+    One home for the sentence, so the real cell checklist tells an operator exactly what
+    the gate would say.
+    """
+    return ("the self_collision guard would answer this path with the capsule proxy, "
+            "which bounds the arm links and cannot see the gripper on a joint "
+            "configuration at all. Judging a path needs the exact mesh engine: set "
+            "safety.self_collision.backend to fcl, install python-fcl or Coal, and give "
+            "the cell the baked mesh bundle for its robot model")
+
+
 class SafetyPreflight:
     """Ordered :class:`SafetyGuard` pipeline.
 
@@ -243,6 +267,14 @@ class SafetyPreflight:
                 disagreement = approach_refusal(hand)
                 if disagreement is not None:
                     raise ConfigError(disagreement)
+                # And the whole placement, not its approach axis alone. A frame that is a
+                # mirror, oblique, or clocked by anything other than a quarter turn places
+                # no hand model: the hand carries UNSET, and a guard built on it would
+                # measure the hand where its own model puts it rather than where this cell
+                # says it is, which is an implied default for a safety identity. The planner
+                # refuses such a cell when it starts, and an ik cell never starts one.
+                if hand.placement_refusal is not None:
+                    raise ConfigError(hand.placement_refusal)
             guards.append(SelfCollisionGuard(safety_cfg.self_collision, hand=hand))
         if safety_cfg.payload.enforce:
             guards.append(PayloadGuard(safety_cfg.payload))
@@ -493,21 +525,9 @@ class SafetyPreflight:
         """
         guard = self._path_authority(arm)
         if guard is None:
-            return self._say_and_refuse(
-                "no self_collision guard is wired, so nothing here can judge a path: "
-                "safety.self_collision.enforce is false in this cell. A planned path is "
-                "refused rather than executed unexamined",
-                command,
-            )
+            return self._say_and_refuse(no_path_guard_refusal(), command)
         if guard.exact_mesh_engine(arm) is None:
-            return self._say_and_refuse(
-                "the self_collision guard would answer this path with the capsule proxy, "
-                "which bounds the arm links and cannot see the gripper on a joint "
-                "configuration at all. Judging a path needs the exact mesh engine: set "
-                "safety.self_collision.backend to fcl, install python-fcl or Coal, and give "
-                "the cell the baked mesh bundle for its robot model",
-                command,
-            )
+            return self._say_and_refuse(exact_mesh_path_refusal(), command)
         return None
 
     def gate_joint_path(

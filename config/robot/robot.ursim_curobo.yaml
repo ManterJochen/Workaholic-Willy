@@ -14,6 +14,8 @@ robot:
 
   safety:
     self_collision:
-      # The margin the planner keeps, as the UR5e sim cell uses. A UR3e is a smaller arm and finds no
-      # plan at 10 mm, which is why the ur3 bed layer lowers it rather than inheriting this.
-      planner_margin_mm: 10.0
+      # The margin the planner keeps, the same value the sim cell declares: 4.0 across the arm
+      # family. With the planner's spheres fitted to the meshes, 10 mm leaves a UR5 no pose at all,
+      # so this layer and the ur3 bed layer below name one number. robot.sim.yaml carries the
+      # measurement.
+      planner_margin_mm: 4.0

@@ -1301,25 +1301,33 @@ class IsaacRobotArm(RobotArm):
             import os
 
             from src.contracts import chosen
-            from src.robot.drivers.sim.robot_models import curobo_robot_yml
+            from src.robot.drivers.sim.robot_models import curobo_arm_descriptor
+            from src.robot.safety.planning._curobo_body_links import BodyLinkError
+            from src.robot.safety.planning.body_link import HandLink
+            from src.robot.safety.planning.curobo_client import SidecarIdentity
             from src.robot.safety.planning.environment import ENV_CUROBO_ROBOT
             from src.robot.safety.planning.hand import descriptor_refusal
 
-            # Named by the arm and the hand, the hand being the one this cell's safety pipeline
-            # models. A cell with no hand there has no descriptor to name, and plans nothing.
+            # The hand this cell's safety pipeline models is added to the arm's descriptor as a
+            # body link when the sidecar starts. A cell with no hand there has nothing to add, and
+            # plans nothing.
             hand = self._preflight.planner_hand(self) if self._preflight is not None else None
             if hand is None or not chosen(hand):
                 raise CuroboUnavailableError(
                     "this cell's safety pipeline models no hand (robot.gripper.model is unset, or the arm has no "
-                    "preflight), so no cuRobo descriptor can be named: descriptors are named by the arm and the hand"
+                    "preflight), so the planner has no hand to add to its arm and is not started"
                 )
-            # The cuRobo robot config is the {key}_{hand}.yml of the configured model. The
+            try:
+                link = HandLink.from_hand(hand)
+            except BodyLinkError as exc:
+                raise CuroboUnavailableError(str(exc)) from exc
+            # The cuRobo robot config is the willy_{key}.yml of the configured model. The
             # config wins on purpose: a shell-scoped WILLY_CUROBO_ROBOT would otherwise
             # plan one robot cell against another robot geometry silently, such as a ur3e
             # cell planned with ur5e link lengths, with no visible symptom. A disagreeing
             # variable is therefore ignored loudly, and planning a different robot means
             # setting robot_model.
-            robot_yml = curobo_robot_yml(self._config.robot_model, hand.model)
+            robot_yml = curobo_arm_descriptor(self._config.robot_model)
             env_yml = os.environ.get(ENV_CUROBO_ROBOT)
             if env_yml and env_yml != robot_yml:
                 _LOGGER.warning(
@@ -1332,15 +1340,28 @@ class IsaacRobotArm(RobotArm):
             # different geometry and cuRobo keeps offering configurations the guard
             # refuses, measured on-box as 9.44 to 9.47 mm plans against a 10.000 mm guard
             # margin, which reads as a bad grasp rather than a rejected one.
+            # The pose this pair was judged at, per arm and hand: a pose that clears the exact
+            # meshes with one hand can be a self collision in the planner's own sphere model with
+            # another, and then the sidecar never becomes ready. The descriptor carries a fallback
+            # for a bare arm only.
+            from src.robot.safety.planning.robot.retract_table import RetractMissing, read_retract
+
+            margin_mm = self._guard_self_collision_margin_mm()
+            try:
+                default_q = read_retract(str(self._config.robot_model), hand.model, float(hand.coupling_mm),
+                                        margin_mm)
+            except RetractMissing as exc:
+                raise CuroboUnavailableError(str(exc)) from exc
             client = CuroboPlanClient(
-                robot_config=robot_yml, self_collision_margin_mm=self._guard_self_collision_margin_mm(),
+                robot_config=robot_yml, self_collision_margin_mm=margin_mm,
+                body_links=[link.to_dict()], default_q=default_q,
             )
             if self._config.planner_reservation is not None:
                 # Before start: the sidecar allocates its collision storage once, when it spawns.
                 client.reserve_world(self._config.planner_reservation)
             client.start()
             refusal = descriptor_refusal(
-                getattr(client, "descriptor_provenance", None), hand, arm=str(self._config.robot_model),
+                SidecarIdentity.from_client(client), link, arm=str(self._config.robot_model),
             )
             if refusal is not None:
                 # Closed rather than kept: the next call would find a started client and plan with it.
@@ -1360,7 +1381,7 @@ class IsaacRobotArm(RobotArm):
         such diagnosis, where an OS policy blocked the sidecar CUDA extension, took an hour
         against a single warning among thousands of lines.
 
-        It is also no longer only a fidelity question. Every motion on a cuRobo cell is
+        It is also not only a fidelity question. Every motion on a cuRobo cell is
         judged against the planner's world as well as the local guards, so a fallback would
         drop half the safety of every verb and keep going.
 
@@ -1592,6 +1613,12 @@ class IsaacRobotArm(RobotArm):
                 [round(v, 4) for v in goal_quat_wxyz],
                 np.round(arm_q, 3).tolist(), [round(v, 3) for v in start],
             )
+            # And, where the sidecar said it, what it could not get past: the deepest pair of links
+            # and how far they reach into one another. The verdict is unchanged, and only this log
+            # knows more than it did.
+            refusal = getattr(client, "last_refusal", None)
+            if refusal is not None:
+                _LOGGER.warning("cuRobo refused this move. %s", refusal.render())
             return MotionResult.failed(
                 MotionStatus.TIMEOUT, MotionCommand.MOVE_TO, target_pose=pose,
                 message=NO_PLAN_FAIL_SAFE_MESSAGE,

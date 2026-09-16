@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from src.config.schema.robot.sim_schema import UR_MODEL_KEYS, SimConfig
 from src.robot.drivers.sim.robot_models import (
     URModelSpec,
-    curobo_robot_yml,
+    curobo_arm_descriptor,
     ur_model_spec,
 )
 
@@ -45,13 +45,12 @@ class URModelRegistryTests(unittest.TestCase):
         self.assertIn("ur16e", str(ctx.exception))
         self.assertIn("ur5e", str(ctx.exception))  # the message lists what IS supported
 
-    def test_curobo_robot_yml_round_trip(self) -> None:
-        """Named by arm and hand from Step 4i (owner Q5): a descriptor for one hand is not another hand's."""
-        self.assertEqual(curobo_robot_yml("ur3e", "robotiq_2f85"), "ur3e_robotiq_2f85.yml")
-        self.assertEqual(curobo_robot_yml("ur5e", "robotiq_hande"), "ur5e_robotiq_hande.yml")
-        self.assertEqual(curobo_robot_yml("UR3e", "robotiq_2f85"), "ur3e_robotiq_2f85.yml")
+    def test_curobo_arm_descriptor_round_trip(self) -> None:
+        """One descriptor per arm from UM lane S11; the hand is a body link the planner adds when it starts."""
+        self.assertEqual(curobo_arm_descriptor("ur3e"), "willy_ur3e.yml")
+        self.assertEqual(curobo_arm_descriptor("UR5e"), "willy_ur5e.yml")
         with self.assertRaises(ValueError):
-            curobo_robot_yml("nope", "robotiq_2f85")
+            curobo_arm_descriptor("nope")
 
     def test_registry_and_schema_key_sets_match(self) -> None:
         """Drift guard: the config layer cannot import the driver package (it is the bottom of the dependency

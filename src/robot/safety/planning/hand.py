@@ -8,10 +8,12 @@ can name another hand:
 * the committed sphere map ``robot/<model>_gripper_spheres.yml`` beside this file, for the planner,
   and the ``origin`` its provenance declares;
 * the guard's mesh bundle: the arm's own for the hand every committed arm bundle carries, the hand's
-  per-arm bundle otherwise (``environment.collision_mesh_bundle`` composes the arm in);
+  own bundle otherwise (``environment.compose_collision_meshes`` composes the arm in);
 * the coupling, the sum of ``robot.gripper.coupling_plates_mm``;
 * the approach axis, flange +Y in every committed model, which a declared tool frame has to agree
-  with.
+  with;
+* the placement, the one rotation that puts the hand model on the flange, derived once from the
+  declared tool frame (``_hand_placement``).
 
 An unset name is :data:`UNSET`, never the 2F-85. A caller that reads hand geometry refuses it, and
 :func:`unset_hand_refusal` words that refusal once for every such caller.
@@ -32,11 +34,16 @@ from src.config.loader import ConfigError
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry.quaternion import to_rotation_matrix
 
+from ._curobo_body_links import HAND_LINK
+from ._hand_placement import HandPlacement, PlacementRefused
 from .robot.gripper_spheres import FLANGE, MOUNTING_FACE
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.grippers.gripper_schema import ParallelJawSpec
     from src.config.schema.robot import RobotConfig, SelfCollisionSafetyConfig
+
+    from .body_link import HandLink
+    from .curobo_client import SidecarIdentity
 
 __all__ = [
     "APPROACH_TOLERANCE_DEG",
@@ -45,6 +52,7 @@ __all__ = [
     "PlannerHand",
     "approach_refusal",
     "declared_approach",
+    "declared_placement",
     "descriptor_refusal",
     "guard_variant_for",
     "hand_geometry_model",
@@ -95,6 +103,12 @@ class PlannerHand:
     #: The approach axis ``robot.gripper.tool_frame`` declares, in flange axes, or ``None`` where it is
     #: undeclared.
     declared_approach: tuple[float, float, float] | None = None
+    #: Where the hand model sits on tool0, derived from the declared tool frame; :data:`UNSET` where
+    #: the declaration places no hand, and then ``placement_refusal`` says why. A refused placement is
+    #: not readable as a rotation.
+    placement: Maybe[HandPlacement] = UNSET
+    #: Why the declared tool frame places no hand, or ``None`` where it places one.
+    placement_refusal: str | None = None
 
     @property
     def approach_disagreement_deg(self) -> float | None:
@@ -140,6 +154,22 @@ def declared_approach(robot_cfg: RobotConfig) -> tuple[float, float, float] | No
     return (float(column[0]), float(column[1]), float(column[2]))
 
 
+def declared_placement(robot_cfg: RobotConfig) -> tuple[Maybe[HandPlacement], str | None]:
+    """Where the cell's declared tool frame puts the hand model on the flange, or why it puts it nowhere.
+
+    An undeclared frame gives the undeclared placement, the hand model's own axes; the real driver
+    refuses to connect with it anyway. A declaration ``_hand_placement`` refuses gives :data:`UNSET`
+    and its sentence, so no reader can take a refused placement for a rotation.
+    """
+    frame = robot_cfg.gripper.tool_frame
+    if frame.source == "undeclared":
+        return HandPlacement.undeclared(), None
+    try:
+        return HandPlacement.from_quaternion_xyzw(frame.rotation_quat_xyzw), None
+    except PlacementRefused as exc:
+        return UNSET, f"robot.gripper.tool_frame places no hand model: {exc}"
+
+
 def approach_refusal(hand: PlannerHand) -> str | None:
     """Why a hand whose declared approach and model disagree cannot be modelled, or ``None`` where they agree."""
     degrees = hand.approach_disagreement_deg
@@ -156,43 +186,47 @@ def approach_refusal(hand: PlannerHand) -> str | None:
     )
 
 
-def descriptor_refusal(provenance: "object", hand: PlannerHand, *, arm: str) -> str | None:
-    """Why the planner must not plan with a descriptor, or ``None`` where it was built for this arm and hand.
+def descriptor_refusal(identity: "SidecarIdentity", link: "HandLink", *, arm: str) -> str | None:
+    """Why the planner must not plan with what its sidecar loaded, or ``None`` for this arm's
+    descriptor with this cell's hand added.
 
-    ``provenance`` is the descriptor's ``_provenance`` block, as ``scripts/curobo/build_ur_config.py``
-    writes it and the sidecar reports it when ready. A descriptor that says nothing about its hand
-    refuses, as does one built for another arm, another hand, or another plate than
-    ``robot.gripper.coupling_plates_mm`` sums to. There is no fallback to another file.
+    ``identity`` is what the sidecar reported when it became ready. A descriptor that says nothing of
+    itself refuses, as does one built for another arm. A descriptor carries no hand, so one that names
+    a hand, or does not say it carries none, is a per-hand file from an earlier build and refuses by
+    name; and a sidecar that added no body link called ``hand`` would plan without the hand this cell
+    carries. There is no fallback to another file. The plate and the placement are in the link the
+    client sent, so nothing about them is compared here.
     """
-    rebuild = (
-        f"Rebuild it on the box: ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py {arm} "
-        f"--gripper {hand.model}" + (f" --coupling-mm {hand.coupling_mm:g}" if hand.coupling_mm else "")
-    )
+    build = f"Build the arm on the box: ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py {arm}"
+    provenance = identity.provenance
     if not isinstance(provenance, dict):
         return (
-            f"the cuRobo descriptor this planner loaded has no _provenance, so nothing says which hand it "
-            f"models, and this cell names {hand.model!r}. A descriptor built before its hand was recorded "
-            f"cannot be told from one for another hand. {rebuild}"
+            f"the cuRobo descriptor this planner loaded has no _provenance, so nothing says which arm it describes or "
+            f"that no hand is in it, and this cell adds {link.model} to it. A descriptor built before its provenance "
+            f"was recorded cannot be told from one for another robot. {build}"
         )
     built_arm = str(provenance.get("arm", ""))
-    built_hand = str(provenance.get("gripper_key", ""))
-    built_plate = float(provenance.get("coupling_mm") or 0.0)
     if built_arm.lower() != arm.lower():
         return (
-            f"the cuRobo descriptor this planner loaded was built for the {built_arm!r} arm, and this cell "
-            f"drives {arm!r}: the planner would route another robot's links. {rebuild}"
+            f"the cuRobo descriptor this planner loaded was built for the {built_arm!r} arm, and this cell drives "
+            f"{arm!r}: the planner would route another robot's links. {build}"
         )
-    if built_hand != hand.model:
+    carried = provenance.get("gripper_key")
+    if carried or provenance.get("carries_hand") is not False:
+        what = f"models the hand {carried!r}" if carried else "does not say it carries no hand"
         return (
-            f"the cuRobo descriptor this planner loaded models the hand {built_hand!r}, and this cell names "
-            f"{hand.model!r}: the planner would route another hand's geometry. {rebuild}"
+            f"the cuRobo descriptor this planner loaded {what}, and this cell adds {link.model} as a body link: the "
+            f"planner would model the hand twice, or a hand that is not there. It is a per hand file from an earlier "
+            f"build, and a descriptor is built per arm. {build}"
         )
-    if abs(built_plate - float(hand.coupling_mm)) > 1e-6:
+    if HAND_LINK not in identity.body_names:
+        if identity.body_names:
+            said = f"reported the body links {', '.join(identity.body_names)}"
+        else:
+            said = "reported no body link" if chosen(identity.bodies) else "said nothing about body links"
         return (
-            f"the cuRobo descriptor this planner loaded places {hand.model} {built_plate:g} mm from the "
-            f"flange, and robot.gripper.coupling_plates_mm sums to {hand.coupling_mm:g} mm: the planner "
-            f"would model the hand {abs(float(hand.coupling_mm) - built_plate):g} mm from where it is. "
-            f"{rebuild}"
+            f"the cuRobo sidecar {said}, and this cell's hand {link.model} is added as the body link {HAND_LINK!r}: the "
+            f"planner would plan without a hand. A sidecar older than body links cannot add one; restart the planner"
         )
     return None
 
@@ -279,6 +313,7 @@ def planner_hand(robot_cfg: RobotConfig, *, data_dir: str | Path | None = None) 
             f"robot.gripper.coupling_plates_mm adds {coupling:g} mm to that, which would move the hand away "
             f"from where it was measured. Delete the plates, or fit a map whose origin is {MOUNTING_FACE}."
         )
+    placement, placement_refusal = declared_placement(robot_cfg)
     return PlannerHand(
         model=spec.model,
         sphere_map=sphere_map,
@@ -287,4 +322,6 @@ def planner_hand(robot_cfg: RobotConfig, *, data_dir: str | Path | None = None) 
         coupling_mm=coupling or 0.0,
         jaw=spec.jaw,
         declared_approach=declared_approach(robot_cfg),
+        placement=placement,
+        placement_refusal=placement_refusal,
     )

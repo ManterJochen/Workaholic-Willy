@@ -563,20 +563,20 @@ class MeshBackendModelGateTests(unittest.TestCase):
     """
 
     @staticmethod
-    def _known_model_without_geometry() -> str:
-        """A model whose DH chain is bundled and whose mesh bundle is not.
+    def _known_model_without_geometry() -> tuple[str, str]:
+        """A model with a DH row and a mesh directory that does not hold its bundle, as (model, mesh_dir).
 
-        Read off the tree rather than written down, because baking a bundle for one of these
-        is a normal thing to do and must move this example rather than break the test.
+        The condition is made rather than found, through the same ``mesh_dir`` a cell can set. Every
+        model named here has eventually been baked, so a hunt for an unbaked arm comes back empty and
+        both tests below skip themselves, and a skip is not a pass. Whatever this repository ships,
+        there is always a directory without this arm in it.
         """
-        from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
-        from src.robot.safety.planning.environment import collision_mesh_bundle
+        import tempfile
 
-        for model in sorted(UR_DH_TABLES_M):
-            if not collision_mesh_bundle(model, None).exists():
-                return model
-        raise AssertionError("every model with a DH chain now ships geometry; this test needs "
-                             "a different example of the no_bundle branch")
+        from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
+
+        folder = tempfile.mkdtemp()
+        return sorted(UR_DH_TABLES_M)[0], folder
 
     def test_status_distinguishes_unknown_model_from_missing_geometry(self) -> None:
         from src.robot.safety._fcl_self_collision import mesh_backend_status
@@ -585,7 +585,10 @@ class MeshBackendModelGateTests(unittest.TestCase):
         self.assertEqual(mesh_backend_status("definitely-not-a-robot"), "unknown_model")
         # this one IS a known model (DH bundled) and has no committed mesh bundle. Proving the
         # token is "no_bundle" and not "unknown_model" is what proves the ur5e hardcode is gone.
-        self.assertEqual(mesh_backend_status(self._known_model_without_geometry()), "no_bundle")
+        model, folder = self._known_model_without_geometry()
+        self.assertEqual(mesh_backend_status(model, folder), "no_bundle", model)
+        # The control on the control: the same arm in the directory that DOES hold it answers otherwise.
+        self.assertNotEqual(mesh_backend_status(model), "no_bundle", model)
 
     def test_bundled_models_are_known_and_have_geometry(self) -> None:
         """A model with a committed bundle must never report unknown_model or no_bundle.
@@ -598,9 +601,9 @@ class MeshBackendModelGateTests(unittest.TestCase):
     def test_make_backend_logs_and_degrades_for_a_model_without_geometry(self) -> None:
         from src.robot.safety import _fcl_self_collision as fcl
 
-        model = self._known_model_without_geometry()
+        model, folder = self._known_model_without_geometry()
         with self.assertLogs(fcl.__name__, level="WARNING") as caught:
-            backend = fcl.make_backend(model)
+            backend = fcl.make_backend(model, folder)
         self.assertIsNone(backend, f"no {model} mesh bundle -> must fall back, not fabricate one")
         joined = "\n".join(caught.output)
         self.assertIn(model, joined)
@@ -683,20 +686,17 @@ class TheCouplingPlateReachesTheGuardTests(unittest.TestCase):
 
         return make_backend("ur5e", None, "robotiq_hande", coupling_mm=coupling_mm)
 
-    def test_the_hande_bundles_are_all_stamped_mounting_face(self) -> None:
-        """The premise, derived from the files rather than asserted. If a re-bake ever stamps these
-        FLANGE, the coupling key stops applying and this says so before anything else drifts."""
+    def test_the_hande_bundle_is_stamped_mounting_face(self) -> None:
+        """The premise, derived from the file rather than asserted. If a re-bake ever stamps it
+        FLANGE, the coupling key stops applying and this says so before anything else drifts. One
+        file since UM lane S08: the hand is its own bundle, composed onto every arm."""
         import pathlib
 
-        data = pathlib.Path(__file__).resolve().parents[1] / "src/robot/safety/data"
-        found = sorted(data.glob("robotiq_hande_*_collision_meshes.npz"))
-        self.assertTrue(found, "no Hand-E bundles, so this whole class proves nothing")
-        for path in found:
-            with self.subTest(bundle=path.name):
-                z = np.load(path, allow_pickle=True)
-                self.assertIn("gripper__origin", z.files)
-                self.assertEqual(str(np.asarray(z["gripper__origin"]).reshape(-1)[0]),
-                                 "mounting_face")
+        path = pathlib.Path(__file__).resolve().parents[1] / "src/robot/safety/data/robotiq_hande_hand_meshes.npz"
+        self.assertTrue(path.is_file(), "no Hand-E bundle, so this whole class proves nothing")
+        with np.load(path, allow_pickle=True) as z:
+            self.assertIn("gripper__origin", z.files)
+            self.assertEqual(str(np.asarray(z["gripper__origin"]).reshape(-1)[0]), "mounting_face")
 
     def test_the_2f85_bundle_carries_no_origin_and_is_therefore_flange(self) -> None:
         """The control. A bundle baked from a composed arm asset already sits where the hand is

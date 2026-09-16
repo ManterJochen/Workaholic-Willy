@@ -33,10 +33,15 @@ from __future__ import annotations
 
 from .curobo_client import (
     MAX_CHECK_CONFIGURATIONS,
+    CuroboNotReady,
     CuroboPlanClient,
     CuroboUnavailableError,
     JointCheckVerdict,
     SceneRegistration,
+    SelfExplanation,
+    StateRefusal,
+    StateRefusalKind,
+    StateWhere,
     curobo_env_available,
 )
 from .environment import (
@@ -54,11 +59,16 @@ __all__ = [
     "CuroboPlanClient",
     "JointCheckVerdict",
     "SceneRegistration",
+    "SelfExplanation",
     "MAX_CHECK_CONFIGURATIONS",
     "ModelSource",
     "MotionStack",
     "MotionStackReport",
+    "CuroboNotReady",
     "CuroboUnavailableError",
+    "StateRefusal",
+    "StateRefusalKind",
+    "StateWhere",
     "curobo_env_available",
     "CollisionEngineStatus",
     "CuroboStatus",

@@ -9,11 +9,11 @@ from::
 
     M_dh = inv(T_dh[frame](q0)) @ inv(R_base) @ world_usd(q0)
 
-``R_base`` is the ``kinematics_base_yaw_deg`` reconcile and ``q0`` is the USD's rest configuration,
+``R_base`` is the ``kinematics_base_yaw_deg`` reconcile, 180 deg, and ``q0`` is the USD's rest configuration,
 meaning all joints at zero, the pose the asset composes to before any articulation is applied.
 
 The ur5e run is self-validating: it diffs the freshly computed links against the committed ur5e bundle
-and prints the largest per-vertex deviation. That is the gate, because a wrong frame here corrupts a
+and prints the largest per-vertex deviation, which has to come out at about 0 mm. That is the gate, because a wrong frame here corrupts a
 safety guard without any other symptom. A deviation at or above the gate refuses the write.
 
 The Robotiq 2F-85 tool0 meshes, ``gripper``, ``lfinger`` and ``rfinger`` at DH frame 6, are
@@ -21,15 +21,13 @@ model-independent and are copied verbatim from the ur5e bundle. The URDF joints 
 through ``flange`` to ``tool0`` are identical across the UR e-series, so the transform from DH frame 6
 to ``tool0`` is identity for every model here.
 
-Re-baking ``ur5e`` rebuilds the reference rather than validating against it, and that has a cost the
-gate does not show. A variant bundle, such as ``schunk_egu50_collision_meshes.npz``, carries the ur5e
-arm links unchanged and swaps the gripper alone, and ``_fcl_self_collision`` decides which robot a
-variant belongs to by comparing one arm link against the model's own bundle, demanding equality. A
-re-bake is a fresh computation, not a copy, so its residual is small and not zero: a rewritten ur5e
-reference unpairs every variant that pointed at it, and those cells drop to the weaker capsule proxy
-with a single log line. So this refuses to overwrite a bundle other bundles are paired with, and
-``--force`` is how an operator who means it says so. Note that no tool in this repository produces the
-variant bundles themselves; the gripper half of a variant has no generator here.
+A hand other than that 2F-85 is a bundle of its own, ``{hand}_hand_meshes.npz``, written by
+``scripts/grippers/bake_gripper_variant.py`` and composed onto whichever arm the cell carries when the
+guard loads. A hand is therefore baked once rather than once per arm, and nothing here is re-run when a
+cell changes hands.
+
+Re-baking ``ur5e`` rewrites the reference every other model copies its tool0 arrays from, so the arms
+already committed keep the copies they were baked with until they are re-baked as well.
 
 Usage, on the box that has Isaac, under Isaac's own python::
 
@@ -51,7 +49,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 #: Where the guard reads its bundles from. The library's own answer for a single bundle path is
-#: ``src/robot/safety/planning/environment.collision_mesh_bundle(model, variant)``, which anchors the
+#: ``src/robot/safety/planning/environment.collision_mesh_bundle(model)``, which anchors the
 #: same directory from inside the package. It is not imported here: this file runs under Isaac's
 #: interpreter, whose site-packages is not the project environment, so importing the package, which
 #: pulls in the whole safety guard stack and from there src.config and pydantic, is not something a
@@ -67,7 +65,6 @@ GATE_MM = 0.15
 _ARGS = [a for a in sys.argv[1:] if not a.startswith("-")]
 MODEL = (_ARGS[0] if _ARGS else "ur5e").lower()
 WRITE = "--write" in sys.argv
-FORCE = "--force" in sys.argv
 
 # bundle name: (USD link prim, DH frame index)
 LINKS = {
@@ -79,12 +76,10 @@ LINKS = {
     "wrist_3": ("wrist_3_link", 6),
 }
 GRIPPER_KEYS = ("gripper", "lfinger", "rfinger")  # model-independent, tool0 is DH frame 6
-#: The link one arm bundle is compared on to tell two robots apart, as ``_fcl_self_collision`` does it.
-VARIANT_PROBE_LINK = "forearm__v"
 
-# Standard UR DH (a, d, alpha), mirroring ``src/robot/safety/_ur_kinematics.UR_DH_TABLES_M`` for the
-# three models the stack ships descriptors for. Inlined for the same reason DATA_DIR is anchored: the
-# bake must not depend on the project package being importable from Isaac's interpreter.
+# Standard UR DH (a, d, alpha), mirroring ``src/robot/safety/_ur_kinematics.UR_DH_TABLES_M``. Inlined
+# for the same reason DATA_DIR is anchored: the bake must not depend on the project package being
+# importable from Isaac's interpreter.
 UR_DH = {
     "ur3": ((0.0, 0.1519, 1.570796327), (-0.24365, 0.0, 0.0), (-0.21325, 0.0, 0.0),
             (0.0, 0.11235, 1.570796327), (0.0, 0.08535, -1.570796327), (0.0, 0.0819, 0.0)),
@@ -97,6 +92,12 @@ UR_DH = {
     "ur10": ((0.0, 0.1273, 1.570796327), (-0.612, 0.0, 0.0), (-0.5723, 0.0, 0.0),
              (0.0, 0.163941, 1.570796327), (0.0, 0.1157, -1.570796327), (0.0, 0.0922, 0.0)),
     "ur10e": ((0.0, 0.1807, 1.570796327), (-0.6127, 0.0, 0.0), (-0.57155, 0.0, 0.0),
+              (0.0, 0.17415, 1.570796327), (0.0, 0.11985, -1.570796327), (0.0, 0.11655, 0.0)),
+    # ur16e has no Isaac asset here, so this baker cannot produce it. The row is still required:
+    # every inlined copy of the table must be able to place every bundle this repository ships, and
+    # the ur16e bundle is baked from Universal Robots' own collision STLs by
+    # scripts/isaac/bake_ur_meshes_from_urdf.py.
+    "ur16e": ((0.0, 0.1807, 1.570796327), (-0.4784, 0.0, 0.0), (-0.36, 0.0, 0.0),
               (0.0, 0.17415, 1.570796327), (0.0, 0.11985, -1.570796327), (0.0, 0.11655, 0.0)),
 }
 
@@ -165,31 +166,6 @@ def collision_mesh(link_prim: Usd.Prim) -> tuple[np.ndarray | None, np.ndarray |
         world = (Tw[:3, :3] @ pts.T).T + Tw[:3, 3]
         return world, idx.reshape(-1, 3)
     return None, None
-
-
-def paired_variants(target: Path) -> list[Path]:
-    """Bundles in :data:`DATA_DIR` that carry ``target``'s arm links and would be unpaired by a write.
-
-    ``_fcl_self_collision`` accepts a variant bundle for a model only while one arm link is equal to
-    that model's own, so any bundle matching here depends on ``target`` staying byte-identical.
-    """
-    if not target.exists():
-        return []
-    with np.load(target) as own:
-        if VARIANT_PROBE_LINK not in own.files:
-            return []
-        reference = np.asarray(own[VARIANT_PROBE_LINK])
-    hits: list[Path] = []
-    for other in sorted(DATA_DIR.glob("*_collision_meshes.npz")):
-        if other == target:
-            continue
-        with np.load(other) as bundle:
-            if VARIANT_PROBE_LINK not in bundle.files:
-                continue
-            probe = np.asarray(bundle[VARIANT_PROBE_LINK])
-        if probe.shape == reference.shape and bool(np.array_equal(probe, reference)):
-            hits.append(other)
-    return hits
 
 
 stage = omni.usd.get_context().get_stage()
@@ -263,21 +239,13 @@ if WRITE and gate_failed:
     print("\n[write] refused: the validation gate failed, so this recipe must not become the "
           "reference", flush=True)
 elif WRITE:
-    pinned = paired_variants(target)
-    if pinned and not FORCE:
-        names = ", ".join(p.name for p in pinned)
-        print(f"\n[write] refused: {names} carries {target.name}'s arm links and is accepted only "
-              f"while they stay byte-identical. A re-bake is a fresh computation, so writing here "
-              f"unpairs it and those cells fall back to the capsule guard. Pass --force to write "
-              f"anyway, and re-bake or re-derive {names} in the same pass.", flush=True)
-    else:
-        # The ignore is the numpy stub: `allow_pickle` is a keyword of the same call, so a mapping
-        # unpacked into it cannot be typed as arrays only. Every value here is an array.
-        np.savez_compressed(target, **out)  # type: ignore[arg-type]
-        print(f"\n[write] {target}", flush=True)
-        if pinned:
-            print(f"[write] forced over the pairing with {', '.join(p.name for p in pinned)}; "
-                  f"re-derive it before shipping this cell", flush=True)
+    # The ignore is the numpy stub: `allow_pickle` is a keyword of the same call, so a mapping
+    # unpacked into it cannot be typed as arrays only. Every value here is an array.
+    np.savez_compressed(target, **out)  # type: ignore[arg-type]
+    print(f"\n[write] {target}", flush=True)
+    print("[next] a hand bundle needs no Isaac, and none is per arm: it is baked once and composed "
+          "onto every arm\n"
+          "  python scripts/grippers/bake_gripper_variant.py robotiq_hande --write", flush=True)
 else:
     print("\n[dry-run] pass --write to save the bundle", flush=True)
 

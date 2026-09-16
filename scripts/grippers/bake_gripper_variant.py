@@ -1,28 +1,26 @@
-"""Bake a collision-mesh bundle for a cell running a gripper other than the baked Robotiq 2F-85.
+"""Bake a hand's own collision-mesh bundle, for a cell running a gripper other than the Robotiq 2F-85
+the arms carry.
 
     python scripts/grippers/bake_gripper_variant.py --list
-    python scripts/grippers/bake_gripper_variant.py robotiq_hande --arm ur5e --check
-    python scripts/grippers/bake_gripper_variant.py robotiq_hande --arm ur5e --write
+    python scripts/grippers/bake_gripper_variant.py robotiq_hande --check
+    python scripts/grippers/bake_gripper_variant.py robotiq_hande --write
 
-⛔ **A VARIANT BUNDLE IS AN ARM PLUS A HAND, NOT A HAND.** ``schunk_egu50_collision_meshes.npz``
-carries the UR5e's own arm meshes, and ``_variant_is_for_another_model`` compares a probe link
-against the model's own bundle, so naming that variant on a ur3e cell trips ``variant_model_mismatch``
-and drops the WHOLE cell to the capsule proxy. A gripper therefore needs one bundle per arm it is
-mounted on, and ``--arm`` is not a convenience.
+A hand bundle is a hand and nothing else. This writes ``{hand}_hand_meshes.npz``, which the guard
+composes onto whichever arm the cell has at load, so one file serves every arm. A freshly baked hand
+records no arm as proven, and the guard refuses to compose it onto one until evidence admits the
+pairing, answering ``variant_model_mismatch`` until then.
 
-**NO ISAAC AND NO GPU.** The arm meshes are already committed and correct, so this script never
-re-derives them: it copies the arm arrays from ``{arm}_collision_meshes.npz`` verbatim and replaces
-only ``gripper__v`` / ``lfinger__v`` / ``rfinger__v``. That is exactly what a variant is. The only
-thing it computes is the new hand, read out of a vendor USD. ``scripts/isaac/bake_ur_collision_meshes.py``
-needs Isaac because it reads a COMPOSED articulation; opening a stage needs neither.
+No Isaac and no GPU. The only thing this computes is the hand, read out of a vendor USD.
+``scripts/isaac/bake_ur_collision_meshes.py`` needs Isaac because it reads a composed articulation;
+opening a stage needs neither.
 
-**IT PROVES ITSELF BEFORE IT IS TRUSTED.** ``--check`` reads the standalone 2F-85 asset, places it
+It proves itself before it is trusted. ``--check`` reads the standalone 2F-85 asset, places it
 by the same reasoning, and diffs it against the committed ``ur5e_collision_meshes.npz``. Only trust a
 newly baked hand if that reproduces, because a wrong frame here silently corrupts a safety guard and
 a mirrored gripper has identical extents. That is the gate ``bake_ur_collision_meshes.py`` sets for
 arms, applied to hands.
 
-THE FRAME, read out of the committed bundle rather than assumed::
+The frame, read out of the committed bundle rather than assumed::
 
     approach   +Y     palm y [-3.36, 90.00], fingers y [91.45, 148.47]
     closing     X     finger centroids 114.96 mm apart along x, nothing along y or z
@@ -65,7 +63,7 @@ class GripperAsset:
     """Where a vendor gripper lives and how its own frame relates to the bundle's.
 
     ``rotation`` maps the asset's axes onto the bundle's, as ``new = old @ rotation.T``. It is a
-    matrix rather than an axis permutation because a permutation can be a REFLECTION: swapping two
+    matrix rather than an axis permutation because a permutation can be a reflection: swapping two
     axes has determinant -1 and mirrors the hand, and a mirrored symmetric gripper has identical
     extents, so no assertion about sizes would catch it. The determinant check in
     :func:`_read_gripper` is the only thing that does.
@@ -75,15 +73,15 @@ class GripperAsset:
     usd: str
     #: The rigid bodies to read, in the bundle's order: the body first, then the two fingers.
     bodies: tuple[str, str, str]
-    #: Asset-frame coordinate of the MOUNTING FACE along the asset's approach axis, millimetres.
+    #: Asset-frame coordinate of the mounting face along the asset's approach axis, millimetres.
     #: Subtracted before the rotation, so the bundle's y = 0 is the flange.
     mount_face_mm: float
     #: Which asset axis carries the approach, as an index into (x, y, z). Used only to apply
     #: ``mount_face_mm``, and named so the two cannot silently disagree.
     approach_axis: int
     rotation: tuple[tuple[float, float, float], ...]
-    #: Where the placed arrays START, once the mounting face has been moved to zero. Two hands,
-    #: two answers: a bundle read out of a COMPOSED arm asset was already placed by the arm, so
+    #: Where the placed arrays start, once the mounting face has been moved to zero. Two hands,
+    #: two answers: a bundle read out of a composed arm asset was already placed by the arm, so
     #: its origin is the flange, while a standalone vendor asset has no idea what it will be
     #: bolted to and its origin is the mounting face. The difference is one coupling plate, it is
     #: a bench measurement, and a sphere set one plate too close to the flange looks reasonable.
@@ -93,7 +91,7 @@ class GripperAsset:
 
 #: Every gripper this repository can bake a bundle for.
 #:
-#: The two entries do NOT share a frame, and that is a fact about the assets rather than an oversight:
+#: The two entries do not share a frame, and that is a fact about the assets rather than an oversight:
 #: Isaac authors the 2F-85 with the approach on +Z and the closing on Y, and the Hand-E with the
 #: approach on +Y and the closing on Z. A single "Robotiq convention" does not exist, which is why
 #: each entry states its own and why the 2F-85 is baked here at all: it is the control.
@@ -106,9 +104,9 @@ CATALOGUE: tuple[GripperAsset, ...] = (
         approach_axis=2,
         # (x, y, z)_asset -> (y, z, x)_bundle. A cyclic permutation, determinant +1.
         rotation=((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
-        # MEASURED: reading this asset in its own root frame reproduces the committed bundle to
-        # 0.00 mm on all six corners of the palm, so this asset root IS the UR flange. Its body
-        # starts 3.36 mm behind that root, which is the mounting boss sitting inside the flange.
+        # Reading this asset in its own root frame reproduces the committed bundle to 0.00 mm on all
+        # six corners of the palm, so this asset root is the UR flange. Its body starts 3.36 mm
+        # behind that root, which is the mounting boss sitting inside the flange.
         origin=FLANGE,
         note="the control: this must reproduce the committed ur5e bundle",
     ),
@@ -117,16 +115,16 @@ CATALOGUE: tuple[GripperAsset, ...] = (
         usd="Robotiq/Hand-E/Robotiq_Hand_E_edit.usd",
         bodies=("base_link", "left_gripper", "right_gripper"),
         # Group1 is the housing and spans y [-86.10, 0.00]; the coupling bolts reach 4.90 mm further
-        # back and are KEPT, because they are real geometry and a collision model that drops real
+        # back and are kept, because they are real geometry and a collision model that drops real
         # geometry is optimistic in the one direction that matters.
         mount_face_mm=-86.10,
         approach_axis=1,
         # (x, y, z)_asset -> (z, y, -x)_bundle. Determinant +1. The sign puts the body the asset calls
-        # `left_gripper` at NEGATIVE x, which is where the committed 2F-85 puts `lfinger__v`.
+        # `left_gripper` at negative x, which is where the committed 2F-85 puts `lfinger__v`.
         rotation=((0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)),
-        # MEASURED: the housing spans 99.20 mm, which is the published body length, and the asset
-        # holds no coupling part at all. So these numbers start at the gripper own mounting face
-        # and the plate between it and the flange is not in them.
+        # The housing spans 99.20 mm, which is the published body length, and the asset holds no
+        # coupling part at all. So these numbers start at the gripper's own mounting face and the
+        # plate between it and the flange is not in them.
         origin=MOUNTING_FACE,
         note="Robotiq Hand-E, 50 mm stroke, two prismatic fingers of 25 mm each",
     ),
@@ -166,7 +164,7 @@ def _read_gripper(asset: GripperAsset) -> dict[str, np.ndarray]:
     """
     try:
         from pxr import Usd, UsdGeom
-    except ImportError:  # pragma: no cover - the message is the point
+    except ImportError:  # pragma: no cover (the message is the point)
         raise SystemExit(
             "pxr is not importable. Either `pip install usd-core` in the project venv, or run this "
             "with Isaac's own interpreter. No simulator is needed either way."
@@ -274,7 +272,7 @@ def _check_against_2f85(hand: dict[str, np.ndarray]) -> int:
             print(f"    worst corner deviation {deviation:.2f} mm")
     # The committed 2F-85 comes from the UR5e asset's baked Gripper variant, which is a simplified
     # three-body model, while the standalone asset is the nine-body articulated one at its own
-    # aperture. The SHAPES have to agree; the vertex counts do not, and demanding they did would be
+    # aperture. The shapes have to agree; the vertex counts do not, and demanding they did would be
     # comparing two different meshes of one gripper.
     limit = 1.0
     print(f"\n  worst deviation over all three arrays: {worst:.2f} mm (limit {limit:.2f})")
@@ -286,62 +284,72 @@ def _check_against_2f85(hand: dict[str, np.ndarray]) -> int:
     return 0
 
 
-def _write_variant(gripper: GripperAsset, arm: str, hand: dict[str, np.ndarray]) -> int:
-    arm_bundle = _DATA / f"{arm}_collision_meshes.npz"
-    if not arm_bundle.is_file():
-        print(f"no arm bundle at {arm_bundle}; the arms present are "
-              f"{sorted(p.name for p in _DATA.glob('*_collision_meshes.npz'))}", file=sys.stderr)
-        return 2
-    out = _DATA / f"{gripper.key}_{arm}_collision_meshes.npz"
+def _still_admitted(out: Path, payload: dict[str, np.ndarray]) -> np.ndarray:
+    """The arms the committed bundle records, if and only if every array about to be written is the committed one."""
+    none = np.array([], dtype="<U8")
+    if not out.is_file():
+        return none
+    with np.load(out) as committed:
+        if "hand__admitted_arms" not in committed.files:
+            return none
+        for key, array in payload.items():
+            if key not in committed.files or committed[key].dtype != array.dtype or \
+                    not np.array_equal(committed[key], array):
+                return none
+        return np.asarray(committed["hand__admitted_arms"])
 
-    with np.load(arm_bundle) as source:
-        payload = {name: source[name] for name in source.files}
-    replaced = []
+
+def _write_variant(gripper: GripperAsset, hand: dict[str, np.ndarray]) -> int:
+    """Write the hand alone, ``{key}_hand_meshes.npz``; the guard composes it onto an arm at load.
+
+    It records no arm as proven. A newly baked hand is admitted to an arm by evidence, not by being
+    written, so composing it onto any arm answers ``variant_model_mismatch`` until then. A re-bake
+    that reproduces the committed arrays byte for byte keeps the arms already recorded, because
+    nothing they were proven on has changed.
+    """
+    out = _DATA / f"{gripper.key}_hand_meshes.npz"
+    payload: dict[str, np.ndarray] = {}
     for key in _HAND_KEYS:
-        for suffix in ("__v", "__f"):
-            name = f"{key}{suffix}"
-            if name not in payload:
-                print(f"{arm_bundle.name} has no {name}; it is not an arm-plus-hand bundle",
-                      file=sys.stderr)
-                return 2
-            payload[name] = hand[name]
-            replaced.append(name)
-    # The frame marker travels with the arrays it labels. `_fcl_self_collision` reads `{part}__frame`
-    # to decide which DH frame a mesh is placed from, and the hand sits at frame 6 on every UR flange
-    # whatever hand it is, so the arm bundle's own value is carried through untouched.
-    # The origin travels WITH the arrays, because it is the one fact about them a reader cannot
+        payload[f"{key}__v"] = hand[f"{key}__v"]
+        payload[f"{key}__f"] = hand[f"{key}__f"]
+        # `_fcl_self_collision` reads `{part}__frame` to decide which DH frame a mesh is placed from,
+        # and the hand sits at frame 6 on every UR flange whatever hand it is.
+        payload[f"{key}__frame"] = np.array([6], dtype=np.int64)
+    # The origin travels with the arrays, because it is the one fact about them a reader cannot
     # recover by looking: a sphere set placed one coupling plate too close to the flange has
     # entirely reasonable numbers.
     payload[_ORIGIN_KEY] = np.array([gripper.origin])
+    admitted = _still_admitted(out, payload)
+    payload["hand__admitted_arms"] = admitted
     np.savez_compressed(out, **payload)
     print(f"wrote {out.name}")
-    print(f"  arm links copied verbatim from {arm_bundle.name}")
     print(f"  origin: {gripper.origin}")
-    print(f"  hand arrays replaced: {', '.join(replaced)}")
+    if admitted.size:
+        print(f"  the arrays are the committed ones, so the arms they were proven on stay: {', '.join(admitted.tolist())}")
+    else:
+        print("  proven on no arm yet: the guard refuses to compose it onto one until evidence admits the pairing")
     for key in _HAND_KEYS:
         v = payload[f"{key}__v"]
         lo, hi = v.min(axis=0), v.max(axis=0)
         print(f"  {key:<9} {len(v):>6} verts  x [{lo[0]:8.2f},{hi[0]:8.2f}]"
               f"  y [{lo[1]:8.2f},{hi[1]:8.2f}]  z [{lo[2]:8.2f},{hi[2]:8.2f}]")
     print("\nnext, in the project venv:")
-    print(f"  python -m src.robot.safety.planning.robot.build_gripper_spheres "
-          f"--variant {gripper.key}_{arm}")
+    print(f"  python -m src.robot.safety.planning.robot.build_gripper_spheres --variant {gripper.key}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python scripts/grippers/bake_gripper_variant.py",
-        description="Bake an arm-plus-hand collision bundle for a non-default gripper.",
+        description="Bake a hand bundle, the hand alone, for a non-default gripper.",
     )
     parser.add_argument("gripper", nargs="?", help=f"one of: {', '.join(_BY_KEY)}")
-    parser.add_argument("--arm", default="ur5e", help="the arm whose links the bundle carries")
     parser.add_argument("--list", action="store_true", help="print the catalogue and exit")
     parser.add_argument(
         "--check", action="store_true",
         help="read the 2F-85 and diff it against the committed bundle, then exit",
     )
-    parser.add_argument("--write", action="store_true", help="write the variant bundle")
+    parser.add_argument("--write", action="store_true", help="write the hand bundle, {hand}_hand_meshes.npz")
     args = parser.parse_args(argv)
 
     if args.list or (not args.gripper and not args.check):
@@ -377,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"  y [{lo[1]:8.2f},{hi[1]:8.2f}]  z [{lo[2]:8.2f},{hi[2]:8.2f}]")
         print("\nnothing written; pass --write")
         return 0
-    return _write_variant(gripper, args.arm.lower(), hand)
+    return _write_variant(gripper, hand)
 
 
 if __name__ == "__main__":  # pragma: no cover

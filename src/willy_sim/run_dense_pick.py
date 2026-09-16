@@ -527,6 +527,7 @@ def wire_safety_guards(
         ContinuousGuardProfile(enabled=True, margin_mm=continuous_guard_margin_mm),
         variant=guard_hand.guard_variant if chosen(guard_hand) else None,
         coupling_mm=guard_hand.coupling_mm if chosen(guard_hand) else 0.0,
+        placement=guard_hand.placement if chosen(guard_hand) and chosen(guard_hand.placement) else None,
     )
     if mon is None:  # requested but no mesh backend (set WILLY_COAL_PREFIX): guard off, warn
         # The run continues unguarded with everything else identical, so this line is the only
@@ -908,13 +909,13 @@ def build_service(
     # uniform stamp they are no-ops. This applies to the ground-truth path only, because the vision source
     # has its own always-on top reference. The default "gt" keeps ground_truth_depth=True.
     _render_depth = depth_source == "rendered"
-    # `--depth-source rendered` used to be refused together with `--vision`, because the vision source
-    # applied its own top reference to the depth map on every frame and the two would have fought. It
-    # does not any more: the vision source publishes what the camera rendered, so the flag is about
-    # the ground-truth source alone and means nothing on the vision path rather than conflicting.
+    # `--depth-source rendered` is not refused together with `--vision`. The vision source publishes
+    # what the camera rendered and applies no top reference of its own to the depth map, so the flag is
+    # about the ground-truth source alone and means nothing on the vision path rather than conflicting
+    # with it.
     _depth_band_mm = depth_band_mm if depth_band_mm > 0.0 else None
-    # The calculator owns the descend, on both paths. On the vision path this is now the only descend
-    # there is: the perception source no longer moves the depth map, so a penetration that does not
+    # The calculator owns the descend, on both paths. On the vision path it is the only descend
+    # there is: the perception source does not move the depth map, so a penetration that does not
     # reach the calculator does not happen at all. It is read only when the reference is "top", so on
     # the shipped "centre" reference this stays inert whatever it is set to.
     _calc_pen_mm = float(_ycb_pen) if (_ycb_pen is not None and (_render_depth or vision)) else 0.0

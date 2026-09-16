@@ -681,9 +681,10 @@ robot:
       min_distance_mm: 10.0
 
       # Clearance (mm) handed to the TRAJECTORY PLANNER so it stops proposing configurations this guard will
-      # reject.
-      # [default: 0.0]
-      planner_margin_mm: 0.0
+      # reject. Undeclared by default: a UR cell that plans with cuRobo must set it here or in its profile, or
+      # it refuses to start a planner rather than inherit a number nobody measured for that arm and hand.
+      # [default: null]
+      planner_margin_mm: null
 
       # Per-link capsule radii in mm, indexed by link (entry 0 = the first DH link capsule). It sets how fat
       # the arm is modelled to be in the capsule collision proxy; missing or short lists fall back to a 60

@@ -106,9 +106,11 @@ class _Client:
             self.joint_names = list(joint_names)
         self.confirm_all = confirm_all
         self.checked: list[list[list[float]]] = []
-        # What a descriptor built for this ur5e and the 2F-85 says of itself: a planner refuses one that says
+        # What a sidecar on the ur5e descriptor with the 2F-85 added says of itself: a planner refuses one that says
         # nothing, so without it every UR verb here was refused at start before its world was asked.
-        self.descriptor_provenance = {"arm": "ur5e", "gripper_key": "robotiq_2f85", "coupling_mm": None}
+        from tests._sidecar_identity import arm_identity
+
+        self.identity = arm_identity()
 
     def start(self) -> None:
         return None

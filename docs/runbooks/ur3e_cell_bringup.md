@@ -55,13 +55,13 @@ configured cell's later.
 **2. Does the boot banner name the robot you think it does?**
 
 ```
-cuRobo planner: AVAILABLE  (python=..., robot=ur3e_robotiq_2f85.yml not verified: ...)
+cuRobo planner: AVAILABLE  (python=..., robot=willy_ur3e.yml not verified: ...)
 exact-mesh collision engine: coal  (ur3e mesh bundle present, ...)
 => fully anchored
 ```
 
 Both halves are per robot: the mesh bundle ships as `{model}_collision_meshes.npz` and the cuRobo
-descriptor is `{model}_{hand}.yml`, so a present `ur5e` bundle says nothing about a UR3e cell. The reading
+descriptor is `willy_{model}.yml`, so a present `ur5e` bundle says nothing about a UR3e cell. The reading
 carries the model and the key that chose it, rather than leaving it to be assumed. What
 `AVAILABLE` still does not mean is that the descriptor was built; that is a separate check, and
 [real_cell_first_pick.md](real_cell_first_pick.md) Diagnose 6 is where it lives.
@@ -139,20 +139,20 @@ matching profile layers.
 **2. Build the robot's cuRobo configuration and its collision-mesh bundle.**
 
 ```bash
-python scripts/curobo/build_ur_config.py ur3e --gripper robotiq_2f85   # -> {curobo content}/configs/robot/ur3e_robotiq_2f85.yml
-
-# the bake runs under Isaac's own interpreter, on the box that has Isaac
-python.bat scripts/isaac/bake_ur_collision_meshes.py ur5e            # validate, write nothing
-python.bat scripts/isaac/bake_ur_collision_meshes.py ur3e --write    # -> src/robot/safety/data/
+ext_deps/curobo_env/python.exe scripts/curobo/fetch_ur_meshes.py       # the pinned UR arm meshes, once per box
+ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur3e  # -> {curobo content}/configs/robot/willy_ur3e.yml
+python scripts/isaac/bake_ur_meshes_from_urdf.py ur3e --write          # -> src/robot/safety/data/
 ```
 
-The bake script is self-validating, which is why the `ur5e` run comes first: it diffs the freshly
-computed links against the committed bundle, prints the largest per-vertex deviation and refuses the
-write at or above its gate. Reproducing a known-good bundle is what licenses baking a new one,
-because a wrong frame would silently corrupt a fail-closed guard. It writes nothing without
-`--write`, and it refuses to overwrite a bundle that other bundles are paired with unless `--force`
-says so, because a rewritten reference unpairs every variant that pointed at it and drops those
-cells to the capsule proxy on one log line.
+cuRobo ships the meshes of ur5e and ur10e only, so without the fetch the ur3e build refuses with
+every mesh reference missing from disk. `scripts/ext_deps/install.ps1` runs the fetch and then builds
+every UR arm once. The descriptor carries no hand: the planner adds the one this cell names when its
+sidecar starts, so a cell that changes hands needs no rebuild.
+
+The bake is self-validating, and that is the gate: it compares the fresh bake with the bundle already
+committed for the same model and refuses to write a difference nobody named, because a wrong frame
+would silently corrupt a fail-closed guard. Run it without `--write` first. It needs no simulator and
+no GPU: the geometry is the collision STL files of Universal Robots, pinned to one upstream commit.
 
 **3. Re-anchor the scene, and check the joint poses too.** Keep every configured position under
 about 85 % of reach. Past that the arm is near straight with almost no orientation freedom left,

@@ -1,17 +1,19 @@
-"""A cuRobo descriptor is named by its arm and its hand, and one built for another hand refuses (Step 4i).
+"""A planner starts from its arm's descriptor, adds the hand the cell names, and refuses anything else it loaded.
 
 Owner Q5 (.commits/robot/51-the-world-and-the-hand.md): the hand is robot.gripper.model and nothing else,
-descriptors are ``{arm}_{hand}.yml``, there is no fallback to ``{arm}.yml``, and a descriptor without ``_provenance``
-refuses. Q10: the plate a descriptor was built with is compared with ``robot.gripper.coupling_plates_mm``.
-
-Read on the box before this step (2026-09-15): ur5e.yml and ur3e.yml carry no ``_provenance``, and ur3, ur5, ur10 and
-ur10e record ``gripper_key: ur5e``, the sphere map stem before Step 4f. Nothing read that provenance, so a cell that
-changed hands kept planning against the old one and every file looked correct. Each of them refuses under this step until
-it is rebuilt.
+and a descriptor without ``_provenance`` refuses. Until UM lane S11 a descriptor carried the hand, ``{arm}_{hand}.yml``,
+and the refusal compared the hand and plate it was built with. A descriptor is now built per arm, ``willy_{arm}.yml``,
+and says ``carries_hand: false``; the hand is a body link the sidecar adds when it starts (S10), derived from the hand
+the cell names and where its declared tool frame puts it (S12). What is refused is what the sidecar reports it loaded:
+no provenance, another arm, a descriptor that carries a hand (the per hand files an earlier build wrote stay in the
+content directory), and a sidecar that added no hand.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import json
+import os
 import sys
 import tempfile
 import textwrap
@@ -23,8 +25,12 @@ from unittest import mock
 import numpy as np
 
 from src.config.schema.robot import RobotConfig
+from src.contracts import UNSET
 from src.geometry import Frame, Pose
 from src.robot.core import MotionStatus
+from tests._sidecar_identity import arm_identity
+
+_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _hand(model: str = "robotiq_2f85", plates: "list[float] | None" = None) -> Any:
@@ -36,81 +42,93 @@ def _hand(model: str = "robotiq_2f85", plates: "list[float] | None" = None) -> A
     return planner_hand(RobotConfig.model_validate({"vendor": "ur", "gripper": gripper}))
 
 
-def _provenance(arm: str = "ur5e", gripper_key: str = "robotiq_2f85", coupling_mm: "float | None" = None) -> dict:
-    """What build_ur_config.py writes (scripts/curobo/build_ur_config.py, the _provenance block)."""
-    return {
-        "arm": arm, "gripper": "as the map names it", "gripper_key": gripper_key, "coupling_mm": coupling_mm,
-        "generated_by": "scripts/curobo/build_ur_config.py",
-    }
+def _link(model: str = "robotiq_2f85", plates: "list[float] | None" = None) -> Any:
+    from src.robot.safety.planning.body_link import HandLink
+
+    return HandLink.from_hand(_hand(model, plates))
 
 
-class TheDescriptorIsNamedByArmAndHandTests(unittest.TestCase):
-    def test_the_name_carries_the_arm_and_the_hand(self) -> None:
-        from src.robot.drivers.sim.robot_models import curobo_robot_yml
+def _per_hand_file(arm: str = "ur5e", hand: str = "robotiq_2f85") -> Any:
+    """What a sidecar started on a per hand file from an earlier build reports: the hand it carries, no body link."""
+    from src.robot.safety.planning.curobo_client import SidecarIdentity
 
-        self.assertEqual(curobo_robot_yml("ur5e", "robotiq_hande"), "ur5e_robotiq_hande.yml")
-        self.assertEqual(curobo_robot_yml("UR3e", "robotiq_2f85"), "ur3e_robotiq_2f85.yml")
+    return SidecarIdentity(
+        provenance={"arm": arm, "gripper_key": hand, "coupling_mm": None,
+                    "generated_by": "scripts/curobo/build_ur_config.py"},
+        bodies=(),
+    )
 
-    def test_a_hand_the_registry_does_not_hold_names_no_file(self) -> None:
-        from src.robot.drivers.sim.robot_models import curobo_robot_yml
+
+class TheDescriptorIsNamedByTheArmTests(unittest.TestCase):
+    def test_the_name_is_the_arm_alone(self) -> None:
+        from src.robot.drivers.sim.robot_models import curobo_arm_descriptor
+
+        self.assertEqual(curobo_arm_descriptor("ur5e"), "willy_ur5e.yml")
+        self.assertEqual(curobo_arm_descriptor("UR3e"), "willy_ur3e.yml")
+
+    def test_an_arm_the_registry_does_not_hold_names_no_file(self) -> None:
+        from src.robot.drivers.sim.robot_models import curobo_arm_descriptor
 
         with self.assertRaises(ValueError) as ctx:
-            curobo_robot_yml("ur5e", "robotiq_2f58")
-        self.assertIn("robotiq_2f58", str(ctx.exception))
+            curobo_arm_descriptor("ur99")
+        self.assertIn("ur99", str(ctx.exception))
 
 
-class ADescriptorForAnotherHandRefusesTests(unittest.TestCase):
-    def test_the_descriptor_built_for_this_arm_and_hand_is_accepted(self) -> None:
-        """The control: a matching descriptor, with and without a plate."""
+class WhatThePlannerLoadedIsCheckedTests(unittest.TestCase):
+    """Each refusal changes exactly one field of an identity that is accepted."""
+
+    def _refusal(self, identity: Any, link: Any = None, arm: str = "ur5e") -> "str | None":
         from src.robot.safety.planning.hand import descriptor_refusal
 
-        self.assertIsNone(descriptor_refusal(_provenance(), _hand(), arm="ur5e"))
-        self.assertIsNone(descriptor_refusal(
-            _provenance(gripper_key="robotiq_hande", coupling_mm=20.0), _hand("robotiq_hande", [20.0]), arm="ur5e",
-        ))
+        return descriptor_refusal(identity, link if link is not None else _link(), arm=arm)
 
-    def test_a_descriptor_for_another_hand_refuses_naming_both(self) -> None:
-        from src.robot.safety.planning.hand import descriptor_refusal
+    def test_the_arm_descriptor_with_the_hand_added_is_accepted(self) -> None:
+        """The control, for a flange hand and for a hand behind a plate."""
+        self.assertIsNone(self._refusal(arm_identity()))
+        self.assertIsNone(self._refusal(arm_identity(), _link("robotiq_hande", [20.0])))
 
-        refusal = descriptor_refusal(_provenance(gripper_key="ur5e"), _hand("robotiq_hande", [20.0]), arm="ur5e")
-        assert refusal is not None
-        self.assertIn("robotiq_hande", refusal)
-        self.assertIn("'ur5e'", refusal)
-
-    def test_a_descriptor_for_another_arm_refuses(self) -> None:
-        from src.robot.safety.planning.hand import descriptor_refusal
-
-        refusal = descriptor_refusal(_provenance(arm="ur3e"), _hand(), arm="ur5e")
-        assert refusal is not None
-        self.assertIn("ur3e", refusal)
-
-    def test_a_descriptor_that_says_nothing_about_its_hand_refuses(self) -> None:
-        """ur5e.yml and ur3e.yml on the box today: built before provenance existed."""
-        from src.robot.safety.planning.hand import descriptor_refusal
-
-        refusal = descriptor_refusal(None, _hand(), arm="ur5e")
+    def test_no_provenance(self) -> None:
+        refusal = self._refusal(dataclasses.replace(arm_identity(), provenance=None))
         assert refusal is not None
         self.assertIn("_provenance", refusal)
 
-    def test_a_descriptor_built_without_the_plate_refuses_naming_both_plates(self) -> None:
-        """Q10: the Hand-E cell writes [20.0]; a descriptor built without --coupling-mm modelled the hand 20 mm short."""
-        from src.robot.safety.planning.hand import descriptor_refusal
-
-        refusal = descriptor_refusal(
-            _provenance(gripper_key="robotiq_hande", coupling_mm=None), _hand("robotiq_hande", [20.0]), arm="ur5e",
-        )
+    def test_another_arm(self) -> None:
+        identity = arm_identity()
+        refusal = self._refusal(dataclasses.replace(identity, provenance={**identity.provenance, "arm": "ur3e"}))
         assert refusal is not None
-        self.assertIn("20", refusal)
-        self.assertIn("0 mm", refusal)
+        self.assertIn("'ur3e'", refusal)
+        self.assertIn("'ur5e'", refusal)
+
+    def test_a_per_hand_file_says_how_to_build_the_arm(self) -> None:
+        identity = arm_identity()
+        refusal = self._refusal(dataclasses.replace(
+            identity, provenance={**identity.provenance, "gripper_key": "robotiq_hande"}))
+        assert refusal is not None
+        self.assertIn("robotiq_hande", refusal)
+        self.assertIn("build_ur_config.py ur5e", refusal)
+        self.assertNotIn("--gripper", refusal)
+
+    def test_a_descriptor_that_does_not_say_it_carries_no_hand(self) -> None:
+        identity = arm_identity()
+        provenance = {key: value for key, value in identity.provenance.items() if key != "carries_hand"}
+        self.assertIsNotNone(self._refusal(dataclasses.replace(identity, provenance=provenance)))
+
+    def test_a_sidecar_that_added_no_hand(self) -> None:
+        for label, bodies in (("none", ()), ("another body", ({"link": "plate", "parent": "tool0"},)),
+                              ("not reported", UNSET)):
+            with self.subTest(label):
+                refusal = self._refusal(dataclasses.replace(arm_identity(), bodies=bodies))
+                assert refusal is not None
+                self.assertIn("hand", refusal)
 
 
 class _Client:
-    def __init__(self, provenance: "dict | None") -> None:
+    def __init__(self, identity: Any) -> None:
         from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES
 
         self.joint_names = list(UR_ARM_JOINT_NAMES)
         self.dt = 0.0
-        self.descriptor_provenance = provenance
+        self.identity = identity
         self.calls: list[str] = []
         self.closed = False
 
@@ -153,50 +171,83 @@ def _pose() -> Pose:
     )
 
 
-class TheURPlannerRefusesAnotherHandsDescriptorTests(unittest.TestCase):
-    def _planner(self, client: _Client, hand: Any) -> Any:
+def _ur_arm(gripper: "dict | None") -> Any:
+    from src.robot.drivers.ur.arm import URRobotArm
+
+    # Declares its planner margin, as every UR cuRobo cell must since B1 S17: without one the factory refuses
+    # before it reaches the descriptor, which is this test's subject.
+    config: dict[str, Any] = {"vendor": "ur", "ur": {"motion_planner": "curobo"},
+                              "safety": {"self_collision": {"planner_margin_mm": 4.0}}}
+    if gripper is not None:
+        config["gripper"] = gripper
+    return URRobotArm(RobotConfig.model_validate(config))
+
+
+class TheURPlannerChecksWhatItLoadedTests(unittest.TestCase):
+    def _planner(self, client: _Client, link: Any) -> Any:
         from src.robot.drivers.ur.curobo_motion import CuroboUrPlanner
         from src.robot.safety.planning.hand import descriptor_refusal
 
         return CuroboUrPlanner(
             _Conn(), client_factory=lambda: client, require_registration=False,
-            descriptor_check=lambda provenance: descriptor_refusal(provenance, hand, arm="ur5e"),
+            descriptor_check=lambda identity: descriptor_refusal(identity, link, arm="ur5e"),
         )
 
-    def test_a_move_on_another_hands_descriptor_is_rejected_and_nothing_is_sent(self) -> None:
-        client = _Client(_provenance(gripper_key="ur5e"))
-        planner = self._planner(client, _hand("robotiq_hande", [20.0]))
+    def test_a_move_on_a_per_hand_file_is_rejected_and_nothing_is_sent(self) -> None:
+        client = _Client(_per_hand_file(hand="robotiq_hande"))
+        planner = self._planner(client, _link("robotiq_hande", [20.0]))
         with self.assertLogs("CuroboUrPlanner", level="ERROR") as logs:
             result = planner.move(_pose())
         self.assertIs(result.status, MotionStatus.CONTROLLER_REJECTED)
-        self.assertIn("robotiq_hande", result.message)
+        self.assertIn("build_ur_config.py", result.message)
         self.assertNotIn("plan", client.calls)
         self.assertEqual(planner._conn.moves, [])  # noqa: SLF001
-        self.assertTrue(client.closed, "a client for the wrong hand is closed, not kept for the next move")
+        self.assertTrue(client.closed, "a client on the wrong descriptor is closed, not kept for the next move")
         self.assertEqual(len([r for r in logs.records if r.levelname == "ERROR"]), 1, logs.output)
 
-    def test_the_matching_descriptor_plans(self) -> None:
+    def test_the_arm_descriptor_with_the_hand_plans(self) -> None:
         """The control."""
-        client = _Client(_provenance())
-        result = self._planner(client, _hand()).move(_pose())
+        client = _Client(arm_identity())
+        result = self._planner(client, _link()).move(_pose())
         self.assertIs(result.status, MotionStatus.EXECUTED, result.message)
         self.assertIn("plan", client.calls)
 
-    def test_the_ur_arm_checks_against_the_hand_it_names(self) -> None:
-        from src.robot.drivers.ur.arm import URRobotArm
+    def test_the_ur_arm_starts_its_planner_on_the_arm_descriptor_with_the_hand_link(self) -> None:
+        arm = _ur_arm({"model": "robotiq_hande", "coupling_plates_mm": [20.0]})
+        with mock.patch("src.robot.drivers.ur.arm.CuroboPlanClient") as client_class:
+            arm._default_curobo_client_factory()()  # noqa: SLF001
+        kwargs = client_class.call_args.kwargs
+        self.assertEqual(kwargs["robot_config"], "willy_ur5e.yml")
+        self.assertEqual([body["link"] for body in kwargs["body_links"]], ["hand"])
+        self.assertEqual(kwargs["body_links"][0]["fixed_transform"], [0.0, 0.02, 0.0, 1.0, 0.0, 0.0, 0.0])
 
-        arm = URRobotArm(RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"motion_planner": "curobo"},
-            "gripper": {"model": "robotiq_hande", "coupling_plates_mm": [20.0]},
-        }))
-        arm._curobo_client_factory = lambda: _Client(_provenance(gripper_key="ur5e"))  # noqa: SLF001
+    def test_the_ur_arm_checks_what_the_sidecar_loaded(self) -> None:
+        arm = _ur_arm({"model": "robotiq_hande", "coupling_plates_mm": [20.0]})
+        arm._curobo_client_factory = lambda: _Client(arm_identity())  # noqa: SLF001
         check = arm._curobo_ur_planner()._descriptor_check  # noqa: SLF001
         self.assertIsNotNone(check)
-        self.assertIsNotNone(check(_provenance(gripper_key="ur5e")))
-        self.assertIsNone(check(_provenance(gripper_key="robotiq_hande", coupling_mm=20.0)))
+        self.assertIsNotNone(check(_per_hand_file(hand="robotiq_hande")))
+        self.assertIsNone(check(arm_identity()))
+
+    def test_a_cell_with_no_hand_builds_no_client(self) -> None:
+        """The control: nothing is started for a hand nobody named.
+
+        On the capsule guard, because a cell whose exact mesh guard reads hand geometry is already refused when it is
+        built with no hand, one layer before any planner, which is the stronger refusal and not the one tested here.
+        """
+        from src.robot.drivers.ur.arm import URRobotArm
+        from src.robot.safety.planning import CuroboUnavailableError
+
+        arm = URRobotArm(RobotConfig.model_validate({
+            "vendor": "ur", "ur": {"motion_planner": "curobo"}, "safety": {"self_collision": {"backend": "capsule"}},
+        }))
+        with mock.patch("src.robot.drivers.ur.arm.CuroboPlanClient") as client_class:
+            with self.assertRaises(CuroboUnavailableError):
+                arm._default_curobo_client_factory()()  # noqa: SLF001
+        client_class.assert_not_called()
 
 
-class TheSimArmRefusesAnotherHandsDescriptorTests(unittest.TestCase):
+class TheSimArmChecksWhatItLoadedTests(unittest.TestCase):
     """A non UR double: the Isaac arm builds its own client and names its descriptor itself."""
 
     def _arm(self) -> Any:
@@ -208,73 +259,88 @@ class TheSimArmRefusesAnotherHandsDescriptorTests(unittest.TestCase):
             SimRobotConfig(enabled=True, mock_mode=True), safety_preflight=sim_safety_preflight(load_sim_config()),
         )
 
-    def _patched(self, provenance: "dict | None") -> tuple[Any, dict]:
+    def _patched(self, identity: Any) -> tuple[Any, dict]:
         built: dict = {}
 
         def factory(**kwargs: Any) -> _Client:
             built.update(kwargs)
-            built["client"] = _Client(provenance)
+            built["client"] = _Client(identity)
             return built["client"]
 
         return mock.patch("src.robot.drivers.sim.arm.CuroboPlanClient", side_effect=factory), built
 
-    def test_another_hands_descriptor_refuses_and_the_client_is_closed(self) -> None:
+    def test_a_per_hand_file_refuses_and_the_client_is_closed(self) -> None:
         from src.robot.safety.planning import CuroboUnavailableError
 
-        patch, built = self._patched(_provenance(gripper_key="ur5e"))
+        patch, built = self._patched(_per_hand_file())
         arm = self._arm()
         with patch, self.assertRaises(CuroboUnavailableError) as ctx:
             arm._get_curobo_client()  # noqa: SLF001
-        self.assertIn("robotiq_2f85", str(ctx.exception))
+        self.assertIn("build_ur_config.py", str(ctx.exception))
         self.assertTrue(built["client"].closed)
         self.assertIsNone(arm._curobo_client)  # noqa: SLF001
 
-    def test_the_sim_names_the_descriptor_by_its_arm_and_hand_and_the_matching_one_is_kept(self) -> None:
-        patch, built = self._patched(_provenance())
+    def test_the_sim_starts_on_the_arm_descriptor_with_the_hand_link_and_keeps_a_matching_client(self) -> None:
+        patch, built = self._patched(arm_identity())
         arm = self._arm()
         with patch:
             client = arm._get_curobo_client()  # noqa: SLF001
-        self.assertEqual(built["robot_config"], "ur5e_robotiq_2f85.yml")
+        self.assertEqual(built["robot_config"], "willy_ur5e.yml")
+        self.assertEqual([body["link"] for body in built["body_links"]], ["hand"])
         self.assertIs(client, built["client"])
 
 
-class TheSidecarSaysWhichDescriptorItLoadedTests(unittest.TestCase):
-    def test_the_ready_line_carries_the_descriptor(self) -> None:
-        """A source check, as test_curobo_client_error_vs_verdict.py does: running the sidecar needs a GPU."""
-        source = (
-            Path(__file__).resolve().parents[1] / "src/robot/safety/planning/curobo_planner_server.py"
-        ).read_text(encoding="utf-8")
-        start = source.index('_emit({"status": "ready"')
-        self.assertIn('"descriptor"', source[start:start + 400])
+def _started_after(ready: dict) -> Any:
+    from src.robot.safety.planning.curobo_client import CuroboPlanClient
 
-    def test_the_client_keeps_what_the_ready_line_said_and_none_when_it_said_nothing(self) -> None:
+    script = Path(tempfile.mkdtemp()) / "sidecar.py"
+    script.write_text(textwrap.dedent(f"""
+        import json, sys
+        sys.stdout.write(json.dumps({ready!r}) + chr(10)); sys.stdout.flush()
+        for line in sys.stdin:
+            if json.loads(line).get("cmd") == "shutdown":
+                break
+    """), encoding="utf-8")
+    return CuroboPlanClient(python_path=sys.executable, server_script=str(script), robot_config="unused",
+                            scene_config=None)
+
+
+class TheSidecarAddsTheBodiesItIsGivenTests(unittest.TestCase):
+    def test_the_client_hands_its_bodies_to_the_sidecar_and_never_a_stale_one(self) -> None:
+        from src.robot.safety.planning._curobo_body_links import ENV_BODY_LINKS
         from src.robot.safety.planning.curobo_client import CuroboPlanClient
 
-        for said, expected in (({"descriptor": _provenance()}, _provenance()), ({}, None)):
-            ready = {"status": "ready", "joint_names": ["j0", "j1", "j2", "j3", "j4", "j5"], "dt": 0.02, **said}
-            script = Path(tempfile.mkdtemp()) / "sidecar.py"
-            script.write_text(textwrap.dedent(f"""
-                import json, sys
-                sys.stdout.write(json.dumps({ready!r}) + chr(10)); sys.stdout.flush()
-                for line in sys.stdin:
-                    if json.loads(line).get("cmd") == "shutdown":
-                        break
-            """), encoding="utf-8")
-            client = CuroboPlanClient(
-                python_path=sys.executable, server_script=str(script), robot_config="unused", scene_config=None,
-            )
-            with self.subTest(said=sorted(said)):
-                try:
-                    client.start()
-                    self.assertEqual(client.descriptor_provenance, expected)
-                finally:
-                    client.close()
+        body = _link().to_dict()
+        with mock.patch.dict(os.environ, {ENV_BODY_LINKS: json.dumps([{"link": "stale"}])}):
+            given = CuroboPlanClient(python_path=sys.executable, robot_config="willy_ur5e.yml", body_links=[body])
+            bare = CuroboPlanClient(python_path=sys.executable, robot_config="willy_ur5e.yml")
+            self.assertEqual(json.loads(given._sidecar_env()[ENV_BODY_LINKS]), [body])  # noqa: SLF001
+            self.assertNotIn(ENV_BODY_LINKS, bare._sidecar_env())  # noqa: SLF001
+
+    def test_the_sidecar_composes_them_and_reports_what_it_loaded(self) -> None:
+        """A source check, as test_curobo_client_error_vs_verdict.py does: running the sidecar needs a GPU."""
+        source = (_ROOT / "src/robot/safety/planning/curobo_planner_server.py").read_text(encoding="utf-8")
+        for name in ("os.environ.get(ENV_BODY_LINKS)", "bodies=_bodies", "body_report(_COMPOSED"):
+            with self.subTest(present=name):
+                self.assertIn(name, source)
+        start = source.index('_emit({"status": "ready"')
+        self.assertIn('"bodies": _body_rows', source[start:start + 600])
+
+    def test_the_client_keeps_the_rows_the_ready_line_reported(self) -> None:
+        row = {"link": "hand", "parent": "tool0", "spheres": 36, "slots": 0, "spheres_sha256": "e" * 64}
+        client = _started_after({"status": "ready", "joint_names": ["j0", "j1", "j2", "j3", "j4", "j5"], "dt": 0.02,
+                                 "descriptor": arm_identity().provenance, "bodies": [row]})
+        try:
+            client.start()
+            self.assertEqual(client.identity.body_names, ("hand",))
+            self.assertEqual(client.identity.bodies, (row,))
+            self.assertEqual(client.descriptor_provenance, arm_identity().provenance)
+        finally:
+            client.close()
 
 
 class EveryReadingNamesTheDescriptorTests(unittest.TestCase):
     def test_the_doctor_says_a_cell_with_no_hand_has_no_descriptor(self) -> None:
-        from unittest import mock
-
         from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR
         from src.robot.safety.planning import doctor as doc
 
@@ -286,7 +352,23 @@ class EveryReadingNamesTheDescriptorTests(unittest.TestCase):
         self.assertIs(descriptor.status, doc.ProbeStatus.MISSING)
         self.assertIn("robot.gripper.model", descriptor.detail + descriptor.remedy)
 
-    def test_the_real_cell_hand_row_names_the_descriptor(self) -> None:
+    def test_the_doctor_reads_the_arm_descriptor_and_names_the_hand_it_adds(self) -> None:
+        """A healthy arm descriptor is OK, with the hand in the detail rather than joined into a file name."""
+        from src.robot.safety.planning import doctor as doc
+
+        payload = {"curobo": "x", "torch": "y", "cuda": True, "backend": "cuda_core",
+                   "descriptor": "content/configs/robot/willy_ur5e.yml", "descriptor_present": True}
+        completed = mock.Mock(stdout=json.dumps(payload), stderr="")
+        with mock.patch.object(doc, "curobo_python_path", return_value=sys.executable), \
+             mock.patch.object(doc.subprocess, "run", return_value=completed) as run:
+            probes = doc._probe_curobo((), "willy_ur5e.yml", gripper="robotiq_2f85")  # noqa: SLF001
+        (descriptor,) = [p for p in probes if p.name.startswith("cuRobo robot descriptor")]
+        self.assertIs(descriptor.status, doc.ProbeStatus.OK)
+        self.assertIn("willy_ur5e.yml", descriptor.name)
+        self.assertIn("robotiq_2f85", descriptor.detail)
+        self.assertEqual(run.call_args.kwargs["env"]["WILLY_DOCTOR_ROBOT"], "willy_ur5e.yml")
+
+    def test_the_real_cell_hand_row_names_the_arm_descriptor_and_the_hand_link(self) -> None:
         from src.robot.execution.real_cell.preflight import run_config_preflight
 
         report = run_config_preflight(
@@ -294,12 +376,16 @@ class EveryReadingNamesTheDescriptorTests(unittest.TestCase):
             curobo_available=True,
         )
         (row,) = [check for check in report.checks if check.name == "hand"]
-        self.assertIn("ur5e_robotiq_2f85.yml", row.detail)
+        self.assertIn("willy_ur5e.yml", row.detail)
+        self.assertIn("body link", row.detail)
 
-    def test_the_build_script_writes_and_the_checker_finds_arm_and_hand(self) -> None:
-        """Source checks: both scripts run in the cuRobo environment, where this repository cannot be imported."""
-        root = Path(__file__).resolve().parents[1]
-        build = (root / "scripts/curobo/build_ur_config.py").read_text(encoding="utf-8")
-        check = (root / "scripts/curobo/check_ur_descriptors.py").read_text(encoding="utf-8")
-        self.assertIn('f"configs/robot/{MODEL}_{GRIPPER}.yml"', build)
-        self.assertIn('glob("ur*_*.yml")', check)
+    def test_the_checker_plans_an_arm_descriptor_with_a_hand_added(self) -> None:
+        """A source check: the checker runs in the cuRobo environment, where this repository cannot be imported."""
+        check = (_ROOT / "scripts/curobo/check_ur_descriptors.py").read_text(encoding="utf-8")
+        self.assertIn('glob("willy_ur*.yml")', check)
+        self.assertIn('"--hand"', check)
+        self.assertIn("compose_sidecar_config(", check)
+
+
+if __name__ == "__main__":
+    unittest.main()

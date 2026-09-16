@@ -94,6 +94,15 @@ class SelfCollisionGuard:
         # SafetyPreflight.from_safety_config refuses to build a guard that reads hand
         # geometry with no hand named.
         self._hand = hand
+        # A refused placement is not an identity. A declared frame the derivation refuses leaves
+        # the hand's placement unset, and a guard built on it would place the hand by the model's
+        # own axes instead. The cell refuses at build; this refuses a guard built directly, which
+        # the sim runners and the probes do.
+        if chosen(hand) and not chosen(hand.placement):
+            raise ValueError(
+                hand.placement_refusal
+                or f"{hand.model} has no placement on the flange, so no exact mesh guard can model where it is"
+            )
         self._min_distance_mm = float(config.min_distance_mm)
         # What the planner keeps clear, so it stops proposing configurations this guard
         # rejects. It is separate from _min_distance_mm on purpose; SelfCollisionConfig
@@ -410,8 +419,12 @@ class SelfCollisionGuard:
             hand = self._hand
             variant = hand.guard_variant if chosen(hand) else None
             coupling_mm = hand.coupling_mm if chosen(hand) else 0.0
+            # Where the hand sits on the flange, as the hand resolved it. A refused placement never
+            # reaches a guard, because the cell refuses to build first, and ``None`` is only a guard
+            # built without a hand.
+            placement = hand.placement if chosen(hand) and chosen(hand.placement) else None
             self._fcl_backend = make_backend(
-                model, self._config.mesh_dir, variant, coupling_mm=coupling_mm,
+                model, self._config.mesh_dir, variant, coupling_mm=coupling_mm, placement=placement,
             )
             self._fcl_backend_built = True
             # The config asked for the exact-mesh backend. Falling back to the coarser

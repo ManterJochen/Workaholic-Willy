@@ -1,6 +1,6 @@
-"""Measure a parallel jaw off a committed collision bundle, in the grasp frame the gripper registry uses.
+"""Measure a parallel jaw off a committed hand bundle, in the grasp frame the gripper registry uses.
 
-    python scripts/grippers/measure_jaw_from_bundle.py robotiq_hande --arm ur5e --centre-mm 135.75
+    python scripts/grippers/measure_jaw_from_bundle.py robotiq_hande --centre-mm 135.75
     python scripts/grippers/measure_jaw_from_bundle.py schunk_egu50
 
 Read-only: numpy over one ``.npz``, no Isaac, no GPU and no USD. The numbers a hand's registry file needs and no
@@ -175,21 +175,21 @@ def measure_parallel_jaw(bundle: "str | Path", *, centre_mm: float | None = None
 
 def main(argv: list[str] | None = None) -> int:
     sys.path.insert(0, str(_REPO))
-    from src.robot.safety.planning.environment import collision_mesh_bundle
+    from src.robot.safety.planning.environment import hand_mesh_bundle
 
     parser = argparse.ArgumentParser(
         prog="python scripts/grippers/measure_jaw_from_bundle.py",
-        description="Measure a parallel jaw off a committed collision bundle, in the registry's grasp frame.",
+        description="Measure a parallel jaw off a committed hand bundle, in the registry's grasp frame.",
     )
     parser.add_argument("hand", help="the hand's registry name, for example robotiq_hande")
-    parser.add_argument("--arm", default="ur5e", help="the arm whose bundle carries the hand")
     parser.add_argument("--centre-mm", type=float, default=None,
                         help="the grasp centre along the approach in the bundle frame (default: the face midpoint)")
     args = parser.parse_args(argv)
 
-    bundle = collision_mesh_bundle(args.arm, args.hand)
+    # A hand is its own bundle, the same on every arm, so no arm is asked for.
+    bundle = hand_mesh_bundle(args.hand)
     if not bundle.is_file():
-        print(f"no bundle for {args.hand} on {args.arm} at {bundle}", file=sys.stderr)
+        print(f"no bundle for {args.hand} at {bundle}", file=sys.stderr)
         return 2
     try:
         measured = measure_parallel_jaw(bundle, centre_mm=args.centre_mm)
