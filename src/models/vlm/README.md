@@ -1,122 +1,128 @@
-# VLM grounding route
+# The vision-language route for hard prompts (`src/models/vlm`)
 
-A vision-language model used as a detector, so the existing two-stage backend composes it with the
-segmenter unchanged.
+A vision-language model (Qwen3-VL) used as a detector: it reads a prompt a phrase grounder cannot
+represent, such as a negation, a comparison or German, and answers with boxes. Boxes are what the
+two-stage backend already hands to the segmenter, so this replaces the detector stage and nothing
+downstream changes. A cell switches it on in config; you rarely construct it yourself.
+
+```python
+from willy import PerceptionSpec, load_tree
+
+tree = load_tree().with_values({"models.pipeline.zero_shot.backend": "vlm"})   # or set it in object.yaml
+backend = PerceptionSpec.from_config(tree.app_config.models).build()           # Qwen3-VL grounds, SAM2 cuts
+objects = backend.perceive(image_bgr, "the broken part")
+```
+
+Built by hand, it is the same two stages:
 
 ```python
 from src.models.perception_backend import TwoStageBackend
 from src.models.vlm import Qwen3VLGrounder
 
-backend = TwoStageBackend(detector=Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct"),
-                          segmenter=sam2)
-objects = backend.perceive(image_bgr, "the broken part")
+backend = TwoStageBackend(detector=Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct"), segmenter=segmenter)
 ```
 
-That is the whole design decision. A grounding VLM produces boxes, and boxes are what
-`TwoStageBackend` already hands to the segmenter. So this is not a second kind of pipeline; it is a
-drop-in replacement for the detector stage, and nothing downstream changes.
-
-## Honesty, first
-
-**Nothing in this package has run against real weights.** The grounding quality, the VRAM cost and
-the choice between the 4B and 8B checkpoints are unmeasured. The config default therefore has to
-follow an on-box measurement rather than the other way round, and any load time or memory figure
-you find attributed to this route is an estimate, not a measurement.
-
-What is settled is the shape: the parser, the coordinate space and the unavailability contract are
-exercised without a GPU, and no module here imports torch or transformers at import time, so the
-package loads on CI and on a box with no GPU. A cell that never sends a complex prompt never pays
-for the model.
+[`routing/`](../routing/README.md) decides which prompts reach this route when both are configured, and
+[route_hard_prompts.py](../../../examples/offline/perception/route_hard_prompts.py) shows the switch.
 
 ## Why the route exists
 
-The phrase grounder does not fail on a prompt it cannot represent. It returns a confident,
-high-scoring box for the wrong object, and nothing downstream (not the gate, not the record, not
-the operator) can tell that apart from a correct answer. Negation, comparatives, relative clauses,
-quantifiers and non-English wording are exactly that class of prompt.
+A phrase grounder does not fail on a prompt it cannot represent. It returns a confident box on the wrong
+object, and nothing downstream (not the gate, not the record, not the operator) can tell that from a
+right answer. Measured in simulation with
+[`run_attribute_pick`](../../willy_sim/run_attribute_pick.py): four objects of one size, a red and a blue
+cube and a red and a blue cylinder, so only the conjunction names one.
 
-So the route exists to answer those prompts, and [`routing/`](../routing/README.md) decides which
-prompts reach it, from the prompt alone.
+| Prompt | Route | Intended object lifted | Wrong object lifted |
+| --- | --- | --- | --- |
+| `"the red cube"` | phrase grounder | 0 of 10 | 10 of 10, each reported a success |
+| `"the red cube"` | VLM | 10 of 10 | 0 |
+| `"der rote Wuerfel"` | phrase grounder | 0 of 10 | 0: no target, no motion |
+| `"der rote Wuerfel"` | VLM | 10 of 10 | 0 |
 
-## What is actually hard here
+On one rendered frame of that scene, eight prompts each naming one object in English or German, the VLM
+grounded 5 of 8 and the phrase grounder 2 of 8. Every VLM miss put a cylinder prompt on the cube of the
+same colour: the colour bound, the shape did not, on a frame where the circles and squares are plainly
+distinct ([the frame](../../../docs/assets/attribute_scene.png)). The phrase grounder did get
+`"the red cylinder"` right where the VLM did not, so neither route is strictly better.
 
-Not the model call. The parsing.
+## What it refuses
 
-A VLM does not return a tensor, it returns text that is supposed to contain JSON, and every part of
-that phrase carries weight: it is text, so it can arrive as prose, a markdown fence or an apology;
-it is only supposed to be JSON, so it can be malformed; and the JSON can be well formed while
-describing a nonsensical box.
-
-[`parsing.py`](parsing.py) is therefore written from one angle: every box it accepts becomes a
-grasp pose. So it drops rather than repairs wherever repair would mean guessing.
-
-| Case | Behaviour | Why |
-| --- | --- | --- |
-| inverted corners (`x1 < x0`) | repaired by swapping | exactly one possible intent, no ambiguity |
-| out-of-frame coordinates | clamped, then re-checked | a box entirely off-frame collapses and drops |
-| a value in the wrong space, such as `0.1` under `absolute` | dropped, not rescaled | rescaling is a guess, and a wrong guess sends the gripper to a corner of the scene; dropping yields an honest empty result |
-| prose-only answer, malformed entry, degenerate box | dropped | one bad entry never discards the scene's good objects |
-
-**The coordinate space is declared, never inferred.** `CoordinateSpace.GRID_1000`, the constructor
-default, means the model emits a 0 to 1000 normalised grid, which is Qwen3-VL's convention;
-`CoordinateSpace.ABSOLUTE` means pixels of the image as submitted. Getting it wrong is silent: on a
-1280x720 frame, grid values are in range, ordered and sane-sized, so they pass every validation and
-the gripper simply goes to the wrong place. A rule like "if a value exceeds the image width, assume
-a grid" would misread every small object in a large frame, which is why there is no such rule.
-
-`VLM_NOMINAL_SCORE` is `1.0` and is not a confidence: a grounding VLM emits none. It means "the
-model asserted this". It is 1.0 because downstream filters compare against a detector's box
-threshold, and dropping an asserted box on a threshold meant for GroundingDINO's logits would
-discard the route's entire output. The model's output order is preserved as its only ranking.
-
-The prompt template's most safety-relevant line is `"If no object matches, return an empty array
-[]. Do not guess."` Instruct-tuned models are agreeable by default and will invent a plausible box
-rather than return nothing.
-
-## When the model is not there
-
-`models.pipeline.zero_shot.vlm.on_unavailable` selects the behaviour, implemented in
-[`availability.py`](availability.py):
+`models.pipeline.zero_shot.vlm.on_unavailable` decides what happens when the model cannot load:
 
 | Mode | Behaviour |
 | --- | --- |
-| `refuse` (the default) | raises `VlmUnavailableError`, carrying the underlying cause so an operator sees whether the weights are missing, a dependency is absent, or the GPU is out of VRAM. "No objects found" and "I could not look" are different answers, and the pick loop must not treat the second as the first. |
-| `degrade` | falls back to the phrase grounder, and warns on every use rather than once, so a run that has fallen back never looks normal again. |
+| `refuse`, the default | raises `VlmUnavailableError` with the cause: weights missing, a dependency absent, or no VRAM |
+| `degrade` | falls back to the phrase grounder and warns on every use, so a degraded run never looks normal |
 
-Refuse is the default because the prompts that reach this route are exactly the ones the phrase
-grounder gets confidently wrong. A quiet fallback does not mean slightly worse perception; it means
-grasping something the operator did not ask for.
+"No objects found" and "I could not look" are different answers, and a pick must not read the second as
+the first. Refuse is the default because the prompts that reach this route are the ones the phrase
+grounder gets confidently wrong: a quiet fallback means grasping something the operator did not ask for.
+Only those three causes degrade; any other exception is a bug and surfaces. `degrade` without a
+`models.objectdetector` block is refused when the stack is built, since there is nothing to fall back to.
 
-Only the three shapes of a missing or unloadable model degrade (no dependency, no weights on disk,
-no VRAM). Any other exception is a real bug and is left to surface. `degrade` without a
-`models.objectdetector` block is refused at build time rather than mid-pick, since there would be
-nothing to fall back to.
+## The parsing is the hard part
 
-## Contents
+A VLM returns text that is supposed to contain JSON: it can arrive as prose, a markdown fence or an
+apology, be malformed, or be well formed and describe a nonsensical box. Every box
+[`parsing.py`](parsing.py) accepts becomes a grasp pose, so it drops rather than repairs wherever a
+repair would be a guess.
 
-| File | Role |
-| --- | --- |
-| [`qwen.py`](qwen.py) | `Qwen3VLGrounder`: `detect_all(bgr, prompt) -> [Detection]`, the shape GroundingDINO has. Weights load inside the first call unless `preload` is set. |
-| [`parsing.py`](parsing.py) | `parse_grounding_response`, `extract_json_payload`, `CoordinateSpace`, `VLM_NOMINAL_SCORE`. The half of this route that runs without a GPU. |
-| [`availability.py`](availability.py) | `GuardedVlmBackend` and `VlmUnavailableError`: the `on_unavailable` contract. The fallback arrives as a factory, so a healthy cell never builds it. |
+| Case | Behaviour | Why |
+| --- | --- | --- |
+| inverted corners (`x1 < x0`) | swapped | exactly one possible intent |
+| coordinates outside the frame | clamped, then re-checked | a box wholly off the frame collapses and drops |
+| a value in the wrong space, such as `0.1` under `absolute` | dropped, not rescaled | a rescale is a guess that sends the gripper to a corner |
+| prose only, a malformed entry, a degenerate box | dropped | one bad entry never discards the good ones |
+
+**The coordinate space is declared, never inferred.** `CoordinateSpace.GRID_1000`, the default, is the
+0 to 1000 grid Qwen3-VL emits; `CoordinateSpace.ABSOLUTE` is pixels of the image as sent. A wrong space
+is silent: on a 1280x720 frame, grid values are in range and sanely sized, pass every check, and send
+the gripper to the wrong place. So there is no rule such as "a value past the image width means a grid".
+
+`VLM_NOMINAL_SCORE` is `1.0` and is not a confidence, because a grounding VLM emits none: it means the
+model asserted the box, and it keeps a detector's box threshold from discarding the route's output. The
+model's own order is kept as its only ranking. The prompt tells the model: "If no object matches,
+return an empty array []. Do not guess."
 
 ## Traps
 
-**The checkpoint has to fit beside the segmenter.** VRAM is the constraint on this block: the model
-shares a card with the mask model and, in simulation, with the renderer.
+**The checkpoint shares the card.** The model sits beside the segmenter and, in simulation, the renderer.
+The 4B checkpoint in bf16 held 8.93 GB of VRAM on an RTX 5080; the 8B checkpoint's bf16 weights,
+17.5 GB, do not fit that card, so the two were not compared there, and the FP8 variants were not measured.
 
-**The schema default and the shipped value differ.** The schema names the FP8 variant;
-[`config/models/object.yaml`](../../../config/models/object.yaml) sets the bf16 checkpoint, which
-is the one the coordinate space in `qwen.py` is written for.
+**The schema default and the shipped value differ.** The schema names the 4B FP8 variant;
+[`config/models/object.yaml`](../../../config/models/object.yaml) ships the 4B bf16 checkpoint, which
+the coordinate space in `qwen.py` is written for. FP8 needs `compressed-tensors`, which `requirements.txt`
+does not install.
 
-**`preload: false` is the default**, so the model loads on the first prompt that reaches this
-route, a one-off pause mid-session. `preload: true` loads it at cell build instead, except under
-`router.enabled`, where the route stays lazy by construction.
+**`preload: false` is the default**, so the model loads on the first prompt that reaches this route, a
+one-off pause mid-session. `preload: true` loads it when the cell is built, except under
+`router.enabled`, where the route stays lazy.
 
-## See also
+## Status
 
-- [`src/models/routing/`](../routing/README.md), which decides which route a prompt needs, before
-  any weights load
-- [`src/models/`](../README.md), the perception model layer and its factory
-- [`config/models/object.yaml`](../../../config/models/object.yaml), the `models.pipeline` block
-  that selects this route
+| Capability | Evidence |
+| --- | --- |
+| The route picking the intended object, and the grounding table above | measured in simulation |
+| The coordinate space, against real weights on a synthetic scene (IoU about 0.87) | measured in simulation (`tests/test_vlm_inference.py`) |
+| The route on a real cell's camera | never touched hardware |
+
+The parser, the coordinate space and the unavailability contract are also tested without a GPU, and no
+module here imports torch or transformers at import time, so a cell that never sends a hard prompt never
+pays for the model. `tests/test_vlm_inference.py` needs CUDA and the weights, and skips without them.
+
+## Files
+
+| File | Holds |
+| --- | --- |
+| [`qwen.py`](qwen.py) | `Qwen3VLGrounder`: `detect_all(bgr, prompt)`, the shape GroundingDINO has; loads on first call unless `preload` |
+| [`parsing.py`](parsing.py) | `parse_grounding_response`, `CoordinateSpace`, `VLM_NOMINAL_SCORE`; runs without a GPU |
+| [`availability.py`](availability.py) | `GuardedVlmBackend` and `VlmUnavailableError`; the fallback is built only when needed |
+
+## Details
+
+- [`../routing/`](../routing/README.md) decides which route a prompt needs, before any weights load
+- [`../README.md`](../README.md) is the perception layer and its factory
+- Weights: `python scripts/model_weights/fetch.py vlm-4b`
+- Tests: `tests/test_vlm_grounding.py`, `tests/test_vlm_inference.py`

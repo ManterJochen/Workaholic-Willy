@@ -1,125 +1,148 @@
 # Grasp motion (`src.robot.grasping.motion`)
 
-How the arm and the gripper realise a chosen grasp: the approach, close and retreat choreography,
-the transform that places the camera, and the swept-volume check that can refuse the path. Which
-grasp to attempt is decided one layer up, in [`loop/`](../loop/README.md).
+How the arm and the hand carry out a chosen grasp: the approach, the close and the lift, the transform
+that places the camera, and the swept-volume check that can refuse the path. Which grasp to attempt is
+decided one layer up, in [`loop/`](../loop/README.md).
 
-## What it guarantees
+The part you tune is `GraspMotion`, which `willy` exports. The pick service builds the one
+`GraspExecutionPolicy` it drives from it, on its own arm and hand, with every guard in place:
 
-Vendor-neutral. It imports no driver and talks only to the `RobotArm` and `Gripper` Protocols in
-[`robot/core`](../../core/README.md). TCP positions are `Pose` in millimetres with XYZW rotations and
-a tagged frame; gripper widths and motion offsets are millimetres; forces are newtons.
+```python
+from willy import Cell, GraspMotion, load_tree
 
-It fails closed on an unresolved frame. A pose that is valid as a number and wrong as a target
-commands no motion.
+# Start 60 mm above the grasp, close 5 mm below the measured width, lift 100 mm after the close.
+# A field left out keeps the service's own; a negative standoff or a close speed above 1 raises here.
+motion = GraspMotion(standoff_mm=60.0, close_squeeze_mm=5.0, retreat_mm=100.0)
+cell = Cell.from_tree(load_tree(), motion=motion)      # the cell WILLY_PROFILE names
+print(motion.to_dict())
+```
 
-The package `__init__` re-exports nothing; import from the modules, or from the `src.robot.grasping`
-package root, which re-exports the public names.
+[`examples/real_robot/11_your_own_pick_motion.py`](../../../../examples/real_robot/11_your_own_pick_motion.py)
+runs a pick with it. Everything else here is internal: the pick service and the pick loop call it.
 
-## The public surface
+## The nouns
 
-| Module | Owns |
-| --- | --- |
-| `execution_policy.py` | `GraspExecutionPolicy`, `PolicyOutcome`, `PolicyReport`: the choreography and the close verification |
-| `grasp_motion.py` | `GraspMotion`: what a caller may choose about the approach, the close and the lift, and nothing that keeps a pick safe. `build_execution_policy` builds the one `GraspExecutionPolicy` from it with the service's arm and hand and every guard (base frame, dwell gate, jaws opened before the approach); `foreign_policy_refusal` refuses a hand-built policy on another arm or hand. `GraspMotion` is also exported from `src.robot.execution` |
-| `frame_resolver.py` | The `FrameResolver` Protocol and its three implementations, plus `FrameResolutionFailure` and the typed refusal reasons |
-| `trajectory_safety.py` | `ApproachPathPolicy` and the sweep functions: swept-volume validation of the moving gripper along the path |
+| Noun | Built by | Verb | Returns |
+| --- | --- | --- | --- |
+| `GraspMotion` | `GraspMotion(...)`, every field optional | `to_dict()` | the fields you chose |
+| `GraspExecutionPolicy` | `build_execution_policy(motion, arm=..., ...)` in the pick service | `execute(grasp)` | `PolicyReport` |
+| `FrameResolver` | one of the three resolvers below | `camera_to_base_for_frame(frame, arm=...)` | a CAMERA to BASE `Transform` |
+| `ApproachPathPolicy` | `ApproachPathPolicy(standoff_mm=80.0, ...)` | `validate_approach_and_retreat(grasp, policy=...)` | two `ApproachPathReport`s |
 
-### The choreography, and its five endings
+Nothing is re-exported from the package `__init__`; import from the modules, or from `src.robot.grasping`.
+Positions are `Pose` in millimetres with XYZW rotations and a tagged frame, widths are millimetres and
+forces newtons. The package talks only to the `RobotArm` and `Gripper` Protocols in
+[`robot/core`](../../core/README.md) and imports no driver.
 
-Pre-grasp standoff along the negated approach, linear descent, `gripper.set_width_mm`, then the close
-verification, then the lift. The policy first reads what the arm keeps of a straight line
-(`KeepsLines`). An arm that says it keeps one gets a planned move to the standoff, one line to the
-grasp and line lifts; an arm that keeps none is refused before the jaws open, as `MOTION_FAILED` with
-status `unsupported` and the arm's reason; an arm that does not say drives the interpolated
-waypoints. `PolicyReport.line_motion` carries the reading.
+## The choreography, and how it ends
+
+The policy first reads what the arm keeps of a straight line (`KeepsLines`). An arm that keeps one gets a
+planned move to the standoff, one line down to the grasp, and line lifts. An arm that keeps none is
+refused before the jaws open. An arm that does not say drives the interpolated waypoints.
+`PolicyReport.line_motion` carries the reading. The jaws open before the approach, close at the grasp,
+and the close is verified before the lift.
 
 | `PolicyOutcome` | Means | Moved |
 | --- | --- | --- |
-| `EXECUTED` | approach, close and retreat completed; the object is held or trusted to be | yes |
-| `OBJECT_NOT_DETECTED` | the close succeeded mechanically and the gripper reports an empty jaw | yes |
-| `MOTION_FAILED` | `RobotArm.move_to` raised; the exception is carried in the report. Also an arm that keeps no straight line, refused before anything moves | partly |
-| `CAMERA_FRAME_REJECTED` | a camera-frame grasp with `require_base_frame_grasp` on and no resolver wired | no |
-| `APPROACH_PATH_BLOCKED` | every ranked candidate's approach and retreat sweep hit the scene cloud | no |
+| `EXECUTED` | approach, close and lift completed; the part is held or trusted to be | yes |
+| `OBJECT_NOT_DETECTED` | the close finished and the hand reports an empty jaw | yes |
+| `MOTION_FAILED` | a move raised or was refused; the report carries the status and the message | partly |
+| `CAMERA_FRAME_REJECTED` | a camera-frame grasp reached a policy that requires BASE | no |
+| `APPROACH_PATH_BLOCKED` | every ranked candidate's approach or lift sweep hit the scene cloud | no |
 
-The close verification is capability-aware. The policy calls
-`ObjectDetectingGripper.is_object_detected()` if and only if the configured gripper advertises that
-capability; a gripper without it is trusted after the close and the outcome is `EXECUTED`. That is an
-honest default rather than a lax one, because inventing a signal a gripper cannot produce would
-report a held object on every empty close.
+## Did the hand really hold it
 
-Advertising the capability is not the same as having a sensor, and that is the second half of the
-same honesty. Five shipped grippers implement it. The Robotiq driver reads gOBJ and the OnRobot
-driver reads the grip-detected bit out of the status word, both real measurements. The digital-I/O jaw prefers a part-present input,
-falls back to inferring from a reed pair, and with neither reports the commanded state. The vacuum
-driver reads the vacuum switch when `vacuum_ok_input_pin` names one, and otherwise reports the
-commanded state as well. A cell that wires no feedback pin still gets a `True` after every close, so
-check the pin before trusting `OBJECT_NOT_DETECTED` to mean anything. `hold_evidence()`
-(`ReportsHoldEvidence`) says which answers are measurements, and the robot's hand verbs read that
-instead.
+The policy asks `is_object_detected()` only of a hand that implements `ObjectDetectingGripper`. A hand
+without it is trusted after the close and the outcome is `EXECUTED`: inventing a signal the hand cannot
+produce would report a held part on every empty close.
 
-### The frame resolver
+Implementing it is not the same as having a sensor. The Robotiq driver reads the object status (gOBJ)
+and the OnRobot driver the grip-detected bit, both measurements. The digital-I/O jaw reads a
+part-present input where one is wired, infers from a reed pair otherwise, and with neither reports the
+command. The vacuum driver reads the switch named by `vacuum_ok_input_pin`, and without one reports the
+command too. The simulated suction cup reports whether Isaac bonded a body. So a cell with no feedback
+pin sees a hold after every close. `hold_evidence()` (`ReportsHoldEvidence`) says which answers are
+measurements, and the robot's hand verbs read that instead.
 
-A perception frame carries intrinsics but not the camera-to-base transform. Without a resolver a
-candidate stays in the camera frame, and a camera-frame pose driven at the arm is a valid number
-pointing at the wrong place. The `FrameResolver` Protocol closes that: the orchestrator asks a
-resolver for the current CAMERA to BASE transform at the moment a frame is captured, forwards it into
-the calculator, and the policy refuses with `CAMERA_FRAME_REJECTED` when no resolver is wired and a
-candidate is still camera-frame.
+## The frame resolver
 
-| Implementation | For | Behaviour |
+A perception frame carries the lens but not where the camera is. Without a resolver a candidate stays in
+the camera frame, and a camera-frame pose driven at the arm is a valid number pointing at the wrong place.
+
+| Resolver | For | Behaviour |
 | --- | --- | --- |
-| `StaticCameraToBaseResolver` | eye-to-hand | one transform, loaded from the calibration artifact |
-| `EyeInHandFrameResolver` | eye-in-hand | recomposed from the live TCP every frame |
-| `IdentityFrameResolver` | perception already in BASE | explicit, so no transform needed is a stated choice rather than an omission |
+| `StaticCameraToBaseResolver` | a fixed camera | one CAMERA to BASE transform, from the rig's calibration |
+| `EyeInHandFrameResolver` | a wrist camera | composed from the tool pose every frame |
+| `IdentityFrameResolver` | perception already in BASE | a stated choice rather than an omission |
 
-`require_base_frame_grasp` defaults to `False` on the policy. The composition root switches it on
-exactly when a resolver is wired, so a cell either transforms its grasps or refuses to move them.
+The pick service sets `require_base_frame_grasp` exactly when a resolver is wired, so a cell either
+transforms its grasps or refuses to move them.
 
-### The swept-path validator
+## The swept-path validator
 
-`ApproachPathPolicy` generates a deterministic series of intermediate poses, pre-grasp to grasp and
-grasp to retreat, reuses the shared `GripperGeometryStrategy` and `colliding_point_indices` at each
-sample so the moving gripper volume is tested against the scene points, and returns a frozen
-`ApproachPathReport`.
+`ApproachPathPolicy` samples poses from the standoff to the grasp and from the grasp up the lift, and at
+each sample tests the gripper envelope from [`collision/`](../collision/README.md) against the scene
+points. It never commands motion; the pick loop takes the first candidate whose sweep is clear.
 
 | `ApproachPathOutcome` | Means |
 | --- | --- |
 | `CLEAR` | every sampled pose fits |
 | `BLOCKED` | at least one does not, and the report names which step |
 | `NO_OBSTACLES` | there was no scene cloud to check against |
-| `SKIPPED` | the check was not configured |
+| `SKIPPED` | the leg was switched off (zero samples) |
 
-`NO_OBSTACLES` and `SKIPPED` are separate values on purpose. Nothing was in the way and nobody looked
-are different answers, and collapsing them would make an unconfigured check read as a passing one.
+`NO_OBSTACLES` and `SKIPPED` are separate on purpose: "nothing was in the way" and "nobody looked" are
+different answers.
 
-This is a validator, not a planner. It never commands motion; it returns a report and the caller
-decides whether to refuse the pick or fall back to another candidate.
+## What it refuses
+
+| Refusal | When | What to do |
+| --- | --- | --- |
+| `TypeError` or `ValueError` from `GraspMotion` | a negative distance, `pre_open_width_mm` of `None` or 0, `close_speed` above 1 | fix the field or leave it unset |
+| `ValueError` at the build | a pre-open wider than the hand opens, or any pre-open on a service with no hand | leave `pre_open_width_mm` unset |
+| `ValueError` at the build | a `policy=` built around another arm or hand | pass `motion=GraspMotion(...)` instead |
+| `TypeError` at the build | both `motion=` and `policy=` | pass one |
+| `MOTION_FAILED`, status `unsupported` | the arm keeps no straight line for the final descent | use an arm driver that keeps lines |
+| `CAMERA_FRAME_REJECTED` | a grasp still in the camera frame on a cell with a resolver | check the rig's declared calibration |
+| `CameraWorldUnavailable`, raised | a camera could not vouch for the cell | the campaign stops; fix the camera first |
 
 ## Traps
 
-The swept validator is off by default and mode-scoped. `robot.grasping.approach_validation` ships
-`enabled: false`, and its `apply_modes` lists only the dense modes, so switching it on in a cell
-running another mode leaves it inert. Defaults are `standoff_mm: 80.0`, `retreat_mm: 100.0`,
-6 approach samples and 4 retreat samples; zero samples on a leg disables that leg and reports
-`SKIPPED`.
+- The swept validator ships off and mode-scoped: `robot.grasping.approach_validation` has
+  `enabled: false` and `apply_modes` of only the dense modes, so switching it on in another mode is
+  inert. Its defaults are an 80 mm standoff, a 100 mm lift, 6 approach and 4 lift samples.
+- The policy lifts along +Z of the grasp's own frame, and the validator's `retreat_direction` defaults
+  to +Z too. Both are a vertical lift only for a BASE grasp.
+- `approach_clearance_mm` in [`scoring/`](../scoring/README.md) looks at one waypoint and is telemetry,
+  not this check.
+- The arm's own path is not checked here. Whole-robot collision belongs to the planner and the
+  [safety layer](../../safety/README.md); this package only checks the end-effector.
 
-Retreat is along the policy's `retreat_direction`, world `+Z` by default. That is a true vertical
-lift only for a base-frame grasp.
+## Status
 
-A single scalar clearance is not this check. `approach_clearance_mm` lives in
-[`scoring/occlusion.py`](../scoring/README.md) and inspects one waypoint, ignoring the standoff, the
-interpolation and the retreat. It is telemetry, not a gate.
+| Capability | Evidence |
+| --- | --- |
+| The choreography, both camera resolvers, the frame guard | measured in simulation: `run_m1_pick`, `run_m2_pick` and `run_eih_pick` drive this policy |
+| The swept-path validator | measured in simulation: the dense Isaac scene, `run_dense_pick`, switches it on per flag |
+| Close verification on a physical hand | never touched hardware: the drivers read their signals, no physical grasp was judged |
 
-The arm's own path is not checked here. Whole-robot self-collision and world-collision belong to the
-planner and to the [safety layer](../../safety/README.md); this package only ever checks the
-end-effector.
+## Files
 
-## See also
+| File | Holds |
+| --- | --- |
+| `grasp_motion.py` | `GraspMotion`, `build_execution_policy`, `foreign_policy_refusal` |
+| `execution_policy.py` | `GraspExecutionPolicy`, `PolicyOutcome`, `PolicyReport` |
+| `frame_resolver.py` | `FrameResolver`, the three resolvers, `FrameResolutionFailure` and `resolve_or_none` |
+| `trajectory_safety.py` | `ApproachPathPolicy`, `ApproachPathOutcome`, `ApproachPathReport` and the sweep functions |
 
-- [`../README.md`](../README.md) for the tier this package executes for
-- [`../loop/README.md`](../loop/README.md) for the orchestrator that decides which grasp reaches this policy
-- [`../planning/README.md`](../planning/README.md) for where the pre-grasp and retreat poses come from
-- [`../collision/README.md`](../collision/README.md) for the gripper envelope reused at each sample
-- [`../../safety/README.md`](../../safety/README.md) for the guards every commanded motion still passes through
-- [`../../core/README.md`](../../core/README.md) for the `RobotArm`, `Gripper` and `ObjectDetectingGripper` Protocols
+## Details
+
+- [`loop/`](../loop/README.md) decides which grasp reaches this policy.
+- [`planning/`](../planning/README.md) builds the standoff and lift poses, and
+  [`collision/`](../collision/README.md) the envelope each sample reuses.
+- [`robot/core`](../../core/README.md) holds `RobotArm`, `Gripper` and `ObjectDetectingGripper`.
+- [Guide 05, the pick loop](../../../../docs/guide/05-pick-loop.md), and
+  [the grasping config reference](../../../../docs/grasping-config-reference.md) for `approach_validation`.
+- Tests: `tests/test_grasp_motion.py`, `tests/test_grasp_execution_policy.py`,
+  `tests/test_frame_resolver.py`, `tests/test_grasp_trajectory_safety.py`,
+  `tests/test_what_the_hand_verbs_read.py`.

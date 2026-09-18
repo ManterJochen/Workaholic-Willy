@@ -1,183 +1,137 @@
-# Camera
+# Cameras (`src/camera`)
 
-Open camera devices, capture frames, and give every rig one owner, for the stereo and RGB-D
-pipeline.
-
-Three public entry points: **`Camera`**, the owner of one rig's device, which is its only opener,
-serialises its grabs and stamps its frames; **`FrameProvider`**, a rig-id-keyed catalogue that opens
-each of its rigs through a `Camera` and grabs raw or rectified frames; and
-**`StereoCapturePipeline`**, which resolves the configured rigs and hands back a ready
-`FrameProvider`.
-
-## What this package guarantees
-
-- **Frames are image arrays.** No robotics coordinates. This package does not own calibration math,
-  hand-eye solving, extrinsics persistence, SE(3) geometry, robot drivers, model inference or UI
-  workflows; those live in [`src/geometry/`](../geometry/README.md) and
-  [`src/calibration/`](../calibration/README.md).
-- **One place constructs a device.** No module outside
-  [`orchestration/camera.py`](orchestration/camera.py) builds a streamer. Every consumer takes its
-  rig from a `Camera` owner, directly or through a `FrameProvider`, so rig identity, open and release
-  bookkeeping and intrinsics all have one owner.
-- **One owner per device.** A second owner of a device that is already open in this process is
-  refused with `CameraBusy`, naming the holder, before the device is touched.
-- **A consumer can hold one rig.** `open_rig` / `release_rig`, and `rig(rig_id)` for a handle,
-  exist because a cell holds one camera and must give back exactly the device it was handed, never
-  acquiring or releasing one it was not.
-- **Frame validation is fail closed.** `StereoFrame` requires non-empty numeric `left` and `right`
-  with matching height and width; `RGBDFrame` requires a non-empty numeric colour image. Empty
-  depth is allowed only as the documented fallback when an OpenCV backend exposes colour but not
-  depth. `captured_at_s` defaults to None.
-
-## Contents
-
-| Path | Role |
-| --- | --- |
-| [`orchestration/camera.py`](orchestration/camera.py) | `Camera`: one owner per rig, the process registry that refuses a second opener (`CameraBusy`), the rig selection a cell uses (`select_rig`), and the one place a device streamer is constructed (`create_streamer`). A `with` block opens an owner and releases it. |
-| [`orchestration/frame_provider.py`](orchestration/frame_provider.py) | `FrameProvider`, the rig-keyed catalogue over the owners, plus `RigHandle`. |
-| [`pipeline/stereo_capture.py`](pipeline/stereo_capture.py) | `StereoCapturePipeline`: resolves rigs, ensures stereo calibration image sets exist, builds `StereoCam3D`, returns a `FrameProvider`. |
-| [`setup/`](setup/README.md) | The streamers underneath the owners, the frame dataclasses, and the capture-quality configuration. |
-
-## Usage
-
-### `Camera`: one rig, one owner
+Opens the cameras of a cell and hands out their frames. `Camera` owns one rig's device: it is the only
+code that opens it, it runs every grab under the rig's lock, and it stamps each frame with the time it
+was taken. Where a camera sits relative to the robot is decided in
+[`src/calibration/`](../calibration/README.md), not here.
 
 ```python
-from src.camera import Camera, CameraRefused, RigNotCalibrated
+from willy import Camera, RGBDFrame, load_tree
 
-with Camera.from_config(app_cfg.camera) as camera:   # opened here, released however the block ends
-    frame = camera.grab()                           # RGBDFrame, stamped at the grab
-    K = camera.get_intrinsics()                     # None where the backend reports no pinhole matrix
-    calibration = camera.calibration()              # RigNotCalibrated names the key when the rig declares none
+with Camera.from_tree(load_tree()) as camera:   # the rig camera.cameras.primary_rig_id names
+    print(camera)                               # its rig id, its device, and whether it is open
+    frame = camera.grab()                       # frame.captured_at_s is the host time of the grab
+    lens = camera.get_intrinsics()              # the device's 3x3 matrix, or None where it reports none
+    print(camera.calibration() if camera.calibrated else f"{camera.rig_id}: not calibrated")
+
+assert isinstance(frame, RGBDFrame)             # from_tree refuses a rig with no depth
+print(frame.color.shape, frame.depth.shape)     # BGR colour; depth in millimetres, 0 where nothing was measured
 ```
 
-The same owner without a block, for a holder that outlives one:
+The `with` block opens the device and gives it back however the block ends. The same program at a cell
+is [`examples/real_robot/06_open_a_camera.py`](../../examples/real_robot/06_open_a_camera.py). From a
+shell, see which rig a cell opens, then prove that rig on its own:
+
+```bash
+python -m src.config explain camera.cameras.primary_rig_id
+python -m src.robot.perception --rig <rig id>
+```
+
+The first exits 0 once it has answered and 1 when the tree does not load. The second needs the camera
+and the model weights: it grabs one frame, runs the detector and prints the depth holes inside every
+mask ([`src/robot/perception/`](../robot/perception/README.md)).
+
+## The nouns
+
+| Noun | Built by | Verb | Returns |
+|---|---|---|---|
+| `Camera` | `from_tree(tree)`, `from_config(camera_section)`, `from_rig(rig)`; `rig_id=` names another rig | `grab()`, in a `with` block or between `open()` and `release()` | an `RGBDFrame` (`color`, `depth`) or a `StereoFrame` (`left`, `right`) |
+| `RigHandle` | `camera.handle()`, `provider.rig(rig_id)` | `grab()`, `get_intrinsics()`, `release()` | the owner's frames; `release()` gives back that one rig |
+| `FrameProvider` | `FrameProvider(rigs)` | `grab(rig_id)`, `grab_rectified(rig_id)` | frames keyed by rig id, over stereo and RGB-D rigs |
+| `StereoCapturePipeline` | `StereoCapturePipeline(cameras, stereo_calibration, stereomatcher)` | `run()` | `(FrameProvider, StereoCam3D)`; the second is `None` when every rig is RGB-D |
+
+`Camera` also answers `get_distortion()`, and `calibration()` loads the rig's declared calibration,
+`camera.cameras.rigs[<id>].extrinsics`, through the one loader in
+[`rig_calibration.py`](../calibration/rig_calibration.py). `Camera`, `CameraRefused`, `RGBDFrame` and
+`RigNotCalibrated` come from `willy`; the other names on this page import from `src.camera`.
+
+### Many rigs, one catalogue
+
+`FrameProvider` knows every rig it is given and opens only what it is asked to: building one touches no
+device. Each rig it opens is held by a `Camera` owner, so a catalogue and an owner elsewhere in the
+process never both hold one device.
 
 ```python
-camera = Camera.from_config(app_cfg.camera)   # the primary rig; rig_id="wrist" names another
-camera.open()                                  # CameraBusy if another owner in this process holds the device
-handle = camera.handle()                       # a RigHandle, shaped like a streamer
-frame = handle.grab()                          # RGBDFrame; frame.captured_at_s is the host time of the grab
-handle.release()                               # gives the device back; never raises
+from willy import load_tree
+from src.camera import FrameProvider
+
+provider = FrameProvider(list(load_tree().app_config.camera.cameras.rigs))
+provider.open_rig("overhead")        # one rig; open() or a with block opens every rig
+handle = provider.rig("overhead")    # a RigHandle, shaped like a device streamer
+frame = handle.grab()
+handle.release()                     # gives back this rig; every other rig keeps streaming
 ```
 
-`src.camera` exports `Camera` and its refusals: `CameraRefused`, `CameraBusy`, `CameraNotOpen`, and
-the two raises of `camera.calibration()`, `RigNotCalibrated` and `RigCalibrationError` (defined in
-[`calibration/rig_calibration.py`](../calibration/rig_calibration.py)). A `with` block releases the
-owner it holds, also one that was open before the block began.
+`StereoCapturePipeline(...).run()` builds the same catalogue from the camera section, together with
+the `StereoCam3D` that rectifies its stereo rigs ([the stereo runtime](../calibration/README.md#the-stereo-runtime)).
+When a stereo rig lacks calibration images it records them first, interactively, and blocks until the
+operator ends that session. RGB-D rigs pass through to the catalogue and are never stereo calibrated.
 
-`Camera.from_config(camera_section, *, rig_id=UNSET, open_disabled=UNSET)` refuses with
-`CameraRefused`, whose `reason` is `unknown`, `disabled` or `not_rgbd`: a rig the section does not
-configure, a rig with `enabled: false`, and a rig with no depth channel. Only the bench exerciser
-passes `open_disabled=True`, and it prints that it did. The cell (`build_real_components`), the
-calibration command and the perception exerciser open their cameras this way, so the three say one
-thing about a rig.
+## Choosing the RGB-D driver
 
-**Identity is the device, not the rig name.** A RealSense rig is its serial, and a RealSense with no
-serial collides with every open RealSense, because the SDK then binds whichever camera it offers
-first. An OpenCV RGB-D rig and a single-device stereo rig are their `device_index`. A webcam pair is
-both of its ids, and an unset id collides with every open video device. A second owner of an open
-device is refused before the device is touched, naming the holder. The registry holds live owners
-only: an owner that no longer exists holds no claim, and releasing is still what gives the device
-itself back.
+Each RGB-D rig names its driver in `rgbd_backend`:
 
-**Every grab is serialised and stamped.** `grab`, `get_intrinsics` and `get_distortion` through any
-handle of an owner run under that rig's lock, and a frame from the owner carries `captured_at_s`,
-the host `time.time()` read just before the device grab. A streamer used directly returns
-`captured_at_s=None`.
+| `rgbd_backend` | Driver | Depth |
+|---|---|---|
+| `opencv` (the default) | `OpenCvRGBDStreamer`: `cv2.VideoCapture` over OpenNI, no vendor SDK | empty on a device that exposes colour only |
+| `realsense` | `RealSenseRGBDStreamer`, through `pyrealsense2` | in millimetres, aligned to colour by default, through the SDK's filter chain |
 
-### `FrameProvider`: the catalogue
+A RealSense on the `opencv` driver gives colour and an empty depth channel, so set
+`rgbd_backend: realsense` for one. `pyrealsense2` is in `requirements.txt` and is imported only when a
+RealSense rig opens, so the library runs on a machine without it.
 
-```python
-from src.camera import FrameProvider, StereoCapturePipeline
+## What it refuses
 
-# Build the provider straight from config: resolves rigs, ensures image sets, builds StereoCam3D.
-provider, stereo = StereoCapturePipeline(camera_config, calibration, stereo_matcher).run()
+| Refusal | When | What to do |
+|---|---|---|
+| `CameraRefused`, `reason="unknown"` | the section has no rig with that id | name a rig from `camera.cameras.rigs` |
+| `CameraRefused`, `reason="disabled"` | the rig says `enabled: false` | switch it on, or name a rig that is on |
+| `CameraRefused`, `reason="not_rgbd"` | the rig has no depth channel of its own, a stereo pair | name an RGB-D rig; the message lists them |
+| `CameraBusy` | another owner in this process holds the same device; the message names it | release that owner, or give the rigs distinct device ids |
+| `CameraNotOpen` | a grab or a lens read before `open()` | use a `with` block, or call `open()` first |
+| `RigNotCalibrated` | `calibration()` on a rig with no `extrinsics` block | calibrate the camera and paste the block the sweep prints |
+| `RigCalibrationError` | the declared artifact does not load | the message names the key and the path |
+| `ConfigError` when the tree loads | two enabled RGB-D rigs where one has no `serial_number`, or two share one | set one serial per rig; `rs-enumerate-devices` prints them |
 
-with provider:                                  # open() / release() every streamer
-    for rig_id in provider.rig_ids:
-        if provider.is_stereo(rig_id):
-            frame = provider.grab_rectified(rig_id)      # rectified StereoFrame
-            rig = provider.get_stereo_rig_index(rig_id)  # StereoCam3D rig index
-            depth_mm = stereo.compute_depth_map(frame.left, frame.right, unit="mm", rig=rig)
-        else:                                    # RGB-D rig
-            frame = provider.grab(rig_id)        # raw RGBDFrame
-            color, depth_mm = frame.color, frame.depth
-```
+A device is known by what identifies it, never by the rig name: a RealSense by its serial, an OpenCV
+RGB-D rig or a single-device stereo rig by its `device_index`, a webcam pair by both ids. A RealSense
+with no serial collides with every open RealSense, because the SDK then binds whichever camera it
+offers first, and a webcam pair with an unset id collides with every open video device.
 
-`run()` returns `(FrameProvider, StereoCam3D | None)`; the `StereoCam3D` is `None` only when every
-target rig is RGB-D. Recording missing calibration images is interactive and blocks until the
-operator ends the session.
+The catalogue raises `UnknownCameraRigError` for a rig id it does not hold, `FrameProviderStateError`
+for a grab on a rig that is not open, `ValueError` for `grab_rectified` on an RGB-D rig, and `KeyError`
+for `get_stereo_rig_index` on one. A stereo rig has no single camera matrix, so its `get_intrinsics()`
+is `None`; its geometry lives in `StereoCam3D`.
 
-`FrameProvider`'s surface: `open()` / `release()` (context-manager safe), `open_rig(rig_id)` /
-`release_rig(rig_id)`, `grab(rig_id)`, `grab_rectified(rig_id)`, `get_intrinsics(rig_id)`,
-`get_distortion(rig_id)`, `rig(rig_id)`, `camera(rig_id)`, `rig_ids`, `open_rig_ids()`,
-`is_stereo(rig_id)`, `is_rgbd(rig_id)`, `get_rig_config(rig_id)`, `get_stereo_rig_index(rig_id)`.
-Stereo capture and hand detection use it. Every rig it opens is held by a `Camera`, so a catalogue
-and a `Camera` elsewhere in the process never both hold one device.
+## Status
 
-### One rig, for a consumer that should not know about rigs
+The legend is the root README's [Status and honest scope](../../README.md#status-and-honest-scope).
 
-```python
-handle = provider.rig("overhead")   # a RigHandle; camera.handle() hands out the same kind
-handle.grab()                       # -> RGBDFrame
-handle.get_intrinsics()             # -> K, or None where a rig has no single pinhole matrix
-handle.release()                    # gives THIS rig back; every other one keeps streaming
-```
+| Capability | Evidence |
+|---|---|
+| One owner per device, serialised grabs, stamped frames | never touched hardware; pinned against device doubles in [`test_camera_noun.py`](../../tests/test_camera_noun.py) |
+| The RealSense driver | never touched hardware; the real librealsense processes its frames, no camera attached ([test](../../tests/test_realsense_sdk_contract.py)) |
+| Device identity by serial and by index | never touched hardware; how a D435 enumerates beside an OpenCV video device is not observed |
 
-`RigHandle` answers exactly `grab()`, `get_intrinsics()`, `get_distortion()`, `release()` and
-`is_open`, and names its owner as `camera`. That is the surface the real-camera perception adapter
-and hand-eye calibration duck-type against. So nothing under
-[`src/robot/perception/`](../robot/perception/README.md) has to learn about camera orchestration,
-and a console teardown closes exactly the device it opened.
+## Files
 
-Constructing a streamer touches no device, so a provider is told about every configured rig and
-opens only what it is asked to open: knowing a rig costs nothing, holding one is a deliberate act.
+| File | Holds |
+|---|---|
+| [`orchestration/camera.py`](orchestration/camera.py) | `Camera`, its refusals, the process registry, `select_rig`, and `create_streamer`, the one place a device streamer is built |
+| [`orchestration/frame_provider.py`](orchestration/frame_provider.py) | `FrameProvider` and `RigHandle` |
+| [`pipeline/stereo_capture.py`](pipeline/stereo_capture.py) | `StereoCapturePipeline` |
+| [`setup/`](setup/README.md) | the device drivers, the two frame types and the capture quality settings |
 
-**Rig selection**: `camera.cameras.primary_rig_id` names the rig a CELL opens, and `select_rig`
-refuses a primary that is not configured, is disabled or is not an RGB-D rig. The stereo
-calibration pipeline is a tool over the whole catalogue rather than a cell: an explicit `rig_id`
-argument wins there, and otherwise it works on every enabled rig that answers a probe.
+## Details
 
-## The two RGB-D backends
-
-Selected per rig by `RGBDDeviceRigConfig.rgbd_backend`; `create_streamer` in
-`orchestration/camera.py` builds the matching streamer.
-
-| `rgbd_backend` | Streamer | Depth source |
-| --- | --- | --- |
-| `opencv` (default) | `OpenCvRGBDStreamer` | A generic `cv2.VideoCapture` with OpenNI `CAP_OPENNI_*` channels, and no vendor SDK. Returns empty depth explicitly on a device that exposes colour only. |
-| `realsense` | `RealSenseRGBDStreamer` | Intel RealSense through `pyrealsense2`: hardware-aligned depth, device depth scale to uint16 millimetres, emitter, laser power and visual preset, a post-processing filter chain, and a colour-intrinsics accessor. |
-
-`pyrealsense2` is pinned in `requirements.txt` and its import is deferred, so the library runs on a
-machine without it. **The RealSense driver has never been exercised against a physical device
-here**: its logic is covered with an injected fake SDK, and the real round trip remains the same
-gap [`src/robot/perception/`](../robot/perception/README.md) names as the largest one in the stack.
-The device identity rules above have not met hardware either: how a D435 enumerates beside an
-OpenCV video device has not been observed.
-
-## Traps
-
-**`FrameProvider` only routes frames.** It does not crop, split, resize or configure quality; the
-streamers under [`setup/`](setup/README.md) do. An unknown rig id raises `UnknownCameraRigError`;
-grabbing a rig that is not open raises `FrameProviderStateError`, and reading a `Camera` that is not
-open raises `CameraNotOpen`; `grab_rectified` on an RGB-D rig raises `ValueError`, and on a stereo
-rig with no `StereoCam3D` raises `RuntimeError`; `get_stereo_rig_index` on an RGB-D rig raises
-`KeyError`.
-
-**A stereo rig has no single camera matrix**, so `get_intrinsics` answers `None` for one: its
-geometry lives in `StereoCam3D`. Both accessors require the rig to be open.
-
-**RGB-D rigs never reach stereo calibration.** Stereo rig config order is preserved and is what
-`get_stereo_rig_index` returns. Each rig keeps isolated capture and calibration artefacts under its
-own `calibration_paths.base_dir`.
-
-## See also
-
-- [`setup/`](setup/README.md), the streamers underneath the owners and the frame dataclasses
-- [`src/calibration/`](../calibration/README.md), for stereo calibration, reconstruction, hand-eye
-  and extrinsics
-- [`src/geometry/`](../geometry/README.md), where robotics coordinates live
-- [`src/config/`](../config/README.md), which validates the camera, rig, calibration and matcher
-  config
-- [`config/camera/cam.yaml`](../../config/camera/cam.yaml), the rigs themselves
+- The rigs of the shipped tree: [`config/camera/cam.yaml`](../../config/camera/cam.yaml); every key of a
+  rig as it validated: `python -m src.config explain camera.cameras.rigs`.
+- Calibrating a camera: [`docs/calibration-setup.md`](../../docs/calibration-setup.md), and the examples
+  [`07_calibrate_a_fixed_camera.py`](../../examples/real_robot/07_calibrate_a_fixed_camera.py) and
+  [`08_calibrate_a_wrist_camera.py`](../../examples/real_robot/08_calibrate_a_wrist_camera.py).
+- The adapter that turns a frame into what a pick perceives: [`src/robot/perception/`](../robot/perception/README.md).
+- Every command: [`docs/cli.md`](../../docs/cli.md). The first cell:
+  [`docs/runbooks/real_cell_first_pick.md`](../../docs/runbooks/real_cell_first_pick.md).
+- Tests: [`test_camera_noun.py`](../../tests/test_camera_noun.py),
+  [`test_frame_provider_seam.py`](../../tests/test_frame_provider_seam.py),
+  [`test_realsense_streamer.py`](../../tests/test_realsense_streamer.py).

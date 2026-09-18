@@ -1,38 +1,149 @@
+# Workaholic-Willy
+
+Workaholic-Willy picks what you name: it finds the object with a camera, plans a collision-free 6-DoF
+grasp, refuses anything unsafe, drives a real or simulated arm, and verifies, recovers and logs each
+attempt. It is a Python 3.11 library you import as `willy`, and the first run below needs no GPU,
+camera or robot.
+
+## Install
+
+```bash
+python -m venv .venv
+source .venv/bin/activate            # Windows: .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt      # everything, with CUDA torch wheels that also import without a GPU
+pip install -e . --no-deps           # the repository itself, so `from willy import ...` resolves
+```
+
+`requirements-cpu.txt` installs the same set against CPU torch, for a host that cannot take the CUDA
+wheels. Perception weights are fetched on their own: `python scripts/model_weights/fetch.py dino-tiny sam2`
+fetches the detector and the segmenter a vision pick needs, and `--list` shows every key with its size.
+The planner and the exact-mesh collision engine install as in [`ext_deps/`](ext_deps/README.md).
+
+## Try it without hardware
+
+From the repository root:
+
+```bash
+python -m src.config                              # the config tree loads: "OK: config under <default> validates"
+python examples/simulation/01_rehearse_a_pick.py  # one pick on a dummy arm, ending "layers (none)"
+python -m src.robot.execution.real_cell --check   # what stops a real cell, each with its fix; a fresh tree blocks by design
+```
+
+The rehearsal from Python, which is what that example does:
+
+```python
+from willy import Cell, PickRun, Recording, load_tree
+
+cell = Cell.rehearsal(load_tree("console_dummy").robot)  # the desk profile: a dummy arm and a dummy hand
+report = PickRun.from_cell(cell, runs=1, recording=Recording.off()).execute()
+print(report)                        # "RESULT: 1/1 succeeded", the rule it was judged by, what was recorded
+raise SystemExit(report.exit_code)   # 0 passed, 1 refused, 2 picked and did not pass, 3 a fault stopped it
+```
+
+A success here says the code path ran, not that anything was held: the dummy hand holds nothing, and
+the dummy arm reports `UNGATED` because no guard sits in front of it. The same campaign from a shell is
+`python -m src.robot.execution.real_cell --rehearse --runs 3 --profile console_dummy`.
+
+## Your own cell
+
+A cell is a profile: a layer of `*.<your cell>.yaml` files beside the files they change in
+[`config/`](config/). `WILLY_PROFILE` names it, and every `real_robot` example and every command that
+reads the tree follows it (in PowerShell, `$env:WILLY_PROFILE = "<your cell>"` before the command);
+the simulation and offline examples name the tree they read in the file.
+
+1. **Write the profile.** Start from a worked cell: `ur5e` (a UR5e on a bench), `ur3e`, `ur5e,eth2`
+   (two fixed RGB-D cameras, fused) or `sim` (the Isaac UR5e cell). [Guide 01](docs/guide/01-configuration.md)
+   explains the tree, and the profile step of [cell_bringup.md](docs/runbooks/cell_bringup.md) writes it.
+   The base tree names no hand on purpose: name yours with `robot.gripper.model` in your layer, or chain
+   the shipped hand layer, as in `ur5e,hande` for a Robotiq Hand-E.
+2. **Check it at a desk.** `WILLY_PROFILE=<your cell> python -m src.robot.execution.real_cell --check`
+   lists every item that stops a first connect. The tool frame, the payload, the hand and the camera
+   calibration are values only your bench can give, so the shipped tree leaves them unset: a
+   plausible guess would fail open.
+3. **Run [`examples/real_robot/`](examples/README.md) in order.** 01 loads your tree and 02 is the desk
+   check; neither moves anything. 03 connects and moves, 04 and 05 use the hand, 06 to 08 open and
+   calibrate the cameras, 09 and 10 locate and pick, 11 tunes the pick motion and 12 takes a spoken
+   command.
+4. **Follow the runbooks at the bench.** [cell_bringup.md](docs/runbooks/cell_bringup.md) takes any
+   robot from its profile to a connected arm, with URSim for a UR.
+   [your_own_gripper.md](docs/runbooks/your_own_gripper.md) fits a hand the repository never shipped,
+   [calibration-setup.md](docs/calibration-setup.md) calibrates a camera, and
+   [real_cell_first_pick.md](docs/runbooks/real_cell_first_pick.md) is the ordered bring-up to a first
+   pick on a physical arm.
+
+> [!WARNING]
+> From `03_connect_and_move.py` on, the examples move the arm, and connecting can sweep the fingers as
+> the hand activates. Every motion goes through the cell's safety checks, but software collision
+> avoidance is not certified functional safety: a real cell needs the vendor's safety-rated stop.
+
+## What you can do
+
+| I want to | Run or read | Needs |
+|---|---|---|
+| see the robot's verbs at a desk: move, grasp, pick, place | `python examples/simulation/02_a_robot_at_the_desk.py` | nothing |
+| ask what a config key means and which file set it | `python -m src.config explain <key>` | nothing |
+| see which hand and which planner a tree builds (the file names its tree; put yours there) | [`examples/offline/config/`](examples/offline/config/) | nothing |
+| rank grasps for an object's point cloud | `python examples/offline/grasping/grasps_for_a_cloud.py` | nothing |
+| check that every guard of my cell refuses its own violation | `python scripts/checks/safety_guards.py` | my cell's profile |
+| drive my cell from Python | [`examples/real_robot/`](examples/README.md), in order | the cell |
+| run a pick rate in Isaac Sim | [`docs/isaac-ready.md`](docs/isaac-ready.md), then `examples/simulation/03_isaac_pick_rate.py` | Isaac Sim, an NVIDIA GPU |
+| generate grasp data and train a generator on my own parts | [`examples/offline/`](examples/README.md), [train_your_own_generator.md](docs/runbooks/train_your_own_generator.md) | nothing to plan; a GPU to train |
+| run the operator console | `python -m api --profile console_dummy`, [`api/`](api/README.md) | the [frontend](frontend/README.md) built, for the page |
+| roll up KPIs from a pick log | `python -m src.robot.grasping.replay --records <file>` | a record log: a campaign with `Recording.to_file("picks.jsonl")` writes one |
+| find the command line for any of these | [`docs/cli.md`](docs/cli.md) | |
+
+Every public name `willy` exports, with the example that shows it, is in
+[`willy/README.md`](willy/README.md). An object a program holds between calls, such as a connected
+robot, a located object or a spoken turn, is Python only; everything else also has a command line.
+
+## See it work
+
 <div align="center">
 
-<img src="docs/assets/willy_banner.png" alt="Workaholic-Willy, a vendor-neutral vision-language robot grasping stack" width="100%">
-
-<br>
-
-### Say **what** to pick. Willy finds it, plans a collision-free 6-DoF grasp, refuses anything unsafe, executes it on a real or simulated arm, then verifies, recovers and logs.
-
-<br>
-
-![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
-![Ruff](https://img.shields.io/badge/lint-ruff-261230?logo=ruff&logoColor=white)
-![mypy](https://img.shields.io/badge/types-clean-2A6DB2)
-![Coverage](https://img.shields.io/badge/coverage_gate-80%25-brightgreen)
-![Isaac Sim](https://img.shields.io/badge/validated-Isaac_Sim_5.1-76B900?logo=nvidia&logoColor=white)
-![UR](https://img.shields.io/badge/UR_controller-measured_on_URSim-1F6FEB)
-![Status](https://img.shields.io/badge/physical_arm-not_yet-E8A317)
-
-[See it work](#see-it-work) &middot; [Quick start](#quick-start) &middot; [Your cell](#describe-your-cell) &middot;
-[Console](#operator-console) &middot; [Architecture](#how-the-pieces-fit-together) &middot;
-[Status](#status-and-honest-scope) &middot; [Reading](#further-reading)
+![the autonomy endgame](docs/assets/demo/gif/endgame.gif)
 
 </div>
 
----
+| Vision-language perception | Autonomous decision |
+|:--:|:--:|
+| ![perception](docs/assets/demo/gif/vision.gif) | ![autonomy](docs/assets/demo/gif/autonomy.gif) |
+| A prompt, detection, segmentation, a masked point cloud, a 6-DoF grasp | Perceive, refine, verify, recover; the AUTO gate is opt-in (`run_m1_pick --mode auto`) |
+| **Scene recovery** | **Fail-closed safety** |
+| ![recovery](docs/assets/demo/gif/recovery.gif) | ![safety](docs/assets/demo/gif/safety.gif) |
+| A push near the blocker's centre of mass frees the target | Refused as `approach_path_blocked`, a grasping-side check beside the six guards |
 
-Workaholic-Willy turns **a text prompt and a camera scene** into **a completed pick**. It grounds the
-prompt (GroundingDINO, SAM2, stereo or RGB-D depth), synthesizes and scores 6-DoF grasps, plans a
-collision-free trajectory (cuRobo with exact-mesh collision), gates every motion through six
-fail-closed guards, drives an arm and a gripper (UR, KUKA, Isaac Sim, Dummy, all behind one
-`Protocol`), then verifies the grasp, recovers on failure, and logs each attempt as a frozen
-`GraspAttemptRecord`.
+Jaw and suction on the same deep KLT bin: the jaw clears the shallow tray and suction reaches the
+floor. In the suction segment the part rides the wrist kinematically, because attaching a physics
+joint mid-play freezes Isaac's render; the jaw picks are real physics.
 
-It runs **two end-effector modalities**, a parallel jaw and suction, and is validated end to end in
-NVIDIA Isaac Sim on a UR5e cell.
+<div align="center">
+
+![jaw and suction on a deep KLT bin](docs/assets/demo/gif/klt.gif)
+
+</div>
+
+<details>
+<summary><b>Full-length cuts, and the originals</b></summary>
+
+<br>
+
+The loops above are muted GIFs. The edited cuts and one original per capability are in
+[`docs/assets/demo/`](docs/assets/demo/), and GitHub plays them on click:
+
+- [The autonomy endgame](docs/assets/demo/willy_endgame_demo.mp4), the whole run through the four scenarios
+- [KLT, jaw and suction](docs/assets/demo/klt_combined.mp4)
+- [`docs/assets/demo/raw/`](docs/assets/demo/raw/): the wrist-camera pick, the seal-gated suction
+  pick, exposing an occluded object, the planner working a bin, clearing a bin to empty, and a second
+  gripper meeting a shape it cannot hold
+
+The `run_*` recorders under [`src/willy_sim/`](src/willy_sim/README.md) reproduce each of them on an
+Isaac workstation. The endgame recorder retries each segment and keeps the first take that lifts
+clear, so the reel shows successful takes rather than a per-attempt rate, and the on-frame banner
+never claims a recovery that did not happen.
+
+</details>
+
+## How it fits together
 
 ```mermaid
 flowchart LR
@@ -58,291 +169,37 @@ flowchart LR
     classDef exe   fill:#3a3355,stroke:#8b7fd1,color:#e4e7eb
 ```
 
-> [!NOTE]
-> **A library and a CLI stack, with one optional service on top.** The library under `src/` imports
-> **no web framework**, and that is a contract rather than a habit: the operator console
-> ([`api/`](api/README.md) and [`frontend/`](frontend/README.md)) is the single named exception, a
-> FastAPI application that depends on the library and that the library may never import back. There
-> is no ROS node in this repository.
-
----
-
-## See it work
-
-<div align="center">
-
-**Four scenarios, one stack: perceive, grasp, recover, refuse.**
-
-![the autonomy endgame](docs/assets/demo/gif/endgame.gif)
-
-</div>
-
-Four pillars, one loop each, and every clip below plays on its own:
-
-| Vision-language perception | Autonomous decision |
-|:--:|:--:|
-| ![perception](docs/assets/demo/gif/vision.gif) | ![autonomy](docs/assets/demo/gif/autonomy.gif) |
-| Prompt, then GroundingDINO, then SAM2, then a masked point cloud, then a 6-DoF grasp | The dense autonomous loop: perceive, refine, verify, recover. The AUTO decision gate is a separate opt-in; `run_m1_pick --mode auto` demonstrates it |
-| **Scene recovery** | **Fail-closed safety** |
-| ![recovery](docs/assets/demo/gif/recovery.gif) | ![safety](docs/assets/demo/gif/safety.gif) |
-| A contact-redistribute push: the arm nudges a blocker aside near its centre of mass to free the target | Six ordered guards run before every motion ([`src/robot/safety/preflight.py`](src/robot/safety/preflight.py)). This clip's refusal is `approach_path_blocked`, from a seventh grasping-side check, and the pipeline fails closed either way |
-
-**Complementary end-effectors**, jaw and suction on the same deep KLT bin: the jaw clears the shallow
-tray, suction reaches the floor. In the suction segment the object is carried kinematically on the
-wrist rather than held by a physics joint, because attaching one mid-play freezes Isaac's render.
-The jaw picks are real physics.
-
-<div align="center">
-
-![jaw and suction on a deep KLT bin](docs/assets/demo/gif/klt.gif)
-
-</div>
-
-<details>
-<summary><b>Full-length cuts, and the originals</b></summary>
-
-<br>
-
-The loops above are muted GIFs. The edited cuts and one original per capability are in
-[`docs/assets/demo/`](docs/assets/demo/), and GitHub plays them on click:
-
-- [The autonomy endgame](docs/assets/demo/willy_endgame_demo.mp4), the whole run through the four pillars
-- [KLT, jaw and suction](docs/assets/demo/klt_combined.mp4)
-- [`docs/assets/demo/raw/`](docs/assets/demo/raw/): the wrist-camera pick, the seal-gated suction
-  pick, exposing an occluded object, the planner working a bin, clearing a bin to empty, and a second
-  gripper meeting a shape it cannot hold
-
-Every one of them is reproducible on the workstation through the `run_*` recorders under
-[`src/willy_sim/`](src/willy_sim/README.md).
-
-</details>
-
----
-
-## What is inside
-
-|  |  |
-|---|---|
-| **Vision-language perception** | A text prompt, then detection, then segmentation, then a masked point cloud, over stereo or RGB-D depth. A VLM route handles the attribute prompts a detector gets wrong. |
-| **6-DoF grasp synthesis** | Support-plane geometry, then antipodal, surface and dense contact sampling, then geometric, stability and reachability scoring, then a deterministic rank. Every formula: [`docs/grasping-math.md`](docs/grasping-math.md). |
-| **Fail-closed safety** | Six ordered guards, workspace, joint limit, IK quality, self-collision, payload and motion continuity, run before every motion and outrank anything a model proposes. Every formula: [`docs/safety-math.md`](docs/safety-math.md). |
-| **Collision-free motion** | cuRobo for planning and Coal or fcl for vertex-exact mesh self-collision, with the engines installed once into a single local root. |
-| **Vendor-neutral drivers** | UR over RTDE, KUKA over EthernetKRL, Isaac Sim and Dummy, all behind one `RobotArm` and `Gripper` `Protocol`, with vendor SDKs imported lazily inside the driver. |
-| **Gripper drivers** | Robotiq over its URCap socket, OnRobot over Modbus, a jaw and a suction cup over digital I/O, the two simulated grippers, and Dummy and Null. Every wiring number is configuration, so bring-up is measuring rather than coding. |
-| **Multi-camera calibration and fusion** | Per-camera eye-to-hand and eye-in-hand extrinsics through one central map, solved by AX=XB. Multi-camera geometry fusion runs inside the pick loop, and a worked two-camera cell ships as a configuration example. |
-| **Structured telemetry** | Every attempt becomes a frozen `GraspAttemptRecord`, which feeds the KPI rollup, the soak gate, the failure taxonomy and offline reinforcement learning. |
-| **Offline reinforcement learning** | Train, evaluate off-policy, promote through a gate. It runs shadow-only at run time and never overrides the safety mask, and `check-dataset` answers whether a log is trainable before the training run rather than after. |
-| **Operator console** | FastAPI and React: preflight, cell, pick, history and configuration, over a typed HTTP surface with a live event stream. Driven end to end against real UR controller software. |
-| **Isaac Sim platform** | A config-driven UR5e cell: known-pose, real-vision, eye-in-hand, multi-view and suction picks, hand-eye calibration, and the cinematic recorders that made the clips above. |
-| **Synthetic data engine** | [`datagen/`](datagen/README.md): path-traced scenes with a posed arm, analytic grasp labels and a physics reward. It is the independent reference the grasp calculator is measured against. |
-
----
-
-## Quick start
-
-**Windows 10 or later, and Linux.** The library and the test suite need no GPU, camera or robot. Only
-the Isaac Sim runners need the workstation.
-
-```bash
-# 1. install
-python -m venv .venv
-source .venv/bin/activate            # Windows: .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt      # runtime, drivers, console and tooling in one file
-#    The cu128 wheels import without a GPU, so this is the default everywhere. If you would
-#    rather not pull them, requirements-cpu.txt installs the same set against CPU torch.
-pip install -e . --no-deps           # the repository itself, so `from willy import ...` resolves
-
-# 2. validate the whole configuration tree
-python -m src.config --print
-
-# 3. run the synthetic soak and KPI gate; exit 0 means every locked gate passed
-python -m src.robot.grasping.replay --soak-report
-
-# 4. rehearse the real-cell boot path end to end, on a dummy arm, commanding nothing
-python -m src.robot.execution.real_cell --rehearse --runs 3
-```
-
-Two rehearsals that need nothing but the clone, and print what they actually did:
-
-```bash
-python scripts/checks/cell_bringup.py              # is this cell described coherently?
-python examples/simulation/01_rehearse_a_pick.py   # one pick on a dummy arm, and which layers ran
-```
-
-The same pick from Python, which is what that example does:
-
-```python
-from willy import Cell, PickRun, Recording, load_tree
-
-cell   = Cell.rehearsal(load_tree("console_dummy").robot)   # or Cell.from_tree(load_tree()) for a real one
-report = PickRun.from_cell(cell, runs=1, recording=Recording.off()).execute()
-
-print(report)                 # what happened, in words
-report.exit_code              # 0 passed, 1 refused, 2 picked and did not pass, 3 raised
-```
-
-New here? Read the [five-part guide](docs/guide/README.md), which goes from an empty directory to a
-pick, or the shorter [Quickstart](docs/Quickstart.md). Getting the workstation ready for Isaac and
-the motion engines: [`docs/isaac-ready.md`](docs/isaac-ready.md).
-
----
-
-## Describe your cell
-
-Configuration is a Pydantic `StrictModel` tree with `extra='forbid'`, so a typo fails loudly at load
-rather than quietly at run time. The YAML lives in [`config/`](config/), and a **profile** is a set of
-overlay files deep-merged onto it, selected by `WILLY_PROFILE`.
-
-Four worked cells ship as profiles, and each one is commented key by key for the person standing at
-the bench:
-
-| Profile | The cell |
-|---|---|
-| `sim` | The Isaac UR5e cell, the same tree the simulator boots from |
-| `ur3e` | A UR3e, in simulation or on a bench. Every position is re-anchored, because a UR3e works a 500 mm sphere where a UR5e works 850 |
-| `ur5e` | A real UR5e on a bench: the workspace box, the home pose, the bench as a collision fixture, and the planner's world |
-| `ur5e,eth2` | The same bench with two fixed RGB-D cameras, fused |
-
-```bash
-python -m src.config                              # validate the shipped tree
-WILLY_PROFILE=ur5e,eth2 python -m src.config      # validate a two-camera cell
-python -m src.config explain robot.safety.self_collision.planner_margin_mm
-```
-
-`explain` reports a key's type, its default, which file and which layer set the winning value, the
-whole override chain, and the comment written above that line.
-
-> [!TIP]
-> The `ur5e` example draws a line worth copying. A value that **fails closed** if it is wrong ships
-> as a worked example with its assumption stated, because a workspace box that is too small refuses
-> a motion visibly. A value that **fails open** does not ship at all: a tool frame or a payload that
-> is merely plausible drives the arm into the bench and logs a success, so those keys are written out
-> as commented blocks with what to measure, and the shipped refusals stay armed.
-
-Full reference: [`src/config/README.md`](src/config/README.md). Every `robot.grasping` block, what it
-does and which grasp mode it can fire in:
-[`docs/grasping-config-reference.md`](docs/grasping-config-reference.md).
-
----
-
-## Operator console
-
-A browser front end for the people who stand at the cell, not a demo shell. Five screens over a typed
-HTTP surface with a live event stream, served same-origin from one process.
-
-```bash
-python -m api --profile console_dummy      # hardware-free; --profile ursim for a UR controller
-# then open http://127.0.0.1:8000
-```
-
-| Screen | Answers |
-|---|---|
-| **Preflight** | Is this cell runnable? Every check verbatim, with its fix instruction, nothing softened. |
-| **Cell** | Build, preview the connect, connect, and watch live telemetry: TCP, joints, controller state, both stop flags. |
-| **Pick** | Run an attempt against a live event stream. A refusal names the guard that refused, and why. |
-| **History** | Every logged attempt, rolled up. |
-| **Config** | The merged, validated tree, the same one the cell booted from. |
-
-> [!TIP]
-> The console was driven end to end against URSim, which is real UR controller software running a
-> robot that does not exist. That is what proved the motion-explanation path: a refused pick reported
-> the guard, the pose and the reason rather than a generic failure.
-
-Full surface, error envelope and event contract: [`api/README.md`](api/README.md). UI internals:
-[`frontend/README.md`](frontend/README.md).
-
----
-
-## Examples
-
-Short programs that call the library the way your own code would, `from willy import ...`, in three
-folders by what has to be attached. Full index: [`examples/`](examples/README.md).
-
-| Folder | What it holds |
-|---|---|
-| [`real_robot/`](examples/real_robot/) | your cell, the one `WILLY_PROFILE` names, numbered in the order a cell comes up. The first two move nothing; from the third on the arm moves, and every motion goes through the safety checks |
-| [`simulation/`](examples/simulation/) | the same calls on a dummy arm at a desk, and picks in Isaac Sim |
-| [`offline/`](examples/offline/) | data generation, training and the models a desk evaluates, with no robot and no camera attached |
-
-A subject whose object a program holds between calls (a connected robot, a located object, a spoken
-turn, a `GraspMotion`) is Python only, because a command line has no place to keep one. Every other
-capability also has a command line, and [`docs/cli.md`](docs/cli.md) carries them by the same topics,
-each with the runbook that uses it.
-
-**Checks are the other half**, in [`scripts/checks/`](scripts/checks/). A check holds this cell against
-its own configuration and exits non-zero when the two disagree, which is what puts it in a bring-up
-list. [`cell_bringup.py`](scripts/checks/cell_bringup.py) connects and asks whether the arm stands
-inside the box it will be held to, [`safety_guards.py`](scripts/checks/safety_guards.py) makes every
-wired guard refuse a violation of its own family,
-[`camera_artifacts.py`](scripts/checks/camera_artifacts.py) opens every calibration artifact the
-config names, and [`grasping_switches.py`](scripts/checks/grasping_switches.py) reports which
-grasping block is reachable in which mode.
-
-Start with [`scripts/checks/cell_bringup.py`](scripts/checks/cell_bringup.py).
-
----
-
-## How the pieces fit together
-
-A strict downward dependency stack, and nothing imports up.
-
-```mermaid
-flowchart TD
-    subgraph ENTRY["Entry points"]
-        direction LR
-        E1["<code>python -m src.config</code>"]
-        E2["<code>... grasping.replay</code><br/><code>... grasping.rl</code>"]
-        E3["<code>... execution.real_cell</code>"]
-        E4["<code>willy_sim.run_*</code><br/>Isaac validation and demos"]
-        E5["<code>python -m api</code><br/>operator console"]
-    end
-
-    subgraph EXEC["execution, the composition root"]
-        X["<b>Cell and AutonomousGraspService</b><br/>perceive, grasp, gate, move, verify, recover, log"]
-    end
-
-    subgraph MID["the three pillars"]
-        direction LR
-        GR["<b>grasping/</b><br/>generate, score, decide<br/>refine, verify, recover<br/>and rl, shadow-only"]
-        SA["<b>safety/</b><br/>SafetyPreflight<br/>six fail-closed guards<br/><i>outranks every model</i>"]
-        PE["<b>perception</b><br/>models, camera, calibration<br/>stereo and RGB-D depth"]
-    end
-
-    subgraph HW["robot, the vendor boundary"]
-        direction LR
-        CO["<b>core/</b><br/>RobotArm and Gripper Protocols"]
-        DR["<b>drivers/</b><br/>UR, KUKA, Isaac, Dummy"]
-        GP["<b>grippers/</b><br/>robotiq, onrobot, jaw_io, vacuum, sim, null"]
-    end
-
-    subgraph BASE["foundations"]
-        direction LR
-        GE["<b>geometry</b><br/>numpy SE(3): Frame, Pose, Transform"]
-        CF["<b>config</b><br/>Pydantic StrictModel and YAML overlays"]
-    end
-
-    OFF["<b>offline</b>: replay, KPI rollup, the soak gate, RL training<br/><i>never imported back</i>"]
-
-    ENTRY --> EXEC --> MID --> HW --> BASE
-    EXEC -. "JSONL telemetry" .-> OFF
-
-    classDef entry fill:#1f2933,stroke:#63768d,color:#e4e7eb
-    classDef exe   fill:#3a3355,stroke:#8b7fd1,color:#e4e7eb
-    classDef mid   fill:#2b3a55,stroke:#5b8def,color:#e4e7eb
-    classDef hw    fill:#2d3b2f,stroke:#5fa463,color:#e4e7eb
-    classDef base  fill:#4a3f2f,stroke:#d1a065,color:#e4e7eb
-    class E1,E2,E3,E4,E5,OFF entry
-    class X exe
-    class GR,SA,PE mid
-    class CO,DR,GP hw
-    class GE,CF base
-```
-
-> [!IMPORTANT]
-> **The default pick is open-loop**: perceive, rank geometrically, gate, move, log. The AUTO decision
-> gate, closed-loop refine and verify, recovery, multi-view fusion, the learned success model and
-> reinforcement learning are all built, opt-in and default-off. A switch that would read as on while
-> doing nothing is refused by the schema rather than silently accepted.
+The dependency stack points one way, and nothing imports up:
+
+- [`willy/`](willy/README.md): the one import, `from willy import ...`, over the packages below.
+- [`src/robot/execution/`](src/robot/execution/README.md): `Robot`, `Cell` and `PickRun`, and the
+  composition root that assembles a cell from its tree.
+- [`src/robot/grasping/`](src/robot/grasping/README.md): generate, score, decide, refine, verify,
+  recover and log; every formula is in [`docs/grasping-math.md`](docs/grasping-math.md).
+- [`src/robot/safety/`](src/robot/safety/README.md): `SafetyPreflight`, six ordered fail-closed guards
+  that outrank anything a model proposes, and the cuRobo binding; formulas in
+  [`docs/safety-math.md`](docs/safety-math.md).
+- Perception: [`src/camera/`](src/camera/README.md), [`src/calibration/`](src/calibration/README.md),
+  [`src/models/`](src/models/README.md) and [`src/robot/perception/`](src/robot/perception/README.md).
+- The vendor boundary: [`src/robot/core/`](src/robot/core/README.md) holds the `RobotArm` and `Gripper`
+  Protocols, [`src/robot/drivers/`](src/robot/drivers/README.md) the UR, KUKA, Isaac and Dummy arms,
+  and [`src/robot/grippers/`](src/robot/grippers/README.md) the hands. Vendor SDKs import lazily.
+- Foundations: [`src/config/`](src/config/README.md), a Pydantic tree with `extra='forbid'`, so a typo
+  fails at load; [`src/geometry/`](src/geometry/README.md), poses in millimetres with XYZW
+  quaternions; [`src/contracts/`](src/contracts/README.md), the calling convention.
+- Beside the library: [`src/willy_sim/`](src/willy_sim/README.md) runs the Isaac Sim cell,
+  [`datagen/`](datagen/README.md) generates synthetic scenes with analytic grasp labels, and
+  [`api/`](api/README.md) with [`frontend/`](frontend/README.md) is the operator console.
+
+The library under `src/` imports no web framework. The console is the one named exception: it
+depends on the library, and the library never imports it back. There is no ROS node in this
+repository.
+
+The default pick is open-loop: perceive, rank geometrically, gate, move, log. The AUTO decision gate,
+closed-loop refinement and verification, recovery, multi-view fusion, the learned success model and
+reinforcement learning are built, opt-in and off by default; each is a `robot.grasping.*` block, and
+[`docs/grasping-config-reference.md`](docs/grasping-config-reference.md) says which grasp mode each can
+fire in. A switch that would read as on while doing nothing is refused by the schema.
 
 <details>
 <summary><b>Repository layout</b></summary>
@@ -361,9 +218,9 @@ src/
         drivers/            UR over RTDE, KUKA over EKI, Isaac Sim, Dummy, and two empty slots
         grippers/           robotiq, onrobot, jaw_io, vacuum, the two simulated ones, dummy, null
         safety/             the ordered fail-closed preflight, and the cuRobo binding
-        perception/         real-camera RGB-D into a PerceptionFrame
+        perception/         real-camera RGB-D into a PerceptionFrame, and the Locator
         grasping/           generate, score, decide, refine, verify, recover, log
-        execution/          the composition root, the real cell, the calibration routine
+        execution/          Robot, Cell, PickRun, the composition root, the real cell, calibration
     willy_sim/              the Isaac Sim runners, the full-motion validation platform
     utility/                paths, device selection, atomic IO, logging, unit scaling
 api/                        the console backend: FastAPI, seven routers, an event hub
@@ -373,13 +230,11 @@ willy/                      the one import door: from willy import ...
 examples/                   the library called as your code calls it: real_robot, simulation, offline
 scripts/                    the checks, the URSim probes, the build and bake tools
 ext_deps/                   the single install root for Coal and cuRobo; the payload is ignored
-tests/                      the suite, torch-free, gated at 80 percent coverage
+tests/                      the suite, gated at 80 percent coverage
 docs/                       the guide, the runbooks, the math references, and the media
 ```
 
 </details>
-
----
 
 ## Testing
 
@@ -392,11 +247,10 @@ pytest tests --cov=src --cov=api --cov=datagen --cov-fail-under=80
 python -m src.robot.grasping.replay --soak-report
 ```
 
-The suite mocks every model constructor and every robot and camera connection, so it needs no GPU, no
-camera and no robot, and it is torch-free. The Isaac imports are lazy, so the mock-mode simulation
-tests stay green on a machine that has no Isaac at all.
-
----
+The suite needs no GPU, camera or robot: it mocks every model constructor and every robot and camera
+connection. The Isaac imports are lazy, so the simulation tests pass on a machine with no Isaac.
+`examples/real_robot/` is type-checked against the library's signatures and never run, because each
+file drives a real cell.
 
 ## Status and honest scope
 
@@ -420,42 +274,34 @@ Three levels of evidence run through this repository, and they mean exactly this
 | Drivers: Dummy and Isaac Sim | measured in simulation |
 | Driver: KUKA over EthernetKRL | never touched hardware: software-complete, unvalidated |
 | Drivers: Franka and ROS2 | reserved empty vendor slots |
-| Grippers: Robotiq, OnRobot, jaw and suction over digital I/O | never touched hardware: the drivers are complete and the digital-I/O pins were measured switching on a real controller, the grippers were not |
+| Grippers: Robotiq, OnRobot, jaw and suction over digital I/O | never touched hardware: drivers complete, the I/O pins seen switching on real controller software |
 | Real-camera perception over RealSense | never touched hardware: complete and reachable from configuration, never fed a real frame |
 | Operator console | measured against real controller software: five screens, driven end to end |
+| Speech to a prompt, push to talk, a person confirms | never touched hardware: no physical microphone or recorded human voice has driven it |
 | Synthetic data engine | measured in simulation: proof run complete, verifier clean |
 | Offline reinforcement learning | measured in simulation: the chain closes on measured physics outcomes, and the committed policies abstain rather than pretend |
 | **Physical arm motion** | **no line of this code has ever executed on a physical robot** |
-| A ROS node, or a voice API | does not exist, by design |
+| A ROS node | does not exist; `src/robot/drivers/ros2/` is an empty slot |
 
-> [!IMPORTANT]
-> **Honesty first.** The advanced grasping layers ship default-off and byte-identical, and the
-> default pick is open-loop. The soak gate is a synthetic contract self-check: it proves telemetry
-> and KPI consistency, not grasp quality, and says so in its own provenance block. Software collision
-> avoidance is **not certified functional safety**; a real cell needs the vendor's safety-rated stop,
-> not this guard. On the clips: the endgame recorder retries each segment and keeps the first take
-> that lifts clear, so the reel shows representative successful takes rather than a per-attempt rate,
-> and the on-frame banner never claims a recovery that did not happen.
+The advanced grasping layers ship off, and the default pick is open-loop. The soak gate is a
+synthetic contract self-check: it proves telemetry and KPI consistency, not grasp quality, and says so
+in its own provenance block. Software collision avoidance is not certified functional safety.
 
----
+## Where the details live
 
-## Further reading
-
-> **New here? Start with [the guide](docs/guide/README.md).** Five sequential walkthroughs that go
-> from an empty directory to a robot picking an object:
-> [configuration](docs/guide/01-configuration.md), [models](docs/guide/02-models.md),
-> [calibration](docs/guide/03-calibration.md),
-> [robot and safety](docs/guide/04-robot-and-safety.md), [the pick loop](docs/guide/05-pick-loop.md).
-> The package READMEs below are the per-module reference you reach for afterwards.
-
-**The two math references**, every formula the stack evaluates and how each one fails:
-[grasping](docs/grasping-math.md), from prompt to point cloud to grasp pose, and
-[safety](docs/safety-math.md), workspace, forward kinematics, Jacobian, capsules and mesh distance.
+**Start with [the guide](docs/guide/README.md)**, which goes from an empty directory to a robot picking
+an object: [configuration](docs/guide/01-configuration.md), [models](docs/guide/02-models.md),
+[calibration](docs/guide/03-calibration.md), [robot and safety](docs/guide/04-robot-and-safety.md),
+[the pick loop](docs/guide/05-pick-loop.md) and [grippers](docs/guide/06-grippers.md). The shorter
+path is the [Quickstart](docs/Quickstart.md), every command line is in [`docs/cli.md`](docs/cli.md), and
+the bench procedures are the [runbooks](docs/runbooks/).
 
 <table>
 <tr><th align="left">Foundations</th><th align="left">Vision and calibration</th></tr>
 <tr valign="top"><td>
 
+- [The `willy` import](willy/README.md), every public name
+- [Examples](examples/README.md), by what has to be attached
 - [Contracts](src/contracts/README.md), the calling convention
 - [Configuration](src/config/README.md), the loader, the schema and the CLI
 - [Geometry](src/geometry/README.md), SE(3) value objects
@@ -469,6 +315,7 @@ Three levels of evidence run through this repository, and they mean exactly this
 - [Hand-eye](src/calibration/eye_hand/README.md), the two workflows
 - [Real-camera perception](src/robot/perception/README.md)
 - [Models](src/models/README.md), detection, segmentation, the VLM route
+- [Speech](src/models/speech/README.md), push to talk and a confirmation
 
 </td></tr>
 <tr><th align="left">The robot</th><th align="left">Drivers and grippers</th></tr>
@@ -503,13 +350,11 @@ Three levels of evidence run through this repository, and they mean exactly this
 - [Isaac Sim harness](src/willy_sim/README.md)
 - [Synthetic data engine](datagen/README.md), and its [grasp labels](datagen/grasps/README.md)
 - [Operator console API](api/README.md), and the [UI](frontend/README.md)
-- [Runbooks](docs/runbooks/real_cell_first_pick.md): a first pick on a real cell
+- [Scripts](scripts/README.md), the checks, the probes and the build tools
 - [Installing the motion engines](ext_deps/README.md)
 
 </td></tr>
 </table>
-
----
 
 <div align="center">
 <br>

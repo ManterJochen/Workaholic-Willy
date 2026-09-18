@@ -1,166 +1,147 @@
-# Isaac Sim harness
+# Isaac Sim picks and demos (`src/willy_sim`)
 
-The on-box validation and demo cell: it wires the vendor-neutral grasping stack to the Isaac
-driver and drives a real `AutonomousGraspService.pick()` inside NVIDIA Isaac Sim.
+This package runs the real pick service inside NVIDIA Isaac Sim on a UR5e cell: known-pose, real-vision,
+eye-in-hand, multi-view and suction picks, hand-eye calibration, and the recorders that film them. It is a test
+and demo harness, not a runtime, and a simulator rate proves the software, never the cell.
 
-This is a harness, not a shipped runtime. It sits above both `robot/drivers` and `robot/grasping`,
-so it may import from each: its perception sources produce a `grasping.PerceptionFrame`, which
-`drivers` is forbidden to import.
+```python
+from willy import record_demo, run_gate
 
-## What the simulator needs that this repository does not ship
+result = run_gate(runs=10, headless=True, mode="easy")    # ten known-pose picks, each scored on the part's rise
+print(f"{result.passed} of {result.runs} passed, gate passed: {result.gate_passed}")
 
-Three external systems, none of them a dependency of the library:
+film = record_demo(out_path="logs/demo/pick.mp4", fps=18)  # one wrist-camera pick, filmed as an MP4
+print(film["out"], film["lift_mm"])
+```
 
-- **Isaac Sim**, a multi-gigabyte standalone install with its own bundled Python, which stays
-  wherever its installer put it. Every runner needs that interpreter, not this repository's
-  virtual environment.
-- **cuRobo**, the collision-aware motion planner, reached over a stdio sidecar and pointed at by
-  `WILLY_CUROBO_PYTHON`.
-- **Coal**, the exact-mesh self-collision engine, pointed at by `WILLY_COAL_PREFIX`.
+Everything here runs under Isaac's own interpreter, from the repository root; the project's virtual environment
+cannot import Isaac. [03_isaac_pick_rate.py](../../examples/simulation/03_isaac_pick_rate.py) and
+[04_isaac_record_a_pick.py](../../examples/simulation/04_isaac_record_a_pick.py) make these two calls and check
+the interpreter first. The runners are the same from a shell:
 
-The last two install into [`ext_deps/`](../../ext_deps/README.md) with
-`scripts/ext_deps/install.ps1`, which touches nothing outside that directory.
+```bash
+<isaac-sim>/python.bat -m src.willy_sim.run_m1_pick --runs 10 --result-json logs/m1.json
+<isaac-sim>/python.bat -m src.willy_sim.run_m2_pick --runs 5 --prompt "a red cube"
+<isaac-sim>/python.bat -m src.willy_sim.run_eih_demo --fps 18 --out logs/demo/eih.mp4
+```
 
-The `sim` profile configures `motion_planner: curobo` and `self_collision.backend: fcl`, so
-`bootstrap_sim_cell` probes for both before Isaac starts and refuses to boot when either is
-missing. That refusal is the point: blind IK proposes self-colliding branches and the capsule proxy
-passes configurations the mesh check rejects, so a missing engine replaces the safety argument
-rather than weakening it, and any rate measured that way describes a different system.
-`WILLY_ALLOW_DEGRADED_MOTION=1` runs anyway, prints the banner every time, logs an error, and puts
-the missing engines on `SimCell.degraded_engines`, which a runner can stamp onto its result JSON as
-`planner_degraded`.
-
-`python -m src.robot.safety.planning --doctor` reports which of the two are installed, without
-Isaac.
-
-The Isaac imports themselves stay lazy, after the `mock_mode` check, so the package imports on a
-machine with no Isaac at all and the mock suite covers the parts that do not need it.
+A pick runner's verdict is its `GATE:` line and the JSON `--result-json` writes. No pick runner's exit code is
+that verdict: most exit 0 whatever the gate said, so a script reads the JSON. `run_m1_pick --mode` takes
+`easy`, `auto` (the decision gate before every grasp) or `closed_loop` (refine and verify each one).
+`run_m1_pick`, `run_m2_pick`, `run_eih_pick`, `run_multiview_pick`, `run_attribute_pick` and the two
+calibrations take `--robot-model <model>` and `--profile <layer>`, which load the chain `sim,<model>,<layer>`,
+and `--hand <name>`, which runs a registry hand in place of the one the tree names.
+[isaac-ready.md](../../docs/isaac-ready.md) turns a fresh workstation into one that runs all of this.
 
 ## The gate rule
 
-Each pick runner shares the boot prefix and the gate primitives, runs N picks, prints a gate line
-naming how many of the N passed, and exits with a meaningful code.
+A run passes when `pick()` reports success and, checked separately, the part's world height rose by at least
+`robot.sim.scene_setup.gate.lift_threshold_mm`, 50.0 in the sim profile. The service's own outcome is never
+enough on its own. A campaign passes when the passing runs reach `int(pass_fraction * runs)`, and at least one,
+with `pass_fraction` 0.8. A real cell's `PickRun` defaults to unanimity instead (`PassRule`).
+`run_m1_pick` retreats 100.0 mm after the grasp, twice the threshold, so a run that grips at all clears it.
 
-A run passes when `pick()` reports success and, independently, the object's measured world-Z rose
-by at least `robot.sim.gate.lift_threshold_mm`, which the tree sets to 50.0. The service's own
-outcome is never sufficient on its own. The campaign passes when the number of passing runs reaches
-`int(pass_fraction * runs)`, and at least one, with `pass_fraction` set to 0.8. Those two numbers
-are the difference between this gate and the unanimity rule the real-cell runner applies.
+## What it needs, and what it refuses
 
-The known-pose gate has been run on an Isaac workstation against this tree and passed. It is not a
-close call by construction: `run_m1_pick` retreats 100.0 mm after the grasp, twice the threshold the
-gate applies, so a run that grips at all clears it and a run that fails is a failure to grip rather
-than a marginal lift. Every other runner's numbers are yours to measure on your own cell.
+The sim profile plans with cuRobo and checks self-collision on exact meshes with Coal. Both install into
+[ext_deps/](../../ext_deps/README.md) with `scripts/ext_deps/install.ps1`, and
+`python -m src.robot.safety.planning --doctor` reports what is installed without starting Isaac.
+
+| Refusal | When | What to do |
+|---|---|---|
+| the boot, before Isaac starts | cuRobo or Coal cannot be found | install them; `WILLY_ALLOW_DEGRADED_MOTION=1` runs anyway, marked degraded |
+| a cuRobo cell with no camera world | the runner states neither a decline nor a live world | pass `camera_world=`: a `CameraWorldDecline`, or `SimCameraWorld("overhead")` |
+| a policy pick on an `ik` or `rmpflow` arm | before the jaws open: those planners keep no straight line | plan with `curobo`, the sim profile's default |
+| a profile layer that does not claim its robot | `--robot-model ur3e` with a layer that says otherwise | set `robot.sim.robot_model` in that layer |
+| a hand with no Isaac mount | `--hand` or the tree names a hand that exists only on a real cell | refused before the boot; pick a hand `grippers.py` mounts |
+| a multi-view, fused or industrial pick | no calibrated eye-in-hand artifact for the marker | run `run_eih_calibrate` first; it writes `logs/calibration/<model>/` |
+
+A degraded run prints a banner every time and logs an error, because a rate measured on blind IK or the capsule
+proxy describes a different system; `run_m2_pick` and `run_attribute_pick` also stamp `planner_degraded` into
+their result JSON.
 
 ## The runners
 
 | Runner | Scenario |
-| --- | --- |
-| `run_m1_pick.py` | known-pose pick with ground-truth perception, so a failure is motion or geometry |
-| `run_m2_pick.py` | real-vision pick, with the detector and segmenter in the loop. The reference cell: by default it plans against a live camera world from the overhead camera, adding the `sim_camera_world` profile layer; `--decline-camera-world "<why>"` boots the control run without it |
-| `run_eih_pick.py` | eye-in-hand pick: the camera rides the wrist and re-perceives from where it moved |
-| `run_dense_pick.py` | dense-clutter pick, with `--vision` and `--mode dense_autonomous` |
-| `run_fused_pick.py` | dual-camera fused pick: overhead coarse scan, then wrist refine and grasp |
-| `run_multiview_pick.py` | fixed-camera localize, wrist refine, grasp. `--mode` selects the active fixed-camera set (`eth1`, `eth2`, `eth3`, or `sides`, the two-side-camera industrial rig) |
-| `run_industrial_bin_pick.py` | two side cameras localize the prompted part in a tray of mixed parts |
-| `run_attribute_pick.py` | four objects where the noun alone is never enough, as a route comparison |
-| `run_eth_calibrate.py`, `run_eih_calibrate.py` | eye-to-hand and eye-in-hand calibration through the real `CalibrationRoutine` |
+|---|---|
+| `run_m1_pick` | known-pose pick with ground-truth perception, so a failure is motion or geometry |
+| `run_m2_pick` | real vision: detector and segmenter in the loop, planning against a live world from the overhead camera |
+| `run_eih_pick` | eye-in-hand: the camera rides the wrist and perceives again from where it moved |
+| `run_dense_pick` | dense clutter; `--vision` for real perception, `--mode dense_autonomous` for the full loop |
+| `run_fused_pick` | overhead coarse scan, then wrist refine and grasp |
+| `run_multiview_pick` | fixed cameras localize, the wrist refines; `--mode eth1`, `eth2`, `eth3` or `sides` |
+| `run_industrial_bin_pick` | two side cameras find the prompted part in a tray of mixed parts |
+| `run_attribute_pick` | four objects the noun alone cannot tell apart, compared per route |
+| `run_eth_calibrate`, `run_eih_calibrate` | eye-to-hand and eye-in-hand calibration through the real `CalibrationRoutine` |
+| `run_suction_pick`, `run_industrial_suction_pick` | a suction cup on the wrist: one part, and a wide flat package the jaw cannot span |
 
-Every policy pick on a cuRobo sim arm is a planned move to the standoff, one checked line down to
-the grasp and line lifts, and the M1, M2 and dense runners print what the policy read of the arm's
-line on each run (`line_motion=`). A sim arm on ik or RMPflow keeps no straight line, so its policy
-picks are refused before the jaws open: `run_dense_pick --motion-planner ik` or `rmpflow` and
-`run_curobo_demo --record blind` record a refusal, not a pick.
+`run_m2_pick --decline-camera-world "<why>"` boots the control run without the live world. The film recorders
+are `run_eih_demo`, `run_dense_demo`, `run_dense_demo_endgame`, `run_sorting_demo`, `run_bin_clearing_demo`,
+`run_klt_combined_demo`, `run_clutter_demo`, `run_expose_pick`, `run_suction_demo` and
+`run_industrial_suction_demo`. The probes and matrices are `inspect_wrist_cam`, `run_commit_gate`,
+`run_mode_matrix`, `run_occlusion_probe`, `run_pile_baseline`, `run_shake_label`, `run_suction_probe` and
+`run_curobo_demo`.
 
-Beyond the pick gates: cinematic recorders (`run_dense_demo`, `run_dense_demo_endgame`,
-`run_sorting_demo`, `run_bin_clearing_demo`, `run_klt_combined_demo`, `run_clutter_demo`,
-`run_eih_demo`, `run_expose_pick`), suction runners (`run_suction_pick`,
-`run_industrial_suction_pick`, `run_suction_demo`, `run_suction_probe`), and probes and matrices
-(`inspect_wrist_cam`, `run_commit_gate`, `run_mode_matrix`, `run_occlusion_probe`,
-`run_pile_baseline`, `run_shake_label`, `run_curobo_demo`).
-
-```bash
-# Isaac's bundled interpreter, from the repository root:
-<isaac-sim>\python.bat -m src.willy_sim.run_m1_pick --runs 10
-```
-
-`examples/simulation/03_isaac_pick_rate.py` fronts the first three and checks the interpreter before anything
-else, which is the single most common way an hour disappears here.
-
-## Contents
-
-| Path | Role |
-| --- | --- |
-| `config.py` | `load_sim_config`, which loads the repository `config` tree under the `sim` profile, plus `require_robot`, `sim_driver_config`, `sim_safety_preflight` and `sim_profile_chain` |
-| `harness/` | The shared runner seams, below |
-| `perception/` | `PerceptionSource` implementations: `ground_truth.py` (single and multi-object, runnable on CPU) and `vision.py` (the real detector and segmenter, on box), plus `camera_owner.py`, the Isaac overhead camera as the camera owner a live planner world is built from. Each perception source stamps a frame with the clock read just before the last render step whose buffers it reads, and takes `camera_name=`, the name the live world gives its camera, under which the pick loop offers its masks (`run_m2_pick` passes `overhead`) |
-| `scene/` | Isaac scene authoring: `build.py`, `cameras.py` (overhead and wrist, with their frame transforms), `markers.py`, `constants.py` |
-| `calibration/` | `hand_eye.py`, the marker-pose sources and hemisphere viewpoints around the real `CalibrationRoutine`, and `paths.py` |
-| `grippers.py` | Which end-effector to mount, jaw or suction, as config-selected data. The mount follows `robot.gripper.model`; a per-run `hand=` override in the bootstrap brings that hand's widths and envelope as the loader would. A registry hand with no mount here is a real-cell hand and is refused by name in Isaac. |
-| `gso_assets.py` | Loader that converts scanned-object meshes to USD for realistic scenes |
-| `suction_mount.py` | Authors an Isaac surface-gripper suction anchor on the wrist |
-| `shake_label.py` | Native physics shake-test labeller, held or dropped, via kicks and gravity overload |
-
-The seams in `harness/`:
-
-| Seam | What it gives |
-| --- | --- |
-| `bootstrap_sim_cell(...) -> SimCell` | The shared boot prefix: load the sim-profile config, audit reach and camera coverage, probe the motion stack, build a fail-closed `IsaacRobotArm`, start the session, author the scene, connect the arm and then the gripper. `SimCell` exposes `arm`, `gripper`, `handles`, `cfg`, `robot`, `sim`, `dwell`, `degraded_engines`, `mount` and `camera_world`. A cuRobo cell must pass `camera_world=`, or it is refused before the arm is built: a `CameraWorldDecline` naming the runner, held for the cell's life, or `SimCameraWorld("overhead")` from `harness/camera_world.py`, which fits the overhead camera's CAMERA to BASE from rendered depth (`perception/camera_owner.py`) and wires a live world through `Robot.from_parts`. Every runner states one at its boot call. |
-| `GateResult` and helpers | `GateResult.to_dict()` emits exactly the key set its runner expects, plus `reset_object_to_home_z0()`, `lift_mm_since()`, `gate_passed()` and `last_line_motion()`, what the last pick's policy read the arm to keep of a straight line. The per-pick loop and the scoring stay per-runner, deliberately not shared. |
-| `RunnerEnv.from_env(...)` | The 17 `WILLY_*` runner knobs in one place, with their context-aware defaults preserved. |
-| `mode_service_kwargs`, `resolve_demo_mode` | Map a mode string to a typed `GraspMode` plus the sub-policy arguments it needs. |
-| `reach.py`, `coverage.py` | Geometry checks that run before the Isaac boot: whether a configured point is inside the arm's reach sphere, and whether the scene is inside the camera frame. |
-| `cli.py` | The `--robot-model` and `--profile` arguments every runner shares. |
-| `DomainRandomizer`, `ArmBackedIKService`, `instrumentation`, `depth_noise` | A seeded randomizer stamped into the record, a singularity-aware IK service backing the grasping veto seam, opt-in per-pick record and image dumps, and synthetic noise on Isaac's noise-free depth. |
-
-## Launch discipline on a workstation
+## On a workstation
 
 | Rule | Why |
-| --- | --- |
-| One single file-redirected `cmd /c "...python.bat... > log 2>&1"` | `cmd` writes UTF-8 and PowerShell redirection writes UTF-16 |
-| Never a compound command | it hangs the boot |
-| One Isaac process at a time | they contend for the GPU and the asset cache |
-| Export `WILLY_CUROBO_PYTHON` and `WILLY_COAL_PREFIX` before launching | otherwise a cuRobo cell refuses, at the boot and again at every motion, rather than running the blind IK path whose self-collisions on some reach poses read as grasp failures. Every runner prints the anchoring status, so a degraded run is obvious rather than mistaken for a grasp-quality problem |
+|---|---|
+| one file-redirected `cmd /c "<isaac-sim>/python.bat ... > log 2>&1"` | `cmd` writes UTF-8 where PowerShell redirection writes UTF-16 |
+| never a compound command | it hangs the boot |
+| one Isaac process at a time | they contend for the GPU and the asset cache |
+| export `WILLY_CUROBO_PYTHON` and `WILLY_COAL_PREFIX` before launching | otherwise a cuRobo cell refuses at the boot |
 
-## Traps
+- **Most runners build through `from_components`**, because the Isaac gripper is not in the gripper registry and
+  needs the arm's session, so they switch the grasping overlays on in runner code. `run_multiview_pick` builds
+  through `from_robot_config` by default (`--boot config`, with `--boot components` as the comparison), which
+  is the path a real cell takes, and `run_eih_pick.build_service(service_from_config=True)` does from Python.
+- **The overhead camera keeps Isaac's 1.0 m near clip on purpose.** It hides the arm from the instance mask;
+  read the clipping range back off the camera before believing a value was applied.
+- **The detector runs fp32 weights in the simulator.** The sim model overlays leave the dtype unset, which
+  holds recall on small objects in the overhead view.
+- **Record logging is opt-in**: `run_m1_pick --record-log <file>` appends one `GraspAttemptRecord` per pick.
+- **Logs.** Library modules write under `logs/willy_sim/`. The runners print to stdout, so a run's narrative
+  lands in that run's redirect; the ones that leave an artifact (the calibrations, the mode matrix, the shake
+  labeller, the pile baseline, the occlusion probe) also log the conditions the artifact cannot carry.
 
-- **Most runners build through `from_components`, not `from_robot_config`,** because `IsaacGripper`
-  is not in the gripper registry and needs the arm's session. That leaves `effective_config=None`
-  and silences the config-driven overlays, so those runners re-enable them in runner code through
-  `build_effective_config` and `apply_orchestrator_overlays`. Two runners can take the other path
-  by handing the live gripper handle to `from_robot_config`, which is the path a real cell takes:
-  `run_multiview_pick` defaults to it (`--boot config`, with `--boot components` kept as the
-  comparison that must agree), and `run_eih_pick.build_service` takes `service_from_config=True`
-  from Python.
-- **The overhead camera's near clip is deliberate.** The sim tree leaves `near_clip_m` unset for
-  the nadir camera, so it keeps Isaac's 1.0 m default, which hides the arm from the instance mask.
-  A clean mask and the object in the depth render are mutually exclusive there, and mutating a
-  camera after its annotators are attached kills them. Read the clipping range back off the camera
-  before believing a value was applied.
-- **The detector runs fp32 weights in the simulator.** The `sim` model overlays leave the dtype
-  unset so the weights load fp32 under fp16 autocast, which is what holds recall on small objects
-  in the overhead view.
-- **On-box only for the runners.** They need a real Isaac install and are excluded from the
-  coverage measurement. The CPU-runnable core, meaning the ground-truth perception path, the
-  randomizer, the IK service, the gate, the environment knobs, the modes, the hand-eye calibration,
-  the config module and the scene module, is what the mock suite covers.
-- **Record logging is opt-in**, through `enable_record_logging(path)`, so the offline soak, KPI and
-  learning layers get real simulator data only when a run asks for it.
-- **Where the logs go.** Each library module writes a rotating file under `logs/willy_sim/`, and
-  every filename is declared in `constants.py`. The pick and demo runners deliberately do not: their
-  per-run narrative stays on stdout, which lands in that run's redirect and is therefore
-  attributable to one run, where a shared rotating file is not. The exceptions are the runners that
-  leave an artifact behind, the two calibrations, the mode matrix, the shake labeller, the pile
-  baseline and the occlusion probe, which log the conditions their artifact cannot carry.
-- **A simulator rate proves the software, never the cell.** Contact friction is a model, the depth
-  is a perfect sensor, a gripper that closes cleanly here can slip on a real surface, and a
-  simulated camera's near clip hides things no real camera hides.
+## Status
 
-## See also
+| Capability | Evidence |
+|---|---|
+| Known-pose gate, `run_m1_pick` | measured in simulation: run on an Isaac workstation against this tree, and passed |
+| Real-vision, eye-in-hand, multi-view and suction picks, and calibration | measured in simulation; rates on your cell are yours to measure |
+| Any of it on a physical cell | never touched hardware: contact is a model and the depth is a perfect sensor |
 
-- [Workaholic-Willy](../../README.md), the repository overview
-- [robot/drivers/sim](../robot/drivers/sim/README.md), the Isaac driver this cell mounts
-- [robot/execution/autonomous_grasp](../robot/execution/autonomous_grasp/README.md), the pick path the runners drive
-- [robot/grasping](../robot/grasping/README.md), the vendor-neutral grasp stack under test
-- [ext_deps](../../ext_deps/README.md), how to install cuRobo and Coal
-- `examples/simulation/03_isaac_pick_rate.py`, the readiness check and a fronted run
+Without Isaac, the mock suite (`tests/test_willy_sim_*.py`) covers the CPU half: ground-truth perception, the
+randomizer, the IK service, the gate, the runner knobs, the modes, hand-eye calibration, the config and the scene.
+
+## Files
+
+| Path | Holds |
+|---|---|
+| [config.py](config.py) | `load_sim_config`, which loads the `config` tree under the `sim` profile, and its helpers |
+| [harness/](harness/) | the shared seams below |
+| [perception/](perception/) | ground-truth and real-vision perception sources, and the overhead camera as a live world's camera |
+| [scene/](scene/) | Isaac scene authoring: the cell, the cameras and their frames, the markers |
+| [calibration/](calibration/) | marker-pose sources and viewpoints around the real `CalibrationRoutine` |
+| [grippers.py](grippers.py) | which jaw or suction cup Isaac mounts, following `robot.gripper.model` |
+| [gso_assets.py](gso_assets.py), [suction_mount.py](suction_mount.py), [shake_label.py](shake_label.py) | scanned-object USDs, the suction anchor, the shake labeller |
+
+| Seam in `harness/` | Gives |
+|---|---|
+| `bootstrap_sim_cell(...) -> SimCell` | the shared boot: config, reach and camera audits, motion stack probe, arm, scene, gripper |
+| `GateResult`, `gate_passed`, `lift_mm_since` | the verdict type the pick runners return, and the gate arithmetic |
+| `SimCameraWorld`, `CellCameraWorld` | a live camera world from the overhead camera, or the decline a cell holds |
+| `RunnerEnv.from_env(...)` | the `WILLY_*` runner knobs in one place |
+| `mode_service_kwargs`, `resolve_demo_mode` | a mode string to a typed `GraspMode` and its sub-policy arguments |
+| `reach.py`, `coverage.py`, `cli.py` | the reach and camera checks before the boot, and the arguments the runners share |
+| `DomainRandomizer`, `ArmBackedIKService`, `depth_noise` | seeded randomization, the IK service behind the veto seam, noise on perfect depth |
+
+## Details
+
+- [docs/isaac-ready.md](../../docs/isaac-ready.md), the workstation setup, and [docs/cli.md](../../docs/cli.md),
+  the commands.
+- [robot/drivers/sim](../robot/drivers/sim/README.md), the Isaac driver;
+  [robot/execution/autonomous_grasp](../robot/execution/autonomous_grasp/README.md), the pick path the runners
+  drive; [robot/grasping](../robot/grasping/README.md), the grasp stack under test.
+- [Guide 05](../../docs/guide/05-pick-loop.md), the pick loop in the simulator.

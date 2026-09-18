@@ -1,90 +1,101 @@
-# Grasping geometry (`src.robot.grasping.geometry`)
+# Grasp geometry (`src.robot.grasping.geometry`)
 
-The grasp-specific numeric toolbox: back-project a masked depth map into a point cloud, filter and
-sub-sample it, estimate local surface normals, and validate a CAMERA to BASE rigid transform.
+The numeric toolbox under grasp generation: turn a masked depth map into a point cloud, filter and thin
+it, estimate surface normals, and check a CAMERA to BASE matrix before it is used. Pure NumPy and
+deterministic.
 
-## What it guarantees
-
-Pure NumPy, deterministic, and no required dependency beyond NumPy. Every point array is `(N, 3)` in
-millimetres, in the camera frame unless the caller has transformed it. The filtering and sampling
-helpers return keep-indices rather than new clouds, so a caller can slice its parallel attribute
-arrays, points, normals and colours, in step.
-
-Every helper validates shape, finiteness and range, and raises `ValueError` on a bad input. It never
-raises the frame algebra's `InvalidPoseError`, so the whole grasping stack has one validation
-contract to catch.
-
-The frame-safe `Pose` and `Frame` algebra, compose, invert and apply, belongs to
-[`src.geometry`](../../../geometry/README.md). This package deliberately does not duplicate it and
-holds no frame composition: the one `Pose` it builds, in `grasp_frame.py`, is built through that
-algebra. Nor does it hold Open3D, torch, a perception model or a vendor SDK.
-
-## The public surface
-
-The stages run in this order: `pointcloud -> filters -> sampling -> normals`.
-
-| Module | Public surface |
-| --- | --- |
-| `pointcloud.py` | `CameraIntrinsics`, `MaskedPointCloud`, `masked_point_cloud`, `masked_points`, `depth_unit_to_mm` |
-| `filters.py` | `CloudOutlierConfig`, `apply_cloud_outlier_filter`, `filter_by_depth_range`, `radius_outlier_indices`, `statistical_outlier_indices` |
-| `sampling.py` | `uniform_sample_indices`, `voxel_downsample_indices`, `farthest_point_sample_indices` |
-| `normals.py` | `NormalEstimationConfig`, `SurfaceNormals`, `estimate_surface_normals` |
-| `transforms.py` | `validate_transform`, the one gate a rigid 4x4 passes before any back-projection |
-| `grasp_frame.py` | `pose_from_grasp_axes`: a grasp's position, approach and closing axis as the `Pose` a tool takes, +Z the approach and +X the closing axis. The candidates' `pose()` methods call it. |
-| `_spatial.py` | `RadiusIndex`, the shared neighbour index |
-| `_validation.py` | `as_points_nx3`, `as_vec3`, `as_mask_and_depth`, the shared input validators |
-
-The back-projection formula is in the `pointcloud` module docstring, and the local-PCA normal
-estimate in `normals`.
-
-## Usage
-
-There is no command line here. It is a library.
+You reach it through the grasp calculator; there is no command line. Call it directly to look at the
+cloud the calculator would see:
 
 ```python
 from src.robot.grasping.geometry import (
-    CameraIntrinsics, masked_point_cloud, statistical_outlier_indices, estimate_surface_normals,
+    CameraIntrinsics, estimate_surface_normals, masked_point_cloud, statistical_outlier_indices,
 )
 
 cloud = masked_point_cloud(mask, depth_map, CameraIntrinsics(fx, fy, cx, cy), unit="m")
-keep = statistical_outlier_indices(cloud.points_mm)
+keep = statistical_outlier_indices(cloud.points_mm)          # indices, so parallel arrays stay in step
 normals = estimate_surface_normals(cloud.points_mm[keep], radius_mm=15.0)
+print(cloud.points_mm.shape, normals.normals.shape)
 ```
 
-`masked_point_cloud` drops non-finite and non-positive depths in the same pass as the optional
-`min_depth_mm` and `max_depth_mm` band, and downsamples afterwards when `voxel_size_mm` is given.
-`min_depth_mm` defaults to 1.0 mm, so a zero-depth pixel is never a point.
+`mask` is an HxW boolean or `uint8` array, `depth_map` the matching depth in the `unit` you name (`mm`,
+the default, `cm` or `m`). Every point array is `(N, 3)` millimetres in the camera frame unless you
+transformed it.
+
+## The calls
+
+The stages run in this order: point cloud, filters, sampling, normals.
+
+| Call | Takes | Returns |
+| --- | --- | --- |
+| `masked_point_cloud(mask, depth_map, intrinsics, ...)` | a depth band and an optional `voxel_size_mm` | `MaskedPointCloud`: points, pixels, depths |
+| `statistical_outlier_indices`, `radius_outlier_indices` | points | the indices to keep |
+| `apply_cloud_outlier_filter(points, CloudOutlierConfig(...))` | points and a config | the indices to keep |
+| `uniform_sample_indices`, `voxel_downsample_indices`, `farthest_point_sample_indices` | points | the indices to keep |
+| `estimate_surface_normals(points, config or overrides)` | points, a `NormalEstimationConfig` | `SurfaceNormals`: normals, confidence, curvature |
+| `validate_transform(T)` | a 4x4 matrix | a validated float64 copy |
+| `pose_from_grasp_axes(position, approach=..., closing_axis=..., frame=...)` | a grasp's axes | the tool `Pose`: +Z approach, +X closing |
+
+Filters and samplers return keep-indices rather than new clouds, so a caller slices points, normals and
+colours in step. `masked_point_cloud` drops non-finite, zero and negative depths in the same pass as
+the depth band; `min_depth_mm` defaults to 1.0, so a zero-depth pixel is never a point. The
+back-projection formula is in the `pointcloud` module docstring and the normal estimate in `normals`.
+
+This package holds no frame algebra. Composing, inverting and applying poses belongs to
+[`src.geometry`](../../../geometry/README.md); the one `Pose` built here, in `grasp_frame.py`, is built
+through it.
+
+## What it refuses
+
+| Refusal | When | What to do |
+| --- | --- | --- |
+| `ValueError` | a wrong shape, a non-finite value, a range out of bounds, in any helper | fix the input; the message names it |
+| `ValueError` from `validate_transform` | a rotation block not orthonormal within `1e-4`, a determinant off 1 by more than `1e-3`, a wrong last row | recheck the calibration |
+| `ValueError` from `estimate_surface_normals` | both a config and keyword overrides | pass one of them |
+| `ValueError` from `depth_unit_to_mm` | a unit other than `mm`, `cm` or `m` | name the unit your camera writes |
+
+Every helper raises `ValueError`, never the frame algebra's `InvalidPoseError`, so the grasping stack
+has one validation error to catch.
 
 ## Traps
 
-`validate_transform` is looser than `src.geometry` on purpose: orthonormality within `1e-4` and a
-determinant within `1e-3` of 1, against about `1e-6` there. A real CAMERA to BASE calibration matrix
-carries more numerical slack than a freshly composed `Pose`, and otherwise good extrinsics would be
-rejected at the tighter tolerance. Tighten these two constants only alongside a re-validation of what
-the calibration routines write.
+- `validate_transform` is looser than `src.geometry` on purpose: `1e-4` and `1e-3` against about `1e-6`
+  there. A real calibration matrix carries more slack than a freshly composed `Pose`, and good extrinsics
+  would fail the tighter check. Tighten these only alongside a re-check of what the calibration writes.
+- Local-PCA normals are noisy near a mask or object edge. `curvature` is an eigenvalue ratio, fit for
+  ranking and not for measurement, and the camera-facing orientation is a heuristic.
+- SciPy is optional. `RadiusIndex` uses `scipy.spatial.cKDTree` when it imports and a NumPy scan
+  otherwise; both return the same neighbours, the scan is slower on a large cloud.
+- `CloudOutlierConfig` is off unless a caller builds one. No config key selects it; it reaches the pick
+  only through `GraspCalculator(cloud_outlier_filter=...)` or the same argument on
+  `dense_surface_samples`. It targets stereo and RGB-D speckle, so it does nothing on a noise-free
+  renderer.
 
-`estimate_surface_normals` takes either a frozen `NormalEstimationConfig` or one-off keyword
-overrides. Passing both raises, rather than silently preferring one.
+## Status
 
-Local-PCA normals are noise-sensitive near a mask or object boundary. `curvature` is an
-eigenvalue-ratio proxy, good for ranking and not for metric reconstruction, and the camera-facing
-orientation is a heuristic rather than a topology-aware one.
+| Capability | Evidence |
+| --- | --- |
+| Point cloud, sampling, normals, `validate_transform` | measured in simulation: the grasp calculator runs them on every Isaac pick |
+| `CloudOutlierConfig` | never touched hardware: it has never been run against a physical depth camera |
 
-SciPy is an optional accelerator. `RadiusIndex` uses `scipy.spatial.cKDTree` when it imports and
-falls back to a NumPy brute-force scan otherwise. Both back ends return the same neighbour set; the
-fallback is slower on a large cloud.
+## Files
 
-`CloudOutlierConfig` is off unless a caller builds one. No configuration key selects it and no
-shipped caller supplies one: it reaches the pipeline only through
-`GraspCalculator(cloud_outlier_filter=...)` or the same argument on `dense_surface_samples`. It
-targets stereo and RGB-D speckle and edge bleed, so it is a no-op on a noise-free renderer, and it
-has never been run against a physical depth camera.
+| File | Holds |
+| --- | --- |
+| `pointcloud.py` | `CameraIntrinsics`, `MaskedPointCloud`, `masked_point_cloud`, `masked_points`, `depth_unit_to_mm` |
+| `filters.py` | `CloudOutlierConfig`, `apply_cloud_outlier_filter`, `filter_by_depth_range`, the outlier index helpers |
+| `sampling.py` | `uniform_sample_indices`, `voxel_downsample_indices`, `farthest_point_sample_indices` |
+| `normals.py` | `NormalEstimationConfig`, `SurfaceNormals`, `estimate_surface_normals` |
+| `transforms.py` | `validate_transform` |
+| `grasp_frame.py` | `pose_from_grasp_axes`, which every candidate's `pose()` calls |
+| `_spatial.py` | `RadiusIndex`, the shared neighbour index |
+| `_validation.py` | `as_points_nx3`, `as_vec3`, `as_mask_and_depth`, the shared input checks |
 
-## See also
+## Details
 
-- [`../README.md`](../README.md) for the pipeline this feeds
-- [`../../../geometry/README.md`](../../../geometry/README.md) for the frame-safe algebra this module
-  intentionally does not duplicate
-- [`../contacts/README.md`](../contacts/README.md) for the contact-pair search built on these clouds
-  and normals
-- [`../scoring/README.md`](../scoring/README.md) for the candidate scoring downstream
+- [`contacts/`](../contacts/README.md) builds contact pairs on these clouds and normals, and
+  [`scoring/`](../scoring/README.md) scores the candidates downstream.
+- [`src.geometry`](../../../geometry/README.md) for the frame-safe algebra this package does not repeat.
+- [The grasping maths](../../../../docs/grasping-math.md) for back-projection and normals.
+- Tests: `tests/test_geometry_hardening.py`, `tests/test_surface_normals.py`, `tests/test_radius_index.py`,
+  `tests/test_h1_2_cloud_outlier_filter.py`.

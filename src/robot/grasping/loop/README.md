@@ -1,107 +1,130 @@
-# The pick loop
+# The pick loop (`src.robot.grasping.loop`)
 
-`BinPickingOrchestrator` turns the tiers into one attempt. The calculator can already say why a pick
-failed; this package turns those reasons into actions, and reports what the loop is doing while it
-runs.
+`BinPickingOrchestrator` turns the grasping tiers into one attempt: perceive, rank, choose a target,
+execute, and act on why an attempt failed. It also reports what a pick is doing while it runs.
 
-| Module | Owns |
-|---|---|
-| [`pick_loop.py`](pick_loop.py) | `BinPickingOrchestrator`, `PickReport`, `PickOutcome`: the loop itself |
-| [`progress.py`](progress.py) | `PickStage`, `PickProgress`, `emit`: what a pick is doing while it does it |
-| [`target_selector.py`](target_selector.py) | The clutter-aware selector: which object first, when several are viable |
-| [`_pick_helpers.py`](_pick_helpers.py) | Two pure adapters: a chosen `GraspPoint` to the `GraspPose` the swept-volume validator wants, and per-segmentation successes to `TargetCandidate` records |
-| [`_shadow_aggregator.py`](_shadow_aggregator.py) | The shadow-telemetry collaborator, described below |
+The pick service builds and drives it; you do not construct one. What you can attach is a listener that
+hears each stage. This runs at a desk, on the dummy arm of the `console_dummy` profile:
+
+```python
+from willy import Cell, PickRun, Recording, load_tree
+from src.robot.grasping.loop.progress import PickProgress
+
+
+def show(event: PickProgress) -> None:
+    print(event.stage, event.attempt, event.candidate_count)
+
+
+cell = Cell.rehearsal(load_tree("console_dummy").robot)   # a dummy arm and a synthetic scene
+cell.build().attach_progress_listener(show)               # the service that drives the loop
+print(PickRun.from_cell(cell, runs=1, recording=Recording.off()).execute())
+```
+
+It prints `pick_started`, `attempt_started`, `perceived`, `ranked` with the candidate count,
+`executing`, `attempt_finished` and `pick_finished`, then the run's verdict.
+
+## The nouns
+
+| Noun | Built by | Verb | Returns |
+| --- | --- | --- | --- |
+| `BinPickingOrchestrator` | the pick service | `run()` | `PickReport` with a `PickOutcome` |
+| a listener | your function taking a `PickProgress` | `service.attach_progress_listener(fn)` | events while the pick runs |
+| `TargetOrderingConfig` | `robot.grasping.ordering` | `select_target(candidates=..., config=...)` | `OrderingDecision` |
 
 The orchestrator depends only on the `RobotArm` Protocol, a calculator, a perception Protocol and an
-optional viewpoint planner. Real perception and a real next-best-view solver plug in without touching
-this file, which is how the simulation runners and the real cell differ from each other while sharing
-the loop.
+optional viewpoint planner, which is how the simulation runners and a real cell share one loop.
 
 ## Reasons become actions
 
-| Reason from the calculator | What the loop does |
-|---|---|
-| `RESCAN_RECOMMENDED`, or no candidate at all | Request a fresh perception frame, without moving the robot |
-| `ACTIVE_PERCEPTION_RECOMMENDED` | Ask a viewpoint planner for a new camera pose, drive there, re-acquire |
-| `IK_FAILED` on the top candidate | Try the next ranked candidate before escalating |
-| Anything else | Terminate with the corresponding outcome |
+| Reasons from the calculator | What the loop does |
+| --- | --- |
+| `RESCAN_RECOMMENDED`, `NO_CANDIDATES_GENERATED`, `NO_VALID_DEPTH`, `LOW_DEPTH_CONFIDENCE`, `LOW_MASK_CONFIDENCE` | a fresh frame, without moving the robot |
+| `ACTIVE_PERCEPTION_RECOMMENDED`, `ALL_OUT_OF_WORKSPACE` | the viewpoint planner's next camera pose, then a fresh frame; with no planner, a rescan |
+| anything else | ends with the matching outcome |
 
-`PickOutcome` is the typed terminal: `EXECUTED`, `RESCANNED_EXHAUSTED`, `RELOCATED_EXHAUSTED`,
-`NO_PERCEPTION`, `ABORTED`, `CANCELLED`, `OBJECT_NOT_DETECTED`, `EXECUTION_FAILED`,
-`CAMERA_FRAME_REJECTED`, `NO_COMMIT_INSUFFICIENT_FUSION`, `APPROACH_PATH_BLOCKED`,
-`CONTROLLER_NOT_OPERATIONAL`. The last of those is what stops the loop retrying into a controller
-that has protective-stopped.
+With an IK service wired, the calculator drops an unreachable candidate and the next ranked one stands;
+without one, the motion planner is the first to refuse it. `IK_FAILED` means every candidate was
+unreachable, and it arrives with `RESCAN_RECOMMENDED`. With the swept-path validator on, the loop executes the first candidate whose
+approach is clear.
+
+`PickOutcome` is the typed end: `EXECUTED`, `RESCANNED_EXHAUSTED`, `RELOCATED_EXHAUSTED`, `NO_PERCEPTION`,
+`ABORTED`, `CANCELLED`, `OBJECT_NOT_DETECTED`, `EXECUTION_FAILED`, `CAMERA_FRAME_REJECTED`,
+`NO_COMMIT_INSUFFICIENT_FUSION`, `APPROACH_PATH_BLOCKED`, `CONTROLLER_NOT_OPERATIONAL`. `CANCELLED` is an
+operator's stop between attempts, kept apart from `ABORTED` so a stop button never counts as a failed
+execution. `CONTROLLER_NOT_OPERATIONAL` stops the loop retrying into a controller that has
+protective-stopped.
 
 ## Progress
 
-`run()` is a single blocking call that returns one report at the end. A subscriber that attaches a
-listener learns something while the pick is still running.
+`run()` is one blocking call; a listener learns something while it is still running. `PickStage` is a
+fixed set: `PICK_STARTED`, `ATTEMPT_STARTED`, `PERCEIVED`, `RANKED`, `NO_CANDIDATE`, `EXECUTING`,
+`ATTEMPT_FINISHED`, `PICK_FINISHED`, `CANCELLED`. The operator console turns each into a sentence, so a
+new member is a change to it as well.
 
-```
-PICK_STARTED -> ATTEMPT_STARTED -> PERCEIVED -> RANKED -> EXECUTING -> ATTEMPT_FINISHED -> PICK_FINISHED
-                                                 |                                          |
-                                                 NO_CANDIDATE                               CANCELLED
-```
+- Off and byte-identical by default: with no listener each emit is one `is None` test, and no event is
+  built.
+- Typed: the stage is a `StrEnum` and the event a flat frozen dataclass, so it serialises with no
+  translation layer.
+- It cannot break a pick: a listener that raises is logged and ignored. It is called inline on the
+  thread driving the robot, so a slow listener slows the loop; hand the event to a queue and return.
 
-Three properties, each of them deliberate.
-
-Default off and byte identical. With no listener attached every emit is one `is None` test. The
-payload is not constructed, no string formatted, nothing measured that was not measured already.
-That is why `emit` takes the pieces rather than a built `PickProgress`: building the event only to
-discard it is the cost this design exists to avoid.
-
-Typed. The stage is a `StrEnum` and the payload a frozen dataclass, so the fields a console renders
-cannot change shape unnoticed. The member set of `PickStage` is a fixed contract, because adding one
-breaks a console replay buffer and any interface that maps stages to labels.
-
-Emission cannot break a pick. Listener exceptions are swallowed. A browser that disconnects
-mid-render, a subscriber with a bug or a full disk in a log listener must not abort a motion already
-in flight.
+`service.set_cancel_check(fn)` lets a caller stop a run between attempts. It never interrupts a motion
+in flight; the physical stop button does that.
 
 ## Which object first
 
-`target_selector.py` runs after per-segmentation grasps are computed and before the executor takes
-one, for the case where several objects are simultaneously viable. It estimates how much removing
-each candidate would unblock the others and returns an `OrderingDecision` carrying the chosen index,
-the supporting scores, the resolved mode (`single_best` or `clutter_aware`) and a typed reason
-(`local_max`, `unlock_swap`, `guard_blocked_swap`, `no_candidates` or `disabled`).
+`target_selector.py` runs when several objects are graspable at once. It estimates how much removing
+each one would unblock the others and returns an `OrderingDecision`: the chosen index, the scores, the
+mode (`single_best` or `clutter_aware`) and a reason (`local_max`, `unlock_swap`, `guard_blocked_swap`,
+`no_candidates` or `disabled`). It is pure: no input or output and no robot state.
 
-It is pure: no input or output, no logging, no robot state. The defaults reduce to taking the best
-grasp, byte for byte. `TargetOrderingConfig.enabled` is false, `unlock_weight` is 0.0, and all three
-blocker-graph signals (`mask_adjacency_enabled`, `depth_only_enabled`, `corridor_overlap_enabled`)
-are off.
+The defaults reduce to taking the best grasp, byte for byte: `enabled` is false and `unlock_weight` is
+`0.0`, so the blocker graph is built and multiplied by zero. Of the three blocker signals,
+`mask_adjacency_enabled` and `depth_only_enabled` work when switched on; `corridor_overlap_enabled` is
+accepted and does nothing. Ordering can only change a decision where two graspable objects block each
+other, and with a target label the choice is made before ordering is asked.
 
-The block runs; what it needs is a scene. Ordering only differs from taking the best grasp when two
-or more objects are graspable at the same time and one genuinely blocks another. A scene of
-well-separated graspable objects yields unlock scores of zero and degenerates to the local maximum,
-and a scene of objects tight enough to block each other tends to offer nothing graspable. Enabling
-the block on the wrong scene changes no decision and is not evidence that it does nothing.
+## What it refuses
 
-## The shadow aggregator, and why it owns no state
+| Refusal | When | What to do |
+| --- | --- | --- |
+| `CAMERA_FRAME_REJECTED` | the chosen grasp is still in the camera frame on a cell that requires BASE | check the camera's declared calibration |
+| `NO_COMMIT_INSUFFICIENT_FUSION` | the commit gate found too little multi-view evidence and the re-look budget is spent | add a view, or leave the gate off |
+| `APPROACH_PATH_BLOCKED` | every ranked candidate's approach sweep hits the scene cloud | clear the scene or re-perceive |
+| `CONTROLLER_NOT_OPERATIONAL` | the controller is stopped or powered off | a person clears the stop |
+| `RuntimeError` | a configured fused camera delivered no frame and `on_camera_unavailable` is `refuse` | see [`multiview/`](../multiview/README.md) |
 
-`_shadow_aggregator.py` holds the reinforcement-learning observability logic that is interleaved with
-the deterministic perceive, score, decide, commit, execute loop. It is stateless by design.
+## Status
 
-Every per-pick slot lives on the orchestrator as `field(init=False)`, because the
-`AutonomousGraspService` shadow seam reads several of them through `getattr` and the runtime pick
-path reads another directly. Moving a slot off the instance drops telemetry silently, with no error
-anywhere. The aggregator therefore reads loop state through getter closures and returns telemetry,
-and the orchestrator's thin same-named delegators assign their own slots. Return and assign means a
-slot-write typo is a type error rather than a silently created new attribute.
+| Capability | Evidence |
+| --- | --- |
+| The loop, its outcomes and the progress events | measured in simulation: every Isaac pick runs through it |
+| `CONTROLLER_NOT_OPERATIONAL` | measured against real controller software: a protective stop in URSim |
+| Clutter-aware ordering | never touched hardware: tested on synthetic scenes, no measured scene where order matters |
 
-Every shadow producer swallows its own exceptions by contract, so that a broken shadow can never
-break a pick. That also means a permanently broken shadow looks exactly like one that is switched
-off, which is why the aggregator logs.
+## Files
 
-## See also
+| File | Holds |
+| --- | --- |
+| [`pick_loop.py`](pick_loop.py) | `BinPickingOrchestrator`, `PickReport`, `PickOutcome`, `CommitPolicy` |
+| [`progress.py`](progress.py) | `PickStage`, `PickProgress`, `emit` |
+| [`target_selector.py`](target_selector.py) | `select_target`, `TargetOrderingConfig`, `OrderingDecision`, the blocker graph |
+| [`_pick_helpers.py`](_pick_helpers.py) | a chosen `GraspPoint` to a `GraspPose`, and successes to `TargetCandidate` records |
+| [`_shadow_aggregator.py`](_shadow_aggregator.py) | the observe-only telemetry the loop emits for the learning tools |
 
-- [`../README.md`](../README.md) for the tiers this loop wires together
-- [`../../execution/autonomous_grasp/README.md`](../../execution/autonomous_grasp/README.md) for the
-  service that builds and drives this orchestrator
-- [`../motion/README.md`](../motion/README.md) for the execution policy the chosen grasp is handed to
-- [`../recovery/README.md`](../recovery/README.md) and
-  [`../closed_loop/README.md`](../closed_loop/README.md) for the two second chances
-- [`../../../../api/README.md`](../../../../api/README.md) for the console that consumes `PickStage`
-  over a WebSocket
-- [`../../../../docs/grasping-config-reference.md`](../../../../docs/grasping-config-reference.md)
-  for the `ordering` block and the mode gate
+The shadow aggregator owns no state: every per-pick slot stays on the orchestrator, because the pick
+service reads several of them by name, and moving one would drop telemetry with no error. Every shadow
+producer swallows its own exceptions so it cannot break a pick, which is why the aggregator logs.
+
+## Details
+
+- [`execution/autonomous_grasp/`](../../execution/autonomous_grasp/README.md) builds and drives this
+  orchestrator; [`motion/`](../motion/README.md) executes the chosen grasp.
+- [`recovery/`](../recovery/README.md) and [`closed_loop/`](../closed_loop/README.md) are the two second
+  chances.
+- [The console](../../../../api/README.md) streams `PickStage` over a WebSocket.
+- [Guide 05, the pick loop](../../../../docs/guide/05-pick-loop.md), and
+  [the grasping config reference](../../../../docs/grasping-config-reference.md) for `ordering`.
+- Tests: `tests/test_pick_loop.py`, `tests/test_pick_progress.py`,
+  `tests/test_pick_loop_controller_state.py`, `tests/test_t4_target_selector.py`,
+  `tests/test_t4_pick_loop_ordering.py`.

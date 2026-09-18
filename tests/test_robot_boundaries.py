@@ -189,7 +189,7 @@ class RobotImportBoundaryTests(unittest.TestCase):
         )
         offenders: list[str] = []
 
-        for path in (root / "backend").rglob("*.py"):
+        for path in (root / "src").rglob("*.py"):
             rel = path.relative_to(root).as_posix()
             text = path.read_text(encoding="utf-8")
             if (any(pattern.search(text) for pattern in patterns)

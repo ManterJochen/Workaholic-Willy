@@ -1,240 +1,167 @@
-# 🖥 `frontend/` — the operator console UI
+# Operator console pages (`frontend/`)
 
-> **The browser face of the optional [`api/`](../api/README.md) layer.**
-> React + TypeScript + Vite, built into `api/static/` and served by the same FastAPI process that
-> drives the cell.
+The browser pages of the operator console: the console an engineer uses to bring a cell up and run
+picks, and a room view for a projector. They are React and TypeScript, built with Vite into
+`api/static/`, and served by the same [`api/`](../api/README.md) process that drives the cell, so
+they need Node.js to build and a running `python -m api` to talk to.
 
-`React 19` · `Vite` · `TypeScript` · `oxlint` · `types generated from the backend's OpenAPI`
+The library, every command line and every Python test run without this folder; a server with no
+built pages serves the API alone.
 
-It is **optional in the same way `api/` is optional**: the library, every CLI and every existing test
-run without it, and a backend with no `api/static/` directory behaves exactly as it did before this
-directory existed — asserted in
-[`tests/test_api_serves_the_console.py`](../tests/test_api_serves_the_console.py).
-
----
-
-## 🪟 Two pages, on purpose
-
-| page | what it is | who opens it |
-|---|---|---|
-| `index.html` → the **console** | five screens: Preflight · Cell · Pick · History · Config | whoever is bringing the cell up |
-| `demo.html` → the **room view** | one instruction, one large narration, no navigation | a projector |
-
-They are **separate bundler entries, not routes of one app.**
-
-> [!IMPORTANT]
-> The demo page cannot build a cell, cannot connect one, cannot write config and cannot reach the
-> history. A page shown to an audience must not be one mis-click away from bringing a robot up.
-> Keeping them apart *at the bundler level* is what makes that structural instead of a matter of
-> discipline.
-
----
-
-## 🚀 Running it
+## Try it without hardware
 
 ```bash
-# 1 · the backend, against the hardware-free profile (no controller, no camera, no GPU)
+# 1. the server, on the desk profile: no controller, no camera, no GPU
 python -m api --profile console_dummy
 
-# 2a · development: hot reload, Vite proxies /v1 (and the WebSocket) to the backend
-cd frontend && npm install && npm run dev          # http://localhost:5173
+# 2a. development: hot reload at http://localhost:5173; Vite forwards /v1 and its WebSockets to the server
+cd frontend && npm install && npm run dev
 
-# 2b · production: build into api/static/, then the backend serves it itself
-cd frontend && npm run build                       # http://127.0.0.1:8000
+# 2b. or build once into api/static/; the server then serves the pages at http://127.0.0.1:8000
+cd frontend && npm install && npm run build
 ```
 
-`WILLY_API=http://10.0.0.5:8000 npm run dev` points the dev proxy at a cell on another box.
+On the Cell screen, build with the desk scene, read the connect preview, connect, then pick on the
+Pick screen. The Cell screen and the room view label the arm `simulated arm` and the sidebar names
+its vendor, `dummy`, because a dummy arm proves the console and nothing about grasping.
+`WILLY_API=http://10.0.0.5:8000 npm run dev` points the development server at a console on another
+machine.
 
-Other profiles: `--profile ursim,ursim_ur3` (real UR controller software in Docker — see
-[`scripts/ursim/`](../scripts/ursim)), or none at all for the shipped tree.
-
-| command | |
+| Command | What it does |
 |---|---|
-| `npm run dev` | dev server on 5173, `/v1` proxied |
+| `npm run dev` | development server on port 5173, `/v1` forwarded to the console |
 | `npm run build` | type-check, then bundle into `../api/static` |
-| `npm test` | render every screen against captured payloads |
+| `npm test` | render every screen against captured payloads (Vitest) |
 | `npm run lint` | oxlint |
 | `npm run api:types` | regenerate `src/api/schema.d.ts` from `logs/openapi.json` |
 
----
+## Your own cell
 
-## 🧬 Where the types come from
+Start the server on your cell's profile, `python -m api --profile <your cell>`, and open
+http://127.0.0.1:8000. Work in this order:
 
-```mermaid
-flowchart LR
-    S["<b>backend</b><br/>Pydantic schemas"] --> O["<code>logs/openapi.json</code><br/>the app's own OpenAPI doc"]
-    O -->|"npm run api:types"| D["<code>src/api/schema.d.ts</code><br/><i>GENERATED — do not edit</i>"]
-    D --> C["<code>client.ts</code><br/>names the types, describes none"]
-    C --> U["screens"]
+1. **Preflight**: every blocking row with its fix. A blocking row does not refuse the connect; it
+   makes the later motions fail, so the banner says the cell is not runnable as configured.
+2. **Config**: the values a person measures at the bench (payload, tool frame, camera serials,
+   controller address). Everything else stays in YAML.
+3. **Cell**: build, read what connecting will move, connect, watch the live status.
+4. **Pick**: a typed or spoken prompt, the run's events as they happen, and Stop.
+5. **History**: the runs of this session, the logged attempts, the KPIs, and CSV downloads.
 
-    classDef be fill:#2b3a55,stroke:#5b8def,color:#e4e7eb
-    classDef gen fill:#4a3f2f,stroke:#d1a065,color:#e4e7eb
-    classDef fe fill:#2d3b2f,stroke:#5fa463,color:#e4e7eb
-    class S,O be
-    class D gen
-    class C,U fe
-```
+The runbooks [bringing up a cell](../docs/runbooks/cell_bringup.md) and
+[the first pick on a physical arm](../docs/runbooks/real_cell_first_pick.md) are the procedure around
+these screens.
 
-**Nothing describes a payload by hand.** A console carrying its own idea of what a `PreflightCheck`
-looks like disagrees with the cell the first time the cell changes — and it disagrees *silently*.
-Regenerate after any schema change:
+> [!WARNING]
+> Two buttons move hardware, and only these two are filled red: Connect (a gripper may sweep or
+> release on connect) and Pick. Stop does not stop the arm. It declines the next attempt, and the
+> motion in flight completes. The stop for a moving arm is the physical button at the cell.
+
+## Two pages
+
+| Page | What it is | Who opens it |
+|---|---|---|
+| `index.html`, the console | five screens: Preflight, Cell, Pick, History, Config | whoever brings the cell up |
+| `demo.html`, the room view | one prompt, one large narration, the live counts, no navigation | a projector |
+
+They are two separate bundler entries, not two routes of one app. The room view drives a cell that is
+already connected and reads its KPIs; it cannot build a cell, connect one or write config, so a page
+shown to an audience is never one click from bringing a robot up.
+
+## What the screens promise
+
+| The screen | Because | Test |
+|---|---|---|
+| A simulated arm says simulated, on both pages | a simulated reading looks exactly like a physical one; only `simulated` tells them apart | yes |
+| A missing measurement says "not offered by this driver", never zero | dummy, sim and KUKA offer no force and torque reading, and a zero reads as a measurement | yes |
+| A blank controller state says "not asked" | mode and safety cost a dashboard round trip and are opt-in; blank must not read as fine | yes |
+| An unmeasurable KPI is listed as unmeasurable | hidden reads as fine and zero reads as bad; the records cannot say either | yes |
+| Stop says it does not stop the arm | a button labelled Stop is what someone reaches for instead of the physical button | yes |
+| Preflight fixes are shown word for word, per row | a checklist that says wrong without saying what to do has only moved the guessing | yes |
+| A lost event is shown as a gap | the server sends a `gap` frame when a client slept past its buffer; the screen draws it | no |
+| The camera view names its picture: `live`, `rehearsal`, `overlay` or `held` | the four look alike; the sentence under the picture is the server's | no |
+| A held frame is dimmed, not blanked | while a pick owns the camera the last image stays, greyed; blank reads as a fault | no |
+| Zero counts are drawn | `0 blocking` is the answer an operator came for | no |
+
+"yes" means `src/screens/screens.test.tsx` asserts it; the rows marked "no" hold in the code and have
+no test yet.
+
+## Speech
+
+The microphone button fills the prompt box and nothing else; the operator still presses Pick. While
+the text is what the machine heard, the box says so, and it stops saying so once the operator edits
+it. Push to talk records while the button is held; a click alone records nothing. A foot switch that
+sends a key works the same way: the talk key is F8 unless the `talkKey` prop or
+`localStorage['willy.talkKey']` names another, and a key that repeats while held counts once.
+
+The page encodes 16-bit PCM WAV itself (`src/prompt/recordWav.ts`), because no browser records WAV and
+WAV is the only format the server decodes; anything else is refused with 415. The browser offers a
+microphone only over HTTPS or on localhost. A console opened as `http://<cell PC>:8000` from another
+machine has none, and the button is disabled with that sentence.
+
+## Where the types come from
+
+Nothing describes a payload by hand. The server's Pydantic schemas produce its OpenAPI document,
+`npm run api:types` turns that into `src/api/schema.d.ts` (generated, do not edit), and
+`src/api/client.ts` names those types for the screens. After any schema change on the server, from the
+repository root:
 
 ```bash
-python -c "import json,pathlib; from api.cell import Console, set_console; from api.app import create_app; \
-set_console(Console(profile='console_dummy')); \
-pathlib.Path('logs/openapi.json').write_text(json.dumps(create_app().openapi(), indent=2))"
+python -c "import json; from api.app import create_app; print(json.dumps(create_app().openapi(), indent=2))" > logs/openapi.json
 cd frontend && npm run api:types
 ```
 
----
+## How the pages are built
 
-## 🎨 Why the code looks the way it does
+- **No server address anywhere.** In production the pages come from the server itself; in development
+  the Vite proxy makes them same-origin too. No build and no bookmark can aim the console at a
+  different cell than the one whose server opened it.
+- **The server writes every sentence.** An event row shows the server's `human` text word for word, so
+  there is one account of what happened.
+- **One file of design tokens.** `src/styles.css` is a Tailwind v4 theme: the palette is declared under
+  `@theme inline` over runtime custom properties, because one status has one colour.
+- **Two reds, apart by colour and by form.** `--alarm` is only ever a tinted surface with a border,
+  for every `block` status; `--arm` is only ever a filled button with white text, for Connect and Pick.
+  Colour never carries the text: a pill's word stays in the foreground colour in both themes.
+- **Contrast is a test.** [`tests/test_console_contrast.py`](../tests/test_console_contrast.py) reads the
+  numbers out of `styles.css` and checks WCAG AA for every text tier on every surface it can land on.
+- **Three theme states.** `src/lib/theme.ts` cycles system, light and dark. System sets no attribute
+  and follows the operating system live; light and dark set `<html data-theme>`.
+- **Outcome strings in one place.** `src/lib/outcome.ts` maps an outcome to a pill tone. The server
+  spells a success `succeeded`, the literal the KPI roll-up counts.
 
-**The API base URL is the empty string, in both modes.** In production the SPA is served by the
-backend, so every request is same-origin; in development the Vite proxy reproduces exactly that. So
-there is no host to configure — and therefore no build flag and no bookmark that can aim the console
-at a different cell than the one whose server it was opened from.
+## Files
 
-**The console never writes its own summary of what happened.** Event rows render the backend's
-`human` sentence verbatim. Two sentence-writers would drift, and the prettier one would win.
-
-**The design tokens ARE the safety contract, so they live in one file.** `src/styles.css` is a
-Tailwind v4 CSS-first theme: the palette is declared in `@theme inline` over runtime custom properties,
-never in a JS config, because *one status has one colour* is a rule and a rule belongs in the file that
-declares it.
-
-**Two reds, separated by colour AND by form** — either alone is one coincidence away from failing:
-
-| token | how it may be used | where it appears |
-|---|---|---|
-| `--alarm` | **tint only** — a surface at 13–17 % with a bordered edge, text stays `--fg` | every `block` status, everywhere |
-| `--arm` | **fill only** — solid, white text, `button.danger` | exactly two controls: Connect and Pick |
-
-Semantic colour never carries the text. A pill's tint groups it, its dot hues it, and the word stays in
-the foreground colour — so a status survives both themes and a reader who cannot separate red from
-green. The one place a gradient is allowed is the sidebar's brand mark.
-
-**Contrast is a test, not a taste.** [`tests/test_console_contrast.py`](../tests/test_console_contrast.py)
-recomputes WCAG AA for every text tier against every surface it can land on, **reading the numbers out
-of `styles.css`** rather than duplicating them. It was written because the palette as first drawn put
-three tokens below AA — `--fg-subtle` at 3.47:1 on `--panel`, and `--accent` at 4.48:1 as link text —
-and `--fg-subtle` is what carries the DENOMINATOR under every figure on the demo page. A rate whose
-denominator is hard to read is a rate presented without one. It also caught what the fix missed: a
-link sits in a panel *head* (`--panel-alt`) and can sit in a caveat (`--inset`), not only on the page
-ground.
-
-**Light and dark are three states, not two.** An explicit choice stamps `<html data-theme>`; the
-default stamps nothing and follows `prefers-color-scheme` live. `lib/theme.ts` cycles
-`system → light → dark` and *removes* the attribute for `system` rather than resolving it, which is
-what keeps the OS switch working while the tab is open.
-
----
-
-## 🔒 The honesty rules this UI enforces
-
-These are pinned as assertions in `src/screens/screens.test.tsx`, because they are exactly the
-sentences a tidy-up pass would quietly remove.
-
-| the rule | why the obvious alternative is worse |
+| File | Holds |
 |---|---|
-| **A simulated arm says simulated.** | `TelemetryOut.simulated` is the only field that distinguishes a sim reading from a physical one — the numbers themselves are identical. So it is always on screen, on both pages. |
-| **A missing measurement says "not offered by this driver"**, never a zero. | Sim, dummy and KUKA advertise no force/torque Protocol at all; a zero would read as a measurement. |
-| **A blank controller state says "not asked".** | Mode and safety cost a dashboard round trip and are opt-in. Blank must never read as *fine*. |
-| **An unmeasurable KPI is listed as unmeasurable.** | Hidden reads as fine, zero reads as bad, and both are wrong when the truth is *the records cannot say*. |
-| **Stop does not stop the arm** — it declines the next attempt. | The button says so in those words, because a button labelled *Stop* on a screen is exactly what somebody reaches for instead of the mushroom. |
-| **A lost event is shown as a gap.** | The server sends a `gap` frame with a count when the client slept past the ring buffer; the console renders it as a row rather than drawing a run that never had those steps. |
-| **Preflight fixes are verbatim, per row.** | A checklist that says *wrong* without saying *do this* has only moved the guessing. |
-| **The viewfinder names which picture it is showing.** | `live` · `rehearsal` · `overlay` · `held` are four different things that render as one rectangle. The badge is never hidden, and the sentence under it is the backend's, not one this UI composes. |
-| **A held frame is dimmed, not blanked.** | When a pick takes the camera, the last image stays on screen greyed and marked `held`. Blanking reads as a fault; showing it undimmed reads as live. |
-| **Zero counts are drawn, not hidden.** | Preflight's four tiles include the zeros: *0 blocking* is the answer an operator came for, and a tile that vanishes when empty makes them count the rest to be sure. |
+| `src/styles.css` | the design tokens, both themes, every shared class |
+| `src/App.tsx`, `src/main.tsx` | the console shell and its entry; the sidebar always shows vendor, profile and state |
+| `src/api/client.ts` | the only code that talks to the server, typed from `schema.d.ts` |
+| `src/api/events.ts` | the run WebSocket: resume from `since_seq`, show gaps, back off |
+| `src/api/schema.d.ts` | generated from the OpenAPI document; do not edit |
+| `src/lib/useAsync.ts` | loading, error and stale states, and the poll helper |
+| `src/lib/theme.ts` | system, light or dark, remembered per browser |
+| `src/lib/outcome.ts` | outcome string to pill tone |
+| `src/lib/provenance.ts` | the label `simulated arm`, `simulator` (URSim) or `controller`; never "physical arm" |
+| `src/components/ui.tsx` | status pills, panels, the error banner |
+| `src/components/ProvenanceBadge.tsx` | the badge that renders `provenance.ts` |
+| `src/components/Viewfinder.tsx` | polls `/v1/camera` and badges what the picture is |
+| `src/prompt/` | the shared prompt box, typed or spoken, the WAV encoder, and their tests |
+| `src/screens/` | Preflight, Cell, Pick, History, Config, and `screens.test.tsx` |
+| `src/demo/` | the room view: its own entry and a layout stylesheet over the same tokens |
 
----
+`api/static/` and `node_modules/` are not committed; `npm run build` regenerates the bundle.
 
-## 🧪 What a real controller changed
+## What is proven and what is not
 
-The console was driven end to end against **URSim** (real UR controller software, UR3e) on
-**2026-08-20**: preflight → build → connect-preview → connect → live telemetry → pick → history →
-disconnect.
+| Capability | Evidence |
+|---|---|
+| The screens render captured payloads and keep the rules marked yes above | `npm test` (Vitest) |
+| The server serves the built pages, and an unknown `/v1` path stays a JSON 404 | [`tests/test_api_serves_the_console.py`](../tests/test_api_serves_the_console.py) |
+| Preflight, build, connect, live status, a pick, history, disconnect | measured against real controller software (URSim, UR3e) |
+| Any screen with a physical arm, gripper or camera | never touched hardware |
 
-⛔ **It found a defect in this UI's own copy.** The Preflight banner claimed *"Connect will be
-refused"* whenever any row was `block`. The run showed 1 blocking item — and the connect **succeeded**.
-A blocking checklist item does not stop you connecting; it makes every later **motion** fail, which is
-the failure that reads as a broken robot. The banner now says *"this cell is not runnable as
-configured"* and a Caveat names where the connect refusal actually lives (`connect-preview.blocking`,
-on the Cell screen, where the wording was already correct).
+## Where the details live
 
-✅ **An empty warnings list was correct, not broken.** The `ursim` profile carries `gripper.vendor:
-none`, and `motion_warnings` returns `()` for a `NullGripper` on purpose — warning about a finger sweep
-that cannot happen teaches an operator to skip the warning that can.
-
----
-
-## 🗂 Layout
-
-```
-src/
-  styles.css               the token system: @theme, both themes, every shared class
-  api/client.ts            the only thing that talks to the backend; typed from schema.d.ts
-  api/events.ts            the run WebSocket: since_seq resume, gap surfacing, backoff
-  api/schema.d.ts          GENERATED — do not edit
-  lib/useAsync.ts          loading / error / stale, and the poll helper
-  lib/theme.ts             system / light / dark, persisted; `system` follows the OS live
-  lib/outcome.ts           outcome string -> pill tone, in ONE place
-  lib/provenance.ts        sim driver vs sim controller vs real controller — never "physical arm"
-  components/ui.tsx        status pills, panels, the error banner
-  components/Viewfinder.tsx  polls /v1/camera; badges what the picture actually is
-  prompt/pipeline.ts       ONE path for every prompt, and what it remembers about where it came from
-  prompt/PromptInput.tsx   the shared box: type it or say it (+ prompt.test.tsx)
-  prompt/recordWav.ts      microphone → 16-bit WAV, in the browser
-  screens/                 Preflight · Cell · Pick · History · Config  (+ screens.test.tsx)
-  demo/                    the room view: its own entry, layout-only stylesheet over the same tokens
-```
-
-> [!IMPORTANT]
-> **Speech lands in the box; the operator still presses the button.** `prompt/` adds a microphone to
-> the prompt on both screens that have one, and it deliberately stops there — a transcription fills
-> the text field and nothing else. "Pick up the red cube" and "pick up the red cup" differ by one
-> phoneme and by a whole grasp, so a spoken prompt is confirmed the same way a typed one is. The
-> backend draws the same line: `POST /v1/voice/transcribe` returns TEXT and starts nothing.
->
-> While the text is still as the machine heard it, the box **says so**, and stops saying it the moment
-> the operator edits it. `pipeline.ts` carries the same `source` into its history, because "the
-> operator asked for the wrong thing" and "the machine heard the wrong thing" look identical
-> afterwards unless something wrote down which route the words came in by.
->
-> Push to talk works both ways. The microphone records while the button is held and stops when it is
-> let go or the pointer leaves it; a click alone records nothing. A foot switch that sends a key does
-> the same: holding the talk key records wherever the focus is, and a key that repeats while held is
-> one hold. The key is F8 unless the `talkKey` prop or `localStorage['willy.talkKey']` names another.
-> The cell PC's own microphone has its own routes (`POST /v1/voice/talk`, `POST /v1/voice/listen`),
-> which no screen calls yet.
->
-> ⛔ **The console encodes WAV itself** (`recordWav.ts`), and that is not gold-plating: **no browser
-> records WAV.** `MediaRecorder` gives webm/opus in Chrome and Firefox and mp4 in Safari, and the
-> backend decodes WAV with the standard library and everything else only with the optional `av`
-> extra. Recording what the platform chose would have made the console's own microphone the one
-> client needing a `pip install` on a machine where nothing else does.
->
-> ⚠ **`getUserMedia` needs HTTPS or localhost.** A console opened at `http://192.168.1.50:8000`
-> from another machine has no microphone at all — the browser does not expose the API, so there is no
-> permission prompt and no error. The button is disabled with that sentence rather than left to fail
-> on click.
-
-> [!NOTE]
-> **`lib/outcome.ts` exists because it did not.** Three screens each compared a `final_outcome` string
-> by hand, and the History screen compared against `'success'` while the backend writes `'succeeded'`
-> (`AutonomousGraspOutcome.SUCCEEDED`, and `src/robot/grasping/replay/kpi.py` computes `pick_success_rate` off exactly that
-> literal). Every successful logged attempt therefore rendered as a **warning** pill — the console
-> reporting a worse result than the cell achieved, on the one screen an operator goes to for the record.
-> The mapping is in one file now.
-
-`api/static/` and `node_modules/` are git-ignored. A built bundle in git is a second copy of the
-source that drifts from it silently, and it is one command to regenerate.
-
----
-
-## 📚 See also
-
-- [`api/README.md`](../api/README.md) — every endpoint this UI calls, and the rules behind them
-- the operator console's own README — the 16 decisions and the build order
-- [`scripts/ursim/`](../scripts/ursim) — bringing up the controller software this was measured against
+- [`api/README.md`](../api/README.md): every endpoint these pages call, and what each refuses.
+- [`scripts/ursim/README.md`](../scripts/ursim/README.md): the controller software the console was measured against.

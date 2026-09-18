@@ -1,134 +1,125 @@
-# Multi-view (`src.robot.grasping.multiview`)
+# Multi-camera fusion (`src.robot.grasping.multiview`)
 
-More cameras rather than more time. One depth view observes one side of an object and an antipodal
-grasp needs two, so a contact face no view proposed is one no ranker can recover. This package
-decides which blob in another camera is the same object, fuses the surfaces that agree, and
-accumulates a bounded occupancy grid alongside.
+One depth view sees one side of a part, and a parallel-jaw grasp needs two opposite faces. This package
+decides which blob in another camera is the same object and fuses the surfaces that agree into one BASE
+cloud per object, so the grasp generator sees sides the primary camera cannot.
 
-## Two different things are called fusion
+You reach it through your cell's config and the pick loop; there is nothing to call. A two-camera cell
+turns it on under `robot.grasping.fusion`, as the shipped `ur5e,eth2` profile does in
+[`config/robot/robot.eth2.yaml`](../../../../config/robot/robot.eth2.yaml):
 
-They share a config prefix and they are not the same feature. Confusing them is easy and expensive:
-one is telemetry, the other changes which grasps exist.
+```yaml
+robot:
+  grasping:
+    fusion:
+      enabled: true
+      cameras: { cam_left: { enabled: true }, cam_right: { enabled: true } }   # rig ids, primary included
+      geometry: { enabled: true, metric: overlap, min_score: 0.30, on_camera_unavailable: degrade }
+```
 
-| | Config key | What it is | Runtime status |
+Call it directly only to try a fusion on frames of your own:
+
+```python
+from src.robot.grasping.multiview.scene_geometry import ObservedView, fuse_scene_geometry
+
+# Masks, a depth map in mm, a 3x3 lens matrix and a 4x4 CAMERA to BASE matrix per camera.
+side = ObservedView(name="side", masks=side_masks, depth_map=side_depth_mm,
+                    intrinsics=side_lens, camera_to_base=side_to_base)
+fused = fuse_scene_geometry(masks, depth_mm, lens, camera_to_base, [side])
+print(fused.views_used, fused.objects_fused)
+cloud = fused.cloud_for(0)   # object 0 in BASE mm from every camera that saw it, or None
+```
+
+## Two things are called fusion
+
+They share a config prefix and are not the same feature: one changes which grasps exist, the other is
+evidence for a gate that ships off.
+
+| | Config key | What it is | At run time |
 | --- | --- | --- | --- |
-| Voxel substrate | `grasping.fusion.enabled` | a bounded BASE-frame occupancy grid accumulated across attempts | read by one consumer, the commit gate, which is itself off |
-| Geometry fusion | `grasping.fusion.geometry.enabled` | per-object BASE clouds fused across cameras, fed to the generator | reaches the core pick loop when enabled |
+| Geometry fusion | `fusion.geometry.enabled` | per-object BASE clouds fused across cameras, fed to the generator | reaches the pick loop when on |
+| Voxel substrate | `fusion.enabled` | a bounded BASE occupancy grid, accumulated within one pick | read only by the commit gate |
 
-Both ship `false`.
+Both ship `false`. The commit gate reads the grid through `SceneFusion.corridor_evidence` only when
+`fusion.commit_policy.enabled` is true, which it is not by default; with the gate off the grid is
+written and never consulted.
 
-## What it guarantees
+## Which blob is the same object
 
-Pure NumPy, plus the deterministic `linear_sum_assignment` of SciPy for the assignment. Frames are
-BASE millimetres throughout. Reductions are bit-stable: the ingest arithmetic is behaviour-locked, so
-the same input produces the same counters.
+Three metrics, and which to use is a measurement rather than a preference. `CENTROID` is cheapest and
+degrades in a dense pile where neighbouring centres sit closer than the localisation error. `BOX_IOU`
+uses extent as well, so a small part against a large one stays separable. `OVERLAP` is the share of the
+target's points with a candidate point within `neighbour_mm` (12 mm by default), the only metric that
+uses the surfaces themselves.
 
-The scope is deliberately narrow. These are pure functions over already-resolved inputs: masks,
-depth, intrinsics and one CAMERA to BASE matrix per camera. Resolving those, and deciding what to do
-when a camera is missing, is policy, and policy lives with the config in the orchestrator. No Isaac,
-no torch, no camera objects, no perception models.
+`OVERLAP` is the default because it abstains. `CENTROID` scores better on the cases that have an answer,
+but when the target is not in the other view it takes a neighbour and welds that neighbour's far surface
+into the cloud the grasp is planned on, and the generator cannot tell that cloud from a real one. A
+camera that cannot see the target should contribute nothing, and below `min_score` (0.30) it does not.
+A whole view is assigned globally with `linear_sum_assignment`, so one object in another view is never
+claimed by two primary objects.
 
-## The public surface
+A view whose transform is unusable, or which segmented nothing, contributes nothing and is absent from
+`views_used`, the record of what the fusion was built from.
 
-| Module | Owns |
-| --- | --- |
-| `association.py` | `AssociationMetric`, `ViewCandidates`, `associate_target`, `assign_view`, `fuse_target_cloud`, `fuse_scene_clouds`: is this blob in another camera the same object |
-| `scene_geometry.py` | `fuse_scene_geometry`, `ObservedView`, `FusedSceneGeometry`, `to_base_mm`: one BASE cloud per candidate object, carrying the sides one view cannot see |
-| `localize.py` | `fuse_view_localizations`, `fuse_scene_points_base`, `ViewLocalization`: visibility-weighted BASE centroid fusion |
-| `synthesis.py` | `synthesize_grasp_from_cloud`, `fused_grasp_to_point`, `FusedGrasp`: a grasp derived from the fused cloud rather than from one silhouette |
-| `fusion.py` | `SceneFusion` and `FusionConfig`: the bounded voxel-occupancy substrate |
-| `_fusion_geometry.py`, `_fusion_queries.py` | the ingest hot loop and the read side |
+## Switches that stay off, and why
 
-### Association
-
-Three metrics, and which one to use is a measurement rather than a preference. `CENTROID` is the
-cheapest and degrades in a dense pile where neighbouring centres sit closer together than the
-localisation error. `BOX_IOU` uses extent as well as position, so a small object nested against a
-large one stays separable. `OVERLAP` is the fraction of the target points that have a candidate point
-within `neighbour_mm`, the only metric that uses the surfaces themselves.
-
-`OVERLAP` is the default, and the reason is abstention rather than raw accuracy. On the answerable
-half of a decision set `CENTROID` scores better, but it never abstains: when the target is simply not
-in the other view it takes a neighbour instead, and welds a neighbour far surface into the cloud the
-grasp is planned on. The generator cannot tell that cloud from a real one. A camera that cannot see
-the target should contribute nothing, and only `OVERLAP` does. `DEFAULT_MIN_SCORE` is 0.30.
-
-Assignment across a whole view is solved globally with `linear_sum_assignment`, not greedily, so one
-object in another view is never claimed by two primary objects.
-
-Voxel decimation, applied once per cloud and only for `OVERLAP`, keeps one real observed point per
-cell: `key(p) = floor(p / voxel_mm)`, first index of each unique key. Not a cell centroid, because a
-centroid is a point that was never observed and `OVERLAP` is a statement about observed points.
-
-### Geometry fusion
-
-`fuse_scene_geometry` takes the primary view as its first four arguments and every other camera as
-`other_views`, and returns one fused cloud per primary object in the segmentation order of the
-primary. A view whose transform is unusable, or which segmented nothing, contributes nothing and is
-absent from `views_used`, the honest record of what the fusion was built from.
-
-`with_neighbours` additionally returns, per object, the view every other camera has of everything
-that is not that object, which is the obstacle side of the same observation. It is off by default: it
-costs a second pass, and a caller that only feeds the generator has no use for it. The config key is
-`fusion.geometry.neighbour_scene_enabled`, and it stays off for a second reason. In a bin, the finger
-collisions that survive ranking are dominated by the bin wall rather than by a neighbouring part, and
-a wall is not an instance any detector segments, so no amount of cross-camera fusion can supply one.
-Wall geometry has to be declared instead, under `robot.grasping.support.container`. Where the
-blocker really is another object, as in a loose pile, the switch works as designed.
-
-### The voxel substrate
-
-`SceneFusion` ingests per-attempt depth captures into a bounded BASE-frame occupancy grid, tracking
-per-voxel `hits`, meaning a depth sample landed there, and `seen`, meaning how many views touched it,
-as saturating `uint16` accumulators. It enforces a strict frame and intrinsics policy so a
-misconfigured camera cannot silently poison the grid.
-
-Exactly one thing reads it: the commit gate in the pick loop, through `corridor_evidence`, and only
-when `fusion.commit_policy.enabled` is true, which it is not by default. With that gate off the grid
-is written and never consulted, so no grasp, ranking, decision or recovery path changes. Telemetry,
-replay and debug overlays are welcome readers.
-
-### Localization and synthesis
-
-`fuse_view_localizations` takes the BASE estimate each active camera has of the target centroid, plus
-how many target pixels it saw, and fuses them into one BASE point. A camera that did not see the
-target reports `centroid_base_mm=None` and `visible_px=0` and contributes nothing, so the fused point
-is carried by whichever cameras did. That is the redundancy that lets a fixed oblique resolve a
-target the overhead loses, which matters because in an arm-over-bench cell the arm is the dominant
-occluder and two opposed views mean it cannot hide the scene from both.
-
-`synthesize_grasp_from_cloud` derives the closing axis and grip width from the true horizontal
-footprint over all views, by PCA on the BASE XY projection, closing across the minor extent, rather
-than from one foreshortened silhouette. The position is the fused centroid at a grasp depth below the
-top surface of the cloud, so symmetric views cancel the surface bias of each single view. It returns
-`None` when the cloud has fewer than eight finite points, rather than fitting a footprint anyway.
-
-These two modules have callers in the simulation runners, not in the core pick loop. What the loop
-uses is `fuse_scene_geometry`.
+- `fusion.geometry.neighbour_scene_enabled` also hands the collision filter every other camera's view of
+  everything that is not the target. In a bin the finger collisions left after ranking are mostly the
+  bin wall, and no detector segments a wall, so fusion cannot supply it. Declare the walls under
+  `robot.grasping.support.container` instead ([`collision/`](../collision/README.md)). In a loose pile,
+  where the blocker is another part, the switch works as designed.
+- `fusion.geometry.promote_unmatched` lets a camera introduce an object the primary did not see, instead
+  of only confirming one it did. The cell then holds one calculator per camera. How often a bin holds a
+  part only a second camera sees is not measured, so it ships off.
 
 ## Configuring a two-camera cell
 
-The worked example is `config/robot/robot.eth2.yaml`, loaded as `WILLY_PROFILE=ur5e,eth2`, with its
-camera inventory in `config/camera/cam.eth2.yaml`. Read those files before wiring one: they carry the
-bring-up order. No physical multi-camera cell has been built by this code.
+Read [`robot.eth2.yaml`](../../../../config/robot/robot.eth2.yaml) and
+[`cam.eth2.yaml`](../../../../config/camera/cam.eth2.yaml) before wiring one; they carry the bring-up
+order. Each camera's calibration is declared on its rig, `camera.cameras.rigs[<id>].extrinsics`, and the
+calibration runner prints that block for each camera. `fusion.cameras` names which rigs are fused, keyed
+by rig id. List the primary too: the rig builder and the list of cameras a pick waits for both leave it
+out by `camera.cameras.primary_rig_id`, and listing it keeps the single-view warning accurate.
 
-Each camera's calibration is declared on its rig, `camera.cameras.rigs[<id>].extrinsics`, and the
-primary rig's block is what satisfies the CAMERA to BASE refusal in
-`AutonomousGraspService.from_robot_config`. The calibration runner prints that block after each camera.
-`fusion.cameras` names which rigs are fused, one `enabled` entry each, keyed by rig id. An id that
-names no rig is refused at load, and a fused camera whose rig declares no calibration is refused when
-the cell is built.
+## What it refuses
 
-The primary may be listed in `fusion.cameras`. The rig builder leaves it out, because it already
-streams through the main perception source, and so does `configured_camera_ids`, the list a pick waits
-for; both decide it from `camera.cameras.primary_rig_id`. Listing it keeps the counter that warns about
-a single-view cell accurate, since that counter reads the same map and counts the mapped cameras whose
-rig declares a calibration.
+| Refusal | When | What to do |
+| --- | --- | --- |
+| `ConfigError` at load | an id in `fusion.cameras` names no rig | use the rig ids from `camera.cameras.rigs` |
+| refused at the build | a fused camera's rig declares no calibration, or its artifact does not load | calibrate it and declare the block |
+| `RuntimeError` in the pick | a configured camera delivered no frame and `on_camera_unavailable` is `refuse` | fix the camera, or choose `degrade` |
+| a WARNING, the view dropped | `degrade` and a missing camera, or a camera with no CAMERA to BASE resolver | read the log line; it names the camera |
+| `IngestResult` refused | `SceneFusion.ingest` on a wrong frame, a bad lens, a changed lens, or no valid depth | the reason is on the result |
 
-## See also
+## Status
 
-- [`../README.md`](../README.md) for the tier this feeds
-- [`../generation/README.md`](../generation/README.md) for the seam these clouds arrive through
-- [`../loop/README.md`](../loop/README.md) for the orchestrator that observes the rig and applies the policy
-- [`../collision/README.md`](../collision/README.md) for the declared container walls that fusion cannot supply
-- [`../../../calibration/README.md`](../../../calibration/README.md) for the one calibration per camera, declared on its rig, and `fusion.cameras` naming which rigs are fused
+| Capability | Evidence |
+| --- | --- |
+| Geometry fusion across fixed cameras | measured in simulation: `run_multiview_pick`; top-1 43.50 % single-view, 55.93 % fused on the datagen reference |
+| Centroid fusion and the fused-cloud grasp | measured in simulation: called by `run_multiview_pick`, not by the pick loop |
+| The commit gate on the voxel grid | measured in simulation: `run_commit_gate` shows the evidence grows with distinct views and stays flat on a repeated one |
+| `promote_unmatched` | never touched hardware: unit-tested, not measured |
+| A physical multi-camera cell | never touched hardware: none has been built with this code |
+
+## Files
+
+| File | Holds |
+| --- | --- |
+| `association.py` | `AssociationMetric`, `associate_target`, `assign_view`, `cluster_views`, `fuse_target_cloud`, `fuse_scene_clouds` |
+| `scene_geometry.py` | `ObservedView`, `fuse_scene_geometry`, `FusedSceneGeometry`, `build_scene_objects`, `SceneObject`, `to_base_mm` |
+| `fusion.py` | `SceneFusion` and `FusionConfig`, the voxel substrate |
+| `localize.py` | `fuse_view_localizations`, `ViewLocalization`: a visibility-weighted BASE centroid |
+| `synthesis.py` | `synthesize_grasp_from_cloud`, `FusedGrasp`: a top-down grasp from the fused footprint, `None` below 8 points |
+| `_fusion_geometry.py`, `_fusion_queries.py` | the ingest loop and the read side of the grid |
+
+## Details
+
+- [`loop/`](../loop/README.md) observes the rig and applies the camera policy;
+  [`generation/`](../generation/README.md) receives the fused clouds.
+- [Calibration](../../../calibration/README.md) for one calibration per camera, declared on its rig.
+- [The grasping config reference](../../../../docs/grasping-config-reference.md) for `fusion` and
+  `fusion.geometry`, and [guide 01](../../../../docs/guide/01-configuration.md) for the `eth2` profile.
+- Tests: `tests/test_multiview_association.py`, `tests/test_pick_loop_fusion_geometry.py`,
+  `tests/test_scene_objects.py`, `tests/test_promoted_objects_reach_the_pick.py`,
+  `tests/test_u5_multi_view_fusion.py`, `tests/test_fusion_camera_map_means_every_camera.py`.

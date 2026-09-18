@@ -1,144 +1,109 @@
-# Isaac Sim arm driver
+# Isaac Sim arm (`src/robot/drivers/sim`)
 
-The `RobotVendor.SIM` arm driver: a UR e-series arm inside NVIDIA Isaac Sim behind the `RobotArm`
-Protocol, plus a no-GPU mock so the whole pick stack runs where Isaac is not installed.
-
-It implements the `robot/core` `RobotArm` Protocol on an Isaac Sim UR, owns the Isaac application
-lifecycle, and may call `safety` from `move()`.
-
-Every `isaacsim` import is lazy, so importing this package is always safe. `connect()` on a host
-without Isaac raises `IsaacNotAvailableError`.
-
-## Contents
-
-| File | Role |
-| --- | --- |
-| `arm.py` | `IsaacRobotArm` and `ISAAC_CAPABILITIES`: Lula FK and IK, the flange-to-TCP transform, multi-seed IK resolve, interpolated `move_joint`, the cuRobo and RMPflow approach, and the typed `move()`. |
-| `session.py` | `IsaacSimSession`: the Isaac app lifecycle (`start`, `stop`, `step`, `step_n`). It lazily boots the `SimulationApp`, opens the scene and owns the `World`. |
-| `robot_models.py` | The model registry: a `robot_model` key maps to the Lula config name, the Isaac USD path, the cuRobo `willy_{model}.yml`, the baked gripper variant if any, and reach, payload and workspace limits. |
-| `config.py` | `SimRobotConfig` and `SimCameraConfig`, frozen pure-Python config dataclasses with no Isaac import, safe to build, validate and serialise anywhere. |
-| `adapter.py` | The unit and convention conversions: millimetres against metres, XYZW against Isaac WXYZ, rotation matrix to quaternion, and `Pose` and `JointPositions` round-trips, all tagged `Frame.BASE`. |
-| `_isaac_protocols.py` | Structural `Protocol` stubs for the lazy Isaac runtime surface, so type checking stays clean without importing `isaacsim`. Annotation-only. |
-| `__init__.py` | Re-exports the import-safe public surface. |
-
-The gripper lives next door. `IsaacGripper`, `GripperProfile` and `ROBOTIQ_2F85_PROFILE` are in
-[`robot/grippers/sim`](../../grippers/README.md), which is sim-only and deliberately unregistered so
-it can never be selected for a real robot. The sim runners hand-build it against the arm's shared
-`session`.
-
-## Usage
-
-Build the arm through the registry with `create_arm(RobotVendor.SIM, config=SimRobotConfig)`, or
-construct the components directly for a full sim cell with a shared session.
+The `sim` arm: a UR arm inside NVIDIA Isaac Sim behind the `RobotArm` Protocol, and a mock mode that
+answers the same calls with no Isaac installed. It drives Isaac only, never a real robot; the picks
+and calibrations that run on it live in [willy_sim](../../../willy_sim/README.md).
 
 ```python
-# The off-workstation mock: no Isaac needed.
-from src.robot.drivers.sim import IsaacRobotArm, SimRobotConfig
-from src.robot.grippers.sim import IsaacGripper
+from willy import Robot, load_tree
 
-cfg = SimRobotConfig(mock_mode=True, home_joint_positions=(0.0,) * 6,
-                     gripper_prim_path="/World/Gripper")
-arm = IsaacRobotArm(cfg)
-arm.connect()                                            # no SDK touched in mock_mode
-
-grip = IsaacGripper(session=arm.session, gripper_prim_path=cfg.gripper_prim_path,
-                    mock_mode=True)
-grip.connect()
+# The sim profile's arm in mock mode: no Isaac, no GPU, identity kinematics.
+tree = load_tree("sim").with_values({"robot.sim.mock_mode": True})
+robot = Robot.from_tree(tree, gripper=None)   # the Isaac gripper comes from the sim runners
+with robot.connected():
+    print(robot.arm.get_tcp_pose())
 ```
 
-`build_sim_driver_config` in `execution/robot_parts.py` translates the Pydantic `SimConfig` into a
-`SimRobotConfig`. The end-to-end picks and calibrations live under
-[`willy_sim`](../../../willy_sim/README.md) as `run_m1_pick`, `run_m2_pick`, `run_eih_pick`,
-`run_eth_calibrate` and `run_eih_calibrate`, among others. This package has no `python -m` entry.
+With Isaac installed, the picks run under Isaac's own interpreter, as
+`<isaac-sim>/python.bat examples/simulation/03_isaac_pick_rate.py` (see
+[docs/isaac-ready.md](../../../../docs/isaac-ready.md)). In any other interpreter those examples say so
+and exit. This package has no command line of its own.
 
-## Load-bearing details
+## The nouns
 
-**Model-selectable, and the config wins.** `SimRobotConfig.robot_model` (`ur5e` by default, or
-`ur3e` or `ur10e`) selects the Lula solver and RMPflow config, the Isaac USD and the cuRobo
-`willy_{model}.yml` together, through `robot_models.py`. The hand the cell's preflight models is
-added to that planner as a body link when it starts, and an arm with no hand there plans nothing.
-A descriptor built for another arm or carrying a hand refuses at start, and so does a combination
-of arm, hand, plate, placement and margin that no committed evidence file measured. The
-end-effector frame `tool0` and the six arm
-joint names are shared by every UR e-series, so they stay constants. A disagreeing
-`WILLY_CUROBO_ROBOT` environment variable is loudly ignored, because planning one cell against
-another robot's geometry produces no visible symptom.
+| Noun | Built by | Verb | Returns |
+|---|---|---|---|
+| `IsaacRobotArm` | `Robot.from_tree(tree)` on a `sim` cell, or `create_arm("sim", config=SimRobotConfig(...))` | `move(pose)`, `move_joint(joints)`, `fk`, `ik` | `MotionResult`; base-frame poses in millimetres |
+| `SimRobotConfig` | `build_sim_driver_config(tree.robot.sim, tree.robot.gripper.tool_frame)` | | frozen settings; importing it loads no Isaac |
+| `IsaacSimSession` | the arm, at `connect()` | `start()`, `step()`, `step_n(n)`, `stop()` | the Isaac application and its `World` |
 
-**A combined articulation, where the asset bakes a gripper.** The arm addresses its six joints by
-name through an `ArticulationSubset`, and the gripper drives only `finger_joint`. The Isaac `ur5e`
-and `ur10e` assets bake a Robotiq 2F-85 variant; the `ur3e` asset ships bare, so a UR3e cell mounts
-a standalone gripper.
+`build_sim_driver_config` is in [execution/robot_parts.py](../../execution/robot_parts.py) and is what
+`Robot` calls for a `sim` cell. The gripper is not built here: `IsaacGripper` and `IsaacSuctionGripper`
+are in [grippers/sim](../../grippers/README.md), outside the gripper registry so a real cell can never
+select one, and the sim runners build them against this arm's `session`.
 
-**`move_joint` is interpolated.** A single large point-to-point command stalls the position drive
-partway: it reaches equilibrium short of the target and stays there. `move_joint` walks waypoints of
-at most `_MAX_JOINT_STEP_RAD` (0.03 rad), capped at `_MAX_INTERP_STEPS` (250), then settles. This is
-what makes a known-pose pick work at all.
+## What it refuses
 
-**The flange-to-TCP transform is one transform in one pair of fields.**
-`SimRobotConfig.tool_offset_mm` and `tool_rotation_quat_xyzw` map the Lula end-effector frame
-`tool0`, which is the flange, to the gripper's grasp centre. `fk`, `ik` and `get_tcp_pose` all work
-in that TCP frame, so motion targets the grasp point rather than the flange, and the identity
-targets `tool0` directly. Both halves come from `robot.gripper.tool_frame`, which the real drivers
-read too. For the Robotiq 2F-85 on a UR5e flange the sim profile sets a rotation of minus 90 degrees
-about the flange X axis, which maps flange +Y onto TCP +Z, the approach direction, with the grasp
-centre offset along flange +Y. Two values describing one transform, one of them invisible to config,
-is how a cell silently inherits the wrong tool.
+| Refusal | When | What to do |
+|---|---|---|
+| `RobotConnectionError`, host not ready | `Robot.from_tree` on a `sim` cell with mock mode off and no Isaac here | Run under Isaac's `python.bat`, or set `robot.sim.mock_mode: true` |
+| `IsaacNotAvailableError` | `connect()` outside mock mode with no Isaac; `fk` or `ik` in mock mode | The same |
+| `ValueError` | a `robot_model` outside `ur3`, `ur3e`, `ur5`, `ur5e`, `ur10`, `ur10e` | Use one of the six |
+| `CONTROLLER_REJECTED` | the arm plans with `curobo` and the cuRobo environment is missing or will not start | [ext_deps/README.md](../../../../ext_deps/README.md); `python -m src.robot.safety.planning --doctor` |
+| `CuroboUnavailableError` at planner start | no hand named in `robot.gripper.model`; a descriptor for another arm; a setup no evidence file measured | [ur_family_bringup.md](../../../../docs/runbooks/ur_family_bringup.md) |
+| `CuroboUnavailableError` in a move | planned joint moves are on and no collision-free path exists | Move the goal; nothing interpolates blindly past it |
+| `NoRealGripper` at connect | a `sim` cell built through `Robot` with its gripper: the Robotiq needs a UR controller | Build with `gripper=None`, or run the sim runners |
 
-**The motion planner.** `SimRobotConfig.motion_planner` defaults to `curobo`, a global
-collision-aware trajectory from a process-isolated cuRobo server, and auto-falls-back to the blind
-`ik` path where the cuRobo environment is absent, which is what keeps a machine without it green.
-`rmpflow` is also available. Every path ends in the same verify: multi-seed IK resolve, interpolated
-`move_joint`, then a check against `_MOVE_POS_TOL_MM` (5 mm) and `_MOVE_ORI_TOL_DEG` (6 degrees),
-with up to `_MOVE_MAX_ATTEMPTS` (3) retries.
+## How it behaves
 
-Note the contrast with the real UR driver, whose `curobo` path is fail-closed and never degrades.
-Here the fallback is deliberate, so continuous integration and a laptop stay usable.
+- **The model comes from config.** `robot_model` (`ur5e` by default) selects the Lula solver, the
+  Isaac USD and the cuRobo `willy_{model}.yml` together. A disagreeing `WILLY_CUROBO_ROBOT` environment
+  variable is ignored with a warning, because planning one arm against another's geometry shows no
+  symptom. The cell's hand is added to the planner as a body when it starts.
+- **Baked or mounted hand.** The `ur5e` and `ur10e` assets carry a Robotiq 2F-85 variant, selected
+  when the cell's hand is the 2F-85. Every other hand, and every hand on the other four arms, is mounted
+  standalone from `willy_sim.grippers`. A hand with a joint profile and no measured mount, such as the
+  Hand-E, is refused.
+- **One tool transform.** `tool_offset_mm` and `tool_rotation_quat_xyzw` map the flange frame `tool0`
+  to the grasp centre, from `robot.gripper.tool_frame`, the same key the real drivers read. `fk`, `ik`
+  and `get_tcp_pose` all work in that TCP frame.
+- **Joint moves are interpolated.** One large position command stalls short of its target, so
+  `move_joint` walks steps of at most 0.03 rad, capped at 250 steps, then settles.
+- **The planner does not fall back.** `motion_planner` defaults to `curobo`, a collision-aware plan
+  from a separate cuRobo process (cuRobo and Isaac cannot share one). Where that process cannot start,
+  every motion is refused as `CONTROLLER_REJECTED`, because a run on blind IK would report the pick rate
+  of another motion stack. A runner may choose `ik` or `rmpflow` for a cell; the config has no key for
+  it. Every path ends in the same check: within 5 mm and 6 degrees of the target, with up to 3 attempts.
+- **Planned joint moves are a runner's choice.** With the private `_plan_joint_moves` flag set and the
+  planner on `curobo`, `move_joint` takes its path from cuRobo in joint space, so the goal
+  configuration is the one asked for. It is off by default and is not a config key.
 
-**Planned joint moves are opt-in, and a runner turns them on.** With the arm's `plan_joint_moves`
-flag set and the planner on `curobo`, `move_joint` takes its path from cuRobo in joint space instead
-of interpolating a straight line, so the goal configuration is the one that was asked for rather
-than any IK branch reaching the same tool pose. It is off by default and is not a config key,
-because it changes the trajectory of every `move_joint` call and each runner that adopts it owes its
-own measurement. When it is on and no collision-free path exists it raises `CuroboUnavailableError`
-rather than interpolating blindly, because interpolating there would hand back exactly the path the
-guard rejects.
+## What it does not do
 
-## Partial and stubbed
+- `is_inside_workspace` accepts every base-frame pose. The workspace box belongs to the
+  `WorkspaceGuard` in the injected `SafetyPreflight`, which `move()` runs on every Cartesian command.
+- `stop()` holds the current joints and never raises; it does not interrupt a `move()` already walking
+  its waypoints.
+- `linear=True` is a checked line on `curobo` with a preflight wired, and dropped on `ik` and `rmpflow`;
+  `line_motion()` says which before anything moves. `vel` and `acc` are accepted and not applied.
+- In mock mode `move`, `move_linear` and `move_to` commit the requested pose, `move_joint` updates the
+  joints but not the pose, `fk` and `ik` raise, and the capabilities report no native FK or IK, so no
+  guard calls them.
+- `IsaacSimSession.stop()` can crash Isaac at a headless shutdown. Keep what you need before you call it.
 
-- `is_inside_workspace` always returns `True` for a `Frame.BASE` pose, because this driver owns no
-  workspace box. The box belongs to the `WorkspaceGuard` inside the injected `SafetyPreflight`,
-  which `move()` enforces on every Cartesian command.
-- `stop()` is best-effort and never raises: outside mock mode it re-commands the current joint
-  positions so the drive holds station instead of tracking a stale target, and drops the preflight
-  continuity memo. It does not interrupt a `move()` already iterating its waypoint loop.
-- `move()` honours an optional `SafetyPreflight`. With cuRobo outside mock mode and a preflight
-  wired, `linear=True` is a checked line: the straight TCP line is sampled, and every sample is
-  solved and judged before the arm walks them. The `ik` and `rmpflow` planners drop `linear` and
-  drive to the pose, and `line_motion()` reads that as `NOT_KEPT` before anything moves. The `vel`
-  and `acc` keyword arguments are accepted for Protocol parity and are not applied. `move_joint`
-  accepts velocity and acceleration for the same reason and does not apply them either, because the
-  drive is position-controlled and walks fixed waypoints at a fixed cadence.
-- This package owns no camera class. `SimCameraConfig` is consumed by the `willy_sim` scene and
-  perception code and by the calibration routine in `execution`, not here.
+## Status
 
-`mock_mode` gives identity kinematics: `move`, `move_linear` and `move_to` commit the requested TCP;
-`move_joint` updates the cached joints but not the TCP, because there is no mock FK; `fk` and `ik`
-raise `IsaacNotAvailableError`; and `capabilities` reports no native FK or IK, so the safety guards
-never call them.
+| Capability | Evidence |
+|---|---|
+| Known-pose, real-vision and wrist-camera picks on a UR5e with a 2F-85; hand-eye calibration | measured in simulation: [willy_sim](../../../willy_sim/README.md) |
 
-## Honest caveats
+The other five UR models are selectable; the measured picks are on the UR5e. Mock mode answers the same
+calls with no Isaac installed, which is how CI runs the stack above it.
 
-- `AutonomousGraspService.from_robot_config` cannot build a sim gripper, because that gripper is
-  unregistered and needs the shared session, so the sim path uses `from_components`. That is by
-  design, not a defect.
-- `IsaacSimSession.stop()` calls `SimulationApp.close()`, which can segfault on headless shutdown.
-  That is a known upstream issue, so capture any result you need before calling `stop()`.
-- Sim-only by definition. No validated real hardware, no async motion, no force control. Non-`ur5e`
-  models are selectable, but only `ur5e` is validated on the workstation.
+## Files
 
-## See also
+| File | Holds |
+|---|---|
+| `arm.py` | `IsaacRobotArm` and `ISAAC_CAPABILITIES`: Lula FK and IK, the TCP transform, the planners, the typed `move()` |
+| `session.py` | `IsaacSimSession`: boots the `SimulationApp`, opens the scene, owns the `World` |
+| `robot_models.py` | one `URModelSpec` per UR: Lula key, USD path, cuRobo descriptor, baked hand, reach and workspace |
+| `config.py` | `SimRobotConfig` and `SimCameraConfig`, with no Isaac import |
+| `adapter.py` | millimetres against metres, XYZW against Isaac's WXYZ, pose and joint round trips |
+| `_isaac_protocols.py` | typing stubs for the Isaac objects, so type checks need no Isaac |
 
-- [drivers](../README.md), the driver layer and the `RobotVendor` registry
-- [robot/grippers](../../grippers/README.md), including the sim `IsaacGripper` counterpart
-- [robot/core](../../core/README.md), the Protocols and typed motion contracts this implements
-- [willy_sim](../../../willy_sim/README.md), the runners that drive this arm end to end
+## Details
+
+- [drivers](../README.md): the registry, the doctor and the other vendors
+- [grippers](../../grippers/README.md): `IsaacGripper`, the jaw profiles and the suction cups
+- [willy_sim](../../../willy_sim/README.md): the runners, the scenes and the measured pick rates
+- [UR driver](../ur/README.md): the real arm these picks stand in for

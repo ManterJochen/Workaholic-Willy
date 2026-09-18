@@ -195,7 +195,10 @@ def preflight_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | No
         raise ValueError(f"unknown grasping.calculator {choice!r}: expected 'geometric' or 'deep'")
     block = getattr(robot_cfg.grasping, "deep_generator", None)
     artifact = str(getattr(block, "artifact_path", "") or "")
-    if not artifact or not Path(artifact).is_file():
+    if not artifact:
+        raise FileNotFoundError(
+            "grasping.calculator is 'deep' but robot.grasping.deep_generator.artifact_path is unset.")
+    if not Path(artifact).is_file():
         raise FileNotFoundError(
             f"grasping.calculator is 'deep' but no generator artifact is readable at {artifact!r}.")
     _stamp, trained = _refuse_unless_artifact(artifact)
@@ -268,8 +271,10 @@ def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" 
         # Fail closed rather than fall back to `geometric`: the cell would run the analytic stack
         # and every record, every KPI and every ladder row would be filed under the learned
         # generator's name.
+        where = ("robot.grasping.deep_generator.artifact_path is unset" if not artifact
+                 else f"no generator artifact is readable at {artifact!r}")
         raise FileNotFoundError(
-            f"grasping.calculator is 'deep' but no generator artifact is readable at {artifact!r}. "
+            f"grasping.calculator is 'deep' but {where}. "
             f"Train one with `python -m src.robot.grasping.deep train-set --clouds DIR --out DIR`, "
             f"or set calculator: geometric.")
     # And it has to be an artifact, checked here rather than on first use. The kind check also lives

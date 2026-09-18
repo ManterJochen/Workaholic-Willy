@@ -48,6 +48,7 @@ the cell connected and the campaign did not pass its rule, and 3 when a fault of
 | command | what it does | runbook |
 |---|---|---|
 | `python scripts/checks/cell_bringup.py --live` | connects the arm alone under the cell lock, reads its pose back and holds it against the workspace box; no motion. Exit 0 it stands inside its box, 1 it disagrees with its configuration, 2 there is nothing to connect to | [cell_bringup](runbooks/cell_bringup.md), [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
+| `python -m src.robot.drivers.ur --read` | reads a gripper's pins on the UR controller's digital I/O; never moves the arm, and every write (`--set`, `--pulse`, `--measure`) needs `--yes` | [hande_gripper_bringup](runbooks/hande_gripper_bringup.md) |
 
 ### The camera
 
@@ -146,7 +147,7 @@ Routing a prompt has no command; the operator console answers `GET /v1/diagnosti
 | command | what it does |
 |---|---|
 | `python -m src.robot.execution.real_cell --check` | its `fixtures` and `planning world` rows say what the cell declared about the space it moves through |
-| `python -m src.config` | after declaring the bench and turning `safety.trajectory_check` on, the tree still loads |
+| `python -m src.config` | after declaring the bench, the tree still loads |
 
 No command judges a trajectory; [gate_the_whole_path.py](../examples/offline/safety/gate_the_whole_path.py)
 does it from Python.
@@ -161,6 +162,7 @@ does it from Python.
 | `python -m src.config explain robot.grasping.calculator` | `geometric` or `deep` |
 | `python -m src.config explain robot.grasping.deep_generator.artifact_path` | where the deep branch reads its weights |
 | `python -m src.robot.grasping.deep inspect --artifact <file>` | what a weights file says about itself: kind, version, gripper |
+| `python -m src.robot.grasping.calibration --replay <records.jsonl> --out <file>.json` | fits the uncertainty calibration of the grasp score from a replay of pick records |
 
 Nothing on the command line proposes a suction grasp or triggers the deep generator's refusal; the
 examples under [offline/grasping/](../examples/README.md) do both from Python.

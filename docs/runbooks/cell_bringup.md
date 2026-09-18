@@ -111,6 +111,20 @@ python -m src.config decisions --section robot --profile <your cell>       # wha
 python -m src.config explain robot.workspace_limits --profile <your cell>  # one key, and where it was set
 ```
 
+A first layer holds only what differs from the layers before it. The smallest real one names the hand
+and the weighed tool; save it as `config/robot/robot.mycell.yaml`, chain it after the worked
+cell you start from (`WILLY_PROFILE=<worked cell>,mycell`), and let the desk check name the next key:
+
+```yaml
+robot:
+  gripper:
+    model: robotiq_2f85          # your hand, by its registry name
+  safety:
+    payload:
+      mass_kg: 1.2               # the tool and fingers, weighed
+      cog_mm: [0.0, 0.0, 60.0]   # from the tool's drawing
+```
+
 Profiles compose, so `WILLY_PROFILE=sim,<your cell>` applies every `*.sim.yaml` overlay and then yours on
 top. Do not fork the simulator overlays into a profile of their own: they carry measured values, such as
 the detector dtype the vision pick depends on, and a second copy will drift.

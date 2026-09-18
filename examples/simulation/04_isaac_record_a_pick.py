@@ -1,6 +1,7 @@
 """Film one wrist-camera pick in Isaac Sim as an MP4, and print what was filmed and where the file landed.
 
-Run it from the repository root with Isaac Sim's own interpreter, which loads the tree's sim profile:
+Run it from the repository root with Isaac Sim's own interpreter and the root on its path, so it finds
+willy (in PowerShell, `$env:PYTHONPATH = (Get-Location).Path`; in cmd, `set PYTHONPATH=%CD%`):
     <isaac-sim>/python.bat examples/simulation/04_isaac_record_a_pick.py
 """
 

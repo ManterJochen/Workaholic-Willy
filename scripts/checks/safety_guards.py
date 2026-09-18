@@ -70,12 +70,19 @@ def main() -> int:
         return _not_ready(f"the config tree has no cell to check ({error})",
                           "select a profile that has a `robot` block: WILLY_PROFILE=ur5e")
 
+    vendor = str(getattr(config.vendor, "value", config.vendor))
+    if vendor in ("sim", "dummy"):
+        return _not_ready(
+            f"this tree's arm is `{vendor}`, and a {vendor} arm has no real guard pipeline to interrogate",
+            "run this under a real cell's profile, the one that names its arm and its hand")
     try:
         arm = create_arm(RobotVendor.from_string(config.vendor), config=config)
     except Exception as error:  # noqa: BLE001  (report, not raise)
         return _not_ready(
             f"the `{config.vendor}` arm could not be built ({type(error).__name__}: {error})",
-            "this reads the guard pipeline of a real cell's driver: WILLY_PROFILE=ur5e")
+            "name the cell's hand in its profile, robot.gripper.model (the registry holds robotiq_2f85, "
+            "robotiq_hande and schunk_egu50), or chain a layer that names one: WILLY_PROFILE=hande is the "
+            "shipped tree with the Hand-E")
 
     attestation = SafetyAttestation.of(arm)
     print(attestation.render())

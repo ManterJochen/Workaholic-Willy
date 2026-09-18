@@ -1,426 +1,161 @@
-# `src/config`: the configuration system
+# The config tree of a cell (`src/config`)
 
-Type-safe, immutable YAML configuration, validated by Pydantic v2, loaded once at startup and never
-mutated by anything downstream. This package is the loader and the schemas; the YAML you edit is the
-[`config/`](../../config/) tree at the repository root.
-
-This is the bottom of the dependency stack. Every other subsystem reads a frozen `AppConfig` and
-nobody mutates it.
-
-**Typos are rejected at load time, not silently dropped.** Every model is a `StrictModel` with
-`extra="forbid"`, so a misspelled key is a `ConfigError` naming the file and the line, the profile
-layer that file belongs to, and a near-miss suggestion. It is never a setting that quietly never
-applied.
-
-## How a config is built
-
-The YAML tree is read, `${VAR}` references are substituted before parsing, profile overlays are
-deep-merged left to right, each section is validated by its `StrictModel`, and the result is a frozen
-`AppConfig` cached by data directory and profile chain.
+A cell is described once, as a tree of YAML files under [`config/`](../../config/) that Pydantic
+validates; this package loads that tree, answers questions about it and refuses what does not
+validate. A misspelled key, a value out of bounds or a profile layer that does not exist is a
+`ConfigError` naming the file, the line and the layer, never a setting that quietly never applied.
+It opens no device and runs no calibration.
 
 ```python
-from src.config import load_config
+from willy import load_tree
 
-cfg = load_config()                            # validated, immutable AppConfig
-
-cfg.camera.cameras.primary_rig_id
-cfg.camera.stereomatcher.num_disparities
-cfg.models.stt.model_id
-cfg.runtime.image_encoding.frame_quality
-```
-
-`cfg` is frozen: assigning to `cfg.camera.cameras.primary_rig_id` raises. Configs are values, not state.
-Schema classes are also safe to import on their own, without the loader:
-
-```python
-from src.config.schema.camera import CameraSystemConfig
-```
-
-## Asking the tree about itself
-
-```bash
-python -m src.config                     # validate the shipped tree      (exit 0 = OK)
-python -m src.config --print             # also dump the parsed AppConfig as JSON
-python -m src.config --data DIR          # validate a different tree
-
-python -m src.config decisions           # only what differs from the schema default
-python -m src.config where fusion --tier all
-python -m src.config explain robot.grasping.fusion.enabled --profile ur5e,eth2
-```
-
-Exit codes: `0` succeeded, `1` `ConfigError` (file, parse or schema), `2` bad CLI arguments. A query
-that finds nothing still exits `0`: `explain` reports the key as unknown and offers near matches, and
-`where` says no key matches.
-
-`explain` reports a key's type, constraints, default, tier, which file and layer set the winning value,
-the whole override chain, and the comment written above that line, which `yaml.safe_load` discards.
-`where` searches the schema rather than the files, so it finds the fields no YAML mentions. The same
-questions from Python are
-[`examples/real_robot/01_load_your_cell.py`](../../examples/real_robot/01_load_your_cell.py), and
-[`docs/cli.md`](../../docs/cli.md#the-config-tree) carries these commands beside every other one.
-
-These three exist because the tree has to be asked rather than read. A YAML file states what this cell
-decided; everything it stays silent about is the schema default, in force and unchanged, and a reader
-who greps the files sees only half the configuration.
-
-## What is here
-
-| Path | Role |
-|---|---|
-| [`__init__.py`](__init__.py) | Public surface: `load_config`, `load_robot_config`, the section loaders `load_robot_section`, `load_camera_section`, `load_speech_section` and `load_perception_section`, `reload_config`, `default_data_dir`, `ConfigError`, `ConfigTree`, `LoadedTree`, and the section models `AppConfig`, `CameraConfig`, `ModelsConfig`, `RobotConfig`, `RuntimeConfig`. Schema classes import eagerly; loader helpers and the tree load lazily, so a schema-only import needs no YAML dependency. |
-| [`loader.py`](loader.py) | The pipeline above. `load_config` is cached by data directory and profile chain; each section loader reads and validates one section and is not cached. |
-| [`grippers.py`](grippers.py) | The gripper registry: `load_gripper` and `available_grippers` read one `config/grippers/<model>.yaml` per hand, and refuse an unknown name, a file named after another hand, or an alias two hands claim. The registry holds the Robotiq 2F-85, the Robotiq Hand-E and the Schunk EGU-50, the last two measured off their collision bundles. `robot.gripper.model` names the hand a cell carries. The loader fills that hand's widths and collision envelope from the repository's registry file for every key the profile chain leaves unset, and refuses a stated one that differs, naming both (`hand_numbers.py`); the guard, the planner, the deep calculator and the sim's mount take the hand from the same name, and `robot.gripper.vendor` still picks the driver. A short name such as `2f85` resolves through `load_gripper(name)`, the lookup for reading a corpus, and is refused by `load_gripper(name, aliases=False)`, the lookup behind the key. `python -m src.config` reads the registry whenever the tree has one and resolves the hand a cell names, so a broken hand file, an alias two hands claim, a short name or a hand no file defines fails validation, and the OK line lists the hands. A tree with no `grippers/` directory validates while it names no hand. The repository's registry is the one authority: a tree whose copy of the hand its cell names differs from the repository's, or that describes a hand the repository does not, fails naming both files (`tree_hand_refusal`), because the hand's body, sphere map, retract rows and evidence are written from the repository's file. |
-| [`cameras.py`](cameras.py) | The camera registry: `load_camera` and `available_cameras` read one `config/cameras/<model>.yaml` per camera body, the housing as a box in the colour camera's optical frame. The registry holds the RealSense D435i, D435, D405 and D415, each housing the smallest box around the drawing's maximum extents, every number from Intel's D400 datasheet 337029-017 revision 019 and the colour offset from realsense-ros at a pinned commit, derived in the file's own comments. `camera.cameras.rigs[<id>].body` (`model`, `margin_mm`, `bracket`, all required, `bracket: null` written out) declares a camera the arm carries; the schema refuses it on an eye_to_hand rig, on a stereo rig and on a rig id that cannot name a link, and a rig with a body needs `extrinsics.record_tolerance_mm` and `record_tolerance_deg` with no default. The repository's registry is the one authority, as for grippers: a tree whose copy of a camera its rigs name differs from the repository's fails naming both files (`tree_camera_refusal`), but a tree without `cameras/` reads the repository's, because a camera fills no config number at load. `python -m src.config` reads the camera registry whenever the tree has one and looks up every camera a rig's body names. |
-| [`_registry.py`](_registry.py) | What the two registries share: how a `<model>.yaml` file is found on every platform, how two descriptions compare key by key, and how a registry path is shown to a person. |
-| [`hand_numbers.py`](hand_numbers.py) | The thirteen robot keys a named hand determines (its widths and its collision envelope), filled at load from the repository's registry file where the profile chain leaves them unset, and the refusal of a stated one that differs. |
-| [`tree.py`](tree.py) | `ConfigTree` and `LoadedTree`: the root and the chain as one value, `load()` as a verdict that never raises, the questions (`explain`, `decisions`), `write()` for a bench measurement, `with_values()` for a validated change in memory, and the names a noun built from the tree reads (see below). `default_data_dir()` is the one place that answers "which directory does `load_config()` read", so no caller rebuilds that walk from its own location and gets a silently wrong answer. |
-| [`_merge.py`](_merge.py) | The recursive dict merge profile overlays are built on. |
-| [`explain.py`](explain.py) | Value, type, default, tier, which layer set it, and the YAML comment above that line. Backs `explain`, `where` and `decisions`, and the console's provenance view. |
-| [`edit.py`](edit.py) | Writing a bench measurement back in: allowlisted keys only, one line rewritten in place so comments survive, the group validated as one transaction, files restored if the loader rejects the result. |
-| [`schema/`](schema/) | The `StrictModel` schemas: [`app.py`](schema/app.py), [`runtime.py`](schema/runtime.py), [`camera/`](schema/camera/), [`models/`](schema/models/), [`grippers/`](schema/grippers/) for one hand's description, [`cameras/`](schema/cameras/) for one camera body's, and [`robot/`](schema/robot/) split per vendor and subsystem (`ur`, `kuka`, `sim`, `dummy`, `safety`, `grasping`, `calibration`, `kpi`, `rl`, `tool_frame`). |
-| `__main__.py` | The `python -m src.config` validator and query CLI. |
-
-## One tree, handed over once
-
-`ConfigTree` is the directory and the chain in force as one value, with the layers derived from the
-chain. `load()` never raises: it returns a `LoadedTree`, the verdict with both halves (`render()`,
-`to_dict()`), and the questions `explain` and `decisions` hang off it.
-
-```python
-from src.config import ConfigTree
-
-tree = ConfigTree.from_directory(profile="ursim").load()
-print(tree.render())
+tree = load_tree()                   # the chain WILLY_PROFILE names, validated as one tree
+print(tree)                          # OK with its layers, or the refusal with its file and line
 if not tree.ok:
     raise SystemExit(tree.exit_code)
 
-hande = tree.with_values({"robot.gripper.model": "robotiq_hande"})
-print(hande.render())                                          # ... in memory: robot.gripper.model
-print(hande.explain("robot.gripper.max_width_mm").render())    # 49.99, from grippers/robotiq_hande.yaml
+print(tree.explain("robot.safety.payload.mass_kg"))       # value, bounds, default, where it was set
+weighed = tree.with_values({"robot.safety.payload.mass_kg": 1.2})   # validated in memory; nothing written
+print(weighed.robot.safety.payload.mass_kg)               # the validated robot section
 ```
 
-A change in memory is a load. `with_values` reads the files again under the same root and chain, sets
-the dotted keys on top of every layer, and runs the load as it always runs: the named hand fills the
-thirteen numbers it supplies (`hand_numbers.py`), the schema validates the whole tree, and the
-registries are checked. Nothing is written, and the tree it was called on is unchanged. A value that
-does not validate comes back as a tree that did not load, with the load's own refusal, where the key
-is said to be written in `LoadedTree.with_values` and not at a file line that holds another value;
-`explain` and `decisions` name it the same way. `[n]` sets an item of a list the tree holds
-(`camera.cameras.rigs[1].enabled`). `model_copy` on a loaded section runs none of this: naming the
-Hand-E that way keeps the 2F-85's widths without a word. A change that belongs in a file goes through
-`ConfigTree.write`, which takes the bench measurements only.
+`load_tree("console_dummy")` loads the desk profile, `load_tree(None)` the base tree alone, and
+`root=` another directory. `Robot`, `Cell`, `Camera`, `Locator`, `HandEyeCalibration` and
+`SafetyPreflight` each take the loaded tree (`from_tree`), so values given in memory reach them.
+[01_load_your_cell.py](../../examples/real_robot/01_load_your_cell.py) shows the same calls.
 
-A noun that spans sections takes the `LoadedTree` and reads it under these names:
+```bash
+python -m src.config                                      # validate the tree WILLY_PROFILE names
+python -m src.config --profile ur5e,eth2 --print          # another chain, and the validated tree as JSON
+python -m src.config explain robot.gripper.max_width_mm   # one key: value, type, default, who set it
+python -m src.config decisions --section robot.safety     # only what this cell decided
+python -m src.config where fusion --tier all              # searches the schema, so it finds unwritten keys
+```
 
-| Name | What it is |
-|---|---|
-| `app_config` | The validated `AppConfig`. Raises `ConfigError` with the tree's refusal when it did not load; `config` is the same object, or `None`. |
-| `robot` | The validated robot section. Raises the tree's refusal, or the sentence `load_robot_config` gives a tree with no robot block. |
-| `root` | The directory, resolved: the repository's `config/` when none was named. Every `data_dir=` takes it. |
-| `profile`, `layers` | The chain as `load_config(profile=...)` takes it (`None` for the base tree), and the chain split into its layers. `chain` is the same fact for a person. |
-| `values` | What `with_values` gave in memory, dotted key to value. Empty for a tree read from its files. |
+Exit codes: `0` the tree validates or the question was answered (an unknown key is answered too), `1`
+the tree does not load, `2` bad arguments. More in [docs/cli.md](../../docs/cli.md#the-config-tree).
 
-A door reads the sections from here and never loads `root` under `profile` a second time: the values
-given in memory live only in the `LoadedTree`, and a second load drops them without a word.
+## The nouns
 
-A directory without profiles loads the same way. `ConfigTree.from_directory(root=path,
-profile=None).load()` reads the directory's base files and nothing else, and its `config` is the
-`AppConfig` that `load_config(path, profile=None)` returns. Leaving `profile` unset reads
-`WILLY_PROFILE`, as `load_config(path)` does, so a chain exported in the shell that the directory has
-no overlays for is refused naming the variable. The tree checks one thing the bare loader does not: a
-directory that names a hand carries the repository's registry file for it under `grippers/`, whether a
-file names the hand or `with_values` does.
+| Noun | Built by | Verbs | Returns |
+| --- | --- | --- | --- |
+| `LoadedTree` | `load_tree(profile, root=)`, `ConfigTree.load()` | `explain(key)`, `decisions()`, `with_values(values)` | `KeyExplanation`, text, a `LoadedTree` |
+| `ConfigTree` | `ConfigTree.from_directory(root=, profile=)` | `load()`, `write(items, connected=)` | `LoadedTree`, `WriteResult` |
+| `AppConfig` | `load_config(data_dir, profile=)`, `tree.app_config` | | the frozen tree: `camera`, `models`, `robot`, `runtime` |
+| one section | `load_robot_config()`, `load_robot_section`, `load_camera_section`, `load_speech_section`, `load_perception_section` | | one validated section |
+
+A `LoadedTree` never raises on `load()`: it is the verdict, `ok` and `exit_code`, with the refusal
+when it did not load. Nouns read it under `app_config`, `robot`, `root`, `profile`, `layers` and
+`values`; `app_config` and `robot` raise the tree's `ConfigError` when it did not load.
+
+`with_values` reads the files again under the same root and chain, sets the dotted keys on top of
+every layer and runs the whole load: the named hand fills the numbers it supplies, the schema
+validates and the registries are checked. `[n]` sets a list item (`camera.cameras.rigs[1].enabled`).
+`model_copy` on a loaded section runs none of this, so naming another hand that way keeps the old
+hand's widths without a word. A config is frozen: assigning to it raises.
+
+## Profiles
+
+A layer is the files `<name>.<layer>.yaml` beside each base `<name>.yaml`, deep-merged onto it.
+`WILLY_PROFILE` (or `--profile`) takes a chain, applied left to right, so each dimension is stated
+once: `ur5e,eth2` is a UR5e bench with two fixed cameras, `ur3e,hande` a UR3e with a Hand-E.
+
+| Layer | What it changes |
+| --- | --- |
+| `ur5e` | a real UR5e bench: workspace box, home pose, bench fixture, planning world |
+| `ur3e` | a UR3e, in simulation or on a bench, every position re-anchored for its shorter reach |
+| `ur3`, `ur5`, `ur10`, `ur10e` | the arm model, its workspace box, its safe pose and its payload cap |
+| `hande` | the Robotiq Hand-E as the cell's hand; chains after any arm layer |
+| `eth2`, `tiltcam` | two fixed RGB-D cameras fused; two tilted eye to hand D435s |
+| `sim`, `sim_camera_world` | the Isaac UR5e cell; chained on it, a planner that plans against the overhead camera |
+| `ursim`, `ursim_ur3`, `ursim_curobo` | the UR driver aimed at a URSim container; chained on it, UR3e kinematics, or the planner on |
+| `console_dummy` | a dummy arm and a dummy hand with a declared tool frame: the desk profile |
+| `web` | a development rig of two USB webcams with a KUKA KR6 R900 robot section |
+| `decision`, `rl_datagen` | the AUTO decision gate alone; the advanced grasping blocks and `rl.mode: rl_shadow` |
+
+Read [`config/robot/robot.ur5e.yaml`](../../config/robot/robot.ur5e.yaml) before you describe your own
+bench. A wrong value that fails closed, such as a workspace box that is too small, ships there as a
+worked example, because it refuses a motion visibly. A wrong value that fails open does not ship at
+all: a plausible tool frame or payload drives the arm into the bench and logs a success, so those are
+commented blocks saying what to measure. Prefer a new layer over an edit to `robot.yaml` when you are
+measuring something, so the measured block is the only thing that changed.
+
+Merging: mappings merge key by key, scalars and lists replace, and a later layer wins. A `null` leaf
+keeps the base value; the string `"__null__"` sets `None`. Any string may name an environment
+variable, `${ROBOT_IP:-192.168.1.100}` with a default or `${MODEL_DIR}` without one, substituted
+before parsing. `load_config()` is cached by directory and chain; call `reload_config()` after
+editing a file.
 
 ## The tree on disk
 
-```
-AppConfig
-  camera  : CameraConfig
-    cameras       (primary_rig_id, rigs, stereo_calibration: ChArUco/ArUco board)
-    stereomatcher (SGBM + WLS + temporal; the YAML keeps OpenCV's camelCase)
-    hand_eye      (independent eye-to-hand and eye-in-hand workflows)
-  models  : ModelsConfig
-    objectdetector, segmenter, oneformer, rtdetr  (the model blocks)
-    detector, segmenter_backend                   (the do-it-yourself choice)
-    pipeline      (the one-block way of choosing a perception stack)
-    handdetect, gesturedetect                     (standalone, not in the grasp path)
-    stt           (Whisper)
-  robot   : RobotConfig or None   (absent means camera-only)
-  runtime : RuntimeConfig
-```
+| Path under `config/` | Holds |
+| --- | --- |
+| `camera/cam.yaml`, `camera/stereomatcher.yaml`, `camera/hand_eye.yaml` | the rigs, stereo matching, and the eye to hand and eye in hand workflows |
+| `models/*.yaml` | detection, segmentation, the perception `pipeline`, speech; every top-level key merged |
+| `robot/robot.yaml`, `robot/kpi_thresholds.yaml` | the robot section, and the KPI gate |
+| `app/runtime.yaml` | runtime settings; schema defaults otherwise |
+| `grippers/<model>.yaml`, `cameras/<model>.yaml` | the hand registry and the camera body registry |
+| `grasping_presets/` | operator overlays the loader never reads |
+| `all_keys/` | a reference tree with every key written out; `python -m src.config --data config/all_keys` validates it |
 
-Layout under [`config/`](../../config/):
+`robot.gripper.model` names the hand (the registry holds `robotiq_2f85`, `robotiq_hande` and
+`schunk_egu50`); the loader fills its widths and collision envelope for every key the chain leaves
+unset and refuses a stated one that differs, while `robot.gripper.vendor` picks the driver.
+`camera.cameras.rigs[<id>].body` declares a camera the arm carries, from the RealSense D435i, D435,
+D405 and D415 bodies. A tree whose copy of a registry file differs from the repository's is refused,
+naming both files.
 
-```
-camera/cam.yaml            (required)   camera/stereomatcher.yaml   (required)
-camera/hand_eye.yaml       (optional)
-models/*.yaml              (auto-discovered; every top-level key merged, duplicates rejected)
-robot/robot.yaml           (optional)   robot/kpi_thresholds.yaml   (the KPI gate)
-app/runtime.yaml           (optional; schema defaults otherwise)
-grasping_presets/{easy,dense_clutter,verification_heavy}.yaml
-grippers/<model>.yaml      (one hand per file, read by src.config.grippers)
-cameras/<model>.yaml       (one camera body per file, read by src.config.cameras)
-all_keys/                  (a reference tree, see below)
-```
+`robot.safety` tightens the controller's own limits and never loosens them. Each block has its own
+gate: `limits`, `joint_limits`, `ik_quality`, `motion_continuity`, `payload` and `self_collision`
+(`enforce`), `dwell` (`require_steady_before_motion`) and `planning_world` (`enabled`). The drivers
+build `SafetyPreflight` from it. The emergency stop is a hardware and controller function, and
+nothing in this package can enable, disable or observe it.
 
-`load_config("/path/to/tree")` accepts a different directory, which must follow the same
-`camera/ models/ robot/ app/` layout.
+`config/grasping_presets/` holds `easy` (a single pick at the least risk), `dense_clutter` (bin
+picking with bounded next-viewpoint recovery) and `verification_heavy` (closed loop with a check
+after the grasp). `apply_preset(robot_dict, name)` from `src.robot.grasping.replay` merges one onto a
+robot section as a plain dict without validation; `validate_preset` in its `presets` module checks
+that the merge validates.
 
-### `config/all_keys/` is the reference tree, not the one that loads
+## What it refuses
 
-[`config/all_keys/`](../../config/all_keys/) is a complete tree in which every key the schema accepts
-is written out with what it does, its default, and its legal values. Nothing loads it by default. It
-validates on its own, so it is checkable rather than merely documentation:
+| Refusal | When | What to do |
+| --- | --- | --- |
+| an unknown key | a key the schema does not have | the message names the file, the line, the layer and the nearest key |
+| an unknown layer | a chain names a layer no `*.<layer>.yaml` carries | fix the name; it is checked per layer |
+| an unset variable | `${VAR}` with no default and no such environment variable | set it, or give a default |
+| a hand or camera the registry does not hold | `robot.gripper.model`, or a rig body, names no registry file | name one the registry holds |
+| a switch that would do nothing | `occlusion.hard_reject_enabled: true` (`UNWIRED_SWITCHES`) | leave it off |
+| a perception stack that would ground the wrong thing | `kind: closed_set` with the router on, or the router on a backend other than `vlm` | use the combination the message names |
+| a fused camera with no rig | `grasping.fusion.cameras` names an id `camera.cameras.rigs` does not have | fix the id |
+| a write outside the allowlist | `ConfigTree.write` of a limit, a threshold or a safety toggle | edit the profile by hand |
 
-```bash
-python -m src.config --data config/all_keys
-```
+`ConfigTree.write` takes the bench measurements and site facts only: the payload mass and centre of
+gravity, the tool frame's `source`, `offset_mm` and `rotation_quat_xyzw`, a rig's `serial_number` and
+`enabled`, `camera.cameras.primary_rig_id`, and the controller addresses `robot.ur.ip` and
+`robot.kuka.controller_ip`. It rewrites one line in place so comments survive, validates the group as
+one transaction and restores every file if the loader rejects the result. The primary rig and the
+controller addresses are refused while anything is connected.
 
-Read it to find out what exists; edit the shipped tree beside it to change what your cell does. Do not
-copy it over the shipped tree, because a file that restates every default turns each of those lines
-into something a reader must check against the schema.
+## Files
 
-### Two kinds of line stay written even when they equal their default
+| File | Holds |
+| --- | --- |
+| `tree.py` | `ConfigTree`, `LoadedTree`, `load_tree`, `default_data_dir` |
+| `loader.py` | `load_config`, `load_robot_config`, the section loaders, `reload_config`, `ConfigError` |
+| `explain.py`, `_provenance.py`, `_schema_index.py`, `_tiers.py` | `explain`, `where` and `decisions`: value, type, default, tier and the layer that set it |
+| `edit.py` | the allowlisted bench writes |
+| `grippers.py`, `cameras.py`, `_registry.py`, `hand_numbers.py` | the hand and camera registries, and the robot keys a named hand fills |
+| `_merge.py` | the deep merge the layers are built on |
+| `schema/` | the `StrictModel` schemas, `robot/` split per vendor and subsystem |
+| `__main__.py` | `python -m src.config` |
 
-Safety bounds, and the site facts a bring-up has to find (`ur.ip`, `kuka.controller_ip`,
-`sim.robot_model`, `grasping.default_mode`, `rl.mode`). A leaner file that hides them is not a better
-file. Rig catalogues in `config/camera/cam.yaml` also keep their full per-rig fields, because ragged entries
-where one rig lists `fps` and the next does not are harder to read, not easier.
+## Details
 
-When you add a field, document it on the schema field (a `#:` or a plain `#` block above it; `explain`
-harvests both). Only write it into a YAML if the cell is actually choosing something.
-
-## Profiles and overlays
-
-Set `WILLY_PROFILE`, or pass `--profile`, to layer per-file overlays on top of the base YAML. For a
-base `foo.yaml` the loader deep-merges `foo.<profile>.yaml` from the same directory.
-
-Profiles compose. `WILLY_PROFILE` takes a comma-separated chain, applied left to right:
-
-```bash
-WILLY_PROFILE=ur5e                # a real UR5e on a bench
-WILLY_PROFILE=ur5e,eth2           # the same bench with two fixed RGB-D cameras
-WILLY_PROFILE=sim                 # the Isaac cell (a UR5e)
-WILLY_PROFILE=sim,ur3e            # the same sim cell driving a UR3e
-WILLY_PROFILE=ursim,ursim_ur3     # real UR controller software, UR3e kinematics
-```
-
-Layers are independent dimensions, not alternative whole configurations, which is why they chain
-rather than fork. A profile per combination would have to copy the same measured values per robot and
-the copies would drift; chained, each value is stated once. It also keeps an experiment interpretable:
-change the robot layer alone, or the camera layer alone, and a measured difference is attributable to
-it.
-
-### The shipped layers
-
-| Layer | What it changes |
-|---|---|
-| `ur5e` | a real UR5e cell: workspace box, home pose, safe pose, bench fixture, planning world, and the four bench measurements written out as commented blocks |
-| `ur3e` | reach-anchored geometry and kinematics for the shorter arm |
-| `eth2` | the fusion half of a cell with two fixed RGB-D cameras; chain it after a robot layer |
-| `sim` | the Isaac cell; also overlays `config/camera/hand_eye.sim.yaml`, `config/models/object.sim.yaml`, `config/models/segmenting.sim.yaml` |
-| `ursim` | points the UR driver at a URSim container, and declares the two things `connect()` fails closed on (payload, tool frame) |
-| `ursim_ur3` | chained onto `ursim`; changes one thing, `ur.model`, which keys the DH chain, the collision bundle and the cuRobo config |
-| `tiltcam` | two tilted eye-to-hand D435s instead of one nadir camera |
-| `console_dummy` | hardware-free: dummy arm and gripper with a declared tool frame. The cell the operator console is developed against |
-| `web` | the webcam-pair rig and its runtime |
-| `decision` | turns the default-off AUTO decision gate on, alone, so a measurement of it means one thing |
-| `rl_datagen` | the advanced grasping blocks on plus `rl.mode: rl_shadow` with a bootstrap policy: the layer that makes a record log trainable |
-
-Four of these are worked cell examples rather than single-dimension switches: `ur5e`, `ur3e`, `sim`
-and `eth2`. Read [`config/robot/robot.ur5e.yaml`](../../config/robot/robot.ur5e.yaml) before you
-describe your own bench. It states which values it ships and which it deliberately refuses to guess:
-a wrong value that fails closed, such as a workspace box that is too small, ships as a worked example
-with its assumption stated, because it refuses a motion visibly and an operator widens it. A wrong
-value that fails open does not ship at all. A tool frame or a payload that is merely plausible drives
-the arm into the bench and logs a success, so those are written out as commented blocks saying what to
-measure, and the shipped refusals in `run_config_preflight` and `URRobotArm.connect` stay armed.
-
-Prefer a new profile layer over an edit to `robot.yaml` when you are measuring something. A block that
-has not been measured on your cell does not belong in the default, and a block being measured should be
-the only thing that changed.
-
-### The two-camera cell
-
-[`config/robot/robot.eth2.yaml`](../../config/robot/robot.eth2.yaml) and
-[`config/camera/cam.eth2.yaml`](../../config/camera/cam.eth2.yaml) document it in place.
-
-**Each camera's calibration is declared on its rig.** `camera.cameras.rigs[<id>].extrinsics` is what
-`AutonomousGraspService.from_robot_config` reads for the primary camera's CAMERA to BASE transform, and
-the calibration runner prints that block to paste after each camera. `fusion.cameras` names which rigs
-are fused and holds `enabled` only; a `mounting_mode` or an artifact path written there is refused at
-load.
-
-**The primary camera may be listed in `fusion.cameras`.** The extra-camera rig builder and the
-orchestrator's configured-camera list both leave it out, decided from `camera.cameras.primary_rig_id`,
-so listing it costs nothing.
-
-### Merge rules, the reset sentinel, and environment substitution
-
-Dictionaries merge recursively per key; scalars and lists replace the base value; a later layer wins
-over an earlier one, and the base YAML is the earliest layer of all. A `null` overlay leaf keeps the
-base value, so a partial overlay never accidentally wipes a field. The sentinel string `"__null__"` is
-the only way an overlay can unset a base value to `None`.
-
-If `WILLY_PROFILE` names a layer with no matching `*.<layer>.yaml` anywhere in the tree, loading fails
-with `ConfigError`, checked per layer, so a typo in the middle of a chain cannot merge as a silent
-no-op and leave the cell running another robot's geometry.
-
-Any string in any YAML may reference an environment variable, substituted before parsing, so the result
-must stay valid YAML:
-
-```yaml
-robot:  { ur: { ip: ${ROBOT_IP:-192.168.1.100} } }    # default supplied
-models: { stt: { model_path: ${MODEL_DIR}/whisper } }  # required: ConfigError names MODEL_DIR if unset
-```
-
-Sim is a profile of this one tree, not a second tree. `src.willy_sim.config.load_sim_config` builds the
-chain for you from a robot model and any extra layers.
-
-## Robot and fail-closed safety
-
-`config/robot/robot.yaml` is vendor-block shaped: the top-level `vendor` key selects which sibling block the
-runtime consults. The `sim` block carries `mock_mode`, a pure-Python kinematic mock that needs no
-Isaac, plus the Isaac scene-authoring extras read by `src.willy_sim` rather than by the bare driver.
-KUKA is schema-validated and its EthernetKRL driver has never been validated on real hardware;
-controller-side templates ship under
-[`config/robot/templates/kuka/`](../../config/robot/templates/kuka/).
-
-`robot.safety` is a vendor-neutral block applied on top of controller-side limits (UR safety planes,
-KUKA SafeOperation and so on). The more restrictive value always wins, so this block can only ever
-tighten a cell, never loosen it. Each sub-block carries its own gate, so one guard can be dropped
-without touching the others.
-
-| Guard block | Checks | Gate |
-|---|---|---|
-| `limits` | workspace-face margins | `enforce` |
-| `joint_limits` | per-axis angle margins | `enforce` |
-| `ik_quality` | joint jump, singular value, condition number, limit proximity | `enforce` |
-| `motion_continuity` | max joint, orientation and TCP step per move | `enforce` |
-| `payload` | mass, centre of gravity and inertia envelope | `enforce` |
-| `self_collision` | link-link and link-fixture, capsule or mesh backend | `enforce` |
-| `dwell` | post-stop dwell and steady-before-motion | `require_steady_before_motion` |
-| `planning_world` | the boxes the trajectory planner routes around | `enabled` |
-
-The single entry point is `SafetyPreflight` in [`src/robot/safety/`](../robot/safety/). Each driver
-builds one with `SafetyPreflight.from_safety_config(...)` and evaluates it before commanding motion.
-Rejections surface as typed `MotionStatus` reasons: `WORKSPACE_REJECTED`, `JOINT_LIMIT_REJECTED`,
-`IK_QUALITY_REJECTED`, `SELF_COLLISION_REJECTED`, `PAYLOAD_REJECTED`, `CONTINUITY_REJECTED`. No data
-means no motion, by design.
-
-The emergency stop is deliberately not here. It is a hardware and controller function, and nothing in
-this package can enable, disable, route or observe it.
-
-### A switch that would lie is refused at load
-
-`robot.grasping` configures optional grasp behaviour layered on top of the locked mode profiles. Its
-values cannot relax safety or unlock a recovery action the active mode forbids, and the defaults
-reproduce the shipped open-loop jaw pick byte for byte.
-
-`RobotGraspingConfig.UNWIRED_SWITCHES` lists any switch that would land in the cell's telemetry while
-nothing reads it back. Setting one is a load-time refusal, not a warning, because enabling it would
-give you a cell that reports a capability and does not have it. Today the list holds one entry,
-`occlusion.hard_reject_enabled`, and it stays there until the occlusion score itself is trusted.
-
-## Choosing a perception stack
-
-`models.detector` and `models.segmenter_backend` are two independently settable keys with no
-cross-check, so every detector and segmenter combination builds, including ones where the prompt means
-something different to each half. They are kept as the do-it-yourself path.
-
-The everyday way is one block:
-
-```yaml
-models:
-  pipeline:                     # absent means the two keys above are in force, byte-identically
-    kind: zero_shot             # zero_shot (any prompt) | closed_set (a trained class list)
-    zero_shot:
-      backend: grounded_sam     # grounded_sam (a phrase grounder + a segmenter) | vlm
-      segmenter: sam2           # sam2 | oneformer, on either backend
-```
-
-`build_perception(cfg.models)` resolves it, and so does the physical cell, through
-`PerceptionSpec.from_config(cfg.models).build()`.
-
-Two combinations are refused at load, each naming the legal one:
-
-- `kind: closed_set` with `router.enabled: true`. Routing decides between open-vocabulary backends, and
-  a closed-set detector answers only from its class list.
-- `router.enabled: true` with any `zero_shot.backend` other than `vlm`. The router chooses between the
-  phrase grounder and the VLM, and no other backend configures a VLM for it to choose.
-
-So the router is opt-in and it needs `backend: vlm`:
-
-```yaml
-models:
-  pipeline:
-    kind: zero_shot
-    zero_shot: { backend: vlm }
-    router:    { enabled: true }
-```
-
-Left unwritten, `router.enabled` is corrected to `false` rather than refused, so a bare `pipeline: {}`
-is legal. Only an explicit `true` on an illegal stack is an error.
-
-Nothing pins the segmenter to a backend. Both mask sources implement the same box-prompted contract, so
-either works with either grounding model, and which one segments better is unmeasured. It is a knob,
-not a recommendation.
-
-This is fail-closed rather than warn-and-continue, because the failure it exists to remove is a stack
-that runs confidently and grounds the wrong thing, and a warning in a log has never stopped a grasp.
-
-## Notes
-
-**Grasping presets bypass schema validation.** The three overlays under
-[`config/grasping_presets/`](../../config/grasping_presets/), `easy` (min-risk single pick),
-`dense_clutter` (bin picking with bounded next-viewpoint recovery and an uncertainty fail-closed) and
-`verification_heavy` (closed-loop with mandatory post-grasp verification), are merged onto
-`robot.grasping` by `apply_preset` in the replay package. They are operator overlays, not validated
-`AppConfig` fields.
-
-**Writing config from a tool goes through `edit.py`, and it is deliberately narrow.** Eight keys are
-writable: the payload mass and centre of gravity, the three tool-frame keys, a camera rig's serial
-number, and the two controller addresses `robot.ur.ip` and `robot.kuka.controller_ip`. They are there
-because they are measurements and site facts rather than policy. Limits, thresholds and safety toggles
-are refused by name, because in this tree the evidence for such a value lives in the comment above it,
-and a tool that writes the number without showing the comment invites changing a value whose reason
-nobody remembers. A group is written as one transaction (the three tool-frame keys only validate
-together), the result is re-validated by the real loader, and every touched file is restored byte for
-byte if it is rejected.
-
-**`kpi_thresholds.yaml` is the KPI gate** consumed by `python -m src.robot.grasping.replay`. That gate
-is a synthetic contract self-check: it proves the telemetry and KPI plumbing agree with themselves, not
-that any grasp is good, and it says so in its own provenance block.
-
-**Config owns validated data only.** It never opens a camera and never runs calibration; that is
-`src.camera` and `src.robot.execution.real_cell.calibrate`.
-
-**There is an optional HTTP surface**, the operator console in [`api/`](../../api/README.md). Nothing
-under `src/` imports it, and the web framework it needs is an optional extra.
-
-**Caching.** `load_config()` is cached by absolute data directory and active profile chain. Call
-`reload_config()` to invalidate it after editing files. `LoadedTree.with_values` is never cached:
-two sets of values under one chain are two trees.
-
-**Section loaders.** `load_robot_section`, `load_camera_section`, `load_speech_section` and
-`load_perception_section` read and validate one section each, through the same profile chain, so a
-broken camera file does not refuse an arm and a missing speech block does not refuse a camera. A model
-file that cannot be read is tolerated only when every key the section reads was found in files that
-could, and a top-level models key the schema does not know refuses the section it may belong to. They
-are not cached, the adaptation overlay reaches the robot section as it reaches the whole tree, and the
-cross-section rule on `AppConfig` does not run: a caller that combines the camera and robot sections
-runs it through `src.config.schema.camera_calibration_conflict`, which refuses a
-`robot.grasping.fusion.cameras` id that names no rig in `camera.cameras.rigs`. `load_config()` still
-validates everything.
-
-**Validation you can rely on.** `numDisparities` must be a positive multiple of 16 and `blockSize`
-odd; `temporal_alpha` sits in `[0, 1]`; a duplicate `rig_id` is rejected; `aruco_dict_name` is checked
-against the OpenCV catalogue; duplicate model keys across `models/*.yaml` are rejected; and camera rigs
-are a discriminated union on `source` (`webcam_pair`, `single_device`, `rgbd`).
-
-**Changing config in anger has runbooks.** This page describes the tree; the ordered procedures
-that edit it on a live cell live under [`docs/runbooks/`](../../docs/runbooks/):
-[`real_cell_first_pick.md`](../../docs/runbooks/real_cell_first_pick.md) for the first pick on a
-physical arm and [`cell_bringup.md`](../../docs/runbooks/cell_bringup.md) for a robot the
-stack has not run before. Measuring the extrinsics those procedures write is
-[`docs/calibration-setup.md`](../../docs/calibration-setup.md).
+- Guide: [configuration](../../docs/guide/01-configuration.md); perception stacks: [models](../../docs/guide/02-models.md)
+- Every `robot.grasping` block and the mode it fires in: [grasping-config-reference.md](../../docs/grasping-config-reference.md)
+- Changing config on a live cell: the runbooks under [`docs/runbooks/`](../../docs/runbooks/), first
+  [real_cell_first_pick.md](../../docs/runbooks/real_cell_first_pick.md) and [cell_bringup.md](../../docs/runbooks/cell_bringup.md);
+  measuring extrinsics: [calibration-setup.md](../../docs/calibration-setup.md)
+- The KPI gate `kpi_thresholds.yaml` feeds is a synthetic contract self-check, not a grasp quality measure
+- Tests: `tests/test_config_tree.py`, `tests/test_config_tree_with_values.py`, `tests/test_config_cli.py`, `tests/test_config_explain.py`, `tests/test_config_edit.py`

@@ -183,5 +183,37 @@ class TheSweepMeasuresEverySwitchTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, f"the sweep failed:\n{output[-1500:]}")
 
 
+class TheGuardChecksAdviceClearsItTests(unittest.TestCase):
+    """The fix a refusal prints must lead out of it: a new user follows it and the check passes."""
+
+    def _guards(self, profile: str | None) -> subprocess.CompletedProcess[str]:
+        import os
+
+        env = dict(os.environ)
+        env.pop("WILLY_PROFILE", None)
+        if profile is not None:
+            env["WILLY_PROFILE"] = profile
+        return subprocess.run([sys.executable, str(_CHECKS / "safety_guards.py")], cwd=_ROOT, capture_output=True,
+                              text=True, timeout=300, env=env)
+
+    def test_the_layer_the_base_trees_refusal_names_passes_the_check(self) -> None:
+        refused = self._guards(None)
+        self.assertEqual(2, refused.returncode, refused.stdout + refused.stderr)
+        fix = next(line for line in refused.stdout.splitlines() if line.strip().startswith("fix:"))
+        self.assertIn("robot.gripper.model", fix)
+        advised = re.search(r"WILLY_PROFILE=(\S+)", fix)
+        assert advised is not None, fix
+        passed = self._guards(advised.group(1))
+        self.assertEqual(0, passed.returncode, passed.stdout[-1500:] + passed.stderr[-1500:])
+
+    def test_a_desk_arm_is_a_sentence_not_a_traceback(self) -> None:
+        for profile in ("sim", "console_dummy"):
+            with self.subTest(profile=profile):
+                result = self._guards(profile)
+                self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+                self.assertNotIn("Traceback", result.stdout + result.stderr)
+                self.assertIn("NOT READY", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,108 +1,95 @@
-# `src/geometry/`: frame-safe SE(3) primitives
+# Poses, frames and transforms (`src/geometry`)
 
-Poses, transforms and quaternions, each tagged with the coordinate frame it lives in. The single
-source of truth for robotics geometry in this repository.
-
-`NumPy only, float64` `millimetres` `unit XYZW quaternion, canonical w >= 0` `no SciPy`
-`schema-versioned wire format`
+Every position, orientation and rigid transform in this repository, each tagged with the coordinate frame
+it lives in. Millimetres, unit XYZW quaternions with `w >= 0`, radians, `float64`, and nothing guessed.
+It owns no camera IO, calibration workflow, driver or model inference.
 
 ```python
-from src.geometry import Frame, Pose, Transform
+from willy import Frame, Pose
+from src.geometry import Transform, transform_from_dict, transform_to_dict
+
+target = Pose.tool_down(450.0, 100.0, 300.0)       # mm in Frame.BASE, the tool's +Z pointing down
+camera_to_base = Transform.from_matrix(matrix_4x4, from_frame=Frame.CAMERA, to_frame=Frame.BASE)
+point_base_mm = camera_to_base.apply_point(point_camera_mm)
+target_in_camera = camera_to_base.inverse().apply_pose(target)
+
+blob = transform_to_dict(camera_to_base)           # {"schema": "willy.geometry.transform/1", ...}
+same = transform_from_dict(blob)                   # a different schema is refused on load
 ```
 
-## What it guarantees
+`Frame` and `Pose` are public through `willy`: every motion verb takes a `Pose`, as in
+[03_connect_and_move.py](../../examples/real_robot/03_connect_and_move.py). `Transform`, the quaternion
+helpers and the serializers import from `src.geometry`.
 
-Every public value carries its frame, its unit and its dtype, and none of the three is ever guessed.
-Translations are millimetres, orientation is a unit XYZW quaternion with canonical sign (`w >= 0`),
-angles are radians, and everything is `float64`. Both ndarray fields of a `Pose` and a `Transform`
-are made read-only at construction, so a consumer cannot mutate a value it was handed. Nothing here
-rounds, and serialization stores full-precision floats.
+## The one convention to learn
 
-The package sits near the bottom of the dependency stack. At run time it imports NumPy and its own
-modules and nothing else in this repository, and perception, calibration, the robot drivers and the
-grasping stack all import it. The single outward reference is a typing-only annotation in
-[`adapters/matrix.py`](adapters/matrix.py) naming `Extrinsics`, which adds no run-time edge.
+`Transform(from_frame=A, to_frame=B)` maps a point expressed in `A` into `B`: the matrix usually
+written `T_B_A`. `a.compose(b)` applies `a` first, then `b`. If `a` runs `A` to `B` and `b` runs `B` to
+`C`, the result runs `A` to `C` and equals `b.to_matrix() @ a.to_matrix()`. Frames that do not join
+raise `InvalidTransformError` rather than returning a plausible wrong answer, and `apply_pose` refuses
+a pose in the wrong frame the same way.
 
-It deliberately does not own camera IO, calibration workflows, robot drivers, model inference or
-application orchestration.
+## The nouns
 
-## What is in it
+| Noun | Built by | Verb | Returns |
+| --- | --- | --- | --- |
+| `Frame` | a member: `WORLD`, `BASE`, `CAMERA`, `MARKER`, `TCP`, `TOOL`, `OBJECT`, `GRASP` | used as a tag | a `StrEnum` |
+| `Pose` | `Pose(position_mm, quaternion_xyzw, frame)`, `tool_down(x, y, z)`, `identity`, `from_matrix` | `distance_to`, `angle_to`, `with_frame` | an immutable pose |
+| `Transform` | `Transform(...)`, `identity`, `from_matrix(T, from_frame=, to_frame=)` | `compose`, `inverse`, `apply_point`, `apply_pose` | an immutable transform |
 
-| File | Owns |
-|---|---|
-| [`frame.py`](frame.py) | `Frame`, the canonical coordinate-frame `StrEnum`: `WORLD`, `BASE`, `CAMERA`, `MARKER`, `TCP`, `TOOL`, `OBJECT`, `GRASP`. No raw-string frames anywhere in the public API |
-| [`pose.py`](pose.py) | `Pose`, an immutable frame-tagged 6-DoF pose: position, XYZW orientation, frame, optional label |
-| [`transform.py`](transform.py) | `Transform`, an immutable typed rigid transform between two frames |
-| [`quaternion.py`](quaternion.py) | XYZW quaternion algebra plus axis-angle, Euler, rotation-vector and rotation-matrix conversions |
-| [`matrix.py`](matrix.py) | Homogeneous 4x4 helpers for boundary code that speaks plain ndarrays, and for inner loops where one matrix multiply beats allocating a `Transform`. Nothing here carries a frame |
-| [`validation.py`](validation.py) | Shape, finiteness, quaternion, rotation, frame-chain and homogeneous-matrix checks, and the three tolerance constants |
-| [`serialization.py`](serialization.py) | Schema-versioned dict conversion for `Pose` and `Transform` |
-| [`conversions.py`](conversions.py), [`adapters/`](adapters/) | The only modules allowed to know about raw 4x4 ndarrays, axis-angle vectors and the `Extrinsics` boundary |
-| [`exceptions.py`](exceptions.py) | `GeometryError` and its subclasses: `InvalidPoseError`, `InvalidQuaternionError`, `InvalidMatrixError`, `InvalidTransformError`, `FrameMismatchError` |
+## What it refuses
 
-## The one convention to internalise
+| Refusal | When | What to do |
+| --- | --- | --- |
+| `InvalidPoseError` | a position that is not finite or not `(3,)` | pass a finite `(3,)` array in millimetres |
+| `InvalidQuaternionError` | a quaternion not finite, not `(4,)`, or not unit within `1e-6` | normalise it at the boundary |
+| `InvalidMatrixError` | a rotation not orthonormal or with `det` away from `+1`, or a non-rigid 4x4 | re-orthonormalise the matrix where it enters |
+| `InvalidTransformError` | a composition or an `apply_pose` whose frames do not join | compose in the order the frames run |
 
-`Transform(from_frame=A, to_frame=B)` maps a point expressed in frame `A` into frame `B`. That is
-the matrix usually written `T_B_A`.
+Constructors normalise and canonicalise a quaternion on purpose, because equality and hashing compare
+the arrays byte-wise. Nothing repairs a bad rotation matrix. Both arrays of a `Pose` and a `Transform`
+are read-only, so a value you were handed cannot change under you.
 
-`a.compose(b)` means apply `a` first, then `b`. If `a` runs `A` to `B` and `b` runs `B` to `C`, the
-result runs `A` to `C`, and it equals the matrix product `b.to_matrix() @ a.to_matrix()`. A frame
-pair that does not join raises `InvalidTransformError` rather than producing a plausible wrong
-answer, and `apply_pose` refuses the same way.
+## Traps
 
-```python
-import numpy as np
-from src.geometry import Frame, Transform
+**This tolerance is tighter than the grasp calculator's.** `validation.py` holds `1e-6` for unit length,
+orthonormality and determinant. `src/robot/grasping/geometry/transforms.py` accepts orthonormality
+within `1e-4` and a determinant within `1e-3`, because a CAMERA to BASE matrix from a hand-eye solve
+carries more numerical slack than a freshly composed `Pose`. Passing such a matrix here unchanged turns
+a good calibration into a refused motion: re-orthonormalise it at the boundary rather than loosening
+the check.
 
-T_cam_to_base = Transform.from_matrix(matrix_4x4, from_frame=Frame.CAMERA, to_frame=Frame.BASE)
-point_base_mm = T_cam_to_base.apply_point(point_camera_mm)
-```
+**Euler angles and bare 4x4 matrices are boundary helpers, never storage.** `matrix.py` and `adapters/`
+exist for OpenCV, for eye-to-hand calibration and for tight loops. A matrix carries no frame, so frame
+agreement becomes the caller's job the moment you drop to one. Everywhere else, use `Transform`.
 
-```python
-from src.geometry import transform_to_dict, transform_from_dict
+**The wire format is versioned.** Dicts carry `willy.geometry.pose/1` or `willy.geometry.transform/1`,
+and a mismatch is refused on load, so a later layout cannot be misread as this one. Serialization keeps
+full-precision floats.
 
-blob = transform_to_dict(T_cam_to_base)   # {"schema": "willy.geometry.transform/1", ...}
-same = transform_from_dict(blob)          # a mismatched schema is refused on load
-```
+**No SciPy, and no vendor types.** Every operation is closed-form NumPy. A vendor pose type, such as the
+UR axis-angle pose, stays in its driver; generic numeric bridges belong in `conversions.py` and `adapters/`.
 
-## The traps
+At run time the package imports NumPy and its own modules only. The one outward reference is a
+typing-only annotation of `Extrinsics` in `adapters/matrix.py`.
 
-**Strict validation, and no silent repair.** Positions must be finite and `(3,)`; quaternions finite,
-`(4,)` and unit within `1e-6`; rotation matrices orthonormal with `det` near `+1`; homogeneous
-matrices rigid 4x4 with a `[0, 0, 0, 1]` bottom row. Constructors do normalise and canonicalise a
-quaternion deliberately, because equality and hashing compare the arrays byte-wise and that is only
-well defined under a fixed sign convention. No helper repairs a bad rotation matrix.
+## Files
 
-**This package's tolerance is deliberately tighter than the grasp calculator's.** `validation.py`
-uses `1e-6` for quaternion unit length, orthonormality and determinant.
-`src/robot/grasping/geometry/transforms.py` accepts orthonormality within `1e-4` and a determinant
-within `1e-3`, because a real CAMERA to BASE matrix produced by a hand-eye solve carries more
-numerical slack than a freshly composed `Pose`. Composing the two without noticing the difference
-turns a good calibration into a refused motion. The fix is to re-orthonormalise at the boundary, not
-to loosen the check here.
+| File | Holds |
+| --- | --- |
+| [`frame.py`](frame.py) | `Frame`, the coordinate frames as a `StrEnum`; no raw-string frames in the public API |
+| [`pose.py`](pose.py) | `Pose`, an immutable frame-tagged pose with an optional label |
+| [`transform.py`](transform.py) | `Transform`, an immutable rigid transform between two frames |
+| [`quaternion.py`](quaternion.py) | XYZW algebra, and axis-angle, Euler, rotation vector and matrix conversions |
+| [`matrix.py`](matrix.py) | homogeneous 4x4 helpers for boundary code and inner loops; no frames |
+| [`validation.py`](validation.py) | shape, finiteness, rotation and frame checks, and the three tolerances |
+| [`serialization.py`](serialization.py) | the versioned dict form of `Pose` and `Transform` |
+| [`conversions.py`](conversions.py), [`adapters/`](adapters/) | the only modules that know raw 4x4 arrays, axis-angle vectors and `Extrinsics` |
+| [`exceptions.py`](exceptions.py) | `GeometryError` and its subclasses, `FrameMismatchError` among them |
 
-**Euler angles are a boundary helper, never a storage format.** So is a bare 4x4. `matrix.py` and
-the adapters exist for OpenCV, for eye-to-hand calibration and for tight loops; everywhere else, use
-`Transform`, which carries explicit frames and is checked at every step. A matrix cannot carry a
-frame, so frame agreement becomes the caller's obligation the moment you drop to one.
+## Details
 
-**The wire format is versioned, and the version is checked.** Dicts carry
-`willy.geometry.pose/1` and `willy.geometry.transform/1`, and a mismatch is rejected on load, so a
-future change to ordering or to a covariance field cannot be misread as the current one.
-
-**SciPy is not used here.** Every operation is a closed-form rigid-body conversion in NumPy
-`float64`. SciPy is used elsewhere in the tree, mostly behind deferred imports; if it is ever needed
-for geometry, isolate it behind an adapter rather than importing it into these modules.
-
-**Vendor pose types stay behind their drivers.** Cross-cutting numeric bridges belong in
-`conversions.py` and `adapters/`; a vendor-specific adapter, such as the UR axis-angle pose, belongs
-in that driver's package.
-
-## Where to look next
-
-- [`../calibration/README.md`](../calibration/README.md), which stores every hand-eye output as a
-  `Transform` or an `Extrinsics`
-- [`../camera/README.md`](../camera/README.md), which returns image frames only and no robotics
-  transforms
-- [`../utility/README.md`](../utility/README.md), for the millimetre scaling table these units are
-  defined against
+- [`../calibration/README.md`](../calibration/README.md) stores every hand-eye result as a `Transform` or an `Extrinsics`
+- [`../utility/README.md`](../utility/README.md) holds the millimetre scale factors these units are defined against
+- Maths: [safety-math.md](../../docs/safety-math.md) and [grasping-math.md](../../docs/grasping-math.md)
+- Tests: `tests/test_geometry_hardening.py`, `tests/test_geometry_precision.py`, `tests/test_geometry_error_types.py`

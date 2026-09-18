@@ -1,80 +1,110 @@
-# Grasping telemetry: the frozen contract
+# Grasp telemetry (`src.robot.grasping.telemetry`)
 
-The record the pick path writes, and the per-stage clock the latency gate reads. A pure recorder: no
-numpy in the JSON, a lossless round trip, and nothing silently dropped.
+The record every pick writes, `GraspAttemptRecord`, and the per-stage clock the latency gate reads. It
+records and never acts: no perception, no robot, no verification, only typed reports serialised from
+elsewhere.
 
-| Module | Owns |
-|---|---|
-| [`outcome_logging.py`](outcome_logging.py) | `GraspAttemptRecord`, the `*_metadata_from` serialisers, and `append_jsonl` / `iter_jsonl` / `json_safe` |
-| [`latency_tracker.py`](latency_tracker.py) | `LatencyTracker` and `LatencyStage`: per-stage wall-clock spans |
+Recording is off by default. Turn it on for a run, or for a cell with `robot.grasping.record_log_path`,
+and read the log back. This runs at a desk on the dummy arm of the `console_dummy` profile:
 
-## `GraspAttemptRecord`
+```python
+from willy import Cell, PickRun, Recording, load_tree
+from src.robot.grasping.telemetry.outcome_logging import iter_jsonl
 
-This is a frozen contract. Changing it means updating the telemetry catalog and the consumers that
-read it in the same change: the KPI roll-up, the soak gate, the failure taxonomy, the offline
-reinforcement-learning dataset builder and the operator console's history screen all read this shape.
+cell = Cell.rehearsal(load_tree("console_dummy").robot)          # a dummy arm and a synthetic scene
+print(PickRun.from_cell(cell, runs=2, recording=Recording.to_file("logs/attempts.jsonl")).execute())
 
-Four required fields and twelve optional blocks:
-
-```
-timestamp, attempt_id, mode, final_outcome                      always present
-
-profile, frame, target, initial_grasp, initial_telemetry,
-refined_grasp, refinement, selected_grasp, execution,
-verification, recovery_actions, extra
+for record in iter_jsonl("logs/attempts.jsonl"):                # one GraspAttemptRecord per pick
+    print(record.attempt_id, record.mode, record.final_outcome)
 ```
 
-`extra` is the free-form bag, and it exists for a stated reason: nothing is silently dropped. A caller
-that needs to carry something the schema does not name stashes it there instead of losing it, which
-is how the per-candidate feature rows, the fusion telemetry and the record provenance travel without
-re-freezing the contract.
+The same log feeds the KPI roll-up and the gates. `--records` rolls it up and never fails; `--records-gate`
+compares it against thresholds and can fail:
 
-Record logging is opt-in and off by default. Setting `robot.grasping.record_log_path` makes every
-`pick()` append one record; that path is the source the soak, KPI and offline learning tooling read.
+```bash
+python -m src.robot.grasping.replay --records logs/attempts.jsonl
+```
 
-What the record deliberately does not store: images, depth maps and full point clouds. It keeps
-summaries, positions, scores, telemetry counters and outcome strings. Replay tooling that needs
-pixels references the perception system separately through the frame fingerprint.
+## The nouns
 
-It is a pure recorder. This module calls no perception, no robot and no verification; it only
-serialises typed reports produced elsewhere. That is what makes replay-quality logs possible with no
-hardware in the loop, and what keeps `to_dict()` and `from_dict()` a lossless round trip with no
-`repr` strings and no numpy or dataclass leaks in the JSON payload.
+| Noun | Built by | Verb | Returns |
+| --- | --- | --- | --- |
+| `GraspAttemptRecord` | the pick service, one per `pick()` | `to_dict()`, `to_json()`, `from_dict()` | a lossless round trip |
+| a record log | `append_jsonl(record, path)` | `iter_jsonl(path)` | the records, one per line |
+| `LatencyTracker` | the pick service, one per pick | `with tracker.span(LatencyStage.RANKING):` then `snapshot()` | `{field name: milliseconds}` |
+
+## `GraspAttemptRecord`, a frozen contract
+
+```
+always present   timestamp, attempt_id, mode, final_outcome
+optional         profile, frame, target, initial_grasp, initial_telemetry, refined_grasp, refinement,
+                 selected_grasp, execution, verification, recovery_actions, extra
+```
+
+Changing its shape means changing, in the same commit, every reader: the telemetry catalog, the KPI
+roll-up, the soak gate, the failure taxonomy, the offline learning dataset builder and the operator
+console's history screen, which rolls records up with the same `compute_kpis`.
+
+`extra` is the free-form bag, so nothing is silently dropped: a caller with something the schema does
+not name puts it there, which is how per-candidate feature rows, fusion telemetry and provenance travel
+without re-freezing the contract. The record keeps summaries, positions, scores, counters and outcome
+strings, never images, depth maps or full clouds. `to_dict()` and `from_dict()` round-trip with no
+`repr` strings and no NumPy or dataclass objects in the JSON.
 
 ## `LatencyTracker`
 
-```
-decision  ->  decision_latency_ms    the DecisionEngine.decide call
-ranking   ->  ranking_latency_ms     the calculator and scoring blend
-fusion    ->  fusion_latency_ms      the multi-view fusion update
-```
+| Stage | Field in `extra` | Measures | 95th percentile gate |
+| --- | --- | --- | --- |
+| `DECISION` | `decision_latency_ms` | the `DecisionEngine.decide` call | 60 ms |
+| `RANKING` | `ranking_latency_ms` | the calculator and the scoring blend | 80 ms |
+| `FUSION` | `fusion_latency_ms` | the multi-view fusion update | 220 ms |
 
-Those key names are fixed in the telemetry catalog and gated at the 95th percentile by the offline
-evaluator, at 60 ms, 80 ms and 220 ms respectively.
-
-The tracker is deliberately passive: it never raises, never blocks the caller and performs no input
-or output, and it uses `time.monotonic_ns`, so a clock adjustment does not affect it.
+The offline evaluator applies the gates. The tracker does no input or output and uses
+`time.monotonic_ns`, so a clock adjustment does not affect it.
 
 | Rule | Why |
-|---|---|
-| Stages are named by a small enum | A typo at the call site is a name error, not a silently missed metric |
-| A stage never entered reports `None` | The latency gate skips nulls instead of counting them as a pass |
-| Re-entering a stage replaces the previous span | Inside a retry loop the contract measures the final, decision-relevant span |
-| `snapshot()` returns a fresh dictionary | A caller may mutate it without corrupting the tracker |
-| A stage whose context is never entered is omitted entirely | The pipeline stays byte-identical when the performance block is off |
+| --- | --- |
+| Stages are an enum | a typo at the call site is a name error, not a silently missed metric |
+| A stage never entered is absent from `snapshot()`, and `get()` gives `None` | the gate skips it instead of counting a pass |
+| Re-entering a stage replaces the span | inside a retry loop the final, decision-relevant span counts |
+| A span that raises is still recorded | the tracker measures real cost, not successful paths alone |
+| `snapshot()` returns a fresh dictionary | a caller may change it without corrupting the tracker |
 
-Do not read `fusion_latency_ms` as what fusion cost. It measures the span the caller wrapped, so an
-attempt-level span recorded around a whole pick will appear under a stage name and be read as that
-stage's cost. Wrap the stage, not the attempt.
+A span measures what the caller wrapped. Wrap the stage, not the whole attempt, or the attempt's time
+is read as that stage's cost.
 
-## See also
+## What it refuses
 
-- [`../README.md`](../README.md) for the tier that produces these records
-- [`../replay/README.md`](../replay/README.md) for the KPI roll-up, the telemetry catalog and the
-  soak gate that read them
-- [`../rl/README.md`](../rl/README.md) for the offline trainers, and `check-dataset` for whether a
-  given log is trainable at all
-- [`../types/README.md`](../types/README.md) for `GraspResult` and `GraspFailureReason`, the reasons
-  that end up in `final_outcome`
-- [`../../../../api/README.md`](../../../../api/README.md) for the operator console history screen,
-  which rolls these up with the same `compute_kpis`
+| Refusal | When | What to do |
+| --- | --- | --- |
+| `ValueError` from `GraspAttemptRecord` | an empty `attempt_id`, `mode` or `final_outcome`, or a malformed field | fill the four required fields |
+| `ValueError` from `iter_jsonl` | a malformed line; the message carries the line number | repair or drop that line |
+| `TypeError` from `LatencyTracker.span` | anything but a `LatencyStage` | name the stage from the enum |
+
+## Status
+
+| Capability | Evidence |
+| --- | --- |
+| Records and the latency clock | measured in simulation: the Isaac runners write records with `--record-log` |
+| Records from a physical cell | never touched hardware: no physical pick has run, so no record comes from one |
+
+The soak gate over these records, `python -m src.robot.grasping.replay --soak-report`, is a synthetic
+contract self-check: it proves the telemetry and KPI pipeline is consistent, not that grasps succeed.
+
+## Files
+
+| File | Holds |
+| --- | --- |
+| [`outcome_logging.py`](outcome_logging.py) | `GraspAttemptRecord`, the `*_metadata_from` serialisers, `append_jsonl`, `iter_jsonl`, `json_safe` |
+| [`latency_tracker.py`](latency_tracker.py) | `LatencyTracker`, `LatencyStage`, `STAGE_FIELD_NAMES` |
+
+## Details
+
+- [`replay/`](../replay/README.md) for the KPI roll-up, the telemetry catalog and the soak gate, and
+  [`rl/`](../rl/README.md) for the offline trainers and `check-dataset`.
+- [`types/`](../types/README.md) for `GraspResult` and the typed reasons behind a failed attempt.
+- [Guide 05, record logging](../../../../docs/guide/05-pick-loop.md) for what lands in a line, and
+  [the console](../../../../api/README.md) for the history screen.
+- Tests: `tests/test_grasp_outcome_logging.py`, `tests/test_k1_record_logging.py`,
+  `tests/test_u0_telemetry_contract.py`, `tests/test_record_schema_evolution.py`,
+  `tests/test_u10_runtime_slo_gate.py`.

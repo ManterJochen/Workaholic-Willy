@@ -62,6 +62,18 @@ def _artifact(directory: Path) -> str:
     return str(path)
 
 
+class AnUnsetArtifactTests(unittest.TestCase):
+    """A deep cell that names no artifact is told the key is unset, not that nothing is readable at ''."""
+
+    def test_both_doors_name_the_unset_key(self) -> None:
+        from src.robot.grasping.calculator_factory import preflight_calculator
+
+        for door in (lambda: build_calculator(_config("deep", ""), camera_matrix=None),
+                     lambda: preflight_calculator(_config("deep", ""))):
+            with self.assertRaisesRegex(FileNotFoundError, "deep_generator.artifact_path is unset"):
+                door()
+
+
 class RefusalTests(unittest.TestCase):
 
     def _build(self, **kwargs):

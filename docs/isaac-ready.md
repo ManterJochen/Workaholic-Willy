@@ -100,7 +100,8 @@ the service's own outcome is never sufficient on its own. The campaign passes wh
 passing runs reaches `int(pass_fraction * runs)` and is at least one, with `pass_fraction` set to
 0.8.
 
-Then the real-vision pick, which downloads the detector and segmenter weights on first run:
+Then the real-vision pick. It reads the detector and segmenter weights from disk and downloads nothing, so
+fetch the pair first with `python scripts/model_weights/fetch.py dino-tiny sam2`:
 
 ```bash
 cmd /c "<isaac-sim>\python.bat -m src.willy_sim.run_m2_pick --runs 10 > m2.log 2>&1"

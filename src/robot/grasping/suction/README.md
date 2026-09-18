@@ -1,92 +1,87 @@
-# Suction (`src.robot.grasping.suction`)
+# Suction grasps (`src/robot/grasping/suction`)
 
-Turn a perceived object into ranked suction candidates: flat, sealable surface patches approached
-along the local surface normal. It answers where the cup can seal and hold. Performing the attach and
-the lift is the driver and the runner job.
+Turns a perceived object into ranked suction candidates: flat, sealable patches of its surface, each
+approached along the local surface normal. It answers where a cup can seal and hold; the attach and
+the lift belong to the gripper driver and the pick service.
 
-## What it guarantees
+```python
+from willy import synthesize_suction_grasps
+from src.robot.grasping.suction import SuctionConfig
 
-A second end-effector modality rather than a flag on the parallel-jaw path. Where a jaw grasp has an
-aperture, an antipodal pair and a closing direction, a suction grasp is one sealable contact and a
-press direction, so it has none of those. It covers what a two-finger gripper is weakest at: wide
-flat objects and top-face bin picks.
+grasps = synthesize_suction_grasps(
+    mask, depth_mm, K,                   # a boolean mask, depth in millimetres, the 3x3 camera matrix
+    camera_to_base=camera_to_base,       # a Transform; leave it out to stay in the camera frame
+    payload_mass_g=250.0,                # turns on the wrench term
+    config=SuctionConfig(max_results=5, min_quality=0.2),
+)
+best = grasps[0] if grasps else None     # ranked by quality, ties toward the centre of mass
+```
 
-Pure NumPy, deterministic, no robot and no simulator import. Camera frame and millimetres, or BASE
-when a `camera_to_base` transform is supplied and only the winners are transformed.
+A `SuctionGrasp` carries `position_mm`, a unit `approach`, `seal_score`, `quality` in `[0, 1]`, its
+`frame` and metadata. [jaw_or_suction.py](../../../../examples/offline/grasping/jaw_or_suction.py)
+compares it with the jaw on three boxes at a desk.
 
-The quality model is analytical physics written from the published equations. There is no learned
-scorer here, and that is a licensing decision rather than an oversight; see the trap below.
+A suction grasp is a second end-effector modality, not a flag on the jaw path: one sealable contact and
+a press direction, with no aperture, no antipodal pair and no closing direction. It covers what a
+two-finger gripper does worst, wide flat objects and top faces in a bin. The package is pure numpy and
+deterministic, and imports no robot and no simulator.
 
 ## The model
 
-Back-project the mask, estimate normals and curvature, take a uniform spatial subsample of the
-surface as candidate contacts, and score each one:
+The synthesis back-projects the mask, estimates normals and curvature, takes a uniform subsample of the
+surface as candidate contacts and scores each:
 
 ```
-seal(flatness, perimeter support, normal alignment) x wrench(gravity + payload about the contact)
+quality = seal(flatness, perimeter support, normal alignment) x wrench(gravity and payload about the contact)
 ```
 
-Without a payload, `quality` is the seal score alone. With `payload_mass_g` and a centre-of-mass
-proxy, it is the product. The subsample is a stride over the row-major cloud, which is a regular
-spatial grid, rather than a sort by curvature: sorting would cluster every evaluated point into one
-region and miss the interior of a flat face entirely.
-
-| File | Role |
-| --- | --- |
-| `synthesis.py` | `synthesize_suction_grasps`, plus `SuctionGrasp` (one ranked candidate) and `SuctionConfig` |
-| `scorer.py` | the `SuctionScorer` Protocol, which is the seam, and `AnalyticalSuctionScorer`, its only implementation; emits `SuctionQuality` |
-| `seal.py` | `evaluate_seal`, a deformable concentric-ring model: can the cup rim form an airtight seal here; returns `SealResult` |
-| `wrench.py` | `evaluate_wrench_resistance`, asking whether vacuum, friction and the elastic moment hold the part; returns `WrenchResult` |
-
-A `SuctionGrasp` carries `position_mm`, a unit `approach`, `seal_score`, `quality` in `[0, 1]`, its
-`frame` and metadata.
-
-## Usage
-
-```python
-from src.robot.grasping.suction import (
-    synthesize_suction_grasps, SuctionConfig, AnalyticalSuctionScorer,
-)
-
-grasps = synthesize_suction_grasps(
-    segmentation, depth_map, intrinsics,   # intrinsics is the 3x3 camera matrix
-    camera_to_base=cam_to_base,            # optional; omit to stay in the camera frame
-    payload_mass_g=250.0,                  # enables the wrench term
-    config=SuctionConfig(scorer=AnalyticalSuctionScorer(), max_results=5, min_quality=0.2),
-)
-best = grasps[0]   # ranked by quality, ties broken toward the centre of mass, deterministic
-```
+Without a payload the quality is the seal score alone. The subsample is a stride over the row-major
+cloud, a regular grid, rather than a sort by curvature, which would cluster every evaluated point in one
+region and miss the interior of a flat face. The cloud is scored in the camera frame, and only the
+winners are transformed to the base frame.
 
 `SuctionConfig` defaults: `max_eval_candidates=80`, `max_results=5`, `min_quality=0.2`,
 `min_cloud_points=16`. A cloud smaller than `min_cloud_points` returns an empty list.
 
+## Status
+
+| Capability | Evidence |
+| --- | --- |
+| Suction candidates and the suction pick | measured in simulation |
+| A seal on a physical cup | never touched hardware |
+
+The scorer is a geometric seal argument, not vacuum physics. A flat patch scores 1.0 and a curved
+contact or an edge scores near 0; air leak, porosity and line pressure are not modelled. The simulated
+surface gripper is binary and carries no seal model at all.
+
 ## Traps
 
-There is no learned scorer, and there will not be one wrapping a published network trained on
-non-commercially licensed data. That boundary is enforced in the checks this repository runs, not
-just documented. Nothing structural is lost: the seam is the `SuctionScorer` Protocol, `synthesis.py`
-depends on nothing else, and a replacement implements `prepare_scene` and `score` and drops in. What
-a replacement needs is licence-clean training data, which is what the scene generator under
-[`datagen/`](../../../../datagen/README.md) exists to produce.
+- The cup is not the default collision envelope. `SuctionCupGripperModel` in
+  [collision/](../collision/README.md) is selected by `robot.grasping.gripper_geometry.kind: suction`;
+  a cell that leaves that key at `parallel_jaw` filters suction candidates against jaw fingers.
+- `prepare_scene` receives depth in metres, although `synthesize_suction_grasps` takes millimetres,
+  because metres is the unit the published RGB-D formulations use. A scorer that assumes otherwise
+  scores at a thousand times the intended scale without saying so.
+- There is no learned scorer, and there will not be one wrapping a network trained on non-commercially
+  licensed data; the repository's licence checks enforce that boundary. The seam is the `SuctionScorer`
+  Protocol: a replacement implements `prepare_scene` and `score` and drops in. What it needs is
+  licence-clean training data, which [datagen/](../../../../datagen/README.md) exists to produce.
 
-`prepare_scene` receives depth in metres although `synthesize_suction_grasps` takes it in
-millimetres, because metres is the unit every published RGB-D formulation uses. A future scorer that
-assumes otherwise scores at a thousand times the intended scale without saying so.
+## Files
 
-The analytic scorer is a geometric seal argument, not vacuum physics. A flat patch scores 1.0 and a
-curved contact or an edge scores near 0, which is a genuine and meaningful spread over rendered depth.
-Air leak, material porosity and line pressure are not modelled and stay a real-hardware concern. The
-simulated surface gripper is binary and carries no seal model at all.
+| File | Holds |
+| --- | --- |
+| `synthesis.py` | `synthesize_suction_grasps`, `SuctionGrasp` (one ranked candidate) and `SuctionConfig` |
+| `scorer.py` | the `SuctionScorer` Protocol, and `AnalyticalSuctionScorer`, its one implementation, returning `SuctionQuality` |
+| `seal.py` | `evaluate_seal`: a concentric-ring model of whether the cup rim can seal here; returns `SealResult` |
+| `wrench.py` | `evaluate_wrench_resistance`: whether vacuum, friction and the elastic moment hold the part; returns `WrenchResult` |
 
-The cup envelope is not the default collision envelope. `SuctionCupGripperModel` exists in
-[`collision/`](../collision/README.md) and `robot.grasping.gripper_geometry.kind: suction` selects
-it, but a cell that leaves that block at its default filters suction candidates against jaw fingers.
+## Details
 
-## See also
-
-- [`../README.md`](../README.md) for the pick pipeline this modality plugs into
-- [`../planning/README.md`](../planning/README.md) for `suction_approach`, which builds motion from a `SuctionGrasp`
-- [`../geometry/README.md`](../geometry/README.md) for the point cloud and normals synthesis consumes
-- [`../collision/README.md`](../collision/README.md) for the cup envelope these candidates should be checked against
-- [`../../grippers/README.md`](../../grippers/README.md) for the vacuum drivers, and for the
-  `SuctionCupProfile` shapes the simulated cup is built from
+- [grasping/](../README.md): the pick stack this modality plugs into
+- [planning/](../planning/README.md): the `suction_approach` module, which builds the motion from a
+  `SuctionGrasp`
+- [geometry/](../geometry/README.md): the point cloud and normals the synthesis consumes
+- [grippers/](../../grippers/README.md): the vacuum drivers and the `SuctionCupProfile` shapes of the
+  simulated cup
+- [guide 06](../../../../docs/guide/06-grippers.md): choosing and configuring a gripper

@@ -1,117 +1,132 @@
-# Grasping types: the vocabulary every tier speaks
+# Grasp types (`src.robot.grasping.types`)
 
-Frozen, self-validating carriers with no behaviour of their own. Four value objects and the
-perception Protocols.
+The words every grasping tier speaks: a grasp candidate, why no candidate came back, the sampling mode,
+and what a camera hands the pick loop. Frozen, self-validating carriers with no behaviour of their own.
 
-Nothing here imports another grasping tier, so the calculator, the frame resolver, refinement,
-verification, recovery and the orchestrator can all depend on these names without creating a cycle.
+You meet these in the calculator's results and the pick service's reports; you build one yourself only
+to hand a grasp to the robot or to plug in a perception source of your own. A BASE grasp becomes the
+pose `Robot.pick` takes:
 
-| Module | Owns |
-|---|---|
-| [`grasp_point.py`](grasp_point.py) | `GraspPoint`, one candidate grasp, and `GraspFrame` |
-| [`feedback.py`](feedback.py) | `GraspResult` and the `GraspFailureReason` enum: why the list came back empty |
-| [`modes.py`](modes.py) | `GraspSamplingMode` and the bridge to the calculator's internal tri-state |
-| [`perception.py`](perception.py) | `SegmentationLike`, `PerceptionFrame`, `PerceptionSource`, `CameraObservation`, `MultiCameraPerceptionSource` |
+```python
+import numpy as np
+from src.robot.grasping import GraspFrame, GraspPoint
+
+grasp = GraspPoint(
+    position=np.array([450.0, 100.0, 40.0]),   # mm, in the robot's base frame
+    approach=np.array([0.0, 0.0, -1.0]),       # straight down
+    axis=np.array([1.0, 0.0, 0.0]),            # the jaws close along base X
+    grip_width_mm=30.0,
+    score=0.9,
+    frame=GraspFrame.BASE,
+)
+print(grasp.pose())   # robot.pick(grasp.pose(), grasp.grip_width_mm) takes it; a CAMERA one is refused
+```
+
+Nothing here imports another grasping tier, so every tier can depend on these names without a cycle.
+
+## The nouns
+
+| Noun | Built by | Verb | Returns |
+| --- | --- | --- | --- |
+| `GraspPoint` | a generator, or `GraspPoint(...)` | `pose()` | the tool `Pose` in the grasp's frame: +Z approach, +X closing axis |
+| `GraspResult` | the calculator | read `candidates`, `reasons`, `is_success` | ranked candidates, or typed reasons for none |
+| `GraspSamplingMode` | `resolve_grasp_sampling_mode(value)` | `mode_to_dense_sampling(mode)` | the calculator's `True`, `False` or `None` |
+| `PerceptionSource` | your camera adapter | `acquire()` | `PerceptionFrame` |
+| `MultiCameraPerceptionSource` | your rig, or `MappedCameraRig` | `acquire_all()` | a tuple of `CameraObservation` |
 
 ## `GraspPoint`, the candidate
 
-A `GraspPoint` fully specifies how a parallel jaw should approach and close.
-
 | Field | Meaning |
-|---|---|
-| `position` | The 3D anchor point, in millimetres, in the camera or the base frame |
-| `approach` | The unit vector the gripper moves along toward the object. Top-down in BASE is `[0, 0, -1]` |
-| `axis` | The unit vector along the line joining the two finger pads, perpendicular to `approach`. The gripper closes across it |
-| `grip_width_mm` | The expected finger-pad separation at contact |
-| `score` | Quality in `[0, 1]`, higher is better |
-| `frame` | Which frame the vectors live in: `GraspFrame.CAMERA` or `GraspFrame.BASE` |
-| `label`, `metadata` | Optional provenance and per-candidate telemetry |
+| --- | --- |
+| `position` | the anchor point in millimetres, in the camera or the base frame |
+| `approach` | the unit vector the gripper moves along toward the part; top-down in BASE is `[0, 0, -1]` |
+| `axis` | the unit vector joining the two finger pads, perpendicular to `approach`; the jaws close across it |
+| `grip_width_mm` | the expected pad separation at contact |
+| `score` | quality in `[0, 1]`, higher is better |
+| `frame` | `GraspFrame.CAMERA` or `GraspFrame.BASE` |
+| `label`, `metadata` | optional provenance and per-candidate telemetry |
 
-`pose()` is where the tool goes for the grasp, in the grasp's own frame: +Z `approach`, +X `axis`. A
-BASE grasp gives the pose `Robot.pick` takes, with `grip_width_mm` as its width; `Robot.pick` refuses
-a CAMERA one with nothing commanded.
-
-The numerics contract is enforced rather than described. Distances are millimetres; `approach` and
-`axis` are normalised at construction and a zero vector raises. The dataclass is frozen and the three
-numpy arrays are marked read-only, so `gp.position[0] = x` raises instead of silently mutating a
-candidate another tier is holding.
+The contract is enforced. `approach` and `axis` are normalised at construction and a zero vector
+raises; a negative width or a score outside `[0, 1]` raises. The three arrays are read-only, so
+`grasp.position[0] = x` raises instead of changing a candidate another tier holds.
 
 ## `GraspResult`, and why nothing came back
 
-The calculator is deliberately non-throwing for the ordinary no-grasp cases: an empty mask, all
-candidates collided, no valid depth under the mask. A bare empty list would leave the caller unable to
-choose between retry, rescan, escalation and abort, so the result carries a typed reason.
-
-`GraspFailureReason` has 23 members, grouped by what a caller would do about them.
+The calculator does not raise for an ordinary no-grasp case. A bare empty list would leave the caller
+unable to choose between retry, rescan, escalation and abort, so the result carries typed
+`GraspFailureReason`s, grouped here by what a caller does about them:
 
 | Group | Reasons |
-|---|---|
+| --- | --- |
 | Nothing to look at | `EMPTY_MASK`, `MASK_TOO_SMALL`, `NO_VALID_DEPTH`, `TARGET_LABEL_NOT_FOUND` |
 | Perception too weak to trust | `LOW_DEPTH_CONFIDENCE`, `LOW_MASK_CONFIDENCE`, `HEAVY_OCCLUSION` |
-| Candidates existed and every one was filtered | `NO_CANDIDATES_GENERATED`, `ALL_COLLIDED`, `ALL_OUT_OF_WORKSPACE`, `ALL_TABLE_CONFLICT`, `IK_FAILED`, `NO_VALID_GRASP` |
+| Every candidate was filtered | `NO_CANDIDATES_GENERATED`, `ALL_COLLIDED`, `ALL_OUT_OF_WORKSPACE`, `ALL_TABLE_CONFLICT`, `IK_FAILED`, `NO_VALID_GRASP` |
 | A policy refused | `TOPOLOGY_RISK_REJECTED`, `SEMANTIC_REJECTED`, `DEFORMABLE_ROUTING_REQUIRED` |
 | Try something different | `RESCAN_RECOMMENDED`, `TRY_NEXT_CANDIDATE`, `ACTIVE_PERCEPTION_RECOMMENDED` |
 | The closed loop lost it | `TARGET_LOST_DURING_REFINE`, `REFINEMENT_DIVERGED` |
 | The cell cannot move | `MOTION_PLAN_REFUSED`, `CONTROLLER_NOT_OPERATIONAL` |
 
-The enum is coarse-grained on purpose. It is not a diagnostic taxonomy, only enough resolution for an
-execution layer to branch on; the full root-cause classification lives offline in
-[`../replay/failure_taxonomy.py`](../replay/failure_taxonomy.py).
+The enum is coarse on purpose: enough for an execution layer to branch on. The full root-cause
+classification lives offline in [`replay/failure_taxonomy.py`](../replay/failure_taxonomy.py). The last
+two change what a cell does: a planner refusal is recovered by a rescan alone, and a controller that has
+protective-stopped ends the loop instead of being retried.
 
-The last two change what a cell does. `MOTION_PLAN_REFUSED` is what makes a planner refusal
-recoverable, by rescan alone. `CONTROLLER_NOT_OPERATIONAL` is what stops the loop retrying into a
-controller that has protective-stopped.
+## `GraspSamplingMode`
 
-## `GraspSamplingMode`, a typed name for a tri-state
+A typed name for the calculator's `dense_sampling` switch:
 
-The calculator's internal switch is a tri-state `dense_sampling` of `True`, `False` or `None`. A
-caller should not have to remember which boolean means what, so it configures a typed enum and the
-bridge maps it.
+| Mode | `dense_sampling` | Strings accepted |
+| --- | --- | --- |
+| `AUTO` | `None`, decide per scene | `auto`, and `None` itself |
+| `SINGLE_OBJECT` | `False` | `single`, `single_object`, and `False` |
+| `DENSE_CLUTTER` | `True` | `dense`, `dense_clutter`, and `True` |
 
-```
-GraspSamplingMode.AUTO          -> dense_sampling = None    (decide per scene)
-GraspSamplingMode.SINGLE_OBJECT -> dense_sampling = False
-GraspSamplingMode.DENSE_CLUTTER -> dense_sampling = True
-```
+Strings are case-insensitive. Anything else, an integer included, raises `ValueError` naming the forms
+that are accepted.
 
-Boolean callers keep working (`True` becomes `DENSE_CLUTTER`, `False` becomes `SINGLE_OBJECT`).
-Strings are accepted for YAML and command-line usability against a closed allow-list; anything else
-raises `ValueError` with an explicit hint rather than silently picking a mode.
+## What a camera hands the loop
 
-## The perception snapshot, and the one with a join key
+`PerceptionSource.acquire()` returns a `PerceptionFrame`: a depth map, the lens matrix and the
+segmentations, and optionally an RGB image, a timestamp, the tool pose at capture and the measured depth
+before any grasp overwrite (`surface_depth_map`). A segmentation needs only a `.mask`
+(`SegmentationLike`), so a simulated ground-truth source and a real detector are interchangeable.
 
-`PerceptionSource.acquire()` returns a `PerceptionFrame`: a depth map, the camera intrinsics, the
-segmentations, and optionally an RGB image, a timestamp and the tool pose the frame was taken at.
-`MultiCameraPerceptionSource` returns a tuple of `CameraObservation`, each pairing a `camera_id` with
-one such frame.
+`MultiCameraPerceptionSource.acquire_all()` returns one `CameraObservation` per camera that answered,
+and the two Protocols are separate because fusing a bin needs the cameras at the same moment.
+`camera_id` is a contract, not a label: it must name a camera the loop holds a resolver for, which on a
+config-built cell is a rig id in `robot.grasping.fusion.cameras`. A frame whose id has no resolver is
+dropped and named, never fused at a guessed position.
 
-Segmentations need only satisfy `SegmentationLike`, which is a `.mask` attribute. The orchestrator
-does not care which model produced them, which is what lets a simulated ground-truth source and a
-real detector-plus-segmenter source be interchangeable.
+## What it refuses
 
-`camera_id` is a contract, not a label. It must match a camera the orchestrator holds a resolver
-for. On a config-built cell that is a rig id `robot.grasping.fusion.cameras` fuses, and that
-camera's own CAMERA to BASE calibration artifact is declared on its rig,
-`camera.cameras.rigs[<id>].extrinsics`. A frame whose id has no resolver cannot be placed in BASE, so
-it cannot be fused; the orchestrator drops it and names the id, rather than guessing at a default
-extrinsic and fusing a cloud into the wrong place.
+| Refusal | When | What to do |
+| --- | --- | --- |
+| `ValueError` from `GraspPoint` | a zero `approach` or `axis`, a negative width, a score outside `[0, 1]` | fix the value |
+| `ValueError` from `resolve_grasp_sampling_mode` | a value outside the accepted forms | use a mode name or a bool |
+| a camera absent from `acquire_all()` | it produced no frame; `MappedCameraRig.last_failures` says why | the loop applies `fusion.on_camera_unavailable` (`degrade` or `refuse`) |
 
-The two Protocols are separate on purpose. The single-camera one answers what the camera sees now;
-the multi-camera one answers what the cameras see at the same moment, and that simultaneity is what
-makes fusing a bin of moving parts sound.
+## Status
 
-A camera that failed to produce a frame is simply absent from the returned tuple: the Protocol has no
-error channel by design. Which cameras were expected is config, so comparing expected against
-delivered belongs to the caller that holds the config, in one place and under one policy
-(`fusion.on_camera_unavailable`, which is `degrade` or `refuse`).
+| Capability | Evidence |
+| --- | --- |
+| The carriers and the reasons | measured in simulation: every Isaac pick carries them |
+| `CONTROLLER_NOT_OPERATIONAL` | measured against real controller software: a protective stop in URSim |
+| A real camera through `PerceptionSource` | never touched hardware: the RealSense source has never been fed a real frame |
 
-## See also
+## Files
 
-- [`../README.md`](../README.md) for the tier these types are the vocabulary of
-- [`../geometry/README.md`](../geometry/README.md) for the numeric layer `GraspPoint` validates against
-- [`../planning/README.md`](../planning/README.md) for `GraspPose`, the richer 6-DoF frame a
-  `GraspPoint` becomes
-- [`../telemetry/README.md`](../telemetry/README.md) for where a `GraspResult` ends up as a logged
-  record
-- [`../../../../docs/grasping-math.md`](../../../../docs/grasping-math.md) for what the numbers in
-  these carriers mean
+| File | Holds |
+| --- | --- |
+| [`grasp_point.py`](grasp_point.py) | `GraspPoint`, `GraspFrame` |
+| [`feedback.py`](feedback.py) | `GraspResult`, `GraspFailureReason` |
+| [`modes.py`](modes.py) | `GraspSamplingMode`, `resolve_grasp_sampling_mode`, `mode_to_dense_sampling` |
+| [`perception.py`](perception.py) | `PerceptionFrame`, `PerceptionSource`, `MultiCameraPerceptionSource`, `CameraObservation`, `MappedCameraRig` |
+
+## Details
+
+- [`planning/`](../planning/README.md) for `GraspPose`, the 6-DoF frame a candidate becomes, and
+  [`geometry/`](../geometry/README.md) for the numbers it validates against.
+- [`telemetry/`](../telemetry/README.md) for where a result ends up as a logged record.
+- [The grasping maths](../../../../docs/grasping-math.md) for what the numbers mean.
+- Tests: `tests/test_grasping_modes.py`, `tests/test_pick_loop_controller_state.py`,
+  `tests/test_motion_plan_refusal_recovery.py`, `tests/test_pick_loop_target_label_gate.py`.

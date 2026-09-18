@@ -1,7 +1,9 @@
 # The Workaholic-Willy guide
 
-Six guides that take you from an empty directory to a robot picking an object, in order. Each one
-assumes only what the ones before it established, so read them in sequence the first time.
+These guides take you from an empty directory to a robot picking an object, in order. Each one assumes
+only what the ones before it established, so read them in sequence the first time; the short path to a
+first run is the [Quickstart](../Quickstart.md), and the same ground as short programs is
+[`examples/`](../../examples/README.md).
 
 Everything here is written against the code as it is. Where a capability is built but not running,
 the guide says so and says why. See [What is on, and what is only built](#what-is-on-and-what-is-only-built).
@@ -10,24 +12,24 @@ the guide says so and says why. See [What is on, and what is only built](#what-i
 
 | # | Guide | What you have at the end |
 |---|-------|--------------------------|
-| 1 | [Building the configuration](01-configuration.md) | A validating config tree for your own cell, and the ability to ask the config what any key means, where it was set, and what this cell actually decided. |
+| 1 | [Building the configuration](01-configuration.md) | Your cell's config tree, validating, and how to ask what a key means, where it was set and what the cell decided. |
 | 2 | [The perception models](02-models.md) | Detection and segmentation chosen by config, weights on disk, loading and detecting, all settled before you touch a robot. |
-| 3 | [Hand-eye calibration: the derivations](03-calibration.md) | The ability to reason about a calibration result rather than only produce one: why the problem is `AX = XB`, what each mounting case solves for, what the residual measures, and how the transform reaches a grasp. |
-| 4 | [Robot, drivers and the safety stack](04-robot-and-safety.md) | A driver connected, an end-effector declared, every safety guard understood in the order it runs, and motion routed through the planner and the exact-mesh collision engine. |
+| 3 | [Hand-eye calibration: the derivations](03-calibration.md) | Why it is `AX = XB`, what each mounting solves for, what the residual measures, how the transform reaches a grasp. |
+| 4 | [Robot, drivers and the safety stack](04-robot-and-safety.md) | A driver connected, an end-effector declared, every guard understood in its order, motion routed through the planner. |
 | 5 | [Assembling and running the pick loop](05-pick-loop.md) | A pick executing, and a map of which advanced behaviour a config key can switch on and which needs code. |
-| 6 | [Driving a gripper](06-grippers.md) | Your gripper moving: which driver it is, the read-only steps that settle polarity and wiring before anything is commanded, and the traps each protocol carries. |
+| 6 | [Driving a gripper](06-grippers.md) | Your gripper moving: its driver, the read-only steps that settle polarity and wiring, the traps each protocol carries. |
 
-Guide 1 needs no hardware at all, and most of guide 2 needs none either: it gets you to a
-perception stack that loads and detects on a CPU. Guides 3 and 4 are read at a desk as well; they
-explain what a cell has to settle before it moves. The first simulator boot is at the end of guide 2,
-and every step that boots one also assumes the two motion sidecars are installed, because the
-simulator refuses to boot without them ([`ext_deps/README.md`](../../ext_deps/README.md)).
+Guide 1 needs no hardware at all, and most of guide 2 needs none either: it gets you to a perception
+stack that loads and detects on a CPU. Guides 3 and 4 are read at a desk as well; they explain what a
+cell has to settle before it moves. The first simulator boot is at the end of guide 2, and every step
+that boots one also assumes the two motion sidecars are installed, because the simulator refuses to
+boot without them ([`ext_deps/README.md`](../../ext_deps/README.md)).
 
-One session-hygiene rule that spans the whole set. `WILLY_PROFILE` is sticky: it lives for the whole
-shell session and `load_config()` honours it everywhere, including in the next guide you read. Guide
-2 asks you to set it to `sim`. Unset it again before the later guides, whose transcripts are against
-the base tree, with `Remove-Item Env:\WILLY_PROFILE` on PowerShell or `unset WILLY_PROFILE` on a
-POSIX shell. The non-sticky alternative is `--profile`, passed after the subcommand.
+`WILLY_PROFILE` is sticky: it lives for the whole shell session, and every tree load honours it,
+including in the next guide you read. Guide 2 asks you to set it to `sim`. Unset it again before the
+later guides, whose transcripts are against the base tree, with `Remove-Item Env:\WILLY_PROFILE` on
+PowerShell or `unset WILLY_PROFILE` on a POSIX shell. The non-sticky alternative is `--profile`,
+passed after the subcommand.
 
 ## Or jump to what you need
 
@@ -49,9 +51,10 @@ POSIX shell. The non-sticky alternative is `--profile`, passed after the subcomm
 | understand exactly what refuses a motion, and in what order | [04](04-robot-and-safety.md), the safety preflight |
 | choose a self-collision backend | [04](04-robot-and-safety.md), the two backends and what each is worth |
 | prove the planner and the collision engine are installed | [04](04-robot-and-safety.md), and `python -m src.robot.safety.planning --check` |
-| work out which gripper driver I need | [06](06-grippers.md), the four drivers |
+| work out which gripper driver I need | [06](06-grippers.md), which driver is yours |
 | measure which pin closes my jaws | [06](06-grippers.md), and `python -m src.robot.drivers.ur --measure PIN=VALUE` |
-| find out why every pick reports success and nothing is held | [06](06-grippers.md), a substituted null gripper |
+| fit a gripper this repository never shipped | [docs/runbooks/your_own_gripper.md](../runbooks/your_own_gripper.md) |
+| find out why the connect refuses a hand that could not be built | [06](06-grippers.md), a substituted gripper |
 | launch a simulator runner without corrupting its log | [05](05-pick-loop.md), the `cmd /c` rule |
 | see a pick happen, from a cold box | [05](05-pick-loop.md) |
 | clear a whole bin rather than one object | [05](05-pick-loop.md), the bin-picking orchestrator |
@@ -69,19 +72,19 @@ ordering, the learned success model and the reinforcement-learning layer are all
 default to off. Check any claim of that shape against the tree rather than against a document:
 
 ```bash
-python -c "from src.config import load_config; g=load_config().robot.grasping; print({n: getattr(getattr(g,n),'enabled',None) for n in ('fusion','decision','closed_loop','verification','recovery','success_model')})"
+python -c "from willy import load_tree; g = load_tree().robot.grasping; print({n: getattr(g, n).enabled for n in ('fusion', 'decision', 'closed_loop', 'verification', 'recovery', 'success_model')})"
 ```
 
 **There are two composition paths, and the simulator mostly does not use the real one.**
 `AutonomousGraspService.from_robot_config()` is the config-driven boot path a physical cell takes,
 reached through `build_real_cell` and `build_rehearsal_cell` in
-[`src/robot/execution/autonomous_grasp/cells.py`](../../src/robot/execution/autonomous_grasp/README.md)
-and driven by [`python -m src.robot.execution.real_cell`](../../src/robot/execution/real_cell/README.md).
-Most simulator runners build through `from_components` instead, because the simulated gripper is not
-in the gripper registry and needs the arm's session. That leaves `effective_config=None` and
-silences the config-driven overlays, so those runners re-enable them in runner code. Two runners can
-take the config path, `run_multiview_pick` by default and `run_eih_pick` on request. The consequence
-is in [05](05-pick-loop.md).
+[`src/robot/execution/autonomous_grasp/cells.py`](../../src/robot/execution/autonomous_grasp/README.md),
+and through `Cell` from Python and [`python -m src.robot.execution.real_cell`](../../src/robot/execution/real_cell/README.md)
+from a shell. Most simulator runners build through `from_components` instead, because the simulated
+gripper is not in the gripper registry and needs the arm's session. That leaves `effective_config=None`
+and silences the config-driven overlays, so those runners re-enable them in runner code. Two runners
+can take the config path, `run_multiview_pick` by default and `run_eih_pick` on request. The
+consequence is in [05](05-pick-loop.md).
 
 A file staying silent about a setting means the schema default is in force, not that the feature
 does not exist. `python -m src.config where <substring>` searches the schema, so it finds the keys no
@@ -93,7 +96,8 @@ YAML mentions. It lists at most 40 keys per tier; pass `--limit 500` for the com
 Every command printed here was run against this repository, and every path and config key named here
 was resolved against it. What is not promised is a number. The pick rates a cell reaches depend on
 its optics, its objects and its gripper, so the guides state the rule a gate applies rather than the
-score somebody else's run got.
+score somebody else's run got. Where a guide does report a result, it uses the three evidence levels
+of the root README's [Status and honest scope](../../README.md#status-and-honest-scope).
 
 Two consequences worth carrying between guides:
 
@@ -101,8 +105,10 @@ Two consequences worth carrying between guides:
   when `int(pass_fraction * runs)` picks pass, with `pass_fraction` set to `0.8` in the tree, and a
   run counts as passing only when `pick()` reports success and, independently, the object's measured
   world-Z rose by at least `robot.sim.gate.lift_threshold_mm`, which the tree sets to `50.0`. The
-  real-cell runner requires unanimity and has no independent confirmation, which is why it prints
-  its rule beside its verdict.
+  real-cell runner requires every attempt to succeed and takes the pick service's word for each, which
+  is why it prints its rule beside its verdict. From Python, `PassRule(fraction=..., confirm=...)` sets
+  another fraction and a check of your own on each attempt
+  ([`examples/real_robot/10_pick_campaign.py`](../../examples/real_robot/10_pick_campaign.py)).
 - **A failing run says little about why.** Each runner prints one line per pick, `succeeded`,
   `lift_mm` and `passed`, and then a gate line. `run_m2_pick` adds a reason beside its rate: each run
   that did not pick, with the report's failure summary and the motion's message. Attributing a
@@ -114,14 +120,15 @@ These are not part of the walkthrough, but the guides link into them.
 
 | Document | For |
 |----------|-----|
-| [QUICKSTART.MD](../Quickstart.md) | the short path: pick a profile, run the gate |
-| [docs/isaac-ready.md](../isaac-ready.md) | the cold-box simulator checklist: the standalone interpreter, the asset pack, the logging pattern and the gate criterion |
-| [ext_deps/README.md](../../ext_deps/README.md) | the three external systems, and installing the planner and collision sidecars with `scripts/ext_deps/install.ps1` |
+| [docs/Quickstart.md](../Quickstart.md) | the short path: a pick on a dummy arm, the desk check, a profile |
+| [examples/README.md](../../examples/README.md) | the same ground as short programs through `from willy import ...`: your cell, simulation, offline work |
+| [willy/README.md](../../willy/README.md) | every name `from willy import ...` gives you, and the example that shows it |
+| [docs/cli.md](../cli.md) | every command line, by topic, and the runbook that uses it |
+| [docs/runbooks/](../runbooks/) | bench procedures: cell bring-up, a first real pick, your own gripper, the Hand-E, UR arms, corpus builds, training |
 | [docs/calibration-setup.md](../calibration-setup.md) | the bench procedure: print the board, run the sweep, wire the artifact in. [03](03-calibration.md) is the concepts, this is the session |
-| [docs/runbooks/](../runbooks/) | on-call procedures: first pick on a real cell, cell bring-up, corpus builds, training your own generator |
+| [docs/isaac-ready.md](../isaac-ready.md) | the cold-box simulator checklist: the standalone interpreter, the asset pack, the logging pattern and the gate criterion |
+| [ext_deps/README.md](../../ext_deps/README.md) | installing the planner and collision sidecars with `scripts/ext_deps/install.ps1` |
 | [docs/safety-math.md](../safety-math.md) | the derivations behind the safety bounds |
 | [docs/grasping-math.md](../grasping-math.md) | the derivations behind the grasp itself, from prompt to point cloud to grasp pose |
 | [docs/grasping-config-reference.md](../grasping-config-reference.md) | every `robot.grasping` block, and which grasp mode it can fire in |
-| [examples/README.md](../../examples/README.md) | the same ground as short programs through `from willy import ...`, in three folders by what has to be attached: your cell, simulation, and offline work |
-| [docs/cli.md](../cli.md) | every command line, by topic, and the runbook that uses it |
 | [src/willy_sim/README.md](../../src/willy_sim/README.md) | the simulator harness behind every simulation step in these guides |

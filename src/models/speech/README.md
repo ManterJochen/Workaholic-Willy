@@ -1,173 +1,138 @@
-# Speech: one engine, one voice detector, a microphone stream, `listen()`, push to talk and a confirmation
+# Speech to a pick prompt (`src/models/speech`)
 
-A recording uploaded to the console and an utterance cut from the cell PC's microphone go through one
-`SpeechEngine` and come back as the same frozen `Transcript`: the text in the language it was spoken
-in, which language that was, how long the recording was, and what the decode cost. Before Whisper is
-asked what was said, Silero is asked whether anything was said at all, because Whisper answers silence
-with a word. A transcript is a proposal. A human confirms it before anything acts, "Stopp" included, and
-`Confirmation` is that answer as a report. At the cell PC a talk switch gates the microphone: a turn is
-what is said while it is held.
-
-## Contents
-
-| File | Role |
-| --- | --- |
-| [`engine.py`](engine.py) | `SpeechEngine`, the seam every engine sits behind, and the three refusals: `SpeechStackUnavailable` (a package this host cannot import, or a DLL Windows refused), `SpeechModelMissing` (a model this box has not fetched), `RecordingTooLong` (past Whisper's 30 s window). |
-| [`transcript.py`](transcript.py) | `Transcript`, `SpeechCheck` and `Proposal`, the frozen reports both paths return. stdlib only. |
-| [`whisper_transformers.py`](whisper_transformers.py) | `WhisperTransformersEngine`: Whisper large-v3-turbo on transformers, the engine. |
-| [`silero.py`](silero.py) | `SileroVoiceActivityDetector`: Silero VAD 6.2.1 as TorchScript on the CPU, on the torch this interpreter already has. |
-| [`gate.py`](gate.py) | `SpeechGate.check()`: does this recording hold an utterance, by the microphone path's own rule. |
-| [`holder.py`](holder.py) | `SpeechHolder` / `shared_speech()`, the process's one engine and gate, keyed on the `models.stt` section, and `HeldSpeech.propose()`, the upload path's verb. |
-| [`capture.py`](capture.py) | `AudioSource`, `AudioBlock`, `MicrophoneSource` (a sounddevice `InputStream` copied into a ring), `MicrophoneUnavailable` (no input device the stream can open), `to_mono_float32` and `to_mono_at_rate`. |
-| [`endpointing.py`](endpointing.py) | `VoiceActivityDetector`, the seam Silero fills, `Endpointing` and the `UtteranceCutter` state machine. |
-| [`listener.py`](listener.py) | `Listener` and `listen()`, which returns an `Utterance` carrying the `Transcript`. |
-| [`push_to_talk.py`](push_to_talk.py) | `TalkSwitch`, the seam a talk switch comes through; `TalkButton` and `shared_talk_button()`, the switch in software; `PushToTalkSource`, the microphone behind the switch, and `record()`, which returns a `TalkRecording` of one turn. |
-| [`confirm.py`](confirm.py) | `Confirmation` (`from_proposal`, `from_utterance`), the `Confirmer` seam and `TerminalConfirmer`: a person says yes, types a correction, or nothing becomes a prompt. stdlib only at import. |
-
-## Usage
+A recording becomes text a person confirms before anything uses it as a prompt. It comes from an
+upload, or from the cell PC's microphone while a talk switch is held. One `SpeechEngine` (Whisper
+large-v3-turbo) transcribes it, after Silero has checked that anything was said at all, because Whisper
+answers silence with a word. Nothing here moves the arm; stopping stays with the emergency stop.
 
 ```python
-from src.config.loader import load_speech_section
-from src.models.speech import Listener, shared_speech
+from willy import (Confirmation, PushToTalkSource, TalkButton, TerminalConfirmer,
+                   load_speech_section, shared_speech)
 
-config = load_speech_section()                  # models.stt alone: speech needs no camera and no robot
-held = shared_speech().for_config(config=config)  # the process's engine and gate; loads nothing yet
-proposal = held.propose(samples, samplerate=48000)  # loads each model on its first use, then decodes
-print(proposal.render())
+config = load_speech_section()                     # models.stt alone: no camera, no robot
+held = shared_speech().for_config(config=config)   # the process's engine and gate; loads nothing yet
+switch = TalkButton.from_parts()                   # press() and release() from whatever reads your switch
 
-# The same engine drives the microphone. The listener builds a voice detector of its own, because a
-# detector carries state from one window to the next and the gate's belongs to uploads.
-listener = Listener.from_config(config=config, engine=held.engine)
-with listener:                                  # opens the microphone
-    heard = listener.listen(timeout_s=10.0)     # the first utterance that closes
-print(heard.render())
-```
-
-Push to talk, and the confirmation before any words become a prompt:
-
-```python
-from src.models.speech import Confirmation, PushToTalkSource, TalkButton, TerminalConfirmer
-
-switch = TalkButton.from_parts()               # pressed and released by whatever reads the switch; in the
-                                               # console process, POST /v1/voice/talk presses shared_talk_button()
-source = PushToTalkSource.from_config(config=config, switch=switch)
-with source:                                    # opens the microphone; nothing is served before the press
-    turn = source.record(timeout_s=10.0)        # everything said from the press to the release
-print(turn.render())
+with PushToTalkSource.from_config(config=config, switch=switch) as microphone:
+    turn = microphone.record(timeout_s=10.0)       # waits for the press, keeps what is said until release
+print(turn)
 if turn.ok:
-    proposal = held.propose(turn.samples, samplerate=turn.samplerate)
+    proposal = held.propose(turn.samples, samplerate=turn.samplerate)   # loads each model on first use
     confirmation = Confirmation.from_proposal(proposal=proposal, confirmer=TerminalConfirmer.from_parts())
-    print(confirmation.render())
-    if confirmation.confirmed is not None:      # only an explicit yes or a typed correction
-        prompt = confirmation.confirmed
-
-# A Listener listens across a turn the same way; the release closes the utterance at the latest.
-listener = Listener.from_config(config=config, engine=held.engine, source=source)
+    print(confirmation)                            # confirmation.confirmed is the prompt, or None
 ```
+
+The whole chain to a pick is [12_speak_a_command.py](../../../examples/real_robot/12_speak_a_command.py).
+The operator console serves the same engine: `POST /v1/voice/transcribe` proposes an uploaded recording,
+`POST /v1/voice/talk` presses or releases the console's talk switch, and `POST /v1/voice/listen` records
+one push-to-talk turn at the cell PC and proposes it ([api/README.md](../../../api/README.md)).
+
+## The nouns
+
+| Noun | Built by | Verb | Returns |
+| --- | --- | --- | --- |
+| `HeldSpeech` | `shared_speech().for_config(config=...)` | `propose(samples, samplerate=...)` | a `Proposal`: text, or the reason there is none |
+| `PushToTalkSource` | `from_config(config=..., switch=...)` | `record(timeout_s=...)` | a `TalkRecording` of one turn |
+| `TalkButton` | `from_parts()`, `shared_talk_button()` | `press()`, `release()` | the talk switch in software |
+| `Listener` | `from_config(config=..., engine=held.engine)` | `listen(timeout_s=...)` | an `Utterance` cut by voice activity |
+| `Confirmation` | `from_proposal(...)`, `from_utterance(...)` | read `confirmed` | the text a person let through, or `None` |
+
+Every report prints as itself. `Listener` builds a voice detector of its own, because a detector carries
+state from one window to the next; pass it `source=` a `PushToTalkSource` and the release closes the
+utterance at the latest.
+
+## What it refuses
+
+| Refusal | When | What to do |
+| --- | --- | --- |
+| `SpeechStackUnavailable` | a package this host cannot import, a DLL Windows refused, or no PortAudio | install from `requirements.txt`; the console answers 501 naming the file |
+| `SpeechModelMissing` | the Whisper or Silero weights are not on this machine | `python scripts/model_weights/fetch.py whisper-turbo silero-vad` |
+| `RecordingTooLong` | a recording past Whisper's 30 s window, before either model runs | send one command per recording |
+| `MicrophoneUnavailable` | no input device the stream can open | connect or select a microphone |
+| an empty `Proposal` | Silero heard no utterance close, so Whisper is never asked | speak, or check the microphone level |
+| a turn that is not `ok` | not pressed in time, nothing captured, or held past 30 s (`HELD_TOO_LONG`) | say it again: a cut-off command is a different command |
+| `ConfigError` at load | `models.stt.task` other than `transcribe` | Whisper transcribes and never translates |
 
 ## What it decides
 
-- **Transcribe, never translate.** `models.stt.task` accepts only `transcribe`, and a tree that says
-  `translate` is refused at load with a sentence naming the key. `language: auto` picks German or
-  English per recording; `german` or `english` forces that language token. `generate` is asked through
-  `task` and `language`: transformers 5.5.4 deprecates `forced_decoder_ids` and ignores them once
-  either is passed, and the engine clears a checkpoint's own forced tokens at load.
-- **German or English, out of one encoder pass.** Under `auto` the encoder runs once and a single
-  decoder step from the start token scores the language tokens; only `<|de|>` and `<|en|>` are compared,
-  and the winner goes to `generate` with the same encoder output. Speech in a third language still comes
-  out as one of the two, which is the decision, not a defect.
-- **The language is read back from the decoder prompt.** With `return_dict_in_generate=True` a recording
-  of up to 30 s comes back with the prompt at the front, so the report says the language token the
-  decoder actually ran with, rather than the one that was asked for.
-- **Silence is not transcribed.** Whisper answers a recording with no speech with a word, on this
-  workstation as through the console. `SpeechGate` scores the recording with Silero first, through the
-  same `UtteranceCutter` the microphone path cuts utterances with, and a recording in which no utterance
-  closes comes back as an empty `Proposal` with the reason, with Whisper never asked.
-- **One window.** A recording longer than 30 s is refused before either model runs. This engine decodes
-  one Whisper window and does not stitch several together.
-- **Loaded once.** `SpeechHolder` keeps one engine and one gate per `models.stt` section; an edited
-  section builds a new pair. Building Whisper per request would put a whole model load inside the 2 s
-  budget from the end of speaking.
-- **One engine for both paths.** An upload and a `listen()` utterance return the same text for the same
-  audio; nothing on either path lower-cases or rewrites it.
-- **Every block scaled by its own format.** int16, int32 and float32 are each divided by their full scale
-  and the channels are averaged. The callback only copies into the ring; a full ring keeps the newest
-  audio and the next block reports the loss.
-- **Bounded.** `listen()` returns `TIMED_OUT` at its bound (30 s unless chosen; `None` waits for the
-  source). It drops audio captured before the call.
-- Push to talk, and the release is the end. A turn is what the microphone catches while the talk
-  switch is held. `PushToTalkSource` drops what was captured before the press, and at the release it
-  serves what the ring still holds before it reports that it has ended; it never stops the microphone to
-  end a turn, because `MicrophoneSource.stop()` drops the audio not yet read. A key that repeats while
-  held is one press. `record()` bounds the wait for the press (NOT_PRESSED) and the turn itself at
-  Whisper's 30 s window (HELD_TOO_LONG, not proposed: a command cut off at the limit is a different
-  command). The console's `POST /v1/voice/listen` proposes a turn through `HeldSpeech.propose()`, so a
-  turn and an upload go through one gate and one engine.
-- A person confirms, and only two answers let words through. `Confirmation.confirmed` holds text for
-  an explicit yes (y, yes, j, ja: the words as heard, SPOKEN) or a correction typed after e (TYPED), and
-  None for every other answer (REFUSED), for a process with no terminal to ask (NO_PERSON) and for a
-  proposal without words, which nobody is asked about (NOTHING_HEARD). A bare line of text is not a
-  correction: a typo would otherwise become the grounding phrase of a pick.
-- **Heavy imports are lazy.** Importing this package imports neither torch, transformers, scipy nor
-  sounddevice. A missing package, a DLL the OS refuses, or a missing PortAudio is a
-  `SpeechStackUnavailable`, which the console answers with 501 naming the requirements file that holds
-  the package, or, for a refused DLL, the file Windows refused.
+- **German or English, from one encoder pass.** `language: auto` scores only the `<|de|>` and `<|en|>`
+  tokens and decodes with the winner; `german` or `english` forces one. A third language still comes
+  out as one of the two. The report reads the language back from the decoder prompt it actually ran.
+- **The text is never rewritten.** An upload and a microphone utterance return the same text for the
+  same audio; nothing lower-cases or edits it.
+- **Loaded once.** `shared_speech()` keeps one engine and one gate per `models.stt` section, because
+  building Whisper per request would put a model load inside the 2 s budget from the end of speaking.
+- **A turn is the time the switch is held.** Audio before the press is dropped. At the release the ring
+  is drained before the turn ends, and a key that repeats while held is one press.
+- **Only two answers let words through.** `Confirmation.confirmed` holds text for an explicit yes (y,
+  yes, j, ja: the words as heard) or for a correction typed after `e`. Every other answer, a process with
+  no terminal, and a proposal without words confirm nothing. A bare line of text is not a correction,
+  because a typo would become the grounding phrase of a pick.
+- **Heavy imports wait.** Importing this package loads neither torch, transformers, scipy nor
+  sounddevice.
 
-## What it runs, and what that cost
+## What it costs
 
-**Machinery, not accuracy.** No recording of a spoken command exists in this repository, so nothing here
-says how well anything is heard. What was measured is what the machinery costs and what it does with
-audio that carries no speech. RTX 5080, torch 2.7.1+cu128, `torch_dtype: auto` (float16 on CUDA),
-weights from `assets/models/hf/speech/openai--whisper-large-v3-turbo` at the catalogue's pinned commit
-`41f01f3`, synthetic audio at 16 kHz: 3 s of silence, 3 s and 8 s of a 440 Hz tone.
+Measured on the workstation (RTX 5080, torch 2.7.1+cu128, `torch_dtype: auto`, float16 on CUDA), with
+the weights at the catalogue's pinned commit and synthetic audio at 16 kHz: 3 s of silence, and 3 s and
+8 s of a 440 Hz tone.
 
 | What | Measured |
 | --- | --- |
-| `load()` of whisper-large-v3-turbo | **3.0 s** (weights already in the OS file cache; the first fetch of the day reads 1.62 GB from disk) |
-| Weights on the GPU | **1543.7 MB** allocated by the load |
-| Peak CUDA memory over the whole run | **1619.5 MB** allocated, 1768.0 MB reserved |
-| First transcription after the load | **388 ms** (3 s of silence; it carries the CUDA warm-up) |
-| Warm transcription, median of five | **60.1 ms** (3 s silence), **61.1 ms** (3 s tone), **61.6 ms** (8 s tone) |
-| Silero `load()` | **0.046 s**, on the CPU |
-| Silero per 512-sample window | **0.18 ms** warm (0.94 ms in the first stretch, which carries the warm-up) |
+| `load()` of whisper-large-v3-turbo | 3.0 s with the weights in the OS file cache; a cold first read is 1.62 GB |
+| Weights on the GPU | 1543.7 MB allocated by the load |
+| Peak CUDA memory over the run | 1619.5 MB allocated, 1768.0 MB reserved |
+| First transcription after the load | 388 ms (3 s of silence; it carries the CUDA warm-up) |
+| Warm transcription, median of five | 60.1 ms (3 s silence), 61.1 ms (3 s tone), 61.6 ms (8 s tone) |
+| Silero `load()` | 0.046 s, on the CPU |
+| Silero per 512-sample window | 0.18 ms warm (0.94 ms while warming up) |
 
-- **The decode does not get slower with a longer recording**, because Whisper pads every recording to its
-  30 s window: 8 s of audio costs the same 61 ms as 3 s. The whole budget from the end of speaking is 2 s,
-  and a warm decode spends 3 % of it.
-- **Whisper answered 3 s of silence with `you`** and 3 s of a 440 Hz tone with `.`, both as `en`. That
-  word would have landed in the prompt box. It is the whole reason `SpeechGate` runs first.
-- **Silero refuses both**, far below the 0.5 onset: peak speech probability **0.0089** over 93 windows of
-  silence and **0.0024** over the tone. Neither is speech, and the gate says so in 93 windows at 0.18 ms
-  each.
-- The first call after a load is six times a warm one. A cell that wants the first spoken command to be
-  as quick as the tenth calls `engine.load()` at start-up and transcribes one short clip.
+Whisper pads every recording to its 30 s window, so 8 s costs the same as 3 s, and a warm decode spends
+3 % of the 2 s budget. Whisper answered 3 s of silence with `you` and the tone with `.`, both as `en`;
+Silero scored both far below its 0.5 onset (peak 0.0089 on silence, 0.0024 on the tone). The first call
+after a load is six times a warm one: a cell that wants its first command as quick as its tenth calls
+`engine.load()` at start-up and transcribes one short clip. The checks that reproduce these numbers
+stand down with a sentence naming the fetch when the weights are absent.
 
-The measurements above need the real weights under this checkout's weights root; where they are absent,
-the checks that reproduce them stand down with a sentence naming the fetch.
+## Status
 
-## Honesty
+| Capability | Evidence |
+| --- | --- |
+| Whisper and Silero on synthetic audio, the costs above | measured in simulation (real weights, synthetic audio) |
+| Push to talk, the console's voice routes, a physical microphone or switch, a human voice | never touched hardware |
 
-**Checked against fakes, plus the real models on this box.** The engine runs against fakes and against a
-randomly initialised two-layer Whisper that exercises transformers' own `generate`; the microphone runs
-against a fake `sounddevice` module; `listen()` runs against a scripted source, a loudness test double
-and a recording engine. On top of that, the real whisper-large-v3-turbo weights and the real Silero
-model run here, and what they measured is the table above.
+Push to talk and the voice routes run against a fake `sounddevice` and a ring double. No recording of a
+spoken command exists in this repository, so nothing here says how well anything is heard, German
+included, and the 2 s budget has not been measured end to end. Every `Endpointing` default is a
+placeholder until it is measured on cell audio. `Listener` has no caller yet: no console route and no
+cell verb builds one. The console's own talk button records in the browser and uploads to
+`/v1/voice/transcribe`.
 
-**Not run here:** a physical microphone, any recording of a human voice, the 2 s budget end to end, and
-therefore every accuracy question, German included. `Listener` has no caller: no console route and no
-cell verb builds one, and there is no CLI twin. Every `Endpointing` default is a placeholder until it is
-measured on recorded cell audio, and its trailing silence counts against that budget. Push to talk and
-the console's `/v1/voice/listen` and `/v1/voice/talk` run against a ring double, a fake `sounddevice`
-and a fake held speech; no physical microphone or switch has driven them, and no console screen calls
-them yet (the console's talk button records in the browser and uploads).
+Not built: faster-whisper on CTranslate2 (its wheel carries no kernels for the RTX 5080, and Windows
+application control refused it on the workstation); a reader for a USB hand or foot switch, which waits
+for a licence check of the HID library (a foot switch that types a key works in the browser); a wake
+word, for which no licence-clean German model is known.
 
-**Not built:** faster-whisper on CTranslate2, which stays a later bake-off (CTranslate2 4.8.2 does not
-load on this box: Smart App Control, event 3033, and its wheel carries no sm_120 kernels for the RTX
-5080); a reader for a USB HID hand or foot switch at the cell PC, which waits for a licence check of
-the HID library, while a foot switch that sends a key works in the browser; a wake word, for which no
-licence-clean German model is known.
+## Files
 
-**Weights and licences.** `python scripts/model_weights/fetch.py whisper-turbo silero-vad` writes both,
-each pinned: the checkpoint by hub commit, the Silero file by its wheel's sha256 and its own. Whisper's
-weights are MIT and Silero's are MIT; Whisper's training data is undisclosed, which `NOTICE` records as
-a known provenance gap rather than a proven violation.
+| File | Holds |
+| --- | --- |
+| [`engine.py`](engine.py) | the `SpeechEngine` seam and the three refusals |
+| [`transcript.py`](transcript.py) | `Transcript`, `SpeechCheck` and `Proposal`; standard library only |
+| [`whisper_transformers.py`](whisper_transformers.py) | `WhisperTransformersEngine`, Whisper large-v3-turbo on transformers |
+| [`silero.py`](silero.py) | `SileroVoiceActivityDetector`, Silero VAD 6.2.1 as TorchScript on the CPU |
+| [`gate.py`](gate.py) | `SpeechGate`: does this recording hold an utterance |
+| [`holder.py`](holder.py) | `shared_speech()`, `SpeechHolder` and `HeldSpeech.propose()` |
+| [`capture.py`](capture.py) | `MicrophoneSource`, `AudioBlock`, `MicrophoneUnavailable`, mono and rate conversion |
+| [`endpointing.py`](endpointing.py) | `Endpointing` and the `UtteranceCutter` that closes an utterance |
+| [`listener.py`](listener.py) | `Listener` and `listen()` |
+| [`push_to_talk.py`](push_to_talk.py) | `TalkSwitch`, `TalkButton`, `PushToTalkSource` and `TalkRecording` |
+| [`confirm.py`](confirm.py) | `Confirmation`, the `Confirmer` seam and `TerminalConfirmer` |
+
+## Details
+
+- Weights and licences: `python scripts/model_weights/fetch.py whisper-turbo silero-vad` writes both,
+  pinned by hub commit and by sha256. Both are MIT; Whisper's training data is undisclosed, which
+  `NOTICE` records as a known provenance gap.
+- Guide: [models](../../../docs/guide/02-models.md); console routes: [api/README.md](../../../api/README.md)
+- Tests: `tests/test_speech_engine.py`, `tests/test_speech_push_to_talk.py`, `tests/test_speech_confirm.py`

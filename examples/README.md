@@ -12,6 +12,8 @@ be attached for them to run.
 
 Install the repository once from its root with `pip install -e . --no-deps` (the requirements first, see
 [guide 02](../docs/guide/02-models.md)); after that `from willy import ...` works from any directory.
+Every name it gives you is listed, with the file that shows it, in
+[`willy/README.md`](../willy/README.md).
 
 ## real_robot: your cell
 
@@ -40,16 +42,18 @@ moves the arm either hands the robot its cameras or declines the camera world an
 | [`06_open_a_camera.py`](real_robot/06_open_a_camera.py) | open the cell's camera: one frame, its lens matrix, its declared calibration | nothing |
 | [`07_calibrate_a_fixed_camera.py`](real_robot/07_calibrate_a_fixed_camera.py) | where a fixed camera sits in the robot's frame: check, dry run, sweep | the arm, in the sweep |
 | [`08_calibrate_a_wrist_camera.py`](real_robot/08_calibrate_a_wrist_camera.py) | the same for a camera on the flange | the arm, in the sweep |
-| [`09_locate_and_pick.py`](real_robot/09_locate_and_pick.py) | find a prompted object with the camera and pick it | the arm and the hand |
-| [`10_pick_campaign.py`](real_robot/10_pick_campaign.py) | a campaign of picks with a verdict and a record per attempt | the arm and the hand |
-| [`11_your_own_pick_motion.py`](real_robot/11_your_own_pick_motion.py) | tune the approach, the close and the lift, and keep every guard | the arm and the hand |
-| [`12_speak_a_command.py`](real_robot/12_speak_a_command.py) | a spoken command, confirmed by a person, becomes the pick prompt | the arm and the hand |
+| [`09_locate_and_pick.py`](real_robot/09_locate_and_pick.py) | find a prompted object with the camera and pick it (weights: `dino-tiny sam2`) | the arm and the hand |
+| [`10_pick_campaign.py`](real_robot/10_pick_campaign.py) | a campaign of picks with a verdict and a record per attempt (weights: `dino-tiny sam2`) | the arm and the hand |
+| [`11_your_own_pick_motion.py`](real_robot/11_your_own_pick_motion.py) | tune the approach, the close and the lift, and keep every guard (weights: `dino-tiny sam2`) | the arm and the hand |
+| [`12_speak_a_command.py`](real_robot/12_speak_a_command.py) | a spoken command, confirmed by a person, becomes the pick prompt (weights: `whisper-turbo silero-vad`, and those of 09) | the arm and the hand |
 
 ## simulation: no cell
 
 `console_dummy` is the desk profile: a dummy arm and a dummy hand that command nothing. The Isaac files
-need an Isaac Sim install and run under its own interpreter, `<isaac-sim>/python.bat examples/simulation/03_isaac_pick_rate.py`
-([docs/isaac-ready.md](../docs/isaac-ready.md)); in any other interpreter they say so and exit.
+need an Isaac Sim install and run under its own interpreter from the repository root, with the root on its path
+so it finds `willy` (`$env:PYTHONPATH = (Get-Location).Path` in PowerShell, `set PYTHONPATH=%CD%` in cmd), then
+`<isaac-sim>/python.bat examples/simulation/03_isaac_pick_rate.py` ([docs/isaac-ready.md](../docs/isaac-ready.md));
+in any other interpreter they say so and exit.
 
 | file | what it shows | needs |
 |---|---|---|
@@ -61,7 +65,8 @@ need an Isaac Sim install and run under its own interpreter, `<isaac-sim>/python
 ## offline: data, training and models at a desk
 
 Offline means data generation, training and the models a desk evaluates, with no robot and no camera
-attached. A file that needs something a bare machine lacks (model weights, a GPU, a generated corpus, the
+attached. Run these from the repository root: the model and asset paths in the config tree are relative
+to it, and each file names the config tree it reads. A file that needs something a bare machine lacks (model weights, a GPU, a generated corpus, the
 network, an optional engine) checks for it, names what is missing in one sentence and exits.
 
 | file | what it shows |

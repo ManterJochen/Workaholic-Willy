@@ -28,8 +28,11 @@ with tempfile.TemporaryDirectory() as work:
         extracted = build.clouds(corpus, kinds=kinds)
         print(f"{' and '.join(kinds)}: {extracted.summary['scenes_written']} scenes, "
               f"{extracted.summary['points']} points")
-        # The suction arrays exist in both corpora and are empty in the jaw-only one: kinds changes the
-        # rows, never the keys.
-        with np.load(sorted(corpus.glob("*.npz"))[0]) as scene:
-            print(f"  points {scene['points_mm'].shape}, jaw grasps {scene['grasp_position_mm'].shape}, "
-                  f"suction grasps {scene['suction_position_mm'].shape}")
+        # The first scene that holds a jaw grasp. The suction arrays exist in both corpora and are empty in
+        # the jaw-only one: kinds changes the rows, never the keys.
+        for path in sorted(corpus.glob("*.npz")):
+            with np.load(path) as scene:
+                if len(scene["grasp_position_mm"]):
+                    print(f"  {path.stem}: points {scene['points_mm'].shape}, jaw grasps "
+                          f"{scene['grasp_position_mm'].shape}, suction grasps {scene['suction_position_mm'].shape}")
+                    break

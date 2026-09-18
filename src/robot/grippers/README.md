@@ -1,218 +1,146 @@
-# robot.grippers
+# Grippers (`src/robot/grippers`)
 
-Every end-effector, real or simulated, behind the one vendor-neutral `Gripper` Protocol.
-
-## What this package guarantees
-
-The concrete drivers live here and satisfy the `Gripper` Protocol defined in
-[`../core/`](../core/README.md), so pipeline code never imports a vendor SDK and never branches on
-which end-effector is attached. Real drivers are reached through a lazy factory registry,
-`create_gripper(vendor, **kwargs)`, whose factory bodies defer any transport import until they run.
-The simulator drivers live in `sim/` and are selected by config too, but deliberately not through the
-registry.
-
-Adding a gripper means adding a `GripperVendor` member and one module here. No pipeline changes.
-
-## Contents
-
-| Path | Role |
-| --- | --- |
-| `registry.py` | Maps a `GripperVendor` to a lazy factory. `create_gripper()` builds it and then checks the result against the Protocol. |
-| `robotiq.py` | `GripperController`, a Robotiq 2F-85, 2F-140 or Hand-E over the URCap socket. |
-| `robotiq_socket.py` | `RobotiqSocket`, a dependency-free client that speaks the port-63352 grammar directly. |
-| `onrobot.py` | `OnRobotGripper`, an RG2 or RG6 over Modbus TCP through the Compute Box. |
-| `onrobot_modbus.py` | `OnRobotRG`, `RGStatus` and `ModbusError`, the register-level client. |
-| `vacuum.py` | `VacuumGripper`, suction over the controller's digital I/O. |
-| `jaw_io.py` | `JawIOGripper`, parallel jaws over the controller's digital I/O, single or double solenoid. |
-| `dummy.py` | `DummyGripper`, pure Python for offline work. It tracks a width in memory and clamps to range. |
-| `null.py` | `NullGripper`, the explicit no-op, plus `GripperSubstitution` and `SubstitutionReason`. |
-| `sim/gripper.py` | `IsaacGripper`, a parallel jaw driven by a swappable `GripperProfile`. |
-| `sim/suction_gripper.py` | `IsaacSuctionGripper`, a simulated surface gripper driven by a `SuctionCupProfile`. |
-
-`__init__.py` registers six built-ins: `ROBOTIQ`, `ONROBOT`, `VACUUM`, `JAW_IO`, `DUMMY` and `NONE`.
-
-## How a gripper is chosen
-
-| Gripper | Selected by | Mechanism |
-| --- | --- | --- |
-| Real hardware | `robot.gripper.vendor` | `create_gripper(vendor, **kwargs)` looks up the lazy factory and checks the result against the Protocol |
-| Simulated parallel jaw | `robot.gripper.model`, for example `schunk_egu50` | `willy_sim.grippers.sim_mount_for` derives the gripper from the hand and the arm asset: the asset's baked variant, or a `MountedGripperSpec` from `MOUNTED_GRIPPERS` and its `GripperProfile` |
-| Simulated suction cup | `robot.sim.suction_cup`, for example `slim` | picks a `SuctionCupProfile` from `willy_sim.grippers.SUCTION_CUPS`; the default is the standard cup |
-
-The rule is the same in every row: a new gripper, or a new cup, is data in the shape of a profile,
-not new driver code. One `IsaacGripper` drives any jaw profile and one `IsaacSuctionGripper` drives
-any cup profile.
-
-## The three wire protocols, and why they are separate drivers
-
-`robotiq` speaks a socket protocol on TCP port 63352 that the URCap opens on the UR controller. There
-is no SDK behind it: `robotiq_socket.py` speaks that grammar directly. Native position counts from 0
-to 255 convert to millimetres inside the driver, and `speed` and `force` are normalised to the range
-0 to 1 and mapped onto counts, so they are not newtons.
-
-`onrobot` speaks Modbus TCP to an OnRobot Compute Box, which is a separate device on its own network
-address rather than something the arm hosts. Three things are the opposite of the Robotiq: there is
-no activation stroke, there is no speed register, and the width is an opening in tenths of a
-millimetre, so a larger number means more open. Force is newtons natively. The default port is 502
-and the default unit is the quick changer's. RG2 and RG6 only: the 2FG7 shares the family name and
-not the register map, and the vacuum tools and the three-finger model are different devices again.
-
-`vacuum` and `jaw_io` are the same idea applied to different hardware: on a UR controller an ejector
-and a solenoid jaw are both pins. There is no SDK and nothing manufacturer-specific in either, which
-is why both are named for what they are and how they speak rather than for a maker, and why every
-wiring number lives in config (`gripper.vacuum.*`, `gripper.jaw_io.*`) rather than in the driver. A
-cell can be configured and tested before the end-effector has been bought, and bring-up becomes a
-matter of measuring numbers rather than editing code.
-
-Measuring those numbers has its own tool. Nothing below moves the arm, and every write is gated:
-
-```bash
-python -m src.robot.drivers.ur --read                        # read every pin on the bank, change nothing
-python -m src.robot.drivers.ur --watch 0 --for 15            # trip a sensor by hand and watch a pin
-python -m src.robot.drivers.ur --measure 4=1 --watch 0 --yes # drive a pin and time the response
-```
-
-## Post-close verification
-
-`ObjectDetectingGripper` is the opt-in extension that answers whether the end-effector is holding
-something. Five drivers implement it and they differ in how much they know:
-
-- `robotiq` reads gOBJ, which tells fingers that stalled on something from fingers that reached their
-  target.
-- `jaw_io` reads a reed pair, which distinguishes closed on nothing from closed on a part. This is
-  the first real post-close evidence available to a solenoid jaw.
-- `onrobot` reads the grip-detected bit out of the status word directly.
-- `vacuum` reads the vacuum switch if one is wired. Without a switch there is nothing to read, so it
-  reports the commanded state, which is the honest answer as far as the driver knows.
-- The simulated suction gripper polls the physical bond.
-
-`dummy` and `null` do not implement it, so a gate written against it stays inert on those.
-
-Several of these answer with the command where nothing is wired, so `hold_evidence()`
-(`ReportsHoldEvidence`) says whether the answer is a measurement: `HELD` or `EMPTY` from gOBJ, the
-status word, a vacuum switch, a part sensor, the reeds or the bond, and `UNMEASURED` otherwise and
-always while the jaws are open. `width_is_measured()` (`MeasuresWidth`) says which widths are read
-rather than commanded: the Robotiq, the OnRobot, and the Isaac jaw off mock. The robot's hand verbs
-read these two rather than `is_object_detected()`.
-
-`jaw_io` also has an unusual connect rule, and it differs from the suction driver on purpose. Suction
-asserts off on connect, because releasing a cup that was left latched is cheap. A jaw gripper left
-closed from an interrupted run may be holding a rigid part, and opening it drops that part wherever
-the arm is standing. So: feedback says empty, open; feedback says something is held, hold it and warn
-so a person decides; no feedback wired, do not actuate at all, unless
-`open_on_connect_without_feedback` opts into the suction behaviour.
-
-## The substituted gripper
-
-A `NullGripper` is also what a caller gets when a real one could not be built, and that case must be
-distinguishable from a cell that genuinely has no end-effector. Five config combinations cannot
-produce a real gripper, one per `SubstitutionReason` member: an unknown vendor, Robotiq asked for on
-an arm that is not a UR, vacuum or a digital-I/O jaw asked for on an arm that advertises no digital
-I/O, and a recognised vendor with no driver in this repository.
-
-Each of those otherwise produces a working `NullGripper` and a log line, so the cell connects, every
-pick reports success, the jaws close on nothing and lift nothing. `GripperSubstitution` carries the
-reason, the requested vendor, a sentence an operator can act on, and the fix, on the object itself,
-where a caller reads it without parsing logs. A `NullGripper` whose `substitution` is `None` is a
-cell that has no end-effector on purpose.
-
-## Usage
+The drivers for the hand on the arm, each behind the `Gripper` Protocol: a Robotiq over its URCap
+socket, an OnRobot RG2 or RG6 over Modbus, a jaw or a suction cup over the controller's digital I/O, a
+dummy for a desk and an explicit "no gripper", plus the two simulated grippers Isaac uses.
+`robot.gripper.vendor` picks the driver and `Robot` builds it, so you rarely call this package directly.
 
 ```python
-from src.robot.grippers import GripperVendor, create_gripper
+from willy import Robot, load_tree
 
-# Offline work and tests.
-g = create_gripper(GripperVendor.DUMMY, max_width_mm=85.0)
-g.connect()
-g.activate()
-g.set_width_mm(40.0)
-print(g.get_width_mm())
-
-# A real Robotiq on a UR controller. The gripper is daisy-chained on the tool I/O.
-from src.config.schema.robot import GripperConfig
-g = create_gripper(GripperVendor.ROBOTIQ, config=GripperConfig(), ip="192.168.1.10")
-
-# A real OnRobot RG2. The host is the Compute Box, not the robot.
-g = create_gripper(GripperVendor.ONROBOT, config=GripperConfig(), host="192.168.1.20")
-
-# Simulated suction with the slim cup, built by a sim runner rather than the registry.
-from src.robot.grippers.sim import SLIM_SUCTION_CUP, IsaacSuctionGripper
-g = IsaacSuctionGripper(session=session, gripper_prim_path=path, profile=SLIM_SUCTION_CUP)
+robot = Robot.from_tree(load_tree())    # robot.gripper.vendor picks the driver
+print(robot)                            # the hand that was built, or the stand-in and why
+with robot.connected():                 # the arm first, then the hand
+    print(robot.grasp(40.0))            # close to 40 mm and read what the hand measured
+    print(robot.is_holding())           # HELD, EMPTY or UNMEASURED
+    print(robot.release())
 ```
 
-`create_gripper(vendor, **kwargs) -> Gripper` raises `ValueError` for a vendor string that is not a
-`GripperVendor`, `RobotConnectionError` for a known vendor with no registered factory, and
-`TypeError` if a factory returns something that does not satisfy the Protocol.
-`register_gripper_driver(vendor, *, overwrite=False)` is the registering decorator, and
-`unregister_gripper_driver`, `is_gripper_vendor_registered` and `available_gripper_vendors` are the
-introspection surface.
+The walk at a cell is [examples/real_robot/04_open_and_close_the_hand.py](../../../examples/real_robot/04_open_and_close_the_hand.py);
+which hand a tree really builds is [examples/offline/config/which_gripper_gets_built.py](../../../examples/offline/config/which_gripper_gets_built.py).
+Before the first close of a digital-I/O hand, measure its pins with the UR bench, which moves no arm:
 
-Also re-exported from this package: `Gripper` and `GripperVendor` from `robot.core`;
-`GripperDriverFactory`; `GripperSubstitution` and `SubstitutionReason`; `RobotiqSocket` and
-`RobotiqSocketError`; `OnRobotRG`, `RGStatus` and `ModbusError`; and `GripperController` under its own
-name for existing imports.
+```bash
+python -m src.robot.drivers.ur --read                          # every pin on the tool bank, changes nothing
+python -m src.robot.drivers.ur --measure 4=1 --watch 0 --yes   # drive a pin and time the answer
+```
 
-From `src.robot.grippers.sim`: `IsaacGripper`, `GripperProfile` and the profiles
-`ROBOTIQ_2F85_PROFILE`, `SCHUNK_EGU50_PROFILE` and `SCHUNK_EZU35_PROFILE`; `IsaacSuctionGripper`,
-`SuctionCupProfile`, `STANDARD_SUCTION_CUP` and `SLIM_SUCTION_CUP`.
+## The drivers
 
-## The simulator drivers, and why a real cell cannot reach them
+| `robot.gripper.vendor` | Driver | Speaks | Needs |
+|---|---|---|---|
+| `robotiq` | `GripperController` | ASCII on TCP port 63352, opened by the URCap on the UR controller | a UR arm with the Robotiq URCap |
+| `onrobot` | `OnRobotGripper` | Modbus TCP to the Compute Box, port 502 by default | the box on your network; RG2 or RG6 only |
+| `jaw_io` | `JawIOGripper` | one or two output pins, optional reed switches or a part sensor | an arm with digital I/O: the UR driver |
+| `vacuum` | `VacuumGripper` | an ejector pin, an optional blow-off pin and vacuum switch | an arm with digital I/O: the UR driver |
+| `dummy` | `DummyGripper` | nothing: a width in memory, clamped to range | nothing |
+| `none` | `NullGripper` | nothing | nothing |
 
-They are kept out of the vendor registry: no `GripperVendor` member points at them, so
-`create_gripper` can never return one for a real robot. The sim runners construct them by hand with a
-live simulator session, and every simulator import is deferred, so this package imports cleanly on a
-machine with no simulator installed.
+None of them needs a third-party package: `robotiq_socket.py` and `onrobot_modbus.py` speak their wire
+formats directly. `franka_hand` and `schunk` are reserved names with no driver. Units differ at the wire
+and are converted inside each driver: Robotiq positions are counts from 0 to 255, and its speed and
+force are fractions from 0 to 1, not newtons; an OnRobot width is an opening in tenths of a millimetre
+(larger is more open), its force is in newtons, and it has no activation stroke and no speed register.
+Every `jaw_io` and `vacuum` wiring number is config (`robot.gripper.jaw_io.*`, `robot.gripper.vacuum.*`),
+so bring-up is measuring, not coding.
 
-`IsaacGripper` drives a gripper articulation through a `GripperProfile`, which names the driven joint
-and carries a measured table from joint angle to jaw width. `IsaacSuctionGripper` drives a binary
-vacuum joint by reinterpreting `set_width_mm`: at or below the profile's vacuum-on threshold the
-vacuum engages.
+`robot.gripper.model` is a separate key: the hand's name in the registry under `config/grippers/`
+(`robotiq_2f85`, `robotiq_hande`, `schunk_egu50`), whose geometry the collision guard and the planner
+read. [Your own gripper](../../../docs/runbooks/your_own_gripper.md) adds one.
 
-| Cup profile | Contact diameter | Use |
-| --- | --- | --- |
-| `STANDARD_SUCTION_CUP` | 30 mm, from a 15 mm radius | the default, matching the collision-envelope defaults |
-| `SLIM_SUCTION_CUP` | 20 mm, from a 10 mm radius | tight gaps and small flat faces |
+## The nouns
 
-A cup profile carries its geometry, meaning cup radius, height and shaft, as the single source of
-truth. The driver, the visible-cup author in the simulator layer and the collision envelope in
-`grasping.collision` all read the same profile, so which cup is in use is one decision rather than
-three. A profile may name a cup mesh asset for a realistic render; without one, primitive cylinders
-are drawn.
+| Noun | Built by | Verb | Returns |
+|---|---|---|---|
+| `Gripper`, one class per vendor | `Robot.from_tree(tree)`, or `create_gripper(vendor, **kwargs)` | through `Robot`: `grasp(width_mm)`, `release()`, `is_holding()` | `HandReport`; `HoldEvidence` |
+| `GripperSubstitution` | set on a `NullGripper` that stands in for a hand that could not be built | | the reason, the vendor asked for, a sentence, the fix |
 
-## Traps
+Offline, `create_gripper(GripperVendor.DUMMY, max_width_mm=85.0)` from `src.robot.grippers` builds a
+hand alone, and `connect()`, `activate()`, `set_width_mm(40.0)` and `get_width_mm()` drive it.
 
-Only the registry seam, `DummyGripper`, `NullGripper` and the two simulator drivers are exercised
-outside real hardware.
+## What it refuses
 
-The Robotiq driver has never driven a physical gripper. Its millimetre-to-count arithmetic and its
-injection seam are exercised with a fake driver. It is also the one path that simulated UR controller
-software cannot cover, because port 63352 is opened by the URCap rather than by the robot interface,
-so it stays a bench item.
+| Refusal | When | What to do |
+|---|---|---|
+| a `NullGripper` stand-in, then `NoRealGripper` at connect | the tree names a hand this arm cannot drive, one of the cases below | Read the fix the refusal carries |
+| `ValueError` from `create_gripper` | a name that is not a `GripperVendor` | The message lists the buildable and the reserved names |
+| `RobotConnectionError` from `create_gripper` | `franka_hand` or `schunk` | Use a vendor with a driver; a Schunk on tool I/O works as `jaw_io` |
+| `TypeError` from `create_gripper` | a factory returned something that is not a `Gripper` | A bug in a registered factory |
 
-The OnRobot driver has never driven a physical gripper either. It is exercised against a fake Modbus
-client.
+A stand-in is built for an unknown vendor, for `robotiq` on an arm that is not a UR or exposes no
+address, for `jaw_io` or `vacuum` on an arm without digital I/O, and for `franka_hand` or `schunk`. Its
+`substitution` carries the reason, the vendor asked for and the fix. A `NullGripper` with no
+substitution is a cell that has no hand on purpose, and it connects. A stand-in would accept every width
+and hold nothing while the picks report success, which is why the connect refuses it.
+`Robot.from_tree(tree, gripper=None)` builds the arm alone, for a calibration.
 
-`jaw_io` and `vacuum` have never touched a real end-effector. Their logic is exercised against a fake
-I/O port, and the controller pins have been observed switching against simulated controller software,
-but the wiring itself, meaning which bank, active high or low, and travel time, is exactly what the
-exerciser above exists to measure.
+## What a hand measures
 
-`GripperVendor` lists `FRANKA_HAND` and `SCHUNK`, and neither has a real-hardware driver.
-`create_gripper(GripperVendor.FRANKA_HAND)` raises `RobotConnectionError`. Schunk is realised in
-simulation only, through a sim cell naming `robot.gripper.model: schunk_egu50`, on the
-vendor-neutral `IsaacGripper`. The three-finger `schunk_ezu35` has a mount spec and no registry
-name.
+`hold_evidence()` answers `HELD` or `EMPTY` only from a measurement, and `UNMEASURED` otherwise, and
+always while the jaws are open. `width_is_measured()` says whether a width is read or only commanded.
+The hand verbs read these two, never the command echoed back.
 
-Simulated suction has a binary bond. The simulator models the attach and the lift, meaning whether
-the cup holds the part through the move. It does not model seal quality. The analytical seal and
-wrench score lives in [`../grasping/suction/`](../grasping/suction/README.md).
+| Driver | A hold is read from | Width |
+|---|---|---|
+| `robotiq` | gOBJ: fingers stalled on something, or reached their target | measured |
+| `onrobot` | the grip-detected bit of the status word | measured |
+| `jaw_io` | the reed switches or a part sensor, where wired | commanded |
+| `vacuum` | the vacuum switch, where wired | commanded |
+| simulated suction | the physical bond in Isaac | commanded |
+| `IsaacGripper` | nothing | measured outside mock mode |
+| `dummy`, `none` | nothing | commanded |
 
-None of the real drivers reports force or current.
+Connecting differs on purpose. `vacuum` switches suction off at connect, because releasing a cup left
+latched is cheap. A `jaw_io` hand left closed may hold a rigid part, so it opens only when feedback says
+it is empty, holds and warns when feedback says a part is there, and does not move at all with no
+feedback wired, unless `open_on_connect_without_feedback` is set. Both touch the controller's I/O at
+connect, so the arm connects first; `Robot` does that for you.
 
-## See also
+## The simulated grippers
 
-- [`../core/`](../core/README.md) for the `Gripper`, `ObjectDetectingGripper`, `ReportsHoldEvidence`, `MeasuresWidth` and `GripperVendor` contracts
-- [`../drivers/ur/`](../drivers/ur/README.md) for the arm that owns the digital I/O these drivers switch
-- [`../grasping/suction/`](../grasping/suction/README.md) for the analytical suction seal and wrench score
-- [`../grasping/collision/`](../grasping/collision/README.md) for the envelope models that share the cup geometry
-- `docs/guide/06-grippers.md` for choosing and configuring one from scratch
+`IsaacGripper` drives any jaw from a `GripperProfile` (`ROBOTIQ_2F85_PROFILE`, `ROBOTIQ_HANDE_PROFILE`,
+`SCHUNK_EGU50_PROFILE`, `SCHUNK_EZU35_PROFILE`), and `IsaacSuctionGripper` drives any cup from a
+`SuctionCupProfile`. No vendor name reaches either, so a real cell can never build one; the Isaac
+runners build them against the arm's live session, and importing `src.robot.grippers.sim` loads no Isaac.
+The Hand-E has a profile and no measured mount yet, so a sim cell naming it is refused.
+
+| Selected by | What it picks |
+|---|---|
+| `robot.gripper.model` | the jaw a sim cell mounts (`willy_sim.grippers.sim_mount_for`); a hand with no measured mount is refused |
+| `robot.sim.suction_cup` | `STANDARD_SUCTION_CUP`, 30 mm across and the default, or `SLIM_SUCTION_CUP`, 20 mm |
+
+A cup profile is the one source of the cup's geometry: the driver, the drawn cup and the collision
+envelope read the same profile. The simulated suction bond is binary: it models the attach and the lift,
+not seal quality, which is scored in [grasping/suction](../grasping/suction/README.md).
+
+## Status
+
+| Capability | Evidence |
+|---|---|
+| `IsaacGripper` and `IsaacSuctionGripper` | measured in simulation |
+| The `jaw_io` and `vacuum` pins switching on a controller | measured against real controller software: URSim |
+| Robotiq, OnRobot, `jaw_io` and `vacuum` on a real hand | never touched hardware |
+
+The Robotiq arithmetic runs against a fake driver, and it is the one path URSim cannot cover, because
+the URCap opens port 63352. The OnRobot driver runs against a fake Modbus client, and the I/O drivers
+against a fake I/O port. None of the real drivers reports force or current.
+
+## Files
+
+| File | Holds |
+|---|---|
+| `registry.py` | `create_gripper`, `register_gripper_driver`, `available_gripper_vendors` and the rest of the registry |
+| `robotiq.py`, `robotiq_socket.py` | `GripperController` and `RobotiqSocket`, the port-63352 client |
+| `onrobot.py`, `onrobot_modbus.py` | `OnRobotGripper` and `OnRobotRG`, the register-level Modbus client |
+| `jaw_io.py`, `vacuum.py` | `JawIOGripper` and `VacuumGripper`, over the arm's digital I/O |
+| `dummy.py`, `null.py` | `DummyGripper`; `NullGripper`, `GripperSubstitution` and `SubstitutionReason` |
+| `sim/` | `IsaacGripper`, `IsaacSuctionGripper` and their profiles |
+
+## Details
+
+- [guide 06](../../../docs/guide/06-grippers.md): choosing, wiring and driving a gripper, step by step
+- [docs/runbooks/your_own_gripper.md](../../../docs/runbooks/your_own_gripper.md) and
+  [hande_gripper_bringup.md](../../../docs/runbooks/hande_gripper_bringup.md)
+- [robot/core](../core/README.md): the `Gripper`, `ReportsHoldEvidence`, `MeasuresWidth` and `GripperVendor` contracts
+- [UR driver](../drivers/ur/README.md): the arm that owns the I/O and the bench
+- [grasping/collision](../grasping/collision/README.md): the envelopes that share the cup geometry

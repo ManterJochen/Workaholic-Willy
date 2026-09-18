@@ -1,6 +1,7 @@
 """Ten known-pose picks in Isaac Sim, each scored by whether the part really rose, and the rate they make.
 
-Run it from the repository root with Isaac Sim's own interpreter, which loads the tree's sim profile:
+Run it from the repository root with Isaac Sim's own interpreter and the root on its path, so it finds
+willy (in PowerShell, `$env:PYTHONPATH = (Get-Location).Path`; in cmd, `set PYTHONPATH=%CD%`):
     <isaac-sim>/python.bat examples/simulation/03_isaac_pick_rate.py
 """
 

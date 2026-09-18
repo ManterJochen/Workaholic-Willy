@@ -1,104 +1,117 @@
 # The perception models
 
-You have a validating config tree ([01-configuration.md](01-configuration.md)) and you want the
-vision half of the stack to load weights and hand back a box and a mask. This chapter covers
+You have a validating config tree ([01-configuration.md](01-configuration.md)). This guide gets the
+vision half of the stack to load its weights and hand back a box and a mask for a prompt. It covers
 [`src/models/`](../../src/models/README.md) and [`config/models/`](../../config/models/). Sections 1
-to 7 need no GPU and no simulator; section 8 is the first simulator boot. Work from the repository
-root; `import src` resolves from anywhere once the repository is installed, see section 2.
+to 7 need no GPU and no simulator; section 8 is the first simulator boot.
+
+```python
+from willy import PerceptionSpec, load_tree
+
+spec = PerceptionSpec.from_config(load_tree().app_config.models)
+print(spec.resolve())   # what build() would construct, and which config half decided it; no weight loads
+```
+
+`spec.build()` then loads the weights and returns an object with `perceive(image_bgr, prompt)`.
+[`examples/offline/perception/resolve_perception_stack.py`](../../examples/offline/perception/resolve_perception_stack.py)
+runs both halves on a drawn frame.
 
 ---
 
 ## 1. What is here, and what the pick loop consumes
 
-The family list lives in [`src/models/README.md`](../../src/models/README.md): GroundingDINO
+The model families are listed in [`src/models/README.md`](../../src/models/README.md): GroundingDINO
 zero-shot detection, RT-DETR closed-set detection, SAM2 and OneFormer segmentation, the Qwen3-VL
-grounder, MediaPipe hand and gesture, Whisper speech to text. Read it there. This chapter is about
-which of them a given config builds.
+grounder, MediaPipe hand and gesture, and Whisper speech to text. This guide is about which of them a
+given config builds.
 
 Two seams matter.
 
 **`PerceptionBackend`** is prompt in, grounded objects out: `perceive(image_bgr, prompt)` returns
 `PerceivedObject`s, each carrying a `Detection` and a `SegmentationResult`. It lives in
-[`perception_backend.py`](../../src/models/perception_backend.py), imports no torch, and
-[`factory.py`](../../src/models/factory.py) builds one from config in `build_perception`.
+[`perception_backend.py`](../../src/models/perception_backend.py) and imports no torch.
+`PerceptionSpec.build()` constructs one through `build_perception` in
+[`factory.py`](../../src/models/factory.py).
 
 **`PerceptionSource`** is one step further out: `acquire() -> PerceptionFrame`, with a depth map in
 millimetres, a 3x3 camera matrix and a tuple of segmentations
-([`src/robot/grasping/types/`](../../src/robot/grasping/types/README.md)). The pick loop consumes
-this, never a model. A source owns a camera and usually a backend. Two simulator sources ship, plus
-a depth-noise decorator, the synthetic rehearsal scene in `src/robot/execution/autonomous_grasp/cells.py`, and the
-live-camera adapter in [`src/robot/perception/`](../../src/robot/perception/README.md), whose
-streamer, detector and segmenter are injected so it imports with neither `pyrealsense2` nor torch.
-`python -m src.robot.perception --prompt "a red cube"` exercises that one against a real RGB-D camera
-with no robot involved; it has only ever been driven by a fake streamer here.
+([`src/robot/grasping/types/`](../../src/robot/grasping/types/README.md)). The pick loop consumes this,
+never a model. A source owns a camera and usually a backend. The simulator ships two sources and a
+depth-noise decorator; the rehearsal uses a synthetic scene; and a real cell uses the live-camera
+adapter in [`src/robot/perception/`](../../src/robot/perception/README.md), whose streamer, detector and
+segmenter are injected, so it imports with neither `pyrealsense2` nor torch.
+`python -m src.robot.perception --prompt "a red cube"` runs that adapter against a real RGB-D camera
+with no robot. It has only been driven by a fake streamer: never touched hardware.
 
 **There is no depth model here.** Depth comes from the simulator's rendered annotator, from stereo
 block matching in [`src/calibration/`](../../src/calibration/README.md), or from an RGB-D stream. See
 [03-calibration.md](03-calibration.md).
 
-Which builder a caller uses decides which half of the config is read, and the two halves are
-described in section 4 and section 5. The physical-cell path,
-`build_real_components` in `src/robot/execution/autonomous_grasp/cells.py`, goes through
-`PerceptionSpec.from_config(app_cfg.models).build()`, so it honours `models.pipeline`.
-`python -m src.robot.perception` goes through `build_object_detector` plus `build_segmenter`, so it
-honours only `models.detector` and `models.segmenter_backend`. That is deliberate: the exerciser
-exists to prove a camera and two models work before a cell exists.
+Which builder a caller uses decides which half of the config it reads (sections 4 and 5). A real cell
+builds through `PerceptionSpec.from_config(app_cfg.models).build()`, so it honours `models.pipeline`.
+`python -m src.robot.perception` builds through `build_object_detector` and `build_segmenter`, so it
+honours only `models.detector` and `models.segmenter_backend`. That is on purpose: the exerciser proves
+a camera and two models work before a cell exists.
 
 ---
 
 ## 2. Install
 
-Two files, and they are the whole dependency set. There are no optional extras, because a package
-installed only "if you need it" is one whose absence is discovered on the day it is needed.
+Two files hold the whole dependency set. There are no optional extras.
 
 | File | For |
 |---|---|
 | [`requirements.txt`](../../requirements.txt) | the supported path: torch and torchvision from the CUDA 12.8 wheel index |
-| [`requirements-cpu.txt`](../../requirements-cpu.txt) | the escape hatch, for a host that cannot take the CUDA wheels |
+| [`requirements-cpu.txt`](../../requirements-cpu.txt) | a host that cannot take the CUDA wheels |
 
-They differ in three lines, the index URL and the two torch pins. Prefer the CUDA file even on a
-machine with no card: those wheels install and import fine, and torch simply reports
-`cuda.is_available() == False`, which is why CI installs that file rather than the CPU one.
+They differ in three lines: the index URL and the two torch pins. Prefer the CUDA file even on a
+machine with no card. Those wheels install and import fine, and torch reports
+`cuda.is_available() == False`, which is why CI installs that file.
 
-Nothing creates the virtual environment for you. After the requirements, install the repository itself
-with `pip install -e . --no-deps`: it puts `src`, `api`, `datagen` and `willy` on the environment's
-path and installs no dependency. Every bare `python`, `pip` and `pytest` below assumes the environment
-is active.
+Nothing creates the virtual environment for you. After the requirements, install the repository
+itself with `pip install -e . --no-deps`: it puts `src`, `api`, `datagen` and `willy` on the
+environment's path and installs no dependency. Every bare `python`, `pip` and `pytest` below assumes
+the environment is active.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1          # POSIX: source .venv/bin/activate
 python -m pip install -U pip
 pip install -r requirements.txt
+pip install -e . --no-deps
 python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.version.cuda)"
 ```
 
-The `+cu128` local version in the pin is load-bearing. `--extra-index-url` adds an index rather than
-replacing one, so a plain `torch==2.7.1` is equally satisfiable from PyPI, where it is the CPU build,
-and the resolver is free to pick either. Naming the local version makes the CPU wheel a non-match.
-The CUDA 12.8 wheels are also what a Blackwell card needs: they carry `sm_120` kernels and the older
-`cu121` wheels do not.
+The `+cu128` local version in the pin matters. `--extra-index-url` adds an index rather than replacing
+one, so a plain `torch==2.7.1` is also satisfied by PyPI's CPU build, and the resolver may pick either.
+Naming the local version rules the CPU wheel out. The CUDA 12.8 wheels are also what a Blackwell card
+needs: they carry `sm_120` kernels, and the older `cu121` wheels do not.
 
-A simulator install ships its own bundled Python, whose pins you do not control, and it will not be
-exactly these. That is fine, and it is why weights live in a shared cache rather than in either
-environment (section 3).
+A simulator install ships its own Python, whose pins you do not control. That is fine, and it is why
+the weights live in one directory both environments read (section 3).
 
 ---
 
 ## 3. The weights, and what happens when they are missing
 
-**A fresh checkout has no weights, and one command produces every one of them.** Since 2026-09-08
-every model block ships `local: True` at a path the fetch script writes:
-`models.objectdetector.model_path` is
-`assets/models/hf/detection/IDEA-Research--grounding-dino-tiny`, and `models.segmenter`,
-`models.stt`, `models.rtdetr`, `models.oneformer` and the VLM name their own directories under the
-same root. Before that the three live blocks pointed at
-`src/models/{detection,segmentation,speech}/model`, which is not in this repository and never was,
-and the detector's `model_id` was the empty string, so it could load neither locally nor from the
-Hub. A cell built from the shipped tree could not assemble a perception stack at all.
+**A fresh checkout has no weights, and one script fetches every one of them.** Every model block ships
+`local: True` at a path the fetch script writes. `models.objectdetector.model_path` is
+`assets/models/hf/detection/IDEA-Research--grounding-dino-tiny`, and `models.segmenter`, `models.stt`,
+`models.rtdetr`, `models.oneformer` and the VLM name their own directories under the same root.
 
-**Only the detector checks.** GroundingDINO raises `FileNotFoundError` before it loads anything,
-naming the key, the configured path, the resolved absolute path, and both ways out:
+```bash
+python scripts/model_weights/fetch.py --list
+python scripts/model_weights/fetch.py dino-tiny sam2      # the pair a real-vision pick needs
+python scripts/model_weights/fetch.py --mediapipe         # the hand and gesture .task bundles
+```
+
+[`scripts/model_weights/fetch.py`](../../scripts/model_weights/fetch.py) takes the keys `dino-tiny`,
+`dino-base`, `rtdetr`, `sam2`, `oneformer`, `whisper-turbo`, `silero-vad`, `vlm-2b`, `vlm-4b`, `vlm-8b`
+and `vlm-4b-fp8`. `--list` prints each with its approximate size, its pin and what it is for. Exit
+codes: `0` everything asked for is present, `1` at least one fetch failed, `2` an unknown key.
+
+**Two models check their directory before they load.** GroundingDINO raises `FileNotFoundError`
+naming the key, the configured path, the resolved path, and both ways out:
 
 ```
 FileNotFoundError: models.objectdetector.local is true and model_path is
@@ -107,258 +120,232 @@ directory (resolved: ...).
 Nothing is downloaded in local mode: that is the point of the flag.
 ```
 
-The guard exists because, left to `from_pretrained`, the path is taken for a Hub repository id and
-rejected as one, with a message about repository-id form that sends an operator hunting a token
-problem that does not exist. **The SAM2 segmenter and the Whisper wrapper do not check.** They pass
-`local_files_only=True` straight through and fail inside `from_pretrained`, so a missing segmenter or
-a missing speech model surfaces as a library error rather than as a named config key. Read the
-traceback for which of the three you are looking at.
+The Whisper wrapper refuses the same way, naming `models.stt.model_path` and the fetch that fixes it.
+**SAM2, OneFormer, RT-DETR and the VLM do not check.** They pass `local_files_only=True` to
+`from_pretrained`, which reads the missing path as a Hub repository id and fails as one. So a missing
+segmenter surfaces as a library error about repository ids, not as a named config key. Read the
+traceback for which model it is.
 
-**The fetch script.** [`scripts/model_weights/fetch.py`](../../scripts/model_weights/fetch.py)
-carries a catalogue with sizes and notes, and it writes into the repository rather than into a cache
-somewhere in the user profile.
+**What the script does for you:**
 
-```bash
-python scripts/model_weights/fetch.py --list
-python scripts/model_weights/fetch.py dino-tiny sam2      # the pair a real-vision pick needs
-python scripts/model_weights/fetch.py --mediapipe         # the hand and gesture .task bundles
-```
+- **Everything lands under `assets/models/hf/` inside the repository**, by what the model is for.
+  Deleting the checkout deletes the weights with it. The directory is gitignored, so the layout travels
+  with a clone and the gigabytes do not. The default location, `~/.cache/huggingface`, outlives every
+  checkout and is shared silently between them (12 GB on the development workstation).
+- **It drops duplicate formats.** Several repositories publish the same weights as `.safetensors` and
+  as `.bin`, and `transformers` reads only what the index names. A per-model ignore list drops the
+  duplicate: `openai/whisper-large-v3-turbo` is 1.62 GB filtered, and `IDEA-Research/grounding-dino-tiny`
+  is 1.38 GB whole against 0.69 filtered. It cannot be a blanket rule:
+  `shi-labs/oneformer_coco_swin_large` publishes no safetensors at all, so a global `*.bin` filter would
+  fetch it empty.
+- **`silero-vad` is not a Hub repository.** It is one TorchScript file inside a PyPI wheel. The script
+  downloads the pinned wheel, checks the wheel's sha256, reads the one member out of it and checks that
+  member's sha256. Nothing is installed. The speech entries also carry a Hub commit, so a second fetch
+  cannot replace the bytes under a config path without a trace.
+- **It fences the Hub cache** with `fence_model_downloads()` from
+  [`src/utility/paths.py`](../../src/utility/paths.py), before `huggingface_hub` is imported, because
+  the Hub reads its cache locations once at import.
 
-Its keys are `dino-tiny`, `dino-base`, `rtdetr`, `sam2`, `oneformer`, `whisper-turbo`, `silero-vad`,
-`vlm-2b`, `vlm-4b`, `vlm-8b` and `vlm-4b-fp8`, and `--list` prints each with its approximate download
-size, its pin and what it is for. Exit codes: `0` everything asked for is present, `1` at least one
-fetch failed, `2` an unknown key was named.
-
-`silero-vad` is the one entry that is not a Hub repository. It is a single TorchScript file shipped
-inside a PyPI wheel, fetched by downloading the pinned wheel, checking the wheel's sha256, reading the
-one member out of it and checking that member's sha256. Nothing is installed: the file is what the
-speech path reads, not the package's code. The speech entries also carry a hub commit, so a second
-fetch cannot replace the bytes under a config path without a trace.
-
-The catalogue also decides what is left on the Hub. Several repositories publish the same weights
-twice, once as `.safetensors` and once as `.bin`, and `transformers` reads only what the index names,
-so a per-model ignore list drops the duplicate: `openai/whisper-large-v3-turbo` is 1.62 GB filtered,
-`IDEA-Research/grounding-dino-tiny` 1.38 GB whole against 0.69 filtered. It cannot be a blanket rule.
-`shi-labs/oneformer_coco_swin_large` publishes no safetensors at all, measured, so a global `*.bin`
-filter would fetch it empty and the failure would surface much later as a missing weight file.
-
-**Fetch with the environment that can reach the network, load with the one that owns the GPU.** The
-cache is shared, and the split matters for two reasons the script's own docstring gives. Every
+**Fetch with the environment that reaches the network, load with the one that owns the GPU.** Every
 simulator vision runner sets `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` before transformers
-imports, because a detector that pings the hub at boot can take the whole cell down with it; the
-runners use `setdefault`, so exporting `HF_HUB_OFFLINE=0` overrides them, and the fix is to fetch
-first rather than to override. And two interpreters on one machine can disagree about TLS, where the
-one that loads a model fails certificate verification and the project environment succeeds. That
-split has a fix, `pip install truststore`, which is pinned in both requirements files; the script
-imports it inside a `try` and reports which trust store it used.
+imports, because a detector that calls the Hub at boot can take the whole cell down with it. The
+runners use `setdefault`, so exporting `HF_HUB_OFFLINE=0` overrides them; fetch first instead. Two
+interpreters on one machine can also disagree about TLS: behind a proxy that re-signs TLS, the
+simulator's interpreter can fail certificate verification where the project environment succeeds.
+`truststore` fixes that, is pinned in both requirements files, and the script reports which trust
+store it used.
 
-**Every byte lands under `assets/models/hf` inside the repository**, sub-categorised by what the
-model is for, and deleting the checkout deletes the weights with it. That is what the location is
-for. The default is the opposite: a download goes to `~/.cache/huggingface`, measured at 12 GB on
-this workstation, where it outlives every checkout, is shared silently between them, and cannot be
-reasoned about from inside the tree. `assets/models/hf/` is gitignored, so the layout travels with a
-clone while the gigabytes do not.
-
-The fence is `fence_model_downloads()` in [`src/utility/paths.py`](../../src/utility/paths.py), and
-it has to run before `huggingface_hub` is imported: the hub reads its cache locations into module
-level constants at import time, so setting `HF_HOME` afterwards is accepted and changes nothing. That
-is why the fetch script calls it at the top of `main` and imports the hub inside a function.
-
-**The `sim` profile is still needed here, but no longer for the weights.** Its model overlays used to
-set `local: false` so that a simulated run fetched from the Hub instead of reading a directory that
-was not there. They inherit the base paths now, and what they still change is the dtype: the
-validated baseline loads fp32 weights with fp16 autocast, and the production `torch_dtype: auto`
-drops a small overhead cube that the unset path finds.
+**The `sim` profile changes the detector and segmenter numerics, not their weights.** Its model
+overlays inherit the base paths. They load fp32 weights with fp16 autocast (section 6), because the
+production `torch_dtype: auto` misses a small overhead cube that the unset path finds, and they lower
+the detector threshold. For the rest of this guide, set it:
 
 ```powershell
 $env:WILLY_PROFILE = "sim"
 ```
 
-Everything from here to section 8 assumes that. **Unset it before guide 3 or 4**
-(`Remove-Item Env:\WILLY_PROFILE`, POSIX `unset WILLY_PROFILE`): it is sticky for the whole shell and
-will silently re-tint every base-profile transcript in the later guides. The non-sticky alternative
-is `--profile sim`, passed after the subcommand.
+**Unset it before guide 3 or 4** (`Remove-Item Env:\WILLY_PROFILE`, or `unset WILLY_PROFILE` on POSIX).
+It is sticky for the whole shell and would change every base-profile transcript in the later guides.
+The alternative that is not sticky is `--profile sim`, passed after the subcommand.
 
 ---
 
 ## 4. `models.pipeline`: the whole stack in one block
 
-This is the block that decides what perception is on a cell. It lives in
+This block decides what perception is on a cell. It lives in
 [`config/models/object.yaml`](../../config/models/object.yaml), and `build_perception` is the one
-function that builds from it.
+function that builds from it. In outline:
 
 ```yaml
 pipeline:
-  kind: zero_shot          # zero_shot = free-text prompt | closed_set = fixed classes
+  kind: zero_shot            # zero_shot = free-text prompt; closed_set = fixed classes
   zero_shot:
-    backend: grounded_sam  # grounded_sam = GroundingDINO grounds | vlm = Qwen3-VL grounds
-    segmenter: sam2        # sam2 | oneformer
+    backend: grounded_sam    # grounded_sam = GroundingDINO grounds; vlm = Qwen3-VL grounds
+    segmenter: sam2          # sam2 | oneformer
     vlm:
       model_id: "Qwen/Qwen3-VL-4B-Instruct"
-      preload: false       # false = load on the first prompt that reaches the VLM | true = at cell build
-      on_unavailable: refuse   # refuse | degrade
+      model_path: "assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct"
+      local: true
+      preload: false         # false = load on the first prompt that reaches the VLM; true = at cell build
+      on_unavailable: refuse # refuse = reject the pick; degrade = fall back to the phrase grounder
   router:
     enabled: false
 ```
 
-Read the live values rather than trusting that snippet, with
-`python -m src.config explain models.pipeline.kind` and the same for
-`models.pipeline.zero_shot.backend` and `models.pipeline.router.enabled`.
+Read the live values rather than this outline: `python -m src.config explain models.pipeline.kind`,
+and the same for `models.pipeline.zero_shot.backend` and `models.pipeline.router.enabled`.
 
-**`kind`** picks the detector family, and `closed_set` needs a `models.rtdetr` block or the builder
+**`kind`** picks the detector family. `closed_set` needs a `models.rtdetr` block, or the builder
 refuses.
 
-**`zero_shot.backend`** is the interesting one. `grounded_sam` is the default: GroundingDINO grounds
-the phrase, the segmenter cuts the mask. `vlm` puts Qwen3-VL in the detector slot instead, so the
-same two-stage chain composes it with the same segmenter and nothing downstream changes. The route
-exists because of a specific failure: **the phrase grounder does not fail on a prompt it cannot
-represent.** It returns a confident, high-scoring box for the wrong object, and nothing downstream,
-not the gate, not the record, not the operator, can tell that apart from a correct answer. Negation,
-comparatives, relative clauses, quantifiers and non-English wording are exactly that class of prompt.
-That is also why there is no cheap-first cascade: a cascade needs the cheap stage to fail loudly, and
-there is no signal to fall back on. **Nothing in the VLM package has run against real weights here**,
-so its grounding quality, its VRAM cost and the choice between the 4B and 8B checkpoints are yours to
-measure ([`src/models/vlm/README.md`](../../src/models/vlm/README.md)).
+**`zero_shot.backend`** picks what grounds the phrase. `grounded_sam` is the default: GroundingDINO
+grounds the phrase and the segmenter cuts the mask. `vlm` puts Qwen3-VL in the detector slot instead,
+with the same segmenter, and nothing downstream changes. The route exists because **the phrase
+grounder does not fail on a prompt it cannot represent**. It returns a confident box for the wrong
+object, and nothing downstream (not the gate, not the record, not the operator) can tell that from a
+correct answer. Negation, comparatives, relative clauses, quantifiers and non-English wording are that
+class of prompt. For the same reason there is no cheap-first cascade: a cascade needs the cheap stage
+to fail loudly. **The VLM package has never run against real weights here**, so its grounding quality,
+its VRAM cost and the choice between the 4B and 8B checkpoints are yours to measure
+([`src/models/vlm/README.md`](../../src/models/vlm/README.md)).
 
-**`router.enabled`** decides each prompt from its text alone, before any weights load: plain English
-noun phrases to the phrase grounder, everything else to the VLM. It is deterministic, first matching
-rule wins, no model and no image, and the reason travels with the pick so an operator seeing a slow
-one can find out which word chose the expensive route. Rules and reasons:
-[`src/models/routing/README.md`](../../src/models/routing/README.md).
+**`router.enabled`** routes each prompt from its text alone, before any weights load: plain English
+noun phrases go to the phrase grounder, everything else to the VLM. It is deterministic: the first
+matching rule wins, with no model and no image. The reason travels with the pick, so an operator seeing
+a slow pick can find out which word chose the expensive route
+([`src/models/routing/README.md`](../../src/models/routing/README.md)).
 
-Two combinations are refused at load, each naming the legal one: `kind: closed_set` with an explicit
-`router.enabled: true`, because a closed-set detector answers only from its class list and has no
-free-text route to send anything to; and `router.enabled: true` with any `zero_shot.backend` other
-than `vlm`, because routing needs somewhere better to send a hard prompt. Both are errors only when
-you wrote the value. Left unwritten, `router.enabled` is corrected to `false` rather than refused, so
-a bare `pipeline: {}` is legal.
+Two combinations are refused at load, each naming the legal one:
 
-**`vlm.on_unavailable`** is the one to think about. `refuse` rejects the pick with a typed error
-carrying the underlying cause, so an operator sees whether the weights are missing, a dependency is
-absent, or the GPU is out of VRAM. `degrade` falls back to the phrase grounder and warns on every use
-rather than once, so a run that has fallen back never looks normal again. `refuse` is the default,
-because degrading produces exactly the failure the route exists to prevent, and only three shapes of
-a missing model degrade at all: no dependency, no weights, no VRAM. Any other exception is a real bug
-and is left to surface. `GET /v1/diagnostics/route?prompt=...` previews a prompt with no GPU and no
-image: the route, the reason, and whether it could run here
-([`api/README.md`](../../api/README.md)).
+- `kind: closed_set` with `router.enabled: true` written out: a closed-set detector answers only from
+  its class list and has no free-text route to send anything to.
+- `router.enabled: true` with any `zero_shot.backend` other than `vlm`: routing needs somewhere better
+  to send a hard prompt.
 
-Nothing pins the segmenter to a backend. Both mask sources implement the same box-prompted contract,
-so either works with either grounding model, and which one segments better is unmeasured here. It is
-a knob, not a recommendation. To compare the two routes yourself, `run_attribute_pick.py` takes
+Both are errors only when you wrote the value. Left unwritten, `router.enabled` becomes `false`, so a
+bare `pipeline: {}` is legal.
+
+**`vlm.on_unavailable`** is the one to think about. `refuse`, the default, rejects the pick with a
+typed error carrying the cause, so an operator sees whether the weights are missing, a dependency is
+absent or the GPU is out of memory. `degrade` falls back to the phrase grounder and warns on every use,
+so a run that fell back never looks normal. Degrading produces exactly the failure the route exists to
+prevent, and only three causes degrade at all: no dependency, no weights, no VRAM. Any other exception
+is a bug and surfaces. `GET /v1/diagnostics/route?prompt=...` previews a prompt with no GPU and no
+image: the route, the reason, and whether it could run here ([`api/README.md`](../../api/README.md)).
+
+Nothing ties the segmenter to a backend. Both mask sources take a box the same way, so either works
+with either grounding model, and which one segments better is unmeasured here. It is a knob, not a
+recommendation. To compare the two routes in simulation, `run_attribute_pick` takes
 `--route simple|vlm|auto`.
 
 ---
 
 ## 5. The leaf blocks
 
-`ModelsConfig` requires `objectdetector`, `segmenter` and `stt`. `handdetect` and `gesturedetect`
-have schema defaults; `rtdetr`, `oneformer` and `pipeline` default to `None`. List what exists with
-`python -m src.config where "models."` and read one key with `explain`. Both commands, and the rule
-that shared flags work on either side of the subcommand, belong to
-[01 section 4](01-configuration.md).
+`ModelsConfig` requires `objectdetector`, `segmenter` and `stt`. `handdetect` and `gesturedetect` have
+schema defaults; `rtdetr`, `oneformer` and `pipeline` default to `None`. List what exists with
+`python -m src.config where "models."` and read one key with `explain`
+([01 section 4](01-configuration.md)).
 
-**`models.objectdetector`** and **`models.segmenter`** share the shape `model_path`, `model_id`,
-`local`, `optim`, with the detector adding `threshold`; `local` selects which of the first two is the
-source. The YAML carries the field comments, so read them rather than a table here. Three behaviours
-it will not tell you: `detect()` returns the argmax only and raises when nothing clears the
-threshold, while `detect_all()` returns an empty list; GroundingDINO boxes come back normalised and
-are scaled to pixels inside the wrapper, whereas RT-DETR passes `target_sizes` and its boxes are
-already pixels; and SAM2 raises on an empty mask after post-processing.
+**`models.objectdetector`** and **`models.segmenter`** share the fields `model_path`, `model_id`,
+`local` and `optim`, and the detector adds `threshold`. `local` selects which of the first two is the
+source. The YAML comments describe each field. Three behaviours they do not:
 
-The checkpoint is a per-cell choice rather than a fixed best. The `sim` overlay names the tiny
-GroundingDINO checkpoint, because the base checkpoint returns nothing at all on sparse scenes and a
-detector that grounds nothing is a cell that cannot pick; the base checkpoint is the better one on
-dense clutter, which is why `run_dense_pick` overrides the field for its own scenes through
-`WILLY_YCB_DETECTOR`. On a scene that yields no detection, try the other checkpoint before lowering
-`threshold`. Note that a config-only audit will mis-report which weights that runner ran.
+- `detect()` returns the best box only and raises when nothing clears the threshold; `detect_all()`
+  returns an empty list.
+- GroundingDINO boxes come back normalised and are scaled to pixels inside the wrapper; RT-DETR's
+  boxes are already pixels.
+- SAM2 raises on a mask that is empty after post-processing.
 
-**`models.detector` and `models.segmenter_backend`** are the do-it-yourself path, kept because
-assembling a stack by hand is legitimate: a caller may need a checkpoint the pipeline block does not
-name. They are not inert. `build_object_detector` and `build_segmenter` read them, that is what
-`python -m src.robot.perception` calls, and `build_perception` falls back to them whenever
-`models.pipeline` is absent, byte-identically. What they lack is a cross-check, which is what
-`pipeline` adds: the two keys have no validator between them, so every detector and segmenter
-combination builds, including ones where the prompt means something different to each half.
+**The checkpoint is a per-cell choice.** `grounding-dino-tiny`, the shipped one, grounds sparse scenes
+on which `grounding-dino-base` returns nothing at all, and a detector that grounds nothing is a cell
+that cannot pick. `grounding-dino-base` is the better one on dense clutter. On a scene with no
+detection, try the other checkpoint before lowering `threshold`. To switch, fetch `dino-base` and
+point `model_path` at `assets/models/hf/detection/IDEA-Research--grounding-dino-base`: with `local:
+true`, `model_id` is not read.
 
-**`models.stt`** is Whisper, and it has a caller: the operator console reads the section alone
-(`load_speech_section`) and keeps one `WhisperTransformersEngine` for the process, which turns a
-recording into a text proposal that a human reads before pressing the button. The text stays in the
-language it was spoken in: `task` accepts only `transcribe`, and `language: auto` lets Whisper detect
-German or English per recording. Its base block is `local: True` against an absent directory, so a
-base-profile console is refused on the first transcription, by name and with the fetch that fixes it.
-The microphone keys (`samplerate`, `blocksize`, `channels`, `dtype`) open the cell PC's microphone for
-the console's push to talk listen (`POST /v1/voice/listen`, through `PushToTalkSource.from_config`) and
-for `Listener.from_config`, which no console route or cell verb builds yet; `chunk_duration` left with
-the fixed-window path it fed, so a tree that still writes it is refused as an unknown key
-([`src/models/speech/README.md`](../../src/models/speech/README.md)).
+**`models.detector` and `models.segmenter_backend`** assemble a stack by hand, for a checkpoint the
+pipeline block does not name. They are read: `build_object_detector` and `build_segmenter` use them,
+that is what `python -m src.robot.perception` calls, and `build_perception` falls back to them
+whenever `models.pipeline` is absent. What they lack is a cross-check, which is what `pipeline` adds:
+no validator relates the two keys, so every detector and segmenter pair builds, including pairs where
+the prompt means something different to each half.
+
+**`models.stt`** is Whisper. The operator console reads the section alone (`load_speech_section`) and
+keeps one engine for the process, behind `POST /v1/voice/transcribe`, `/v1/voice/talk` and
+`/v1/voice/listen`. A recording becomes a text proposal that a person reads and confirms before it
+becomes a prompt. The text stays in the language it was spoken in: `task` accepts only `transcribe`,
+and `language: auto` lets Whisper detect German or English per recording. The base block is
+`local: True`, so a console on a fresh checkout is refused on the first transcription, by name and
+with the fetch that fixes it. The microphone keys (`samplerate`, `blocksize`, `channels`, `dtype`) open
+the cell PC's microphone for push to talk (`PushToTalkSource.from_config`) and for
+`Listener.from_config`, which no console route or cell verb opens. A tree that writes `chunk_duration`
+is refused as an unknown key. From a program:
+[`examples/real_robot/12_speak_a_command.py`](../../examples/real_robot/12_speak_a_command.py); the
+package is [`src/models/speech/README.md`](../../src/models/speech/README.md).
 
 **`handdetect` and `gesturedetect`** are standalone MediaPipe and are not on the grasp path. Nothing
-auto-builds them, which is why their config blocks carry no `enabled` flag: a switch would have no
-reader. The `.task` bundles are an operator download whose URLs are in the comments of
-`config/models/hand.yaml`, and `python -m src.models.handdetection --check` says whether this host
-can run them ([`src/models/handdetection/README.md`](../../src/models/handdetection/README.md)).
+builds them automatically, so their blocks carry no `enabled` flag: a switch would have no reader. The
+`.task` bundles come from `fetch.py --mediapipe`, and `python -m src.models.handdetection --check`
+says whether this host can run them
+([`src/models/handdetection/README.md`](../../src/models/handdetection/README.md)).
 
 ---
 
 ## 6. `optim`, and the `torch_dtype` trap
 
 `InferenceOptimization` has five fields, each defaulting to the safe or off value: `torch_dtype`,
-`attn_implementation`, `channels_last`, `compile`, `compile_mode`. Only `torch_dtype` changes
-numbers. `channels_last` is a memory format and numerically inert; `compile` is applied only on CUDA
-and falls back to eager with a warning on any failure.
-`python -m src.config where torch_dtype` lists every block that has one.
+`attn_implementation`, `channels_last`, `compile`, `compile_mode`. Only `torch_dtype` changes numbers.
+`channels_last` is a memory format; `compile` applies only on CUDA and falls back to eager with a
+warning on any failure. `python -m src.config where torch_dtype` lists every block that has one.
 
-The gate is a single condition in [`src/models/_inference.py`](../../src/models/_inference.py): when
-`torch_dtype` is not `None`, the resolved dtype goes to `from_pretrained` **and** is reused as the
-autocast dtype. On CUDA that gives three genuinely different behaviours.
+The gate is one condition in [`src/models/_inference.py`](../../src/models/_inference.py): when
+`torch_dtype` is set, the resolved dtype goes to `from_pretrained` **and** becomes the autocast dtype.
+On CUDA that gives three different behaviours:
 
 | YAML value | Weights | Autocast compute |
 |---|---|---|
 | unset (`"__null__"` in the `sim` overlay) | fp32, read from the checkpoint | the CUDA autocast default, fp16 |
 | `auto` (the base value) | fp16 | fp16 |
-| `"float32"` | fp32 | `autocast(dtype=torch.float32)`, so autocast effectively off |
+| `"float32"` | fp32 | `autocast(dtype=torch.float32)`, so autocast is effectively off |
 
 **This is the paragraph to remember.** "The detector must run fp32" is true about the weights and
-dangerously incomplete as an instruction. Writing `torch_dtype: "float32"`, the obvious way to say
-it, also kills the fp16 autocast. The configuration the simulator overlays choose is fp32 weights
-with fp16-autocast compute, and the only way to express that is to leave `torch_dtype` unset. A plain
-YAML `null` in an overlay is treated as "no value" by the deep merge and would keep the base's
-`auto`, so the loader's reset sentinel `"__null__"` is the only way back. Confirm before a vision run
-that the chain ends at `"__null__"`, not `auto`:
+incomplete as an instruction. Writing `torch_dtype: "float32"`, the obvious way to say it, also turns
+off the fp16 autocast. The simulator overlays choose fp32 weights with fp16-autocast compute, and the
+only way to express that is to leave `torch_dtype` unset. A plain YAML `null` in an overlay keeps the
+base's `auto` (01 section 3), so the reset sentinel `"__null__"` is the only way back. Before a vision
+run, confirm that the chain ends at `"__null__"`, not `auto`:
 
 ```bash
 python -m src.config explain models.objectdetector.optim.torch_dtype --profile sim
 ```
 
-Why it matters: fp16 costs recall on small objects, and `build_load_kwargs` warns whenever it
-resolves to fp16 for exactly that reason. Small here means a few tens of pixels across, which is what
-a 30 mm part under an overhead camera a metre above it comes to.
+fp16 costs recall on small objects, and `build_load_kwargs` logs a warning whenever it resolves to
+fp16. Small means a few tens of pixels across: a 30 mm part under an overhead camera a metre above it.
 
-Two sub-traps. This project's `"auto"` is not Hugging Face's: here it means fp16 on CUDA and fp32
-elsewhere, while Hugging Face's `dtype="auto"` means read the checkpoint, so "unset gives fp32
-weights" is a property of these particular checkpoints rather than a guarantee of the code. And the
-trap is CUDA-only, because half dtypes downgrade to fp32 on CPU and MPS and the autocast context is a
-no-op off CUDA, so you cannot reproduce the regression on a CPU. A deprecation warning about
-`torch_dtype` being renamed `dtype` is harmless; do not rename the config key. `WILLY_DEVICE` forces
-the device independently of any config: `auto`, `cuda`, `cpu` or `mps`.
+Two more traps. This project's `"auto"` is not Hugging Face's: here it means fp16 on CUDA and fp32
+elsewhere, while Hugging Face's `dtype="auto"` reads the checkpoint, so "unset gives fp32 weights" is
+a property of these checkpoints rather than a guarantee of the code. And the trap is CUDA-only: half
+dtypes become fp32 on CPU and MPS, and autocast does nothing off CUDA, so a CPU cannot reproduce the
+loss. A deprecation warning that `torch_dtype` is renamed `dtype` is harmless; do not rename the
+config key. `WILLY_DEVICE` forces the device whatever the config says: `auto`, `cuda`, `cpu` or `mps`.
 
 ---
 
 ## 7. Prove the stack before you boot the simulator
 
-A simulator boot costs a lot of seconds before it can tell you anything. Settle the perception half
-first, in two steps.
+A simulator boot takes a long time before it can tell you anything. Settle the perception half first,
+in two steps.
 
-**Step one needs no weights at all.** `PerceptionSpec.resolve()` reports what `build()` would
-construct, and why, from the same refusal constants the builder uses:
+**Step one needs no weights.** `PerceptionSpec.resolve()` reports what `build()` would construct, and
+why, from the same refusals the builder uses:
 
 ```bash
-python -c "from src.config import load_config; from src.models.perception_spec import PerceptionSpec; print(PerceptionSpec.from_config(load_config().models).resolve().render())"
+python -c "from willy import PerceptionSpec, load_tree; print(PerceptionSpec.from_config(load_tree().app_config.models).resolve())"
 ```
 
-On the shipped tree that prints the stack, which half of the config decided it, and whether the
-prompt router is on:
+On the shipped tree it prints the stack, which half of the config decided it, and whether the prompt
+router is on:
 
 ```
 perception stack: zero_shot / groundingdino + sam2
@@ -366,111 +353,106 @@ perception stack: zero_shot / groundingdino + sam2
   prompt router   : off
 ```
 
-If that line says `models.detector` instead of `models.pipeline`, your `pipeline` block is absent and
-the legacy keys are deciding. If it names a refusal, fix that before fetching gigabytes.
+If it says `models.detector` instead of `models.pipeline`, your `pipeline` block is absent and the
+legacy keys decide. If it names a refusal, fix that before fetching gigabytes.
 
-**Step two runs the stack on a synthetic image.** This needs no simulator, no camera and no image
-file, and it goes through the factory, so it exercises the stack your config selects rather than a
-hand-wired pair. The repository does not ship this file; save it wherever you like.
+**Step two runs the stack on a drawn image.** It needs no simulator, no camera and no image file, and
+it builds through the same path a cell does, so it exercises the stack your config selects. Save it
+wherever you like:
 
 ```python
 # smoke_models.py
-import numpy as np, cv2
-from src.config import load_config
-from src.models.factory import build_perception
+import numpy as np
 
-img = np.full((480, 640, 3), 200, np.uint8)                     # grey table
-cv2.rectangle(img, (280, 200), (360, 280), (40, 40, 220), -1)   # BGR red square, 80x80 px
-for o in build_perception(load_config().models).perceive(img, "a red cube"):
-    print(o.detection.label, round(o.detection.score, 3), [round(v, 1) for v in o.detection.box],
-          int(o.segmentation.mask.sum()), tuple(round(float(v), 1) for v in o.segmentation.centroid_xy))
+from willy import PerceptionSpec, load_tree
+
+spec = PerceptionSpec.from_config(load_tree().app_config.models)
+print(spec.resolve())
+
+image = np.full((480, 640, 3), 200, dtype=np.uint8)   # a grey table
+image[200:280, 280:360] = (40, 40, 220)              # BGR, so a red square 80 px across
+for found in spec.build().perceive(image, "a red cube"):
+    box = [round(v, 1) for v in found.detection.box]
+    print(found.detection.label, round(found.detection.score, 3), box,
+          found.segmentation.mask_area_px, found.segmentation.centroid_xy)
 ```
 
 ```powershell
 $env:WILLY_PROFILE = "sim"
-$env:HF_HUB_OFFLINE = "1"          # fail fast on a missing cache instead of pulling gigabytes mid-test
-$env:PYTHONPATH = (Get-Location).Path
+$env:HF_HUB_OFFLINE = "1"          # fail fast on missing weights instead of downloading mid-test
 python smoke_models.py
 ```
 
-The drawn square is 6400 px at `(280,200)-(360,280)` and its centre is `(320.0, 240.0)`, so a box
-near those corners, a mask area near 6400 px and a centroid on that centre mean the front end works.
-The wrappers log the load line themselves; `dtype=None` in it confirms the regime from section 6 at
-the object level rather than only in the YAML. Timings vary between runs, and the box, the score and
-the pixel count are the stable part.
+The square covers `(280, 200)` to `(360, 280)`: 6400 px, centred on `(320.0, 240.0)`. A box near
+those corners, a mask area near 6400 px and a centroid on that centre mean the front end works. The
+wrappers log their load line; `dtype=None` in it confirms the regime from section 6 on the loaded
+object, not only in the YAML. The box, the score and the pixel count are the stable part; timings
+vary.
 
-One thing to expect: the label comes back as a fragment of the prompt, `red` rather than
-`a red cube`, because GroundingDINO grounds sub-phrases. That is why the simulator's vision source
-normalises each detection's label to the nearest canonical spawn name before the orchestrator matches
-on exact equality.
+Expect the label to come back as a fragment of the prompt, `red` rather than `a red cube`, because
+GroundingDINO grounds sub-phrases. The simulator's vision source maps each label back to the nearest
+object name for that reason. Nothing found comes back as an empty tuple, and so does a model error.
 
-CI never executes a line of model inference: the torch wrappers sit in the coverage omit list,
-because CI has neither a GPU nor weights. What runs there is import smoke, the builder guards, and
-the pipeline, routing and spec logic, all of which are pure. Anything that needs real weights on a
-real GPU is marked and skipped without them.
+CI never runs model inference: CI has no GPU and no weights, and the torch wrappers are left out of
+coverage. It runs import checks, the builder guards, and the pipeline, routing and spec logic, all of
+which are pure. Tests that need real weights on a real GPU are marked and skipped without them.
 
 ---
 
 ## 8. The simulator pick
 
-Ground truth before vision. The known-pose runner loads no models at all, so a failure there is the
-cell, the arm, the gripper or the planner, and not perception. First anchor the two motion sidecars,
-because the simulator refuses to boot without them; a standard `scripts/ext_deps/install.ps1` install
-needs no environment variables at all, and the full treatment is in
-[04-robot-and-safety.md](04-robot-and-safety.md).
+Ground truth before vision. The known-pose runner loads no models, so a failure there is the cell, the
+arm, the gripper or the planner, not perception. The simulator refuses to boot without the two motion
+engines; a standard `scripts/ext_deps/install.ps1` install needs no environment variables
+([04-robot-and-safety.md](04-robot-and-safety.md), [`docs/isaac-ready.md`](../isaac-ready.md)).
 
 ```powershell
 $env:WILLY_PROFILE = "sim"
-python -m src.robot.safety.planning --doctor   # 0 = both load, 1 = degraded, 2 = policy-blocked
+python -m src.robot.safety.planning --doctor   # 0 = both load, 1 = degraded, 2 = blocked by OS policy
 cmd /c "<isaac-sim>\python.bat -m src.willy_sim.run_m1_pick --runs 10 > m1.log 2>&1"
 cmd /c "<isaac-sim>\python.bat -m src.willy_sim.run_m2_pick --runs 10 --prompt ""a red cube"" > m2.log 2>&1"
 Select-String "GATE:" m1.log, m2.log
 ```
 
-`--check` reads paths and `--doctor` reads reality: the doctor imports the collision engine, runs a
-real distance query, spawns the planner sidecar's interpreter to see what resolves there, and
-classifies an operating-system application-control refusal as its own outcome, which is exit `2` and
-deliberately not exit `1`, because a blocked binary and a box with no GPU environment need opposite
-responses.
+`--check` reads paths; `--doctor` loads the engines. It runs a real distance query, starts the
+planner's own interpreter to see what resolves there, and reports an operating-system
+application-control block as exit `2`, not `1`, because a blocked binary and a box with no GPU
+environment need opposite fixes.
 
-The `cmd /c` wrapper is the documented pattern: `cmd` writes UTF-8 logs and PowerShell redirection
-writes UTF-16 and mangles them. Never a compound command, and one simulator process at a time. Both
-runners print one line per pick carrying `succeeded`, `lift_mm` and `passed`, then a gate line
-carrying how many of the N passed. A run counts as passing only when `pick()` reports success and,
-independently, the object's measured world-Z rose by at least `robot.sim.gate.lift_threshold_mm`,
-which the tree sets to `50.0`; the campaign passes at `int(pass_fraction * runs)`, with
-`pass_fraction` set to `0.8`.
+Run the simulator through `cmd /c`: `cmd` writes UTF-8 logs, while PowerShell redirection writes
+UTF-16 and mangles them. Use no compound command, and one simulator process at a time. Both runners
+print one line per pick carrying `succeeded`, `lift_mm` and `passed`, then a gate line with how many
+of the N passed. A run passes only when `pick()` reports success and, measured separately, the
+object's world Z rose by at least `robot.sim.gate.lift_threshold_mm`, which the tree sets to `50.0`.
+The campaign passes at `int(pass_fraction * runs)`, with `pass_fraction` set to `0.8`.
 
 If the known-pose run fails, go to [04-robot-and-safety.md](04-robot-and-safety.md). If it passes and
-the real-vision run finds nothing, it is perception: re-check the `torch_dtype` winner (section 6),
-the weight cache (section 3), and the near-clip row below. **No physical camera has ever fed these
-wrappers.**
+the real-vision run finds nothing, it is perception: check the `torch_dtype` winner (section 6), the
+weights (section 3), and the near clip below.
 
-Two preconditions the runners handle for you, and that any source you write must reproduce.
+Two preconditions the runners handle, and that any source you write must reproduce:
 
-- **Park the arm out of the camera view before acquiring**, because an overhead camera sees an arm
-  that is over the workspace.
-- **Set the near clip.** A simulator camera defaults to a 1.0 m near plane, and anything closer
-  renders a black RGB image while depth still reports geometry, which misdiagnoses beautifully as a
-  broken detector. The wrist camera and the obliques therefore carry an explicit `near_clip_m`. The
-  overhead camera deliberately does not: on that geometry a clean instance mask and an
-  object-bearing rendered depth cannot both hold, so the ground-truth runners keep the default and
-  the real-vision path sets its own close clip in code. Authoring a value is not proof the camera
-  took it; read the clipping range back off the camera before believing it.
+- **Park the arm out of the camera's view before acquiring.** An overhead camera sees an arm that is
+  over the workspace.
+- **Set the near clip.** A simulator camera defaults to a 1.0 m near plane. Anything closer renders a
+  black RGB image while depth still reports geometry, which looks exactly like a broken detector. The
+  wrist camera and the oblique cameras carry an explicit `near_clip_m`. The overhead camera does not,
+  on purpose: on that geometry a clean instance mask and an object-bearing rendered depth cannot both
+  hold, so the ground-truth runners keep the default and the real-vision path sets its own clip in
+  code. Read the clipping range back off the camera before you believe a value you wrote.
 
 What happens after the mask is [04-robot-and-safety.md](04-robot-and-safety.md) and
-[05-pick-loop.md](05-pick-loop.md). Remember that the default pick is open-loop: the decision gate,
-the closed-loop refine, verify and recover path, fusion with its commit gate, the rerank stage, the
-learned success model and the reinforcement-learning layer are all built and all default to
-`enabled: false`, and the simulator runners turn them on per flag in runner code.
+[05-pick-loop.md](05-pick-loop.md). The default pick is open-loop: the decision gate, the closed-loop
+refine, verify and recover path, fusion with its commit gate, the rerank stage, the learned success
+model and the reinforcement-learning layer are all built and default to `enabled: false`, and the
+simulator runners turn them on per flag in runner code.
 
 **Training your own closed-set detector.**
-[`src/models/detection/closed_set/train.py`](../../src/models/detection/closed_set/train.py) fine-tunes RT-DETR
-from COCO annotations and writes a provenance manifest beside the checkpoint. Its classification head
-is re-initialised from the dataset's categories rather than fixed to COCO's, so arbitrary classes
-work, and the exported checkpoint drops straight into the inference path via `models.detector:
-"rtdetr"` plus a `models.rtdetr.model_path`. No dataset ships here and no model has ever been trained
-in this repository.
+[`src/models/detection/closed_set/train.py`](../../src/models/detection/closed_set/train.py) fine-tunes
+RT-DETR from COCO annotations and writes a provenance manifest beside the checkpoint. Its
+classification head is built from the dataset's categories, not COCO's, so any classes work. The
+checkpoint drops into the inference path through `models.detector: "rtdetr"` and a
+`models.rtdetr.model_path`. No dataset ships here, and no model has been trained in this repository.
 
 ---
 
@@ -478,48 +460,47 @@ in this repository.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `FileNotFoundError: models.objectdetector.local is true ...` | base profile, `local: True`, directory absent | put the weights there, or set `local: false` with a Hub id, or use the `sim` profile (section 3) |
-| A `from_pretrained` failure naming no config key | the segmenter or the speech model, neither of which checks the directory | the same fix, applied to `models.segmenter` or `models.stt` |
-| A hub-offline error on the first simulator run | the runners set `HF_HUB_OFFLINE=1` on purpose | pre-fetch outside the simulator; do not export `HF_HUB_OFFLINE=0` |
-| `CERTIFICATE_VERIFY_FAILED` while fetching | a proxy re-signs TLS with a CA in the OS store that `certifi` has never heard of | fetch from the project environment, and `pip install truststore` |
-| `ValueError: No object detected with description: ...` | nothing cleared `threshold`; `detect()` raises by design | lower the threshold, rephrase, try the other checkpoint, or use `detect_all()` |
-| Recall on small objects collapses after a "make it fp32" edit | `torch_dtype: "float32"` also disables the fp16 autocast | use `"__null__"`, not `"float32"` and not `null` (section 6) |
-| The label is a fragment of the prompt | GroundingDINO grounds sub-phrases | map back to your canonical name, as the simulator vision source does |
-| The right object is named and the wrong one is lifted, reported as success | the phrase grounder fails confidently on complex prompts | this is the VLM route's reason to exist (section 4) |
-| A config edit to `models.pipeline` changed nothing | that call site builds through the legacy keys, or names the class directly | check which builder it uses (section 1), and `PerceptionSpec.resolve().render()` |
+| `FileNotFoundError: models.objectdetector.local is true ...` | `local: True` and the directory is absent | fetch it (section 3), or set `local: false` with a Hub id |
+| `SpeechModelMissing: models.stt.model_path is ...` | the Whisper directory is absent | `python scripts/model_weights/fetch.py whisper-turbo` |
+| A `from_pretrained` error about repository ids, naming no key | SAM2, OneFormer, RT-DETR or the VLM, which do not check | fetch that model (section 3) |
+| A Hub-offline error on the first simulator run | the runners set `HF_HUB_OFFLINE=1` on purpose | fetch outside the simulator; do not export `HF_HUB_OFFLINE=0` |
+| `CERTIFICATE_VERIFY_FAILED` while fetching | a proxy re-signs TLS with a CA that `certifi` does not know | fetch from the project environment, with `truststore` installed |
+| `ValueError: No object detected with description: ...` | nothing cleared `threshold`; `detect()` raises by design | rephrase, try the other checkpoint, lower the threshold, or use `detect_all()` |
+| Small-object recall collapses after a "make it fp32" edit | `torch_dtype: "float32"` also turns off fp16 autocast | use `"__null__"`, not `"float32"` and not `null` (section 6) |
+| The label is a fragment of the prompt | GroundingDINO grounds sub-phrases | map it back to your object name, as the simulator's source does |
+| The wrong object is lifted and reported as a success | the phrase grounder fails confidently on complex prompts | the VLM route (section 4) |
+| An edit to `models.pipeline` changed nothing | that caller builds through the legacy keys | check which builder it uses (section 1), and `PerceptionSpec.resolve()` |
 | Black RGB from a simulator camera while depth looks fine | the 1.0 m default near plane | `near_clip_m` in the simulator camera config (section 8) |
 
 ---
 
 ## 10. What is settled and what is not
 
-**Exercised without a GPU, and therefore reliable:** the builder guards and their refusal messages,
-the prompt router's rules, `PerceptionSpec.resolve()` agreeing with what `build()` constructs, and
-the VLM response parser and its coordinate-space contract.
+**Pure logic, pinned by the test suite on a machine with no GPU:** the builder guards and their
+refusal messages, the prompt router's rules, `PerceptionSpec.resolve()` agreeing with what `build()`
+constructs, and the VLM response parser with its coordinate-space contract.
 
-**Analytical or unit-tested only:** `RtDetrObjectDetector`, `OneFormerSegmenter`, the RT-DETR
-training CLI, the MediaPipe detectors, and the SAM2 against OneFormer comparison, which has not been
-made here. `WhisperTransformersEngine` and `SileroVoiceActivityDetector` run against fakes and a
-randomly initialised Whisper, plus the real weights on this box: a machinery measurement only (load
-time, latency, memory, and the probabilities silence and a tone score), never accuracy, because no
-recording of a spoken command exists here to be right or wrong about
-([`src/models/speech/README.md`](../../src/models/speech/README.md)).
+| Capability | Evidence |
+|---|---|
+| GroundingDINO and SAM2 on rendered images | measured in simulation: the real-vision pick in section 8 |
+| RT-DETR, OneFormer, the MediaPipe detectors, the RT-DETR training script | never touched hardware: unit tests only; SAM2 against OneFormer is not compared |
+| Whisper and the Silero voice detector | never touched hardware: fakes, a random Whisper, and the real weights for load time, latency and memory only |
+| Every model against a physical camera, and the live RGB-D adapter | never touched hardware: the adapter has seen only a fake streamer |
+| A learned depth model | does not exist |
 
-**Not validated against real hardware:** every model against a physical camera, the `local: True`
-production path, and the live RGB-D adapter, which has only ever seen a fake streamer.
+No recording of a spoken command exists here to be right or wrong about, so speech accuracy is
+unmeasured ([`src/models/speech/README.md`](../../src/models/speech/README.md)).
 
-**Not present at all:** a learned depth model. Do not claim one.
-
-Before you start guide 3 or 4: `Remove-Item Env:\WILLY_PROFILE` (POSIX `unset WILLY_PROFILE`).
+Before you start guide 3 or 4: `Remove-Item Env:\WILLY_PROFILE` (POSIX: `unset WILLY_PROFILE`).
 
 ## See also
 
-- [01-configuration.md](01-configuration.md), profiles and the `"__null__"` sentinel
-- [03-calibration.md](03-calibration.md), intrinsics, the camera-to-base transform and the near clip
+- [01-configuration.md](01-configuration.md): profiles and the `"__null__"` sentinel
+- [03-calibration.md](03-calibration.md): the camera-to-base transform
 - [04-robot-and-safety.md](04-robot-and-safety.md), what the mask feeds, and
-  [05-pick-loop.md](05-pick-loop.md), the orchestrator and the default-off stages
-- [`src/models/README.md`](../../src/models/README.md), the package README
-- [`routing/`](../../src/models/routing/README.md) and [`vlm/`](../../src/models/vlm/README.md), the
+  [05-pick-loop.md](05-pick-loop.md), the loop and the stages that are off by default
+- [`src/models/README.md`](../../src/models/README.md): the package README
+- [`routing/`](../../src/models/routing/README.md) and [`vlm/`](../../src/models/vlm/README.md): the
   two-route perception decision
-- [`src/robot/perception/README.md`](../../src/robot/perception/README.md), the live-camera adapter
-- [`docs/isaac-ready.md`](../isaac-ready.md), box setup for section 8
+- [`src/robot/perception/README.md`](../../src/robot/perception/README.md): the live-camera adapter
+- [`docs/isaac-ready.md`](../isaac-ready.md): the workstation setup for section 8

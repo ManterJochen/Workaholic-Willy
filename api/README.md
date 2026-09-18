@@ -1,400 +1,254 @@
-# `api/`: the operator console
+# Operator console server (`api/`)
 
-The HTTP and WebSocket surface behind Willy's browser console. Optional in the strict sense: a cell
-that never starts this server behaves exactly as it does without it, and nothing under `src/` imports
-this package. It is the one tree in this repository that may import a web framework.
+The HTTP and WebSocket server behind the browser console. It checks a cell, builds and connects it,
+runs picks from a typed or spoken prompt, and shows what happened. It needs the packages in
+`requirements.txt` (FastAPI and uvicorn are pinned there) and a config tree, and it serves on
+127.0.0.1 only, with no login.
+
+Nothing under `src/` imports this package, so a cell that never starts it behaves exactly the same.
+It builds a cell with the same calls `Cell` makes, so the cell the browser drives is the cell your
+code drives. The pages themselves are in [`frontend/`](../frontend/README.md).
+
+## Try it without hardware
 
 ```bash
-pip install -r requirements.txt
-
-python -m api                             # 127.0.0.1:8000
-python -m api --profile console_dummy     # no controller, no camera, no GPU
-python -m api --profile ursim,ursim_ur3   # real UR controller software, UR3e kinematics
-python -m api --profile ur5e,eth2         # a real bench with two fixed cameras
+python -m api --profile console_dummy
 ```
 
-The server binds to `127.0.0.1` and that is not configurable from this entry point. There is no
-authentication in front of these endpoints and the machine running them is next to a robot arm, so
-making the bind address a flag would turn "expose the cell to the network" into a typo. Remote access
-means a reverse proxy with real authentication, decided deliberately.
+`console_dummy` is the desk profile: a dummy arm and a dummy hand, no controller, no camera, no GPU.
+The server prints the preflight summary (`0 blocking`) and `serving http://127.0.0.1:8000`. Open
+http://127.0.0.1:8000/docs for the interactive OpenAPI page, or http://127.0.0.1:8000 once the
+frontend is built. The same flow from a script, with `httpx` (also pinned in `requirements.txt`):
 
-**The browser console is served by this same process**, from `api/static/`, once
-[`frontend/`](../frontend/README.md) has been built (`cd frontend && npm run build`). That directory
-is not committed. Absent it, nothing is mounted and this package serves the API alone, which is the
-correct behaviour for a headless deployment.
+```python
+import httpx
 
-Serving the page from here rather than from a second server is what makes the browser's API base URL
-the empty string: there is no host to configure, so no build and no bookmark can aim the console at a
-different cell than the one whose server it was opened from.
+with httpx.Client(base_url="http://127.0.0.1:8000", timeout=60.0) as api:
+    print(api.get("/v1/preflight").json()["ok"])                     # True: nothing blocks
+    api.post("/v1/cell/build", params={"rehearse": True}).raise_for_status()  # a desk scene, no camera
+    preview = api.get("/v1/cell/connect-preview").json()             # what connecting will move
+    api.post("/v1/cell/connect", json={"token": preview["token"]}).raise_for_status()
+    run = api.post("/v1/pick", json={"prompt": "", "picks": 1}).json()  # 202 and a run id
+    print(run["id"], run["state"])                                    # run-..., running
+```
 
-## What it is for
+`GET /v1/runs/{id}` then reports `finished` with one success, and `WS /v1/events?run_id=<id>`
+replays the run's events. A dummy arm accepts every motion and reports success, so a desk run proves
+that the console and the library agree and says nothing about grasping.
 
-| | |
+## Your own cell
+
+1. Start the console on your cell's profile: `python -m api --profile <your cell>`. A profile is the
+   name of your cell's layer in the config tree ([guide 01](../docs/guide/01-configuration.md)).
+   Without `--profile` the console uses `WILLY_PROFILE`, then the base tree.
+2. Work down the Preflight screen or `GET /v1/preflight`. Every row carries its fix, and the verdicts
+   are the ones `python -m src.robot.execution.real_cell --check` prints.
+3. Write the values a person measures at the bench from the Config screen or `PATCH /v1/config`
+   (see [What you can change here](#what-you-can-change-here)). Everything else is edited in YAML.
+4. Build, read the connect preview, connect, pick. On a real cell a build opens the cameras and loads
+   the models, which takes tens of seconds.
+
+The procedures are the runbooks [bringing up a cell](../docs/runbooks/cell_bringup.md) and
+[the first pick on a physical arm](../docs/runbooks/real_cell_first_pick.md). The same steps from your
+own code are in [`examples/`](../examples/README.md).
+
+> [!WARNING]
+> `POST /v1/cell/connect` moves hardware. A Robotiq activates by sweeping its full finger travel; a
+> vacuum cup's connect switches the ejector on at once and releases whatever it holds; an I/O jaw may
+> open. The connect therefore takes only a token from `GET /v1/cell/connect-preview`, which lists what
+> will move. The token is single use, expires after five minutes and is void once any config value
+> changes. There is no emergency stop endpoint: the stop is the physical button at the cell.
+
+## The endpoints
+
+Everything is under `/v1`, and every failure comes back as one envelope, `{code, message, detail}`,
+with `code` a string your client can branch on.
+
+| Route | What it does |
 |---|---|
-| Prepare a cell | the preflight checklist, the config with its provenance, and forms for the handful of values a person measures at a bench |
-| Bring the cell up | build, acknowledge what will move, connect (arm before gripper), live telemetry, and the bench diagnostics that move nothing |
-| Drive a pick | prompt in, typed or spoken; run lifecycle; the live event stream |
-| See what it sees | one image plus the sentence saying whether it is a camera, a drawing or a decision |
-| See what happened | runs, logged attempts, the KPI roll-up, and CSV out |
-| Show someone | the same data at demo density, at `/demo.html` |
-
-## The rule this package is built around: the console issues tasks, not parameters
-
-A pick can be started, a prompt can be given, a run can be told not to start the next attempt. Nothing
-that changes how a motion executes (speed, acceleration, workspace limits, safety toggles) is writable
-from a browser, and nothing at all is writable while a run is active, which is a typed `409` and never
-a queue.
-
-Three things follow.
-
-**The writable set is an allowlist**, and it is the library's own, in `src/config/edit.py`: the
-payload mass and centre of gravity, the three tool-frame keys, a camera rig's serial number, and the
-two controller addresses. They are there because they are measurements and site facts rather than
-policy.
-
-**Limits and thresholds are read-only here.** Not because a machine could not write the line, but
-because in this tree the evidence for a value lives in the comment above it, and a form that writes the
-number without showing the comment invites changing a value whose reason nobody remembers.
-
-**There is no emergency-stop endpoint.** A stop that travels over a socket depends on latency, an open
-tab and an awake laptop. Offering one would invite relying on it instead of the physical mushroom
-button. The one endpoint called `stop` documents itself as not an emergency stop.
-
-## The cell lifecycle
-
-| from | what you call | to |
-|---|---|---|
-| unbuilt | `POST /v1/cell/build` | built |
-| built | `GET /v1/cell/connect-preview` | previewed, holding a single-use token |
-| previewed | `POST /v1/cell/connect` with that token | connected: arm, then gripper |
-| previewed | any config change | built, and the token is void |
-| connected | `POST /v1/cell/disconnect` | built: gripper, then arm |
-
-**Connect is motion on this cell.** A Robotiq activates by sweeping its full finger travel; a vacuum
-cup's connect asserts the ejector immediately and drops whatever it is holding. A browser button is
-reachable by a stray curl, a replayed request and a reloaded tab, so `POST /v1/cell/connect` accepts
-only a token that `connect-preview` issued for this configuration. The token expires after five
-minutes, is single-use, and is void the moment any config value changes, because what was acknowledged
-is then no longer what would happen. Without one the answer is `428 Precondition Required`.
-
-Three refusals that look like bugs and are not:
-
-**The preview's warnings come from the gripper that was actually built**, not from what the config
-asked for. An empty warning list on a null-gripper cell is correct: warning about a finger sweep that
-cannot happen teaches an operator to skip the warning that can.
-
-**Connect is a transaction.** Arm first, then gripper, and if the gripper refuses, the arm is
-disconnected again. There is no `degraded` state to render, because a cell that came up halfway would
-hold a UR controller's single control script while reporting failure.
-
-**A substituted gripper blocks the connect** (`403 no_real_gripper`). A misconfigured end effector, a
-Robotiq on a non-UR arm, a vacuum gripper on an arm with no digital I/O, or a vendor with no driver,
-yields a working null gripper. Without this refusal the cell would connect, every pick would report
-success, and the jaws would close on nothing. The typed reason travels on the gripper object itself.
-
-**One owner per cell.** `CellLock` is a byte range held by an open file handle, keyed on the
-controller's address, so the operating system releases it when the process dies. There is no stale lock
-and therefore no habit of deleting one. The CLI runner takes the same lock, because a lock only one
-side respects protects nothing. It cannot see a second machine on the network. No local lock can, and
-the reachability probe in `GET /v1/diagnostics` is the honest complement rather than a substitute.
-
-## Endpoints
-
-Everything is mounted under `/v1`.
-
-| Route | What it answers |
-|---|---|
-| **Health and configuration** | |
-| `GET /v1/health` | the server, and deliberately nothing about the cell |
-| `GET /v1/preflight` | the checklist, from the same function the CLI's `--check` calls |
-| `GET /v1/config/explain?key=...` | value, type, default, tier, which layer won, and the YAML comment |
-| `GET /v1/config/writable` | the guided-write form, described by the library |
-| `PATCH /v1/config` | one transaction over a group of keys, all or none |
-| **Cell lifecycle** | |
-| `GET /v1/cell` | state, arm, gripper, and who holds the cross-process lock |
-| `POST /v1/cell/build?rehearse=` | assemble the cell; touches no robot |
-| `GET /v1/cell/connect-preview` | what will move, plus the token that acknowledges it |
-| `POST /v1/cell/connect` | takes the token; arm then gripper, rolled back together |
-| `POST /v1/cell/disconnect` | gripper then arm; idempotent; frees the lock |
-| `GET /v1/cell/status` | live telemetry; the receive stream only, unless asked otherwise |
-| `GET /v1/diagnostics` | SDKs, motion stack, perception stack, controller reachability; nothing moves |
-| `GET /v1/diagnostics/route` | which route a prompt would take, decided from text alone: no GPU, no model, no image |
-| **Picking** | |
-| `POST /v1/pick` | `{prompt, picks}`, answered `202` with a run id. This moves. The prompt is the phrase the detector grounds for this run and the label a target carries; the cell's own phrase is back when the run ends, and an empty prompt keeps it. |
-| `POST /v1/pick/stop` | do not start the next attempt. Not an emergency stop. |
+| `GET /v1/health` | the server is up; says nothing about the cell |
+| `GET /v1/preflight` | the cell checklist, each row with its fix |
+| `GET /v1/config/explain?key=...` | a value, its type, default, the layer that set it, and its YAML comment |
+| `GET /v1/config/writable` | the keys this server may write, described by the library |
+| `PATCH /v1/config` | write a group of keys, all or none |
+| `GET /v1/cell` | state, arm, gripper, and which process holds the cell lock |
+| `POST /v1/cell/build?rehearse=` | assemble the cell; touches no robot. `rehearse=true` uses a desk scene |
+| `GET /v1/cell/connect-preview` | what connecting will move, and the token that acknowledges it |
+| `POST /v1/cell/connect` | `{token}`: arm, then gripper; the arm is rolled back if the gripper refuses |
+| `POST /v1/cell/disconnect` | gripper, then arm; safe to call twice; frees the lock |
+| `GET /v1/cell/status` | live pose, joints and wrench; `?include_controller_state=true` adds modes |
+| `GET /v1/diagnostics` | SDKs, motion stack, perception stack, controller reachability; moves nothing |
+| `GET /v1/diagnostics/route?prompt=` | which perception route a prompt would take, from the text alone |
+| `POST /v1/pick` | `{prompt, picks}`: starts a run, answers `202` with its id. This moves |
+| `POST /v1/pick/stop` | do not start the next attempt; the motion in flight completes |
 | `GET /v1/runs`, `GET /v1/runs/{id}` | recent runs, and one run |
-| `WS /v1/events?run_id=&since_seq=` | replay what you missed, then go live |
-| `GET /v1/camera` | what the cell is looking at, and which of three pictures that is |
-| `POST /v1/overlay/enable` | opt into the debug render; it costs time per pick |
-| `WS /v1/overlay` | each new overlay still, with its age |
-| `POST /v1/voice/transcribe` | WAV to a text proposal, with the voice check behind it. Never starts anything. |
-| `POST /v1/voice/talk` | `{pressed}`: the talk switch, down and up |
-| `POST /v1/voice/listen` | one push to talk turn at the cell PC, answered with the same proposal. Never starts anything. |
-| **History** | |
-| `GET /v1/history/kpis` | rolled up with the same function the offline gate uses |
-| `GET /v1/history/records` | logged grasp attempts, newest first |
-| `GET /v1/history/runs` | this session's last 200 runs, in memory and perishable |
-| `GET /v1/history/runs.csv` | one row per run, the report view |
-| `GET /v1/history/records.csv` | one row per attempt, the analysis view |
+| `WS /v1/events?run_id=&since_seq=` | replay a run's events from a sequence number, then follow it live |
+| `GET /v1/camera` | one picture and one sentence saying what it is |
+| `POST /v1/overlay/enable` | turn on the grasp overlay render; it costs time on every pick |
+| `WS /v1/overlay` | each new overlay image, with its age |
+| `POST /v1/voice/transcribe` | a WAV upload to a text proposal for the prompt box; starts nothing |
+| `POST /v1/voice/talk` | `{pressed}`: press or release the push to talk switch |
+| `POST /v1/voice/listen` | one push to talk turn on the cell PC's microphone, to a proposal; starts nothing |
+| `GET /v1/history/kpis` | the KPI roll-up over the logged attempts |
+| `GET /v1/history/records` | logged attempts, newest first |
+| `GET /v1/history/runs` | this session's runs, from memory |
+| `GET /v1/history/runs.csv`, `GET /v1/history/records.csv` | one row per run, and one row per attempt |
 
-`PATCH` refuses by name: `403 not_writable`, `404 unknown_key`, `422 invalid_value` carrying the
-loader's own message, `409 run_active`, `409 cell_connected`. A rejected write leaves every file it
-touched byte-identical. It takes a group because the schema has cross-field rules no single write
-satisfies: a tool frame that declares an owner while its transform is still identity is rejected, so
-the three tool-frame keys only ever validate together. There is no order in which they validate one at
-a time.
+## What you can change here
 
-## Driving a pick, and watching one you were not there for
+The console starts tasks; it does not set parameters. Speed, acceleration, workspace limits and safety
+switches are read-only here and edited in YAML, next to the comment that says why each value is what
+it is. The writable keys are an allowlist in [`src/config/edit.py`](../src/config/edit.py): the
+payload mass and centre of gravity, the three tool frame keys, each camera rig's serial number and
+whether it is enabled, which rig is primary, and the UR and KUKA controller addresses. A `PATCH`
+takes them as a group, because the three tool frame keys only validate together, and a refused write
+leaves every file byte-identical.
 
-**Starting returns an id, not a result.** A pick blocks for as long as the arm takes, so a handler that
-waited would hold an HTTP connection open across a physical motion, and the browser, a proxy or a
-sleeping laptop would give up somewhere in the middle, leaving an operator with no idea whether the arm
-was still moving.
+## What it refuses
 
-**A run survives the browser.** The arm is holding a part, and the correct behaviour when a tab closes
-is to finish the pick and put the object down. What makes that survivable for the UI is the sequence
-number: a client reconnects with `since_seq` and receives everything after it. If it slept longer than
-the ring buffer it gets a `gap` frame saying how many events it will never see, because a short replay
-that looked complete would make the UI draw a run that never had those steps.
-
-**Stop is not kill.** `POST /v1/pick/stop` sets a flag the pick loop reads before it begins the next
-attempt. A motion already in flight completes. There is nothing stronger here, and a cancelled run ends
-with the typed `CANCELLED` outcome rather than a failure, because a stop is a decision and counting it
-as a failure would make every press of the button lower the measured pick rate.
-
-**Two audiences, one envelope.** Every event carries `human`, a plain sentence, and `data`, the machine
-payload. The person watching a demo reads one and the person diagnosing a failure reads the other.
-
-The library side of this is `PickStage` and the frozen `PickProgress` payload in
-[`src/robot/grasping/loop/progress.py`](../src/robot/grasping/loop/progress.py). With no listener
-attached the emit is one `is None` test and no payload is constructed, so a cell that never runs this
-server pays nothing for the seam.
-
-**The camera world behind an attempt.** `pick.attempt_finished` carries `camera_world` and
-`camera_world_reason` in `data` whenever the weakest camera-world stamp of the attempt's motions says
-something (`unplanned`, `missing`, `declined`, `planned`), and omits both where it is `unstated`, so
-a driver that stamps nothing adds no key. The sentence names only `missing` and `declined`, as
-` Camera world: MISSING (<reason>).`, at the event's own severity: a dummy or ik cell stamps
-`unplanned` on every motion, and repeating that on every line would bury the one that matters. The
-React console types `data` as `Record<string, unknown>`, so the new keys needed no client change.
-
-**Speech goes to the prompt box, not to the arm.** `POST /v1/voice/transcribe` returns a text proposal
-and starts nothing: a misheard word must not be able to move an arm, so a spoken prompt is confirmed by
-the same button, with the same acknowledgement, as a typed one, and "Stopp" is no exception. The text
-stays in the language it was spoken in, because Whisper transcribes and never translates, and the
-answer carries the engine's whole `Transcript`: the language code, whether Whisper detected it or
-`models.stt.language` configured it, the recording's length, the engine, the weights, the device and
-the milliseconds the decode took. Before Whisper is asked what was said, Silero is asked whether
-anything was said at all, so a recording holding no speech comes back as an empty proposal with the
-reason rather than as a hallucinated word.
-
-**One speech engine per process.** The console reads `models.stt` alone through `load_speech_section`,
-so a typo in a camera file cannot refuse a recording, and it keeps the engine and voice gate that
-section builds; a changed section builds a new pair. The weights load on the first transcription and
-stay loaded, because a model load per request sits inside the 2 s budget from the end of speaking. A
-machine that cannot import the stack answers `501 speech_unavailable` and names the file that installs
-the missing package, and a DLL that Smart App Control refuses raises `OSError` rather than
-`ImportError` and gets the same answer. An upload opens no microphone, so a machine without PortAudio
-transcribes uploads all the same.
-
-Push to talk at the cell PC has two routes. `POST /v1/voice/talk` `{pressed}` presses and releases
-the process's one talk switch, and a key that repeats while it is held counts once. `POST /v1/voice/listen`
-opens the cell PC's microphone, waits up to `timeout_s` (10 s unless chosen) for the press, and at the
-release proposes everything said while the switch was held, through the same gate and engine as an
-upload. The answer is the same `ProposalOut`, and it starts nothing. A turn that proposes nothing answers
-with the library's sentence and its `TalkRecording.to_dict()`: `409 talk_not_pressed` or
-`409 microphone_ended`, `422 nothing_recorded` or `422 audio_too_long`. A microphone this host cannot
-open is `501 microphone_unavailable`, and a second listen while one runs is `409 listen_busy`. No console
-screen calls either route yet: the talk button records in the browser and uploads.
-
-[`audio.py`](audio.py) decodes 16-bit PCM WAV with the standard library, which is what the console
-records in the browser, and nothing else. The second decoder for webm/opus, mp4, ogg, flac and mp3 is
-gone: its wheel bundled a GPL build of FFmpeg, which is not what it was admitted under (see `NOTICE`).
-The two failures are answered differently on purpose: a format this server will never decode is
-`415 audio_format_unsupported`, and the sentence names what arrived and what the upload declared
-itself to be, while bytes that are not usable audio are `422 audio_undecodable`. Neither is a 501,
-because neither is a missing capability: no install makes this endpoint read webm.
-
-**A truncated upload is one of those 422s, and it used to be a crash.** A connection dropped
-mid-upload delivers a few bytes, and `wave.open()` answers a short read with a bare `EOFError`, which
-is not a `wave.Error` and not an `AudioDecodeError`. Measured on a WAV truncated to every length from
-0 to 59: lengths 1-7 and 20-35 raised it, and the odd lengths from 45 raised `ValueError` out of
-`np.frombuffer` instead. The endpoint reported all of them from its last-resort handler as
-`transcription_failed` with the message `EOFError:` and no cause in it. They are now
-`audio_undecodable`, and bytes too short to be any container at all (under RIFF's 12-byte header) are
-refused as a bad request rather than as a missing decoder.
-
-## The viewfinder: three pictures, never blurred
-
-`GET /v1/camera` is what the console draws as "what the robot sees". It returns one image and one
-sentence saying what that image is, because there are three of them and they look identical on a
-screen:
-
-| `source` | what it is |
-|---|---|
-| `camera` | a colour frame off a physical device, taken now |
-| `synthetic` | pixels this process drew; a rehearsal cell has no camera at all |
-| `overlay` | the grasp render: segmentation, projected gripper, ranked candidates |
-
-There are also four ways to say no picture, each a `200` with a reason and never a `404`, because a
-cell with no camera is an ordinary cell and an error code would make an everyday state look like a
-fault: `not_built`, `pick_owns_camera`, `no_colour_source`, `encode_failed`.
-
-The kind is declared by the perception source, never inferred from the array, and a source that does
-not declare one is described as unknown rather than as a camera.
-
-**An overlay's age is only ever a lower bound, and the payload says which kind it is.** Nothing in the
-stack stamps a render time on the image, so all a server can measure is when it first saw those bytes.
-The first overlay a process sees may predate it, and the payload then carries `age_is_exact: false` and
-a sentence saying "at least this old, possibly much older". Once the server has watched one image
-replace another the age is real to within a poll. `WS /v1/overlay` does not make this distinction: it
-seeds its clock when the socket is accepted.
-
-**The pick owns the camera, and this endpoint stands down.** A pick runs on its own thread, and while
-a run is active the viewfinder never touches the device and serves the overlay instead, which during a
-pick is the more informative picture anyway. The exclusion is by run state. Below it, every grab from a
-camera goes through its rig's owner (`Camera`, in `src/camera/orchestration/camera.py`) under the rig's
-lock, so a peek outside a run waits for a planner world's depth grab on the same rig, and two browser
-tabs queue on that lock instead of interleaving. One frame can still land in the viewer between the
-pick's grabs; the pick opens every acquisition by discarding warm-up frames, so nothing it relies on
-changes.
-
-**Every camera this server opens, it closes.** Building twice is a normal thing to do: build, read the
-refusal, fix a key, build again. Two rules make the second build survive the first. The session state
-is checked before anything is acquired, so a rebuild refused with `wrong_state` claims no device. And
-adopting a new service closes the one it replaces, because a dropped service with its pipeline still
-streaming makes the next start on that device fail on real hardware, and the old service sits in a
-reference cycle so refcounting would not collect it either. The app's lifespan releases the session on
-the way out, which matters most under `--reload`, where a worker is replaced while the parent lives on.
-
-## History: two sources, never blurred
-
-| | lives in | survives a restart | includes the CLI runner |
+| Code | Status | When | What to do |
 |---|---|---|---|
-| Runs | memory, and is rich: candidate counts, scores, the motion chain | no | no |
+| `not_acknowledged`, `stale_token` | 428 | connect without a valid preview token | read the preview again, then connect with its token |
+| `no_real_gripper` | 403 | the build could not make the configured gripper and put a null one in its place | fix the gripper section; `GET /v1/cell` has the reason |
+| `cell_busy` | 409 | another process holds this controller's cell lock | stop the other program; `GET /v1/cell` names it |
+| `not_built`, `wrong_state` | 409 | preview before a build, connect twice, rebuild while connected | build first, or disconnect first |
+| `driver_refused` | 502 | the controller refused the connect (payload, tool frame, network) | the message is the driver's own sentence |
+| `build_refused` | 422 | a build failed, for example a camera that did not open | the message names the cause |
+| `no_robot_configured` | 409 | the tree and profile configure no robot | start with the profile that has the arm |
+| `not_connected` | 409 | a pick before the cell is connected | connect first |
+| `prompt_not_routable` | 422 | the prompt needs the VLM route and this cell has none | configure the VLM, or set `on_unavailable: degrade` |
+| `run_active` | 409 | a second pick, or a config write, while a run owns the cell | wait for the run, or stop it |
+| `not_writable`, `unknown_key` | 403, 404 | a key outside the allowlist, or no such key | edit it in YAML |
+| `invalid_value` | 422 | the loader rejected the written tree; every file is restored | the message is the loader's |
+| `cell_connected` | 409 | the primary rig or a controller address, while connected | disconnect first |
+| `no_target` | 409 | no file under the config root backs the key | point the console at the config tree with `--data` |
+| `audio_format_unsupported` | 415 | an upload that is not WAV | upload 16-bit PCM WAV, which the console records |
+| `audio_undecodable`, `audio_too_long` | 422 | a truncated or unusable WAV; longer than Whisper's window | record again, shorter |
+| `speech_unavailable`, `speech_model_missing` | 501 | the speech packages or weights are not on this machine | the message names what installs them; or type |
+| `talk_not_pressed`, `microphone_ended` | 409 | the switch was not pressed within `timeout_s`, or the microphone stopped | listen again |
+| `nothing_recorded` | 422 | the switch came up before any audio | hold the switch while speaking |
+| `microphone_unavailable`, `listen_busy` | 501, 409 | no microphone on this host; a listen already running | use the browser's microphone; wait |
+
+A request whose body or query does not match the endpoint answers `422 bad_request`, and an unknown
+path answers `404 http_404`, both in the same envelope.
+
+## How a cell comes up
+
+| State | Call | Next state |
+|---|---|---|
+| `disconnected` (nothing built) | `POST /v1/cell/build` | `built` |
+| `built` | `GET /v1/cell/connect-preview` | `built`, holding a token |
+| `built`, holding a token | `POST /v1/cell/connect` | `connected`: arm, then gripper |
+| `connected` | `POST /v1/cell/disconnect` | `built`: gripper, then arm |
+
+A connect is all or nothing: if the gripper refuses, the arm is disconnected again and the state
+stays `built`. The preview's warnings come from the gripper that was actually built, so a cell with a
+null gripper shows none. One process owns a cell: `CellLock` in
+[`src/robot/execution/cell_lock.py`](../src/robot/execution/cell_lock.py) is keyed on the controller
+address and held by an open file handle, so the operating system frees it when the process dies. The
+console, `Robot`, `Cell` and the command line runner all take it. It cannot see a second machine; the
+reachability check in `GET /v1/diagnostics` covers that.
+
+## Picks and their events
+
+- `POST /v1/pick` returns a run id at once. A run continues when the browser closes, so an arm holding
+  a part finishes the pick and puts it down.
+- The prompt is what the detector grounds for this run. An empty prompt keeps the cell's own phrase.
+- `WS /v1/events` sends every event with a sequence number. A client that reconnects with `since_seq`
+  gets what it missed. If the per-run buffer dropped some, it first gets a `gap` frame with the count.
+- Each event carries `human`, a sentence for the operator, and `data`, the machine payload. An
+  attempt's `data` includes `camera_world` whenever the motions say something about the camera world.
+- `POST /v1/pick/stop` ends the run before its next attempt. The run then ends `cancelled`, which is
+  not counted as a failed pick. Run states are `running`, `finished`, `cancelled` and `failed`.
+
+## Speech
+
+Speech fills the prompt box and never starts a pick: a person confirms a spoken prompt with the same
+button as a typed one. `POST /v1/voice/transcribe` takes 16-bit PCM WAV, which is what the console
+records in the browser. A voice check runs first, so a recording with no speech comes back as an
+empty proposal with its reason. The text stays in the spoken language, and the answer carries the
+whole transcript: language, where the language came from, duration, engine, weights, device and
+decode time. The speech engine is built from `models.stt` alone, loads on the first request and stays
+loaded. `POST /v1/voice/talk` and `POST /v1/voice/listen` are push to talk on the cell PC's own
+microphone; no console screen calls them yet.
+
+## The camera view
+
+`GET /v1/camera` returns one image and says which of three it is: `camera` (a frame taken now),
+`synthetic` (a rehearsal cell's drawing; it has no camera) or `overlay` (the grasp render). No picture
+is a `200` with a reason, never an error: `not_built`, `pick_owns_camera`, `no_colour_source` or
+`encode_failed`. While a run is active the view never touches the camera and shows the overlay
+instead. An overlay's age is a lower bound until the server has seen one image replace another, and
+`age_is_exact` says which.
+
+## History
+
+| Source | Lives in | Survives a restart | Includes the command line runner |
+|---|---|---|---|
+| Runs | memory, the last 200 | no | no |
 | Records | a JSONL file | yes | yes |
 
-Every response says which it came from. Mixing them would let an operator conclude that something is
-stored which is not.
+The console logs records to `logs/console/grasp_records.jsonl` when `grasping.record_log_path` is
+unset, and to the configured path otherwise. The KPIs come from `compute_kpis`, the function
+`python -m src.robot.grasping.replay --records` uses, so the console and the offline gate agree.
+A rate with an empty denominator is withheld and named in `unmeasurable` rather than shown as zero:
 
-**The console turns record logging on itself.** `grasping.record_log_path` is null in the shipped
-config, so a console-driven cell would keep no history at all and a bring-up that went wrong would
-leave nothing to diagnose from. The console writes to `logs/console/grasp_records.jsonl` without
-touching the YAML. A cell that never runs the console is unaffected, and a configured path always wins.
-
-**A rate over an empty denominator is not a measurement.** The ratio helper returns `0.0` for a zero
-denominator, so such a rate would arrive looking exactly like a measurement of zero, reading as perfect
-or as broken depending which rate it is, and both are claims nobody made. Four KPIs are therefore
-withheld and named in an `unmeasurable` map instead, one always and three decided per record set by
-checking the denominator rather than the result:
-
-| KPI | withheld when | because |
-|---|---|---|
-| `false_positive_grasp_rate` | always | it needs an independent post-grasp re-check this stack does not have |
-| `dense_recovery_success_rate` | no record ran in a dense mode | the shipped mode is `auto`, so the denominator is empty by construction |
-| `first_attempt_success_rate` | no record carries a recovery action | it then equals `pick_success_rate`, the same number printed twice |
-| `median_cycle_time_s` | it is absent | nothing on the production path writes that field |
-
-A recovery rate of zero over two hundred dense attempts is a real and alarming measurement; the same
-zero over none of them is not a measurement at all, and only the input tells the two apart.
-
-The duration to quote is `median_attempt_seconds`, which is stamped by the pick itself on every attempt
-regardless of config. Everything else comes from `compute_kpis`, the same function
-`python -m src.robot.grasping.replay --records` uses. A console with its own arithmetic would eventually
-disagree with the offline gate and nobody could say which number was real.
-
-## What the status panel costs
-
-`GET /v1/cell/status` reads the RTDE output stream, which the controller is already broadcasting, so
-polling it costs a running motion nothing. Two neighbouring reads behave differently despite
-identical-looking signatures:
-
-| read | cost | offered |
-|---|---|---|
-| TCP pose, joints, wrench | free; the controller already broadcasts it | always |
-| robot status | four cheap enum reads plus a dashboard socket round trip every call | opt-in with `?include_controller_state=true`, and the response says which reading you got |
-| joint torques | goes through the control interface, the same register space a running pick uses | never, at any price |
-
-There is no counterpart that clears a protective stop, though it sits one method away on the same
-Protocol. That is done at the pendant, where the arm is visible, for the same reason there is no
-emergency-stop button here.
-
-## One envelope, for every failure
-
-Every error leaves here as `{code, message, detail}`, including the router's own `404` and including a
-request-validation failure, which arrives as `code: "bad_request"` rather than as the framework's
-default validation shape. `ErrorOut` is declared as the app's default response, so it appears in the
-OpenAPI document and a generated client can type the failure path as well as the success path.
-
-## Layout
-
-| file | what it owns |
+| KPI | Withheld when |
 |---|---|
-| `app.py` | the app, the `/v1` mount, the single error envelope, and mounting the built console bundle |
-| `cell.py` | the session: config root, profile chain, the built cell, and the run lock everything guards against |
-| `lifecycle.py` | the state machine (build, preview, token, connect, disconnect), the rollback, and closing the camera a rebuild replaces |
-| `telemetry.py` | what one panel tick may read, and what each read actually costs |
-| `schemas.py` | wire types: serialisation only, no judgement of their own |
-| `events.py` | the event stream: per-run sequence numbers, a bounded history, catch-up by sequence, and `forget()` for a run that has left the console |
-| `runs.py` | a run on its own thread, the sentences the operator reads, and the 200-run retention window |
-| `history.py` | reading the record log, the KPI roll-up, and the CSV writers |
-| `viewfinder.py` | resolving the honest picture: camera against synthetic against overlay, and the four refusals |
-| `audio.py` | decoding an uploaded recording, and the two ways it can refuse |
-| `constants.py` | the log directory and the per-module log-file names, in one place, so the set of files this server writes is readable without grepping for it |
-| `routers/preflight.py` | `GET /v1/preflight` |
-| `routers/config.py` | the config explain, writable and patch routes |
-| `routers/cell.py` | the cell lifecycle and `GET /v1/cell/status` |
-| `routers/diagnostics.py` | `GET /v1/diagnostics` and the route preview |
-| `routers/pick.py` | start, stop, list runs, and the events socket |
-| `routers/media.py` | `GET /v1/camera`, the overlay socket, speech to text and push to talk |
-| `routers/history.py` | the history routes |
-| `__main__.py` | `python -m api`, bound to 127.0.0.1 and not configurable off it; the port is checked and claimed before the banner claims to serve |
+| `false_positive_grasp_rate` | always: it needs a post-grasp re-check this stack does not have |
+| `dense_recovery_success_rate` | no record both ran in a dense mode and recorded a recovery action |
+| `first_attempt_success_rate` | no record carries a recovery action |
+| `median_cycle_time_s` | no record carries a cycle time |
 
-**Each module that does something logs to its own file** under `logs/api/`. Modules that only hold data
-or delegate have no logger, because an empty rotating file makes a log directory harder to read, not
-easier. Two things are deliberately absent from those files: the connect token, which is what
-authorises a motion and would outlive a browser tab in a log, and the polled reads, which log when the
-answer changes rather than once per request, so a log stays a record of events rather than a frame
-counter.
+The pick duration to quote is `median_attempt_seconds`, which every attempt stamps.
 
-**Routers stay thin deliberately.** When one starts deciding something, such as what counts as blocking
-or whether a value is allowed, that decision belongs under `src/`, where the CLI reaches it too. Four
-such decisions live there rather than here:
+## The status panel
 
-| decision | lives in |
+`GET /v1/cell/status` reads the stream the controller already broadcasts, so polling it costs a
+running motion nothing. `?include_controller_state=true` adds robot mode, safety mode and the
+controller's message at the price of a dashboard round trip per call; poll it at seconds. Joint
+torques are never offered, because they go through the control interface a pick uses, and nothing
+here clears a protective stop: that is done at the pendant, where the arm is visible.
+
+## Files
+
+| File | Holds |
 |---|---|
-| what may be written, and how, without destroying the file | [`src/config/edit.py`](../src/config/edit.py) |
-| what blocks | [`src/robot/execution/real_cell/preflight.py`](../src/robot/execution/real_cell/preflight.py) |
-| who owns a cell, with the CLI runner taking the same lock | [`src/robot/execution/cell_lock.py`](../src/robot/execution/cell_lock.py) |
-| how a cell is assembled, with console and CLI making the same one call | [`src/robot/execution/autonomous_grasp/cells.py`](../src/robot/execution/autonomous_grasp/cells.py) |
+| [`__main__.py`](__main__.py) | `python -m api`: `--profile`, `--port`, `--data`, `--reload`; checks the port before it announces it |
+| [`app.py`](app.py) | the app, the `/v1` mount, the one error envelope, and serving the built frontend |
+| [`cell.py`](cell.py) | the session: config root, profile chain, the built cell, the run flag |
+| [`lifecycle.py`](lifecycle.py) | build, preview, token, connect, disconnect, and the rollback |
+| [`runs.py`](runs.py) | a run on its own thread, the operator's sentences, the 200-run window |
+| [`events.py`](events.py) | per-run sequence numbers, the bounded buffer, catch-up and the gap |
+| [`history.py`](history.py) | reading the record log, the KPI roll-up, the CSV writers |
+| [`viewfinder.py`](viewfinder.py) | camera, synthetic or overlay, and the no-picture reasons |
+| [`telemetry.py`](telemetry.py) | what one status read may touch, and what it costs |
+| [`audio.py`](audio.py) | decoding an uploaded WAV, and its two refusals |
+| [`schemas.py`](schemas.py) | the wire types |
+| [`constants.py`](constants.py) | the log directory and each module's log file |
+| [`routers/`](routers/) | one module per route group: preflight, config, cell, diagnostics, pick, media, history |
 
-## Two things that will bite you
+Each module that acts logs to its own file under `logs/api/`. The connect token is never logged.
+Decisions live in the library, where the command line reaches them too: what may be written
+([`src/config/edit.py`](../src/config/edit.py)), what blocks
+([`src/robot/execution/real_cell/preflight.py`](../src/robot/execution/real_cell/preflight.py)),
+who owns a cell ([`src/robot/execution/cell_lock.py`](../src/robot/execution/cell_lock.py)) and how
+a cell is built ([`src/robot/execution/autonomous_grasp/cells.py`](../src/robot/execution/autonomous_grasp/cells.py)).
 
-**The profile chain is process-global.** Setting the active profile mutates an environment variable, so
-the console's own config accessor is the only place that touches it, under a lock, restoring what was
-there. A handler that set the chain inline would let one request read another's.
+## What is proven and what is not
 
-**One process owns the cell.** The CLI runners and this server must not both hold the driver. The
-server refuses to build a cell whose driver is already claimed: refusal, not arbitration.
+| Capability | Evidence |
+|---|---|
+| The endpoints, against a copy of the config tree | the `tests/test_api_*.py` files; the preflight is asserted equal to the command line's |
+| The whole console: preflight, build, connect, telemetry, a pick, history, disconnect | measured against real controller software (URSim) |
+| Any endpoint with a physical arm, gripper or camera frame | never touched hardware |
 
-## What has and has not been proved
+On `console_dummy` the cell response's `vendor` and the status response's `simulated` flag say that
+the arm is not real, and the frontend shows both.
 
-The endpoints are exercised against a copy of the real config tree, and the preflight this server
-renders is asserted equal to the CLI's, row for row. The whole console has been driven end to end
-against URSim, which is real UR controller software, through preflight, build, connect-preview,
-connect, live telemetry, a pick, history and disconnect.
+## Where the details live
 
-That leaves the physical half untouched. **No endpoint here has ever run against a physical arm, a
-physical gripper or a real camera frame.**
-
-`--profile console_dummy` is the hardware-free cell this console is developed and reviewed against: a
-dummy arm and gripper, paired with `POST /v1/cell/build?rehearse=true` for a desk scene instead of a
-camera. It exercises the console end to end in seconds and proves nothing whatsoever about grasping,
-because a dummy arm accepts every motion and reports success. The vendor field on the cell response and
-the simulated flag on the telemetry response are how the UI is required to say so.
-
-## See also
-
-- [`frontend/README.md`](../frontend/README.md), the browser face of every endpoint here
-- [`src/config/README.md`](../src/config/README.md), the config system these forms read and write
-- [`scripts/ursim/README.md`](../scripts/ursim/README.md), bringing up the controller software this was measured against
+- [`frontend/README.md`](../frontend/README.md): the browser pages that call these endpoints.
+- [`src/config/README.md`](../src/config/README.md): the config tree these forms read and write.
+- [`scripts/ursim/README.md`](../scripts/ursim/README.md): the controller software this was measured against.
+- [`docs/cli.md`](../docs/cli.md): the same capabilities from a shell.

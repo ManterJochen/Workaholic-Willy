@@ -1,202 +1,130 @@
-# robot.core
+# The arm and hand contract (`src/robot/core`)
 
-The vendor-neutral contract layer: the typed surface every arm driver, every gripper driver and
-every pipeline above them agrees on.
+The typed surface every arm driver, every hand driver and the code above them agree on: the
+`RobotArm` and `Gripper` Protocols, the `MotionResult` a motion returns, the vendor enums and the
+errors. You reach it through `Robot`, whose reports carry these values; use it directly to write a
+driver of your own, or to branch on why a motion was refused.
 
-## What this package guarantees
+```python
+from src.robot.core import MotionResult, MotionStatus, RobotArm, SupportsForceTorque, Wrench
 
-No vendor SDK is ever imported here, and nothing above `core` is imported here either. It sits just
-above `geometry` in the downward stack: it consumes `Pose` and `Frame` from `geometry`, it uses
-`numpy` and `UNSET`/`Maybe` from the stdlib-only `src.contracts`, and it is otherwise a leaf.
-Drivers, safety and the grasping pipeline depend on these
-Protocols; the dependency never runs the other way.
 
-Everything defined here is a Protocol, a frozen value object or a `StrEnum`. There is no behaviour
-to configure and no `python -m` entry point.
+def why(result: MotionResult) -> str:
+    """A caller branches on the status, never on a log line."""
+    if result.ok:
+        return "executed"
+    if result.status is MotionStatus.SELF_COLLISION_REJECTED:
+        return "the guard saw a collision: take another approach"
+    return f"{result.status.value}: {result.message}"
 
-## Contents
 
-| File | Role |
+def tcp_wrench(arm: RobotArm) -> Wrench | None:
+    """The TCP wrench in newtons and newton-metres, where the driver offers one."""
+    return arm.get_tcp_wrench() if isinstance(arm, SupportsForceTorque) else None
+```
+
+`RobotArm` and `Gripper` are runtime-checkable, so `isinstance(my_arm, RobotArm)` checks a driver of
+your own. Nothing here imports a vendor SDK or anything above `core`; it reads `Pose` and `Frame`
+from `geometry`, and has no config and no command line.
+
+## The nouns
+
+| Noun | What it is |
 | --- | --- |
-| `robot_arm.py` | The `RobotArm` Protocol, the manipulator surface. |
-| `gripper.py` | The `Gripper` Protocol and the opt-in extensions `ObjectDetectingGripper`, `StoppableGripper`, `ReportsHoldEvidence` (a `HoldEvidence` of `HELD`, `EMPTY` or `UNMEASURED`) and `MeasuresWidth`, with `hold_evidence_of` and `width_is_measured_of` reading the last two on any gripper. |
-| `arm_capabilities.py` | Opt-in arm capability Protocols `SupportsDigitalIO`, `SupportsForceTorque`, `SupportsRobotStatus`, `KeepsLines` and `CarriesPayload`, with the value types `Wrench`, `RobotStatus`, `RobotMode`, `SafetyMode`, `DigitalIOPort`, `LineMotion`, `LineReading` and `PayloadModel`, and `line_motion_of`. |
-| `motion_result.py` | The typed outcome contract: `MotionStatus`, `MotionCommand`, `MotionResult`, and `NO_PLAN_FAIL_SAFE_MESSAGE`. |
-| `keep_out.py` | `KeepOutBox`, a box in BASE whose inside is no obstacle for one motion (`from_jaw`, `contains`, `render`, `to_dict`), and `SegmentationOffer`, what one perception frame hands a planner world: masks for the camera that took them, the target's BASE points, and the shutter time they age by. Masks without a named camera are refused. `keeping_out(arm, offer)` is the block that holds an offer in the arm's live planner world for every motion inside it and forgets it after, also when the body raises (`KeepOutScope.world_wired` is false on an arm with no world). The pick loop holds its target this way for each attempt. `GoalKeepOut` and `KeepOutSummary` carry a motion's goal region and what a refresh left out. |
-| `camera_world.py` | `CameraWorldStamp`, `CameraWorldUse` and `CameraWorldDecline`: whether a camera world stood behind a motion, carried on its `MotionResult`. Also how a driver declines, stamps and refuses: `without_camera_world`, `active_decline`, `resolve_camera_world`, `stamp_result`, `camera_world_refusal`, the `DeclinesCameraWorld` and `ReadsCameraWorld` capabilities, `DECLINE_ON_A_LIVE_WORLD_MESSAGE` and `NO_CAMERA_WORLD_MESSAGE`, and `weakest_camera_world`, the stamp a report of several motions reads. |
-| `joint_positions.py` | `JointPositions`, an immutable validated vector of joint angles in radians. |
-| `capabilities.py` | `RobotCapabilities`, the descriptor a driver advertises about itself. |
-| `vendor.py`, `gripper_vendor.py` | The `RobotVendor` and `GripperVendor` enums, used as config values and registry keys. |
-| `errors.py` | The `RobotError` hierarchy that drivers translate vendor faults into. |
+| `RobotArm` | connect, disconnect, stop; `get_tcp_pose()`, `get_joint_positions()`, `fk`, `ik`; `move_joint`, `move_linear` |
+| | the typed `move(pose, ...)` and `move_to_joints(...)`, each returning a `MotionResult` |
+| | the bool helpers `move_to`, `move_home`, `is_inside_workspace`, `wait_until_steady` |
+| `Gripper` | connect, disconnect, `activate`, `set_width_mm`, `get_width_mm`, `min_width_mm`, `max_width_mm` |
+| `MotionResult` | frozen: `status`, `command`, target, `message`, `camera_world`; `ok`, and `executed()`, `failed()`, `from_bool()` |
+| `MotionStatus`, `MotionCommand` | why a motion ended, and what was attempted (`MOVE_TO`, `MOVE_HOME`, `MOVE_JOINTS`, `OTHER`) |
+| `JointPositions` | an immutable, validated vector of joint angles in radians |
+| `RobotCapabilities` | what a driver says about itself: vendor, model, DoF, native FK and IK, simulated or not |
+| `RobotVendor`, `GripperVendor` | the vendor names used in config and the registries, with `from_string()` |
+| `CameraWorldStamp`, `CameraWorldDecline` | whether a world built from a current camera image stood behind a motion |
+| `KeepOutBox`, `SegmentationOffer` | a box in BASE that is no obstacle for one motion, and what a perception frame hands the planner |
+| `ShutterMotion` | how far the tool moved while a wrist camera's shutter was open |
 
-## The contract
+Opt-in capabilities are Protocols a driver implements only where the hardware offers them, and a
+caller checks with `isinstance` and falls back: `SupportsDigitalIO`, `SupportsForceTorque` (a
+`Wrench`), `SupportsRobotStatus` (a `RobotStatus`, and recovery from a protective stop), `KeepsLines`
+(what `move(pose, linear=True)` keeps of the line: `CHECKED`, `CONTROLLER_LINE`, `TELEPORT` or
+`NOT_KEPT`) and `CarriesPayload` on the arm; `ObjectDetectingGripper`, `StoppableGripper`,
+`ReportsHoldEvidence` (`HELD`, `EMPTY` or `UNMEASURED`) and `MeasuresWidth` on the hand. A gate
+written against a capability no attached driver implements does nothing, by design.
 
-`RobotArm` is runtime-checkable, so a candidate driver can be verified with `isinstance`. It carries
-`capabilities` and `is_connected`; `connect()`, `disconnect()` and `stop()`; `get_tcp_pose()` and
-`get_joint_positions()`; `move_joint` and `move_linear`; `fk` and `ik`; the bool helpers
-`is_inside_workspace`, `move_to`, `move_home` and `wait_until_steady`; and the typed
-`move(...) -> MotionResult` and `move_to_joints(...) -> MotionResult`, each taking a keyword-only
-`camera_world` decline that defaults to `UNSET`.
+## What a motion ends as
 
-`Gripper` carries `is_connected`, `min_width_mm`, `max_width_mm`, `connect`, `disconnect`,
-`activate`, `set_width_mm` and `get_width_mm`. `ObjectDetectingGripper` adds
-`is_object_detected() -> bool` for post-close verification. `ReportsHoldEvidence` adds
-`hold_evidence()`, what the gripper measured about a hold and never its command, and `MeasuresWidth`
-adds `width_is_measured()`, whether `get_width_mm` reads a sensor. `StoppableGripper` adds `stop()`,
-which halts the jaws where they are without commanding a width.
+| Group | `MotionStatus` members |
+| --- | --- |
+| Success | `EXECUTED`, the only success value |
+| Base outcomes | `WORKSPACE_REJECTED`, `IK_FAILED`, `CONTROLLER_REJECTED`, `TIMEOUT`, `CONNECTION_ERROR` |
+| | `UNSUPPORTED`, `INVALID_TARGET`, `CANCELLED`, `UNKNOWN` |
+| Guard categories, from `SafetyPreflight` | `JOINT_LIMIT_REJECTED`, `IK_QUALITY_REJECTED`, `SELF_COLLISION_REJECTED`, `PAYLOAD_REJECTED`, `CONTINUITY_REJECTED` |
 
-The arm capability Protocols are opt-in and absent-safe. A driver implements one only if the
-hardware offers it, and a caller checks with `isinstance` and falls back when it does not.
-`SupportsDigitalIO` reads and writes controller pins, `SupportsForceTorque` returns a `Wrench` in
-newtons and newton-metres, and `SupportsRobotStatus` reports a `RobotStatus` through
-`get_robot_status()` and clears an active protective stop through `recover_from_protective_stop()`.
-`KeepsLines` says before a move what `move(pose, linear=True)` keeps of the line (`CHECKED`,
-`CONTROLLER_LINE`, `TELEPORT` or `NOT_KEPT`, with the reason), and `CarriesPayload` models a part in
-the gripper and says why it models none.
-A gate written against a capability no attached driver implements
-is inert by construction, which is the intended behaviour rather than a silent failure.
+`TIMEOUT` covers two events. A planner refusal happens before any command reaches the controller,
+so nothing moved; it carries `NO_PLAN_FAIL_SAFE_MESSAGE` verbatim, and the UR and sim drivers emit
+that constant. An execution timeout means the command was accepted and did not finish, so the arm
+may still be moving. `MotionResult.from_bool` labels a bare `False` as `CONTROLLER_REJECTED`; a
+driver that knows the real cause passes `failure_status=`.
 
-`RobotVendor` holds `UR`, `KUKA`, `FRANKA`, `ROS2`, `SIM` and `DUMMY`. `GripperVendor` holds
-`ROBOTIQ`, `FRANKA_HAND`, `SCHUNK`, `VACUUM`, `JAW_IO`, `ONROBOT`, `DUMMY` and `NONE`. Both have a
-case-insensitive `from_string()` that raises on an unknown name. Both refusals name the vendors
-that can actually be built here and list the reserved slots separately, each out of its own
-hand-kept `_RESERVED_VENDORS` (arms: `franka`, `ros2`; grippers: `franka_hand`, `schunk`), because
-a config that copies a reserved name out of an error message still validates. What happens after
-that differs, and the two messages say so: a reserved gripper name comes up with a `NullGripper`
-and no end-effector, while a reserved arm name fails loudly at `create_arm` and `Host.require` and
-never substitutes.
+A motion's `camera_world` stamp is one of `UNSTATED` (nothing was said), `PLANNED` (the only one that
+vouches), `DECLINED` (a caller's decision), `UNPLANNED` (nothing planned or checked the motion) and
+`MISSING` (a planner would need a world and none was declined, so the motion is refused). Every
+driver stamps `move` and `move_to_joints`, read off the built arm:
 
-`MotionResult` is frozen: `(status, command, target_pose=None, target_joints=None, message="",
-exception=None, camera_world=UNSTATED)`, with an `ok` property, truthiness through `__bool__`, and
-the constructors `.executed()`, `.failed()` and `.from_bool()`, each taking `camera_world=`. The
-stamp in `camera_world.py` says whether a world built from a current camera image stood behind the
-motion. There are five uses: `UNSTATED` (nothing was said, the default), `PLANNED` (the only one
-that vouches), `DECLINED` (a caller's decision), `UNPLANNED` (no planner planned this motion or
-checked its path) and `MISSING` (a planner would plan or check it with no camera world, and nobody
-declined, so the motion is refused and the stamp rides on the refusal). The last three each carry a
-mandatory reason, and the stamp takes part in equality where `exception` does not. The `repr` shows
-the stamp only when it says something, so a result built without one prints what the generated repr
-prints.
-
-Every driver stamps `move` and `move_to_joints`, read off the built arm and never off config: the
-`console_dummy` profile keeps `ur.motion_planner: curobo` on a dummy arm, whose motions say
-`UNPLANNED`.
-
-| arm | `move` | `move_to_joints` |
-| --- | --- | --- |
-| UR, `ik` | `UNPLANNED` | `UNPLANNED` |
-| UR, `curobo` | `DECLINED` for a decline, else `MISSING` on an `UNSUPPORTED` refusal with no live world, else `PLANNED` when the refresh this motion made vouched, else `UNSTATED` | as `move`: nothing plans the joint move, and its path is checked against the refreshed world |
-| Isaac, `mock_mode` | `UNPLANNED` | `UNPLANNED` |
-| Isaac, `curobo` | as the UR, and a sidecar that cannot start refuses the move | as `move`: its path is checked against the refreshed world, and planned against it with `plan_joint_moves` |
-| Isaac, `rmpflow` | `UNPLANNED`, because a reactive policy consults no camera world | `UNPLANNED` |
-| KUKA, dummy | `UNPLANNED` | `UNPLANNED` |
+| Arm | Its motions say |
+| --- | --- |
+| UR on `ik`, KUKA, dummy, Isaac in `mock_mode`, Isaac on `rmpflow` | `UNPLANNED` |
+| UR on `curobo`, Isaac on `curobo` | `DECLINED`, else `MISSING` with no live world, else `PLANNED` when its refresh vouched, else `UNSTATED` |
 
 A decline is `camera_world=CameraWorldDecline(reason)` on the verb or a block,
 `with arm.without_camera_world(reason):`, and the keyword beats the block. The block is bound to one
-arm and held in a `ContextVar`, so it does not follow into a thread started inside it. A motion no
-planner plans or checks says `UNPLANNED` whatever was declined. A declined planned or checked motion
-on an arm whose live camera world is wired is refused before the planner is asked, as `UNSUPPORTED` with
-`DECLINE_ON_A_LIVE_WORLD_MESSAGE`. A planned or checked motion with neither a live world nor a decline
-is refused the same way, with `NO_CAMERA_WORLD_MESSAGE`, before the body of every verb,
-`move_joint`, `move_linear` and `move_home` included. `camera_world_refusal(stamp, live_world_wired=)`
-is that rule as one pure function, and `camera_world_required` on the UR and the non-mock Isaac cuRobo
-arms says an arm applies it. `resolve_camera_world` is the precedence as one pure function,
-and `stamp_result` replaces only a `MotionResult` whose stamp is `UNSTATED`. `DeclinesCameraWorld` is
-a capability rather than a `RobotArm` member, so a caller's own arm still satisfies the Protocol and
-its results keep saying `UNSTATED`.
+arm and does not follow into a thread started inside it.
 
-`JointPositions` validates a finite one-dimensional
-radians vector, exposes `.dof`, `.values`, `len`, iteration, indexing, `np.asarray()` support, exact
-equality and hashing, `.check_dof()`, `.tolist()` and `.from_list()`. `RobotCapabilities` is a frozen
-descriptor `(vendor, model="", dof=6, supports_joint_move=True, supports_linear_move=True,
-supports_async_move=False, has_native_fk=False, has_native_ik=False, has_force_control=False,
-is_simulated=False)` that validates a lowercase, whitespace-free vendor and a positive DoF.
+## What it refuses
 
-`RobotError` is the base. `RobotConnectionError`, `RobotKinematicsError`, `RobotMotionRejected` (with
-`RobotSingularityRisk` under it) and `RobotEmergencyStop` are its subclasses.
-`IsaacNotAvailableError` also subclasses `RuntimeError`, so an existing `except RuntimeError` guard
-keeps catching it.
+| Refusal | When | What to do |
+| --- | --- | --- |
+| `UNSUPPORTED`, `NO_CAMERA_WORLD_MESSAGE` | a planned or checked motion with neither a live camera world nor a decline | hand the robot its cameras, or decline with a reason |
+| `UNSUPPORTED`, `DECLINE_ON_A_LIVE_WORLD_MESSAGE` | a declined planned motion on an arm whose live world is wired | drop the decline; the world is there |
+| `ValueError` from `from_string()` | an unknown vendor name | use a name the message lists as buildable |
+| `RobotConnectionError`, `RobotEmergencyStop` | the link or the controller stopped the arm | recover the controller, then connect again |
+| `CameraWorldUnavailable`, `PerceptionFrameMoved` | a camera could not vouch for the cell, or the tool moved during a wrist frame | faults of the cell: a campaign stops on them |
 
-## MotionStatus, and why it is not a string
+Every error here subclasses `RobotError`, and so do `RobotKinematicsError` and `RobotMotionRejected`
+(with `RobotSingularityRisk` under it); `IsaacNotAvailableError` also subclasses `RuntimeError`. Asked for a
+reserved name (`franka`, `ros2`, `franka_hand`, `schunk`), the refusals list those separately: a
+reserved hand comes up as a `NullGripper` that a real cell refuses at the connect, and a reserved arm
+fails at `create_arm`.
 
-Fifteen members. Drivers surface them verbatim, so a caller branches on a value instead of scraping
-a log line.
+## Status
 
-| Group | Members |
+This package holds contracts and no behaviour of its own. `ur` and `sim` are the exercised backends;
+the drivers' evidence is in [drivers](../drivers/README.md) and [grippers](../grippers/README.md).
+`has_force_control` and `supports_async_move` are flags with no method behind them: every `move*`
+blocks, and there is no force, streaming or multi-arm contract here. The frame rules (`move_linear`
+and `ik` take `Frame.BASE`) are stated here and enforced by each driver.
+
+## Files
+
+| File | Holds |
 | --- | --- |
-| Success | `EXECUTED`, the only success value |
-| Base outcomes | `WORKSPACE_REJECTED`, `IK_FAILED`, `CONTROLLER_REJECTED`, `TIMEOUT`, `CONNECTION_ERROR`, `UNSUPPORTED`, `INVALID_TARGET`, `CANCELLED`, `UNKNOWN` |
-| Guard categories, produced by `SafetyPreflight` | `JOINT_LIMIT_REJECTED`, `IK_QUALITY_REJECTED`, `SELF_COLLISION_REJECTED`, `PAYLOAD_REJECTED`, `CONTINUITY_REJECTED` |
+| `robot_arm.py` | `RobotArm` |
+| `gripper.py` | `Gripper`, its opt-in extensions, `HoldEvidence`, `hold_evidence_of`, `width_is_measured_of` |
+| `arm_capabilities.py` | the arm capability Protocols and their values: `Wrench`, `RobotStatus`, `LineReading`, `PayloadModel` |
+| `motion_result.py` | `MotionStatus`, `MotionCommand`, `MotionResult`, `NO_PLAN_FAIL_SAFE_MESSAGE` |
+| `camera_world.py` | the camera world stamp and decline, and how a driver declines, stamps and refuses |
+| `keep_out.py` | `KeepOutBox`, `SegmentationOffer`, `keeping_out(arm, offer)` |
+| `shutter_motion.py` | `ShutterMotion` |
+| `joint_positions.py`, `capabilities.py` | `JointPositions`, `RobotCapabilities` |
+| `vendor.py`, `gripper_vendor.py` | `RobotVendor`, `GripperVendor` |
+| `errors.py` | the `RobotError` hierarchy |
 
-`MotionCommand` names what was attempted: `MOVE_TO`, `MOVE_HOME`, `MOVE_JOINTS`, `OTHER`.
+## Details
 
-`TIMEOUT` covers two events that must not be confused. A planner refusal happens before any command
-reaches the controller: nothing moved and the cell is where it was. A genuine execution timeout means
-the command was accepted and did not finish in its budget, so the arm may still be moving. The status
-alone cannot separate them, so the planner refusal carries `NO_PLAN_FAIL_SAFE_MESSAGE` verbatim, and
-both the sim driver and the UR driver emit that exact constant.
-
-## Usage
-
-```python
-from src.robot.core import (
-    JointPositions,
-    MotionCommand,
-    MotionResult,
-    RobotVendor,
-    SupportsForceTorque,
-)
-
-q = JointPositions.from_list([0.0, -1.57, 1.57, 0.0, 1.57, 0.0])
-assert q.dof == 6
-
-res = MotionResult.executed(MotionCommand.MOVE_TO)
-assert res.ok and bool(res) is True
-
-assert RobotVendor.from_string("UR") is RobotVendor.UR
-
-def read_force(arm):
-    """Return the TCP wrench in newtons and newton-metres, or None where unsupported."""
-    if isinstance(arm, SupportsForceTorque):
-        return arm.get_tcp_wrench()
-    return None
-```
-
-## Traps
-
-`MotionResult.from_bool` assigns `CONTROLLER_REJECTED` when `ok` is `False` and no
-`failure_status=` is given. That is the right default for a driver that returns a bare bool, but a
-caller that has already proved a workspace or IK rejection must pass the specific status, or the
-record will attribute the failure to the controller.
-
-Two motion surfaces coexist on purpose. The bool helpers (`move_to`, `move_home`,
-`is_inside_workspace`, `wait_until_steady`) and the typed `move()` both live on `RobotArm`. The typed
-surface is what runtime and calibration code should use; the bool helpers stay while callers migrate.
-Neither is dead code.
-
-Two capability flags have no method behind them. `has_force_control` is advertised but `RobotArm`
-declares no force or admittance call, and `supports_async_move` is advertised while every `move*` is
-blocking. There is no asynchronous, streaming or multi-arm contract here.
-
-The frame and error coupling is contract-only. `move_linear`, `ik`, `move_to` and
-`is_inside_workspace` are specified to take `Frame.BASE`, and `move_linear` and `ik` to raise
-`FrameMismatchError` otherwise, but the enforcement lives in each driver. `core` states the
-obligation and checks nothing.
-
-The enums name more than the repository implements. `ur` and `sim` are the exercised backends,
-`kuka` has never driven a physical controller, and `franka` and `ros2` are package slots with no
-driver. `GripperVendor.FRANKA_HAND` and `GripperVendor.SCHUNK` have no real-hardware driver either.
-None of that is decided here; `core` only supplies the names.
-
-## Units and frames
-
-Poses are millimetres with canonical XYZW quaternions and carry their frame. Joints are radians.
-Wrenches are newtons and newton-metres. `get_tcp_pose()` and `fk()` return `Frame.BASE`. `Pose` and
-`Frame` are defined in `geometry`; `core` only consumes and tags them.
-
-## See also
-
-- [`../safety/`](../safety/README.md) for the pipeline that produces the five guard rejection statuses
-- [`../grippers/`](../grippers/README.md) for the `Gripper` and `ObjectDetectingGripper` implementations
-- [`../drivers/`](../drivers/README.md) for which driver implements which optional capability
-- [`../execution/`](../execution/README.md) for the services that drive `RobotArm` through the typed `move`
+- Units: poses in millimetres with XYZW quaternions and their frame; joints in radians; wrenches in
+  newtons and newton-metres. `get_tcp_pose()` and `fk()` return `Frame.BASE`.
+- The guards behind the guard statuses: [safety](../safety/README.md), and their formulas in
+  [docs/safety-math.md](../../../docs/safety-math.md)
+- Who drives this contract: [execution](../execution/README.md)
+- Tests: `tests/test_motion_result.py`, `tests/test_core_value_objects.py`, `tests/test_camera_world_stamp.py`, `tests/test_robot_arm_protocol_conformance.py`

@@ -1,100 +1,116 @@
-# The learned success predictor
+# The learned success predictor (`src/robot/grasping/scoring/success_probability`)
 
-A runtime-pure estimate of the probability that a scored grasp succeeds, over a locked 23-feature
-vector, with two rerankers on top. Numpy only at runtime: no scikit-learn and no joblib.
+Estimates the probability that a scored grasp succeeds, from a locked vector of 23 features, and holds
+the two rerankers that may reorder candidates with it. Numpy only at run time, with no scikit-learn and
+no joblib. A cell reaches it through `robot.grasping.success_model`, which ships `enabled: false`; call
+it directly to score candidates offline.
 
-This package is not re-exported by `scoring/__init__`. Import it by its own path. That is deliberate:
-a learned probability arriving through the same door as the deterministic scorers would look like one
-of them.
+```python
+from src.robot.grasping.scoring.success_probability import (
+    extract_features, load_success_probability_model, predict_proba,
+)
 
-## Six leaves behind one facade
-
-`__init__.py` re-exports the leaves, so the import path is a single name.
-
-| Leaf | Owns |
-|---|---|
-| [`_schema.py`](_schema.py) | The frozen constants (`FEATURE_SCHEMA_VERSION`, the three family artifact versions, `FEATURE_NAMES`, `MODE_BUCKETS`) and `ArtifactSchemaError` |
-| [`_features.py`](_features.py) | `extract_features` and `extract_features_from_grasp_point`, the only place the 23-vector is built |
-| [`_model.py`](_model.py) | `SuccessProbabilityModel`, `predict_proba`, the tree-ensemble reader and the artifact loaders |
-| [`_shadow.py`](_shadow.py) | The shadow-mode runtime adapter, `try_load_shadow_success_context`, and the metadata keys |
-| [`_blend.py`](_blend.py) | `maybe_blend_rerank_candidates`, the bounded convex blend |
-| [`_rerank.py`](_rerank.py) | `maybe_uncertainty_rerank_candidates`, the conservative last word on ordering |
-
-## Three families, one schema, one predictor
-
-```
-x -> impute a missing feature with its training mean -> standardise
-  -> family -> isotonic calibration -> probability
+model = load_success_probability_model("assets/models/success_probability/v1")
+features = extract_features(breakdown, mode="dense_clutter")   # breakdown: a GraspScoreBreakdown
+print(predict_proba(model, features[None, :]))                 # a probability in [0, 1]
 ```
 
-| Family | Artifact version | Runtime path | Intended for |
-|---|:--:|---|---|
-| `logistic_regression` | 1 | A linear model through a sigmoid | The synthetic bootstrap that ships |
-| `gradient_boosted_trees` | 2 | A serialized ensemble evaluated by a vectorised numpy traversal, then a sigmoid | A real, nonlinear grasp-outcome corpus |
-| `mlp` | 3 | Standardised inputs, a ReLU network, one raw logit | The most expressive family, if it wins the gate |
+`breakdown` comes from `rank_grasp_poses` ([scoring/](../README.md)). The model under
+`assets/models/success_probability/v1` is a synthetic bootstrap: it exercises the training and export
+path and is not trained on real grasp outcomes. Train on your own cell's records before letting it
+influence an order. A record carries the feature vector only when the predictor scored its grasp, so
+collect with `robot.grasping.success_model.enabled: true` in the default `shadow` phase, which changes
+no order; a log without the vectors is refused with a `ValueError`.
 
-Every family finishes with the same isotonic calibration, and a caller never sees which one it holds.
+```bash
+python -m src.robot.grasping.calibration.success_model_calibration train \
+    --records logs/<your-cell>/grasp_records.jsonl --model-family gradient_boosted_trees \
+    --artifact-dir assets/models/success_probability/my_cell
+```
+
+Without `--artifact-dir` the command writes over the shipped `v1`. Name your directory in
+`robot.grasping.success_model.artifact_dir` as an absolute path: the pick service reads a relative one
+from the working directory.
+
+## Three families, one predictor
+
+```
+features -> a missing feature becomes its training mean -> standardise
+         -> the family's model -> isotonic calibration -> probability
+```
+
+| Family | Artifact version | Model | For |
+| --- | :--: | --- | --- |
+| `logistic_regression` | 1 | linear, through a sigmoid | the synthetic bootstrap that ships |
+| `gradient_boosted_trees` | 2 | a serialized tree ensemble, then a sigmoid | a real, nonlinear grasp-outcome corpus |
+| `mlp` | 3 | standardised inputs, a ReLU network, one logit | the most expressive, if it wins the gate |
+
+Every family ends in the same isotonic calibration, and a caller never sees which one it holds.
 Calibration comes last because a raw model output is a ranking, not a probability, and every fence
-downstream (the blend weight, the promotion thresholds) is stated in probability units.
+below is stated in probability units. The feature vector is locked: `FEATURE_NAMES` in a fixed order
+at `FEATURE_SCHEMA_VERSION` 1, and a change means a new schema version and a new model directory.
 
-The bootstrap stays logistic. On a small, logistic-structured synthetic dataset the more expressive
-families overfit, so they are trained explicitly, on real data. Family selection is a fail-closed
-gate in [`../../calibration/model_families.py`](../../calibration/model_families.py) and not a
-preference: a challenger is promoted either on a Brier improvement of at least 0.005 with no AUROC
-regression, or on an AUROC improvement of at least 0.02 with no meaningful Brier regression (0.002)
-or ECE regression (0.005). Among admissible challengers the best ranker wins. An AUROC that cannot be
-graded, because a class is missing from the evaluation split, keeps the incumbent.
+A challenger replaces the incumbent only through the gate in
+[calibration/model_families.py](../../calibration/model_families.py): a Brier improvement of at least
+0.005 with no AUROC regression, or an AUROC improvement of at least 0.02 with no Brier regression above
+0.002 and no ECE regression above 0.005. Among admissible challengers the best ranker wins, and an AUROC
+that cannot be graded, because a class is missing from the evaluation split, keeps the incumbent.
 
-## Two rerankers, and every fence on them
+## The two rerankers
 
-Both are off by default, both are fail-safe, and neither touches `GraspPoint.score` or the input
-order except through its own returned tuple.
+Both are off by default and fail safe, and neither changes `GraspPoint.score` or the input order except
+through the tuple it returns.
 
-The ranking blend is a bounded convex blend of the geometric score with the learned probability.
+| Fence on the ranking blend | Effect |
+| --- | --- |
+| `ranking_blend_weight` must lie in `[0.0, 0.5]`; a value outside is refused at load | geometry keeps at least half the influence |
+| `ranking_blend_modes` is limited to the dense modes | it cannot fire in `easy` or `auto` |
+| `lifecycle_phase: shadow`, the default, is a hard no-op | shadow observes and never reorders |
+| a candidate without a shadow probability stops the blend | a partial reorder is worse than none |
 
-| Fence | Effect |
-|---|---|
-| The convex weight is clamped to `[0.0, 0.5]` | Geometry always keeps at least half the influence |
-| Locked to the dense modes | It cannot fire in `easy` |
-| A hard no-op in the shadow lifecycle phase | Shadow means observe, and that is enforced rather than requested |
-| It refuses to rerank if any candidate is missing a shadow probability | A partial reorder is worse than none |
+The blend is convex: `(1 - w) * geometric + w * probability`. The uncertainty rerank subtracts weight
+times the per-candidate uncertainty, under the same fences, after the blend and before the RL ranking
+shadow, so that shadow sees the order that ran. It reads the corridor risk the calculator stamps on each
+candidate; with that producer off it does nothing rather than reorder on an invented value. Its weight
+defaults to 0.0 and runtime adaptation cannot change it, so only a person turns it on.
 
-The uncertainty rerank is subtractive, score minus weight times the per-candidate uncertainty, under
-the same fences. It runs after the blend and before the reinforcement-learning ranking shadow, so the
-shadow observes the order that was actually executed.
+## What it refuses
 
-It is honest only because it consumes a real per-candidate signal, the corridor risk the
-`GraspCalculator` stamps, and not a relabelling of the geometric score. With that producer off it
-hard no-ops rather than reordering on a fabricated value. Its weight is also not mutable by runtime
-adaptation: enabling the block stays observe-only until a person sets the weight.
+| Refusal | When | What to do |
+| --- | --- | --- |
+| `ArtifactSchemaError` from `load_success_probability_model` | a missing file, a schema or version mismatch | retrain with this feature schema |
+| `None` from `try_load_shadow_success_context`, with a warning | the same, on the pick path | a pick never fails on a changed file; fix the artifact |
+| the canary or active phase loads nothing | `promotion.json` fails `verify_promotion` | promote the artifact through the calibration gate |
 
-## No artifact is stored here
+`verify_promotion` checks the recorded verdict, that the metrics agree with their bounds, the locked
+validation slice, thresholds no weaker than the locked ones, and the SHA-256 chain over the artifact
+bytes. It stops an accident, a stray flag or a hurried operator; it is not proof against a forgery,
+because whoever writes the file writes the fields it compares.
 
-`model.json` and `manifest.json` are produced by [`../../calibration/README.md`](../../calibration/README.md)
-and [`../../rl/README.md`](../../rl/README.md), and live under
-`assets/models/success_probability/<version>/`. What the repository ships is a synthetic bootstrap of
-the logistic family: it exercises the training and export path and is not trained on real grasp
-outcomes. Train on your own cell's records before letting any of this influence an order.
+## Status
 
-| Loader | On a schema mismatch |
-|---|---|
-| `load_success_probability_model` | Raises `ArtifactSchemaError` |
-| `try_load_shadow_success_context` | Fails closed to `ctx=None`, with a logged warning and never an exception into the runtime path |
+| Capability | Evidence |
+| --- | --- |
+| The predictor and the rerankers on a physical cell | never touched hardware |
 
-The two exist separately on purpose. An offline tool wants the loud failure; a live pick must not
-crash because a file on disk changed shape.
+No model trained on real grasp outcomes ships; the bootstrap proves the pipeline, not a prediction.
 
-The predictor's only reach across tiers is a lazy call to `calibration.model_promotion.verify_promotion`
-on the canary and active paths. That call checks the recorded verdict, that the recorded metrics agree
-with the recorded bounds, that the validation slice is the locked one, that the recorded thresholds
-are not weaker than the locked thresholds, and that the artifact bytes still match the SHA-256 chain.
-It closes the accident, a stray flag or a hurried operator, and it is not proof against a forgery: the
-fields it compares are written by whoever wrote the file.
+## Files
 
-## See also
+| Leaf | Holds |
+| --- | --- |
+| [_schema.py](_schema.py) | `FEATURE_SCHEMA_VERSION`, the artifact versions, `FEATURE_NAMES`, `MODE_BUCKETS`, `ArtifactSchemaError` |
+| [_features.py](_features.py) | `extract_features`, `extract_features_from_grasp_point`: the only place the vector is built |
+| [_model.py](_model.py) | `SuccessProbabilityModel`, `predict_proba`, the tree reader and the loaders |
+| [_shadow.py](_shadow.py) | the shadow adapter, `try_load_shadow_success_context`, the metadata keys |
+| [_blend.py](_blend.py), [_rerank.py](_rerank.py) | `maybe_blend_rerank_candidates`; `maybe_uncertainty_rerank_candidates` |
 
-- [`../README.md`](../README.md) for the four deterministic axes this sits above
-- [`../../calibration/README.md`](../../calibration/README.md) trains, gates and promotes the artifacts
-- [`../../rl/README.md`](../../rl/README.md) is the offline layer this is the runtime cousin of
-- [`../../../../../docs/grasping-math.md`](../../../../../docs/grasping-math.md) for the feature
-  definitions and the within-group differencing property
+`__init__.py` re-exports the leaves, so one import path reaches them all.
+
+## Details
+
+- [scoring/](../README.md): the deterministic axes this sits above
+- [calibration/](../../calibration/README.md): trains, gates and promotes the artifacts
+- [rl/](../../rl/README.md): the offline ranking layer beside it
+- [docs/grasping-math.md](../../../../../docs/grasping-math.md): the feature definitions and the
+  within-group differencing property

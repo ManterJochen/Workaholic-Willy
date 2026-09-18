@@ -1,64 +1,55 @@
-# KUKA EthernetKRL (EKI) controller-side templates
+# KUKA controller templates (`config/robot/templates/kuka`)
 
-This folder contains the KRL + XML side of the Willy <-> KUKA bridge.
-The matching Python driver lives at `src/robot/drivers/kuka/`.
+The controller half of the KUKA driver: a KRL program and an EthernetKRL channel definition you copy
+onto a KRC4 or KRC5, so the Python driver in [src/robot/drivers/kuka](../../../../src/robot/drivers/kuka/README.md)
+has something to talk to. These files have never run on a controller; an integrator validates them
+before anything moves.
 
 | File | Where it goes on the controller | What it does |
 |---|---|---|
-| `EkiHwInterface.xml` | `KRC:\R1\TP\EthernetKRL\Willy\EkiHwInterface.xml` | Defines the EKI channel `Willy`, sets the TCP endpoint of the Python application, and routes inbound `<Cmd>` tags to flag bits. |
-| `Willy.dat` | `KRC:\R1\Program\Willy.dat` | Persistent defaults (home pose, tool/base index, default vel/acc). Edit-in-place to retune without recompiling. |
-| `Willy.src` | `KRC:\R1\Program\Willy.src` | KRL program implementing the wire protocol: dispatch loop, motion commands, FK/IK round-trips, telemetry publisher. |
+| [`EkiHwInterface.xml`](EkiHwInterface.xml) | `KRC:\R1\TP\EthernetKRL\Willy\EkiHwInterface.xml` | defines the EKI channel `Willy`, the TCP endpoint of the Python side, and the inbound tags |
+| [`Willy.dat`](Willy.dat) | `KRC:\R1\Program\Willy.dat` | defaults: home pose, base and tool index, velocity and acceleration; edit in place |
+| [`Willy.src`](Willy.src) | `KRC:\R1\Program\Willy.src` | the program: dispatch loop, motion commands, FK and IK round trips, telemetry |
 
-## Wire protocol (mirror of `protocol.py`)
+## Before you load them
 
-* Frames are newline-terminated XML.
-* Willy -> KRL frames use `<Cmd Type="Willy">` as the root tag.
-* KRL -> Willy frames use `<Sen Type="Willy">` as the root tag.
-* Each frame **must** be followed by exactly one `\n` byte. The
-  `EKI_Send` calls in `Willy.src` already append `Chr(10)`.
+- The controller needs the EthernetKRL option. The FK and IK round trips use `$POS_FOR()` and
+  `INVERSE()` from the base system software.
+- `Willy.dat` sets the base and tool the program uses, `WILLY_BASE_NO` and `WILLY_TOOL_NO` (both 1).
+  Calibrate the matching `BASE_DATA[]` and `TOOL_DATA[]` entries first.
+- Replace `${WILLY_HOST}` and `${WILLY_PORT}` in `EkiHwInterface.xml` with the address of the machine
+  running Willy and the port it listens on, `robot.kuka.eki.port` (7000 by default).
 
-The complete tag list and their attributes is documented at the top of
-[`src/robot/drivers/kuka/protocol.py`](../../../../src/robot/drivers/kuka/protocol.py)
-and in the header of [`Willy.src`](Willy.src).
+## Which side dials
 
-## Connection direction
+By default Willy listens and the KRL program dials in: `robot.kuka.eki.role: "server"` on the Python
+side, `<TYPE>Client</TYPE>` in `EkiHwInterface.xml`. If your safety case needs the controller to
+listen instead, set `robot.kuka.eki.role: "client"`, put the controller's address in
+`robot.kuka.controller_ip`, and change the XML to `<TYPE>Server</TYPE>`.
 
-Willy's default Python configuration (`KukaEkiConfig.role = "server"`)
-expects the **KRL program** to dial in. That matches the
-`<EXTERNAL><TYPE>Client</TYPE>` block of `EkiHwInterface.xml`. Set
-`WILLY_HOST` / `WILLY_PORT` on the controller to the IP / port of
-the machine running Willy.
+## The wire
 
-If your safety case requires the controller to listen instead, flip
-`role` in `robot.yaml` to `"client"`, set the controller's IP under
-`robot.connection.ip`, and switch the EKI XML to
-`<TYPE>Server</TYPE>`.
+Every frame is XML followed by exactly one newline byte; the `EKI_Send` calls in `Willy.src` append
+`Chr(10)`. Frames to the controller have the root `<Cmd Type="Willy">`, frames from it
+`<Sen Type="Willy">`. The tags and their attributes are listed at the top of
+[`protocol.py`](../../../../src/robot/drivers/kuka/protocol.py) and in the header of
+[`Willy.src`](Willy.src), and summarised in the [driver README](../../../../src/robot/drivers/kuka/README.md).
 
-## Required controller options
+## The first check
 
-* **EthernetKRL** option installed on the controller.
-* For FK / IK round-trips: `$POS_FOR()` and `INVERSE()` are part of
-  base KSS, no extra option is required.
-* Default base / tool indices used by `Willy.src` are configured via
-  `WILLY_BASE_NO` / `WILLY_TOOL_NO` in `Willy.dat`. Make sure the
-  matching `BASE_DATA[]` / `TOOL_DATA[]` entries are calibrated.
-
-## Quick sanity test
-
-After loading the files and starting `Willy()`, point the Python side
-at the same TCP endpoint and run:
+With the files loaded and `Willy()` running, load your cell's profile on the Python side and read the
+pose back. Nothing moves:
 
 ```python
-from src.config.schema.robot import RobotConfig
-from src.robot.drivers import create_arm
-from src.robot.core import RobotVendor
+from willy import Robot, load_tree
 
-cfg = RobotConfig(vendor="kuka")  # or load_robot_config() from a profile
-arm = create_arm(RobotVendor.KUKA, config=cfg)
-arm.connect()
-print(arm.get_tcp_pose())
-arm.disconnect()
+robot = Robot.from_tree(load_tree(), gripper=None)   # your KUKA cell's profile
+with robot.connected():
+    print(robot.arm.get_tcp_pose())
 ```
 
-If `get_tcp_pose()` returns a `Pose` in `Frame.BASE` the protocol is
-wired up correctly.
+A `Pose` in the base frame means the channel is wired. A `JointLimitTableMissing` on the first line
+means the profile does not set `robot.safety.joint_limits.min_deg` and `max_deg` yet; no KUKA model
+carries a built-in table. [kuka_eki.yaml](../kuka_eki.yaml) next to this folder is a starting point for
+the profile: it sets no joint limits, and the schema refuses its `controller` and `transport` lines, so
+leave those two out.

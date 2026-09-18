@@ -1,203 +1,164 @@
-# Grasp pipeline (`src.robot.grasping`)
+# The grasp stack (`src/robot/grasping`)
 
-Everything between a segmentation mask plus a depth map and a logged grasp attempt: candidate
-generation, scoring, the decision gate, approach planning, the motion choreography, the closed loop,
-recovery, and the telemetry record.
+Turns an object's points into ranked 6-DoF grasps, and holds the rest of a pick attempt around them:
+the decision gate, the approach, a second look, recovery and the record each attempt leaves. It moves
+nothing by itself: the UR, KUKA and Isaac arm drivers gate every commanded move through their own
+safety preflight, and nothing here can relax a guard.
 
-The package depends on `src.geometry` and on the `RobotArm` / `Gripper` Protocols in
-[`robot/core`](../core/README.md). It imports no vendor SDK and no web framework. Its consumers are
-[`robot/execution`](../execution/README.md) (the composition root and the operator service), the
-offline [`replay/`](replay/README.md) and [`rl/`](rl/README.md) tails, and the simulation runners in
-`src/willy_sim`.
+```python
+from willy import Scene, load_tree
 
-## What the default pick actually does
-
-With a stock `robot.yaml` the attempt is open loop:
-
-```
-perceive -> generate and rank candidates (deterministic geometric score)
-         -> safety preflight and IK -> approach, close, retreat -> log
+tree = load_tree()                      # the cell WILLY_PROFILE names
+# cloud_base_mm: the object's points, an (N, 3) array in the robot's base frame, millimetres
+grasps = Scene.from_robot_config(tree.robot, cloud_base_mm).grasps()
+print(grasps)                           # best first, and which generator made them
+best = grasps.best                      # None when no grasp is legal
+if best is not None:
+    print(robot.pick(best.pose(), best.grip_width_mm))   # robot: a connected Robot
 ```
 
-That is the whole of it. Thirteen blocks under `robot.grasping` carry their own `enabled` switch and
-every one of them ships `false`: `closed_loop`, `verification`, `dense_recovery`, `decision`,
-`feasibility`, `ordering`, `recovery`, `uncertainty`, `success_model`, `performance`, `fusion`,
-`approach_validation`, `deep_ranker`. So the decision gate, pre-grasp refinement, post-grasp
-verification, scene recovery, multi-view fusion and the learned success model are present in this
-directory and not on the path a fresh cell takes. The simulation runners switch several of them on
-per command-line flag in runner code rather than in config, which is why a sim run and a
-config-driven cell can behave differently.
-
-Motion never bypasses the safety layer, and the reason is structural rather than a convention this
-package keeps: `SafetyPreflight` is constructed inside the vendor arm driver, so every commanded
-move is gated there whatever proposed it. Nothing in this package can relax a guard, and no scorer
-here may reject: a scorer that could veto would put a heuristic above the safety layer.
-
-## The tiers
-
-Shared foundations, bottom first. None of them imports a tier above it.
-
-| Tier | Role |
-| --- | --- |
-| [`types/`](types/README.md) | `GraspPoint`, `GraspResult`, `GraspFailureReason`, sampling modes, the perception Protocols. Imports no other grasping tier. |
-| [`geometry/`](geometry/README.md) | Masked point cloud, surface normals, projection, `CameraIntrinsics`. |
-| [`contacts/`](contacts/README.md) | Antipodal contact-pair extraction from mask plus depth. |
-| [`collision/`](collision/README.md) | Gripper against cloud and table queries, parallel-jaw and suction envelopes. |
-
-The pick path itself.
-
-| Tier | Role |
-| --- | --- |
-| [`generation/`](generation/README.md) | `GraspCalculator`: mask plus depth to ranked `GraspPoint` candidates. |
-| [`scoring/`](scoring/README.md) | The four deterministic axis scorers plus `rank_grasp_poses`, the force-closure certificate, and the learned success predictor. |
-| `decision.py` | The `DecisionEngine`, a pure fail-closed gate returning `GRASP_NOW`, `MOVE_CAMERA`, `RECOVER` or `FAIL_CLOSED`. Off by default. |
-| [`planning/`](planning/README.md) | 6-DoF approach planner (`GraspPose`), the IK service seam, multi-finger planners. |
-| [`motion/`](motion/README.md) | `GraspExecutionPolicy` (approach, close, retreat), swept-path validation, and `frame_resolver`, which supplies the CAMERA to BASE transform and fails closed on an unresolved camera-frame grasp. |
-| [`closed_loop/`](closed_loop/README.md) | Two-scan pose refinement, post-grasp verification, next-best-view. Off by default. |
-| [`recovery/`](recovery/README.md) | Failure reasons to bounded recovery actions under anti-loop and budget limits. Off by default. |
-| [`telemetry/`](telemetry/README.md) | The frozen `GraspAttemptRecord` and the per-stage latency clock. |
-| [`loop/`](loop/README.md) | `BinPickingOrchestrator`, which wires the tiers into one attempt and selects the target. |
-
-Second modalities and analysis.
-
-| Tier | Role |
-| --- | --- |
-| [`multiview/`](multiview/README.md) | Fuse, localize and synthesize grasps across camera views, and the per-object multi-camera geometry fusion. |
-| [`suction/`](suction/README.md) | The suction end effector: seal and wrench scoring, approach. |
-| [`deep/`](deep/README.md) | The learned 6-DoF generator, selected by `robot.grasping.calculator: deep`. No trained weights ship in this repository. |
-| `uncertainty.py` | Seven-channel uncertainty fusion. |
-| [`visualization/`](visualization/README.md) | Grasp debug images and scene rendering. |
-
-Offline tail, downward only. [`calibration/`](calibration/README.md), [`replay/`](replay/README.md)
-and [`rl/`](rl/README.md) read what the pick path logged and are never imported by it at module top
-level.
-
-Two files sit at the package root and matter to a caller. `calculator_factory.build_calculator` is
-the only reader of `robot.grasping.calculator`; it returns the analytic or the learned generator and
-raises rather than falling back, so a cell that asked for the learned one can never quietly run the
-other under its name. `scene.Scene` is the smallest useful entry point: a segmented BASE-frame cloud
-and a support height in, ranked candidates out, with no robot and no cell.
+`best.pose()` is what `Robot.pick` takes: base frame, +Z the approach, +X the closing axis. The jaw and
+the support height come from the tree. `Scene.from_cloud(cloud_base_mm, support_height_mm=0.0)` needs no
+tree and plans for the library's default jaw. Run it at a desk with
+[grasps_for_a_cloud.py](../../../examples/offline/grasping/grasps_for_a_cloud.py); a camera supplies the
+cloud in [09_locate_and_pick.py](../../../examples/real_robot/09_locate_and_pick.py).
 
 ## Usage
 
-```python
-import numpy as np
-from src.robot.grasping import GraspCalculator
+| You have | Call | Shown in |
+| --- | --- | --- |
+| an object's cloud in the base frame | `Scene.from_robot_config(tree.robot, cloud).grasps()` | [grasps_for_a_cloud.py](../../../examples/offline/grasping/grasps_for_a_cloud.py) |
+| a mask, a depth image, a camera matrix | `build_calculator(tree.robot, data_dir=tree.root, camera_matrix=K)` | [generation/](generation/README.md) |
+| a cell and a prompt | `PickRun.from_cell(Cell.from_tree(tree, prompt=...), ...)` | [10_pick_campaign.py](../../../examples/real_robot/10_pick_campaign.py) |
 
-calc = GraspCalculator(min_grip_width_mm=5.0, max_grip_width_mm=85.0, camera_matrix=K)
-cam_pts = calc.compute(seg, depth, unit="mm")                     # CAMERA frame
-base_pts = calc.compute(seg, depth, camera_to_base=T, unit="mm")  # BASE frame
-result = calc.compute_result(seg, depth)                          # adds reasons and telemetry
-best = base_pts[0]  # sorted by score, descending
-```
-
-Ranked grasps without a camera or a calibration, straight from a cloud:
+A whole pick, from the camera to the record of the attempt:
 
 ```python
-from src.robot.grasping import Scene
+from willy import Cell, PickRun, Recording, load_tree
 
-scene = Scene.from_cloud(points_base_mm, support_height_mm=0.0)
-grasps = scene.grasps()
-print(grasps.generator, grasps.render())
+cell = Cell.from_tree(load_tree(), prompt="a red cube")
+report = PickRun.from_cell(cell, runs=1, recording=Recording.to_file("picks.jsonl")).execute()
+print(report)
 ```
 
-From a BASE cloud to a pick, with no calculator and no cell: a candidate's `pose()` is the pose
-`Robot.pick` takes, +Z the approach and +X the closing axis, in BASE.
+> [!WARNING]
+> `execute()` connects the cell and moves the arm. Rehearse it on a dummy arm first
+> ([01_rehearse_a_pick.py](../../../examples/simulation/01_rehearse_a_pick.py)), and at a real cell
+> follow [docs/runbooks/real_cell_first_pick.md](../../../docs/runbooks/real_cell_first_pick.md).
 
-```python
-from src.robot.grasping import Scene
+`robot.grasping.calculator` chooses the generator: `geometric`, the default, or `deep`, the learned one
+in [deep/](deep/README.md). Every cell builds through `build_calculator`, the only reader of that key,
+and `preflight_calculator` checks the choice without building anything
+([select_grasp_generator.py](../../../examples/offline/grasping/select_grasp_generator.py)). `Scene`
+always runs the analytic generator and names it in `SceneGrasps.generator`.
 
-best = Scene.from_cloud(cloud_base_mm, support_height_mm=0.0).grasps().best
-if best is not None:
-    robot.pick(best.pose(), best.grip_width_mm)
-```
-
-A `GraspPoint` answers `pose()` the same way, in its own frame, and `pose_from_grasp_axes` is the one
-function both call.
-
-A full pick is driven through `src.robot.execution.autonomous_grasp.AutonomousGraspService`, which
-builds the orchestrator, the execution policy, the frame resolver and the arm together. Worked
-examples live in `examples/`, at the repository root.
-
-This package has no module entry point of its own, so `src.robot.grasping` is not a
-`python -m` target. The runnable command lines belong to the subpackages:
+The command lines belong to the subpackages; `src.robot.grasping` itself has no `python -m` entry.
 
 ```bash
-python -m src.robot.grasping.replay --records run.jsonl        # roll up KPIs from a record log
-python -m src.robot.grasping.replay --soak-report              # the soak gate, exit 0 iff it passes
-python -m src.robot.grasping.rl check-dataset --records run.jsonl   # is this log trainable at all
-python -m src.robot.grasping.rl build-dataset --dataset-id=<id>
-python -m src.robot.grasping.deep --help                       # the learned generator: build, train, evaluate
-python -m src.robot.grasping.calibration --replay run.jsonl --out calibration.json
+python -m src.robot.grasping.replay --records picks.jsonl             # the KPIs of a record log
+python -m src.robot.grasping.replay --records-gate picks.jsonl        # a gate that can fail
+python -m src.robot.grasping.rl check-dataset --records picks.jsonl   # is this log trainable
+python -m src.robot.grasping.deep --help                              # the learned generator
+python -m src.robot.grasping.calibration --replay picks.jsonl --out calibration.json   # uncertainty calibration
 ```
 
-### The three shipped presets
+### What the default pick does
 
-The presets are YAML overlays under [`config/grasping_presets/`](../../../config/grasping_presets/).
-A preset is not part of the tree the loader validates: `apply_preset` in
-[`replay/presets.py`](replay/presets.py) deep-merges one onto an already loaded `robot:` block, so a
-misspelt key merges in silently and only `validate_preset` re-checks the merged result against the
-schema. `default_mode` is the single field that flips sampling, refinement and verification
-together.
+A stock tree runs an open-loop attempt: perceive, generate and rank candidates, safety preflight and
+IK, approach, close and retreat, log. Every block under `robot.grasping` with its own `enabled` switch
+ships `false`: `closed_loop`, `verification`, `dense_recovery`, `decision`, `feasibility`, `ordering`,
+`recovery`, `uncertainty`, `success_model`, `performance`, `fusion`, `approach_validation` and
+`deep_ranker`. So the decision gate, refinement, verification, recovery, multi-view fusion and the
+learned success model are here, and off the path a fresh cell takes. `python scripts/checks/grasping_switches.py` prints which block is
+reachable in which grasp mode, and [the config reference](../../../docs/grasping-config-reference.md)
+explains each block.
+
+### The shipped presets
+
+A preset is a YAML overlay in [`config/grasping_presets/`](../../../config/grasping_presets/).
+`apply_preset` in [replay/presets.py](replay/presets.py) merges one onto a loaded `robot:` block. The
+loader does not validate presets, so a misspelt key merges in silently; `validate_preset` re-checks the
+merged result against the schema. `default_mode` is the one field that switches sampling, refinement
+and verification together.
 
 | Preset | `default_mode` | What the overlay sets | Use for |
 | --- | --- | --- | --- |
-| `easy` | `easy` | recover off, uncertainty off | One object on a clean surface. The strictest gate thresholds apply here: `dead_loop_rate` at most 0.0 and `false_positive_grasp_rate` at most 0.005. |
-| (base) | `auto` | nothing | Mixed scenes and custom tuning. |
-| `dense_clutter` | `dense_clutter` | recover on, restricted to `next_viewpoint`; uncertainty on with a fail-closed threshold of 0.4 | Bins, piles, first-viewpoint occlusion. |
-| `verification_heavy` | `closed_loop` | refine and verify demanded by the mode; recover requested | High-value items where a slip is unacceptable, at a higher cycle time. |
+| `easy` | `easy` | recover off, uncertainty off | one object on a clean surface, under the strictest gate |
+| (base) | `auto` | nothing | mixed scenes and your own tuning |
+| `dense_clutter` | `dense_clutter` | recover on, `next_viewpoint` only; uncertainty on, fail-closed at 0.4 | bins, piles, occlusion |
+| `verification_heavy` | `closed_loop` | refine and verify, which the mode demands; recover on, `next_viewpoint` only | parts where a slip costs most |
 
-Two traps in that table. `closed_loop` demands a wired refiner and a verification policy: a service
-that has neither refuses the pick with a `MODE_NOT_AVAILABLE` outcome rather than degrading to an
-open-loop attempt. And `recovery.apply_modes` ships as `auto`, `dense_clutter` and
-`dense_autonomous`, so the `recovery.enabled: true` that `verification_heavy` sets stays inert until
-a cell adds `closed_loop` to that list. The same gate is why `easy` never produces recovery motion,
-whatever the overlay says.
+The gate for `easy` is the strictest: `dead_loop_rate` at 0.0 and `false_positive_grasp_rate` at most
+0.005. `verification_heavy` costs cycle time. Two traps. `closed_loop` demands a refiner and a
+verification policy: a cell without them refuses the pick with a `MODE_NOT_AVAILABLE` outcome rather
+than running open loop. And `recovery.apply_modes` ships as `auto`, `dense_clutter` and
+`dense_autonomous`, so the recovery `verification_heavy` switches on stays inert until the cell adds
+`closed_loop` to that list. The same gate keeps `easy` free of recovery motion whatever an overlay
+says.
 
 ### KPI triage
 
-`compute_kpis` in [`replay/kpi.py`](replay/kpi.py) defines every rate from the record log, and the
-runbooks under `docs/runbooks/` triage a regression in one. The three an operator meets first:
-`false_positive_grasp_rate` (reported successes that later failed verification),
-`dead_loop_rate` (attempts that ended in `recovery_exhausted`) and `safety_rejection_rate`
-(attempts a guard refused). Never disable a guard to move one of them.
+`compute_kpis` in [replay/kpi.py](replay/kpi.py) defines every rate from the record log. The three an
+operator meets first: `safety_rejection_rate` (attempts a guard refused), `dead_loop_rate` (attempts
+that ended in `recovery_exhausted`) and `false_positive_grasp_rate` (reported successes that later
+failed a re-check). Nothing on this stack writes the field the last one counts, so `--records` withholds
+it rather than printing 0.0. The runbooks in `docs/runbooks/` bring a cell up and take it to its first
+pick; none of them triages a KPI, so start from the rate's definition in `kpi.py`. Never disable a guard
+to move a rate.
 
-## What has and has not run
+## What it refuses
 
-- The soak gate is a synthetic self-check. `--soak-report` proves the telemetry, KPI, taxonomy, SLO
-  and watchdog pipeline is internally consistent over generated records; the outcome distribution in
-  those records is authored, so a pass says nothing about grasp quality. Use `--records-gate` on a
-  real log for a signal that can fail. There is no hardware soak in this repository.
-- Simulation is the only validated full-motion path. The runners under `src/willy_sim` build the
-  service through `from_components` rather than `from_robot_config`, and re-enable the advanced
-  blocks in runner code, so they are not evidence about a config-driven cell.
-- `python -m src.robot.execution.real_cell` is the config-driven path, and `--rehearse` drives all of
-  it on a dummy arm. Nothing below the rehearsal has run against a physical controller.
-- The decision gate is hardware gated. `DecisionEngine` emits `FAIL_CLOSED` only when the arm reports
-  it is not simulated and `fail_closed_on_real_hardware` is true, which is the default; a simulated
-  rig downgrades to `GRASP_NOW` and records the reason it would have refused for. Simulation runs are
-  permissive by construction.
-- RL is offline only. Policies are trained, evaluated off-policy and promotion-gated offline, and run
-  in shadow at runtime. There are no in-process weight updates and no live A/B. A cell that never
-  names an RL mode imports no RL module at runtime.
-- Multi-view fusion is shadow only unless a frame resolver and a commit policy are configured for the
-  running mode. Multi-camera geometry fusion is a separate block and does reach the loop when
-  enabled.
-- Some switches carry a typed surface and no behaviour. `robot.grasping` refuses at config load any
-  switch it knows to be unwired, because a cell that reports a capability it does not have is worse
-  than one that will not start.
-- Sensor limits are real. Transparent, reflective and specular objects produce depth dropouts and are
-  not handled; read `depth_confidence` and rescan or refuse. Deformables have a refuse-safe seam
-  only. The force-closure certificate is a Coulomb friction-cone argument under a contact model, not
-  a wrench-space proof and no substitute for force feedback.
+| Refusal | When | What to do |
+| --- | --- | --- |
+| `FileNotFoundError` from `build_calculator` | `calculator: deep` and no file at `deep_generator.artifact_path` | train one ([deep/](deep/README.md)) or set `geometric` |
+| `ValueError` from `build_calculator` | not a generator artifact of this version, or the cell's hand is unset or not trained on | name a finished run's artifact and the cell's hand |
+| `ConfigError` at load | a switch that reaches nothing is on: `occlusion.hard_reject_enabled` | set it back to `false` |
+| outcome `MODE_NOT_AVAILABLE` | the mode demands refinement or verification the cell did not build | enable `closed_loop` and `verification`, or change mode |
+| `FAIL_CLOSED` from the decision gate | the gate is on, the arm is real and the evidence falls short | read the reason on the record; a simulated arm logs it and goes on |
+| the execution policy fails closed | a camera-frame grasp and no CAMERA to BASE transform | calibrate the camera ([guide 03](../../../docs/guide/03-calibration.md)) |
 
-## See also
+## Status
 
-- [`robot/`](../README.md) for the parent package: the arm and gripper Protocols, drivers, safety,
-  execution
-- [`docs/grasping-math.md`](../../../docs/grasping-math.md) for every formula this stack evaluates and
-  how each step fails
-- [`docs/grasping-config-reference.md`](../../../docs/grasping-config-reference.md) for every
-  `robot.grasping` block, which mode it can fire in, and the blocks that ship their operative weight
-  at zero
-- [`safety/`](../safety/README.md) for the guard pipeline every commanded move passes through
+| Capability | Evidence |
+| --- | --- |
+| Analytic generation, scoring and the pick service on a UR5e with a 2F-85 | measured in simulation ([willy_sim](../../willy_sim/README.md)) |
+| Refinement, verification, recovery and multi-view fusion | measured in simulation, switched on per flag by the runners |
+| A grasp from this package on a physical arm | never touched hardware |
+
+The simulation runners build the pick service through `from_components` and switch the advanced blocks
+on in runner code, so a simulation result says nothing about a config-built cell with those blocks
+off. A desk rehearsal on a dummy arm proves the config-built wiring, not a grasp. The soak gate is a
+synthetic self-check of the telemetry and KPI pipeline, not of grasp quality
+([replay/](replay/README.md)). RL runs offline and in shadow only ([rl/](rl/README.md)). Transparent,
+reflective and specular objects drop out of depth and are not handled; read `depth_confidence` and
+rescan or refuse. Deformables have a refuse-safe seam only. The force-closure certificate is a
+friction-cone argument under a contact model, not a substitute for force feedback.
+
+## Files
+
+| Folder or file | Holds |
+| --- | --- |
+| [types/](types/README.md) | `GraspPoint`, `GraspResult`, `GraspFailureReason`, the sampling modes, the perception value objects |
+| [geometry/](geometry/README.md), [contacts/](contacts/README.md) | masked point cloud, normals, projection; antipodal contact pairs |
+| [collision/](collision/README.md) | the gripper against the cloud and the table; jaw and suction-cup envelopes |
+| [generation/](generation/README.md) | `GraspCalculator`: a mask and a depth image to ranked `GraspPoint`s |
+| [scoring/](scoring/README.md) | the deterministic scorers, `rank_grasp_poses`, force closure, the learned success predictor |
+| `decision.py` | `DecisionEngine`: `GRASP_NOW`, `MOVE_CAMERA`, `RECOVER` or `FAIL_CLOSED`; off by default |
+| [planning/](planning/README.md), [motion/](motion/README.md) | the approach pose, the IK seam; approach, close and retreat, and the CAMERA to BASE resolver |
+| [closed_loop/](closed_loop/README.md), [recovery/](recovery/README.md) | the second look, verification, next-best view; bounded recovery. Off by default |
+| [loop/](loop/README.md), [telemetry/](telemetry/README.md) | `BinPickingOrchestrator`, one attempt across the tiers; the frozen `GraspAttemptRecord` |
+| [multiview/](multiview/README.md), [suction/](suction/README.md) | fusion across camera views; suction candidates |
+| [deep/](deep/README.md) | the learned 6-DoF generator; no trained weights ship |
+| `uncertainty.py`, [visualization/](visualization/README.md) | fusion of the uncertainty channels; grasp debug images |
+| [calibration/](calibration/README.md), [replay/](replay/README.md), [rl/](rl/README.md) | the offline tail: reads what the pick path logged, never imported by it at module top level |
+| `scene.py`, `calculator_factory.py` | `Scene`; `build_calculator` and `preflight_calculator` |
+
+## Details
+
+- [Guide 05](../../../docs/guide/05-pick-loop.md): the pick loop, from the config tree to an attempt
+- [The grasping maths](../../../docs/grasping-math.md): every formula this stack evaluates, and how it fails
+- [The config reference](../../../docs/grasping-config-reference.md): every block, and the modes it fires in
+- [safety/](../safety/README.md) guards every commanded move; [robot/core](../core/README.md) holds the
+  `RobotArm` and `Gripper` Protocols this package depends on. It imports no vendor SDK and no web
+  framework.
+- [tests/test_t8_docs.py](../../../tests/test_t8_docs.py) pins the presets and the KPI names on this page
