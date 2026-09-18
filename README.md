@@ -1,9 +1,17 @@
-# Workaholic-Willy
+<!-- ────────────────────────────────────────────────────────────────────────── -->
+<div align="center">
+<img src="docs/assets/willy_banner.png" alt="Workaholic-Willy · vendor-neutral Vision-Language robot grasping" width="100%">
 
-Workaholic-Willy picks what you name: it finds the object with a camera, plans a collision-free 6-DoF
+<br>
+
+**Workaholic-Willy picks what you name: it finds the object with a camera, plans a collision-free 6-DoF
 grasp, refuses anything unsafe, drives a real or simulated arm, and verifies, recovers and logs each
 attempt. It is a Python 3.11 library you import as `willy`, and the first run below needs no GPU,
-camera or robot.
+camera or robot.**
+
+<br>
+</div>
+<!-- ────────────────────────────────────────────────────────────────────────── -->
 
 ## Install
 
