@@ -115,6 +115,10 @@ class RigCalibration:
                 "CAMERA to BASE.")
         return self.transform
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         tolerance = ("" if self.mounting_mode == "eye_to_hand" else
                      f", shutter motion within {self.shutter_motion_tolerance_mm} mm and "

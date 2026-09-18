@@ -10,6 +10,10 @@ The locator never opens or releases a camera; the caller owns the device. It ref
 with no depth of its own, a rig that declares no calibration, a wrist rig with no reader of the arm's TCP, and a wrist
 rig whose calibration was not solved against the cell's flange to TCP. An empty result is an answer and says it
 cannot be told apart from a detector that failed.
+
+``Located.scene(i, robot_config)`` is the step from seeing a part to picking it: object i's surface as the grasp
+``Scene``, the other objects as its obstacles, and a candidate's ``pose()`` and ``grip_width_mm`` as what
+``Robot.pick`` takes.
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -25,7 +29,11 @@ from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Pose
 from src.robot.core.keep_out import SegmentationOffer
 from src.robot.grasping.multiview.scene_geometry import to_base_mm
+from src.robot.grasping.scene import Scene
 from src.robot.perception.realsense_source import RealSenseVisionPerceptionSource
+
+if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.config.schema.robot import RobotConfig
 
 __all__ = ["Located", "LocatedObject", "LocatedOrientation", "Locator", "LocatorRefused"]
 
@@ -56,6 +64,10 @@ class LocatedObject:
     #: The per-axis median of the surface, or ``None`` when there is no surface.
     centre_mm: "tuple[float, float, float] | None"
     orientation: LocatedOrientation | None = LocatedOrientation()
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""
@@ -106,6 +118,36 @@ class Located:
             target_points_base_mm=points if points.shape[0] else None,
             target_label=chosen_object.label,
         )
+
+    def scene(self, target: int, robot_config: "RobotConfig") -> Scene:
+        """Object ``target`` as the :class:`Scene` its grasps are planned on, every other object an obstacle.
+
+        The support height and the jaw come from ``robot_config`` through ``Scene.from_robot_config``, the
+        target cloud is the object's measured surface, and every other object this frame located with a surface
+        goes in as observed obstacle points. A candidate gives the BASE pose and the width ``Robot.pick`` takes,
+        and :meth:`keep_out` holds the same object out of the planner world while the arm reaches for it:
+
+            best = located.scene(0, app.robot).grasps().best
+            if best is not None:
+                robot.pick(best.pose(), best.grip_width_mm, keep_out=located.keep_out(0))
+
+        The camera sees one side of a part, so the scene extrudes the seen footprint down to the support. The
+        generator is the geometric one whatever ``grasping.calculator`` says, and ``SceneGrasps.generator``
+        says so on every result. An object with no surface under its mask gives a scene with no grasps.
+        """
+        if not 0 <= int(target) < len(self.objects):
+            raise IndexError(f"object {target} of {len(self.objects)} located by camera {self.camera!r}")
+        index = int(target)
+        others = [obj.points_base_mm for position, obj in enumerate(self.objects)
+                  if position != index and obj.points_base_mm.shape[0]]
+        return Scene.from_robot_config(
+            robot_config, self.objects[index].points_base_mm,
+            obstacle_points_base_mm=np.concatenate(others, axis=0) if others else None,
+        )
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""
@@ -208,15 +250,28 @@ class Locator:
     @classmethod
     def from_config(cls, robot_cfg: Any, models_cfg: Any, *, camera: Any,
                     tool_pose: "Maybe[Callable[[], Pose]]" = UNSET) -> "Locator":
-        """A locator for the cell ``robot_cfg`` describes, with the backend ``models_cfg`` builds, as the cell builds it."""
+        """A locator for the cell ``robot_cfg`` describes, with the backend ``models_cfg`` builds, as the cell builds it.
+
+        Every refusal of :meth:`from_parts` runs before the backend is built, so a rig with no depth, no declared
+        calibration or no TCP reader is refused before the detector and the segmenter load.
+        """
         from src.models.perception_spec import PerceptionSpec
 
-        backend = PerceptionSpec.from_config(models_cfg).build()
-        return cls.from_parts(
-            camera=camera, backend=backend, tool_pose=tool_pose,
+        checked = cls.from_parts(
+            camera=camera, backend=None, tool_pose=tool_pose,
             attempts=int(robot_cfg.safety.planning_world.perceived.fresh_frame_attempts),
             tool_frame=robot_cfg.gripper.tool_frame,
         )
+        backend = PerceptionSpec.from_config(models_cfg).build()
+        return cls(camera=camera, backend=backend, calibration=checked._calibration, tool_pose=checked._tool_pose,
+                   attempts=checked._attempts)
+
+    @classmethod
+    def from_tree(cls, tree: Any, *, camera: Any, tool_pose: "Maybe[Callable[[], Pose]]" = UNSET) -> "Locator":
+        """A locator for the cell a loaded tree describes, with the perception stack its models section
+        builds (see :meth:`from_config`). A tree that did not load is refused with its own refusal, as
+        ``ConfigError``."""
+        return cls.from_config(tree.robot, tree.app_config.models, camera=camera, tool_pose=tool_pose)
 
     def locate(self, prompt: str) -> Located:
         """Ground ``prompt`` in one frame and place every object in BASE. Raises ``PerceptionFrameMoved`` on the wrist."""

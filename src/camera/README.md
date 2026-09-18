@@ -33,7 +33,7 @@ each of its rigs through a `Camera` and grabs raw or rectified frames; and
 
 | Path | Role |
 | --- | --- |
-| [`orchestration/camera.py`](orchestration/camera.py) | `Camera`: one owner per rig, the process registry that refuses a second opener (`CameraBusy`), the rig selection a cell uses (`select_rig`), and the one place a device streamer is constructed (`create_streamer`). |
+| [`orchestration/camera.py`](orchestration/camera.py) | `Camera`: one owner per rig, the process registry that refuses a second opener (`CameraBusy`), the rig selection a cell uses (`select_rig`), and the one place a device streamer is constructed (`create_streamer`). A `with` block opens an owner and releases it. |
 | [`orchestration/frame_provider.py`](orchestration/frame_provider.py) | `FrameProvider`, the rig-keyed catalogue over the owners, plus `RigHandle`. |
 | [`pipeline/stereo_capture.py`](pipeline/stereo_capture.py) | `StereoCapturePipeline`: resolves rigs, ensures stereo calibration image sets exist, builds `StereoCam3D`, returns a `FrameProvider`. |
 | [`setup/`](setup/README.md) | The streamers underneath the owners, the frame dataclasses, and the capture-quality configuration. |
@@ -43,14 +43,28 @@ each of its rigs through a `Camera` and grabs raw or rectified frames; and
 ### `Camera`: one rig, one owner
 
 ```python
-from src.camera import Camera
+from src.camera import Camera, CameraRefused, RigNotCalibrated
 
+with Camera.from_config(app_cfg.camera) as camera:   # opened here, released however the block ends
+    frame = camera.grab()                           # RGBDFrame, stamped at the grab
+    K = camera.get_intrinsics()                     # None where the backend reports no pinhole matrix
+    calibration = camera.calibration()              # RigNotCalibrated names the key when the rig declares none
+```
+
+The same owner without a block, for a holder that outlives one:
+
+```python
 camera = Camera.from_config(app_cfg.camera)   # the primary rig; rig_id="wrist" names another
 camera.open()                                  # CameraBusy if another owner in this process holds the device
 handle = camera.handle()                       # a RigHandle, shaped like a streamer
 frame = handle.grab()                          # RGBDFrame; frame.captured_at_s is the host time of the grab
 handle.release()                               # gives the device back; never raises
 ```
+
+`src.camera` exports `Camera` and its refusals: `CameraRefused`, `CameraBusy`, `CameraNotOpen`, and
+the two raises of `camera.calibration()`, `RigNotCalibrated` and `RigCalibrationError` (defined in
+[`calibration/rig_calibration.py`](../calibration/rig_calibration.py)). A `with` block releases the
+owner it holds, also one that was open before the block began.
 
 `Camera.from_config(camera_section, *, rig_id=UNSET, open_disabled=UNSET)` refuses with
 `CameraRefused`, whose `reason` is `unknown`, `disabled` or `not_rgbd`: a rig the section does not

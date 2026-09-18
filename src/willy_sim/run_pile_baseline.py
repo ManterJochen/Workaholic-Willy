@@ -246,6 +246,12 @@ def run_baseline(
         try:
             report = service.pick()
             pick_error = None
+            # `pick()` reports a fault of the cell instead of raising it. It is the pick error it was
+            # as a raise, and like the raise it leaves no report to read.
+            fault = getattr(report, "fault", None)
+            if fault is not None:
+                report = None
+                pick_error = f"{type(fault).__name__}: {fault}"
         except Exception as exc:  # noqa: BLE001 (keep the gate running; record the failure honestly)
             report = None
             pick_error = f"{type(exc).__name__}: {exc}"

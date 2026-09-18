@@ -334,12 +334,16 @@ def run_gate(runs: int = 10, *, prompt: str = "a red cube", headless: bool = Tru
         z0 = reset_object_to_home_z0(obj, home_pos, home_quat, arm.session, settle_steps=25)
         from src.robot.core import CameraWorldUnavailable
 
-        try:
-            report = service.pick()
-        except CameraWorldUnavailable as exc:
+        report = service.pick()
+        # `pick()` reports a fault of the cell instead of raising it. Any fault but a camera world
+        # stops the gate, as its raise did.
+        fault = getattr(report, "fault", None)
+        if fault is not None and not isinstance(fault, CameraWorldUnavailable):
+            raise fault
+        if fault is not None:
             # A camera that could not vouch for the cell stops that pick, not the gate: counted
             # beside the rate.
-            print(f"RUN {i}: CameraWorldUnavailable: {exc}", flush=True)
+            print(f"RUN {i}: CameraWorldUnavailable: {fault}", flush=True)
             results.append({"run": i, "succeeded": False, "lift_mm": 0.0, "passed": False,
                             "camera_world": None, "camera_world_raised": True, "motion_status": None})
             continue

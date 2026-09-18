@@ -98,6 +98,10 @@ class PerceptionResolution:
     def buildable(self) -> bool:
         return not self.refusal
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         lines = [
             f"perception stack: {self.kind} / {self.detector} + {self.segmenter}",

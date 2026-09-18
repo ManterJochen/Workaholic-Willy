@@ -27,7 +27,9 @@ from typing import Any
 
 import numpy as np
 
+from src.geometry import Frame, Pose
 from src.robot.grasping.geometry import as_vec3
+from src.robot.grasping.geometry.grasp_frame import pose_from_grasp_axes
 
 
 class GraspFrame(StrEnum):
@@ -93,6 +95,19 @@ class GraspPoint:
     def distance_to(self, other: GraspPoint) -> float:
         """The Euclidean distance in millimetres between two grasp positions."""
         return float(np.linalg.norm(self.position - other.position))
+
+    def pose(self) -> Pose:
+        """Where the tool goes for this grasp, in this grasp's own frame: +Z ``approach``,
+        +X ``axis``.
+
+        A BASE grasp gives the BASE pose ``Robot.pick`` takes, with ``grip_width_mm`` as
+        its width. A CAMERA grasp gives a CAMERA pose, which ``Robot.pick`` refuses with
+        nothing commanded until the pose is carried into BASE; the frame is never
+        relabelled here. The columns are the ones ``grasp_point_to_pose`` builds for the
+        collision check.
+        """
+        return pose_from_grasp_axes(self.position, approach=self.approach, closing_axis=self.axis,
+                                    frame=Frame(self.frame.value))
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dictionary."""

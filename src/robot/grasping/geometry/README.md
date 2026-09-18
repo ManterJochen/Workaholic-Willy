@@ -16,8 +16,8 @@ contract to catch.
 
 The frame-safe `Pose` and `Frame` algebra, compose, invert and apply, belongs to
 [`src.geometry`](../../../geometry/README.md). This package deliberately does not duplicate it and
-holds no pose, no quaternion and no frame composition. Nor does it hold Open3D, torch, a perception
-model or a vendor SDK.
+holds no frame composition: the one `Pose` it builds, in `grasp_frame.py`, is built through that
+algebra. Nor does it hold Open3D, torch, a perception model or a vendor SDK.
 
 ## The public surface
 
@@ -30,6 +30,7 @@ The stages run in this order: `pointcloud -> filters -> sampling -> normals`.
 | `sampling.py` | `uniform_sample_indices`, `voxel_downsample_indices`, `farthest_point_sample_indices` |
 | `normals.py` | `NormalEstimationConfig`, `SurfaceNormals`, `estimate_surface_normals` |
 | `transforms.py` | `validate_transform`, the one gate a rigid 4x4 passes before any back-projection |
+| `grasp_frame.py` | `pose_from_grasp_axes`: a grasp's position, approach and closing axis as the `Pose` a tool takes, +Z the approach and +X the closing axis. The candidates' `pose()` methods call it. |
 | `_spatial.py` | `RadiusIndex`, the shared neighbour index |
 | `_validation.py` | `as_points_nx3`, `as_vec3`, `as_mask_and_depth`, the shared input validators |
 

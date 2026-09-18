@@ -133,15 +133,19 @@ class TheOtherDoorsStayAsTheyWereTests(unittest.TestCase):
         self.assertEqual(49.99, _policy(service).pre_open_width_mm)
 
     def test_an_explicit_policy_is_left_as_it_was_given(self) -> None:
+        # On the service's own arm and hand: a policy around any other is refused while `policy=` is
+        # accepted at all (tests/test_grasp_motion.py).
         calc, perception = _calc_and_perception()
         arm = DummyRobotArm()
-        given = GraspExecutionPolicy(arm=arm, gripper=DummyGripper(min_width_mm=0.0, max_width_mm=85.0))
+        hand = DummyGripper(min_width_mm=0.0, max_width_mm=85.0)
+        given = GraspExecutionPolicy(arm=arm, gripper=hand)
 
         service = AutonomousGraspService.from_robot_config(
             _dummy_tree(), calculator=calc, perception=perception, policy=given,  # type: ignore[arg-type]
-            arm=arm,
+            arm=arm, gripper=hand,
         )
 
+        self.assertIs(given, _policy(service))
         self.assertIsNone(_policy(service).pre_open_width_mm)
 
 

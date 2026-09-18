@@ -10,6 +10,12 @@
   ],
   "runbooks": [
     {
+      "id": "cell_bringup",
+      "path": "docs/runbooks/cell_bringup.md",
+      "summary": "Bring a cell up on any robot: profile, desk check, simulator, connect and check, with a section per vendor for its controller simulator (UR: URSim in Docker and the container lifetime trap).",
+      "owner_role": "commissioning"
+    },
+    {
       "id": "corpus_v5_build",
       "path": "docs/runbooks/corpus_v5_build.md",
       "summary": "Rebuild the v5 point-cloud corpus from the screened mesh bank, with the measured cost and the resume behaviour of every step.",
@@ -34,15 +40,9 @@
       "owner_role": "data"
     },
     {
-      "id": "ur3e_cell_bringup",
-      "path": "docs/runbooks/ur3e_cell_bringup.md",
-      "summary": "Bring a cell up on a UR model the stack has not run before, including URSim in Docker.",
-      "owner_role": "commissioning"
-    },
-    {
       "id": "ur_family_bringup",
       "path": "docs/runbooks/ur_family_bringup.md",
-      "summary": "Stand up any UR from a UR3 to a UR10, including what a ur10 cannot do and the CB-series swap nothing upstream can see.",
+      "summary": "Stand up any UR arm the stack models, add one it does not model yet, and catch the CB-series swap nothing upstream can see.",
       "owner_role": "commissioning"
     },
     {

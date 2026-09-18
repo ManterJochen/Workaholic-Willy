@@ -1,6 +1,7 @@
 # Whisper speech-to-text: where the weights come from, how the microphone is opened, and what the
 # decoder is asked for. Read by `src.models.speech.holder.SpeechHolder`, which the console reaches
-# over POST /v1/voice/transcribe. Nothing on the grasp path reads this block.
+# over POST /v1/voice/transcribe and, for a push to talk turn at the cell PC, POST /v1/voice/listen.
+# Nothing on the grasp path reads this block.
 stt:
   # `local: True` below reads `model_path` from disk and downloads nothing, and
   # `python scripts/model_weights/fetch.py whisper-turbo` writes that directory, pinned to one hub

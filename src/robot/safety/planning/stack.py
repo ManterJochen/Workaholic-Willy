@@ -128,6 +128,10 @@ class MotionStackReport:
             return 1
         return 0 if self.fully_anchored else 1
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         """The whole reading. ASCII, no trailing newline, no arguments.
 

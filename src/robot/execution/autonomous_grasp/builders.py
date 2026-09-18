@@ -26,6 +26,11 @@ from src.robot.grasping.collision import (
 from src.robot.grasping.decision import DecisionEngine, DecisionPolicy
 from src.robot.grasping.multiview.fusion import FusionConfig, SceneFusion
 from src.robot.grasping.loop.pick_loop import CommitPolicy
+from src.robot.grasping.motion.grasp_motion import (
+    GraspMotion,
+    build_execution_policy,
+    foreign_policy_refusal,
+)
 from src.robot.grasping.scoring.corridor import CorridorAnalysisConfig
 from src.robot.grasping.scoring.feasibility_score import FeasibilityScoreConfig
 from src.robot.grasping.loop.target_selector import (
@@ -1012,15 +1017,18 @@ def build_runtime(
     frame_resolver: Optional["FrameResolver"],
     arm: Optional["RobotArm"] = None,
     gripper: Optional["Gripper"] = None,
+    motion: "Maybe[GraspMotion]" = UNSET,
 ) -> RuntimePickService:
     """Build the underlying :class:`RuntimePickService` and patch its frame guard.
 
     ``from_robot_config`` builds the arm and gripper from the config tree, so a
-    fail-closed default policy cannot be pre-constructed the way ``from_components``
-    does. The runtime builds its own default policy first, and
-    ``require_base_frame_grasp`` is then set on it when a resolver is wired and the
-    caller supplied no explicit policy, and its jaws open to the hand's ``max_width_mm``
-    before the approach. A caller-supplied policy is left untouched.
+    fail-closed policy cannot be pre-constructed the way ``from_components`` does.
+    Once the runtime has resolved them, the one policy it drives is built on that arm
+    and hand from ``motion`` (a default :class:`GraspMotion` when unset) with every
+    guard: ``require_base_frame_grasp`` when a resolver is wired, the dwell steady
+    gate, and the jaws opened to the hand's ``max_width_mm`` before the approach. A
+    caller-supplied policy drives as given when it holds the runtime's own arm and
+    hand, and is refused with ``ValueError`` when it holds another.
     """
 
     runtime = RuntimePickService.from_robot_config(
@@ -1038,30 +1046,28 @@ def build_runtime(
     )
     if frame_resolver is not None:
         runtime.orchestrator.frame_resolver = frame_resolver
-    if policy is None:
-        # The orchestrator built its own default policy in __post_init__; the fail-closed guards are
-        # wired onto it here. require_base_frame_grasp only when a resolver is wired; the dwell
-        # steady-gate is independent of the resolver.
-        built_policy = runtime.orchestrator.policy
-        if built_policy is not None:
-            if frame_resolver is not None:
-                built_policy.require_base_frame_grasp = True
-            # Enable the pre-move steady-state gate from robot_cfg.safety.dwell. Duck-typed via
-            # getattr so the execution layer stays free of config-schema imports (strict downward stack).
-            dwell = getattr(getattr(robot_cfg, "safety", None), "dwell", None)
-            if dwell is not None:
-                built_policy.require_steady_before_motion = bool(
-                    getattr(dwell, "require_steady_before_motion", False)
-                )
-                built_policy.steady_timeout_s = float(getattr(dwell, "steady_timeout_s", 5.0))
-            # Open the jaws to the hand's width before the approach, as `from_components` does. Without
-            # it the arm descends with the jaws wherever the previous close left them, and a close onto
-            # a wider part reaches the gripper as an opening. The width is the hand's own, not a
-            # constant: the 2F-85 opens 85 mm and the Hand-E 49.99. It does not depend on a resolver.
-            built_gripper = built_policy.gripper
-            max_width = getattr(built_gripper, "max_width_mm", None) if built_gripper is not None else None
-            if built_policy.pre_open_width_mm is None and max_width is not None:
-                built_policy.pre_open_width_mm = float(max_width)
+    orchestrator = runtime.orchestrator
+    if policy is not None:
+        # A policy drives the arm and hand it was built with, so one around another arm or hand would
+        # move a robot this cell never checked. Refused for as long as ``policy=`` is accepted at all.
+        refusal = foreign_policy_refusal(policy, arm=orchestrator.arm, gripper=orchestrator.gripper)
+        if refusal:
+            raise ValueError(refusal)
+    else:
+        # The one policy, built on the arm and hand this cell resolved, with every guard, whether the
+        # caller chose a motion or not: the base frame guard only when a resolver is wired; the dwell
+        # steady gate from robot_cfg.safety.dwell, independent of the resolver (duck-typed via getattr,
+        # so the execution layer stays free of config-schema imports); and the jaws opened to the
+        # hand's width before the approach. Without the pre-open the arm descends with the jaws
+        # wherever the previous close left them, and a close onto a wider part reaches the gripper as
+        # an opening. The width is the hand's own, not a constant: the 2F-85 opens 85 mm and the
+        # Hand-E 49.99.
+        orchestrator.policy = build_execution_policy(
+            motion if chosen(motion) else GraspMotion(),
+            arm=orchestrator.arm, gripper=orchestrator.gripper, standoff_mm=standoff_mm, retreat_mm=retreat_mm,
+            base_frame_required=frame_resolver is not None,
+            dwell=getattr(getattr(robot_cfg, "safety", None), "dwell", None),
+        )
     policy_built = runtime.orchestrator.policy
     pre_open = getattr(policy_built, "pre_open_width_mm", None) if policy_built is not None else None
     logger.info(

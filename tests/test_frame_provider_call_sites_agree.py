@@ -13,7 +13,7 @@ ValueError)` does not catch that, so `handdetection --rig` exited 1 with a trace
 ⚠ **NO TEST IMPORTED THAT MODULE**, which is the whole reason four correct siblings did not make the
 fifth correct. Found by a peer session sweeping a different subsystem.
 
-The cell, the calibration CLI and the perception exerciser open one rig through
+The cell, the calibration noun and the perception exerciser open one rig through
 `Camera.from_config(camera_section)`, and `FrameProvider` stays the catalogue that stereo capture and
 hand detection use. So there are two kinds of opener, each with its own argument, and the control
 names the modules rather than counting them: a count breaks as soon as a site moves from one noun to
@@ -33,7 +33,7 @@ _TREES = ("src", "api")
 #: The modules that open one rig through the camera noun.
 _NOUN_OPENERS = {
     "src/robot/execution/autonomous_grasp/cells.py",
-    "src/robot/execution/real_cell/calibrate.py",
+    "src/robot/execution/hand_eye.py",
     "src/robot/perception/__main__.py",
 }
 #: The modules that build the multi-rig catalogue.

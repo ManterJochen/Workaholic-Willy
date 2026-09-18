@@ -1,11 +1,11 @@
 # `scripts/`: the things you install or run from outside Python
 
 One folder per thing that is installed or driven from a shell, rather than a flat pile where you have
-to read a filename to guess what it belongs to.
+to read a filename to guess what it belongs to. The examples are not here: they live at the repository
+root, in [`examples/`](../examples/README.md).
 
 | Folder | What it does | Start here |
 |---|---|---|
-| [`examples/`](examples/) | twenty-nine runnable examples that drive the library API, one per decision you have to make, from an unopened box to a trained model | [`examples/README.md`](examples/README.md) |
 | [`ext_deps/`](ext_deps/) | installs Coal and cuRobo into `ext_deps/`: micromamba, both environments from the committed lockfiles, the pinned cuRobo clone with both kernel backends, the UR5e and UR3e descriptors, then the doctor | [`ext_deps/README.md`](../ext_deps/README.md) |
 | [`model_weights/`](model_weights/) | fetches the perception model weights (detector, segmenter, VLM) into the shared Hugging Face cache | `python scripts/model_weights/fetch.py --list` |
 | [`trial/`](trial/) | the customer chain trial: runs [`docs/runbooks/your_own_gripper.md`](../docs/runbooks/your_own_gripper.md) in a copy of the tree with two hands whose answers are known. Trial instruments, not product code | [`trial/README.md`](trial/README.md) |

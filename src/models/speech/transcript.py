@@ -58,6 +58,10 @@ class Transcript:
     #: Milliseconds from the audio to the text. The one-time weight load is not part of it.
     latency_ms: float
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         """Three ASCII lines: what was heard in which language, what it cost, which weights."""
         heard = f"Heard '{_ascii(self.text)}'" if self.text else "Heard no words"
@@ -104,6 +108,10 @@ class SpeechCheck:
     #: Milliseconds the check took. The one-time model load is not part of it.
     latency_ms: float
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         """One ASCII line: whether speech was heard, on what evidence, by which detector, at what cost."""
         if self.heard_speech:
@@ -142,6 +150,10 @@ class Proposal:
     speech: SpeechCheck
     #: Whisper's report; ``None`` when the voice detector heard no speech and Whisper was not asked.
     transcript: Transcript | None
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         """The proposal in a line, the voice check and the transcript indented under it. ASCII."""

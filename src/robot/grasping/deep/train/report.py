@@ -120,6 +120,10 @@ class TrainingRunReport:
             return f"the folds ran and no artifact was written: {reason}"
         return f"the run ended as {self.outcome}"
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         """What happened, as operator text. What was going to happen is `GeneratorTraining.describe`.
 

@@ -1,7 +1,7 @@
 """An arm says what it enforces, and silence is never read as consent.
 
-⛔⛔ **THE DEFECT THIS GUARDS, AND IT ALREADY HAPPENED.** `scripts/examples/api/01_first_cell/one_pick_end_to_end.py` records
-it: the example's predecessor printed "cleared safety" and its README claimed the run "clears all six
+⛔⛔ **THE DEFECT THIS GUARDS, AND IT ALREADY HAPPENED.** An example in this repository printed
+"cleared safety" and its README claimed the run "clears all six
 safety guards", while driving a `DummyRobotArm` whose own docstring says it carries no preflight and
 simply drives. **No guard ran.** The fix at the time was for that one script to report which layers
 ran; this makes the question askable of any arm, including one a customer wrote.

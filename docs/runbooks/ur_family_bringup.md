@@ -1,15 +1,14 @@
-# Runbook: standing up any UR from a UR3 to a UR10
+# Runbook: standing up any UR arm
 
 **Scope.** Going from "this stack drives a UR5e" to "this stack drives the arm I actually have". The
 gripper half is [hande_gripper_bringup.md](hande_gripper_bringup.md); the physical-cell procedure is
-[real_cell_first_pick.md](real_cell_first_pick.md); the worked UR3e example is
-[ur3e_cell_bringup.md](ur3e_cell_bringup.md).
+[real_cell_first_pick.md](real_cell_first_pick.md); the model-neutral procedure, with URSim and its
+traps, is [cell_bringup.md](cell_bringup.md).
 
 **Why it exists.** Until 2026-09-09 the stack answered "which UR can I drive" in four places that had
 never been compared: the config gate, the DH table, the joint limits and the sim spec registry. The
-DH table held seven models, the joint limits eight, and the other two held three. So `ur10` had
-correct kinematics and could not be configured at all, and the family had been drifting in both
-directions at once. All four now cover the same six keys and
+DH table held seven models, the joint limits eight, and the other two held three, so the family had
+been drifting in both directions at once. All four now cover the same six keys and
 [`tests/test_ur_model_family.py`](../../tests/test_ur_model_family.py) fails if they diverge again.
 
 ---
@@ -23,7 +22,7 @@ Any of:
   e-series namesake, which is the swap nothing upstream can see;
 - `python -m src.robot.safety.planning --doctor` reports `no_bundle`, or a cuRobo cell refuses to
   start its planner because no evidence file measured its arm, hand, plate, placement and margin;
-- cuRobo refuses to start, or raises `Link tool0 not found in parent map` at the first plan.
+- cuRobo refuses to start, or loads and then fails at the first plan.
 
 ## Diagnose
 
@@ -44,46 +43,6 @@ descriptor and plans a real motion with it. **Six of six plan, 21 waypoints each
 Those six descriptors were built under the earlier arm-and-hand names, and both drivers refuse every
 one of them now: the descriptor column reads yes again for an arm once its `willy_{model}.yml` is
 rebuilt (step 4 below) and the check has planned with it and a hand.
-
-### ⚠ ur10 needed four repairs the other five did not
-
-It works now, and everything below is what it took. An operator who reaches for a UR10 should know
-this, because every one of these presented as a property of the arm and was not.
-
-1. **It ships as `ur10_robot.urdf`**, where all five siblings ship `{model}.urdf`.
-2. **That file has NO GEOMETRY AT ALL** — 74 lines, 0 `<collision>`, 0 `<visual>`, 0 mesh
-   references — and it belongs to a different link-frame family than Isaac's own sphere map for the
-   same robot. Pairing them puts 23 of 30 sphere centres off the arm, worst 341.5 mm, fail-open and
-   silent. The builder now picks by a rule instead: *a description with no geometry describes no
-   body*, which excludes it without naming ur10 and changes nothing for the other five.
-3. **Its USD collides the whole arm with thirteen cylinders**, so the Isaac bake cannot read it. Its
-   bundle comes from the vendor path instead: `scripts/isaac/bake_ur_meshes_from_urdf.py` reads the
-   collision STL files of Universal Robots, pinned to one upstream commit, with no simulator at all,
-   and compares every bake with the bundle already committed for that model before it writes.
-4. **Its Lula sphere map describes a different arm.** Measured, those spheres sit about 61 mm from
-   where the geometry is, and the worst one kept sits 75.9 mm outside its own upper arm. Keeping them
-   alongside the correct ones made each wrist a body twice its size spanning two positions, and
-   cuRobo returned None from every plan, a plan from a pose to itself included, while loading
-   perfectly. This arm now plans against `ur10_arm_spheres.yml`, fitted to the same bundle the exact
-   mesh guard judges, and the vendor map is out of its path entirely.
-
-⛔ **AND ONE THAT WAS NEVER TRUE.** From 2026-09-09 to 2026-09-10 this runbook said cuRobo could not
-load the importer description. It could not, because of **one stray `)` in an `xyz` attribute** on
-line 28 of Isaac's file. A one-character parse failure had been written down as a capability of the
-robot. That is worse than a check that stays silent: it says something plausible and wrong, and the
-plausible thing gets believed. The builder repairs the character in its own copy and says so, and
-never touches Isaac's tree.
-
-### Where the ur10's geometry comes from
-
-Nothing in the simulator's own copy of this arm is in its path any more. The bundle it once carried
-was convex hulls of the visual meshes of the importer asset, and those links sat 1.8 to 65.0 mm from
-where the description of Universal Robots puts them, the upper arm worst at 52.0 mm of centroid. The
-bundle it carries now is the vendor's own collision geometry, like every other arm in the family.
-
-**A `ur10` cell plans like any other now**, with exact mesh geometry, the spheres fitted to that
-geometry, the hand its cell names composed onto it, and a descriptor proved by planning rather than
-by existing.
 
 ---
 
@@ -180,7 +139,7 @@ python -m pytest tests/test_ur_model_family.py tests/test_arm_profiles.py \
 ```
 
 `test_lula_and_bundle_agree.py` is the one worth understanding: it checks that Isaac's sphere map and
-this repository's baked meshes describe the same link in the same frame. That is what ur10 fails.
+this repository's baked meshes describe the same link in the same frame.
 
 ## Rollback
 

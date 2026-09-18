@@ -5,8 +5,9 @@ From a fresh clone to a pick you can watch, on a desk with no robot and no camer
 One desk check and one example script carry the whole of it.
 `python -m src.robot.execution.real_cell --check` runs the desk-side preflight over what your
 configuration claims the cell is.
-`scripts/examples/api/01_first_cell/one_pick_end_to_end.py` builds a cell on a dummy arm and drives one pick through the real
-grasp stack. Neither needs hardware, and no example commands a motion unless you pass `--live`.
+`examples/simulation/01_rehearse_a_pick.py` builds a cell on a dummy arm and drives one pick through
+the real grasp stack. Neither needs hardware. The files under `examples/real_robot/` do: they drive
+your cell, and from the third on they move the arm.
 
 ## What you are installing
 
@@ -33,12 +34,15 @@ Python 3.11.
 python -m venv .venv
 .venv\Scripts\activate               # Windows. Elsewhere: source .venv/bin/activate
 pip install -r requirements.txt
+pip install -e . --no-deps
 ```
 
 `requirements.txt` is the whole dependency set and pins the CUDA 12.8 PyTorch wheels. They install
 and import on a machine with no GPU, so this is the file to use even without a card.
 `requirements-cpu.txt` is the escape hatch for a host that cannot take those wheels; under it Isaac
-Sim, cuRobo, the detectors and the local paraphrase model are all unavailable.
+Sim, cuRobo, the detectors and the local paraphrase model are all unavailable. The second install
+puts the repository itself on the environment's path, `src`, `api`, `datagen` and `willy`, and
+installs no dependency; the examples import `willy` through it.
 
 Perception model weights are fetched separately, into the shared Hugging Face cache:
 
@@ -92,34 +96,24 @@ explains what each item looks like at the cell if you skip it.
 ## 3. Run one pick, with no robot
 
 ```bash
-python scripts/examples/api/01_first_cell/one_pick_end_to_end.py
+python examples/simulation/01_rehearse_a_pick.py
 ```
 
 This builds a cell on a dummy arm against a synthetic scene and runs the real pick path: config
-preflight, `from_robot_config`, the safety attestation, one attempt, teardown.
+preflight, `from_robot_config`, the safety attestation, one attempt, teardown. It prints four
+reports in that order: the preflight, what the built arm will refuse, the campaign's verdict, and
+the attempt's own account, which ends in its `layers` line.
 
-```
-  OK   load the config tree                   vendor ur, calculator geometric
-  OK   config preflight                       0 blocking of 8 check(s)
-  OK   build the cell, config-driven          arm DummyRobotArm, gripper NullGripper
-  OK   what this arm will refuse              UNGATED, 0 guard(s)
-  OK   one pick, connect to teardown          1/1 attempt(s) succeeded
+Read the safety report and the `layers` line before the verdict. The safety report says `UNGATED`,
+which is the honest answer: `SafetyPreflight` is constructed inside the vendor driver, so a dummy
+arm reaches no guard at all, and the example asks the built arm what it will refuse rather than
+asserting that safety ran. `layers (none)` is read off report fields that stay unset when a layer
+produced nothing, so a capability that was not exercised cannot be reported as demonstrated.
+`SUCCEEDED` here is evidence about the code path and not about a grasp: the dummy hand commands
+nothing and holds nothing.
 
-      outcome    SUCCEEDED                    mode=auto
-      cell       dummy (simulated), gripper present
-      candidates 8, executed #0 at score 0.714
-      layers     (none)
-```
-
-Read the last three lines before the first. `UNGATED` is the honest answer: `SafetyPreflight` is
-constructed inside the vendor driver, so a dummy arm reaches no guard at all, and the example asks
-the built arm what it will refuse rather than asserting that safety ran. `layers (none)` is read off
-report fields that stay unset when a layer produced nothing, so a capability that was not exercised
-cannot be reported as demonstrated. And a `NullGripper` accepts every command and holds nothing, so
-`SUCCEEDED` here is evidence about the code path and not about a grasp.
-
-The candidate count and the score come from your configuration and your synthetic scene. They will
-differ from the numbers above as soon as you change a grasping key, which is the point of printing
+The candidate count and the score on the `candidates` line come from your configuration and your
+synthetic scene. They change as soon as you change a grasping key, which is the point of printing
 them.
 
 ## 4. Point it at your own cell
@@ -148,9 +142,9 @@ python -m src.config where fusion                            # find keys by subs
 python -m src.config decisions                               # only what this cell changes from default
 ```
 
-`--live` on `01_robot_setup.py` connects to the controller, pushes the payload, verifies the tool
-frame against it, and reads the pose back. That is the first command in this document that talks to
-hardware.
+`python scripts/checks/cell_bringup.py --live` connects to the controller, pushes the payload,
+verifies the tool frame against it, and reads the pose back. That is the first command in this
+document that talks to hardware, and it moves nothing.
 
 ## 5. Teach the camera where the robot is
 
@@ -158,7 +152,7 @@ A cell with no `CAMERA->BASE` transform builds, connects, and then refuses every
 `INVALID_TARGET`, which at the bench looks like a broken robot. Calibration is what removes that
 third blocking item, and it is a bench procedure rather than a command you can rehearse away:
 [calibration setup](calibration-setup.md) is the page to work from, and
-`scripts/examples/api/02_calibration/calibrate_fixed_camera.py` is the guided walkthrough that runs the same routine.
+`examples/real_robot/07_calibrate_a_fixed_camera.py` runs the same routine from Python.
 
 ## 6. Grasp presets
 
@@ -270,22 +264,22 @@ cell refuses to boot without. [Make Isaac ready](isaac-ready.md) is the setup, a
 [`src/willy_sim/`](../src/willy_sim/README.md) is the runner catalogue.
 
 ```bash
-python scripts/examples/api/08_sim/sim_pick_rate.py                                # checks this box, runs nothing
-<isaac-sim>\python.bat -m src.willy_sim.run_m1_pick --runs 10    # known-pose pick
+<isaac-sim>\python.bat -m src.willy_sim.run_m1_pick --runs 10       # known-pose pick
+<isaac-sim>\python.bat examples/simulation/03_isaac_pick_rate.py    # the same gate, from Python
 ```
 
 ## 9. The checks that gate a change
 
 ```bash
-ruff check src api datagen tests scripts
-mypy src api datagen scripts
+ruff check src api datagen tests scripts examples willy
+mypy src api datagen scripts examples willy
 pytest tests --cov=src --cov=api --cov=datagen --cov-fail-under=80
 python -m src.robot.grasping.replay --soak-report
 ```
 
-`scripts/` is linted and type-checked with the library, so an example or a workstation tool that
-stops matching the API fails the same gate the library does. `config/` is not in those lists: it is
-the YAML tree, and the Python that reads it lives in `src/config`.
+`scripts/` and `examples/` are linted and type-checked with the library, so an example or a
+workstation tool that stops matching the API fails the same gate the library does. `config/` is not
+in those lists: it is the YAML tree, and the Python that reads it lives in `src/config`.
 
 ## Where to go next
 
@@ -296,8 +290,9 @@ the YAML tree, and the Python that reads it lives in `src/config`.
 - [`src/robot/README.md`](../src/robot/README.md), the driver contract, and
   [`src/robot/drivers/`](../src/robot/drivers/README.md) for UR, KUKA, Isaac and the dummy.
 - [`src/config/`](../src/config/README.md), the loader and the schemas, and [`config/`](../config/), the YAML you edit.
-- [`scripts/examples/`](../scripts/examples/README.md), twenty-nine examples in topic folders, one per decision.
+- [`examples/`](../examples/README.md), short programs through `from willy import ...`, in three
+  folders by what has to be attached, and [`docs/cli.md`](cli.md), every command line by topic.
 - [`docs/runbooks/real_cell_first_pick.md`](runbooks/real_cell_first_pick.md), the ordered bring-up
   from a validated configuration to a commanded motion, and
-  [`docs/runbooks/ur3e_cell_bringup.md`](runbooks/ur3e_cell_bringup.md), which includes URSim in
-  Docker.
+  [`docs/runbooks/cell_bringup.md`](runbooks/cell_bringup.md), which brings a cell up on any robot and
+  includes URSim in Docker for a UR.

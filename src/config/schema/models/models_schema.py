@@ -120,9 +120,10 @@ class SpeechToTextConfig(StrictModel):
     #: The rate in Hz Whisper is fed at and the cell PC's microphone stream opens at. An upload at any
     #: other rate is resampled to it. 16000 for every Whisper checkpoint, and for Silero VAD.
     samplerate: int = Field(gt=0)
-    #: The three microphone keys, read by `MicrophoneSource.from_config` for `Listener.from_config`.
-    #: No console route or cell verb builds a `Listener` yet and an upload opens no microphone, so
-    #: today none of them changes a path that runs. Frames per callback; 0 lets PortAudio choose.
+    #: The three microphone keys, read by `MicrophoneSource.from_config`, which opens the cell PC's
+    #: microphone for the console's push to talk listen (`POST /v1/voice/listen`, through
+    #: `PushToTalkSource.from_config`) and for `Listener.from_config`. An upload opens no
+    #: microphone. Frames per callback; 0 lets PortAudio choose.
     blocksize: int = Field(ge=0)
     #: Channels to open; every block is averaged into one.
     channels: int = Field(ge=1)

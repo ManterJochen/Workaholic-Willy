@@ -20,14 +20,17 @@ not something a check may do because someone typed its name. That is the only fl
 
 Exit codes: 0 the arm answered and stands inside the box it will be held to, 1 it answered and
 disagrees with its own config, 2 there is nothing to connect to (no cell in the config, no driver on
-this host, no `--live`, a config the driver refuses before it opens a socket, or a controller that
-did not answer). The second-to-last of those used to be reported as the last of them.
+this host, no `--live`, a cell another process holds, a config the driver refuses before it opens a
+socket, or a controller that did not answer). The second-to-last of those used to be reported as the
+last of them.
 """
 
 from __future__ import annotations
 
 import sys
+from contextlib import ExitStack
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -35,11 +38,10 @@ from src.config import ConfigError, load_robot_config  # noqa: E402
 from src.geometry import Frame  # noqa: E402
 from src.robot.core import (  # noqa: E402
     RobotConnectionError,
-    RobotVendor,
     SupportsRobotStatus,
 )
-from src.robot.drivers import create_arm  # noqa: E402
 from src.robot.drivers.host import Host  # noqa: E402
+from src.robot.execution import CellBusy, Robot  # noqa: E402
 from src.robot.execution.real_cell.preflight import run_config_preflight  # noqa: E402
 
 EXIT_OK, EXIT_FAILED, EXIT_NOT_READY = 0, 1, 2
@@ -83,10 +85,13 @@ def main() -> int:
                           "install the vendor extra, or point this at a vendor the host has: "
                           "WILLY_PROFILE=ursim drives a UR against a container")
 
-    # `create_arm`, not a whole cell: `build_real_cell` opens an RGB-D camera and loads two models
-    # onto the GPU, and the question here is only what the controller says about itself.
+    # The arm alone, not a whole cell: `build_real_cell` opens an RGB-D camera and loads two models
+    # onto the GPU, and the question here is only what the controller says about itself. Built as a
+    # `Robot` with no gripper, the arm the calibrate command builds, so the connect below takes the
+    # cell's lock: a console, a campaign or a sweep holding this controller refuses this check
+    # instead of a second control script replacing theirs.
     try:
-        arm = create_arm(RobotVendor.from_string(config.vendor), config=config)
+        robot = Robot.from_config(config, gripper=None)
     except Exception as error:  # noqa: BLE001  (report, not raise)
         return _not_ready(
             f"the {config.vendor!r} arm could not be built ({type(error).__name__}: {error})",
@@ -108,70 +113,77 @@ def main() -> int:
             "never asked: " + "; ".join(f"{check.name} ({check.detail})" for check in refused),
             " / ".join(check.fix for check in refused if check.fix))
 
-    try:
-        # `connect()` does more than open a socket on the UR path: it pushes the declared payload
-        # and verifies the tool frame against the controller, so this is the step that catches a
-        # config describing a different robot than the one on the bench.
-        arm.connect()
-    except Exception as error:  # noqa: BLE001  (report, not raise)
-        return _not_ready(
-            f"the controller did not answer ({type(error).__name__}: {error})",
-            "is the controller reachable, is the robot in REMOTE control, and is the program "
-            "running? For a simulator: scripts/ursim/ursim.sh up MODEL")
+    with ExitStack() as connection:
+        try:
+            # `connect()` does more than open a socket on the UR path: it pushes the declared payload
+            # and verifies the tool frame against the controller, so this is the step that catches a
+            # config describing a different robot than the one on the bench.
+            connection.enter_context(robot.connected())
+        except CellBusy as error:
+            return _not_ready(f"another process holds this cell ({error})",
+                              "end the console session, the campaign or the sweep that holds it, "
+                              "then re-run")
+        except Exception as error:  # noqa: BLE001  (report, not raise)
+            return _not_ready(
+                f"the controller did not answer ({type(error).__name__}: {error})",
+                "is the controller reachable, is the robot in REMOTE control, and is the program "
+                "running? For a simulator: scripts/ursim/ursim.sh up MODEL")
+        # Read inside the connection; leaving the block disconnects and gives the lock back.
+        return _read_and_judge(robot.arm, config)
 
+
+def _read_and_judge(arm: Any, config: Any) -> int:
+    """Read the connected arm's pose and state, and hold them against the box its config declares."""
     caps = arm.capabilities
     box = config.workspace_limits
     margin = float(config.safety.limits.workspace_margin_mm)
     wrong: list[str] = []
     print(f"{caps.vendor} {caps.model}: connected, box shrunk by {margin:g} mm on every face")
 
-    try:
-        pose = arm.get_tcp_pose()
-        print(f"  tcp pose             {[round(float(v), 1) for v in pose.position_mm]} mm "
-              f"in {pose.frame.value}")
-        if pose.frame is not Frame.BASE:
-            # The box is declared in BASE. A pose tagged anything else cannot be compared against
-            # it, and comparing anyway would answer a question nobody asked.
-            wrong.append(f"the arm reports its pose in {pose.frame.value}, but workspace_limits "
-                         f"is declared in {Frame.BASE.value}")
-            print(f"  workspace            NOT COMPARABLE <- pose frame is not {Frame.BASE.value}")
-        else:
-            for axis, value, low, high in (
-                ("x", float(pose.position_mm[0]), box.x_min, box.x_max),
-                ("y", float(pose.position_mm[1]), box.y_min, box.y_max),
-                ("z", float(pose.position_mm[2]), box.z_min, box.z_max),
-            ):
-                face_lo, face_hi = low + margin, high - margin
-                if face_lo >= face_hi:
-                    wrong.append(f"workspace_margin_mm={margin:g} inverts {axis} "
-                                 f"[{low:g}, {high:g}]; the preflight will refuse to build")
-                    print(f"  workspace {axis:10s} INVERTED    margin is wider than the axis")
-                elif not face_lo <= value <= face_hi:
-                    where = ("outside the declared box" if not low <= value <= high else
-                             f"inside the declared box but within its {margin:g} mm margin")
-                    wrong.append(f"{axis} {value:.1f} mm is {where} [{low:g}, {high:g}]; the first "
-                                 f"commanded move is refused as WORKSPACE_REJECTED")
-                    print(f"  workspace {axis:10s} OUTSIDE     {value:.1f} not in "
-                          f"[{face_lo:g}, {face_hi:g}] <- {where}")
-                else:
-                    print(f"  workspace {axis:10s} inside      {value:.1f} in "
-                          f"[{face_lo:g}, {face_hi:g}]")
+    pose = arm.get_tcp_pose()
+    print(f"  tcp pose             {[round(float(v), 1) for v in pose.position_mm]} mm "
+          f"in {pose.frame.value}")
+    if pose.frame is not Frame.BASE:
+        # The box is declared in BASE. A pose tagged anything else cannot be compared against
+        # it, and comparing anyway would answer a question nobody asked.
+        wrong.append(f"the arm reports its pose in {pose.frame.value}, but workspace_limits "
+                     f"is declared in {Frame.BASE.value}")
+        print(f"  workspace            NOT COMPARABLE <- pose frame is not {Frame.BASE.value}")
+    else:
+        for axis, value, low, high in (
+            ("x", float(pose.position_mm[0]), box.x_min, box.x_max),
+            ("y", float(pose.position_mm[1]), box.y_min, box.y_max),
+            ("z", float(pose.position_mm[2]), box.z_min, box.z_max),
+        ):
+            face_lo, face_hi = low + margin, high - margin
+            if face_lo >= face_hi:
+                wrong.append(f"workspace_margin_mm={margin:g} inverts {axis} "
+                             f"[{low:g}, {high:g}]; the preflight will refuse to build")
+                print(f"  workspace {axis:10s} INVERTED    margin is wider than the axis")
+            elif not face_lo <= value <= face_hi:
+                where = ("outside the declared box" if not low <= value <= high else
+                         f"inside the declared box but within its {margin:g} mm margin")
+                wrong.append(f"{axis} {value:.1f} mm is {where} [{low:g}, {high:g}]; the first "
+                             f"commanded move is refused as WORKSPACE_REJECTED")
+                print(f"  workspace {axis:10s} OUTSIDE     {value:.1f} not in "
+                      f"[{face_lo:g}, {face_hi:g}] <- {where}")
+            else:
+                print(f"  workspace {axis:10s} inside      {value:.1f} in "
+                      f"[{face_lo:g}, {face_hi:g}]")
 
-        # A capability, not part of `RobotArm`: vendors differ in what they can report, so the
-        # stack feature-checks the Protocol instead of assuming, and a driver that does not carry
-        # it is UNSTATED rather than healthy.
-        if not isinstance(arm, SupportsRobotStatus):
-            print(f"  controller state     UNSTATED    {type(arm).__name__} does not implement "
-                  "SupportsRobotStatus")
-        else:
-            status = arm.get_robot_status()
-            print(f"  controller state     {status.robot_mode.value} / {status.safety_mode.value}; "
-                  f"protective {status.protective_stopped}; operational {status.is_operational}")
-            if status.is_stopped:
-                wrong.append(f"the cell is STOPPED ({status.safety_mode.value}, protective "
-                             f"{status.protective_stopped}); clear it before a pick")
-    finally:
-        arm.disconnect()
+    # A capability, not part of `RobotArm`: vendors differ in what they can report, so the
+    # stack feature-checks the Protocol instead of assuming, and a driver that does not carry
+    # it is UNSTATED rather than healthy.
+    if not isinstance(arm, SupportsRobotStatus):
+        print(f"  controller state     UNSTATED    {type(arm).__name__} does not implement "
+              "SupportsRobotStatus")
+    else:
+        status = arm.get_robot_status()
+        print(f"  controller state     {status.robot_mode.value} / {status.safety_mode.value}; "
+              f"protective {status.protective_stopped}; operational {status.is_operational}")
+        if status.is_stopped:
+            wrong.append(f"the cell is STOPPED ({status.safety_mode.value}, protective "
+                         f"{status.protective_stopped}); clear it before a pick")
 
     if wrong:
         print(f"\nFAILED: {len(wrong)} disagreement(s) between this arm and its own config")

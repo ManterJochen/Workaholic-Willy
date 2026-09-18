@@ -65,7 +65,8 @@ class RealSenseVisionPerceptionSource:
         ``segmenter.segment_detection(bgr, det) -> SegmentationResult`` (``.mask`` HxW, ``.label`` str).
     prompt
         The GroundingDINO phrase(s). A multi-phrase prompt grounds every object (the neighbour clutter
-        the dense sampler needs), not only the target.
+        the dense sampler needs), not only the target. :meth:`set_prompt` changes it, together with
+        ``object_labels``, between frames.
     object_labels
         Optional canonical labels (the known object names). When given, each detection's free-form
         GDINO label is mapped to the nearest canonical one, so an exact ``seg.label == target``
@@ -126,6 +127,31 @@ class RealSenseVisionPerceptionSource:
         #: gets. Both are bound with the reader.
         self._motion_tolerance: tuple[float, float] = (0.0, 0.0)
         self._frame_attempts = 0
+
+    # ------------------------------------------------------------------ the prompt
+    @property
+    def prompt(self) -> str:
+        """The phrase this source grounds on every frame."""
+        return self._prompt
+
+    @property
+    def object_labels(self) -> tuple[str, ...]:
+        """The labels a detector's words are mapped onto. Empty passes the words through."""
+        return self._object_labels
+
+    def set_prompt(self, prompt: str, *, object_labels: tuple[str, ...] = ()) -> None:
+        """Ground ``prompt`` from the next frame on, and map the detector's words onto
+        ``object_labels``.
+
+        Nothing reopens and nothing reloads: the backend takes the phrase on every call, so a cell
+        built for one object looks for another after this line. An empty phrase is refused here,
+        before a frame is taken, because the detector refuses it on every frame.
+        """
+        phrase = str(prompt)
+        if not phrase.strip():
+            raise ValueError("a grounding prompt names what to find; the detector refuses an empty one")
+        self._prompt = phrase
+        self._object_labels = tuple(str(label) for label in object_labels)
 
     # ------------------------------------------------------------------ label canonicalisation
     def _canonical_label(self, gdino_label: str) -> str:

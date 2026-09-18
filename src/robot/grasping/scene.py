@@ -71,6 +71,10 @@ class SceneGrasps:
     def best(self) -> SupportFootprintCandidate | None:
         return self.candidates[0] if self.candidates else None
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         """The ranked list, for a person. ASCII, no trailing newline, no arguments."""
         head = (f"  {len(self.candidates)} grasp(s) from the {self.generator} generator "

@@ -43,7 +43,8 @@ import time
 from pathlib import Path
 
 # Running this as a file puts only `scripts/ursim/` on sys.path, so `import src...` fails without
-# the repository root. Every file under `scripts/examples/api/` does the same insert inline, for the same reason.
+# the repository root on a checkout that was never installed with `pip install -e . --no-deps`; the
+# install puts `src` on the path from anywhere.
 _REPO_ROOT = str(Path(__file__).resolve().parents[2])
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)

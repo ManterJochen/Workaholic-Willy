@@ -27,6 +27,10 @@ A `GraspPoint` fully specifies how a parallel jaw should approach and close.
 | `frame` | Which frame the vectors live in: `GraspFrame.CAMERA` or `GraspFrame.BASE` |
 | `label`, `metadata` | Optional provenance and per-candidate telemetry |
 
+`pose()` is where the tool goes for the grasp, in the grasp's own frame: +Z `approach`, +X `axis`. A
+BASE grasp gives the pose `Robot.pick` takes, with `grip_width_mm` as its width; `Robot.pick` refuses
+a CAMERA one with nothing commanded.
+
 The numerics contract is enforced rather than described. Distances are millimetres; `approach` and
 `axis` are normalised at construction and a zero vector raises. The dataclass is frozen and the three
 numpy arrays are marked read-only, so `gp.position[0] = x` raises instead of silently mutating a

@@ -54,7 +54,10 @@ that finds nothing still exits `0`: `explain` reports the key as unknown and off
 
 `explain` reports a key's type, constraints, default, tier, which file and layer set the winning value,
 the whole override chain, and the comment written above that line, which `yaml.safe_load` discards.
-`where` searches the schema rather than the files, so it finds the fields no YAML mentions.
+`where` searches the schema rather than the files, so it finds the fields no YAML mentions. The same
+questions from Python are
+[`examples/real_robot/01_load_your_cell.py`](../../examples/real_robot/01_load_your_cell.py), and
+[`docs/cli.md`](../../docs/cli.md#the-config-tree) carries these commands beside every other one.
 
 These three exist because the tree has to be asked rather than read. A YAML file states what this cell
 decided; everything it stays silent about is the schema default, in force and unchanged, and a reader
@@ -64,18 +67,69 @@ who greps the files sees only half the configuration.
 
 | Path | Role |
 |---|---|
-| [`__init__.py`](__init__.py) | Public surface: `load_config`, `load_robot_config`, the section loaders `load_robot_section`, `load_camera_section`, `load_speech_section` and `load_perception_section`, `reload_config`, `default_data_dir`, `ConfigError`, `ConfigTree`, `LoadedTree`, and the section models `AppConfig`, `CameraConfig`, `ModelsConfig`, `RobotConfig`, `RuntimeConfig`. Schema classes import eagerly; loader helpers load lazily, so a schema-only import needs no YAML dependency. |
+| [`__init__.py`](__init__.py) | Public surface: `load_config`, `load_robot_config`, the section loaders `load_robot_section`, `load_camera_section`, `load_speech_section` and `load_perception_section`, `reload_config`, `default_data_dir`, `ConfigError`, `ConfigTree`, `LoadedTree`, and the section models `AppConfig`, `CameraConfig`, `ModelsConfig`, `RobotConfig`, `RuntimeConfig`. Schema classes import eagerly; loader helpers and the tree load lazily, so a schema-only import needs no YAML dependency. |
 | [`loader.py`](loader.py) | The pipeline above. `load_config` is cached by data directory and profile chain; each section loader reads and validates one section and is not cached. |
 | [`grippers.py`](grippers.py) | The gripper registry: `load_gripper` and `available_grippers` read one `config/grippers/<model>.yaml` per hand, and refuse an unknown name, a file named after another hand, or an alias two hands claim. The registry holds the Robotiq 2F-85, the Robotiq Hand-E and the Schunk EGU-50, the last two measured off their collision bundles. `robot.gripper.model` names the hand a cell carries. The loader fills that hand's widths and collision envelope from the repository's registry file for every key the profile chain leaves unset, and refuses a stated one that differs, naming both (`hand_numbers.py`); the guard, the planner, the deep calculator and the sim's mount take the hand from the same name, and `robot.gripper.vendor` still picks the driver. A short name such as `2f85` resolves through `load_gripper(name)`, the lookup for reading a corpus, and is refused by `load_gripper(name, aliases=False)`, the lookup behind the key. `python -m src.config` reads the registry whenever the tree has one and resolves the hand a cell names, so a broken hand file, an alias two hands claim, a short name or a hand no file defines fails validation, and the OK line lists the hands. A tree with no `grippers/` directory validates while it names no hand. The repository's registry is the one authority: a tree whose copy of the hand its cell names differs from the repository's, or that describes a hand the repository does not, fails naming both files (`tree_hand_refusal`), because the hand's body, sphere map, retract rows and evidence are written from the repository's file. |
 | [`cameras.py`](cameras.py) | The camera registry: `load_camera` and `available_cameras` read one `config/cameras/<model>.yaml` per camera body, the housing as a box in the colour camera's optical frame. The registry holds the RealSense D435i, D435, D405 and D415, each housing the smallest box around the drawing's maximum extents, every number from Intel's D400 datasheet 337029-017 revision 019 and the colour offset from realsense-ros at a pinned commit, derived in the file's own comments. `camera.cameras.rigs[<id>].body` (`model`, `margin_mm`, `bracket`, all required, `bracket: null` written out) declares a camera the arm carries; the schema refuses it on an eye_to_hand rig, on a stereo rig and on a rig id that cannot name a link, and a rig with a body needs `extrinsics.record_tolerance_mm` and `record_tolerance_deg` with no default. The repository's registry is the one authority, as for grippers: a tree whose copy of a camera its rigs name differs from the repository's fails naming both files (`tree_camera_refusal`), but a tree without `cameras/` reads the repository's, because a camera fills no config number at load. `python -m src.config` reads the camera registry whenever the tree has one and looks up every camera a rig's body names. |
 | [`_registry.py`](_registry.py) | What the two registries share: how a `<model>.yaml` file is found on every platform, how two descriptions compare key by key, and how a registry path is shown to a person. |
 | [`hand_numbers.py`](hand_numbers.py) | The thirteen robot keys a named hand determines (its widths and its collision envelope), filled at load from the repository's registry file where the profile chain leaves them unset, and the refusal of a stated one that differs. |
-| [`tree.py`](tree.py) | `ConfigTree` and `default_data_dir()`: the one place that answers "which directory does `load_config()` read", so no caller rebuilds that walk from its own location and gets a silently wrong answer. |
+| [`tree.py`](tree.py) | `ConfigTree` and `LoadedTree`: the root and the chain as one value, `load()` as a verdict that never raises, the questions (`explain`, `decisions`), `write()` for a bench measurement, `with_values()` for a validated change in memory, and the names a noun built from the tree reads (see below). `default_data_dir()` is the one place that answers "which directory does `load_config()` read", so no caller rebuilds that walk from its own location and gets a silently wrong answer. |
 | [`_merge.py`](_merge.py) | The recursive dict merge profile overlays are built on. |
 | [`explain.py`](explain.py) | Value, type, default, tier, which layer set it, and the YAML comment above that line. Backs `explain`, `where` and `decisions`, and the console's provenance view. |
 | [`edit.py`](edit.py) | Writing a bench measurement back in: allowlisted keys only, one line rewritten in place so comments survive, the group validated as one transaction, files restored if the loader rejects the result. |
 | [`schema/`](schema/) | The `StrictModel` schemas: [`app.py`](schema/app.py), [`runtime.py`](schema/runtime.py), [`camera/`](schema/camera/), [`models/`](schema/models/), [`grippers/`](schema/grippers/) for one hand's description, [`cameras/`](schema/cameras/) for one camera body's, and [`robot/`](schema/robot/) split per vendor and subsystem (`ur`, `kuka`, `sim`, `dummy`, `safety`, `grasping`, `calibration`, `kpi`, `rl`, `tool_frame`). |
 | `__main__.py` | The `python -m src.config` validator and query CLI. |
+
+## One tree, handed over once
+
+`ConfigTree` is the directory and the chain in force as one value, with the layers derived from the
+chain. `load()` never raises: it returns a `LoadedTree`, the verdict with both halves (`render()`,
+`to_dict()`), and the questions `explain` and `decisions` hang off it.
+
+```python
+from src.config import ConfigTree
+
+tree = ConfigTree.from_directory(profile="ursim").load()
+print(tree.render())
+if not tree.ok:
+    raise SystemExit(tree.exit_code)
+
+hande = tree.with_values({"robot.gripper.model": "robotiq_hande"})
+print(hande.render())                                          # ... in memory: robot.gripper.model
+print(hande.explain("robot.gripper.max_width_mm").render())    # 49.99, from grippers/robotiq_hande.yaml
+```
+
+A change in memory is a load. `with_values` reads the files again under the same root and chain, sets
+the dotted keys on top of every layer, and runs the load as it always runs: the named hand fills the
+thirteen numbers it supplies (`hand_numbers.py`), the schema validates the whole tree, and the
+registries are checked. Nothing is written, and the tree it was called on is unchanged. A value that
+does not validate comes back as a tree that did not load, with the load's own refusal, where the key
+is said to be written in `LoadedTree.with_values` and not at a file line that holds another value;
+`explain` and `decisions` name it the same way. `[n]` sets an item of a list the tree holds
+(`camera.cameras.rigs[1].enabled`). `model_copy` on a loaded section runs none of this: naming the
+Hand-E that way keeps the 2F-85's widths without a word. A change that belongs in a file goes through
+`ConfigTree.write`, which takes the bench measurements only.
+
+A noun that spans sections takes the `LoadedTree` and reads it under these names:
+
+| Name | What it is |
+|---|---|
+| `app_config` | The validated `AppConfig`. Raises `ConfigError` with the tree's refusal when it did not load; `config` is the same object, or `None`. |
+| `robot` | The validated robot section. Raises the tree's refusal, or the sentence `load_robot_config` gives a tree with no robot block. |
+| `root` | The directory, resolved: the repository's `config/` when none was named. Every `data_dir=` takes it. |
+| `profile`, `layers` | The chain as `load_config(profile=...)` takes it (`None` for the base tree), and the chain split into its layers. `chain` is the same fact for a person. |
+| `values` | What `with_values` gave in memory, dotted key to value. Empty for a tree read from its files. |
+
+A door reads the sections from here and never loads `root` under `profile` a second time: the values
+given in memory live only in the `LoadedTree`, and a second load drops them without a word.
+
+A directory without profiles loads the same way. `ConfigTree.from_directory(root=path,
+profile=None).load()` reads the directory's base files and nothing else, and its `config` is the
+`AppConfig` that `load_config(path, profile=None)` returns. Leaving `profile` unset reads
+`WILLY_PROFILE`, as `load_config(path)` does, so a chain exported in the shell that the directory has
+no overlays for is refused naming the variable. The tree checks one thing the bare loader does not: a
+directory that names a hand carries the repository's registry file for it under `grippers/`, whether a
+file names the hand or `with_values` does.
 
 ## The tree on disk
 
@@ -345,7 +399,8 @@ that any grasp is good, and it says so in its own provenance block.
 under `src/` imports it, and the web framework it needs is an optional extra.
 
 **Caching.** `load_config()` is cached by absolute data directory and active profile chain. Call
-`reload_config()` to invalidate it after editing files.
+`reload_config()` to invalidate it after editing files. `LoadedTree.with_values` is never cached:
+two sets of values under one chain are two trees.
 
 **Section loaders.** `load_robot_section`, `load_camera_section`, `load_speech_section` and
 `load_perception_section` read and validate one section each, through the same profile chain, so a
@@ -366,6 +421,6 @@ are a discriminated union on `source` (`webcam_pair`, `single_device`, `rgbd`).
 **Changing config in anger has runbooks.** This page describes the tree; the ordered procedures
 that edit it on a live cell live under [`docs/runbooks/`](../../docs/runbooks/):
 [`real_cell_first_pick.md`](../../docs/runbooks/real_cell_first_pick.md) for the first pick on a
-physical arm and [`ur3e_cell_bringup.md`](../../docs/runbooks/ur3e_cell_bringup.md) for a robot the
+physical arm and [`cell_bringup.md`](../../docs/runbooks/cell_bringup.md) for a robot the
 stack has not run before. Measuring the extrinsics those procedures write is
 [`docs/calibration-setup.md`](../../docs/calibration-setup.md).

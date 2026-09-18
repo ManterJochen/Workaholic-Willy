@@ -1,6 +1,6 @@
 """Autonomous grasp service package.
 
-One concern per module: service, config, report, builders, cells,
+One concern per module: service, config, prompt, report, builders, cells,
 rehearsal, record_logging, action_mask_eval, watchdog, latency, shadow.
 The public API is re-exported here so
 ``src.robot.execution.autonomous_grasp`` import paths are unchanged.
@@ -22,6 +22,8 @@ from .config import (
     _profile_for,
     resolve_grasp_mode,
 )
+from .prompt import PickPrompt
+from src.robot.grasping.motion.grasp_motion import GraspMotion
 from .report import AutonomousGraspOutcome, AutonomousGraspReport
 from .cells import (
     CellBuildRefused,
@@ -64,5 +66,7 @@ __all__ = [
     "GraspBehaviorProfile",
     "GraspMode",
     "GraspModeInput",
+    "GraspMotion",
+    "PickPrompt",
     "resolve_grasp_mode",
 ]

@@ -47,7 +47,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from src.geometry import Frame, Pose
 from src.robot.grasping.collision import ParallelJawGripperModel
+from src.robot.grasping.geometry.grasp_frame import pose_from_grasp_axes
 
 __all__ = [
     "SupportFootprintCandidate",
@@ -150,7 +152,7 @@ class SupportFootprintJaw:
 
 @dataclass(frozen=True, slots=True)
 class SupportFootprintCandidate:
-    """One enumerated grasp, in BASE millimetres."""
+    """One enumerated grasp, in BASE millimetres. :meth:`pose` is where the tool goes for it."""
 
     score: float
     position_mm: np.ndarray
@@ -161,6 +163,25 @@ class SupportFootprintCandidate:
     contact_angle_rad: float
     #: Lowest point of the closed gripper above the support, millimetres.
     clearance_mm: float
+
+    def pose(self) -> Pose:
+        """Where the tool goes for this grasp: the BASE pose ``Robot.pick`` takes, with
+        ``grip_width_mm``.
+
+        The pose sits at ``position_mm``. Its +Z is ``approach``, the direction the tool travels
+        toward the part (straight down is ``(0, 0, -1)``), and its +X is ``closing_axis``, the line
+        the pads close across::
+
+            best = Scene.from_cloud(cloud_base_mm, support_height_mm=0.0).grasps().best
+            if best is not None:
+                robot.pick(best.pose(), best.grip_width_mm)
+
+        ``Robot.pick`` backs off along that +Z to its standoff, runs a line in to ``position_mm``
+        and closes to ``grip_width_mm`` less its squeeze. The frame is BASE because this stage
+        plans in BASE and in nothing else.
+        """
+        return pose_from_grasp_axes(self.position_mm, approach=self.approach, closing_axis=self.closing_axis,
+                                    frame=Frame.BASE)
 
 
 # --------------------------------------------------------------------------- planar helpers

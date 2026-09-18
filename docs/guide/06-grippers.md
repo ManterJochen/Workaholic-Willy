@@ -267,18 +267,21 @@ not know which of the six it has. `Robot` builds the arm and the gripper your co
 pick service around them, and connects them in the order a cell connects:
 
 ```python
-from src.config import load_robot_section
-from src.robot.execution.robot import Robot
+from src.config import ConfigTree
+from src.robot.execution import Robot
 
-robot = Robot.from_config(load_robot_section())
+tree = ConfigTree.from_directory(profile="hande").load()        # your cell's profile, which names its hand
+robot = Robot.from_tree(tree)
 with robot.connected() as live:          # lock, arm, then gripper
     report = robot.grasp(40.0)           # close to 40 mm, read what was measured
     print(report.render())
     robot.release()                      # open to the hand's width
 ```
 
-A gripper that had to be substituted is refused at `connected()` rather than connected, as the cell
-refuses it. `Robot.from_config(..., gripper=None)` builds the arm alone.
+Load the profile of your cell: the base tree names no hand, and a robot is not built on a hand
+nobody named. At a desk, `profile="console_dummy"` builds a dummy arm with a dummy hand. A gripper
+that had to be substituted is refused at `connected()` rather than connected, as the cell refuses it.
+`Robot.from_tree(tree, gripper=None)` builds the arm alone.
 
 `grasp` and `release` say what was measured rather than what was commanded. `report.hold` is `HELD` or
 `EMPTY` where the gripper measured it (the Robotiq's gOBJ, the OnRobot status word, a vacuum switch, a
@@ -294,27 +297,32 @@ commanding anything.
 A pick and a place are one call each, for a part whose pose you already know in BASE:
 
 ```python
-from src.robot.core.camera_world import CameraWorldDecline
-
-bench = CameraWorldDecline("bench check, no cameras mounted")
+bench = "bench check, no cameras mounted"
 with robot.connected():
-    picked = robot.pick(grasp_pose, 40.0, camera_world=bench)   # standoff, a line in, grasp, a line out
+    picked = robot.pick(grasp_pose, 40.0, decline=bench)   # standoff, a line in, grasp, a line out
     print(picked.render())
     if picked.ok:
-        print(robot.place(place_pose, camera_world=bench).render())
+        print(robot.place(place_pose, decline=bench).render())
 ```
 
 The pose's own +Z is the approach. `pick` opens the jaws to the hand's width, moves to a standoff
 `standoff_mm` (80) back along the approach with a planned move, drives a straight line to the pose,
 closes to `width_mm` less `squeeze_mm` (1), and drives the line back out. `place` does the same with a
 release. Before any command both refuse a robot with no usable gripper, a closed link, a pose not in
-BASE, a camera world the arm would refuse the motion for, and an arm that keeps no straight line: on a
-cuRobo UR or sim arm every sample of the line is judged before it runs, on an ik UR the controller draws
-it and only its end is judged, a sim on ik or RMPflow drops it and is refused, and the dummy sets the
-pose. A refused motion ends the verb with nothing commanded after it, a close that measures nothing
-opens and backs out, and a release the gripper does not confirm leaves the arm where it stands.
+BASE, a camera world the arm would refuse the motion for, and an arm whose motions do not go through
+cuRobo and the exact mesh guard: a cuRobo UR or sim arm judges every sample of the line before it runs,
+the dummy and the sim mock set the pose, and an ik UR, a KUKA and a sim on ik or RMPflow are refused. A
+refused motion ends the verb with nothing commanded after it, and so does a camera that could not vouch
+for the cell, as the outcome `CAMERA_WORLD_UNAVAILABLE`. A close that measures nothing opens and backs
+out, and a release the gripper does not confirm leaves the arm where it stands.
+`camera_world=CameraWorldDecline("<why>")` is a second spelling of `decline="<why>"` and works the same.
 
-On a cell whose cameras are handed to `Robot.from_config(..., cameras=[...])`, leave `camera_world`
+`robot.move(pose)`, `robot.move_joints(joints)` and `robot.home()` move the arm alone, with the same
+refusals and the same `decline=`, through the arm's own checked verbs. Each returns a `MotionReport`
+whose `render()` names the outcome, the arm's status and message, the camera-world stamp and the
+route; on a desk arm the route and the stamp say `UNPLANNED`.
+
+On a cell whose cameras are handed to `Robot.from_config(..., cameras=[...])`, leave `decline`
 unset: every motion plans against the live world, and a declined motion is refused there. Pass the
 target's `SegmentationOffer` as `keep_out=` (a `Locator` result's `keep_out(i)` gives one) and the part
 is held out of the planner world through every motion of the pick. The report carries the camera-world

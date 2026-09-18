@@ -50,12 +50,14 @@ alone does not identify which of them carried the typo.
 
 from __future__ import annotations
 
+import copy
 import difflib
 import os
 import re
+from collections.abc import Collection, Mapping
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Final, TypeVar
 
 import yaml
 from pydantic import BaseModel, ValidationError
@@ -118,6 +120,18 @@ _CAMERA_KEYS = ("cameras", "stereomatcher")
 
 # Matches ${VAR} and ${VAR:-default} on a single line; nested references are not supported.
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:\:-([^}]*))?\}")
+
+#: The refusal every door that asks a tree for its robot block gives when there is none:
+#: :func:`load_robot_config` and :attr:`~src.config.tree.LoadedTree.robot`.
+_NO_ROBOT_BLOCK: Final = "the loaded config has no `robot` block"
+
+#: Where a refusal says a value given to :meth:`~src.config.tree.LoadedTree.with_values` was
+#: written. It has no file and no line, and naming the file line it replaced would put the value
+#: above a line that sets another one.
+_IN_MEMORY_ORIGIN: Final = "LoadedTree.with_values"
+
+#: One part of a dotted key given in memory: a name, and at most one ``[index]`` after it.
+_VALUE_SEGMENT = re.compile(r"(?P<name>[^.\[\]\s]+)(?:\[(?P<index>\d+)\])?")
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +196,7 @@ def load_robot_config(
     cfg = load_config(data_dir, profile=profile)
     robot = getattr(cfg, "robot", None)
     if robot is None:
-        raise ConfigError("the loaded config has no `robot` block")
+        raise ConfigError(_NO_ROBOT_BLOCK)
     return robot
 
 
@@ -378,7 +392,9 @@ def _validate_section(
         raise ConfigError(_describe_validation_error(exc, root, profile, prefix=prefix)) from exc
 
 
-def _apply_named_hand(raw: dict[str, Any], root: Path, profile: str) -> None:
+def _apply_named_hand(
+    raw: dict[str, Any], root: Path, profile: str, *, in_memory: Collection[str] = (),
+) -> None:
     """A named hand supplies its unset widths and envelope, and a contradiction is refused.
 
     It runs after every merge and overlay, so what a profile leaves unset is what the chain as a
@@ -386,6 +402,10 @@ def _apply_named_hand(raw: dict[str, Any], root: Path, profile: str) -> None:
     Both doors call it: the whole tree and the robot section. The numbers come from the repository
     registry whatever tree is loaded, because that registry is the one authority: a tree's own
     grippers/ may repeat a hand, and the validator and the desk refuse one that differs.
+
+    ``in_memory`` holds the keys given to :meth:`~src.config.tree.LoadedTree.with_values`, spelled
+    by :func:`_normal_key`. A contradiction among them is said to be written there, never at the
+    file line the value replaced.
     """
     if raw.get("robot") is None:
         return
@@ -395,18 +415,117 @@ def _apply_named_hand(raw: dict[str, Any], root: Path, profile: str) -> None:
         try:
             from ._provenance import index_origins
 
-            return {key: origin.location(root) for key, origin in index_origins(root, profile_layers(profile)).items()
-                    if key.startswith("robot.")}
+            found = {key: origin.location(root) for key, origin in index_origins(root, profile_layers(profile)).items()
+                     if key.startswith("robot.")}
         except Exception:  # noqa: BLE001 (where a number was written is for the sentence; never mask the refusal)
-            return {}
+            found = {}
+        found.update({key: _IN_MEMORY_ORIGIN for key in in_memory if key.startswith("robot.")})
+        return found
 
     raw["robot"] = apply_named_hand(raw["robot"], stated_in=stated_in, data_dir=root)
 
 
+def _value_segments(key: str) -> tuple[str | int, ...]:
+    """The parts of a dotted key given in memory, an index as an ``int``.
+
+    ``rigs[0].enabled`` gives ``rigs, 0, enabled``. A key that does not parse is a programmer error
+    and raises ``ValueError``; it never reaches a tree.
+    """
+    segments: list[str | int] = []
+    for part in key.split("."):
+        match = _VALUE_SEGMENT.fullmatch(part)
+        if match is None:
+            raise ValueError(
+                f"{key!r} is not a dotted config key: each part between the dots is a name, with at most one "
+                "[index] after it, as in 'camera.cameras.rigs[0].enabled'"
+            )
+        segments.append(match["name"])
+        if match["index"] is not None:
+            segments.append(int(match["index"]))
+    return tuple(segments)
+
+
+def _normal_key(key: str) -> str:
+    """``key`` as a validation error and the side-car index spell it: ``rigs[0]`` becomes ``rigs.0``."""
+    return ".".join(str(segment) for segment in _value_segments(key))
+
+
+def _in_memory_keys(values: Mapping[str, Any]) -> frozenset[str]:
+    """The keys of ``values``, spelled by :func:`_normal_key`."""
+    return frozenset(_normal_key(key) for key in values)
+
+
+def _within(dotted: str, keys: Collection[str]) -> bool:
+    """Whether ``dotted``, spelled by :func:`_normal_key`, is one of ``keys`` or lies inside one.
+
+    An item of a list given whole lies inside the key of the list.
+    """
+    return any(dotted == key or dotted.startswith(f"{key}.") for key in keys)
+
+
+def _holds(dotted: str, keys: Collection[str]) -> bool:
+    """Whether ``dotted``, spelled by :func:`_normal_key`, is a block that holds one of ``keys``."""
+    return any(key.startswith(f"{dotted}.") for key in keys)
+
+
+def _apply_values(raw: dict[str, Any], values: Mapping[str, Any]) -> None:
+    """Set each dotted key of ``values`` in the merged ``raw`` tree, in order, so a later key wins.
+
+    A block on the way that no file writes, or that a file wrote as a scalar, becomes a mapping, so
+    a value of the wrong shape is refused by the schema in its own words. ``[n]`` sets an item of a
+    list the files hold; an item the list does not hold is refused here, because no schema rule can
+    name it. Each value is copied, so the tree that was given it never shares a list with the raw
+    mapping.
+    """
+    for key, value in values.items():
+        segments = _value_segments(key)
+        node: Any = raw
+        for depth, segment in enumerate(segments):
+            if isinstance(segment, int) and not (isinstance(node, list) and segment < len(node)):
+                where = ".".join(str(part) for part in segments[:depth])
+                held = f"which holds {len(node)} item(s)" if isinstance(node, list) else "which is not a list"
+                raise ConfigError(
+                    f"{key} names item {segment} of {where}, {held} in this tree. A value given in memory sets an "
+                    "item the tree holds and adds none."
+                )
+            if depth == len(segments) - 1:
+                node[segment] = copy.deepcopy(value)
+                break
+            child = node[segment] if isinstance(segment, int) else node.get(segment)
+            if not isinstance(segments[depth + 1], int) and not isinstance(child, dict):
+                child = {}
+                node[segment] = child
+            node = child
+
+
 @lru_cache(maxsize=8)
 def _load_cached(root_str: str, profile: str) -> AppConfig:
-    root = Path(root_str)
+    return _assemble(Path(root_str), profile, {})
 
+
+def _load_with_values(
+    data_dir: str | Path | None, *, profile: "Maybe[str | None]", values: Mapping[str, Any],
+) -> AppConfig:
+    """The whole tree with ``values`` given in memory on top of every layer, validated, not cached.
+
+    The door behind :meth:`~src.config.tree.LoadedTree.with_values`. It is not cached because two
+    sets of values under one chain are two trees, and the cache is keyed by the directory and the
+    chain only.
+    """
+    root, chain = _root_and_chain(data_dir, profile)
+    return _assemble(root, chain, values)
+
+
+def _assemble(root: Path, profile: str, values: Mapping[str, Any]) -> AppConfig:
+    """Read every file of the tree under ``profile``, set ``values`` on top, fill the named hand, and validate.
+
+    The one pipeline behind :func:`load_config` and :meth:`~src.config.tree.LoadedTree.with_values`,
+    so a value given in memory meets exactly the checks a value written in a layer meets. Every file
+    is read first, the runtime section with the others, and then the steps that change the merged
+    mapping run: the adaptation overlay, the values, the named hand. The runtime file and the named
+    hand touch different sections, so their order decides only which refusal a tree broken in both
+    places meets first, and that is the runtime file's.
+    """
     raw: dict[str, Any] = {
         "camera": _load_camera_section(root, profile),
         "models": _load_models_section(root, profile),
@@ -416,21 +535,24 @@ def _load_cached(root_str: str, profile: str) -> AppConfig:
     if robot is not None:
         raw["robot"] = robot
 
-    _apply_env_adaptation_overlay(raw)
-    _apply_named_hand(raw, root, profile)
-
     runtime = _load_optional_section(root / "app" / "runtime.yaml", "runtime", profile)
     if runtime is not None:
         raw["runtime"] = runtime
 
+    _apply_env_adaptation_overlay(raw)
+    given = _in_memory_keys(values)
+    _apply_values(raw, values)
+    _apply_named_hand(raw, root, profile, in_memory=given)
+
     try:
         return AppConfig.model_validate(raw)
     except ValidationError as exc:
-        raise ConfigError(_describe_validation_error(exc, root, profile)) from exc
+        raise ConfigError(_describe_validation_error(exc, root, profile, in_memory=given)) from exc
 
 
 def _describe_validation_error(
     exc: ValidationError, root: Path, profile: str, *, prefix: tuple[str, ...] = (),
+    in_memory: Collection[str] = (),
 ) -> str:
     """Render a validation failure so the reader can go straight to the line that caused it.
 
@@ -444,6 +566,11 @@ def _describe_validation_error(
     ``prefix`` is where a section validated on its own sits in the whole tree (``("robot",)`` for
     :func:`load_robot_section`), so its keys are named, and found in the side-car index, exactly as
     the whole-tree load names them.
+
+    ``in_memory`` holds the keys given to :meth:`~src.config.tree.LoadedTree.with_values`, spelled
+    by :func:`_normal_key`. A key at or inside one of them is said to be written there, ahead of a
+    file line that also writes it, because that line holds another value; a block no file writes
+    that holds one is said to be written there too.
     """
     layers = profile_layers(profile)
     header = f"configuration failed schema validation under {root}"
@@ -464,7 +591,9 @@ def _describe_validation_error(
         dotted = ".".join(str(part) for part in (*prefix, *err["loc"]))
         lines.append(f"\n  {dotted}")
         origin = origins.get(dotted)
-        if origin is not None:
+        if _within(dotted, in_memory) or (origin is None and _holds(dotted, in_memory)):
+            lines.append(f"      at {_IN_MEMORY_ORIGIN}")
+        elif origin is not None:
             lines.append(f"      at {origin.location(root)}")
         else:
             # No origin means the key appears in no YAML: a schema default that failed a

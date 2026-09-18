@@ -1,8 +1,25 @@
 # Workaholic-Willy, tooling configuration for ruff, mypy, pytest and coverage.
 #
 # The project is a library plus CLI stack, run from the repository root as
-# python -m src.<package>. It is not packaged for pip install, so this file
-# carries tool configuration only and has no [build-system] or [project] table.
+# python -m src.<package>. It is packaged only so that pip install -e . --no-deps
+# puts src, api, datagen and willy on the path of a virtual environment: an
+# example or a script then imports the library from anywhere without a sys.path
+# preamble. The dependencies stay in the requirements files CI installs, so
+# [project] names none.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "workaholic-willy"
+version = "0.1.0"
+description = "Vision-language robot grasping: perception, grasp synthesis, fail-closed motion and a pick loop"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["src*", "api*", "datagen*", "willy*"]
 
 # ---------------------------------------------------------------------------
 # Ruff

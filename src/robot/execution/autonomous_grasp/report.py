@@ -123,6 +123,12 @@ _PICK_TO_AUTONOMOUS: Mapping[PickOutcome, AutonomousGraspOutcome] = {
 }
 
 
+def _ascii(text: str) -> str:
+    """``text`` as ASCII, with anything else escaped. A fault's words come from a driver or an SDK and
+    may carry any character, and :meth:`AutonomousGraspReport.render` prints to a cp1252 console."""
+    return text.encode("ascii", "backslashreplace").decode("ascii")
+
+
 @dataclass(frozen=True, slots=True)
 class AutonomousGraspReport:
     """Typed aggregate result of an :meth:`AutonomousGraspService.pick` call.
@@ -144,7 +150,8 @@ class AutonomousGraspReport:
     pick_report
         Underlying :class:`PickSessionReport` produced by the wrapped
         :class:`RuntimePickService`. :data:`None` only when the service
-        refused to dispatch (e.g. ``MODE_NOT_AVAILABLE``).
+        refused to dispatch (e.g. ``MODE_NOT_AVAILABLE``) or a fault of
+        the cell ended the pick (:attr:`fault`).
     telemetry
         Free-form key/value bag for forward-compatible diagnostics.
         Keys are stable strings; values are JSON-serializable.
@@ -234,6 +241,12 @@ class AutonomousGraspReport:
     # serializer copies it into ``GraspAttemptRecord.recovery_actions`` (an existing top-level field) so
     # offline ``train_recovery`` can walk the per-step (action, reward) sequence. Carrier-only for the pick path.
     recovery_actions: tuple[Mapping[str, Any], ...] = ()
+    # A fault of the cell that ended this pick before its own path could report it: a controller
+    # link that dropped, an e-stop, a camera that could not vouch for the cell, a wrist frame taken
+    # while the tool moved, a device that stopped delivering. `pick()` reports it here instead of
+    # raising it, with `outcome` EXECUTION_FAILED and no `pick_report`, and a campaign stops on it.
+    # `None` on every pick that ended through its own path.
+    fault: Optional[Exception] = None
 
     @property
     def succeeded(self) -> bool:
@@ -248,11 +261,13 @@ class AutonomousGraspReport:
         bag is the reason surface. The lookup lives here so the CLI and the console give the same
         answer rather than each guessing at it.
 
-        The line carries the outcome plus whichever of three sources is present:
+        The line carries the outcome plus whichever of four sources is present:
 
         * ``telemetry['low_level_outcome']``, what the pick loop terminated on, which is
           finer-grained than the service-level outcome (``no_grasp_found`` vs ``approach_path_blocked``);
         * ``telemetry['runtime_error_type']``, present only when the attempt raised;
+        * :attr:`fault`, a fault of the cell that ended the pick, as its type and its sentence
+          escaped to ASCII;
         * the last attempt's typed ``reasons``, why the candidates were rejected.
         """
         if self.succeeded:
@@ -263,6 +278,8 @@ class AutonomousGraspReport:
             parts.append(f"low_level={low_level}")
         if error_type := self.telemetry.get("runtime_error_type"):
             parts.append(f"raised={error_type}")
+        if self.fault is not None:
+            parts.append(_ascii(f"fault={type(self.fault).__name__}: {self.fault}"))
         attempts = getattr(self.pick_report, "attempts", ()) or ()
         if attempts and (reasons := getattr(attempts[-1], "reasons", ())):
             parts.append("reasons=" + ",".join(str(r) for r in reasons))
@@ -305,6 +322,10 @@ class AutonomousGraspReport:
         if self.recovery_actions:
             ran.append("recovery")
         return tuple(ran)
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         """The whole attempt, for a person. ASCII, no trailing newline, no arguments.
@@ -389,4 +410,6 @@ class AutonomousGraspReport:
             "decision": self.decision.to_dict() if self.decision is not None else None,
             "recovery_actions": [dict(action) for action in self.recovery_actions],
             "telemetry": dict(self.telemetry),
+            "fault": (None if self.fault is None
+                      else {"type": type(self.fault).__name__, "message": str(self.fault)}),
         }

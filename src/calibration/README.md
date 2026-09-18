@@ -155,8 +155,9 @@ The pure code logs nothing on purpose: the value objects `Extrinsics`, `EyeHandS
 
 ## Where to look next
 
-- [`scripts/examples/api/02_calibration/calibrate_fixed_camera.py`](../../scripts/examples/api/02_calibration/calibrate_fixed_camera.py), the runnable
-  walkthrough of both modes against the library API
+- [`examples/real_robot/07_calibrate_a_fixed_camera.py`](../../examples/real_robot/07_calibrate_a_fixed_camera.py)
+  and [`08_calibrate_a_wrist_camera.py`](../../examples/real_robot/08_calibrate_a_wrist_camera.py),
+  eye-to-hand and eye-in-hand on a real cell against the library API
 - `python -m src.robot.execution.real_cell.calibrate --rig <id> --check`, the bring-up command that
   drives a real arm through a pose sweep and writes one artifact. It validates and touches nothing
   under `--check`, and builds the arm and opens the camera but commands no motion under `--dry-run`.

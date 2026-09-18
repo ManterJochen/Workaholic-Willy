@@ -361,4 +361,4 @@ print(report.render())
 - [`corpus_v5_build.md`](corpus_v5_build.md), the same pipeline run at corpus scale, with the
   sharding rules a long build needs.
 - [`datagen/`](../../datagen/README.md), the scene generator, its engines and its asset sources.
-- `scripts/examples/api/06_datagen/bring_your_own_parts.py` and `scripts/examples/api/07_training/train_on_your_own_meshes.py`, both steps as runnable files.
+- `examples/offline/datagen/05_bring_your_own_parts.py` and `examples/offline/training/02_train_on_your_own_meshes.py`, both steps as runnable files.

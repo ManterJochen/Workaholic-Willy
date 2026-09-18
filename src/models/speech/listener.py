@@ -10,10 +10,14 @@ Nothing here acts. The transcript is a proposal a human confirms, "Stopp" includ
 
 `from_config` builds `SileroVoiceActivityDetector` from `models.stt.vad_model_path` when no detector is
 chosen, and takes the engine it is handed, which is the one `shared_speech()` holds for uploads. The
-detector is its own: it carries state from one window to the next.
+detector is its own: it carries state from one window to the next. The source is the cell PC's
+microphone unless one is chosen. A `PushToTalkSource` (`push_to_talk.py`) serves audio only while the
+talk switch is held, and its release closes the utterance at the latest.
 
-Not built yet, on purpose: push-to-talk (a console button and a USB hand or foot switch raising one
-event) and a caller. No console route or cell verb opens a `Listener` today.
+No console route or cell verb opens a `Listener` today. The console's push to talk
+(`POST /v1/voice/listen`) records a whole turn with `PushToTalkSource.record()` and proposes it through
+`HeldSpeech.propose()`, like an upload. `Confirmation.from_utterance` (`confirm.py`) asks a person about
+what a `Listener` heard, and its `confirmed` text is the one that may become a prompt.
 """
 
 from __future__ import annotations
@@ -77,6 +81,10 @@ class Utterance:
     timeout_s: float | None
     #: Audio was lost while listening: the driver overflowed, or the capture ring dropped its oldest.
     overflowed: bool
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         """The outcome in a line, the transcript indented under it, and a line when audio was lost."""
@@ -142,6 +150,7 @@ class Listener:
         *,
         config: SpeechToTextConfig,
         engine: SpeechEngine,
+        source: Maybe[AudioSource] = UNSET,
         detector: Maybe[VoiceActivityDetector] = UNSET,
         endpointing: Maybe[Endpointing] = UNSET,
         timeout_s: Maybe[float | None] = UNSET,
@@ -149,15 +158,19 @@ class Listener:
         """The YAML door: the microphone keys of `models.stt` describe the cell PC's microphone.
 
         The engine is handed in rather than built, because it is the one the upload path already holds
-        (`shared_speech().for_config(config=config).engine`). ``detector`` UNSET is Silero from
+        (`shared_speech().for_config(config=config).engine`). ``source`` UNSET is the cell PC's
+        microphone (`MicrophoneSource.from_config`); `PushToTalkSource.from_config(config=config)` is the
+        same microphone behind the talk switch. ``detector`` UNSET is Silero from
         `models.stt.vad_model_path`, a detector of this listener's own. Opens and loads nothing.
         """
         if not chosen(detector):
             from src.models.speech.silero import SileroVoiceActivityDetector
 
             detector = SileroVoiceActivityDetector.from_config(config=config)
+        if not chosen(source):
+            source = MicrophoneSource.from_config(config=config)
         return cls.from_parts(
-            source=MicrophoneSource.from_config(config=config),
+            source=source,
             detector=detector,
             engine=engine,
             endpointing=endpointing,

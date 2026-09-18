@@ -9,7 +9,8 @@ Each format is divided by its own full scale, never by 32768 throughout: that co
 65536 times too loud and float32 audio 32768 times too quiet.
 
 sounddevice is imported in `start()`, never at module level. A machine without PortAudio gets
-`SpeechStackUnavailable` naming `requirements.txt`, and still transcribes uploads.
+`SpeechStackUnavailable` naming `requirements.txt`, and still transcribes uploads. A machine whose
+input device is missing or refuses the stream gets `MicrophoneUnavailable`, a capability the host lacks.
 """
 
 from __future__ import annotations
@@ -25,7 +26,14 @@ from src.models.speech.engine import SpeechStackUnavailable
 if TYPE_CHECKING:  # pragma: no cover, typing only
     import numpy as np
 
-__all__ = ["AudioBlock", "AudioSource", "MicrophoneSource", "to_mono_at_rate", "to_mono_float32"]
+__all__ = [
+    "AudioBlock",
+    "AudioSource",
+    "MicrophoneSource",
+    "MicrophoneUnavailable",
+    "to_mono_at_rate",
+    "to_mono_float32",
+]
 
 #: The full scale of every sample format the stream opens, so each block lands in [-1, 1].
 _FULL_SCALE: Final[dict[str, float]] = {"int16": 32768.0, "int32": 2147483648.0, "float32": 1.0}
@@ -113,6 +121,12 @@ class AudioSource(Protocol):
     def read(self, *, timeout_s: float) -> AudioBlock | None:
         """Everything captured since the last read, waiting up to ``timeout_s`` for any; None when none came."""
         ...
+
+
+class MicrophoneUnavailable(RuntimeError):
+    """This machine has no microphone the stream can open: no usable input device, or one that refused
+    the rate, the channels or the format. A capability the host lacks, not a fault of the caller. It
+    stays a `RuntimeError`, so a handler that catches `RuntimeError` still catches it."""
 
 
 def _import_sounddevice() -> Any:
@@ -246,7 +260,7 @@ class MicrophoneSource:
             )
             stream.start()
         except (sd.PortAudioError, ValueError) as exc:
-            raise RuntimeError(
+            raise MicrophoneUnavailable(
                 f"the microphone '{info['name']}' did not open at {self._samplerate} Hz, "
                 f"{self._channels} channel(s), {self._sample_format} ({type(exc).__name__}: {exc}). "
                 f"The device runs at {float(info['default_samplerate']):.0f} Hz by default."
@@ -259,8 +273,8 @@ class MicrophoneSource:
         try:
             return sd.query_devices(device, "input")
         except (sd.PortAudioError, ValueError) as exc:
-            chosen_device = "the default input" if device is None else f"input device {device!r}"
-            raise RuntimeError(
+            chosen_device = "default input device" if device is None else f"input device {device!r}"
+            raise MicrophoneUnavailable(
                 f"this machine has no usable {chosen_device} ({type(exc).__name__}: {exc})."
             ) from exc
 

@@ -31,9 +31,10 @@ close.
 
 | File | Role |
 | --- | --- |
-| `service.py` | `AutonomousGraspService`: `from_components`, `from_robot_config`, `pick()`, and the pick path, split into the open-loop attempt, the decision loop, the refine and verify pipeline, and the watchdog pre-tick. |
+| `service.py` | `AutonomousGraspService`: `from_components`, `from_robot_config`, `pick()`, and the pick path, split into the open-loop attempt, the decision loop, the refine and verify pipeline, and the watchdog pre-tick. Both factories take `motion=GraspMotion(...)` (`grasping/motion/grasp_motion.py`) and build the one policy the pick drives from it on the arm and hand they resolved, with the base frame guard where a resolver is wired, the dwell gate the tree asks for and the jaws opened to the hand's width before every approach; `from_robot_config` builds its default policy through the same builder. `policy=` is still accepted: a policy whose arm or hand is not the service's own is refused (`ValueError`), and passing both is a `TypeError`. |
 | `config.py` | `GraspMode` (`easy`, `auto`, `dense_clutter`, `closed_loop`, `dense_autonomous`), `resolve_grasp_mode`, `GraspBehaviorProfile` and the locked profiles, and `EffectiveGraspingConfig` with its eight nested per-phase sub-configs. |
-| `report.py` | `AutonomousGraspOutcome` and `AutonomousGraspReport`, which composes `PickSessionReport` and never widens it. |
+| `report.py` | `AutonomousGraspOutcome` and `AutonomousGraspReport`, which composes `PickSessionReport` and never widens it. `fault` carries a fault of the cell that `pick()` reports instead of raising. |
+| `prompt.py` | `PickPrompt` (`phrase`, `target_label`, `object_labels`) and `PickPrompt.from_text(text)`: what a pick looks for. `service.set_prompt(text)` sets the phrase every camera grounds, the labels the detector's words map onto and the label filter, and returns the prompt it replaced; `set_prompt(previous)` puts all three back. |
 | `cells.py` | `build_real_cell` and `build_rehearsal_cell`, a whole cell in one call, plus `build_real_components` and `build_rehearsal_components` for a caller that wants the pieces. |
 | `rehearsal.py` | The synthetic one-box scene `build_rehearsal_cell` uses: no model, no camera, no noise, one flat box at a known place, so that what is under test is the wiring. |
 | `builders.py` | The per-phase `from_robot_config` wiring helpers, as pure functions or one scoped orchestrator mutation. |
@@ -56,6 +57,11 @@ report = service.pick(mode=GraspMode.AUTO)   # per-call override; default_mode o
 print(report.outcome)
 
 service.enable_record_logging("logs/attempts.jsonl")   # opt-in, off by default
+
+# What the next picks look for: the phrase, the label map and the filter, with nothing reopened.
+previous = service.set_prompt("the red cube")
+report = service.pick()
+service.set_prompt(previous)                           # all three back
 ```
 
 `build_real_cell(robot_cfg, prompt=...)` supplies both required arguments and hands the result to
@@ -75,6 +81,12 @@ would let a forgotten argument open a camera.
   `apply_orchestrator_overlays`. `from_robot_config` accepts live `arm` and `gripper` handles for
   exactly this reason: a simulator cell that hands over its session-sharing gripper keeps the
   config-driven path and every overlay with it.
+- A fault of the cell is a report, and a programmer error raises. `pick()` turns a
+  `RobotError`, a `RuntimeError` (the vendor SDKs' type, and a fused camera the cell refuses to go
+  without) and an `OSError` into an `EXECUTION_FAILED` report whose `fault` carries it, with no
+  `pick_report`, no SLO sample, no shadow annotation and no record. `NotImplementedError`,
+  `RecursionError` and every other type still raise. `PickRun` and the console stop on that fault,
+  as they stopped on the raise.
 - **Record logging is opt-in and off.** `from_robot_config` reads `grasping.record_log_path`, which
   supports `${WILLY_RECORD_LOG:-}` substitution and treats an empty expansion as off;
   `from_components` takes a `record_log_path=` argument. Every `pick()` carries a unique

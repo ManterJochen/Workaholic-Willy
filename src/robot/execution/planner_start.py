@@ -49,6 +49,10 @@ class PlannerStartReport:
         """0 when the planner started, 1 when it was refused: a refusal here is a config fact, as at the desk."""
         return 0 if self.started else 1
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         head = f"planner  {self.arm} with {self.hand or 'no hand'}"
         if not self.started:

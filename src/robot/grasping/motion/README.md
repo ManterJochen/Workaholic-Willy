@@ -21,6 +21,7 @@ package root, which re-exports the public names.
 | Module | Owns |
 | --- | --- |
 | `execution_policy.py` | `GraspExecutionPolicy`, `PolicyOutcome`, `PolicyReport`: the choreography and the close verification |
+| `grasp_motion.py` | `GraspMotion`: what a caller may choose about the approach, the close and the lift, and nothing that keeps a pick safe. `build_execution_policy` builds the one `GraspExecutionPolicy` from it with the service's arm and hand and every guard (base frame, dwell gate, jaws opened before the approach); `foreign_policy_refusal` refuses a hand-built policy on another arm or hand. `GraspMotion` is also exported from `src.robot.execution` |
 | `frame_resolver.py` | The `FrameResolver` Protocol and its three implementations, plus `FrameResolutionFailure` and the typed refusal reasons |
 | `trajectory_safety.py` | `ApproachPathPolicy` and the sweep functions: swept-volume validation of the moving gripper along the path |
 

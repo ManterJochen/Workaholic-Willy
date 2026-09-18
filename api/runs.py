@@ -274,6 +274,8 @@ class RunRegistry:
         """The run body. Everything it can raise is caught: a dead thread must still close its stream."""
         service = console.session.service
         hub = self.hub
+        # What the run's prompt replaced, put back in the `finally`. `None` when the run named none.
+        previous_prompt: Any = None
 
         def _on_progress(event: "PickProgress") -> None:
             severity, human = _sentence(event)
@@ -291,17 +293,25 @@ class RunRegistry:
             )
             service.attach_progress_listener(_on_progress)
             service.set_cancel_check(lambda: run.stop_requested)
-            # Always set it, including to None. `set_target_label` documents "Pass None to clear",
-            # and setting it only when a prompt is present leaves the previous run's label on the
-            # shared service: every later run on that cell keeps hunting the earlier object, however
-            # it was prompted. The console keeps one cell for the whole process, so "later" means
-            # "for the rest of the session".
-            service.set_target_label(run.prompt or None)
+            # The prompt reaches the detector, for this run only. A label filter alone is not enough:
+            # every frame would still be grounded with the build phrase ("object"), and "the red
+            # cube", typed or spoken, would filter on a label no phrase grounder returns. `set_prompt`
+            # sets the phrase, the labels the detector's words map onto and the filter together, and
+            # the `finally` below puts all three back: the console keeps one cell for the whole
+            # process, and a prompt that outlived its run would have every later run hunting it. An
+            # empty prompt keeps the build phrase and filters nothing.
+            if run.prompt.strip():
+                previous_prompt = service.set_prompt(run.prompt)
 
             for _ in range(run.requested_picks):
                 if run.stop_requested:
                     break
                 report = service.pick()
+                fault = getattr(report, "fault", None)
+                if fault is not None:
+                    # A fault of the cell still ends the run: the next pick would meet the same dead
+                    # camera or the same dropped link. `pick()` reports it, so the run raises it here.
+                    raise fault
                 run.attempted += 1
                 outcome = str(getattr(report, "outcome", "unknown"))
                 run.outcomes.append(outcome)
@@ -350,6 +360,16 @@ class RunRegistry:
                     "Detaching the progress listener from run %s failed: %s: %s",
                     run.id, type(exc).__name__, exc,
                 )
+            if previous_prompt is not None:
+                # Before the run lock is released, so the next run starts on the cell's own phrase.
+                # Teardown reports and does not propagate.
+                try:
+                    service.set_prompt(previous_prompt)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Putting back the prompt run %s replaced failed: %s: %s. The cell may still "
+                        "ground %r.", run.id, type(exc).__name__, exc, run.prompt,
+                    )
             with self._lock:
                 console.active_run_id = None
                 # The Thread object is useless the moment its run ends and nothing reads this dict

@@ -97,8 +97,8 @@ from typing import Any
 import numpy as np
 
 # Run as a script, `python scripts/curobo/probe_live_world.py` puts only this directory on sys.path,
-# and `import src...` then fails. The repository is not pip installable, so there is no import
-# path without this. Two parents up from here is the root.
+# and `import src...` then fails on a checkout that was never installed with `pip install -e . --no-deps`.
+# Two parents up from here is the root.
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 

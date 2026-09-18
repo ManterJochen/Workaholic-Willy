@@ -250,22 +250,27 @@ class AMotionThatFailsEndsTheVerbTests(unittest.TestCase):
         self.assertEqual([85.0], widths, "the jaws closed after a refused descent")
         self.assertEqual(2, len(report.poses))
 
-    def test_a_camera_that_cannot_vouch_leaves_the_pick(self) -> None:
+    def test_a_camera_that_cannot_vouch_ends_the_pick_as_its_own_outcome(self) -> None:
+        """The verb promises a report, so the camera's fault is an outcome, and the motions before it stay in it."""
         from src.robot.core.keep_out import SegmentationOffer
         from tests.test_keep_out_path import _HoldingWorld
 
+        handling = _handling()
         log = _Log()
         world = _HoldingWorld()
         robot = _robot(log, raise_on=1, world=world)
         offer = SegmentationOffer(captured_at_s=time.time(), target_points_base_mm=np.array([[400.0, 0.0, 90.0]]))
 
-        with self.assertRaises(CameraWorldUnavailable):
-            robot.pick(_pose(), 40.0, keep_out=offer)
+        report = robot.pick(_pose(), 40.0, keep_out=offer)
 
-        self.assertEqual(1, world.forgets, "the scope stayed open after the raise")
+        self.assertIs(handling.HandlingOutcome.CAMERA_WORLD_UNAVAILABLE, report.outcome, report.render())
+        self.assertFalse(report.ok)
+        self.assertIn("'overhead'", report.message)
+        self.assertEqual(2, len(report.poses), "the standoff and the descent the camera stopped")
+        self.assertEqual(1, world.forgets, "the scope stayed open after the camera's fault")
         self.assertFalse(world.holding)
         widths = [entry[1] for entry in log.entries if entry[0] == "set_width"]
-        self.assertEqual([85.0], widths, "a gripper command followed the raise")
+        self.assertEqual([85.0], widths, "a gripper command followed the camera's fault")
 
     def test_a_pick_holds_its_keep_out_for_its_motions(self) -> None:
         from src.robot.core.keep_out import SegmentationOffer

@@ -202,6 +202,13 @@ src/
 > operator asked for the wrong thing" and "the machine heard the wrong thing" look identical
 > afterwards unless something wrote down which route the words came in by.
 >
+> Push to talk works both ways. The microphone records while the button is held and stops when it is
+> let go or the pointer leaves it; a click alone records nothing. A foot switch that sends a key does
+> the same: holding the talk key records wherever the focus is, and a key that repeats while held is
+> one hold. The key is F8 unless the `talkKey` prop or `localStorage['willy.talkKey']` names another.
+> The cell PC's own microphone has its own routes (`POST /v1/voice/talk`, `POST /v1/voice/listen`),
+> which no screen calls yet.
+>
 > ⛔ **The console encodes WAV itself** (`recordWav.ts`), and that is not gold-plating: **no browser
 > records WAV.** `MediaRecorder` gives webm/opus in Chrome and Firefox and mp4 in Safari, and the
 > backend decodes WAV with the standard library and everything else only with the optional `av`

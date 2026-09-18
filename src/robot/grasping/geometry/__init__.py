@@ -15,6 +15,7 @@ from .filters import (
 )
 from ._spatial import RadiusIndex
 from ._validation import as_mask_and_depth, as_points_nx3, as_vec3
+from .grasp_frame import pose_from_grasp_axes
 from .normals import NormalEstimationConfig, SurfaceNormals, estimate_surface_normals
 from .pointcloud import (
     CameraIntrinsics,
@@ -47,6 +48,7 @@ __all__ = [
     "filter_by_depth_range",
     "masked_point_cloud",
     "masked_points",
+    "pose_from_grasp_axes",
     "radius_outlier_indices",
     "statistical_outlier_indices",
     "uniform_sample_indices",

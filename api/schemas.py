@@ -320,7 +320,8 @@ class TelemetryOut(BaseModel):
 class PickIn(BaseModel):
     """An operator instruction: what to pick, and how many times."""
 
-    #: The text prompt. Empty means "whatever the perception source already targets".
+    #: What to pick, typed or spoken: the phrase the detector grounds for this run and the label a
+    #: target must carry. Empty keeps the phrase the cell was built with and filters no label.
     prompt: str = ""
     picks: int = Field(default=1, ge=1, le=100)
 
@@ -401,6 +402,29 @@ class ProposalOut(BaseModel):
     speech: SpeechCheckOut
     #: Whisper's report; null when the detector heard no speech and Whisper was not asked.
     transcript: TranscriptOut | None
+
+
+class ListenIn(BaseModel):
+    """How long a push to talk listen at the cell PC waits for the talk switch."""
+
+    #: Seconds to wait for the switch to go down. The turn itself ends at the release, and at Whisper's
+    #: 30 s window at the latest.
+    timeout_s: float = Field(default=10.0, gt=0.0, le=60.0)
+
+
+class TalkIn(BaseModel):
+    """One edge of the talk switch: down when a person starts talking, up when they are done."""
+
+    pressed: bool
+
+
+class TalkOut(BaseModel):
+    """The talk switch after the edge."""
+
+    pressed: bool
+    #: Presses counted since the console process started. A press while the switch is already down is
+    #: not counted, so a key that repeats while it is held is one press.
+    presses: int
 
 
 class ViewfinderOut(BaseModel):

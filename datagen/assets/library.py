@@ -141,10 +141,19 @@ class MeshEntry:
 
     @property
     def license(self) -> str:
+        """The licence the source ships under; for `custom` the one the operator declared at import,
+        read from the declaration beside the meshes (empty when none was declared, which the licence
+        audit refuses)."""
+        if self.source == "custom":
+            return declared_license(self.path.parent)[0]
         return LICENSES[self.source]
 
     @property
     def attribution(self) -> str:
+        """The credit the source obliges; for `custom` the one declared at import, read as
+        :attr:`license` is."""
+        if self.source == "custom":
+            return declared_license(self.path.parent)[1]
         return ATTRIBUTIONS[self.source]
 
 

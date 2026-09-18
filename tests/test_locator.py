@@ -275,15 +275,31 @@ class TheLocatorImportsLittleTests(unittest.TestCase):
         self.assertIn("src.robot.grasping.loop", self._loaded("src.robot.grasping.loop.pick_loop"))
 
 
+def _cell_tree() -> SimpleNamespace:
+    return SimpleNamespace(
+        safety=SimpleNamespace(planning_world=SimpleNamespace(perceived=SimpleNamespace(fresh_frame_attempts=4))),
+        gripper=SimpleNamespace(tool_frame=_TOOL_FRAME),
+    )
+
+
 class FromConfigTests(unittest.TestCase):
+    def test_a_rig_it_cannot_place_is_refused_before_any_model_loads(self) -> None:
+        from src.config import load_config
+        from src.camera.orchestration.camera import Camera
+
+        stereo_rig = next(rig for rig in load_config().camera.cameras.rigs if rig.source != "rgbd")
+        spec = mock.MagicMock()
+        with mock.patch("src.models.perception_spec.PerceptionSpec", spec):
+            with self.assertRaises(LocatorRefused):
+                Locator.from_config(_cell_tree(), object(),
+                                    camera=Camera.from_rig(stereo_rig, streamer=SimpleNamespace()))
+        spec.from_config.assert_not_called()
+
     def test_from_config_builds_the_backend_the_cell_builds(self) -> None:
         built = _backend("red cube")
         spec = mock.MagicMock()
         spec.from_config.return_value.build.return_value = built
-        tree = SimpleNamespace(
-            safety=SimpleNamespace(planning_world=SimpleNamespace(perceived=SimpleNamespace(fresh_frame_attempts=4))),
-            gripper=SimpleNamespace(tool_frame=_TOOL_FRAME),
-        )
+        tree = _cell_tree()
         models = object()
         with mock.patch("src.models.perception_spec.PerceptionSpec", spec):
             locator = Locator.from_config(tree, models, camera=_Owner())

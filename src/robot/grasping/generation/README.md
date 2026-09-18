@@ -7,7 +7,7 @@
 |---|---|
 | [`calculator.py`](calculator.py) | `GraspCalculator`, and the `compute()` / `compute_result()` contract every pipeline depends on |
 | [`_candidate_generator.py`](_candidate_generator.py) | The three candidate generators: silhouette, geometry-first and dense |
-| [`support_footprint.py`](support_footprint.py) | The support-footprint geometry stage, which plans the table clearance rather than filtering for it |
+| [`support_footprint.py`](support_footprint.py) | The support-footprint geometry stage, which plans the table clearance rather than filtering for it. A candidate's `pose()` is the BASE pose `Robot.pick` takes, with its `grip_width_mm`. |
 | [`_support_footprint_stage.py`](_support_footprint_stage.py) | The adapter that rotates that stage's BASE candidates into CAMERA at the seam |
 | [`_camera_geometry.py`](_camera_geometry.py) | Image space to camera frame lifting, and `level_axis_to_support_plane` |
 | [`_isotropic_closing.py`](_isotropic_closing.py) | Choosing a closing direction when the silhouette does not imply one |

@@ -136,6 +136,10 @@ class CameraWorldPlan:
             f"{self.primary_rig_id!r} among the calibrated ones, or remove the rig's extrinsics while it is not used"
         )
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""
         if self.rig_ids:
@@ -213,6 +217,10 @@ class CameraWorldWiring:
     @property
     def wired(self) -> bool:
         return self.world is not None
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""

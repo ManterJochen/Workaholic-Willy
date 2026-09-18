@@ -44,6 +44,7 @@ from src.robot.core import (
     Gripper,
     MotionStatus,
     RobotArm,
+    RobotError,
 )
 from src.robot.grasping.types.feedback import GraspFailureReason
 from src.robot.execution.runtime_pick import (
@@ -56,6 +57,11 @@ from src.robot.grasping.motion.execution_policy import (
     _grasp_point_to_quaternion,
 )
 from src.robot.grasping.motion.frame_resolver import FrameResolver
+from src.robot.grasping.motion.grasp_motion import (
+    GraspMotion,
+    build_execution_policy,
+    foreign_policy_refusal,
+)
 from src.robot.grasping.types.perception import MultiCameraPerceptionSource
 from src.robot.grasping.generation.calculator import GraspCalculator
 from src.robot.grasping.types.grasp_point import GraspPoint
@@ -111,6 +117,7 @@ from .config import (
     resolve_grasp_mode,
 )
 from .latency import LatencyTelemetryCoordinator
+from .prompt import PickPrompt
 from .report import (
     _PICK_TO_AUTONOMOUS,
     AutonomousGraspOutcome,
@@ -283,6 +290,30 @@ def _warn_if_records_will_not_be_trainable(robot_cfg: Any, record_log_path: Any)
     )
 
 
+#: What :meth:`AutonomousGraspService.pick` reports instead of raising: a fault of the cell. The robot
+#: stack's own errors (a controller link, an e-stop, a camera that could not vouch, a wrist frame taken
+#: while the tool moved), a device that stopped delivering and a fused camera the cell refuses to go
+#: without (both arrive as ``RuntimeError``, the type the vendor SDKs raise), and an I/O link
+#: (``OSError``). Everything else is a programmer error and raises: a ``TypeError`` or an
+#: ``AttributeError`` from a wrong double, a ``ValueError`` from a wiring contract, an assertion.
+_CELL_FAULTS: tuple[type[Exception], ...] = (RobotError, RuntimeError, OSError)
+#: The two ``RuntimeError`` subclasses Python raises for a programmer error rather than for a cell.
+_NOT_CELL_FAULTS: tuple[type[Exception], ...] = (NotImplementedError, RecursionError)
+
+
+def _grounding_sources(orchestrator: Any) -> list[Any]:
+    """The perception sources of a cell that ground a phrase: the primary first, then each fused camera.
+
+    Duck-typed on ``set_prompt``. The live camera source has it; a source that grounds no phrase (the
+    rehearsal scene, a ground-truth sim source) does not, and keeps its frames.
+    """
+    candidates: list[Any] = [getattr(orchestrator, "perception", None)]
+    rig = getattr(orchestrator, "multi_camera_perception", None)
+    candidates.extend((getattr(rig, "sources", None) or {}).values())
+    return [source for source in candidates
+            if source is not None and callable(getattr(source, "set_prompt", None))]
+
+
 @dataclass
 class AutonomousGraspService:
     """High-level operator-facing grasp service.
@@ -420,6 +451,7 @@ class AutonomousGraspService:
         standoff_mm: float = 80.0,
         retreat_mm: float = 100.0,
         policy: GraspExecutionPolicy | None = None,
+        motion: "Maybe[GraspMotion]" = UNSET,
         frame_resolver: FrameResolver | None = None,
         refinement_policy: RefinementPolicy | None = None,
         refiner: PreGraspRefiner | None = None,
@@ -432,6 +464,13 @@ class AutonomousGraspService:
         record_log_path: "str | Path | None" = None,
     ) -> "AutonomousGraspService":
         """Build the service directly from raw components.
+
+        ``motion`` is how the pick moves (:class:`GraspMotion`): the service builds the one policy it
+        drives from it, on ``arm`` and ``gripper``, with the base frame guard where ``frame_resolver``
+        is wired, the dwell gate ``arm.config`` asks for, and the jaws opened before every approach.
+        ``policy`` is the older spelling and is still accepted: a policy whose arm or hand is not
+        ``arm`` or ``gripper`` is refused (``ValueError``), because it would move a robot this service
+        never checked, and passing both is a ``TypeError``.
 
         ``mode`` selects the locked behavior profile that the service
         applies on every :meth:`pick` call unless that call passes
@@ -455,6 +494,12 @@ class AutonomousGraspService:
           policy.
         """
 
+        if policy is not None and chosen(motion):
+            raise TypeError("pass motion=GraspMotion(...) or policy=..., not both")
+        if policy is not None:
+            refusal = foreign_policy_refusal(policy, arm=arm, gripper=gripper)
+            if refusal:
+                raise ValueError(refusal)
         resolved_mode = resolve_grasp_mode(mode)
         profile = _profile_for(resolved_mode)
         # Build a default policy that fails closed when a resolver is
@@ -462,7 +507,17 @@ class AutonomousGraspService:
         # verbatim; mutating an externally owned object would be a
         # silent footgun.
         effective_policy = policy
-        if effective_policy is None and frame_resolver is not None:
+        if chosen(motion):
+            # The caller's motion, on this service's arm and hand, with every guard: the base frame
+            # guard where a resolver is wired, the dwell gate the arm's tree asks for, and the jaws
+            # opened before every approach.
+            standoff_mm, retreat_mm = motion.standoff_and_retreat(standoff_mm, retreat_mm)
+            effective_policy = build_execution_policy(
+                motion, arm=arm, gripper=gripper, standoff_mm=standoff_mm, retreat_mm=retreat_mm,
+                base_frame_required=frame_resolver is not None,
+                dwell=getattr(getattr(getattr(arm, "config", None), "safety", None), "dwell", None),
+            )
+        elif effective_policy is None and frame_resolver is not None:
             effective_policy = GraspExecutionPolicy(
                 arm=arm,
                 gripper=gripper,
@@ -542,6 +597,7 @@ class AutonomousGraspService:
         standoff_mm: float = 80.0,
         retreat_mm: float = 100.0,
         policy: GraspExecutionPolicy | None = None,
+        motion: "Maybe[GraspMotion]" = UNSET,
         frame_resolver: FrameResolver | None = None,
         refinement_policy: RefinementPolicy | None = None,
         refiner: PreGraspRefiner | None = None,
@@ -623,7 +679,18 @@ class AutonomousGraspService:
         ``frame_resolver`` is plumbed through identically to
         :meth:`from_components`. See that method's docstring for the
         full fail-closed contract.
+
+        ``motion`` (:class:`GraspMotion`) is how the pick moves, built into the one policy on the arm
+        and hand this method resolves, with every guard; its standoff is the standoff the closed
+        loop's second look takes too. ``policy`` is still accepted and is refused (``ValueError``)
+        unless it drives the arm and hand this method resolved, which only a caller that also passed
+        ``arm`` and ``gripper`` can hold.
         """
+
+        if policy is not None and chosen(motion):
+            raise TypeError("pass motion=GraspMotion(...) or policy=..., not both")
+        if chosen(motion):
+            standoff_mm, retreat_mm = motion.standoff_and_retreat(standoff_mm, retreat_mm)
 
         # Detect whether the operator explicitly declared the ``grasping``
         # block. ``model_fields_set`` is the pydantic-v2 surface that
@@ -763,6 +830,7 @@ class AutonomousGraspService:
             standoff_mm=standoff_mm,
             retreat_mm=retreat_mm,
             policy=policy,
+            motion=motion,
             frame_resolver=frame_resolver,
             arm=arm,
             gripper=gripper,
@@ -887,6 +955,13 @@ class AutonomousGraspService:
             :class:`RuntimePickService` executed; whenever it
             is :data:`None` the service refused to dispatch and the
             telemetry explains why.
+
+            A fault of the cell (a controller link that dropped, an
+            e-stop, a camera that could not vouch, a device that stopped
+            delivering) is not raised: the outcome is
+            ``EXECUTION_FAILED``, :attr:`AutonomousGraspReport.fault`
+            carries it and ``pick_report`` is :data:`None`. A programmer
+            error still raises.
         """
 
         # A cancel that arrived between two picks is honoured here, before any work starts: a caller
@@ -913,8 +988,18 @@ class AutonomousGraspService:
         # default open-loop path collides on the literal "pick".
         pick_attempt_id = f"pick-{uuid.uuid4().hex[:12]}"
         wall_t0_ns = time.monotonic_ns()
+        fault: Optional[Exception] = None
         try:
             report = self._run_with_recovery(mode=mode)
+        except _CELL_FAULTS as exc:
+            if isinstance(exc, _NOT_CELL_FAULTS):
+                raise
+            # A fault of the cell is this pick's answer, not an exception out of it: a verb that
+            # promises a report never raises for a domain refusal, and a programmer error still does.
+            # A campaign still stops on it, because the report carries the fault and `PickRun`
+            # reads it.
+            fault = exc
+            report = self._fault_report(exc, mode=mode)
         finally:
             # Always tear the tracker down on the way out; subsequent
             # pick() calls install a fresh one.
@@ -927,6 +1012,11 @@ class AutonomousGraspService:
             wall_elapsed_s=wall_elapsed_s,
             attempt_id=pick_attempt_id,
         )
+        if fault is not None:
+            # What the raise left behind, and nothing more: no SLO sample, no shadow annotation and no
+            # record. The corpus counts grasps, and a camera that stopped delivering is not a grasp
+            # that missed.
+            return report
         # Update rolling latency history and emit SLO_BREACH on
         # rising-edge breaches. Always a no-op unless the operator opted
         # in via ``performance.enabled`` and
@@ -1015,6 +1105,23 @@ class AutonomousGraspService:
             telemetry={"cancelled_before_start": True},
         )
 
+    def _fault_report(self, fault: Exception, *, mode: "GraspMode | str | None") -> AutonomousGraspReport:
+        """The report for a pick a fault of the cell ended.
+
+        EXECUTION_FAILED, the outcome the pick loop's own aborted attempt maps to, with the fault on the
+        report and no ``pick_report``: nothing below this service returned, so there is no attempt trail
+        to carry, and an invented one would put a trail into the corpus that replay could not tell from
+        a real one.
+        """
+        effective_mode = resolve_grasp_mode(mode) if mode is not None else self.default_mode
+        return AutonomousGraspReport(
+            outcome=AutonomousGraspOutcome.EXECUTION_FAILED,
+            mode=effective_mode,
+            profile=_profile_for(effective_mode),
+            effective_config=self.effective_config,
+            fault=fault,
+        )
+
     def attach_progress_listener(self, listener: "PickProgressListener | None") -> None:
         """Opt into live progress events from inside the pick loop. ``None`` detaches.
 
@@ -1065,6 +1172,40 @@ class AutonomousGraspService:
         orch = getattr(self.runtime, "orchestrator", None)
         if orch is not None:
             orch.target_label = label
+
+    def set_prompt(self, prompt: "str | PickPrompt") -> PickPrompt:
+        """Say what the next picks look for, and return what they looked for until now.
+
+        A text is what an operator typed or spoke (:meth:`PickPrompt.from_text`). Every camera whose
+        source grounds a phrase grounds it from the next frame on and maps its detector's words onto it,
+        and the label filter (:meth:`set_target_label`) makes only an object it grounded a target. Pass
+        the returned :class:`PickPrompt` back to put all three back. Nothing reopens and nothing
+        reloads: the detector is handed the phrase on every frame, which is what lets a campaign change
+        it.
+
+        A source that grounds no phrase (the rehearsal scene, a ground-truth sim source) keeps its
+        frames and the label filter still applies, so such a cell reports the prompted label as not
+        found rather than picking whatever it shows. Refused before anything changes: a text that names
+        nothing, and a prompt without a phrase for a cell that grounds one.
+        """
+        wanted = PickPrompt.from_text(prompt) if isinstance(prompt, str) else prompt
+        orchestrator = self.runtime.orchestrator
+        sources = _grounding_sources(orchestrator)
+        if sources and not wanted.phrase:
+            raise ValueError(
+                "this cell grounds a phrase and the prompt names none; a prompt taken from a cell whose "
+                "perception grounds nothing cannot be put back on one that grounds a phrase"
+            )
+        first = sources[0] if sources else None
+        previous = PickPrompt(
+            phrase=str(getattr(first, "prompt", "") or ""),
+            target_label=orchestrator.target_label,
+            object_labels=tuple(getattr(first, "object_labels", ()) or ()),
+        )
+        for source in sources:
+            source.set_prompt(wanted.phrase, object_labels=wanted.object_labels)
+        orchestrator.target_label = wanted.target_label
+        return previous
 
     def _extra_with_route(self) -> Optional[dict[str, Any]]:
         """Record provenance, plus which perception route grounded this pick when one did.

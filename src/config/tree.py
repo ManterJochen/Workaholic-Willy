@@ -22,8 +22,10 @@ other is what stops it. Holding the three facts in one object is not by itself t
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import copy
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
 
 from src.contracts import UNSET, Maybe, chosen
@@ -31,8 +33,9 @@ from src.contracts import UNSET, Maybe, chosen
 if TYPE_CHECKING:  # pragma: no cover, typing only
     from .edit import WriteResult
     from .explain import KeyExplanation
+    from .schema import AppConfig, RobotConfig
 
-__all__ = ["ConfigTree", "LoadedTree", "default_data_dir"]
+__all__ = ["ConfigTree", "LoadedTree", "default_data_dir", "load_tree"]
 
 
 def default_data_dir() -> Path:
@@ -100,6 +103,73 @@ def _registry_cameras(root: Path, config: Any) -> None:
             raise ConfigError(refusal)
 
 
+def _no_values() -> Mapping[str, Any]:
+    return MappingProxyType({})
+
+
+def _flattened(values: Mapping[str, object], prefix: str = "") -> dict[str, Any]:
+    """``values`` as dotted keys to leaves, every key checked and every value copied.
+
+    A mapping value merges key by key, so ``{"robot.gripper": {"model": m}}`` sets the one key
+    ``{"robot.gripper.model": m}`` sets. A list, an empty mapping and a scalar are leaves, set
+    whole.
+
+    A key that is not a dotted string, or a value that is a model object rather than the plain
+    data a YAML file holds, is a programmer error and raises. A model object would reach the named
+    hand fill as a block it cannot read, and the fill would be skipped without a word.
+    """
+    from .loader import _value_segments  # noqa: PLC0415
+
+    if not isinstance(values, Mapping):
+        raise TypeError(
+            f"with_values takes a mapping of dotted keys to values, not {type(values).__name__}"
+        )
+    out: dict[str, Any] = {}
+    for key, value in values.items():
+        if not isinstance(key, str):
+            raise TypeError(f"a config key is a dotted string such as 'robot.gripper.model', not {key!r}")
+        dotted = f"{prefix}.{key}" if prefix else key
+        _value_segments(dotted)
+        if hasattr(value, "model_dump"):
+            raise TypeError(
+                f"{dotted} is given a {type(value).__name__}; with_values takes plain data as a YAML file "
+                "holds it, so name the keys that change"
+            )
+        if isinstance(value, Mapping) and value:
+            out.update(_flattened(value, dotted))
+        else:
+            out[dotted] = copy.deepcopy(value)
+    return out
+
+
+def _merged_values(earlier: Mapping[str, Any], later: Mapping[str, Any]) -> dict[str, Any]:
+    """``earlier`` with ``later`` on top: a key of ``later`` replaces the same key, every key inside
+    it and every block holding it, so the last value given for a place is the one in force."""
+    from .loader import _holds, _in_memory_keys, _normal_key, _within  # noqa: PLC0415
+
+    replaced = _in_memory_keys(later)
+    kept = {
+        key: value for key, value in earlier.items()
+        if not (_within(_normal_key(key), replaced) or _holds(_normal_key(key), replaced))
+    }
+    return {**kept, **later}
+
+
+def _plain(value: Any) -> Any:
+    """A value given in memory as data `json.dumps` takes with no encoder: the view for `to_dict`."""
+    if isinstance(value, Mapping):
+        return {str(key): _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    return str(value)
+
+
 @dataclass(frozen=True, slots=True)
 class LoadedTree:
     """A validated tree, and the three facts it was validated under.
@@ -107,6 +177,13 @@ class LoadedTree:
     The ask methods live here rather than on `ConfigTree` because they need the loaded config as
     well as the root and the layers, and this is the only object that holds all three. A method
     taking the config as an argument would let the three disagree again.
+
+    A noun that spans sections takes this object and reads it under names that stay: `app_config`
+    and `robot` for the validated sections, `root` for the directory the registries and the
+    evidence are read from, `profile` and `layers` for the chain, and `values` for what
+    `with_values` gave in memory. A door reads the sections from here and never loads `root` under
+    `profile` a second time: the values given in memory live only in this object, and a second
+    load drops them without a word.
     """
 
     tree: "ConfigTree"
@@ -116,6 +193,9 @@ class LoadedTree:
     error: str = ""
     #: The hands in the tree's gripper registry, sorted. Empty when the tree has no registry.
     hands: tuple[str, ...] = ()
+    #: What `with_values` gave in memory on top of the files, dotted key to value in the caller's
+    #: spelling. Empty for a tree read from its files alone. Out of the hash: a value may be a list.
+    values: Mapping[str, Any] = field(default_factory=_no_values, hash=False)
 
     @property
     def ok(self) -> bool:
@@ -139,6 +219,76 @@ class LoadedTree:
         """
         return " -> ".join(self.tree.layers) or "(no profile)"
 
+    # --- what a door reads ---------------------------------------------------------------------
+
+    @property
+    def root(self) -> Path:
+        """The directory this tree was read from, resolved: the repository's `config/` when none
+        was named. Every `data_dir=` downstream takes it, and the registry checks read `grippers/`
+        and `cameras/` from it."""
+        return self.tree.root
+
+    @property
+    def profile(self) -> str | None:
+        """The chain as `load_config(profile=...)` takes it, such as `"sim,ur3e"`, or `None` for
+        the base tree. `chain` is the same fact for a person."""
+        return self.tree.profile
+
+    @property
+    def layers(self) -> tuple[str, ...]:
+        """The chain split into its layers, in the order they merge."""
+        return self.tree.layers
+
+    @property
+    def app_config(self) -> "AppConfig":
+        """The validated `AppConfig`, or the tree's own refusal raised as `ConfigError`.
+
+        `config` is the same object, or `None` when the tree did not load, which the report needs.
+        A door needs the config or a refusal, and this gives one of the two.
+        """
+        if self.config is None:
+            from .loader import ConfigError  # noqa: PLC0415
+
+            raise ConfigError(self.error)
+        return self.config
+
+    @property
+    def robot(self) -> "RobotConfig":
+        """The validated `robot` section, or `ConfigError`: the tree's own refusal when it did
+        not load, and the sentence `load_robot_config` gives when it loaded without a robot block."""
+        from .loader import _NO_ROBOT_BLOCK, ConfigError  # noqa: PLC0415
+
+        robot = getattr(self.app_config, "robot", None)
+        if robot is None:
+            raise ConfigError(_NO_ROBOT_BLOCK)
+        return robot
+
+    # --- a change in memory --------------------------------------------------------------------
+
+    def with_values(self, values: Mapping[str, object]) -> "LoadedTree":
+        """This tree with `values` given in memory, loaded as a load loads it.
+
+        Nothing is written. `values` maps a dotted key to its value,
+        `{"robot.gripper.model": "robotiq_hande"}`, with `[n]` for an item of a list the tree holds
+        (`"camera.cameras.rigs[1].enabled"`). The files are read again under this tree's root and
+        chain, so a file edited since this tree loaded is read as it is now. The values merge on
+        top of every layer, and then the load runs as it always runs: the named hand fills the
+        thirteen numbers it supplies, the schema validates the whole tree, and the registries are
+        checked. A value that does not validate comes back as a tree that did not load, with the
+        load's own refusal, where the key is said to be written in `LoadedTree.with_values` rather
+        than at a file line that holds another value.
+
+        The values this tree already holds stay, and a key given again, a key inside it or a block
+        holding it takes the new value. A mapping value merges key by key; a list, an empty
+        mapping and a scalar replace; `None` sets `None`. A key that is not a dotted string, or a
+        model object given as a value, is a programmer error and raises `ValueError` or
+        `TypeError`.
+
+        `model_copy` is no substitute: it runs no validator and skips the named hand fill, so
+        naming the Hand-E that way keeps the 2F-85's widths and finger geometry and raises nothing.
+        """
+        return self.tree._load(_merged_values(self.values, _flattened(values)))
+
     # --- the questions, each taking only what it is about --------------------------------------
 
     def explain(self, key: str) -> "KeyExplanation":
@@ -147,10 +297,29 @@ class LoadedTree:
         `explain_in` reads the value out of a config and walks `root` plus `layers` for the origin.
         All three come from this tree, so the value and the provenance cannot describe two
         different loads.
-        """
-        from .explain import explain_in  # noqa: PLC0415
 
-        return explain_in(self.config, key, self.tree.root, self.tree.layers)
+        A key given in memory is said to be set in `LoadedTree.with_values`. The file lines that
+        also write it stay in the chain, and none of them wins.
+        """
+        from .explain import Layer, _yaml_path, explain_in  # noqa: PLC0415
+
+        explanation = explain_in(self.config, key, self.tree.root, self.tree.layers)
+        if not self.values or not explanation.known:
+            return explanation
+        from .loader import _IN_MEMORY_ORIGIN, _normal_key  # noqa: PLC0415
+
+        try:
+            spelled = {_normal_key(key), _normal_key(_yaml_path(key))}
+        except ValueError:  # a key that is no dotted path was given nothing in memory
+            return explanation
+        given = [name for name in self.values if _normal_key(name) in spelled]
+        if not given:
+            return explanation
+        # Printing a file line as `set in` here would put the value given in memory above a line
+        # that sets another one, the disagreement the module docstring describes.
+        stated = Layer(location=_IN_MEMORY_ORIGIN, raw=repr(self.values[given[-1]]), winner=True)
+        files = tuple(replace(layer, winner=False) for layer in explanation.layers)
+        return replace(explanation, layers=(*files, stated), comment="", derived_from="")
 
     def decisions(
         self, *, section: "Maybe[str | None]" = UNSET, tier: "Maybe[str | None]" = UNSET
@@ -167,20 +336,37 @@ class LoadedTree:
             extra["section"] = section
         if chosen(tier):
             extra["tier"] = tier
+        if self.values:
+            from .loader import _in_memory_keys  # noqa: PLC0415
+
+            # A value given in memory is said to be set there, never at the file line it replaced.
+            extra["given"] = _in_memory_keys(self.values)
         return _decisions(self.config, self.tree.root, self.tree.layers, **extra)
 
     # --- the report halves ---------------------------------------------------------------------
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
-        """The verdict as one ASCII line, no trailing newline, taking no arguments."""
+        """The verdict as one ASCII line, no trailing newline, taking no arguments.
+
+        A tree given values in memory names their keys, so its verdict is never read as the files'.
+        """
+        memory = ", ".join(self.values)
         if not self.ok:
+            if memory:
+                return f"config error, with {memory} given in memory:\n{self.error}"
             return f"config error:\n{self.error}"
         named = str(self.tree.named_root) if self.tree.named_root is not None else "<default>"
         line = f"OK: config under {named} validates.  layers: {self.chain}"
+        if memory:
+            line += f"  in memory: {memory}"
         return f"{line}  hands: {', '.join(self.hands)}" if self.hands else line
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain data: the tree, the chain and the verdict.
+        """Plain data: the tree, the chain, the values given in memory and the verdict.
 
         The config itself is not in here. It is a Pydantic model with its own `model_dump_json`,
         and a second serialisation of it would be a second answer.
@@ -194,6 +380,7 @@ class LoadedTree:
             "ok": self.ok,
             "exit_code": self.exit_code,
             "error": self.error,
+            "values": {key: _plain(value) for key, value in self.values.items()},
         }
 
 
@@ -272,8 +459,17 @@ class ConfigTree:
         same sentence as `--profile nosuch`, so the operator was sent looking for a flag they had
         not passed. `profile_source` carries the origin the rest of the way.
         """
-        from .loader import ConfigError, _validated_chain, load_config  # noqa: PLC0415
+        return self._load({})
 
+    def _load(self, values: Mapping[str, Any]) -> LoadedTree:
+        """The load with `values` given in memory on top of the files; `load` gives none.
+
+        One path serves both, so a tree given values meets the checks a tree read from its files
+        alone meets, in the same order.
+        """
+        from .loader import ConfigError, _load_with_values, _validated_chain, load_config  # noqa: PLC0415
+
+        given: Mapping[str, Any] = MappingProxyType(dict(values))
         try:
             # The same validator, called first, only so the refusal is worded honestly.
             # `load_config` runs it with `source="profile"` because that is the door it owns, and it
@@ -283,12 +479,15 @@ class ConfigTree:
             # validates identically; on a bad one it raises before `load_config` is reached, so
             # there is exactly one refusal either way.
             _validated_chain(self.root, self.profile, source=self.profile_source)
-            config = load_config(self.named_root, profile=self.profile)
+            config = (
+                _load_with_values(self.named_root, profile=self.profile, values=given) if given
+                else load_config(self.named_root, profile=self.profile)
+            )
             hands = _registry_hands(self.root, config)
             _registry_cameras(self.root, config)
         except ConfigError as exc:
-            return LoadedTree(tree=self, error=str(exc))
-        return LoadedTree(tree=self, config=config, hands=hands)
+            return LoadedTree(tree=self, error=str(exc), values=given)
+        return LoadedTree(tree=self, config=config, hands=hands, values=given)
 
     def write(self, items: "Mapping[str, Any]", *, connected: bool) -> "WriteResult":
         """Write measured values into this tree as one transaction: all land, or none do.
@@ -313,3 +512,21 @@ class ConfigTree:
             profile=self.profile,
             connected=connected,
         )
+
+
+def load_tree(
+    profile: "Maybe[str | None]" = UNSET, *, root: "Maybe[str | Path | None]" = UNSET
+) -> LoadedTree:
+    """The tree at ``root`` under ``profile``, loaded in one call.
+
+        tree = load_tree()               # the cell WILLY_PROFILE names
+        tree = load_tree("console_dummy")
+        tree = load_tree(None, root="D:/cells/line3")
+
+    It is ``ConfigTree.from_directory(root=root, profile=profile).load()``. Unset ``profile`` is
+    the chain ``WILLY_PROFILE`` names, so a program run as ``WILLY_PROFILE=<cell> python ...``
+    names no robot itself; ``None`` is the base tree; a string is that chain. Unset ``root`` is the
+    repository's tree. A tree that does not load comes back with ``ok`` false and its refusal, as
+    ``ConfigTree.load`` returns it.
+    """
+    return ConfigTree.from_directory(root=root, profile=profile).load()

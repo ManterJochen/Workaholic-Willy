@@ -120,7 +120,7 @@ Everything is mounted under `/v1`.
 | `GET /v1/diagnostics` | SDKs, motion stack, perception stack, controller reachability; nothing moves |
 | `GET /v1/diagnostics/route` | which route a prompt would take, decided from text alone: no GPU, no model, no image |
 | **Picking** | |
-| `POST /v1/pick` | `{prompt, picks}`, answered `202` with a run id. This moves. |
+| `POST /v1/pick` | `{prompt, picks}`, answered `202` with a run id. This moves. The prompt is the phrase the detector grounds for this run and the label a target carries; the cell's own phrase is back when the run ends, and an empty prompt keeps it. |
 | `POST /v1/pick/stop` | do not start the next attempt. Not an emergency stop. |
 | `GET /v1/runs`, `GET /v1/runs/{id}` | recent runs, and one run |
 | `WS /v1/events?run_id=&since_seq=` | replay what you missed, then go live |
@@ -128,6 +128,8 @@ Everything is mounted under `/v1`.
 | `POST /v1/overlay/enable` | opt into the debug render; it costs time per pick |
 | `WS /v1/overlay` | each new overlay still, with its age |
 | `POST /v1/voice/transcribe` | WAV to a text proposal, with the voice check behind it. Never starts anything. |
+| `POST /v1/voice/talk` | `{pressed}`: the talk switch, down and up |
+| `POST /v1/voice/listen` | one push to talk turn at the cell PC, answered with the same proposal. Never starts anything. |
 | **History** | |
 | `GET /v1/history/kpis` | rolled up with the same function the offline gate uses |
 | `GET /v1/history/records` | logged grasp attempts, newest first |
@@ -194,6 +196,16 @@ machine that cannot import the stack answers `501 speech_unavailable` and names 
 the missing package, and a DLL that Smart App Control refuses raises `OSError` rather than
 `ImportError` and gets the same answer. An upload opens no microphone, so a machine without PortAudio
 transcribes uploads all the same.
+
+Push to talk at the cell PC has two routes. `POST /v1/voice/talk` `{pressed}` presses and releases
+the process's one talk switch, and a key that repeats while it is held counts once. `POST /v1/voice/listen`
+opens the cell PC's microphone, waits up to `timeout_s` (10 s unless chosen) for the press, and at the
+release proposes everything said while the switch was held, through the same gate and engine as an
+upload. The answer is the same `ProposalOut`, and it starts nothing. A turn that proposes nothing answers
+with the library's sentence and its `TalkRecording.to_dict()`: `409 talk_not_pressed` or
+`409 microphone_ended`, `422 nothing_recorded` or `422 audio_too_long`. A microphone this host cannot
+open is `501 microphone_unavailable`, and a second listen while one runs is `409 listen_busy`. No console
+screen calls either route yet: the talk button records in the browser and uploads.
 
 [`audio.py`](audio.py) decodes 16-bit PCM WAV with the standard library, which is what the console
 records in the browser, and nothing else. The second decoder for webm/opus, mp4, ogg, flac and mp3 is
@@ -334,7 +346,7 @@ OpenAPI document and a generated client can type the failure path as well as the
 | `routers/cell.py` | the cell lifecycle and `GET /v1/cell/status` |
 | `routers/diagnostics.py` | `GET /v1/diagnostics` and the route preview |
 | `routers/pick.py` | start, stop, list runs, and the events socket |
-| `routers/media.py` | `GET /v1/camera`, the overlay socket and speech to text |
+| `routers/media.py` | `GET /v1/camera`, the overlay socket, speech to text and push to talk |
 | `routers/history.py` | the history routes |
 | `__main__.py` | `python -m api`, bound to 127.0.0.1 and not configurable off it; the port is checked and claimed before the banner claims to serve |
 

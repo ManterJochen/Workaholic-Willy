@@ -2,8 +2,9 @@
 
 **Scope.** The procedure that starts with an arm sitting powered off on a bench and ends with one
 verified, logged pick. It is the hardware counterpart to
-[`ur3e_cell_bringup.md`](ur3e_cell_bringup.md), which covers the configuration and geometry side and
-verifies itself in simulation. This one takes the same cell to metal.
+[`cell_bringup.md`](cell_bringup.md), which takes a cell from its configuration layer through a
+simulator to an arm that answers. That one proves the configuration and the geometry, and this one
+takes the same cell to metal.
 
 **Nothing in this repository has ever run against a physical controller.** The rehearsal, the
 configuration preflight and the connect path have been driven against a dummy arm and against real
@@ -325,7 +326,7 @@ rule alongside the verdict. From Python the rule is an argument:
 
 Exit codes: 0 the campaign passed, or `--check` and `--dry-run` were satisfied; 1 the preflight
 blocked or the build or the connect refused; 2 the cell connected and the campaign did not pass its
-rule; 3 an exception escaped a pick.
+rule; 3 a fault of the cell ended a pick, raised or reported.
 
 ---
 
@@ -351,14 +352,16 @@ rule; 3 an exception escaped a pick.
 
 ## See also
 
-- [`ur3e_cell_bringup.md`](ur3e_cell_bringup.md), the configuration and geometry side, verified in
-  simulation.
+- [`cell_bringup.md`](cell_bringup.md), the profile, the desk check, the simulator and the connect
+  that come before this.
+- [`docs/cli.md`](../cli.md), every command line above, by topic.
 - [`your_own_gripper.md`](your_own_gripper.md), a gripper this repository never shipped, up to a
   planner that starts.
 - [`real_cell` package](../../src/robot/execution/real_cell/README.md), what the runner does at each
   stage, and the calibration command in full.
 - [UR driver](../../src/robot/drivers/ur/README.md), the SDK and the connect-time refusals.
-- [`scripts/examples/`](../../scripts/examples/README.md), the same composition driven from Python,
-  in dependency order, with nothing moving unless you pass `--live`.
+- [`examples/`](../../examples/README.md), the same composition driven from Python: `real_robot/`
+  in the order a cell comes up, where every file from the third on moves the arm, and `simulation/`
+  for the rehearsal.
 - [`src/calibration/`](../../src/calibration/README.md), the typed extrinsics and what each frame
   means.

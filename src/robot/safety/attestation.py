@@ -3,10 +3,8 @@
 The defect this exists to end is a report of a cleared safety layer from a run that
 never reached one. `SafetyPreflight` lives in the driver, the dummy driver carries none
 (`drivers/dummy/arm.py` says so), and a run with `policy.preflight` set to `None`
-looks exactly like a run that passed six guards.
-`scripts/examples/api/01_first_cell/one_pick_end_to_end.py` records the case in its own words. The question is
-the one every caller of the library API asks: hand over an arm, and be told what it
-will refuse.
+looks exactly like a run that passed six guards. The question is the one every caller
+of the library API asks: hand over an arm, and be told what it will refuse.
 
 This is read at runtime and printed rather than checked against the driver registry,
 for a structural reason. A library caller supplies their own arm object, which
@@ -179,6 +177,10 @@ class SafetyAttestation:
             omitted=omitted,
             checks_trajectories=trajectories,
         )
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         """One block an operator reads before driving a cell. ASCII, no trailing newline."""

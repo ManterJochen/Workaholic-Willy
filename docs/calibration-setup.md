@@ -114,25 +114,22 @@ filter:
 hand_eye:
   eye_to_hand:
     marker_length_mm: 50.0          # what you measured
-    aruco_dict_name: "DICT_5X5_100" # simulator runners only, see below
+    aruco_dict_name: "DICT_5X5_100" # the printed board's dictionary; --dict overrides it
     min_samples: 6                  # hard floor for the solve
     min_distance_mm: 40.0           # a new sample must beat one of these two thresholds
     min_angle: 10.0                 # against every stored sample. Degrees.
 ```
 
-**The real-cell runner does not read `aruco_dict_name`.** It reads `--dict`, whose default is the
-hard-coded `DICT_5X5_100`. That YAML key has exactly two consumers and both are simulator runners.
-So if you printed a board from any other dictionary, set it on the command line with
-`--dict DICT_4X4_50`. Setting it only in YAML gives you zero detections and a "too few samples"
-refusal, while the configuration on screen and the runner's own banner disagree about which
-dictionary is in use.
+The real-cell runner reads `aruco_dict_name` from the block of the mode it sweeps, and `--dict`
+overrides it for one run. Its banner prints the dictionary in use, so a board printed from another
+dictionary is set once, in YAML, and the configuration and the banner agree.
 
 Two further notes on that file. Its `enabled` flags are documentation only, and the file says so:
 nothing reads them, they record which mounting the cell intends. And the real-cell runner reads the
-`eye_to_hand` block for both modes, so a wrist-camera cell either edits that block or passes
-`--marker-length-mm`. Of the five collection keys, only `marker_length_mm` has a command-line
-override; `min_samples`, `min_distance_mm` and `min_angle` are read from YAML alone, and
-`aruco_dict_name` is not read here at all.
+block of the mode it sweeps, `eye_in_hand` for a wrist camera (`HandEyeCalibration`, in
+`src/robot/execution/hand_eye.py`). Of the five collection keys, `marker_length_mm` and
+`aruco_dict_name` have a command-line override each, `--marker-length-mm` and `--dict`;
+`min_samples`, `min_distance_mm` and `min_angle` are read from YAML alone.
 
 `robot.calibration` in [`config/robot/robot.yaml`](../config/robot/robot.yaml) holds `settle_time_s`
 (0.5 s), `orientation_spread_deg` (15.0), `max_attempts_per_pose` (200) and `quality_bands_mm`. The
@@ -146,14 +143,16 @@ where the marker stays visible before you run a sweep.
 ## 5. Rehearse, then run the sweep
 
 ```bash
-python scripts/examples/api/02_calibration/calibrate_fixed_camera.py --rig realsense_d435       # the guided walkthrough
 python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --check
+python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --dry-run
 ```
 
-`--check` validates the configuration and the rig and touches no hardware. The example wraps that
-same check and then tells you what a live run would do. Neither moves the robot. Both use the rig id
-you declared in section 2, so on a tree that has no such rig they refuse by name and list the rigs
-that do exist.
+`--check` validates the configuration and the rig and touches no hardware. `--dry-run` builds the
+arm and opens that one camera, then stops before any motion. Neither moves the robot. Both use the
+rig id you declared in section 2, so on a tree that has no such rig they refuse by name and list the
+rigs that do exist. The same check, dry run and sweep from Python are
+[`examples/real_robot/07_calibrate_a_fixed_camera.py`](../examples/real_robot/07_calibrate_a_fixed_camera.py),
+whose last call is the sweep.
 
 The sweep does move. Clear the cell, keep hands out, keep the emergency stop in reach.
 
@@ -387,4 +386,4 @@ a calibration that failed a physical check.
 - [camera package](../src/camera/README.md)
 - [guide chapter 03](guide/03-calibration.md)
 - [first pick](runbooks/real_cell_first_pick.md)
-- [UR3e bring-up](runbooks/ur3e_cell_bringup.md)
+- [cell bring-up](runbooks/cell_bringup.md)

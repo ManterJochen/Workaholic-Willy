@@ -20,6 +20,7 @@ defined-by in one command), and ``ansible-config dump --only-changed``.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -131,6 +132,10 @@ class KeyExplanation:
         """The file:line in force, the registry file and field of a number the named hand supplies,
         or the empty string when the schema default is."""
         return self.layers[-1].location if self.layers else self.derived_from
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         """The CLI text. The only renderer. See the class docstring."""
@@ -316,7 +321,7 @@ def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
 
 def decisions(
     cfg: Any, root: Path, layers: tuple[str, ...],
-    section: str | None = None, tier: str | None = None,
+    section: str | None = None, tier: str | None = None, *, given: Collection[str] = (),
 ) -> str:
     """Only the values that differ from their schema default: the decisions someone actually made.
 
@@ -330,7 +335,13 @@ def decisions(
 
     Prior art: ``ansible-config dump --only-changed``, ``helm get values`` (user-supplied) vs ``-a``
     (computed), ``sshd -T``, ``tsc --showConfig``.
+
+    ``given`` holds the keys a :class:`~src.config.tree.LoadedTree` was given in memory, spelled by
+    ``loader._normal_key``. A row at, inside or holding one of them says it was set in
+    ``LoadedTree.with_values``, because the file line that also writes it holds another value.
     """
+    from .loader import _IN_MEMORY_ORIGIN, _holds, _within  # noqa: PLC0415
+
     index = schema_index()
     chains = index_chains(root, layers)
     values = _flatten(cfg)
@@ -346,6 +357,8 @@ def decisions(
         chain = chains.get(_yaml_path(path), [])
         where = (chain[-1].location(root) if chain
                  else hand_source(cfg, path) or "(not in any YAML: set by a validator or code)")
+        if given and any(_within(p, given) or _holds(p, given) for p in (path, _yaml_path(path))):
+            where = _IN_MEMORY_ORIGIN
         # `decided=True` by construction: everything reaching here differs from its default. The
         # gate state uses the loaded values, so a sim cell's own fields are not called "advanced"
         # merely because the block defaults to disabled.

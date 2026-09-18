@@ -5,7 +5,7 @@ instead. Swapping the end effector, from an unpacked gripper to a cell whose pla
 collision guard, whose grasp calculator and whose driver all model the hand that is actually bolted
 on. It is the gripper half; the physical-arm procedure is
 [real_cell_first_pick.md](real_cell_first_pick.md) and the robot half is
-[ur3e_cell_bringup.md](ur3e_cell_bringup.md).
+[cell_bringup.md](cell_bringup.md).
 
 **Why it exists.** A cell's gripper answers three different questions, and until 2026-09-08 no
 validator named more than one of them:

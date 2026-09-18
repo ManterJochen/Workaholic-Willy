@@ -1,5 +1,5 @@
-"""Stand-ins for Whisper, Silero, the microphone, the voice detector and the engine, so speech tests need
-no weights, no sound card and no PortAudio.
+"""Stand-ins for Whisper, Silero, the microphone, the voice detector, the engine and the talk switch, so
+speech tests need no weights, no sound card and no PortAudio.
 
 The token ids are the ones openai/whisper-small's generation config uses; large-v3-turbo keeps the same
 ids for the start token and for German, English and French, and moves the task tokens up by one. The
@@ -11,7 +11,7 @@ sits at index 1 (`transformers/models/whisper/generation_whisper.py:913-934`).
 from __future__ import annotations
 
 import types
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -186,6 +186,106 @@ class ScriptedSource:
         overflowed = self._served in self._overflow_at
         self._served += 1
         return AudioBlock(samples=block, overflowed=overflowed)
+
+
+class RingSource:
+    """An `AudioSource` with a ring like `MicrophoneSource`'s, as a test double.
+
+    Audio fed to it waits until a read takes it; `discard_buffered` and `stop` drop it, and it has ended
+    while it is not open. ``steps`` run one per read, before the ring is served, so a test can feed,
+    press or release in the middle of a turn. ``refill`` is fed on every read, like a live microphone.
+    With a ``clock``, each read advances it by the audio served, or by its wait when there is none.
+    ``fail_to_open`` is what `start` raises.
+    """
+
+    def __init__(
+        self,
+        *,
+        steps: Iterable[Callable[[RingSource], object]] = (),
+        clock: FakeClock | None = None,
+        refill: np.ndarray | None = None,
+        fail_to_open: BaseException | None = None,
+        samplerate: int = SAMPLERATE,
+    ) -> None:
+        self.steps = list(steps)
+        self.buffered: list[np.ndarray] = []
+        self.open = False
+        self.starts = 0
+        self.stops = 0
+        self._clock = clock
+        self._refill = refill
+        self._fail_to_open = fail_to_open
+        self._samplerate = samplerate
+
+    @property
+    def samplerate(self) -> int:
+        return self._samplerate
+
+    @property
+    def ended(self) -> bool:
+        return not self.open
+
+    def start(self) -> None:
+        if self._fail_to_open is not None:
+            raise self._fail_to_open
+        self.open = True
+        self.starts += 1
+
+    def stop(self) -> None:
+        self.open = False
+        self.buffered.clear()
+        self.stops += 1
+
+    def feed(self, samples: np.ndarray) -> None:
+        self.buffered.append(np.asarray(samples, dtype=np.float32))
+
+    def discard_buffered(self) -> int:
+        dropped = sum(int(part.shape[0]) for part in self.buffered)
+        self.buffered.clear()
+        return dropped
+
+    def read(self, *, timeout_s: float) -> Any:
+        from src.models.speech.capture import AudioBlock
+
+        if not self.open:
+            raise RuntimeError("the ring is not open")
+        if self.steps:
+            self.steps.pop(0)(self)
+        if not self.open:
+            return None
+        if self._refill is not None:
+            self.feed(self._refill)
+        if not self.buffered:
+            if self._clock is not None:
+                self._clock.now += timeout_s
+            return None
+        samples = np.concatenate(self.buffered)
+        self.buffered.clear()
+        if self._clock is not None:
+            self._clock.now += samples.shape[0] / self._samplerate
+        return AudioBlock(samples=samples)
+
+
+class ClockedSwitch:
+    """A `TalkSwitch` as a test double whose waits pass on a `FakeClock` instead of the wall clock."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        self._clock = clock
+        self.pressed = False
+        self.presses = 0
+
+    def press(self) -> None:
+        if not self.pressed:
+            self.pressed = True
+            self.presses += 1
+
+    def release(self) -> None:
+        self.pressed = False
+
+    def wait_for_press(self, *, after: int, timeout_s: float) -> int:
+        if self.presses <= after:
+            self._clock.now += timeout_s
+        return self.presses
 
 
 class LoudnessDetector:

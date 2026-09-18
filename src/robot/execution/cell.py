@@ -34,7 +34,10 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 
     from src.config.schema import AppConfig
     from src.config.schema.robot import RobotConfig
+    from src.config.tree import LoadedTree
     from src.robot.execution.planner_start import PlannerStartReport
+    from src.robot.execution.robot import Robot
+    from src.robot.grasping.motion.grasp_motion import GraspMotion
 
 __all__ = ["Cell", "CellNotBuilt"]
 
@@ -93,14 +96,44 @@ class Cell:
     #: way; a tree whose own ``grippers/`` describes the named hand differently is refused at the desk
     #: and at the build.
     data_dir: "str | Path | None" = None
+    #: How the pick moves (standoff, squeeze, retreat), built by the pick service into the one policy it
+    #: drives, on the arm and hand it resolves and with every guard. ``UNSET`` keeps the service's own.
+    motion: "Maybe[GraspMotion]" = UNSET
     _service: Any = field(default=None, repr=False)
 
     # --- factories ---------------------------------------------------------------------------
 
     @classmethod
+    def from_tree(
+        cls, tree: "LoadedTree", *, prompt: "Maybe[str]" = UNSET, motion: "Maybe[GraspMotion]" = UNSET,
+    ) -> "Cell":
+        """The cell a loaded tree describes: both halves, and the directory, from one load.
+
+            cell = Cell.from_tree(ConfigTree.from_directory(profile="ur5e,hande").load())
+            cell = Cell.from_tree(ConfigTree.from_directory(root="D:/cells/line3", profile=None).load())
+
+        Calls :meth:`from_robot_config` with the tree's robot section, its camera half and its root, so
+        the preflight, the planner start and the build all read the tree that was loaded, values given in
+        memory included. A tree that did not load is refused with its own refusal (``ConfigError``);
+        anything but a ``LoadedTree`` is a ``TypeError``.
+        """
+        from src.config.loader import ConfigError  # noqa: PLC0415
+        from src.config.tree import LoadedTree  # noqa: PLC0415
+
+        if not isinstance(tree, LoadedTree):
+            raise TypeError(
+                f"Cell.from_tree takes a loaded tree, not {type(tree).__name__}: pass "
+                f"ConfigTree.from_directory(...).load()")
+        if not tree.ok:
+            raise ConfigError(f"the tree did not load, so it describes no cell:\n{tree.error}")
+        return cls.from_robot_config(tree.robot, prompt=prompt, app_config=tree.app_config, data_dir=tree.root,
+                                     motion=motion)
+
+    @classmethod
     def from_robot_config(
         cls, robot_config: "RobotConfig", *, prompt: "Maybe[str]" = UNSET,
         app_config: "Maybe[AppConfig]" = UNSET, data_dir: "str | Path | None" = None,
+        motion: "Maybe[GraspMotion]" = UNSET,
     ) -> "Cell":
         """The cell the configuration describes, as configured.
 
@@ -110,10 +143,13 @@ class Cell:
         ``app_config`` is the tree ``robot_config`` came from, and a caller who resolved one should
         pass it: see the field for what happened while it could not be said.
         """
-        return cls(robot_config=robot_config, prompt=prompt, app_config=app_config, data_dir=data_dir)
+        return cls(robot_config=robot_config, prompt=prompt, app_config=app_config, data_dir=data_dir, motion=motion)
 
     @classmethod
-    def rehearsal(cls, robot_config: "RobotConfig", *, data_dir: "str | Path | None" = None) -> "Cell":
+    def rehearsal(
+        cls, robot_config: "RobotConfig", *, data_dir: "str | Path | None" = None,
+        motion: "Maybe[GraspMotion]" = UNSET,
+    ) -> "Cell":
         """The same path with a dummy arm and a synthetic scene.
 
         The operator's own config with the vendor changed, not a separate tree, so the profile
@@ -127,6 +163,7 @@ class Cell:
             robot_config=robot_config.model_copy(update={"vendor": _REHEARSAL_VENDOR}),
             is_rehearsal=True,
             data_dir=data_dir,
+            motion=motion,
         )
 
     # --- the four steps ----------------------------------------------------------------------
@@ -173,8 +210,10 @@ class Cell:
 
             # One branch, in one place. Both factories above produce a `Cell`; only this line
             # knows there are two ways to build the service behind it.
+            # The motion is forwarded only when chosen, as the prompt is: unset keeps the service's own.
+            motion: dict[str, Any] = {"motion": self.motion} if chosen(self.motion) else {}
             if self.is_rehearsal:
-                self._service = build_rehearsal_cell(self.robot_config, data_dir=self.data_dir)
+                self._service = build_rehearsal_cell(self.robot_config, data_dir=self.data_dir, **motion)
             else:
                 # Forwarded only when chosen, so an unspecified prompt reaches the callee's own
                 # default rather than a copy of it made here.
@@ -184,7 +223,7 @@ class Cell:
                 extra: dict[str, Any] = {"prompt": self.prompt} if chosen(self.prompt) else {}
                 if chosen(self.app_config):
                     extra["app_config"] = self.app_config
-                self._service = build_real_cell(self.robot_config, data_dir=self.data_dir, **extra)
+                self._service = build_real_cell(self.robot_config, data_dir=self.data_dir, **extra, **motion)
         return self._service
 
     def safety(self) -> SafetyAttestation:
@@ -223,6 +262,27 @@ class Cell:
     @property
     def gripper(self) -> Any:
         return getattr(self._orchestrator, "gripper", None)
+
+    @property
+    def robot(self) -> "Robot":
+        """This cell's built arm and hand as a :class:`Robot`, for the verbs a pick does not run. Requires a build.
+
+            cell.build()
+            with cell.connected():
+                print(cell.robot.home().render())
+                print(cell.robot.move(pose).render())
+
+        The same handles the pick service drives, so inside ``with cell.connected():`` every verb goes
+        through this arm's planner, its guard and the camera world the build wired onto it; nothing is
+        built, opened or locked a second time. Outside that block the verbs refuse a link that is not
+        open, as on any robot. Take the lock through ``cell.connected()``, not
+        ``cell.robot.connected()``, while the cell is connected: both take the same lock, and the second
+        is refused as busy.
+        """
+        from src.robot.execution.robot import Robot  # noqa: PLC0415
+
+        self._require_built("robot")
+        return Robot.from_parts(arm=self.arm, gripper=self.gripper, robot_config=self.robot_config)
 
     @property
     def vendor(self) -> str:

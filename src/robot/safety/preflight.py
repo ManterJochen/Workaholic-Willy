@@ -42,7 +42,7 @@ translation is written once:
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.robot.constants import SAFETY_PREFLIGHT_LOG_FILE, create_robot_logger
 from src.contracts import UNSET, Maybe, chosen
@@ -187,6 +187,28 @@ class SafetyPreflight:
         It is for a driver that has not wired the rest of the guard pipeline.
         """
         return cls([WorkspaceSafetyGuard(workspace_guard)])
+
+    @classmethod
+    def from_tree(cls, tree: Any, *, extra_guards: Iterable[SafetyGuard] = ()) -> "SafetyPreflight":
+        """The preflight a loaded tree's robot section describes, built as the cell's driver builds it.
+
+            gate = SafetyPreflight.from_tree(load_tree())
+            refusal = gate.gate_planned_path(waypoints, arm=arm)     # None when every sample passes
+
+        The hand the cell names resolves against the tree's own root, and a UR arm passes its model to
+        the guard, as the UR driver does. A tree that did not load, or loaded with no robot block, is
+        refused with its own refusal (``ConfigError``); an exact mesh guard on a tree that names no hand
+        is refused naming ``robot.gripper.model``.
+        """
+        from src.robot.safety.planning.hand import planner_hand  # noqa: PLC0415
+
+        robot = tree.robot
+        vendor = str(getattr(robot.vendor, "value", robot.vendor))
+        arm_model: Maybe[str] = str(robot.ur.model) if vendor == "ur" else UNSET
+        return cls.from_safety_config(
+            robot.safety, robot.workspace_limits, extra_guards=extra_guards,
+            hand=planner_hand(robot, data_dir=tree.root), arm_model=arm_model,
+        )
 
     @classmethod
     def from_safety_config(

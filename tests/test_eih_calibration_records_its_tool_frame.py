@@ -146,7 +146,7 @@ class TheUrArmSaysWhichFrameItAppliesTests(unittest.TestCase):
         self.assertIsNone(arm.active_tool_frame)
 
     def test_the_calibrate_cli_records_what_the_arm_applies(self) -> None:
-        from src.robot.execution.real_cell.calibrate import _flange_to_tcp_record
+        from src.robot.execution.hand_eye import _flange_to_tcp_record
 
         willy = URRobotArm(_cfg("willy"))
         record = _flange_to_tcp_record(willy.config, willy)

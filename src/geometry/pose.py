@@ -14,6 +14,7 @@ mutate a pose it was handed.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -64,6 +65,37 @@ class Pose:
         object.__setattr__(self, "quaternion_xyzw", quat)
 
     # Constructors
+
+    @classmethod
+    def tool_down(
+        cls,
+        x_mm: float,
+        y_mm: float,
+        z_mm: float,
+        *,
+        yaw_deg: float = 0.0,
+        frame: Frame = Frame.BASE,
+        label: str | None = None,
+    ) -> Pose:
+        """The tool at (``x_mm``, ``y_mm``, ``z_mm``) with its +Z pointing straight down
+        and its +X turned ``yaw_deg`` about the frame's +Z.
+
+        Half a turn about X puts the tool's +Z down and its +X along the frame's +X; the
+        yaw then turns the closing axis about the vertical. This is the pose a bench
+        move, a known part and a place most often need.
+        """
+        half = math.radians(float(yaw_deg)) / 2.0
+        # Rz(yaw) * Rx(pi), as (x, y, z, w).
+        return cls(
+            position_mm=np.array(
+                [float(x_mm), float(y_mm), float(z_mm)], dtype=np.float64
+            ),
+            quaternion_xyzw=np.array(
+                [math.cos(half), math.sin(half), 0.0, 0.0], dtype=np.float64
+            ),
+            frame=frame,
+            label=label,
+        )
 
     @classmethod
     def identity(cls, frame: Frame, *, label: str | None = None) -> Pose:

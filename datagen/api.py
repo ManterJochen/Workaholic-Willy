@@ -141,6 +141,10 @@ class DatasetReport:
                 return f"{step.stage} did not complete: {step.reason}"
         return ""
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         """What happened. What was going to happen is `DatasetBuild.describe`.
 

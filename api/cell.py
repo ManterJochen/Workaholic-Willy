@@ -89,9 +89,10 @@ class Console:
     #: UR3e cell configures the console for one too, and ``--reload``'s worker subprocess (which
     #: re-imports this module and cannot see the parent's objects) still comes up on the right chain.
     profile: str | None = field(default_factory=active_profile)
-    #: The text prompt a real perception source is built with. It lives here because
-    #: ``build_real_components`` needs one at construction time; a run's own prompt reaches the
-    #: built service later, through ``set_target_label``.
+    #: The text prompt a real perception source is built with, and the phrase it grounds between
+    #: runs. It lives here because ``build_real_components`` needs one at construction time; a run's
+    #: own prompt replaces it for that run through ``service.set_prompt``, and ``api/runs.py`` puts
+    #: it back when the run ends. Nothing is rebuilt.
     prompt: str = "object"
     #: Set while a run owns the cell. ``RunRegistry`` assigns and clears it; everything else only
     #: refuses against it.

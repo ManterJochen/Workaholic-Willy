@@ -16,6 +16,9 @@ Contract
 * Every :class:`MotionResult` carries a camera-world stamp (:mod:`.camera_world`)
   saying whether a world built from a current camera image stood behind the motion.
   A result built without one says ``UNSTATED``, which vouches for nothing.
+* A :class:`MotionResult` describes itself: ``render()`` for a person and ``to_dict()``
+  for the wire, both views of its fields, so a refused move prints without reading the
+  dataclass by hand.
 
 When may a driver raise?
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -31,7 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .camera_world import CameraWorldStamp, CameraWorldUse
 
@@ -136,6 +139,16 @@ alone.
 _UNSTATED = CameraWorldStamp.unstated()
 
 
+def _ascii(text: str) -> str:
+    """``text`` with every character outside ASCII written as its escape, for ``render()``."""
+    return text.encode("ascii", "backslashreplace").decode("ascii")
+
+
+def _fault_text(exc: BaseException) -> str:
+    """An exception as a reader sees it: its type and its text."""
+    return f"{type(exc).__name__}: {exc}"
+
+
 class MotionCommand(StrEnum):
     """High-level command kind that produced a :class:`MotionResult`."""
 
@@ -220,6 +233,59 @@ class MotionResult:
     def __bool__(self) -> bool:  # pragma: no cover (trivial)
         """Let ``if result:`` test success directly."""
         return self.ok
+
+    # ------------------------------------------------------------------
+    # The two report halves
+    # ------------------------------------------------------------------
+    #
+    # Methods only, with no field added, so equality, the hash and the repr stay as they are.
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
+    def render(self) -> str:
+        """Describe this to a person, as text, ASCII, no trailing newline.
+
+        The command and the status, the message where there is one, what was commanded, the
+        fault an exception carried (its type and text; the traceback stays on the object), and
+        the camera world stamp.
+        """
+        head = f"{self.command.value}  {self.status.value.upper()}"
+        lines = [head + (f": {_ascii(self.message)}" if self.message else "")]
+        if self.target_pose is not None:
+            x, y, z = (float(v) for v in self.target_pose.position_mm)
+            lines.append(
+                f"  target pose  ({x:.1f}, {y:.1f}, {z:.1f}) mm in {self.target_pose.frame.value}")
+        if self.target_joints is not None:
+            joints = ", ".join(f"{float(v):.4f}" for v in self.target_joints.values)
+            lines.append(f"  target joints  [{joints}] rad")
+        if self.exception is not None:
+            lines.append(f"  fault  {_ascii(_fault_text(self.exception))}")
+        lines.append(f"  {self.camera_world.render()}")
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Plain data, ``json.dumps`` safe.
+
+        A view of the fields; the exception is its type and text.
+        """
+        pose = self.target_pose
+        return {
+            "status": self.status.value,
+            "command": self.command.value,
+            "ok": self.ok,
+            "target_pose": None if pose is None else {
+                "position_mm": [float(v) for v in pose.position_mm],
+                "quaternion_xyzw": [float(v) for v in pose.quaternion_xyzw],
+                "frame": pose.frame.value,
+            },
+            "target_joints": (None if self.target_joints is None
+                              else [float(v) for v in self.target_joints.values]),
+            "message": self.message,
+            "exception": None if self.exception is None else _fault_text(self.exception),
+            "camera_world": self.camera_world.to_dict(),
+        }
 
     # ------------------------------------------------------------------
     # Constructors

@@ -76,6 +76,17 @@ class CustomSourceTests(unittest.TestCase):
         self.assertEqual(asset.license, "CC0-1.0")
         self.assertIn("ACME GmbH", asset.attribution)
 
+    def test_an_imported_part_reads_the_licence_declared_for_it(self) -> None:
+        """Each entry the import returns answers with the declaration beside it; it raised KeyError('custom')."""
+        library = Path(tempfile.mkdtemp())
+        entries = import_from_directory("custom", _origin(), destination=library,
+                                        license="own", attribution="ACME GmbH")
+        self.assertTrue(entries)
+        for entry in entries:
+            self.assertEqual(("own", "ACME GmbH"), (entry.license, entry.attribution))
+        records = MeshLibrary(library).records("custom", extent_mm=(10.0, 10.0, 10.0), mass_kg=0.1)
+        self.assertEqual({"own"}, {record.license for record in records})
+
     def test_the_licence_file_is_not_mistaken_for_a_mesh(self) -> None:
         """`custom` matches many suffixes, and its directory also holds the LICENSE.txt we write."""
         library = Path(tempfile.mkdtemp())

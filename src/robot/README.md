@@ -103,7 +103,7 @@ If the safety rejection rate rises in a replay rollup, one of these guards is th
 disable a guard to clear the rate; fix the input that made it fire.
 On call, the procedures live in the runbooks under [`docs/runbooks/`](../../docs/runbooks/):
 [`real_cell_first_pick.md`](../../docs/runbooks/real_cell_first_pick.md) for a cell being taken to
-metal, [`ur3e_cell_bringup.md`](../../docs/runbooks/ur3e_cell_bringup.md) for one moving to a robot
+metal, [`cell_bringup.md`](../../docs/runbooks/cell_bringup.md) for one moving to a robot
 the stack has not run before.
 
 | Guard | Symptom | What to do |

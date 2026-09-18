@@ -44,6 +44,8 @@ from src.camera.setup.image_taking.webcam import WebcamPairStreamer
 from src.contracts import UNSET, Maybe, chosen
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from types import TracebackType
+
     import numpy as np
 
     from src.camera.orchestration.frame_provider import RigHandle
@@ -182,7 +184,11 @@ class Camera:
 
     Built by `from_config` from a camera section, or by `from_rig` from one rig; building touches no
     device. `open` claims the device in the process registry and opens it, `release` gives both back
-    and never raises. Every grab and every lens read goes through the rig's lock.
+    and never raises. Every grab and every lens read goes through the rig's lock. A ``with`` block
+    does both:
+
+        with Camera.from_config(app.camera, rig_id="overhead") as camera:
+            frame = camera.grab()
     """
 
     def __init__(self, rig: CameraRigConfig, streamer: Any) -> None:
@@ -203,6 +209,16 @@ class Camera:
                     open_disabled: Maybe[bool] = UNSET) -> Camera:
         """The owner of the rig a camera section gives (see `select_rig`), not yet open."""
         return cls.from_rig(select_rig(camera_cfg, rig_id=rig_id, open_disabled=open_disabled))
+
+    @classmethod
+    def from_tree(cls, tree: Any, *, rig_id: Maybe[str] = UNSET,
+                  open_disabled: Maybe[bool] = UNSET) -> Camera:
+        """The owner of the rig a loaded tree's camera section gives, not yet open (see
+        :meth:`from_config`).
+
+        A tree that did not load is refused with its own refusal, as ``ConfigError``.
+        """
+        return cls.from_config(tree.app_config.camera, rig_id=rig_id, open_disabled=open_disabled)
 
     @property
     def rig(self) -> CameraRigConfig:
@@ -266,6 +282,21 @@ class Camera:
                 self._open = False
                 self._unclaim()
 
+    def __enter__(self) -> Camera:
+        """Open the device for a ``with`` block and hand the block this owner. Refused as
+        :meth:`open` is."""
+        self.open()
+        return self
+
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None,
+                 tb: TracebackType | None) -> None:
+        """Give the device back as :meth:`release` does, however the block ended. An exception
+        propagates.
+
+        The block releases the owner it holds, also one that was already open when the block began.
+        """
+        self.release()
+
     def grab(self) -> AnyFrame:
         """One frame, taken under the rig's lock and stamped with the host time read just before the
         grab."""
@@ -294,6 +325,10 @@ class Camera:
         from src.camera.orchestration.frame_provider import RigHandle  # noqa: PLC0415 (it imports this module)
 
         return RigHandle.of_camera(self)
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         switched = "" if self.enabled else ", enabled: false"

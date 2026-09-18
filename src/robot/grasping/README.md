@@ -101,9 +101,23 @@ grasps = scene.grasps()
 print(grasps.generator, grasps.render())
 ```
 
+From a BASE cloud to a pick, with no calculator and no cell: a candidate's `pose()` is the pose
+`Robot.pick` takes, +Z the approach and +X the closing axis, in BASE.
+
+```python
+from src.robot.grasping import Scene
+
+best = Scene.from_cloud(cloud_base_mm, support_height_mm=0.0).grasps().best
+if best is not None:
+    robot.pick(best.pose(), best.grip_width_mm)
+```
+
+A `GraspPoint` answers `pose()` the same way, in its own frame, and `pose_from_grasp_axes` is the one
+function both call.
+
 A full pick is driven through `src.robot.execution.autonomous_grasp.AutonomousGraspService`, which
 builds the orchestrator, the execution policy, the frame resolver and the arm together. Worked
-examples live in `scripts/examples/`.
+examples live in `examples/`, at the repository root.
 
 This package has no module entry point of its own, so `src.robot.grasping` is not a
 `python -m` target. The runnable command lines belong to the subpackages:

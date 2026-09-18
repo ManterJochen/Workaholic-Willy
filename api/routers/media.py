@@ -8,6 +8,11 @@ overwrites it, so what exists is the last segmentation the calculator processed,
 target it grasped, unless a label narrowed the loop to one. Calling that a video feed would be a lie an
 operator could act on ("the arm is where the picture shows"), so every frame carries its own age and the
 stream says plainly what the picture is.
+
+Speech arrives two ways and answers one way. A recording made in the browser is uploaded to
+``/v1/voice/transcribe``; a push to talk turn is caught by the cell PC's own microphone through
+``/v1/voice/listen``, while ``/v1/voice/talk`` presses and releases the talk switch. Both go through the
+process's one voice gate and engine and answer with the same `Proposal`, and neither starts anything.
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import threading
 import time
 from typing import TYPE_CHECKING, Annotated
 
@@ -28,19 +34,22 @@ from api.audio import (
 )
 from api.cell import Console, console
 from api.constants import API_LOG_DIR, ROUTER_MEDIA_LOG_FILE
-from api.schemas import ProposalOut, ViewfinderOut
+from api.schemas import ListenIn, ProposalOut, TalkIn, TalkOut, ViewfinderOut
 from api.viewfinder import ViewfinderFrame, read_viewfinder
 from src.utility.log_cfg import create_logger
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.config.schema.models.models_schema import SpeechToTextConfig
+    from src.models.speech.holder import HeldSpeech
+    from src.models.speech.push_to_talk import PushToTalkSource, TalkRecording
     from src.models.speech.transcript import Proposal
 
 router = APIRouter(tags=["media"])
 
 #: ``GET /v1/camera`` is deliberately absent from this log: the browser polls it every 160 ms while a
 #: camera frame is coming back (``Viewfinder.tsx``), so a line per request would be a frame counter.
-#: What is logged is per-event: a socket opening and closing, the overlay being switched on, and a
-#: transcription with what it cost.
+#: What is logged is per-event: a socket opening and closing, the overlay being switched on, a
+#: transcription or a push to talk turn with what it cost, and each edge of the talk switch.
 logger = create_logger("MediaRouter", ROUTER_MEDIA_LOG_FILE, log_dir=API_LOG_DIR)
 
 #: How often the overlay socket looks for a new render. The library produces roughly one image per
@@ -50,6 +59,9 @@ _OVERLAY_POLL_S = 0.25
 #: A quiet stream still says something at this cadence, so a UI can distinguish "no new render" from
 #: "the socket died".
 _OVERLAY_HEARTBEAT_S = 5.0
+#: Held while a push to talk listen runs. The cell PC has one microphone and the process one talk switch,
+#: so a second listen would catch the same turn twice; it is refused instead.
+_LISTENING = threading.Lock()
 
 
 @router.get("/camera", response_model=ViewfinderOut, summary="What the cell is looking at")
@@ -278,12 +290,155 @@ def _refusal(exc: Exception, *, size: int, declared: str | None, started: float)
 
 
 def _transcribe(cell: Console, raw: bytes) -> Proposal:
-    """Decode the upload and hand it to the process's speech holder. Blocking; the caller runs it off the loop.
+    """Decode the upload and hand it to the process's speech holder. Blocking; the caller runs it off the loop."""
+    samples, rate = decode_audio(raw)
+    return _held_speech(cell).propose(samples, samplerate=rate)
+
+
+def _held_speech(cell: Console) -> HeldSpeech:
+    """The process's voice gate and engine for the console's `models.stt`.
 
     The config is `models.stt` alone, read from the console's own tree under its own profile chain:
     speech needs no camera, robot or detector, so a fault in one of those must not refuse a recording.
+    Both speech routes ask here, so an upload and a push to talk turn go through one gate and one engine.
     """
     from src.models.speech.holder import shared_speech
 
-    samples, rate = decode_audio(raw)
-    return shared_speech().for_tree(cell.root, profile=cell.profile).propose(samples, samplerate=rate)
+    return shared_speech().for_tree(cell.root, profile=cell.profile)
+
+
+@router.post("/voice/talk", response_model=TalkOut, summary="Press or release the talk switch")
+def post_talk(body: TalkIn) -> TalkOut:
+    """Press or release the process's talk switch, the event a push to talk listen waits for.
+
+    A client sends ``pressed: true`` on the way down and ``pressed: false`` on the way up, and a switch
+    reader at the cell PC presses the same switch (`shared_talk_button()`). A press while the switch is
+    already down is not counted, so a key that repeats while it is held is one press. It moves nothing
+    and starts nothing. No console screen sends it yet: the console's talk button records in the browser
+    and uploads to ``/v1/voice/transcribe``.
+    """
+    from src.models.speech.push_to_talk import shared_talk_button
+
+    button = shared_talk_button()
+    if body.pressed:
+        button.press()
+    else:
+        button.release()
+    logger.info("Talk switch %s, %d press(es) so far.", "down" if button.pressed else "up", button.presses)
+    return TalkOut(pressed=button.pressed, presses=button.presses)
+
+
+@router.post("/voice/listen", response_model=ProposalOut, summary="Push to talk at the cell PC to a prompt")
+async def post_listen(
+    cell: Annotated[Console, Depends(console)], body: ListenIn | None = None
+) -> ProposalOut:
+    """Listen at the cell PC's own microphone for one push to talk turn, and propose what was said.
+
+    The turn is what the microphone catches while the talk switch is held (``/v1/voice/talk``). The route
+    opens the microphone, waits up to ``timeout_s`` for the press, drops the audio from before it, and at
+    the release hands everything held to the same voice gate and engine as an upload. The answer is the
+    same `Proposal`, and like an upload it starts nothing: the text lands in the prompt box and a person
+    confirms it, "Stopp" included.
+
+    A turn that proposes nothing is an answer, not a crash: 409 when the switch was not pressed in time or
+    the microphone ended, 422 when the switch came up before any audio or stayed down past Whisper's 30 s
+    window, each with the library's sentence and `TalkRecording.to_dict()`. A microphone this host cannot
+    open is 501, like a speech stack it cannot import. One turn at a time: a second listen is 409.
+    """
+    timeout_s = (body or ListenIn()).timeout_s
+    if not _LISTENING.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "listen_busy",
+                "message": "a push to talk listen is already running on this cell PC; it serves one turn "
+                           "at a time.",
+                "detail": {},
+            },
+        )
+    started = time.perf_counter()
+    try:
+        recording, proposal = await asyncio.to_thread(_listen, cell, timeout_s)
+    except Exception as exc:  # noqa: BLE001 (every failure becomes a typed answer, never a crash)
+        raise _listen_refusal(exc, started=started) from exc
+    finally:
+        _LISTENING.release()
+    if proposal is None:
+        raise _turn_refusal(recording)
+    logger.info(
+        "Proposed %r from a %.2f s push to talk turn, %.1f s after the listen began (speech %s, peak %.2f).",
+        proposal.text, recording.duration_s, time.perf_counter() - started,
+        "heard" if proposal.speech.heard_speech else "not heard", proposal.speech.peak_probability,
+    )
+    return ProposalOut(**proposal.to_dict())
+
+
+def _listen(cell: Console, timeout_s: float) -> tuple[TalkRecording, Proposal | None]:
+    """One push to talk turn at the cell PC's microphone, proposed like an upload when the switch came up
+    with audio. Blocking; the caller runs it off the loop. The microphone is closed after the turn."""
+    held = _held_speech(cell)
+    source = _talk_source(held.config)
+    with source:
+        recording = source.record(timeout_s=timeout_s)
+    if not recording.ok:
+        return recording, None
+    return recording, held.propose(recording.samples, samplerate=recording.samplerate)
+
+
+def _talk_source(config: SpeechToTextConfig) -> PushToTalkSource:
+    """The cell PC's microphone from `models.stt`, behind the process's talk switch. Opens nothing. A
+    function of its own, so the route can be driven by a source that needs no microphone."""
+    from src.models.speech.push_to_talk import PushToTalkSource
+
+    return PushToTalkSource.from_config(config=config)
+
+
+def _turn_refusal(recording: TalkRecording) -> HTTPException:
+    """The typed answer to a turn that proposes nothing: the switch or the microphone (409), or the turn
+    itself (422). The message is the library's own sentence, and the detail its `to_dict()`."""
+    from src.models.speech.push_to_talk import TalkOutcome
+
+    answers: dict[TalkOutcome, tuple[int, str]] = {
+        TalkOutcome.NOT_PRESSED: (409, "talk_not_pressed"),
+        TalkOutcome.SOURCE_ENDED: (409, "microphone_ended"),
+        TalkOutcome.NOTHING_CAPTURED: (422, "nothing_recorded"),
+        TalkOutcome.HELD_TOO_LONG: (422, "audio_too_long"),
+    }
+    status, code = answers[recording.outcome]
+    message = recording.render()
+    logger.warning("A push to talk listen proposed nothing: %s", message.replace("\n", " "))
+    return HTTPException(
+        status_code=status, detail={"code": code, "message": message, "detail": recording.to_dict()}
+    )
+
+
+def _listen_refusal(exc: Exception, *, started: float) -> HTTPException:
+    """The typed answer to a push to talk listen that failed.
+
+    A microphone this host cannot open is a capability it lacks (501), like a speech stack it cannot
+    import. The refusals an upload shares (a package or a model missing, a recording too long) get the
+    upload's answers from `_refusal`.
+    """
+    from src.models.speech.capture import MicrophoneUnavailable
+    from src.models.speech.engine import RecordingTooLong, SpeechModelMissing
+
+    if isinstance(exc, MicrophoneUnavailable):
+        logger.warning("The cell PC's microphone did not open: %s", exc)
+        return HTTPException(
+            status_code=501,
+            detail={
+                "code": "microphone_unavailable",
+                "message": f"{exc} Type the prompt instead.",
+                "detail": {},
+            },
+        )
+    if isinstance(exc, (ImportError, SpeechModelMissing, RecordingTooLong)):
+        return _refusal(exc, size=0, declared=None, started=started)
+    logger.error(
+        "A push to talk listen failed after %.1f s: %s: %s",
+        time.perf_counter() - started, type(exc).__name__, exc,
+    )
+    return HTTPException(
+        status_code=422,
+        detail={"code": "listen_failed", "message": f"{type(exc).__name__}: {exc}", "detail": {}},
+    )

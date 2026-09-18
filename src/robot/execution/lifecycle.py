@@ -96,6 +96,10 @@ class TeardownReport:
         """Did every part that existed come down?"""
         return not any(o is StepOutcome.FAILED for o in (self.gripper, self.arm, self.perception))
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         """One line per part, ASCII, no trailing newline."""
         reasons = dict(self.detail)

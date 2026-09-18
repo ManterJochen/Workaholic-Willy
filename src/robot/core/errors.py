@@ -79,9 +79,9 @@ class CameraWorldUnavailable(RobotError):
 
     This is a fault of the cell rather than the refusal of one motion: the camera answered nothing,
     a blind frame, or only frames older than the cell allows, and asking it again did not change
-    that. It raises out of every verb and out of ``pick()``, where an ordinary refusal returns a
-    status, so a campaign stops on a dead camera instead of retrying it as though a grasp had
-    missed.
+    that. A campaign stops on a dead camera instead of retrying it as though a grasp had missed:
+    ``AutonomousGraspService.pick()`` reports it as its report's ``fault`` rather than raising it,
+    and ``PickRun`` stops the campaign on that fault.
 
     It is neither a ``CuroboUnavailableError``, which driver sites turn into CONTROLLER_REJECTED,
     nor a :class:`RobotMotionRejected`, which is the ordinary refusal.

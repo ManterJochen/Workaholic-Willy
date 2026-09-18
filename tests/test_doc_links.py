@@ -114,7 +114,7 @@ def test_canon_source_links_point_at_real_files(doc: Path) -> None:
 #:
 #: ⛔ MEASURED 2026-09-10 in the sibling tree: six commands across four operator documents named
 #: modules the interpreter cannot find, because the old top-level `examples/` package had been
-#: deleted and replaced by `scripts/examples/` while the documents kept naming it. Nothing resolved
+#: deleted and replaced by scripts run by path while the documents kept naming it. Nothing resolved
 #: a command the way `test_relative_markdown_links_resolve` resolves a link. A dead link is visibly
 #: dead in a browser; a dead command looks like a broken install to the operator who runs it, which
 #: is the more expensive failure.
@@ -176,9 +176,9 @@ def test_documented_run_module_commands_name_real_modules(doc: Path) -> None:
 
 #: `python some/path/to/file.py`, the other half of the same rot.
 #:
-#: The dead `python -m examples.*` commands were repointed at `scripts/examples/` and
-#: `scripts/checks/`, which are run by PATH rather than by module name. Guarding only the `-m` form
-#: would have moved the rot rather than caught it.
+#: The dead `python -m examples.*` commands were repointed at example and check scripts, which are
+#: run by PATH rather than by module name. Guarding only the `-m` form would have moved the rot
+#: rather than caught it.
 _RUN_SCRIPT = re.compile(r"python(?:\.bat)?\s+((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.py)\b")
 
 

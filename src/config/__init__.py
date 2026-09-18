@@ -28,7 +28,7 @@ _LOADER_EXPORTS = {
 
 #: The capability noun of this package. Lazy for the same reason as the loader helpers: it
 #: reaches YAML on first use, and a schema-only import must not need the optional dependency.
-_TREE_EXPORTS = {"ConfigTree", "LoadedTree", "default_data_dir"}
+_TREE_EXPORTS = {"ConfigTree", "LoadedTree", "default_data_dir", "load_tree"}
 
 
 def __getattr__(name: str):
@@ -62,5 +62,6 @@ __all__ = [
     "load_robot_config",
     "load_robot_section",
     "load_speech_section",
+    "load_tree",
     "reload_config",
 ]

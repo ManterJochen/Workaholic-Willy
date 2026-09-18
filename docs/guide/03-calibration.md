@@ -11,8 +11,9 @@ the commands are `python -m src.robot.execution.real_cell.calibrate` on a real c
 [`src/calibration/README.md`](../../src/calibration/README.md) for the typed extrinsics, the stereo
 runtime and persistence, and
 [`src/calibration/eye_hand/README.md`](../../src/calibration/eye_hand/README.md) for the two
-workflows themselves. [`scripts/examples/api/02_calibration/calibrate_fixed_camera.py`](../../scripts/examples/api/02_calibration/calibrate_fixed_camera.py)
-is the runnable walkthrough against the library API.
+workflows themselves. [`examples/real_robot/07_calibrate_a_fixed_camera.py`](../../examples/real_robot/07_calibrate_a_fixed_camera.py)
+and [`examples/real_robot/08_calibrate_a_wrist_camera.py`](../../examples/real_robot/08_calibrate_a_wrist_camera.py) are the runnable walkthroughs against
+the library API.
 
 Sibling guides: [01](01-configuration.md) . [02](02-models.md) . **03** . [04](04-robot-and-safety.md)
 . [05](05-pick-loop.md) . [06](06-grippers.md)
@@ -201,19 +202,21 @@ magnitude worse than perturbing it by one millimetre of translation. The exact m
 `|t_X|` and with the pose set, so no single number describes it. The durable point is that the band
 is mostly a **rotation-consistency** gate. Any page that reads a band as "2.5 mm of error" is wrong.
 
-### 3.2 The bands, and why no YAML sets the label
+### 3.2 The bands, and where the YAML sets the label
 
 `classify_rmse` uses inclusive upper bounds: `excellent` at or below 1.0, `good` at or below 2.5,
 `marginal` at or below 5.0, `poor` above that, and `unknown` for `None`, non-finite or negative.
 
-The `robot.calibration.quality_bands_mm` YAML block does **not** set the label on the result or on
-the saved artifact. `BaseEyeHandCalibrator` defaults to the hard-coded `DEFAULT_BANDS_MM` and
-`CalibrationRoutine` never passes a `bands=`. What the YAML block does reach is the callers that run
-`classify_rmse` themselves: the two simulation calibration runners and the real-cell `calibrate`
-command. In `run_eth_calibrate.py` the label feeds `ok_quality`, `ok_quality` feeds the run's `ok`
-flag, and that flag decides the gate line, the log level and the value returned to a caller. So
-retuning the bands moves a verdict, not a printed line. The shipped YAML values equal the hard-coded
-ones, which is why the difference is easy to miss.
+On the real cell the `robot.calibration.quality_bands_mm` YAML block sets the label on the saved
+artifact and on the report: `HandEyeCalibration` builds the solver with those bands and hands it to
+`CalibrationRoutine`, and the real-cell `calibrate` command is its caller. A routine built without a
+solver builds its own with no `bands=`, so it labels with the hard-coded `DEFAULT_BANDS_MM` that
+`BaseEyeHandCalibrator` defaults to, and that is what the simulation runners' artifacts carry. The
+two simulation calibration runners call `classify_rmse` with the YAML bands themselves. In
+`run_eth_calibrate.py` the label feeds `ok_quality`, `ok_quality` feeds the run's `ok` flag, and that
+flag decides the gate line, the log level and the value returned to a caller. So in simulation,
+retuning the bands moves a verdict, not the artifact's label. The shipped YAML values equal the
+hard-coded ones, so on a shipped tree the two labels agree.
 
 ### 3.3 Nothing auto-applies
 
@@ -308,7 +311,7 @@ answer.
 `AutonomousGraspService.from_robot_config()` is the config-driven boot path, and it has live callers:
 `build_real_cell` and `build_rehearsal_cell` in `src/robot/execution/autonomous_grasp/cells.py`, which is what
 `python -m src.robot.execution.real_cell`, the operator console and
-[`scripts/examples/api/01_first_cell/one_pick_end_to_end.py`](../../scripts/examples/api/01_first_cell/one_pick_end_to_end.py) all reach through `Cell`; plus
+[`examples/simulation/01_rehearse_a_pick.py`](../../examples/simulation/01_rehearse_a_pick.py) all reach through `Cell`; plus
 `src/willy_sim/run_multiview_pick.py` and `run_eih_pick.py`, and `datagen/rl/occupancy.py`.
 
 Inside that path, `from_robot_config` builds the singular resolver from the primary rig's
@@ -394,7 +397,9 @@ is torch-free.
 controller. The real-cell entry point,
 [`src/robot/execution/real_cell/calibrate.py`](../../src/robot/execution/real_cell/calibrate.py), drives the same
 `CalibrationRoutine` with a live RGB-D ArUco marker source, and its `--check` and `--dry-run` stages
-touch nothing and open the camera without moving. Below `--dry-run` it is unproven: that marker
+command no motion; `--dry-run` opens the camera without moving. Its library twin is
+`HandEyeCalibration` in [`src/robot/execution/hand_eye.py`](../../src/robot/execution/hand_eye.py),
+which the command calls. Below `--dry-run` it is unproven: that marker
 source has never seen a physical camera, and an aligned stream reports distortion coefficients near
 zero, so its residual is unconfirmed on a real bench.
 
@@ -417,7 +422,7 @@ has met a physical controller.
 | The two workflows, the multi-camera map and their traps | [`src/calibration/eye_hand/README.md`](../../src/calibration/eye_hand/README.md) |
 | The bench session: print the board, run the sweep, wire the artifact in | [docs/calibration-setup.md](../calibration-setup.md) |
 | Running one camera against a real robot, and the flags | [`src/robot/execution/real_cell/README.md`](../../src/robot/execution/real_cell/README.md) |
-| Both modes driven from Python | [`scripts/examples/api/02_calibration/calibrate_fixed_camera.py`](../../scripts/examples/api/02_calibration/calibrate_fixed_camera.py) |
+| Both modes driven from Python | [`examples/real_robot/07_calibrate_a_fixed_camera.py`](../../examples/real_robot/07_calibrate_a_fixed_camera.py) and [`examples/real_robot/08_calibrate_a_wrist_camera.py`](../../examples/real_robot/08_calibrate_a_wrist_camera.py) |
 | Config layering, `explain` and `where` | [01](01-configuration.md) |
 | Camera intrinsics, and building an arm | [02](02-models.md) . [04](04-robot-and-safety.md) |
 | The pick that consumes the transform | [05](05-pick-loop.md) |

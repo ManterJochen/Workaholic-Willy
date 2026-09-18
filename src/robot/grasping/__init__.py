@@ -51,6 +51,7 @@ from .geometry import (
     estimate_surface_normals,
     masked_point_cloud,
     masked_points,
+    pose_from_grasp_axes,
 )
 
 # --- generation/ : mask + depth to ranked candidates ---------------------
@@ -314,6 +315,7 @@ __all__ = [
     "ParallelJawContactPlanner",
     "ParallelJawGripperModel",
     "points_to_grasp_frame",
+    "pose_from_grasp_axes",
     "PolicyOutcome",
     "PolicyReport",
     "PreGraspRefiner",

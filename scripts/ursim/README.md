@@ -5,6 +5,9 @@ URControl core) driving a simulated robot. That makes it the honest middle step 
 physical cell. It exercises the RTDE protocol, the safety modes and the I/O registers, and it exercises
 none of the wiring.
 
+The whole procedure, the Docker install included, is the UR section of
+[`docs/runbooks/cell_bringup.md`](../../docs/runbooks/cell_bringup.md#ur).
+
 ## Run them in this order
 
 | | script | what it proves |

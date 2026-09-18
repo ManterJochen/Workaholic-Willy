@@ -168,6 +168,10 @@ class WristBodies:
             return "wrist cameras  none declared"
         return "wrist cameras  " + "; ".join(body.render() for body in self.bodies)
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         return self.line().encode("ascii", "backslashreplace").decode("ascii")
 

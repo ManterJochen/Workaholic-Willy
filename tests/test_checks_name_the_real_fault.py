@@ -33,7 +33,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 _CHECKS = _ROOT / "scripts" / "checks"
-_EXAMPLES = _ROOT / "scripts" / "examples"
+_EXAMPLES = _ROOT / "examples"
 _DATA = _ROOT / "config"
 
 #: ``WILLY_PROFILE=sim,ur3e`` is a chain of layers, so the value is split on commas before each half

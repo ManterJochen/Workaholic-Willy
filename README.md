@@ -150,6 +150,7 @@ source .venv/bin/activate            # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt      # runtime, drivers, console and tooling in one file
 #    The cu128 wheels import without a GPU, so this is the default everywhere. If you would
 #    rather not pull them, requirements-cpu.txt installs the same set against CPU torch.
+pip install -e . --no-deps           # the repository itself, so `from willy import ...` resolves
 
 # 2. validate the whole configuration tree
 python -m src.config --print
@@ -164,21 +165,19 @@ python -m src.robot.execution.real_cell --rehearse --runs 3
 Two rehearsals that need nothing but the clone, and print what they actually did:
 
 ```bash
-python scripts/checks/cell_bringup.py     # is this cell described coherently?
-python scripts/examples/api/01_first_cell/one_pick_end_to_end.py            # one grasp on a dummy arm, and which layers ran
+python scripts/checks/cell_bringup.py              # is this cell described coherently?
+python examples/simulation/01_rehearse_a_pick.py   # one pick on a dummy arm, and which layers ran
 ```
 
-The same pick from Python, which is what those examples call:
+The same pick from Python, which is what that example does:
 
 ```python
-from src.config import load_config
-from src.robot.execution.cell import Cell
-from src.robot.execution.pick_run import PickRun, Recording
+from willy import Cell, PickRun, Recording, load_tree
 
-cell   = Cell.rehearsal(load_config().robot)     # or Cell.from_robot_config(...) for a real one
+cell   = Cell.rehearsal(load_tree("console_dummy").robot)   # or Cell.from_tree(load_tree()) for a real one
 report = PickRun.from_cell(cell, runs=1, recording=Recording.off()).execute()
 
-print(report.render())        # what happened, in words
+print(report)                 # what happened, in words
 report.exit_code              # 0 passed, 1 refused, 2 picked and did not pass, 3 raised
 ```
 
@@ -256,44 +255,30 @@ Full surface, error envelope and event contract: [`api/README.md`](api/README.md
 
 ## Examples
 
-Twenty-nine executable examples, and each one covers a single decision you have to make: it shows
-the alternatives, runs them, and says what each costs. Where an answer fails, the example runs the
-failure, because a refusal is what you will actually meet. They call the library rather than
-shelling out, so every one is also a worked example of the API.
+Short programs that call the library the way your own code would, `from willy import ...`, in three
+folders by what has to be attached. Full index: [`examples/`](examples/README.md).
 
-> Nothing moves unless you pass `--live`. Every example that can drive an arm defaults to a
-> rehearsal: it loads the configuration, builds the real components, runs every check that needs no
-> motion, and commands nothing.
-
-Every subject appears twice: as Python under [`api/`](scripts/examples/api/) and as the same subject
-on a command line under [`cli/`](scripts/examples/cli/), one `.ps1` and one `.sh` each. That is not a
-convention this directory invented. It is the calling convention the library is built on, whose first
-sentence is that the two callers have to be the same answer in two costumes. The folders are numbered
-by the order a cell needs them, so reading in order is a path from an unopened box to a trained model.
-
-| Folder | The decisions in it |
+| Folder | What it holds |
 |---|---|
-| [`01_first_cell/`](scripts/examples/api/01_first_cell/) | which gripper really gets built, one grasp end to end, and whether the arm plans or drives a straight line |
-| [`02_calibration/`](scripts/examples/api/02_calibration/) | a fixed camera and a wrist camera, and which field each mode puts its answer in |
-| [`03_perception/`](scripts/examples/api/03_perception/) | which detector, what to do when it is confidently wrong, and where depth comes from |
-| [`04_safety/`](scripts/examples/api/04_safety/) | the exact meshes against the capsule proxy, and gating the whole path |
-| [`05_grasping/`](scripts/examples/api/05_grasping/) | a jaw or a cup, and the analytic generator or the learned one |
-| [`06_datagen/`](scripts/examples/api/06_datagen/) | your parts or public ones, what a scene decides, which engine, and the corpus |
-| [`07_training/`](scripts/examples/api/07_training/) | the whole chain on your own parts, the public-corpus road, the two knobs, the report, and the limits |
-| [`08_sim/`](scripts/examples/api/08_sim/) | the same pick where a wrong answer is free, and recording one |
+| [`real_robot/`](examples/real_robot/) | your cell, the one `WILLY_PROFILE` names, numbered in the order a cell comes up. The first two move nothing; from the third on the arm moves, and every motion goes through the safety checks |
+| [`simulation/`](examples/simulation/) | the same calls on a dummy arm at a desk, and picks in Isaac Sim |
+| [`offline/`](examples/offline/) | data generation, training and the models a desk evaluates, with no robot and no camera attached |
 
-**Checks are the other half**, in [`scripts/checks/`](scripts/checks/). An example teaches and has no
-exit code worth reading; a check holds this cell against its own configuration and exits non-zero when
-the two disagree, which is what puts it in a bring-up list.
-[`cell_bringup.py`](scripts/checks/cell_bringup.py) connects and asks whether the arm stands inside the
-box it will be held to, [`safety_guards.py`](scripts/checks/safety_guards.py) makes every wired guard
-refuse a violation of its own family, [`camera_artifacts.py`](scripts/checks/camera_artifacts.py) opens
-every calibration artifact the config names, and
-[`grasping_switches.py`](scripts/checks/grasping_switches.py) reports which grasping block is reachable
-in which mode.
+A subject whose object a program holds between calls (a connected robot, a located object, a spoken
+turn, a `GraspMotion`) is Python only, because a command line has no place to keep one. Every other
+capability also has a command line, and [`docs/cli.md`](docs/cli.md) carries them by the same topics,
+each with the runbook that uses it.
 
-Start with [`scripts/checks/cell_bringup.py`](scripts/checks/cell_bringup.py). Full index:
-[`scripts/examples/README.md`](scripts/examples/README.md).
+**Checks are the other half**, in [`scripts/checks/`](scripts/checks/). A check holds this cell against
+its own configuration and exits non-zero when the two disagree, which is what puts it in a bring-up
+list. [`cell_bringup.py`](scripts/checks/cell_bringup.py) connects and asks whether the arm stands
+inside the box it will be held to, [`safety_guards.py`](scripts/checks/safety_guards.py) makes every
+wired guard refuse a violation of its own family,
+[`camera_artifacts.py`](scripts/checks/camera_artifacts.py) opens every calibration artifact the
+config names, and [`grasping_switches.py`](scripts/checks/grasping_switches.py) reports which
+grasping block is reachable in which mode.
+
+Start with [`scripts/checks/cell_bringup.py`](scripts/checks/cell_bringup.py).
 
 ---
 
@@ -384,7 +369,9 @@ src/
 api/                        the console backend: FastAPI, seven routers, an event hub
 frontend/                   the console UI: React and Vite, built into api/static/
 datagen/                    synthetic scenes, analytic grasp labels, a physics reward
-scripts/                    the examples, the URSim probes, the build and bake tools
+willy/                      the one import door: from willy import ...
+examples/                   the library called as your code calls it: real_robot, simulation, offline
+scripts/                    the checks, the URSim probes, the build and bake tools
 ext_deps/                   the single install root for Coal and cuRobo; the payload is ignored
 tests/                      the suite, torch-free, gated at 80 percent coverage
 docs/                       the guide, the runbooks, the math references, and the media
@@ -399,8 +386,8 @@ docs/                       the guide, the runbooks, the math references, and th
 Continuous integration runs lint, types, tests, coverage and the soak gate on every change. Locally:
 
 ```bash
-ruff check src api datagen tests scripts
-mypy src api datagen scripts
+ruff check src api datagen tests scripts examples willy
+mypy src api datagen scripts examples willy
 pytest tests --cov=src --cov=api --cov=datagen --cov-fail-under=80
 python -m src.robot.grasping.replay --soak-report
 ```

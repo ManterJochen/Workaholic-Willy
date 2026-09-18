@@ -17,13 +17,16 @@ cannot say is read as not measured and not modelled rather than guessed.
 
 ``Robot.pick`` and ``Robot.place`` put the hand verbs at the end of a straight descent. Before any command they refuse,
 in this order: a robot that cannot hold, a link that is not open, a pose not in BASE, a camera world the arm's own
-motion would be refused for (``ReadsCameraWorld``), and an arm that keeps no line or does not say (``KeepsLines``). Then
-the motions: a planned move to the standoff, a line down to the pose, the hand verb, and a line back up to the
+motion would be refused for (``ReadsCameraWorld``), and an arm whose motions do not go through cuRobo and the exact mesh
+guard (``motion.route_of``: a desk arm runs, a UR on the ik planner, a KUKA and an arm that does not say are refused).
+Then the motions: a planned move to the standoff, a line down to the pose, the hand verb, and a line back up to the
 standoff, each move carrying the caller's decline, each preceded by the arm's own steady gate where its tree asks for
-one (``safety.dwell``). A refused motion ends the verb with nothing commanded after it. A pick holds its keep-out offer
-in the arm's live world from before the detach to after its last motion, and forgets it on any exit.
+one (``safety.dwell``). A refused motion ends the verb with nothing commanded after it, and so does a camera that could
+not vouch for the cell, as its own outcome rather than a raise. A pick holds its keep-out offer in the arm's live world
+from before the detach to after its last motion, and forgets it on any exit.
 
-The module imports nothing above ``robot.core`` and connects nothing: the verbs run inside ``Robot.connected()``.
+The module imports nothing above ``robot.core`` but its sibling :mod:`~src.robot.execution.motion`, which imports
+nothing above it either, and connects nothing: the verbs run inside ``Robot.connected()``.
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ import numpy as np
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
 from src.robot.core import MotionResult, MotionStatus, StoppableGripper
-from src.robot.core.arm_capabilities import CarriesPayload, LineMotion, LineReading, PayloadModel, line_motion_of
+from src.robot.core.arm_capabilities import CarriesPayload, LineMotion, LineReading, PayloadModel
 from src.robot.core.camera_world import (
     CameraWorldDecline,
     CameraWorldStamp,
@@ -49,6 +52,7 @@ from src.robot.core.camera_world import (
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.gripper import HoldEvidence, hold_evidence_of, width_is_measured_of
 from src.robot.core.keep_out import SegmentationOffer, keeping_out
+from src.robot.execution.motion import route_of, steady_timeout_of
 
 __all__ = [
     "HandOutcome",
@@ -125,6 +129,10 @@ class HandReport:
     def ok(self) -> bool:
         """Whether the verb did what it was asked: the jaws closed on something or opened off it."""
         return self.outcome in (HandOutcome.GRASPED, HandOutcome.RELEASED)
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""
@@ -297,6 +305,9 @@ class HandlingOutcome(StrEnum):
     RELEASE_NOT_CONFIRMED = "release_not_confirmed"
     #: The gripper raised; it was stopped where it can be, and nothing was commanded after it.
     GRIPPER_FAULT = "gripper_fault"
+    #: A camera could not vouch for the cell through its fresh-frame attempts; nothing was commanded after it, and a
+    #: caller stops rather than trying again. The verb reports it rather than raising it.
+    CAMERA_WORLD_UNAVAILABLE = "camera_world_unavailable"
     #: Nothing was commanded.
     REFUSED = "refused"
 
@@ -334,6 +345,10 @@ class HandlingReport:
         """The stamp a reader of the whole verb has to see: the first that does not vouch, else the last."""
         return weakest_camera_world(self.camera_worlds)
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""
         head = f"{self.verb.value}  {self.outcome.value.upper()}  {len(self.poses)} motion(s) commanded"
@@ -346,6 +361,8 @@ class HandlingReport:
             lines.append(f"  {weakest.render()}")
         if self.keep_out_held:
             lines.append("  the target was held out of the planner world through every motion")
+        if self.outcome is HandlingOutcome.CAMERA_WORLD_UNAVAILABLE:
+            lines.append("  a camera could not vouch for the cell: look at the camera rather than trying again")
         if self.hand is not None:
             lines.extend(f"  {line}" for line in self.hand.render().split("\n"))
         return "\n".join(lines)
@@ -502,14 +519,13 @@ class _Handling:
             if sentence is not None:
                 self.stamps.append(stamp)
                 return self._report(HandlingOutcome.REFUSED, message=sentence)
-        reading = line_motion_of(self.arm)
-        if reading is None:
-            return self._report(HandlingOutcome.REFUSED, message=(
-                f"{type(self.arm).__name__} does not say what it keeps of a straight line, so the descent cannot be "
-                "promised"))
-        self.line = reading
-        if reading.motion is LineMotion.NOT_KEPT:
-            return self._report(HandlingOutcome.REFUSED, message=f"this arm keeps no straight line: {reading.reason}")
+        # Everything that moves the arm goes through cuRobo and the exact mesh guard with the camera world, so a pick
+        # or a place reads the route its motions take, as Robot.move does. A desk arm runs; a UR on the ik planner is
+        # refused like a KUKA.
+        route = route_of(self.arm)
+        self.line = route.line
+        if not route.runs:
+            return self._report(HandlingOutcome.REFUSED, message=route.reason)
         return None
 
     # ---- the steps ----------------------------------------------------------------------------
@@ -533,8 +549,11 @@ class _Handling:
             keywords["camera_world"] = self.camera_world
         try:
             result = self.arm.move(target, **keywords)
-        except CameraWorldUnavailable:
-            raise
+        except CameraWorldUnavailable as exc:
+            # The verb promises a report, so a camera that could not vouch ends it as its own outcome rather than a
+            # raise that loses the motions before it.
+            self.poses.append(target)
+            raise _Refused(self._report(HandlingOutcome.CAMERA_WORLD_UNAVAILABLE, message=str(exc)))
         except Exception as exc:  # noqa: BLE001 (a raising driver ends the verb, reported)
             self.poses.append(target)
             raise _Refused(self._report(HandlingOutcome.MOTION_REFUSED, message=f"{type(exc).__name__}: {exc}"))
@@ -554,12 +573,7 @@ class _Handling:
 
     def _steady_timeout(self) -> float | None:
         """The arm's own steady gate, where its tree asks for one and it can wait; ``None`` otherwise."""
-        dwell = getattr(getattr(getattr(self.arm, "config", None), "safety", None), "dwell", None)
-        if dwell is None or not callable(getattr(self.arm, "wait_until_steady", None)):
-            return None
-        if not bool(getattr(dwell, "require_steady_before_motion", False)):
-            return None
-        return float(getattr(dwell, "steady_timeout_s", 5.0))
+        return steady_timeout_of(self.arm)
 
     def _report(self, outcome: HandlingOutcome, *, hand: HandReport | None = None, message: str = "") -> HandlingReport:
         return HandlingReport(

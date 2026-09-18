@@ -581,8 +581,9 @@ class CellChecksTests(unittest.TestCase):
     ⛔ THESE REPLACE A CLASS THAT IMPORTED EXAMPLES AND CALLED `main([])`. That worked while the
     examples were tools with an argument surface. They are not any more: an example is straight-line
     code with no `main`, no flags and no exit code worth reading, and the file that had a verdict
-    moved to `scripts/checks/cell_bringup.py` and kept it. Every example is executed instead by
-    `tests/test_examples_run.py`, which runs the whole directory rather than four files by name.
+    moved to `scripts/checks/cell_bringup.py` and kept it. The examples are held instead by
+    `tests/test_examples.py`, which runs every simulation and offline one and compiles every
+    real-robot one, rather than four files by name.
 
     ⚠ AND THE OLD LOADER IS WHY THIS WAS RED FOR AN HOUR. It built its path as
     `"scripts" / "examples" / f"{name}.py"`, so the literal path existed nowhere in the source and a
@@ -602,7 +603,7 @@ class CellChecksTests(unittest.TestCase):
         env = dict(os.environ)
         if profile is not None:
             # The caller sets the profile, which is the whole point: no check may write to its own
-            # environment, and `tests/test_examples_run.py` asserts that none does.
+            # environment, and `tests/test_examples.py` asserts that none does.
             env["WILLY_PROFILE"] = profile
         return subprocess.run(
             [sys.executable, str(self._CHECKS / f"{name}.py"), *args],

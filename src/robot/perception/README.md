@@ -29,8 +29,8 @@ other.
 
 | File | Role |
 | --- | --- |
-| [`locator.py`](locator.py) | `Locator.from_parts(camera=, backend=, tool_pose=, attempts=, tool_frame=)` and `Locator.from_config(robot_cfg, models_cfg, camera=)`, with one verb, `locate(prompt) -> Located`. It runs the pick frame's RealSense source over an open camera the caller owns and places every grounded object in BASE (`LocatedObject`: label, score, box, mask, points, per-axis median centre, and an orientation marked unmeasured), stamped at the shutter. `Located.keep_out(i)` is the `SegmentationOffer` a `keeping_out` block holds while user code reaches for object i. It refuses a rig with no depth, a rig with no calibration (naming its key), and a wrist rig with no TCP reader or whose calibration was not solved against the cell's flange to TCP, and it raises `PerceptionFrameMoved` when a wrist camera cannot take a still frame. An empty result says that it reads the same as a failed detector. It imports no driver, pick loop, camera package, models or torch. |
-| [`realsense_source.py`](realsense_source.py) | `RealSenseVisionPerceptionSource`: grab one RGB-D frame, ground and segment it, emit a `PerceptionFrame` whose depth is the depth the sensor measured and whose `timestamp` is the shutter time (the camera owner's `captured_at_s`, else a clock read just before the grab). It carries the mask-completion lever, whose default is `none`. `stamp_tool_pose_with(reader, *, motion_tolerance, attempts)` binds a wrist camera: the TCP is read before and after the grab, a frame taken while the tool moved beyond the rig's shutter tolerance is grabbed again without the warm-ups, and after its attempts the acquire raises `PerceptionFrameMoved`. `build_real_cell` binds the primary and every fused wrist source, and refuses a rig whose calibration was not solved against the declared flange to TCP. |
+| [`locator.py`](locator.py) | `Locator.from_parts(camera=, backend=, tool_pose=, attempts=, tool_frame=)` and `Locator.from_config(robot_cfg, models_cfg, camera=)`, with one verb, `locate(prompt) -> Located`. It runs the pick frame's RealSense source over an open camera the caller owns and places every grounded object in BASE (`LocatedObject`: label, score, box, mask, points, per-axis median centre, and an orientation marked unmeasured), stamped at the shutter. `Located.keep_out(i)` is the `SegmentationOffer` a `keeping_out` block holds while user code reaches for object i, and `Located.scene(i, robot_config)` is object i as the grasp `Scene`, the other objects its obstacles, whose candidates' `pose()` and `grip_width_mm` are what `Robot.pick` takes. It refuses a rig with no depth, a rig with no calibration (naming its key), and a wrist rig with no TCP reader or whose calibration was not solved against the cell's flange to TCP, and it raises `PerceptionFrameMoved` when a wrist camera cannot take a still frame. An empty result says that it reads the same as a failed detector. It imports no driver, pick loop, camera package, models or torch. |
+| [`realsense_source.py`](realsense_source.py) | `RealSenseVisionPerceptionSource`: grab one RGB-D frame, ground and segment it, emit a `PerceptionFrame` whose depth is the depth the sensor measured and whose `timestamp` is the shutter time (the camera owner's `captured_at_s`, else a clock read just before the grab). It carries the mask-completion lever, whose default is `none`. `stamp_tool_pose_with(reader, *, motion_tolerance, attempts)` binds a wrist camera: the TCP is read before and after the grab, a frame taken while the tool moved beyond the rig's shutter tolerance is grabbed again without the warm-ups, and after its attempts the acquire raises `PerceptionFrameMoved`. `build_real_cell` binds the primary and every fused wrist source, and refuses a rig whose calibration was not solved against the declared flange to TCP. `set_prompt(prompt, *, object_labels=())` changes the phrase and the label map between frames, with no reopen and no reload, and refuses an empty phrase; `prompt` and `object_labels` read them. |
 | [`viewfinder.py`](viewfinder.py) | The peek capability: `ColourPeekable`, `peek_color_of`, `colour_source_kind`, `COLOUR_SOURCE_KINDS`. One colour image, with no models, no simulation and no pipeline state. |
 | [`mask_completion.py`](mask_completion.py) | The three mask-fill policies, the shared threshold, and the reasoning behind the default. |
 | [`__main__.py`](__main__.py) | The bench exerciser: open a real RGB-D rig, grab, detect, and print intrinsics and per-mask depth-hole statistics. No robot. |
@@ -69,6 +69,26 @@ for callers that assemble models by hand.
 The exerciser selects its rig on the same predicate the cell uses, `source == "rgbd"`, so a bench run
 cannot open a different camera from the one the cell opens and still count as evidence about the
 cell.
+
+From user code, the locator is the way from seeing a part to picking it. The package exports
+`Locator`, `Located`, `LocatedObject`, `LocatedOrientation` and `LocatorRefused`:
+
+```python
+from src.camera import Camera
+from src.robot.execution.robot import Robot
+from src.robot.perception import Locator
+
+with Camera.from_config(app.camera) as camera:            # the primary rig, released however the block ends
+    robot = Robot.from_config(app.robot, cameras=[camera])   # the camera world the arm plans in
+    locator = Locator.from_config(app.robot, app.models, camera=camera)
+    with robot.connected():
+        located = locator.locate("a red cube")
+        best = located.scene(0, app.robot).grasps().best      # BASE candidates, the other objects as obstacles
+        if best is not None:                                  # +Z the approach, +X the closing axis
+            print(robot.pick(best.pose(), best.grip_width_mm, keep_out=located.keep_out(0)).render())
+```
+
+A wrist rig also takes `tool_pose=robot.arm.get_tcp_pose` on the locator.
 
 ## What it does with a frame
 

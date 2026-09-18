@@ -23,11 +23,12 @@ from unittest import mock
 import yaml
 
 from src.config.schema.robot import RobotConfig
+from src.robot.execution import hand_eye
 from src.robot.execution.real_cell import calibrate
 
 
 class _Rig:
-    """The smallest thing `_pick_rig` reads. Not the schema type on purpose — the RGB-D check is an
+    """The smallest thing `hand_eye._select_rig` reads. Not the schema type on purpose — the RGB-D check is an
     isinstance against the real class, so a stand-in must NOT pass it."""
 
     def __init__(self, rig_id: str, source: str) -> None:
@@ -57,9 +58,9 @@ class RefusalTests(unittest.TestCase):
     def test_an_unknown_rig_LISTS_the_configured_ones(self) -> None:
         """An operator at a cell needs the answer, not the question."""
         cfg = _CameraCfg([_real_rgbd("overhead"), _real_rgbd("wrist")])
-        with self.assertRaises(SystemExit) as caught:
-            calibrate._pick_rig(cfg, "front")
-        message = str(caught.exception)
+        rig, refusal = hand_eye._select_rig(cfg, "front")
+        self.assertIsNone(rig)
+        message = str(refusal)
         self.assertIn("'front'", message)
         self.assertIn("overhead", message)
         self.assertIn("wrist", message)
@@ -68,22 +69,24 @@ class RefusalTests(unittest.TestCase):
         """A stereo pair calibrates through the routine's own stereo path. Letting it through here
         would fail much later with an error about markers rather than about the rig."""
         cfg = _CameraCfg([_Rig("stereo_dev0", "webcam_pair")])
-        with self.assertRaises(SystemExit) as caught:
-            calibrate._pick_rig(cfg, "stereo_dev0")
-        self.assertIn("not an RGB-D device", str(caught.exception))
+        rig, refusal = hand_eye._select_rig(cfg, "stereo_dev0")
+        self.assertIsNone(rig)
+        self.assertIn("not an RGB-D device", str(refusal))
 
     def test_a_real_rgbd_rig_is_accepted(self) -> None:
         rig = _real_rgbd("overhead")
-        self.assertIs(calibrate._pick_rig(_CameraCfg([rig]), "overhead"), rig)
+        selected, refusal = hand_eye._select_rig(_CameraCfg([rig]), "overhead")
+        self.assertIs(selected, rig)
+        self.assertIsNone(refusal)
 
     def test_a_DISABLED_rig_is_refused_by_name(self) -> None:
         """MEASURED 2026-09-10: nothing on this path read `enabled`. `--check` answered "the config
         and the rig are usable" for a rig the cell does not run, and the sweep that follows would
         have moved the arm to 22 poses in front of a camera nobody switched on."""
         rig = _real_rgbd("overhead").model_copy(update={"enabled": False})
-        with self.assertRaises(SystemExit) as caught:
-            calibrate._pick_rig(_CameraCfg([rig]), "overhead")
-        self.assertIn("enabled", str(caught.exception))
+        selected, refusal = hand_eye._select_rig(_CameraCfg([rig]), "overhead")
+        self.assertIsNone(selected)
+        self.assertIn("enabled", str(refusal))
 
     def test_an_empty_rig_list_cannot_reach_this_runner(self) -> None:
         """⛔ REPLACES A TEST OF A BRANCH NOTHING COULD REACH. `_pick_rig` carried its own
@@ -170,7 +173,7 @@ class ThePrintedYamlActuallyValidatesTests(unittest.TestCase):
     into something the schema rejects, would send an operator hunting for a typo in the shipped snippet."""
 
     def _block(self, mode: str = "eye_to_hand") -> dict:
-        text = calibrate._snippet("overhead", mode, "calibration/real/eth_overhead.json")
+        text = hand_eye._rig_block("overhead", mode, "calibration/real/eth_overhead.json")
         rigs = yaml.safe_load(text)["camera"]["cameras"]["rigs"]
         self.assertEqual(len(rigs), 1)
         return rigs[0]
@@ -195,7 +198,7 @@ class ThePrintedYamlActuallyValidatesTests(unittest.TestCase):
 
         from src.config.schema.camera.shared_schema import RigExtrinsicsConfig
 
-        text = calibrate._snippet("overhead", "eye_in_hand", "calibration/real/eih_overhead.json")
+        text = hand_eye._rig_block("overhead", "eye_in_hand", "calibration/real/eih_overhead.json")
         self.assertIn("shutter_motion_tolerance_mm", text)
         self.assertIn("shutter_motion_tolerance_deg", text)
         extrinsics = self._block("eye_in_hand")["extrinsics"]
@@ -207,7 +210,7 @@ class ThePrintedYamlActuallyValidatesTests(unittest.TestCase):
     def test_the_block_is_keyed_by_the_RIG_ID(self) -> None:
         """The artifact stamps `rig_id` to the camera id, and the block names the same rig, which is what
         lets the loader find the file for the camera the perception source opens."""
-        block = yaml.safe_load(calibrate._snippet("wrist_d435", "eye_to_hand", "x.json"))["camera"]["cameras"]["rigs"][0]
+        block = yaml.safe_load(hand_eye._rig_block("wrist_d435", "eye_to_hand", "x.json"))["camera"]["cameras"]["rigs"][0]
         self.assertEqual(block["rig_id"], "wrist_d435")
 
 
@@ -238,7 +241,7 @@ class ContractTests(unittest.TestCase):
     def test_the_artifact_name_follows_the_sim_runner_convention(self) -> None:
         """`eth_<camera_id>.json` / `eih_<camera_id>.json`. A cell brought up in sim and then on
         hardware must not need two mental models of where its calibration lives."""
-        self.assertIn("eth_", calibrate._snippet("cam", "eye_to_hand", "d/eth_cam.json"))
+        self.assertIn("eth_", hand_eye._rig_block("cam", "eye_to_hand", "d/eth_cam.json"))
 
     def test_the_exit_codes_are_distinct_and_documented(self) -> None:
         codes = (calibrate._EXIT_OK, calibrate._EXIT_CONFIG,

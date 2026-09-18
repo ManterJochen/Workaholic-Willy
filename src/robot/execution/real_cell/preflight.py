@@ -107,6 +107,10 @@ class PreflightReport:
             "n_bench": sum(1 for c in self.checks if c.status is CheckStatus.BENCH),
         }
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         """A human-readable checklist. The bench copy of this is what an operator works through."""
         marks = {CheckStatus.OK: "[ ok ]", CheckStatus.BLOCK: "[BLOCK]",

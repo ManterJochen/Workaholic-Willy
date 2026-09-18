@@ -4,7 +4,7 @@ You have a validating config tree ([01-configuration.md](01-configuration.md)) a
 vision half of the stack to load weights and hand back a box and a mask. This chapter covers
 [`src/models/`](../../src/models/README.md) and [`config/models/`](../../config/models/). Sections 1
 to 7 need no GPU and no simulator; section 8 is the first simulator boot. Work from the repository
-root, because the repository is not pip-installed and `import src` only resolves from there.
+root; `import src` resolves from anywhere once the repository is installed, see section 2.
 
 ---
 
@@ -60,9 +60,10 @@ They differ in three lines, the index URL and the two torch pins. Prefer the CUD
 machine with no card: those wheels install and import fine, and torch simply reports
 `cuda.is_available() == False`, which is why CI installs that file rather than the CPU one.
 
-Nothing creates the virtual environment for you, and the repository is not pip-installable, so there
-is no editable-install step either. Every bare `python`, `pip` and `pytest` below assumes the
-environment is active.
+Nothing creates the virtual environment for you. After the requirements, install the repository itself
+with `pip install -e . --no-deps`: it puts `src`, `api`, `datagen` and `willy` on the environment's
+path and installs no dependency. Every bare `python`, `pip` and `pytest` below assumes the environment
+is active.
 
 ```powershell
 python -m venv .venv
@@ -286,9 +287,10 @@ recording into a text proposal that a human reads before pressing the button. Th
 language it was spoken in: `task` accepts only `transcribe`, and `language: auto` lets Whisper detect
 German or English per recording. Its base block is `local: True` against an absent directory, so a
 base-profile console is refused on the first transcription, by name and with the fetch that fixes it.
-The microphone keys (`samplerate`, `blocksize`, `channels`, `dtype`) are read by `Listener.from_config`,
-which no console route or cell verb builds yet; `chunk_duration` left with the fixed-window path it fed,
-so a tree that still writes it is refused as an unknown key
+The microphone keys (`samplerate`, `blocksize`, `channels`, `dtype`) open the cell PC's microphone for
+the console's push to talk listen (`POST /v1/voice/listen`, through `PushToTalkSource.from_config`) and
+for `Listener.from_config`, which no console route or cell verb builds yet; `chunk_duration` left with
+the fixed-window path it fed, so a tree that still writes it is refused as an unknown key
 ([`src/models/speech/README.md`](../../src/models/speech/README.md)).
 
 **`handdetect` and `gesturedetect`** are standalone MediaPipe and are not on the grasp path. Nothing

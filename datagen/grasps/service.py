@@ -90,6 +90,10 @@ class PhysicsReport:
         proposals rather than a stratified sample. Read `by_source` for anything else."""
         return self.held / self.trials if self.trials else 0.0
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         lines = []
         for source, bucket in sorted(self.raw.get("by_source", {}).items()):

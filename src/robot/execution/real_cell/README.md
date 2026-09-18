@@ -19,7 +19,7 @@ This package does not know how to build a cell. It is a thin shim over
 same builders without importing a command-line runner. What lives here is the bench wording, the
 banners, and the two things nothing else owns: `run_config_preflight` and `calibrate`.
 
-`scripts/examples/api/01_first_cell/one_pick_end_to_end.py` runs the same composition from Python and does not go through this
+`examples/simulation/01_rehearse_a_pick.py` runs the same composition from Python and does not go through this
 runner, which is the check that the shim carries no logic of its own.
 
 ## The stages, and what each proves
@@ -35,9 +35,9 @@ runner, which is the check that the shim carries no logic of its own.
 
 Exit codes: `0` the campaign passed, `--check` and `--dry-run` were satisfied, or `--start-planner`
 started; `1` the preflight blocked, the build refused, the connect refused, or the planner start was
-refused; `2` the cell connected and the campaign did not pass its rule; `3` an exception escaped a
-pick. The codes past the first come from `PickRunReport.exit_code`, so the library and the command
-line cannot disagree.
+refused; `2` the cell connected and the campaign did not pass its rule; `3` a fault of the cell
+stopped a pick, reported on its report or raised out of it. The codes past the first come from
+`PickRunReport.exit_code`, so the library and the command line cannot disagree.
 
 The verdict rule is unanimity: every pick must succeed. That is stricter than the simulator
 gate, which configures `pass_fraction: 0.8` and additionally refuses to accept the service's own
@@ -157,6 +157,11 @@ python -m src.robot.execution.real_cell.calibrate --rig overhead --dry-run   # o
 python -m src.robot.execution.real_cell.calibrate --rig overhead --poses 22  # this moves the robot
 ```
 
+The library twin is [`execution/hand_eye.py`](../hand_eye.py):
+`HandEyeCalibration.from_tree(loaded, rig_id=, mode=)`, then `check()` and `run(dry_run=)`, whose
+reports are what this command prints. The command loads the tree, prints the stage banners between
+the reports and returns the report's exit code.
+
 This is what unlocks multi-view. `grasping.fusion.geometry` states its own precondition, that
 `cameras` must be populated with each camera individually calibrated, and every consuming piece is
 finished: the per-camera map, `build_config_frame_resolvers` turning it into resolvers, the pick
@@ -184,11 +189,14 @@ is given back before the camera is. Every move declines the camera world with a 
 mounting, because the sweep produces the transform a camera world needs.
 
 An eye in hand sweep on a UR arm writes `eih_<rig_id>.json` as `willy.calibration.cam_to_tool/2`,
-with the flange to TCP the arm applied while it swept. On a cell that reads geometry the camera's
-body is part of the sweep: a rig without a body is refused, a body its previous calibration places
-is handed to the arm before it moves, and a body that cannot be placed yet (no calibration, no
-record, a stale one) sweeps only with `--unmodelled-wrist-body "<reason>"`, printed and logged,
-with no body in the planner and the guard.
+with the flange to TCP the arm applied while it swept, when `robot.gripper.tool_frame.source` is
+`willy` or `polyscope`. On an `undeclared` tool frame it writes `/1`, which the cell and the
+`Locator` refuse for a wrist camera. The sweep reads `camera.hand_eye.eye_in_hand` for its marker
+and its sample thresholds. On a cell that reads geometry the camera's body is part of the sweep: a
+rig without a body is refused, a body its previous calibration places is handed to the arm before
+it moves, and a body that cannot be placed yet (no calibration, no record, a stale one) sweeps only
+with `--unmodelled-wrist-body "<reason>"`, printed and logged, with no body in the planner and the
+guard.
 
 Writing the artifact is half the job. Until its rig declares it, in
 `camera.cameras.rigs[<rig_id>].extrinsics`, the cell has no CAMERA->BASE for that camera: a real
@@ -206,7 +214,8 @@ mandatory: a cell whose calibrated rigs give no world is refused at build.
 | Flag | Why |
 | --- | --- |
 | `--mode` | `eye_to_hand` for a fixed camera, whose artifact is `CAMERA->BASE` and is what fusion consumes, or `eye_in_hand` for a wrist camera, whose artifact is `CAMERA->TOOL` and is composed with the live TCP each frame |
-| `--marker-length-mm` | a wrong value scales every sample uniformly, so the solve converges and is uniformly wrong. Measure the printed board |
+| `--marker-length-mm` | defaults to the mode's `camera.hand_eye` block. A wrong value scales every sample uniformly, so the solve converges and is uniformly wrong. Measure the printed board |
+| `--dict` | the ArUco dictionary. Defaults to the mode's `camera.hand_eye.<mode>.aruco_dict_name` |
 | `--poses` | 22 by default. The orientation spread is widened because a planar marker viewed near-frontally has a pose-estimation flip ambiguity that ruins the `AX=XB` rotation |
 
 Exit codes: `0` done; `1` configuration or build refused, the cell held by another process, or the
@@ -228,4 +237,4 @@ exercised in simulation only, and the marker source has never seen a physical RG
 - [drivers/ur](../../drivers/ur/README.md), the UR driver and its bring-up checklist
 - [robot/perception](../../perception/README.md), the live-camera source this runner consumes
 - [camera](../../../camera/README.md), `Camera`, the one owner per rig, and the handle both runners take from it
-- `scripts/examples/api/01_first_cell/one_pick_end_to_end.py`, the same composition driven from Python
+- `examples/simulation/01_rehearse_a_pick.py`, the same composition driven from Python

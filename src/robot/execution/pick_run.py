@@ -62,7 +62,9 @@ class PickOutcome(StrEnum):
     SUCCEEDED = "succeeded"
     #: Ran and did not succeed. The service's own outcome is on the report beside it.
     FAILED = "failed"
-    #: An exception escaped `pick()`. The campaign stops; the cell still comes down.
+    #: A fault of the cell ended the pick: `pick()` reported one (a camera that could not vouch, a
+    #: controller link that dropped) or an exception escaped it. The campaign stops; the cell still
+    #: comes down.
     RAISED = "raised"
     #: The campaign was asked to stop before this attempt started.
     CANCELLED = "cancelled"
@@ -92,6 +94,10 @@ class PassRule:
             return True
         good = sum(1 for a in attempts if a.passed)
         return good >= self.fraction * len(attempts)
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         confirmed = ", independently confirmed" if self.confirm is not None else ""
@@ -125,6 +131,10 @@ class Recording:
     def to_file(cls, path: str, *, provenance: "Mapping[str, Any] | None" = None) -> "Recording":
         return cls(path=str(path), provenance=dict(provenance or {}))
 
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
     def render(self) -> str:
         return f"recording to {self.path}" if self.enabled else "recording nothing"
 
@@ -143,6 +153,10 @@ class PickAttempt:
     @property
     def passed(self) -> bool:
         return self.outcome is PickOutcome.SUCCEEDED
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         return f"  run {self.index}: {self.reported or self.outcome.value}" + (
@@ -208,7 +222,7 @@ class PickRunReport:
 
     @property
     def exit_code(self) -> int:
-        """0 pass, 1 refused before picking, 2 picked and did not pass, 3 an exception escaped.
+        """0 pass, 1 refused before picking, 2 picked and did not pass, 3 a fault of the cell stopped it.
 
         The same four codes the command-line runner returns, derived from the report rather than
         branched at four `return` statements.
@@ -218,6 +232,10 @@ class PickRunReport:
         if self.raised:
             return 3
         return 0 if self.passed else 2
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
 
     def render(self) -> str:
         """The whole campaign. ASCII, no trailing newline, no arguments."""
@@ -264,6 +282,17 @@ class PickRunReport:
         }
 
 
+def _checked_prompt(prompt: "Maybe[str]") -> "Maybe[str]":
+    """A campaign's prompt, refused at the factory when it names nothing, before a cell is built.
+
+    The detector refuses an empty phrase on every frame, so a campaign carrying one would build and
+    connect a cell for picks that cannot ground anything.
+    """
+    if chosen(prompt) and not str(prompt).strip():
+        raise ValueError("PickRun(prompt=...) names what to pick; an empty prompt grounds nothing")
+    return prompt
+
+
 @dataclass(frozen=True, slots=True)
 class PickRun:
     """N picks against one cell, under one connect.
@@ -290,8 +319,13 @@ class PickRun:
     rule: PassRule = field(default_factory=PassRule)
     #: No default at the factories: whether a campaign writes a corpus is stated, not inherited.
     recording: Recording = field(default_factory=Recording.off)
-    #: What the vision front end looks for, for this campaign only. Set and cleared around the run.
+    #: The label a pick target must carry, for this campaign only. Set and cleared around the run.
     target_label: "Maybe[str | None]" = UNSET
+    #: What this campaign picks: the phrase every camera grounds, the labels the detector's words map
+    #: onto, and the label filter, all three set before the first pick and put back after the last,
+    #: with no camera reopened and no model reloaded. `target_label` alone sets the filter and
+    #: nothing the detector reads.
+    prompt: "Maybe[str]" = UNSET
     #: Asked before every attempt. Returning True stops the campaign; the remaining attempts are
     #: reported CANCELLED rather than silently missing.
     should_cancel: "Callable[[], bool] | None" = None
@@ -314,6 +348,7 @@ class PickRun:
         recording: Recording,
         rule: "Maybe[PassRule]" = UNSET,
         target_label: "Maybe[str | None]" = UNSET,
+        prompt: "Maybe[str]" = UNSET,
         should_cancel: "Callable[[], bool] | None" = None,
         announce: "Callable[[ConnectStage], None] | None" = None,
         on_attempt: "Callable[[PickAttempt], None] | None" = None,
@@ -330,6 +365,7 @@ class PickRun:
             recording=recording,
             rule=rule if chosen(rule) else PassRule(),
             target_label=target_label,
+            prompt=_checked_prompt(prompt),
             should_cancel=should_cancel,
             announce=announce,
             on_attempt=on_attempt,
@@ -344,6 +380,7 @@ class PickRun:
         recording: Recording,
         rule: "Maybe[PassRule]" = UNSET,
         target_label: "Maybe[str | None]" = UNSET,
+        prompt: "Maybe[str]" = UNSET,
         should_cancel: "Callable[[], bool] | None" = None,
         on_attempt: "Callable[[PickAttempt], None] | None" = None,
     ) -> "PickRun":
@@ -358,6 +395,7 @@ class PickRun:
             recording=recording,
             rule=rule if chosen(rule) else PassRule(),
             target_label=target_label,
+            prompt=_checked_prompt(prompt),
             should_cancel=should_cancel,
             on_attempt=on_attempt,
         )
@@ -408,7 +446,12 @@ class PickRun:
             self.on_attempt(attempt)
 
     def _drive(self, service: Any, *, teardown: "TeardownReport | None") -> PickRunReport:
-        """The loop, and the two per-campaign settings that must be put back afterwards."""
+        """The loop, and the three per-campaign settings that must be put back afterwards."""
+        # The prompt first: it is the one setting that can refuse, and a refusal here leaves the other
+        # two untouched. `set_prompt` returns what it replaced, and that is what goes back.
+        previous_prompt: Any = None
+        if chosen(self.prompt):
+            previous_prompt = service.set_prompt(self.prompt)
         if self.recording.enabled:
             service.enable_record_logging(
                 self.recording.path, provenance=dict(self.recording.provenance) or None
@@ -429,11 +472,17 @@ class PickRun:
                 try:
                     report_i = service.pick()
                 except Exception as exc:  # noqa: BLE001 (the campaign stops, the cell still comes down)
+                    stopped_by = f"{type(exc).__name__}: {exc}"
+                else:
+                    last = report_i
+                    # A fault of the cell stops the campaign as its raise did. `pick()` reports it on
+                    # the report instead of raising it, so the campaign reads it there and says it in
+                    # the same words.
+                    fault = getattr(report_i, "fault", None)
+                    stopped_by = "" if fault is None else f"{type(fault).__name__}: {fault}"
+                if stopped_by:
                     attempts.append(
-                        PickAttempt(
-                            index=index, outcome=PickOutcome.RAISED,
-                            detail=f"{type(exc).__name__}: {exc}",
-                        )
+                        PickAttempt(index=index, outcome=PickOutcome.RAISED, detail=stopped_by)
                     )
                     self._announce(attempts[-1])
                     attempts.extend(
@@ -441,7 +490,6 @@ class PickRun:
                         for i in range(index + 1, self.runs)
                     )
                     break
-                last = report_i
                 raw = getattr(report_i, "outcome", None)
                 reported = str(getattr(raw, "value", raw))
                 ok = reported == _SUCCEEDED
@@ -465,6 +513,9 @@ class PickRun:
             # keep hunting the object this one was told to find.
             if chosen(self.target_label):
                 service.set_target_label(None)
+            if chosen(self.prompt):
+                # After the label, so a campaign that set both ends on the filter the prompt replaced.
+                service.set_prompt(previous_prompt)
             if self.recording.enabled:
                 service.enable_record_logging(None)
 

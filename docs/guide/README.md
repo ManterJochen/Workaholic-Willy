@@ -122,5 +122,6 @@ These are not part of the walkthrough, but the guides link into them.
 | [docs/safety-math.md](../safety-math.md) | the derivations behind the safety bounds |
 | [docs/grasping-math.md](../grasping-math.md) | the derivations behind the grasp itself, from prompt to point cloud to grasp pose |
 | [docs/grasping-config-reference.md](../grasping-config-reference.md) | every `robot.grasping` block, and which grasp mode it can fire in |
-| [scripts/examples/README.md](../../scripts/examples/README.md) | the same ground as twenty-nine runnable Python files, one per decision you have to make, driving the library nouns rather than the command line |
+| [examples/README.md](../../examples/README.md) | the same ground as short programs through `from willy import ...`, in three folders by what has to be attached: your cell, simulation, and offline work |
+| [docs/cli.md](../cli.md) | every command line, by topic, and the runbook that uses it |
 | [src/willy_sim/README.md](../../src/willy_sim/README.md) | the simulator harness behind every simulation step in these guides |

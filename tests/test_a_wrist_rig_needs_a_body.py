@@ -191,7 +191,7 @@ class TheDeskRowTests(unittest.TestCase):
 
 class TheCalibrationSweepTests(unittest.TestCase):
     def _sweep(self, rig: object, reason: "str | None" = None, data_dir: object = None) -> tuple:
-        from src.robot.execution.real_cell.calibrate import _wrist_body_for_sweep
+        from src.robot.execution.hand_eye import _wrist_body_for_sweep
 
         return _wrist_body_for_sweep(wrist_cell(), rig, data_dir=data_dir, reason=reason)
 
@@ -212,7 +212,7 @@ class TheCalibrationSweepTests(unittest.TestCase):
         self.assertIn("acme_cam", refusal)
 
     def test_a_cell_that_reads_no_geometry_sweeps_as_before(self) -> None:
-        from src.robot.execution.real_cell.calibrate import _wrist_body_for_sweep
+        from src.robot.execution.hand_eye import _wrist_body_for_sweep
 
         self.assertEqual(_wrist_body_for_sweep(wrist_cell(planner="ik", backend="capsule"), wrist_rig(body=False),
                                                data_dir=None, reason=None), (None, None))
