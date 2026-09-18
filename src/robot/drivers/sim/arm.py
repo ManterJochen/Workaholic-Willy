@@ -21,6 +21,7 @@ Three guarantees hold throughout:
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import replace
@@ -38,11 +39,9 @@ from src.geometry.quaternion import (
 )
 
 from ...core import (
-    DECLINE_ON_A_LIVE_WORLD_MESSAGE,
     NO_PLAN_FAIL_SAFE_MESSAGE,
     CameraWorldDecline,
     CameraWorldStamp,
-    CameraWorldUse,
     IsaacNotAvailableError,
     JointPositions,
     MotionCommand,
@@ -54,6 +53,7 @@ from ...core import (
     RobotKinematicsError,
     RobotMotionRejected,
     active_decline,
+    camera_world_refusal,
     resolve_camera_world,
     stamp_result,
 )
@@ -61,26 +61,29 @@ from ...core.camera_world import without_camera_world as _without_camera_world
 from ...core.errors import CameraWorldUnavailable
 from ...safety import SafetyPreflight
 from ...safety.continuous_monitor import ContinuousCollisionMonitor, ContinuousGuardAbort
+from ...safety.path_samples import LINE_MAX_JOINT_STEP_RAD
 from ...safety.planning import CuroboPlanClient, CuroboUnavailableError
 from ...safety.planning.live_world import WorldRefresh, refresh_planner_world
 from ...safety.planning.world import merge_planner_worlds
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from ...core.arm_capabilities import LineReading
+    from ...core.keep_out import GoalKeepOut
     from ...safety.planning.live_world import LivePlannerWorld
     from ...safety.planning.perceived import SelfEnvelope
-from .adapter import (
-    willy_joints_to_isaac,
-    willy_pose_to_isaac,
-    isaac_joints_to_willy,
-    isaac_pose_to_willy,
-    isaac_rotmat_to_wxyz,
-)
 from ._isaac_protocols import (
     IsaacArmSubset,
     IsaacArticulation,
     IsaacKinematicsSolver,
     IsaacMotionPolicy,
     IsaacRmpFlow,
+)
+from .adapter import (
+    isaac_joints_to_willy,
+    isaac_pose_to_willy,
+    isaac_rotmat_to_wxyz,
+    willy_joints_to_isaac,
+    willy_pose_to_isaac,
 )
 from .config import SimRobotConfig
 from .session import IsaacSimSession
@@ -438,7 +441,9 @@ class IsaacRobotArm(RobotArm):
         # variant. Addressing the six arm joints by name through an ArticulationSubset
         # makes every arm read and write ignore the gripper DoFs and stay robust to their
         # dof ordering.
-        from isaacsim.core.api.articulations import ArticulationSubset  # type: ignore[import-not-found]
+        from isaacsim.core.api.articulations import (
+            ArticulationSubset,  # type: ignore[import-not-found]
+        )
 
         dof_names = list(articulation.dof_names)
         missing = [n for n in _ARM_JOINT_NAMES if n not in dof_names]
@@ -626,6 +631,48 @@ class IsaacRobotArm(RobotArm):
         if self._preflight is not None:
             self._preflight.reset()
 
+    @property
+    def camera_world_required(self) -> bool:
+        """Whether every motion of this arm needs a live camera world or a decline: a non-mock cuRobo arm."""
+        return not self.mock_mode and self._motion_planner == "curobo"
+
+    def line_motion(self) -> "LineReading":
+        """What a ``move(pose, linear=True)`` on this arm keeps of the line, read before moving.
+
+        The mock sets the pose. On cuRobo every sample is solved and judged before the arm
+        walks them, unless no preflight is wired or the path cannot be judged. ik and RMPflow
+        drop the flag and drive to the pose.
+        """
+        from ...core.arm_capabilities import LineMotion, LineReading
+
+        if self.mock_mode:
+            return LineReading(LineMotion.TELEPORT, "mock_mode: the kinematic mock sets the pose and draws no line")
+        planner = self._motion_planner
+        if planner != "curobo":
+            return LineReading(LineMotion.NOT_KEPT, (
+                f"the motion planner of this arm is {planner!r}, which drops the linear flag and drives to the pose"))
+        if self._preflight is None:
+            return LineReading(LineMotion.NOT_KEPT, "no safety preflight is wired, so the line runs unjudged")
+        refusal = self._preflight.path_judge_refusal(self)
+        if refusal is not None:
+            return LineReading(LineMotion.NOT_KEPT, refusal)
+        return LineReading(LineMotion.CHECKED, (
+            "every sample of the line is solved and judged by the exact mesh guard and the planner before the arm walks "
+            "them"))
+
+    def camera_world_for_move(self, camera_world: Maybe[CameraWorldDecline] = UNSET) -> CameraWorldStamp:
+        """The camera world a :meth:`move` with ``camera_world`` would carry, read as the arm is now.
+
+        It is the stamp :meth:`move` starts from before a refresh vouches for it: UNPLANNED on
+        the mock, ik or RMPflow, MISSING on cuRobo with no live world and no decline, DECLINED
+        for a decline. It starts no planner.
+        """
+        return self._move_camera_world(camera_world)
+
+    def live_camera_world_wired(self) -> bool:
+        """Whether a live camera world is wired to this arm."""
+        return self._live_world is not None
+
     def without_camera_world(self, reason: str) -> AbstractContextManager[CameraWorldDecline]:
         """Decline the camera world for every motion this arm commands inside the ``with`` block.
 
@@ -669,6 +716,24 @@ class IsaacRobotArm(RobotArm):
             planned=planned,
         )
 
+    def _refused_for_camera_world(
+        self, stamp: CameraWorldStamp, command: MotionCommand, *,
+        target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+    ) -> MotionResult | None:
+        """The ``UNSUPPORTED`` result a motion stamped ``stamp`` is refused with before its body, or ``None``.
+
+        One rule for every verb (``core.camera_world.camera_world_refusal``): a cuRobo motion with neither
+        a world nor a decline is refused, and so is a declined one where a live world is wired. The mock,
+        the ik planner and the RMPflow policy say UNPLANNED and are never refused for the camera world.
+        """
+        message = camera_world_refusal(stamp, live_world_wired=self._live_world is not None)
+        if message is None:
+            return None
+        return MotionResult.failed(
+            MotionStatus.UNSUPPORTED, command, target_pose=target_pose, target_joints=target_joints,
+            message=message, camera_world=stamp,
+        )
+
     def _joint_move_camera_world(
         self, keyword: Maybe[CameraWorldDecline], *, planned: CameraWorldStamp | None = None
     ) -> CameraWorldStamp:
@@ -708,16 +773,15 @@ class IsaacRobotArm(RobotArm):
         the same one, run once here rather than twice by delegating to the public
         method.
 
-        On the cuRobo planner the result stamps as :meth:`move` does, the refusal of a decline on a
-        live world included: its path is checked against the refreshed world, and planned against it
-        with ``plan_joint_moves``. The mock and any other planner say UNPLANNED.
+        On the cuRobo planner the result stamps as :meth:`move` does, and is refused as it is, with
+        neither a world nor a decline or with a decline on a live world: its path is checked against the
+        refreshed world, and planned against it with ``plan_joint_moves``. The mock and any other
+        planner say UNPLANNED.
         """
         stamp = self._joint_move_camera_world(camera_world)
-        if stamp.use is CameraWorldUse.DECLINED and self._live_world is not None:
-            return MotionResult.failed(
-                MotionStatus.UNSUPPORTED, MotionCommand.MOVE_JOINTS, target_joints=joints,
-                message=DECLINE_ON_A_LIVE_WORLD_MESSAGE, camera_world=stamp,
-            )
+        refused = self._refused_for_camera_world(stamp, MotionCommand.MOVE_JOINTS, target_joints=joints)
+        if refused is not None:
+            return refused
         # A refresh that is the same object as before was made for an earlier motion, and must not
         # vouch for this one.
         refreshed = self._last_world_refresh
@@ -769,7 +833,8 @@ class IsaacRobotArm(RobotArm):
             )
         # The world first, near the goal flange. The path guard below learns the perceived obstacles
         # from this refresh, and the planner's check does not refresh at all.
-        stale = self._refresh_planner_world(near_point_mm=self._flange_mm(joints))
+        stale = self._refresh_planner_world(near_point_mm=self._flange_mm(joints),
+                                            goal_tcp_mm=self._tcp_at_joints_mm(joints))
         if stale:
             return MotionResult.failed(
                 MotionStatus.CONTROLLER_REJECTED, command, target_joints=joints,
@@ -841,7 +906,17 @@ class IsaacRobotArm(RobotArm):
         The gate runs before the mock branch on purpose. A configuration the guard would
         refuse on the articulation is one it refuses on the mock as well, because a mock
         that accepts what the real driver rejects hides regressions.
+
+        On cuRobo, a move with neither a camera world nor a decline in scope is refused before
+        the judge.
         """
+        refused = self._refused_for_camera_world(
+            self._joint_move_camera_world(UNSET), MotionCommand.MOVE_JOINTS, target_joints=joints,
+        )
+        if refused is not None:
+            raise RobotMotionRejected(
+                f"move_joint refused before planning: {refused.message}", result=refused,
+            )
         rejected = self._judge_joint_move(joints, command=MotionCommand.MOVE_JOINTS)
         if rejected is not None:
             raise RobotMotionRejected(
@@ -955,7 +1030,8 @@ class IsaacRobotArm(RobotArm):
         result = self.move(pose, linear=True, vel=velocity, acc=acceleration)
         if result.status is not MotionStatus.EXECUTED:
             raise RobotMotionRejected(
-                f"IsaacRobotArm.move_linear failed: {result.status.value}: {result.message}"
+                f"IsaacRobotArm.move_linear failed: {result.status.value}: {result.message}",
+                result=result,
             )
 
     def stop(self) -> None:
@@ -1018,10 +1094,10 @@ class IsaacRobotArm(RobotArm):
                 return False
             self._tcp = pose
             return True
-        return (
-            self.move(pose, linear=linear, vel=vel, acc=acc, register=register).status
-            is MotionStatus.EXECUTED
-        )
+        result = self.move(pose, linear=linear, vel=vel, acc=acc, register=register)
+        if result.status is MotionStatus.UNSUPPORTED:
+            _LOGGER.error("move_to REFUSED by %s: %s", result.status, result.message)
+        return result.status is MotionStatus.EXECUTED
 
     def move_home(self) -> bool:
         """Drive to the configured home, gated like every other joint move.
@@ -1032,8 +1108,13 @@ class IsaacRobotArm(RobotArm):
         ``bool`` like its two siblings, and the typed reason is logged.
 
         On a cuRobo cell the whole line home is judged, through :meth:`move_joint`, and a refused
-        line returns ``False``. A camera that could not vouch for the cell still raises.
+        line returns ``False``. A camera that could not vouch for the cell still raises. With neither a
+        camera world nor a decline in scope on a cuRobo arm it is refused first, and logged.
         """
+        refused = self._refused_for_camera_world(self._joint_move_camera_world(UNSET), MotionCommand.MOVE_HOME)
+        if refused is not None:
+            _LOGGER.error("move_home REFUSED by %s: %s", refused.status, refused.message)
+            return False
         if self._preflight is not None and self._home_joints is not None:
             home = JointPositions(np.asarray(self._home_joints, dtype=np.float64))
             rejected = self._preflight.gate_joint_target(home, arm=self)
@@ -1087,8 +1168,12 @@ class IsaacRobotArm(RobotArm):
                 return True
         return False
 
-    def _resolve_ik(self, pose: Pose) -> JointPositions:
+    def _resolve_ik(self, pose: Pose, *, seed: "np.ndarray | None" = None) -> JointPositions:
         """Resolve IK for a TCP target robustly, across several seeds.
+
+        ``seed`` is the configuration to start from and to unwind toward. A line hands it the
+        previous sample, so the configurations it judges are one path rather than a set of
+        branches. Unset, it is the arm's own joints.
 
         A single warm start from the current configuration can land Lula on a far or
         joint-limited IK branch the drive cannot physically reach, as a top-down grasp
@@ -1097,7 +1182,8 @@ class IsaacRobotArm(RobotArm):
         families, and keeps the solution whose FK best matches the target. That makes
         ``move()`` robust to any grasp orientation. It raises where none converges.
         """
-        current = np.asarray(self.get_joint_positions().values, dtype=np.float64)
+        current = (np.asarray(self.get_joint_positions().values, dtype=np.float64)
+                   if seed is None else np.asarray(seed, dtype=np.float64))
         pi = float(np.pi)
         bases = [current]
         if self._natural_aim_seed:
@@ -1122,6 +1208,12 @@ class IsaacRobotArm(RobotArm):
             seeds.append(base + np.array([0.0, 0.0, 0.0, pi, 0.0, 0.0]))  # wrist_1 flip
             seeds.append(base + np.array([0.0, 0.0, 0.0, 0.0, pi, 0.0]))  # wrist_2 flip
 
+        if seed is not None:
+            # A seeded solve tries its own seed first. The first solution inside the tolerance
+            # wins, so a sweep tried earlier, such as the natural aim seed the dense runner
+            # switches on, can answer the other wrist family and put a line's second sample
+            # 3.14 rad from its first.
+            seeds.insert(0, current.copy())
         target_pos = np.asarray(pose.position_mm, dtype=np.float64)
         target_quat = np.asarray(pose.quaternion_xyzw, dtype=np.float64)
         best: JointPositions | None = None
@@ -1151,20 +1243,61 @@ class IsaacRobotArm(RobotArm):
             raise RobotKinematicsError(
                 f"IsaacRobotArm: no IK seed converged for pose {pose.label!r}."
             )
-        # Unwind each revolute joint by plus or minus 2*pi to the branch nearest the
-        # current configuration. A revolute joint at theta and at theta+2*pi is the
-        # identical arm pose and FK, so this never changes the grasp, and it avoids
-        # commanding a needless full turn such as a 360 deg wrist_3 wind or a 235 deg
-        # elbow swing reachable as -125 deg. That keeps the interpolated motion short and
-        # inside the motion-continuity and IK-jump envelope. A joint that would leave the
-        # plus or minus 2*pi limit keeps the raw IK value, because the joint-limit guard
-        # owns that envelope.
+        # Unwind each revolute joint by plus or minus 2*pi to the branch nearest the seed,
+        # which is the current configuration unless a line hands one. A revolute joint at
+        # theta and at theta+2*pi is the identical arm pose and FK, so this never changes
+        # the grasp, and it avoids commanding a needless full turn such as a 360 deg wrist_3
+        # wind or a 235 deg elbow swing reachable as -125 deg. That keeps the interpolated
+        # motion short and inside the motion-continuity and IK-jump envelope. A joint that
+        # would leave the plus or minus 2*pi limit keeps the raw IK value, because the
+        # joint-limit guard owns that envelope; _into_joint_limits then turns each joint
+        # onto a turn the guard admits where one exists.
         best_arr = np.asarray(best.values, dtype=np.float64)
         two_pi = 2.0 * float(np.pi)
         unwound = best_arr - two_pi * np.round((best_arr - current) / two_pi)
         out_of_range = np.abs(unwound) > two_pi
         unwound[out_of_range] = best_arr[out_of_range]
-        return JointPositions(unwound)
+        return JointPositions(self._into_joint_limits(unwound, current))
+
+    def _into_joint_limits(self, values: "np.ndarray", seed: "np.ndarray") -> "np.ndarray":
+        """``values`` turned onto the full turn nearest ``seed`` that this arm's joint limit guard admits.
+
+        The unwind in :meth:`_resolve_ik` takes the branch nearest the seed, which keeps the
+        motion short and is usually inside the limits as well. Next to a joint's own end it is
+        not: a wrist at -350 degrees takes the solver's -359.986, five degrees outside the range
+        the guard keeps, and a checked line through it is refused at its third sample, while the
+        same pose one turn over is +0.014 degrees and inside. That turn is taken instead.
+
+        A turn of 2 pi is the identical arm pose, so neither the grasp nor the path changes, only
+        which of the identical numbers is commanded. With no guard, no limit table for this arm,
+        or no turn inside the limits, the solver's value stands and the guard owns the refusal.
+        """
+        values = np.asarray(values, dtype=np.float64)
+        guard = None
+        for candidate in getattr(self._preflight, "guards", ()) or ():
+            if getattr(candidate, "name", None) == "joint_limit" and callable(getattr(candidate, "limits_for", None)):
+                guard = candidate
+                break
+        if guard is None:
+            return values
+        capabilities = self.capabilities
+        limits = guard.limits_for(vendor=capabilities.vendor, model=capabilities.model)
+        if limits is None or len(limits[0]) != values.shape[0]:
+            return values
+        low_deg, high_deg = limits
+        margin = float(getattr(guard, "margin_deg", 0.0))
+        two_pi = 2.0 * float(np.pi)
+        turned = values.copy()
+        for axis in range(values.shape[0]):
+            low = math.radians(float(low_deg[axis]) + margin)
+            high = math.radians(float(high_deg[axis]) - margin)
+            value = float(values[axis])
+            if low <= value <= high:
+                continue
+            inside = [value + k * two_pi for k in (-2, -1, 1, 2) if low <= value + k * two_pi <= high]
+            if inside:
+                turned[axis] = min(inside, key=lambda candidate_value: abs(candidate_value - float(seed[axis])))
+        return turned
 
     def _drive_rmpflow(self, pose: Pose) -> bool:
         """Drive RMPflow toward a BASE-frame pose, a smooth collision-aware approach.
@@ -1282,7 +1415,7 @@ class IsaacRobotArm(RobotArm):
         except Exception as exc:  # noqa: BLE001 (no planner is "no plan", reported by the caller)
             _LOGGER.warning("planned joint move requested but cuRobo is unavailable: %s", exc)
             return None
-        stale = self._refresh_planner_world()
+        stale = self._refresh_planner_world(goal_tcp_mm=self._tcp_at_joints_mm(JointPositions(target)))
         if stale:
             # The one caller refuses on a `None` path, which is what a world nobody can
             # vouch for has to produce: a joint move plans through the same cell a pose
@@ -1303,7 +1436,7 @@ class IsaacRobotArm(RobotArm):
             from src.contracts import chosen
             from src.robot.drivers.sim.robot_models import curobo_arm_descriptor
             from src.robot.safety.planning._curobo_body_links import BodyLinkError
-            from src.robot.safety.planning.body_link import HandLink
+            from src.robot.safety.planning.body_link import HandLink, coupling_bodies
             from src.robot.safety.planning.curobo_client import SidecarIdentity
             from src.robot.safety.planning.environment import ENV_CUROBO_ROBOT
             from src.robot.safety.planning.hand import descriptor_refusal
@@ -1344,25 +1477,42 @@ class IsaacRobotArm(RobotArm):
             # meshes with one hand can be a self collision in the planner's own sphere model with
             # another, and then the sidecar never becomes ready. The descriptor carries a fallback
             # for a bare arm only.
-            from src.robot.safety.planning.robot.retract_table import RetractMissing, read_retract
+            from src.robot.safety.planning.robot.retract_table import (
+                RetractMissing,
+                read_retract,
+            )
 
             margin_mm = self._guard_self_collision_margin_mm()
             try:
                 default_q = read_retract(str(self._config.robot_model), hand.model, float(hand.coupling_mm),
-                                        margin_mm)
+                                        margin_mm,
+                                        placement=f"{link.placement.approach}{link.placement.closing}")
             except RetractMissing as exc:
                 raise CuroboUnavailableError(str(exc)) from exc
             client = CuroboPlanClient(
                 robot_config=robot_yml, self_collision_margin_mm=margin_mm,
-                body_links=[link.to_dict()], default_q=default_q,
+                body_links=[link.to_dict(), *coupling_bodies(hand)], default_q=default_q,
             )
             if self._config.planner_reservation is not None:
                 # Before start: the sidecar allocates its collision storage once, when it spawns.
                 client.reserve_world(self._config.planner_reservation)
             client.start()
-            refusal = descriptor_refusal(
-                SidecarIdentity.from_client(client), link, arm=str(self._config.robot_model),
-            )
+            identity = SidecarIdentity.from_client(client)
+            refusal = descriptor_refusal(identity, link, arm=str(self._config.robot_model))
+            if refusal is None:
+                # And a committed evidence file that measured this combination. The sim is a cell
+                # like any other here: M1 plans on the ur5e with the 2F-85 because a file measured
+                # that pair, not because it is the sim.
+                from src.robot.safety.planning.evidence import planner_evidence_refusal
+
+                guard = self._preflight._path_authority(self) if self._preflight is not None else None
+                reservation = self._config.planner_reservation
+                refusal = planner_evidence_refusal(
+                    identity, hand, link, arm=str(self._config.robot_model), planner_margin_mm=margin_mm,
+                    guard_margin_mm=float(guard.min_distance_mm) if guard is not None else 0.0,
+                    attach_spheres=int(reservation.sphere_slots) if reservation is not None else 0,
+                    mesh_dir=guard.mesh_dir if guard is not None else None,
+                )
             if refusal is not None:
                 # Closed rather than kept: the next call would find a started client and plan with it.
                 client.close()
@@ -1497,6 +1647,31 @@ class IsaacRobotArm(RobotArm):
         )
         return self_envelope(self._preflight, self, ordered)
 
+    def _goal_keep_out(self, goal_tcp_mm: "np.ndarray | None") -> "GoalKeepOut":
+        """The goal region at ``goal_tcp_mm`` for this arm's hand, or the reason there is none."""
+        from ...core.keep_out import GoalKeepOut
+        from ...safety.planning.self_envelope import goal_keep_out
+
+        if goal_tcp_mm is None:
+            return GoalKeepOut(region=None, reason="the TCP at this goal is not known, so no goal region is placed")
+        return goal_keep_out(self._preflight, self, goal_tcp_mm)
+
+    def _tcp_at_joints_mm(self, joints: "JointPositions") -> "np.ndarray | None":
+        """The TCP at ``joints``: the flange frame the guard's model and yaw place, times this cell's tool frame."""
+        from src.geometry.quaternion import to_rotation_matrix
+
+        from ...safety.planning.self_envelope import yawed_link_transforms_mm
+
+        kinematics = self._preflight.self_kinematics(self) if self._preflight is not None else None
+        model, yaw_deg = kinematics if kinematics is not None else (str(self._config.robot_model), 0.0)
+        frames = yawed_link_transforms_mm(model, np.asarray(joints.tolist(), dtype=np.float64), yaw_deg)
+        if frames is None:
+            return None
+        tool = np.eye(4)
+        tool[:3, :3] = to_rotation_matrix(np.asarray(self._config.tool_rotation_quat_xyzw, dtype=np.float64))
+        tool[:3, 3] = np.asarray(self._config.tool_offset_mm, dtype=np.float64)
+        return np.asarray(frames[-1], dtype=np.float64) @ tool
+
     def _flange_mm(self, joints: JointPositions) -> "list[float] | None":
         """Where the flange stands at ``joints``, in BASE millimetres; ``None`` for a model with no chain.
 
@@ -1513,8 +1688,13 @@ class IsaacRobotArm(RobotArm):
         frames = yawed_link_transforms_mm(model, np.asarray(joints.tolist(), dtype=np.float64), yaw_deg)
         return None if frames is None else [float(v) for v in frames[-1][:3, 3]]
 
-    def _refresh_planner_world(self, *, near_point_mm: "Sequence[float] | None" = None) -> str:
+    def _refresh_planner_world(
+        self, *, near_point_mm: "Sequence[float] | None" = None, goal_tcp_mm: "np.ndarray | None" = None,
+    ) -> str:
         """Refresh the planner world before a plan. An empty string means it may go ahead.
+
+        ``goal_tcp_mm`` is the TCP at the motion's goal, where the space between the jaws is left out
+        of the world (``self_envelope.goal_keep_out``); ``None`` records that no region was placed.
 
         It returns the reason instead of raising, because both callers already have a shape
         for refusing a motion and neither wants an exception mid-pick. Without a live world
@@ -1529,6 +1709,7 @@ class IsaacRobotArm(RobotArm):
                 self_envelope=self._self_envelope(),
                 near_point_mm=near_point_mm,
                 require_registration=self._live_world.require_registration,
+                goal_keep_out=self._goal_keep_out(goal_tcp_mm),
             )
         except CameraWorldUnavailable as exc:
             # Raised on, not refused. The guard is emptied as on any refused refresh, and the fault
@@ -1586,7 +1767,8 @@ class IsaacRobotArm(RobotArm):
         arm_q = np.asarray(self._arm_subset.get_joint_positions(), dtype=np.float64)  # _ARM_JOINT_NAMES order
         try:
             client = self._get_curobo_client()
-            stale = self._refresh_planner_world(near_point_mm=[float(v) for v in pose.position_mm])
+            stale = self._refresh_planner_world(near_point_mm=[float(v) for v in pose.position_mm],
+                                                goal_tcp_mm=np.asarray(pose.to_matrix(), dtype=np.float64))
             if stale:
                 return MotionResult.failed(
                     MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
@@ -1732,14 +1914,13 @@ class IsaacRobotArm(RobotArm):
         decline (``camera_world``, or :meth:`without_camera_world`), MISSING while no live camera
         world is wired, and once one is, PLANNED when the refresh this motion made vouched for the
         cell and UNSTATED when none did. A declined motion on a cuRobo arm whose live camera world is
-        wired is refused with ``UNSUPPORTED`` before the planner is asked.
+        wired is refused with ``UNSUPPORTED`` before the planner is asked, and so is a MISSING one, with
+        neither a world nor a decline.
         """
         before = self._move_camera_world(camera_world)
-        if before.use is CameraWorldUse.DECLINED and self._live_world is not None:
-            return MotionResult.failed(
-                MotionStatus.UNSUPPORTED, MotionCommand.MOVE_TO, target_pose=pose,
-                message=DECLINE_ON_A_LIVE_WORLD_MESSAGE, camera_world=before,
-            )
+        refused = self._refused_for_camera_world(before, MotionCommand.MOVE_TO, target_pose=pose)
+        if refused is not None:
+            return refused
         # A refresh that is the same object as before was made for an earlier motion, and must not
         # vouch for this one.
         refreshed = self._last_world_refresh
@@ -1883,19 +2064,25 @@ class IsaacRobotArm(RobotArm):
                 )
         return self._drive_to_target(pose, target_joints)
 
+    #: How far one joint may turn between two samples of a checked line before the line counts
+    #: as having left the arm's branch. Both drivers read the one number,
+    #: ``safety.path_samples.LINE_MAX_JOINT_STEP_RAD``.
+    _LINE_MAX_JOINT_STEP_RAD = LINE_MAX_JOINT_STEP_RAD
+
     def _drive_checked_line(self, pose: Pose) -> MotionResult:
         """Walk a straight TCP line to ``pose``, every configuration on it judged before any of it runs.
 
-        The line is sampled in the base frame, solved one sample at a time with Lula seeded
-        on the previous solution, and the whole list goes to the local guards and to the
-        sidecar before the arm is asked to move. Then it is walked as the joint path it is,
-        rather than driven to the endpoint: walking the samples is what makes the executed
-        motion the one that was judged.
+        The line is sampled in the base frame. Its first configuration is the one the arm
+        stands in, each later sample is solved with Lula seeded on the one before, and the
+        joint path through them, filled to the line's own step, goes to the local guards and
+        to the sidecar before the arm is asked to move. Then the samples are walked as the
+        joint path they are, rather than driven to the endpoint: walking the samples is what
+        makes the executed motion the one that was judged.
 
         With a live camera world the world is refreshed before the guards judge, so the guards
         and the sidecar see the same cell.
         """
-        from src.robot.safety.path_samples import PathSamples, line_samples
+        from src.robot.safety.path_samples import PathSamples, joint_path_samples, line_samples
 
         if self._preflight is None:
             return self._drive_to_target(pose, self._resolve_ik(pose))
@@ -1914,10 +2101,20 @@ class IsaacRobotArm(RobotArm):
                 MotionStatus.UNSUPPORTED, MotionCommand.MOVE_TO, target_pose=pose, message=str(exc),
             )
 
+        # The line starts where the arm stands. Its first sample is the current tool pose, and
+        # solving that pose again can answer another branch of the arm than the one it is in,
+        # so cuRobo can refuse sample 0 of every line as a self collision of a configuration
+        # nobody commanded while the arm stands in one cuRobo planned itself. The first
+        # configuration is therefore read, not solved, and each later sample is solved seeded
+        # on the sample before it, which makes the judged samples one path.
+        here = np.asarray(self.get_joint_positions().values, dtype=np.float64)
         configs: list[tuple[float, ...]] = []
         for index, sample in enumerate(samples.poses):
+            if index == 0:
+                configs.append(tuple(float(v) for v in here))
+                continue
             try:
-                solved = self._resolve_ik(sample)
+                solved = self._resolve_ik(sample, seed=np.asarray(configs[-1], dtype=np.float64))
             except RobotKinematicsError as exc:
                 return MotionResult.failed(
                     MotionStatus.IK_FAILED, MotionCommand.MOVE_TO, target_pose=pose,
@@ -1927,10 +2124,45 @@ class IsaacRobotArm(RobotArm):
                     ),
                     exception=exc,
                 )
+            # The samples of a judged path are a path only if each follows from the one before:
+            # the step bound the guards judge at assumes it, and the walk between two samples is
+            # not judged at all. A solution that leaves the branch the arm is on is refused here
+            # rather than judged across a jump nobody commanded.
+            step = np.abs(np.asarray(solved.tolist(), dtype=np.float64) - np.asarray(configs[-1], dtype=np.float64))
+            if float(step.max()) > self._LINE_MAX_JOINT_STEP_RAD:
+                joint = int(step.argmax())
+                return MotionResult.failed(
+                    MotionStatus.IK_FAILED, MotionCommand.MOVE_TO, target_pose=pose,
+                    message=(
+                        f"sample {index + 1} of {len(samples.poses)} of this line leaves the branch the arm is on: "
+                        f"joint {joint + 1} turns {float(step.max()):.2f} rad from the sample before, where a step of "
+                        f"{samples.step_bound_mm:.2f} mm along a line turns it by hundredths; the line is refused "
+                        "rather than judged across a jump"
+                    ),
+                )
             configs.append(tuple(float(v) for v in solved.tolist()))
 
-        judged = PathSamples(configs=tuple(configs), step_bound_mm=samples.step_bound_mm)
-        stale = self._refresh_planner_world(near_point_mm=[float(v) for v in pose.position_mm])
+        # Judged filled, walked as sampled. The walk drives each sample in turn, so between two
+        # of them the arm runs the joint line, and the sum |dq_j| * r_j of one 10 mm step can
+        # reach three times the step the gate is told when the elbow and wrist 1 turn against
+        # each other. The gate judges that joint line at the line's own step; the walk is
+        # unchanged, so what it runs between two samples is what was judged.
+        filled: list[tuple[float, ...]] = [configs[0]]
+        if samples.step_bound_mm > 0.0:
+            for before, after in zip(configs, configs[1:]):
+                try:
+                    leg = joint_path_samples(before, after, reach_mm=radii, max_step_mm=samples.step_bound_mm)
+                except ValueError as exc:
+                    return MotionResult.failed(
+                        MotionStatus.UNSUPPORTED, MotionCommand.MOVE_TO, target_pose=pose,
+                        message=f"this line cannot be judged at its own step: {exc}",
+                    )
+                filled.extend(leg.configs[1:])
+        else:
+            filled = list(configs)
+        judged = PathSamples(configs=tuple(filled), step_bound_mm=samples.step_bound_mm)
+        stale = self._refresh_planner_world(near_point_mm=[float(v) for v in pose.position_mm],
+                                            goal_tcp_mm=np.asarray(pose.to_matrix(), dtype=np.float64))
         if stale:
             return MotionResult.failed(
                 MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
@@ -1957,11 +2189,11 @@ class IsaacRobotArm(RobotArm):
         # Walked sample by sample rather than driven to the endpoint: the motion that
         # executes is the one that was judged. Each leg is already at the collision margin,
         # so the interpolation inside `_drive_joints` adds at most one step of its own.
-        for config in judged.configs:
+        for config in configs:
             self._drive_joints(JointPositions(np.asarray(config, dtype=np.float64)))
         return MotionResult.executed(
             MotionCommand.MOVE_TO, target_pose=pose,
-            message=f"checked line, {len(judged.configs)} samples at "
+            message=f"checked line, {len(configs)} samples judged as {len(judged.configs)} configurations at "
                     f"{judged.step_bound_mm:.2f} mm a step",
         )
 

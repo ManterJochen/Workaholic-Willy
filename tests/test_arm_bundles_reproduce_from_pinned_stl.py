@@ -68,7 +68,11 @@ class TheBundlesAreAFunctionOfPinnedBytesTests(unittest.TestCase):
         if reason is not None:
             raise unittest.SkipTest(reason)
         cls.bake = _load("bake_for_reproduce", _SCRIPTS / "isaac" / "bake_ur_meshes_from_urdf.py")
-        cls.index = json.loads((_DATA / "bundles.json").read_text(encoding="utf-8"))["bundles"]
+        record = json.loads((_DATA / "bundles.json").read_text(encoding="utf-8"))
+        cls.index = record["bundles"]
+        # Every declared source this test cannot rebuild from the pinned STLs: the Isaac bakes, and the three ways a
+        # customer hand gets a body (customer chain lane C1a). A source the index does not declare stays refused.
+        cls.not_from_pinned = set(record["sources"]) - {FROM_PINNED_STL}
 
     def _from_pinned(self) -> list[str]:
         return sorted(
@@ -130,7 +134,7 @@ class TheBundlesAreAFunctionOfPinnedBytesTests(unittest.TestCase):
                 continue
             with self.subTest(bundle=name):
                 self.assertTrue(entry["note"].strip())
-                self.assertIn(entry["source"], {"isaac_usd", "isaac_importer_visual_hull"})
+                self.assertIn(entry["source"], self.not_from_pinned)
 
 
 if __name__ == "__main__":

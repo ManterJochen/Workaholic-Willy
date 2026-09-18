@@ -115,6 +115,21 @@ class TheStampDescribesItselfTests(unittest.TestCase):
                 self.assertEqual(data["captured_at_s"], stamp.captured_at_s)
 
 
+class AStampWithNothingKeptOutTests(unittest.TestCase):
+    def test_a_stamp_with_no_keep_out_equals_todays_planned_stamp(self) -> None:
+        """The control, green before and after: a planned stamp built with no region says what it said before."""
+        stamp = CameraWorldStamp.planned(cameras=("overhead",), captured_at_s=100.0)
+
+        self.assertEqual("camera world  PLANNED  cameras overhead, image captured at 100.000 s", stamp.render())
+        data = stamp.to_dict()
+        self.assertEqual(
+            {"use": "planned", "vouched": True, "reason": "", "cameras": ["overhead"], "captured_at_s": 100.0},
+            {key: data[key] for key in ("use", "vouched", "reason", "cameras", "captured_at_s")},
+        )
+        self.assertEqual(stamp, CameraWorldStamp.planned(cameras=("overhead",), captured_at_s=100.0))
+        self.assertIsNone(getattr(stamp, "keep_out", None))
+
+
 class TheStampIsPartOfTheResultTests(unittest.TestCase):
     def test_results_that_differ_only_in_the_stamp_are_different_results(self) -> None:
         plain = MotionResult.executed(MotionCommand.MOVE_TO)

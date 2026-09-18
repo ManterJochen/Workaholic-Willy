@@ -31,7 +31,15 @@ from src.robot.safety.planning.world import build_planner_cuboids, build_planner
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import RobotConfig
 
-__all__ = ["CameraWorldPlan", "CameraWorldWiring", "OpenedCameras"]
+__all__ = ["CameraWorldPlan", "CameraWorldRequired", "CameraWorldWiring", "OpenedCameras"]
+
+
+class CameraWorldRequired(ValueError):
+    """A cell that plans with cuRobo holds a calibrated camera and gets no live world from it.
+
+    Once a rig's calibration is declared on the rig the world is mandatory: this refuses a calibrated
+    cell that would decline every motion forever.
+    """
 
 
 def _rig_key(rig_id: str) -> str:
@@ -56,19 +64,33 @@ class CameraWorldPlan:
     #: Whether the cell asked for a world: the block and its `perceived` half on, and a support plane
     #: declared. A cell that did not ask is told nothing; one that asked and gets no world is told why.
     asked: bool = False
+    #: Every enabled RGB-D rig that declares its calibration, whether or not the world takes it. A
+    #: cuRobo cell with one and no world is refused (:meth:`refusal`).
+    calibrated: tuple[str, ...] = ()
+    #: The primary rig's id, for the refusal sentence.
+    primary_rig_id: str = ""
 
     @classmethod
     def from_config(cls, robot_cfg: "RobotConfig", rigs: Sequence[Any], *, primary_rig_id: str) -> CameraWorldPlan:
+        calibrated = tuple(
+            str(rig.rig_id) for rig in rigs
+            if bool(getattr(rig, "enabled", False)) and getattr(rig, "source", None) == "rgbd"
+            and getattr(rig, "extrinsics", None) is not None
+        )
+        primary = str(primary_rig_id)
         world_cfg = getattr(getattr(robot_cfg, "safety", None), "planning_world", None)
         if world_cfg is None or not bool(getattr(world_cfg, "enabled", False)):
-            return cls((), reason="safety.planning_world.enabled is false, so this cell has no live planner world")
+            return cls((), reason="safety.planning_world.enabled is false, so this cell has no live planner world",
+                       calibrated=calibrated, primary_rig_id=primary)
         perceived = getattr(world_cfg, "perceived", None)
         if perceived is None or not bool(getattr(perceived, "enabled", False)):
             return cls((), reason=(
-                "safety.planning_world.perceived.enabled is false, so no camera feeds the planner world"))
+                "safety.planning_world.perceived.enabled is false, so no camera feeds the planner world"),
+                calibrated=calibrated, primary_rig_id=primary)
         if planner_world_limits(robot_cfg) is None:
             return cls((), reason=(
-                "safety.planning_world declares no support_plane, so no perceived world can be built"))
+                "safety.planning_world declares no support_plane, so no perceived world can be built"),
+                calibrated=calibrated, primary_rig_id=primary)
 
         wired: list[str] = []
         left_out: list[tuple[str, str]] = []
@@ -87,14 +109,32 @@ class CameraWorldPlan:
 
         if not wired:
             return cls((), tuple(left_out), asked=True, reason=(
-                "no enabled RGB-D rig declares its calibration, so no camera can feed the planner world"))
+                "no enabled RGB-D rig declares its calibration, so no camera can feed the planner world"),
+                calibrated=calibrated, primary_rig_id=primary)
         if wired[0] != primary_rig_id:
             why = dict(left_out).get(primary_rig_id, "not a rig in camera.cameras.rigs")
             return cls((), tuple(left_out), asked=True, reason=(
-                f"the primary rig {primary_rig_id!r} is not a world camera ({why}), and the pick loop hands its "
-                "masks to the first camera of the world, so a world led by another camera would cut the target "
-                "out of an image it is not in"))
-        return cls(tuple(wired), tuple(left_out), asked=True)
+                f"the primary rig {primary_rig_id!r} is not a world camera ({why}), and the pick loop offers its "
+                "masks under the primary's name, which a world that does not hold that camera refuses"),
+                calibrated=calibrated, primary_rig_id=primary)
+        return cls(tuple(wired), tuple(left_out), asked=True, calibrated=calibrated, primary_rig_id=primary)
+
+    def refusal(self) -> str | None:
+        """Why a cell planning with cuRobo may not build on this plan, or ``None``.
+
+        A calibrated enabled rig that yields no world is refused: the calibration is on the rig, so
+        the world is mandatory, and a cell built anyway would refuse every motion nothing declined. An
+        uncalibrated cell builds with no world, and every planned motion then needs a decline. The
+        caller decides whether the cell plans with cuRobo.
+        """
+        if self.rig_ids or not self.calibrated:
+            return None
+        return (
+            f"this cell plans with cuRobo and calibrates {', '.join(repr(rig) for rig in self.calibrated)}, and no "
+            f"live camera world comes of it: {self.reason}. Once a rig is calibrated its world is mandatory: enable "
+            "safety.planning_world with a support_plane and perceived.enabled, with the primary rig "
+            f"{self.primary_rig_id!r} among the calibrated ones, or remove the rig's extrinsics while it is not used"
+        )
 
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""
@@ -109,7 +149,7 @@ class CameraWorldPlan:
     def to_dict(self) -> dict[str, Any]:
         """The wire view."""
         return {"rig_ids": list(self.rig_ids), "left_out": dict(self.left_out), "reason": self.reason,
-                "asked": self.asked}
+                "asked": self.asked, "calibrated": list(self.calibrated), "refusal": self.refusal()}
 
 
 @dataclass(frozen=True, slots=True)

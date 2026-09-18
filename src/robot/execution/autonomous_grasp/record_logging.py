@@ -183,6 +183,31 @@ def _verification_from_telemetry(
     }
 
 
+def _camera_world_extras(report: Any) -> dict[str, str]:
+    """The weakest camera world behind the attempt's typed motions, as two record keys.
+
+    Read from ``pick_report.camera_worlds`` through the same :func:`weakest_camera_world` the
+    report's ``render`` and ``to_dict`` read, so the record and the report cannot name two different
+    stamps. Nothing is written for an attempt that commanded no typed motion or whose weakest stamp
+    is UNSTATED, which keeps every unstamped record byte-identical. Only the use and the reason are
+    written; the cameras and the capture time stay on the report.
+
+    Never raises. A record is written after the pick, and a stamp this cannot read writes nothing
+    rather than losing the record.
+    """
+    from src.robot.core.camera_world import CameraWorldUse
+    from src.robot.grasping.motion.execution_policy import weakest_camera_world
+
+    try:
+        stamps = tuple(getattr(getattr(report, "pick_report", None), "camera_worlds", ()) or ())
+        weakest = weakest_camera_world(stamps)
+        if weakest is None or weakest.use is CameraWorldUse.UNSTATED:
+            return {}
+        return {"camera_world": str(weakest.use.value), "camera_world_reason": str(weakest.reason)}
+    except Exception:  # noqa: BLE001 (an unreadable stamp must not cost the record)
+        return {}
+
+
 def to_attempt_record(
     report: Any,
     *,
@@ -200,7 +225,8 @@ def to_attempt_record(
     a sim runner stamps ground-truth labels the pipeline cannot self-report (``sim_lift_mm`` /
     ``sim_lifted`` measured from the object's world pose), so the records carry a reward signal for the RL
     layer instead of only the pipeline's own ``final_outcome`` self-assessment. Default ``None`` merges
-    nothing and leaves behaviour byte-identical.
+    nothing and leaves behaviour byte-identical. The ``camera_world`` keys are stamped after it, so a
+    caller cannot overwrite them.
     """
 
     # The writer for `initial_telemetry`, a field the record contract, the serialiser and the reader
@@ -213,6 +239,9 @@ def to_attempt_record(
     record_extra["safety_rejected"] = report.outcome in SAFETY_REJECTED_OUTCOMES
     if extra:
         record_extra.update(extra)
+    # The camera world the motions stood on, applied after the caller's bag, so a runner cannot
+    # overwrite what the arm stamped.
+    record_extra.update(_camera_world_extras(report))
     # Derive the offline failure-taxonomy ``extra.*_evidence`` flags from the report's typed verdicts.
     _stamp_taxonomy_evidence(record_extra, report)
     # Retain the executed grasp's success-model feature vector (23-d) when the shadow success predictor

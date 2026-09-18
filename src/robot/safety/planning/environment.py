@@ -32,10 +32,12 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from src.robot.constants import PLANNING_ENVIRONMENT_LOG_FILE, create_robot_logger
 from src.utility.paths import project_root
+
+from ._hand_bundle import HAND_PARTS, RECORD_PREFIX, HandBundleRefused, hand_bundle_refusal
 
 __all__ = [
     "ENV_CUROBO_PYTHON",
@@ -55,6 +57,12 @@ __all__ = [
     "curobo_voxel_grid",
     "curobo_env_available",
     "collision_mesh_bundle",
+    "hand_mesh_bundle",
+    "compose_collision_meshes",
+    "BAKED_SOURCE",
+    "DIMENSIONS_SOURCE",
+    "HandProvenance",
+    "hand_provenance",
     "inject_coal_prefix",
     "import_collision_engine",
     "resolve_collision_engine",
@@ -152,26 +160,126 @@ def collision_mesh_bundle(model: str = "ur5e") -> Path:
     the arm when the guard loads, through :func:`compose_collision_meshes`. A file per arm and hand
     that carries a copy of the arm, and a flat one that carries whatever arm it was baked on, can
     describe the wrong arm: a ur10e cell with the EGU-50 checked UR10e joint angles against UR5e arm
-    meshes and reported ``ok``. A hand bundle carries no arm to get wrong, and records the arms it
-    was proven on instead.
+    meshes and reported ``ok``. A hand bundle carries no arm to get wrong, and which arms it may be
+    composed onto is measured, one file per combination.
     """
     return COLLISION_MESH_DIR / f"{model.lower()}_collision_meshes.npz"
 
 
 #: The arrays of an arm bundle that are the hand rather than the arm, and the prefix of the record
-#: keys of a hand bundle, which are never meshes: the guard takes every key not ending in
-#: ``__origin`` as a mesh name.
-_HAND_PARTS = ("gripper", "lfinger", "rfinger")
-_HAND_RECORD_PREFIX = "hand__"
+#: keys of a hand bundle, which are never meshes. Both belong to ``_hand_bundle``, which also refuses
+#: a hand bundle holding anything but these three parts, or fingers off the model's +Y, before it is
+#: composed.
+_HAND_PARTS = HAND_PARTS
+_HAND_RECORD_PREFIX = RECORD_PREFIX
+
+
+def hand_writers_sentence(hand: str) -> str:
+    """The three ways a hand gets a guard body, as one sentence every refusal and remedy for a missing one reads.
+
+    One owner, so no refusal names a baker that exits 2 for any hand outside its presets.
+    """
+    return (
+        f"write its body from its registry numbers with scripts/grippers/write_hand_from_dimensions.py {hand} "
+        f"--inflation-mm <mm> --origin <flange|mounting_face>, from vendor mesh files with "
+        f"scripts/grippers/write_hand_from_mesh.py {hand} --gripper-mesh <file> --lfinger-mesh <file> --rfinger-mesh <file> "
+        f"--scale-to-mm <mm per unit> --closing <axis> --approach <axis> --binormal <axis> --mount-face-mm <mm> "
+        f"--origin <flange|mounting_face> --write, or from one standalone USD with scripts/grippers/bake_gripper_variant.py "
+        f"--usd <file> --hand {hand} --bodies <housing,left,right> --closing <axis> --approach <axis> --binormal <axis> "
+        f"--mount-face-mm <mm> --origin <flange|mounting_face> --write"
+    )
+
+
+def sphere_map_writer_sentence(hand: str) -> str:
+    """How a hand with a body gets the planner map every reader of a missing one names."""
+    return f"fit its planner map from its body with scripts/curobo/fit_cover_spheres.py --hand {hand} --write"
 
 
 def hand_mesh_bundle(hand: str) -> Path:
     """The guard bundle of the hand called ``hand``: its arrays alone, composed onto an arm at load.
 
-    A newly baked hand is written by ``scripts/grippers/bake_gripper_variant.py``, and every bundle
-    records the arms it was proven on under ``hand__admitted_arms``.
+    A newly baked hand is written by ``scripts/grippers/bake_gripper_variant.py``. Which arms a hand
+    may be composed onto is not recorded in the bundle: it is measured, one file per combination,
+    under ``planning/robot/evidence``.
     """
     return COLLISION_MESH_DIR / f"{hand.lower()}_hand_meshes.npz"
+
+
+#: What a hand bundle records about itself. A bake writes no source key, so its absence is the
+#: answer for every hand that was scanned. No record names the arms a hand was proven on: admission
+#: is a measurement, and it lives in the evidence files beside the sphere maps, where a pairing
+#: nobody measured has no file.
+_SOURCE_KEY = "hand__source"
+_INFLATION_KEY = "hand__inflation_mm"
+
+#: The two sources a hand's geometry can have. They have equal standing: a customer who describes
+#: their gripper in ``config/grippers/<name>.yaml`` gets a bundle the planner and the guard read like
+#: any other. What separates them is the inflation a bundle written from dimensions records, and that
+#: is why both are named rather than assumed.
+BAKED_SOURCE: Final = "bake"
+DIMENSIONS_SOURCE: Final = "dimensions"
+
+
+@dataclass(frozen=True, slots=True)
+class HandProvenance:
+    """Where the geometry of one hand came from, read off the hand's own bundle.
+
+    An envelope built from five declared numbers is not the hand. Measured against the two shipped
+    hands that carry both a bundle and a full set of dimensions, at each hand's own declared grasp
+    centre, a bare envelope leaves the Hand-E 5.73 mm and the EGU-50 9.50 mm outside it. So a bundle
+    written from dimensions carries the inflation its writer was told to use, and every reader that
+    models a hand can say which of the two it holds. Nothing refuses an envelope; what would be
+    wrong is a cell that cannot tell.
+    """
+
+    #: The registry name of the hand, as it was asked for.
+    hand: str
+    #: :data:`BAKED_SOURCE` or :data:`DIMENSIONS_SOURCE`.
+    source: str
+    #: How far every declared box grew past the measurements, or ``None`` for a hand that was scanned.
+    inflation_mm: float | None
+
+    @property
+    def from_dimensions(self) -> bool:
+        """Whether this hand is an envelope built from its registry block rather than a scan."""
+        return self.source == DIMENSIONS_SOURCE
+
+    def render(self) -> str:
+        if not self.from_dimensions:
+            return f"{self.hand}: baked from its own asset"
+        inflated = "no stated inflation" if self.inflation_mm is None else f"inflated {self.inflation_mm:g} mm"
+        return f"{self.hand}: an envelope from its declared dimensions, {inflated}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hand": self.hand,
+            "source": self.source,
+            "inflation_mm": self.inflation_mm,
+        }
+
+
+def hand_provenance(hand: str, mesh_dir: str | Path | None = None) -> HandProvenance | None:
+    """What ``hand``'s bundle says about itself, or ``None`` where there is no bundle of its own to ask.
+
+    ``None`` is a real answer and not a failure: a hand nobody has written a bundle for has no file
+    to ask. A bundle that cannot be read answers ``None`` as well, because a file nobody can open
+    proves nothing about where its numbers came from.
+    """
+    import numpy as np
+
+    folder = Path(mesh_dir) if mesh_dir else COLLISION_MESH_DIR
+    path = folder / f"{hand.lower()}_hand_meshes.npz"
+    try:
+        with np.load(path, allow_pickle=True) as data:
+            held = {key: np.asarray(data[key]).reshape(-1) for key in data.files if key.startswith(_HAND_RECORD_PREFIX)}
+    except (OSError, ValueError):
+        # A path that is not there, and a file that is not a readable npz. Every record below is
+        # written as a one element array by both writers, so it is flattened rather than converted:
+        # float() on a shape (1,) array raises, and str() on one spells the brackets into the sentence.
+        return None
+    source = str(held[_SOURCE_KEY][0]) if _SOURCE_KEY in held and held[_SOURCE_KEY].size else BAKED_SOURCE
+    inflation = float(held[_INFLATION_KEY][0]) if _INFLATION_KEY in held and held[_INFLATION_KEY].size else None
+    return HandProvenance(hand=hand, source=source, inflation_mm=inflation)
 
 
 def compose_collision_meshes(model: str, hand: str | None, mesh_dir: str | Path | None = None) -> dict:
@@ -179,7 +287,9 @@ def compose_collision_meshes(model: str, hand: str | None, mesh_dir: str | Path 
 
     The arm's own bundle without its hand arrays, plus every mesh array of the hand's bundle. A
     ``hand`` of ``None`` gives the arm bundle as it is. The record keys of a hand bundle never reach
-    the result. ``mesh_dir`` reads both files from a folder other than the committed one.
+    the result. ``mesh_dir`` reads both files from a folder other than the committed one. A hand
+    bundle that is not exactly the three parts at frame 6 with its fingers along the model's +Y
+    raises :class:`HandBundleRefused` naming what is wrong (``_hand_bundle.hand_bundle_refusal``).
     """
     import numpy as np
 
@@ -189,8 +299,13 @@ def compose_collision_meshes(model: str, hand: str | None, mesh_dir: str | Path 
     if hand is None:
         return arrays
     composed = {key: value for key, value in arrays.items() if key.split("__")[0] not in _HAND_PARTS}
-    with np.load(folder / f"{hand.lower()}_hand_meshes.npz") as data:
-        composed.update({key: data[key] for key in data.files if not key.startswith(_HAND_RECORD_PREFIX)})
+    path = folder / f"{hand.lower()}_hand_meshes.npz"
+    with np.load(path, allow_pickle=True) as data:
+        held = {key: data[key] for key in data.files}
+    refusal = hand_bundle_refusal(held, name=path.name)
+    if refusal is not None:
+        raise HandBundleRefused(refusal)
+    composed.update({key: value for key, value in held.items() if not key.startswith(_HAND_RECORD_PREFIX)})
     return composed
 
 

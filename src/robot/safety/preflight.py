@@ -248,7 +248,6 @@ class SafetyPreflight:
             # carries, which on a Hand-E cell that forgot its name passes by coincidence.
             # It is refused here, at build, where the model resolves.
             from src.robot.safety.planning.hand import (
-                approach_refusal,
                 hand_geometry_model,
                 unset_hand_refusal,
             )
@@ -260,19 +259,14 @@ class SafetyPreflight:
                 if not chosen(hand):
                     what, fix = unset_hand_refusal(reads)
                     raise ConfigError(f"{what} {fix}")
-                # The declared tool frame has to approach along the hand model's axis:
-                # every committed model holds the hand along flange +Y, as the Isaac cell
-                # measures, and a real UR flange approaches along +Z, which no committed
-                # model describes yet.
-                disagreement = approach_refusal(hand)
-                if disagreement is not None:
-                    raise ConfigError(disagreement)
-                # And the whole placement, not its approach axis alone. A frame that is a
-                # mirror, oblique, or clocked by anything other than a quarter turn places
-                # no hand model: the hand carries UNSET, and a guard built on it would
-                # measure the hand where its own model puts it rather than where this cell
-                # says it is, which is an implied default for a safety identity. The planner
-                # refuses such a cell when it starts, and an ik cell never starts one.
+                # The whole placement. A frame that is a mirror, oblique, points into the
+                # wrist, or is clocked by anything other than a quarter turn places no hand
+                # model: the hand carries UNSET, and a guard built on it would measure the
+                # hand where its own model puts it rather than where this cell says it is,
+                # which is an implied default for a safety identity. The planner refuses such
+                # a cell when it starts, and an ik cell never starts one. This is the only
+                # frame refusal: an approach along +Z, which a real UR flange declares, is
+                # placed like one along the model's +Y.
                 if hand.placement_refusal is not None:
                     raise ConfigError(hand.placement_refusal)
             guards.append(SelfCollisionGuard(safety_cfg.self_collision, hand=hand))
@@ -469,6 +463,25 @@ class SafetyPreflight:
                 told += 1
         return told
 
+    def set_wrist_bodies(self, bodies: "Sequence[object]") -> int:
+        """Hand a wrist camera's bodies to every guard that holds them. Returns how many were told.
+
+        The exact-mesh guard builds its backend once, so that guard refuses this after the first
+        judged path. An empty sequence clears them.
+        """
+        told = 0
+        for guard in self._guards:
+            setter = getattr(guard, "set_wrist_bodies", None)
+            if callable(setter):
+                setter(tuple(bodies))
+                told += 1
+        return told
+
+    def wrist_bodies(self, arm: "RobotArm | None" = None) -> "tuple[object, ...]":
+        """The wrist camera bodies the self-collision guard holds, empty where none is wired or none was handed in."""
+        guard = self._path_authority(arm)
+        return guard.wrist_bodies if guard is not None else ()
+
     #: The guard whose verdict a judged path rests on. Named once, because three places
     #: ask for it.
     _PATH_AUTHORITY = "self_collision"
@@ -523,11 +536,39 @@ class SafetyPreflight:
         a folded finger passes it. A path is judged on exact meshes at every sample, and a
         gate that quietly degraded would report a check that never ran.
         """
+        sentence = self._unjudged_path_sentence(arm)
+        return None if sentence is None else self._say_and_refuse(sentence, command)
+
+    def _unjudged_path_sentence(self, arm: "RobotArm | None") -> str | None:
+        """The sentence a path gate refuses with before its first sample, or ``None`` where a path can be judged."""
         guard = self._path_authority(arm)
         if guard is None:
-            return self._say_and_refuse(no_path_guard_refusal(), command)
+            return no_path_guard_refusal()
         if guard.exact_mesh_engine(arm) is None:
-            return self._say_and_refuse(exact_mesh_path_refusal(), command)
+            return exact_mesh_path_refusal()
+        return None
+
+    def path_judge_refusal(self, arm: "RobotArm | None") -> str | None:
+        """Why no path of ``arm`` can be judged sample by sample, or ``None`` where every sample can be.
+
+        The two sentences a path gate refuses with before its first sample, and one where no
+        joint's sweep can be bounded, naming why: the guard names no kinematics model, or the hand
+        it models has no mesh bundle to read its reach past the flange from. A line on such an arm
+        is judged at its start only. Asked before a motion, it moves nothing; the exact mesh engine
+        it loads is the guard's own, cached.
+        """
+        sentence = self._unjudged_path_sentence(arm)
+        if sentence is not None:
+            return sentence
+        if self.joint_radii_mm(arm) is None:
+            hand = self.planner_hand(arm)
+            guard = self._path_authority(arm)
+            model = guard.model_for(arm) if guard is not None else None
+            if model and chosen(hand) and self.carried_reach_mm(arm, str(model)) is None:
+                return ("the hand this guard models has no mesh bundle to read its reach past the flange from, so a "
+                        "line cannot be sampled at a step that covers the hand, and it is judged at its start only")
+            return ("the self_collision guard names no kinematics model this repository has joint radii for, so a "
+                    "line cannot be sampled at the guard's step and is judged at its start only")
         return None
 
     def gate_joint_path(
@@ -694,6 +735,17 @@ class SafetyPreflight:
         meshes for one robot and the sampler bounds the sweep of another, and a cell where
         those disagree is judged twice against two arms. It is also the only answer a sim
         cell has, because the Isaac driver reports its model as ``isaac-sim``.
+
+        Each radius also covers what the flange carries. The DH table ends at the flange, and
+        its radii alone miss the tool: a wrist turn they count as 10 mm moves a 132 mm tool's
+        grasp centre 11.6 mm and its fingertips further. A point beyond the flange is no
+        further from a joint's axis than the flange is, plus how far that point is from the
+        flange, so each radius is the DH radius plus :meth:`carried_reach_mm`. The last joint
+        turns about the tool axis, which runs through the flange, so there a carried point
+        counts by how far it stands off that axis rather than by how far it is from the
+        flange, and a wrist 3 turn is not sampled four times denser than the hand can move.
+        ``None`` where the reach cannot be read, which refuses the path rather than judging it
+        at a bound that leaves the hand out.
         """
         from ._ur_kinematics import ur_joint_radii_mm
 
@@ -704,7 +756,54 @@ class SafetyPreflight:
             model = getattr(capabilities, "model", None)
         if not model:
             return None
-        return ur_joint_radii_mm(str(model))
+        radii = ur_joint_radii_mm(str(model))
+        carried = self.carried_reach_mm(arm, str(model), off_the_tool_axis=False)
+        beside = self.carried_reach_mm(arm, str(model), off_the_tool_axis=True)
+        if radii is None or carried is None or beside is None:
+            return None
+        return tuple(radius + carried for radius in radii[:-1]) + (max(radii[-1], beside),)
+
+    def carried_reach_mm(
+        self, arm: "RobotArm | None", model: str, *, off_the_tool_axis: bool = False,
+    ) -> "float | None":
+        """How far past the flange anything this guard judges on it reaches, in millimetres, or ``None``.
+
+        ``off_the_tool_axis`` measures from the flange's own Z axis instead of from its origin,
+        which is what bounds a point's arc when the last joint turns.
+
+        The hand's sphere map as the guard places it (grown to hold its mesh, coupling plates
+        included), every wrist camera's fill, and a carried part wherever the cell declares its
+        length, attached or not: a bound that holds only while nothing is attached is not a
+        bound. ``0.0`` where no hand is named, so there is nothing past the flange for the guard
+        to judge. ``None`` where a hand is named and cannot be placed.
+        """
+        import numpy as np
+
+        from .planning.self_envelope import hand_spheres, payload_capsule
+
+        hand = self.planner_hand(arm)
+        if not chosen(hand):
+            return 0.0
+        spheres = hand_spheres(hand, model)
+        if spheres is None:
+            return None
+
+        def reach(start: "Sequence[float]", end: "Sequence[float]", radius: float) -> float:
+            if off_the_tool_axis:
+                return max(float(np.linalg.norm(list(start)[:2])), float(np.linalg.norm(list(end)[:2]))) + float(radius)
+            return max(float(np.linalg.norm(start)), float(np.linalg.norm(end))) + float(radius)
+
+        furthest = max(reach(s.start_mm, s.end_mm, s.radius_mm) for s in spheres)
+        for wrist in self.wrist_bodies(arm):
+            for centre, radius in wrist.envelope_spheres_mm():  # type: ignore[attr-defined]
+                furthest = max(furthest, reach(centre, centre, radius))
+        world = getattr(getattr(getattr(arm, "config", None), "safety", None), "planning_world", None)
+        part = getattr(world, "payload", None)
+        if part is not None and bool(getattr(part, "enabled", False)) and getattr(part, "length_mm", None):
+            capsule = payload_capsule(hand, spheres, length_mm=float(part.length_mm),
+                                      lateral_margin_mm=float(part.lateral_margin_mm))
+            furthest = max(furthest, reach(capsule.start_mm, capsule.end_mm, capsule.radius_mm))
+        return furthest
 
     def gate_joint_target(
         self,

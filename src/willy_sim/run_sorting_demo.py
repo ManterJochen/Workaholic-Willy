@@ -39,6 +39,7 @@ from typing import Any
 import numpy as np
 
 from src.robot.safety.planning.world import planner_cuboid
+from src.robot.core.camera_world import CameraWorldDecline
 
 # --- cinematic framing (metres): an elevated front-right 3/4 view that sees both totes + the robot ---
 CINE_POS_M = (2.55, -2.35, 1.85)
@@ -378,7 +379,8 @@ def record_suction_segment(out: str, *, headless: bool = True, fps: int = 24, ca
 
     cell = bootstrap_sim_cell(None, headless=headless, scene_kwargs={
         "objects_override": _source_specs(), "bin_walls": src_walls + dst_walls, "appearance": appearance,
-    }, post_scene_hook=_hook)
+    }, post_scene_hook=_hook,
+        camera_world=CameraWorldDecline("run_sorting_demo: this runner plans without a live camera world"))
     arm, handles, sim = cell.arm, cell.handles, cell.sim
     session = arm.session
     home_q = np.asarray(sim.home_joint_positions, dtype=np.float64)
@@ -590,7 +592,8 @@ def record_jaw_segment(out: str, *, headless: bool = True, fps: int = 24, captur
 
     cell = bootstrap_sim_cell(None, headless=headless, scene_kwargs={
         "objects_override": _source_specs(), "bin_walls": src_walls + dst_walls, "appearance": appearance,
-    }, post_scene_hook=_hook)
+    }, post_scene_hook=_hook,
+        camera_world=CameraWorldDecline("run_sorting_demo: this runner plans without a live camera world"))
     arm, gripper, handles, sim = cell.arm, cell.gripper, cell.handles, cell.sim
     session = arm.session
     home_q = np.asarray(sim.home_joint_positions, dtype=np.float64)

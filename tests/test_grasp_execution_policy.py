@@ -424,5 +424,54 @@ class CloseWidthResolveTests(unittest.TestCase):
         self.assertEqual(p._resolve_close_width(_grasp()), 35.0)  # max(35, 40-11=29) = 35
 
 
+class TheDriversKeepTheirLinesTests(unittest.TestCase):
+    """A real dummy arm and a mock Isaac arm report TELEPORT, so a pick is a standoff, a line and a lift."""
+
+    @staticmethod
+    def _counting(arm: object) -> list[bool]:
+        calls: list[bool] = []
+        original = arm.move  # type: ignore[attr-defined]
+
+        def move(pose: Pose, **kwargs: object):  # noqa: ANN202
+            calls.append(bool(kwargs.get("linear", False)))
+            return original(pose, **kwargs)
+
+        arm.move = move  # type: ignore[attr-defined]
+        return calls
+
+    def _grasp_at(self, z_mm: float) -> GraspPoint:
+        return GraspPoint(
+            position=np.array([300.0, 0.0, z_mm]), approach=np.array([0.0, 0.0, -1.0]),
+            axis=np.array([1.0, 0.0, 0.0]), grip_width_mm=40.0, score=0.9, frame=GraspFrame.BASE, label="test",
+        )
+
+    def test_a_dummy_arm_pick_is_standoff_line_retreat(self) -> None:
+        from src.robot.drivers.dummy.arm import DummyRobotArm
+
+        arm = DummyRobotArm()
+        arm.connect()
+        calls = self._counting(arm)
+        policy = GraspExecutionPolicy(arm=arm, gripper=None)
+
+        report = policy.execute(self._grasp_at(200.0))
+
+        self.assertIs(report.outcome, PolicyOutcome.EXECUTED, report.motion_message)
+        self.assertEqual([False, True, True], calls)
+
+    def test_a_mock_sim_arm_pick_is_standoff_line_retreat(self) -> None:
+        from src.robot.drivers.sim.arm import IsaacRobotArm
+        from src.robot.drivers.sim.config import SimRobotConfig
+
+        arm = IsaacRobotArm(SimRobotConfig(enabled=True, mock_mode=True))
+        arm.connect()
+        calls = self._counting(arm)
+        policy = GraspExecutionPolicy(arm=arm, gripper=None)
+
+        report = policy.execute(self._grasp_at(200.0))
+
+        self.assertIs(report.outcome, PolicyOutcome.EXECUTED, report.motion_message)
+        self.assertEqual([False, True, True], calls)
+
+
 if __name__ == "__main__":
     unittest.main()

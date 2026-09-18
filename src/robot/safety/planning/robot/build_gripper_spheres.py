@@ -1,20 +1,15 @@
-"""Write a gripper's collision-sphere map for the planner, from a baked bundle or from a mesh file.
+"""Grid fit a gripper's collision-sphere map for the planner, from a baked bundle or from a mesh file.
 
 The planner models the robot as spheres. A gripper mesh is never used directly: it is what a sphere
 set is fitted from, once, and the spheres are all the planner ever sees. So this is where "the
 planner knows your gripper" is decided, and a cell whose sphere map describes a different hand plans
 against a different robot without anything saying so.
 
-Run it with the project venv. No simulator, no GPU:
+The command line writes no map. It exits 2 and names what replaces it: the hand's body from
+`scripts/grippers/write_hand_from_mesh.py`, `write_hand_from_dimensions.py` or
+`bake_gripper_variant.py --usd`, then its map from the cover fit. `build()` stays a library.
 
-    .venv/Scripts/python.exe -m src.robot.safety.planning.robot.build_gripper_spheres
-    .venv/Scripts/python.exe -m src.robot.safety.planning.robot.build_gripper_spheres \\
-        --variant schunk_egu50
-    .venv/Scripts/python.exe -m src.robot.safety.planning.robot.build_gripper_spheres \\
-        --mesh vendor/eoat.stl --gripper eoat --scale-to-mm 1000 --cell-mm 34 --rmax-mm 17 \\
-        --origin mounting_face --out eoat_gripper_spheres.yml
-
-This does not write the committed maps. It grid fits a bundle: a voxel grid over the vertices, one
+The grid fit does not write the committed maps. It grid fits a bundle: a voxel grid over the vertices, one
 sphere per occupied cell, capped radius. Measured against the meshes they stand for, the three maps
 it produced left a hole of 16.5 to 19.0 mm and reached 22.9 to 24.7 mm past the hand. A hole is a
 false clear: the planner, and the perception self filter that reads the same map, do not see the
@@ -22,8 +17,8 @@ hand there.
 
 The committed maps are cover fits, written by `scripts/curobo/fit_cover_spheres.py` with
 `--hand <name> --write`, which covers every surface sample by construction or writes nothing at all.
-What is live here is `--mesh`, the path for a gripper this repository has not baked a bundle for,
-and the grid fit behind it.
+`planner_hand` refuses a map that is not one, so a grid fit map under a committed map's name never
+reaches a planner.
 
 Scope, stated honestly: this covers the `tool0` gripper spheres, which are frame-correct and
 directly usable by cuRobo. The arm-link spheres and the schema-complete robot descriptor are
@@ -115,6 +110,17 @@ def main(argv: "list[str] | None" = None) -> int:
         "--out", default=None, help="output file (default {variant}_gripper_spheres.yml beside this)"
     )
     args = parser.parse_args(argv)
+
+    # Retired as a writer. The grid fit leaves every shipped hand a hole of 16.5 to 19.0 mm, and a
+    # bare --out lands on the name of a committed map, which planner_hand refuses. build() stays a
+    # library.
+    print(
+        "build_gripper_spheres writes no map any more: its grid fit leaves holes the planner calls clear. Write the "
+        "hand's body with scripts/grippers/write_hand_from_mesh.py (or write_hand_from_dimensions.py, or "
+        "bake_gripper_variant.py --usd), then fit its map with scripts/curobo/fit_cover_spheres.py --hand <hand> --write",
+        file=sys.stderr,
+    )
+    return 2
 
     try:
         if args.mesh:

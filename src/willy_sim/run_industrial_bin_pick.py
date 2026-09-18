@@ -49,6 +49,7 @@ from src.willy_sim.perception import MultiObjectGroundTruthPerceptionSource
 from src.willy_sim.run_eih_pick import _load_calibrated_eih, build_service, topdown_view_pose
 from src.willy_sim.run_multiview_pick import BIN_PRESETS, _bin_preset_walls, multi_view_localize
 from src.willy_sim.scene import OBJECT_PRIM, author_fixed_camera, camera_to_base_ground_truth
+from src.robot.core.camera_world import CameraWorldDecline
 
 # The two fixed side cameras that make up the rig (config poses come from sim.cameras[...]). No overhead.
 SIDE_CAMERAS = ("oblique_L", "oblique_R")
@@ -133,6 +134,7 @@ def run_industrial_gate(
     service, arm, gripper, handles, cfg, _view_pose, _cell = build_service(
         headless=headless, data_dir=data_dir, marker=marker, objects_override=specs,
         wrist_target_prim=target_prim, bin_walls=bin_walls, real_klt_bin=real_klt, curobo_bin_world=True,
+        camera_world=CameraWorldDecline("run_industrial_bin_pick: this runner plans without a live camera world"),
     )
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]
 

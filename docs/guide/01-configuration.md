@@ -89,12 +89,21 @@ mapping. A duplicate top-level key across two base files is a hard `ConfigError`
 override a model by adding a second base file; that is what profile overlays are for. Deleting the
 file that carries a required key is a load failure, not a leaner config.
 
-Four things under `config/` are not read by `load_config` at all: `config/robot/kpi_thresholds.yaml`, which
+Three things under `config/` are not read by `load_config` at all: `config/robot/kpi_thresholds.yaml`, which
 belongs to the soak and KPI gate; `robot/templates/kuka/`, controller-side files copied to a KUKA by
-hand; `grasping_presets/*.yaml`, merged downstream and outside Pydantic
-([section 8](#8-the-grasping-presets-a-schema-bypass)); and `grippers/<model>.yaml`, the gripper
-registry, read by `src/config/grippers.py` and by nothing on the pick path. `python -m src.config`
-validating green says nothing about the registry: a malformed hand file passes it.
+hand; and `grasping_presets/*.yaml`, merged downstream and outside Pydantic
+([section 8](#8-the-grasping-presets-a-schema-bypass)). The fourth, `grippers/<model>.yaml`, is the
+gripper registry, and the cell reads it: the loader fills a named hand's widths and collision
+envelope from the repository's file, and the self-collision guard, the planner and the deep
+calculator take the hand from it. `python -m src.config` refuses a malformed hand file, and a hand
+a cell names lives in the repository's registry: a tree that describes it differently is refused,
+naming both files. A hand this repository never shipped joins it through
+[your_own_gripper.md](../runbooks/your_own_gripper.md). The fifth, `cameras/<model>.yaml`, is the
+camera registry, which `load_config` does not read: a rig's `camera.cameras.rigs[<id>].body` names a
+housing there, and a cell that reads geometry carries it on the arm. `python -m src.config` refuses
+a malformed camera file and a tree whose copy of a camera its rigs name differs from the
+repository's. A tree without `cameras/` reads the repository's registry, because a camera body fills
+no config number at load.
 
 **`config/all_keys/` is a reference tree, not one that loads.** It writes out every key the schema
 accepts with what it does, its default and its legal values. Nothing loads it by default, and it
@@ -348,10 +357,12 @@ Your tree writes no `workspace_limits`, so the schema default box is in force, a
 placeholder with corners a UR3e cannot reach: check with
 `python -m src.config explain robot.workspace_limits.z_max --data $Cell`, then write your own and put `safe_pose` inside
 it with margin, because the workspace guard also subtracts `safety.limits.workspace_margin_mm` from
-every face. For the gripper, run `python -m src.config where gripper` and then
-`python -m src.config explain robot.gripper.max_width_mm`; the default is already 85 mm, the Robotiq 2F-85 this project
-ships, and the Robotiq driver anchors its count map on that value, so it must be the real physical
-open width rather than a policy ceiling. A vacuum end-effector uses `robot.gripper.vacuum.*` and is
+every face. For the gripper, run `python -m src.config where gripper`, then name the hand with
+`robot.gripper.model`: it brings its widths and its collision envelope from its registry file, and
+`python -m src.config explain robot.gripper.max_width_mm` names that file and field instead of a
+layer. A cell that names no hand keeps the default of 85 mm, the Robotiq 2F-85 this project ships.
+The Robotiq driver anchors its count map on that value, so it must be the real physical open width
+rather than a policy ceiling. A vacuum end-effector uses `robot.gripper.vacuum.*` and is
 consulted only when `robot.gripper.vendor` is `"vacuum"`; under any other vendor that block validates
 green and is ignored, and every field in it is a number somebody has to measure. Safety bounds stay
 written even at their default, so an auditor can read the guard envelope out of the file; the guards

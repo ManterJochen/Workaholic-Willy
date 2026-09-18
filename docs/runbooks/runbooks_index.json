@@ -44,6 +44,12 @@
       "path": "docs/runbooks/ur_family_bringup.md",
       "summary": "Stand up any UR from a UR3 to a UR10, including what a ur10 cannot do and the CB-series swap nothing upstream can see.",
       "owner_role": "commissioning"
+    },
+    {
+      "id": "your_own_gripper",
+      "path": "docs/runbooks/your_own_gripper.md",
+      "summary": "Bring a parallel jaw gripper this repository never shipped onto a UR arm, from its numbers, vendor STL or OBJ files or a USD, to a desk checklist and a planner that starts.",
+      "owner_role": "commissioning"
     }
   ]
 }

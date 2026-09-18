@@ -18,7 +18,7 @@ control reads clear is not written.
 The hand's meshes come from the hand's own bundle and are placed exactly as the guard places them: one plate along the
 model's approach for a mounting face bundle, then the rotation the declared tool frame gives (``--tool-rotation-xyzw``,
 the Isaac cell's frame by default, which places the hand model on the identity). The file records that placement, so a
-fidelity run that places the hand elsewhere refuses to compare against it. An arm with no committed bundle (ur16e)
+fidelity run that places the hand elsewhere refuses to compare against it. An arm with no committed bundle
 cannot be judged here and is refused. Project venv only, because it needs Coal or python-fcl and the committed bundles.
 """
 

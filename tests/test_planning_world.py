@@ -304,6 +304,9 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
         "safety": {
             "payload": {"enforce": False},
             "self_collision": {
+                # The margin every UR cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
+                # so this used to pass without it; the evidence check reads the margin to find its file (S22), and meets it here.
+                "planner_margin_mm": 4.0,
                 "fixtures": [{
                     "name": "bin_wall_left",
                     "center_mm": [400.0, -180.0, 75.0],
@@ -326,7 +329,7 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
     assert [c["name"] for c in client.worlds[0]] == ["support_plane", "bin_wall_left"]
 
     # And with the block off, nothing is registered: the byte-identical path.
-    off = RobotConfig.model_validate({"vendor": "ur", "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"}})
+    off = RobotConfig.model_validate({"vendor": "ur", "safety": {"payload": {"enforce": False}, "self_collision": {"planner_margin_mm": 4.0}}, "gripper": {"model": "robotiq_2f85"}})
     quiet = _FakeClient([[0.0] * 6])
     arm_off = URRobotArm(off)
     arm_off._conn = _FakeConn()  # type: ignore[assignment]
@@ -380,6 +383,9 @@ def test_a_declared_mesh_is_registered_without_a_live_world() -> None:
         "gripper": {"model": "robotiq_2f85"},
         "safety": {
             "payload": {"enforce": False},
+            # The margin every UR cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
+            # so this used to pass without it; the evidence check reads the margin to find its file (S22), and meets it here.
+            "self_collision": {"planner_margin_mm": 4.0},
             "planning_world": {
                 "enabled": True,
                 "support_plane": {"height_mm": -5.0, "extent_mm": [1600.0, 1600.0],
@@ -668,7 +674,12 @@ def test_the_arm_turns_a_jaw_WIDTH_into_a_box_the_planner_can_use() -> None:
     assert np.allclose(seen["centre"], approach * (tip + 60.0)), "the centre sits half the length past the tips"
 
 
-def test_the_payload_is_off_by_default_and_the_arm_says_so() -> None:
+def test_a_cell_that_declares_no_length_models_no_part_and_names_the_key() -> None:
+    """Step 8e (owner Q8 A with O1 A): the carried part is modelled by default, and no length is implied.
+
+    It was off by default and 120 mm when switched on, a number nobody measured. Now the model is on and the length is
+    the cell's to declare: without one nothing is attached, and the arm says which key is missing.
+    """
     from src.config.schema.robot import RobotConfig
     from src.robot.drivers.ur.arm import URRobotArm
 
@@ -676,6 +687,63 @@ def test_the_payload_is_off_by_default_and_the_arm_says_so() -> None:
     arm._conn = _FakeConn()  # type: ignore[assignment]
     assert arm.attach_payload(60.0) is False
     assert arm.detach_payload() is True  # nothing was ever attached
+    reason = arm.payload_declined_reason()
+    assert reason is not None and "safety.planning_world.payload.length_mm" in reason
+
+
+def _curobo_ur_with(payload: dict) -> object:
+    from src.config.schema.robot import RobotConfig
+    from src.robot.drivers.ur.arm import URRobotArm
+
+    arm = URRobotArm(RobotConfig.model_validate({
+        "vendor": "ur",
+        "ur": {"motion_planner": "curobo"},
+        "gripper": {"model": "robotiq_2f85"},
+        "safety": {"payload": {"enforce": False}, "planning_world": {"payload": payload}},
+    }))
+    arm._conn = _FakeConn()  # type: ignore[assignment]
+    return arm
+
+
+def test_a_curobo_ur_with_a_declared_length_models_its_payload_by_default() -> None:
+    from src.robot.safety.planning.hand import HAND_APPROACH_IN_TOOL0
+
+    arm = _curobo_ur_with({"length_mm": 20.0})
+    seen: dict = {}
+
+    class _Planner:
+        def attach_payload(self, joints, dims_mm, centre_mm):  # noqa: ANN001, ANN202
+            seen.update(dims=tuple(dims_mm))
+            return True
+
+    arm._curobo_ur = _Planner()  # type: ignore[attr-defined]
+    assert arm.attach_payload(30.0) is True  # type: ignore[attr-defined]
+    approach = np.asarray(HAND_APPROACH_IN_TOOL0, dtype=np.float64)
+    assert float(np.abs(np.asarray(seen["dims"])) @ np.abs(approach)) == 20.0, "the declared length runs along the approach"
+
+
+def test_a_curobo_ur_without_a_length_models_nothing_and_names_the_key() -> None:
+    arm = _curobo_ur_with({"enabled": True})
+    planner = type("_Planner", (), {"attach_payload": lambda self, *a: True})()
+    arm._curobo_ur = planner  # type: ignore[attr-defined]
+
+    assert arm.attach_payload(30.0) is False  # type: ignore[attr-defined]
+    assert arm._attached_payload is None, "the self filter took out a part of a length nobody declared"  # type: ignore[attr-defined]
+    reason = arm.payload_declined_reason()  # type: ignore[attr-defined]
+    assert reason is not None and "safety.planning_world.payload.length_mm" in reason
+
+
+def test_an_ik_ur_still_declines_and_says_why() -> None:
+    """The control, green before and after: an ik UR models no part, with a length or without."""
+    from src.config.schema.robot import RobotConfig
+    from src.robot.drivers.ur.arm import URRobotArm
+
+    arm = URRobotArm(RobotConfig.model_validate({
+        "vendor": "ur", "ur": {"motion_planner": "ik"}, "gripper": {"model": "robotiq_2f85"},
+        "safety": {"planning_world": {"payload": {"enabled": True, "length_mm": 50.0}}},
+    }))
+    arm._conn = _FakeConn()  # type: ignore[assignment]
+    assert arm.attach_payload(30.0) is False
 
 
 # --------------------------------------------------------------------------------------------
@@ -739,33 +807,38 @@ def test_a_partial_registration_is_reported_not_swallowed(caplog) -> None:
     assert any("confirmed 1 of 2" in r.getMessage() for r in caplog.records)
 
 
-def test_a_gripper_variant_may_not_be_paired_with_another_robot() -> None:
-    """A hand is composed only onto the arms its bundle was proven on.
+def test_a_hand_is_composed_onto_the_arm_it_is_placed_on() -> None:
+    """The EGU-50 on a ur3e is judged on the ur3e's arm, which is what the admission list used to stand in for.
 
-    MEASURED before UM lane S05: the EGU-50's file held the ur5e arm links byte-for-byte, and the status token used to
-    be `ok` for a ur3e cell, which would have checked UR5e arm geometry on UR3e DH frames with the guard reporting
-    itself healthy. Its hand bundle now records ur5e as the one arm it was proven on, and every other arm keeps the
-    refusal until evidence admits the pairing.
+    MEASURED before UM lane S05: the EGU-50's file held the ur5e arm links byte for byte, and the status token was
+    `ok` for a ur3e cell, which would have checked UR5e arm geometry on UR3e DH frames with the guard reporting
+    itself healthy. S05 cut the hands out of the arm files, and `hand__admitted_arms` refused every arm but the
+    one a hand was cut from, as a second guard. S22 retired that list: which arms a hand may be composed onto is
+    MEASURED now, one file per combination, and the matrix measured the EGU-50 on the ur3e at b1. So the property
+    is held directly: the arm links the guard composes are the ur3e's own, and the hand parts are the EGU-50's.
     """
-    from src.robot.safety._fcl_self_collision import make_backend, mesh_backend_status
+    import numpy as np
 
-    if not pathlib.Path("src/robot/safety/data/ur3e_collision_meshes.npz").is_file():
+    from src.robot.safety._fcl_self_collision import composed_parts, mesh_backend_status
+
+    root = pathlib.Path("src/robot/safety/data")
+    if not (root / "ur3e_collision_meshes.npz").is_file():
         pytest.skip("no ur3e bundle on this box")
-    assert mesh_backend_status("ur5e", None, "schunk_egu50") in {"ok", "no_engine"}
-    assert mesh_backend_status("ur3e", None, "schunk_egu50") == "variant_model_mismatch"
-    assert make_backend("ur3e", None, "schunk_egu50") is None, "it must refuse, not run on wrong meshes"
+    assert mesh_backend_status("ur3e", None, "schunk_egu50") in {"ok", "no_engine"}
+    parts = composed_parts("ur3e", None, "schunk_egu50")
+    with np.load(root / "ur3e_collision_meshes.npz") as arm, np.load(root / "schunk_egu50_hand_meshes.npz") as hand:
+        for link in ("shoulder", "upper_arm", "forearm", "wrist_1", "wrist_2", "wrist_3"):
+            assert np.array_equal(parts[link][0], arm[f"{link}__v"]), f"{link} is not the ur3e's own"
+        for part in ("gripper", "lfinger", "rfinger"):
+            assert np.array_equal(parts[part][0], hand[f"{part}__v"]), f"{part} is not the EGU-50's"
 
 
-def test_the_bundles_the_mismatch_check_relies_on_really_do_differ() -> None:
-    """If this ever fails, the check above is testing nothing: the EGU-50's hand bundle records ur5e as the one arm it
-    was proven on, and the ur3e arm it would be composed onto is not ur5e's."""
+def test_the_arms_that_test_tells_apart_really_do_differ() -> None:
+    """If this ever fails, the test above is testing nothing: a ur5e forearm would pass for a ur3e one."""
     import numpy as np
 
     root = pathlib.Path("src/robot/safety/data")
     if not (root / "ur3e_collision_meshes.npz").is_file():
         pytest.skip("no ur3e bundle on this box")
-    with np.load(root / "schunk_egu50_hand_meshes.npz") as hand, \
-            np.load(root / "ur5e_collision_meshes.npz") as ur5e, \
-            np.load(root / "ur3e_collision_meshes.npz") as ur3e:
-        assert [str(arm) for arm in np.asarray(hand["hand__admitted_arms"]).reshape(-1)] == ["ur5e"]
+    with np.load(root / "ur5e_collision_meshes.npz") as ur5e, np.load(root / "ur3e_collision_meshes.npz") as ur3e:
         assert not np.array_equal(ur5e["forearm__v"], ur3e["forearm__v"])

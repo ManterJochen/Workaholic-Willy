@@ -18,6 +18,10 @@ no Isaac:
     python -m src.willy_sim.run_curobo_demo --compose
 
 On-box only (Isaac). A sim capability; motion safety is not certified.
+
+The pick policy refuses an arm that keeps no straight line, and the sim on ik keeps none, so
+``--record blind`` records that pick refused before the jaws open, not the ram described above. A
+composed video shows what its blind take recorded.
 """
 from __future__ import annotations
 
@@ -30,6 +34,7 @@ from src.robot.safety.planning.world import planner_cuboid
 
 from src.willy_sim.run_dense_demo_endgame import CINE_POS_M, CINE_RES, _banner
 from src.willy_sim.run_dense_pick import _blocking_specs, build_service
+from src.robot.core.camera_world import CameraWorldDecline
 
 _DEMO_DIR = "logs/demo/curobo"
 _CINE_TARGET = (0.47, -0.09, 0.04)  # frame the red target + the +X blocker
@@ -51,12 +56,14 @@ def record(planner: str, *, out_path: str | None = None, headless: bool = True, 
     out.parent.mkdir(parents=True, exist_ok=True)
     is_curobo = planner == "curobo"
 
-    # blind: default IK, align_closing_to_base_x on and no G12, so it rams. curobo: align off, and G12
-    # selects the corridor-clear -Y close at an 8 mm margin, with an interpolated vertical retreat.
+    # blind: default IK, align_closing_to_base_x on and no G12; ik keeps no straight line, so the policy
+    # refuses this pick before the jaws open. curobo: align off, and G12 selects the corridor-clear -Y
+    # close at an 8 mm margin, with an interpolated vertical retreat.
     service, arm, gripper, handles, cfg, target_idx, target_label = build_service(
         prompt="the red cube", headless=headless, blocking=True,
         motion_planner="curobo" if is_curobo else "ik",
         enable_g12=is_curobo, approach_margin_mm=8.0, retreat_steps=5 if is_curobo else 1,
+        camera_world=CameraWorldDecline("run_curobo_demo: this runner plans without a live camera world"),
     )
     session = arm.session
     app = getattr(session, "app", None)

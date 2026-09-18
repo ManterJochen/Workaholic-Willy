@@ -172,8 +172,8 @@ Per pose: move, settle, read the actual TCP pose with `arm.get_tcp_pose()`, grab
 marker, offer the pair to the calibrator. A sample is kept only if it beats `min_distance_mm` or
 `min_angle` against every stored sample, and a refused move or a missing marker drops it too. Every
 move declines the camera world, because the sweep is what produces the transform a camera world
-needs: on a cuRobo cell each move's result says `DECLINED` with the mounting's reason instead of
-`MISSING`.
+needs: on a cuRobo cell each move's result says `DECLINED` with the mounting's reason, where an
+undeclined move is refused before planning with `MISSING`.
 
 **On a UR, `get_tcp_pose()` is the controller's reported actual TCP, not a pose this code derives.**
 So the TCP offset configured in PolyScope determines every `A_i` the solver sees. Get that offset
@@ -254,6 +254,12 @@ whether or not `grasping.fusion.enabled` is on, and it is what the real-cell pre
 `camera -> base` row and `from_robot_config` look for. `build_real_cell` hands the camera section to
 `from_robot_config`, and a real cell built without one is refused, naming
 `camera.cameras.rigs[<primary rig id>].extrinsics`.
+
+On a cell that plans with cuRobo, the shipped planner, a declared calibration also makes the live
+camera world mandatory. Every enabled RGB-D rig that declares `extrinsics` feeds it, so enable
+`safety.planning_world` with a measured `support_plane` and `perceived.enabled` in the same step,
+with the primary rig among the calibrated ones. Without that world the build is refused, naming the
+calibrated rigs, and the `camera world` row of `real_cell --check` blocks.
 
 A wrist camera is declared the same way, with its `eih_<rig_id>.json` and the two tolerances the
 calibration command prints as comments:
@@ -343,6 +349,7 @@ Aim at a known object and measure where the TCP actually lands.
 | Far fewer accepted samples than poses | marker not found, or poses too similar | check lighting and framing, widen the pose spread |
 | Solve refuses with "two independent axes" | the sweep only rotated about one axis | raise `orientation_spread_deg` above 30 and tilt in more directions. The runner floors it at 30, so a smaller value changes nothing |
 | Cell refuses every motion, or still behaves single-view | the primary rig declares no `extrinsics`, or `fusion.enabled` still false | section 7, then `real_cell --check` |
+| Cell refuses to build once a rig is calibrated | a cuRobo cell with a calibrated RGB-D rig and `safety.planning_world` off or incomplete | section 7, then `real_cell --check` and its `camera world` row |
 
 ## 9. When to recalibrate
 

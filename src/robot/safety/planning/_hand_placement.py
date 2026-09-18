@@ -30,7 +30,7 @@ from typing import Any
 
 __all__ = [
     "ADMITTED_APPROACHES", "R_MG", "TOLERANCE_DEG", "HandPlacement", "PlacementRefused", "RefusalKind",
-    "quaternion_xyzw_to_matrix",
+    "placement_quaternion_xyzw", "quaternion_xyzw_to_matrix",
 ]
 
 Matrix = tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
@@ -92,6 +92,56 @@ def quaternion_xyzw_to_matrix(q: Any) -> Matrix:
         (2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - w * x)),
         (2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y)),
     )
+
+
+#: The only magnitudes a quarter turn's quaternion components take.
+_QUARTER_TURN_COMPONENTS = (0.0, 0.5, math.sqrt(0.5), 1.0)
+
+
+def placement_quaternion_xyzw(approach: str, closing: str) -> tuple[float, float, float, float]:
+    """The declared tool frame rotation that places a hand ``approach`` + ``closing``, as XYZW.
+
+    The inverse of what :meth:`HandPlacement.from_quaternion_xyzw` derives, so a refusal that knows only ``+Z+X``
+    can print a rotation a customer pastes into ``choose_ur_retract.py`` and ``matrix_gate.py``. ``w >= 0``, and
+    every component is snapped to 0, 0.5, sqrt(0.5) or 1 with its sign and no negative zero: ``+Z+X`` is
+    ``(0, 0, 0, 1)`` and ``+Y+X`` the sim's ``(-sqrt(0.5), 0, 0, sqrt(0.5))``, exactly.
+    """
+    words = ("+X", "-X", "+Y", "-Y", "+Z", "-Z")
+    if approach not in words or closing not in words:
+        raise PlacementRefused(RefusalKind.NOT_PROPER, f"{approach!r} and {closing!r} are not both flange axes")
+    if approach not in ADMITTED_APPROACHES:
+        raise PlacementRefused(
+            RefusalKind.APPROACH_NOT_ADMITTED,
+            f"a hand is placed along {' or '.join(ADMITTED_APPROACHES)}, and {approach} is not one of them",
+        )
+    if approach[1] == closing[1]:
+        raise PlacementRefused(RefusalKind.NOT_PROPER, f"the closing {closing} lies along the approach {approach}")
+    z = _unit("XYZ".index(approach[1]), 1.0 if approach[0] == "+" else -1.0)
+    x = _unit("XYZ".index(closing[1]), 1.0 if closing[0] == "+" else -1.0)
+    y = (z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0])
+    m = ((x[0], y[0], z[0]), (x[1], y[1], z[1]), (x[2], y[2], z[2]))
+    trace = m[0][0] + m[1][1] + m[2][2]
+    if trace > 0.0:
+        s = 0.5 / math.sqrt(trace + 1.0)
+        q = ((m[2][1] - m[1][2]) * s, (m[0][2] - m[2][0]) * s, (m[1][0] - m[0][1]) * s, 0.25 / s)
+    elif m[0][0] >= m[1][1] and m[0][0] >= m[2][2]:
+        s = 2.0 * math.sqrt(1.0 + m[0][0] - m[1][1] - m[2][2])
+        q = (0.25 * s, (m[0][1] + m[1][0]) / s, (m[0][2] + m[2][0]) / s, (m[2][1] - m[1][2]) / s)
+    elif m[1][1] >= m[2][2]:
+        s = 2.0 * math.sqrt(1.0 - m[0][0] + m[1][1] - m[2][2])
+        q = ((m[0][1] + m[1][0]) / s, 0.25 * s, (m[1][2] + m[2][1]) / s, (m[0][2] - m[2][0]) / s)
+    else:
+        s = 2.0 * math.sqrt(1.0 - m[0][0] - m[1][1] + m[2][2])
+        q = ((m[0][2] + m[2][0]) / s, (m[1][2] + m[2][1]) / s, 0.25 * s, (m[1][0] - m[0][1]) / s)
+    if q[3] < 0.0 or (q[3] == 0.0 and next((c for c in q[:3] if c != 0.0), 0.0) < 0.0):
+        q = (-q[0], -q[1], -q[2], -q[3])
+
+    def snap(value: float) -> float:
+        magnitude = min(_QUARTER_TURN_COMPONENTS, key=lambda candidate: abs(abs(value) - candidate))
+        return (-magnitude if value < 0.0 else magnitude) + 0.0
+
+    x_, y_, z_, w_ = (snap(c) for c in q)
+    return (x_, y_, z_, w_)
 
 
 def _unit(index: int, sign: float) -> tuple[float, float, float]:
@@ -202,6 +252,11 @@ class HandPlacement:
     @property
     def is_identity(self) -> bool:
         return self.rotation == _IDENTITY
+
+    @property
+    def quaternion_xyzw(self) -> tuple[float, float, float, float]:
+        """The declared tool frame rotation that places this hand, as :func:`placement_quaternion_xyzw` spells it."""
+        return placement_quaternion_xyzw(self.approach, self.closing)
 
     @property
     def approach_in_tool0(self) -> tuple[float, float, float]:

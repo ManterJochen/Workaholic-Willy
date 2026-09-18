@@ -14,13 +14,32 @@ Numerics contract
 * Speeds are normalised to ``[0.0, 1.0]``, again a driver-dependent mapping onto
   counts or millimetres per second. A pipeline that needs physical units reads
   :class:`RobotCapabilities`.
+
+Readings a caller takes after a command
+---------------------------------------
+* :class:`ReportsHoldEvidence` says what the gripper measured about a hold: HELD, EMPTY, or
+  UNMEASURED where nothing was measured. On several drivers ``is_object_detected`` answers with
+  what the driver knows, which is the command where nothing is wired, so a verb that has to say
+  whether a hold was measured reads this instead.
+* :class:`MeasuresWidth` says whether ``get_width_mm`` is a measurement or the band the jaws were
+  commanded to.
 """
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
-__all__ = ["Gripper", "ObjectDetectingGripper"]
+__all__ = [
+    "Gripper",
+    "HoldEvidence",
+    "MeasuresWidth",
+    "ObjectDetectingGripper",
+    "ReportsHoldEvidence",
+    "StoppableGripper",
+    "hold_evidence_of",
+    "width_is_measured_of",
+]
 
 
 @runtime_checkable
@@ -108,19 +127,62 @@ class ObjectDetectingGripper(Protocol):
 
 @runtime_checkable
 class StoppableGripper(Protocol):
-    """Capability extension: the jaws can be HALTED where they are.
+    """Capability extension: the jaws can be halted where they are.
 
-    ⛔ **WHY THIS IS SEPARATE FROM `open()`.** Opening is a motion to a new target; stopping is the
-    absence of motion. On a Robotiq the two are different registers and the distinction is
-    load-bearing: ``SPE 0`` is MINIMUM SPEED, not stop, and only clearing ``GTO`` halts a travel.
-    A caller that "stops" a gripper by commanding a width has commanded another motion.
+    A halt is not an ``open()``. Opening is a motion to a new target, and stopping is the absence
+    of motion. On a Robotiq the two are different registers: ``SPE 0`` is the minimum speed, not a
+    stop, and only clearing ``GTO`` halts a travel. A caller that stops a gripper by commanding a
+    width has commanded another motion.
 
-    ⚠ Added 2026-09-10 because there was no halt in this surface at all. The transport had one
-    (:meth:`robotiq_socket.RobotiqSocket.stop`) and nothing above it could call it, so an aborted
-    close went on closing while the cell believed the attempt was over. Drivers without a halt simply
-    do not implement this, and callers must treat its absence as "these jaws cannot be stopped".
+    The transport's halt (:meth:`robotiq_socket.RobotiqSocket.stop`) is reached through this
+    Protocol. Without it an aborted close goes on closing while the cell believes the attempt is
+    over. A driver without a halt does not implement this, and a caller must treat its absence as
+    jaws that cannot be stopped.
     """
 
     def stop(self) -> None:
         """Halt the jaws where they are. Must not command a new width."""
         ...
+
+
+class HoldEvidence(StrEnum):
+    """What a gripper measured about a hold after its last command."""
+
+    #: The gripper measured a part held: a stall on something, a vacuum switch, a part sensor.
+    HELD = "held"
+    #: The gripper measured nothing held: the jaws reached their target, or the switch or sensor
+    #: reads off.
+    EMPTY = "empty"
+    #: Nothing was measured: no sensor is wired, the jaws are open or travelling, or the driver
+    #: cannot say.
+    UNMEASURED = "unmeasured"
+
+
+@runtime_checkable
+class ReportsHoldEvidence(Protocol):
+    """Capability extension: the gripper says what it measured about a hold, never its command."""
+
+    def hold_evidence(self) -> HoldEvidence:
+        """HELD or EMPTY where a measurement says so, UNMEASURED otherwise."""
+        ...
+
+
+@runtime_checkable
+class MeasuresWidth(Protocol):
+    """Capability extension: the gripper says whether ``get_width_mm`` is measured or commanded."""
+
+    def width_is_measured(self) -> bool:
+        """``True`` where ``get_width_mm`` reads a position sensor."""
+        ...
+
+
+def hold_evidence_of(gripper: object) -> HoldEvidence:
+    """What ``gripper`` measured about a hold; UNMEASURED for a gripper that cannot say."""
+    if isinstance(gripper, ReportsHoldEvidence):
+        return HoldEvidence(gripper.hold_evidence())
+    return HoldEvidence.UNMEASURED
+
+
+def width_is_measured_of(gripper: object) -> bool:
+    """Whether ``gripper`` measures its width; ``False`` for a gripper that cannot say."""
+    return isinstance(gripper, MeasuresWidth) and bool(gripper.width_is_measured())

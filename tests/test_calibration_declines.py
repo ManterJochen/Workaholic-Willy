@@ -76,6 +76,10 @@ def _curobo_ur(*, plans: bool = True) -> tuple[URRobotArm, list[MotionResult]]:
     planner = _PlannerThatArrives([[0.0, -1.5, 1.5, 0.0, 1.5, 0.0]] if plans else [])
     arm._curobo_ur = planner  # type: ignore[assignment]
     arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
+    # And the plan's end. This double hands back one trajectory whatever it is asked, which a real planner never
+    # does, and what this file reads is not where a plan ends: the UR driver refuses a plan off its goal before
+    # anything moves (Step 8f), and tests/test_the_planner_sees_the_cell_where_the_controller_has_it.py holds that half.
+    arm._plan_end_refusal = lambda goal, joints, pose: None  # type: ignore[method-assign]
     # The path gate too. This file is about what a calibration sweep says about the camera world,
     # and the preflight above holds one accepting stand-in rather than a self collision guard,
     # which a judged path refuses outright (exact meshes on every sample, or no motion).
@@ -143,6 +147,17 @@ class TheRoutineDeclinesTests(unittest.TestCase):
         self.assertEqual(result.num_samples, len(poses), "the declined sweep did not solve")
         # The decline belongs to the sweep: the same arm moved outside it plans as it would without it.
         self.assertIs(arm.move(poses[0]).camera_world.use, CameraWorldUse.MISSING)
+
+    def test_the_sweep_runs_on_a_cell_that_refuses_undeclared_motion(self) -> None:
+        """By owner decision a cuRobo arm refuses a motion nothing declined, and the sweep still runs."""
+        arm, seen = _curobo_ur()
+        routine, poses = _eye_to_hand(arm)
+        routine.run_with_poses(poses)
+        self.assertEqual({(r.status, r.camera_world.use) for r in seen},
+                         {(MotionStatus.EXECUTED, CameraWorldUse.DECLINED)})
+        bare = arm.move(poses[0])
+        self.assertIs(MotionStatus.UNSUPPORTED, bare.status, "a motion outside the sweep ran with no camera world")
+        self.assertIs(CameraWorldUse.MISSING, bare.camera_world.use)
 
     def test_an_eye_in_hand_sweep_declines_with_its_own_reason(self) -> None:
         arm, seen = _curobo_ur()
@@ -277,6 +292,13 @@ class TheCliConnectsTheArmThroughRobotTests(unittest.TestCase):
         arm.connect.assert_not_called()
         self.assertIsNone(peek(self.KEY), "a dry run took the cell lock")
         camera.release.assert_called_once_with()
+
+    def test_the_calibrate_cli_prints_the_camera_world_line(self) -> None:
+        arm = _ur_arm("curobo")
+        arm.connect = MagicMock(side_effect=AssertionError("--dry-run connected the arm"))  # type: ignore[method-assign]
+        code, printed, _, _ = self._run("--dry-run", arm=arm)  # type: ignore[arg-type]
+        self.assertEqual(code, calibrate._EXIT_OK, printed)
+        self.assertIn("every planned motion needs a decline; this sweep declines for itself", printed)
 
 
 if __name__ == "__main__":  # pragma: no cover

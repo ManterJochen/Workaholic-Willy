@@ -2,7 +2,9 @@
 
 Every pick, calibration and diagnostic runner opens its Isaac session with the same prefix: load
 the sim config, build the fail-closed arm, start the session, push the asset root into Kit's
-settings, author the combined scene, connect the arm, then build and connect the gripper.
+settings, author the combined scene, connect the arm, then build and connect the gripper. A cell
+on the cuRobo planner also states its camera world before the arm is built: a decline held for
+the cell's life, or a live world from the overhead camera, wired once the gripper is connected.
 :func:`bootstrap_sim_cell` is that prefix and returns a typed :class:`SimCell`. Each runner adds
 its own perception, calculator, resolver, policy and service assembly on top of the booted cell.
 
@@ -15,12 +17,14 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from src.config import ConfigError
 from src.config.schema.robot import RobotConfig
 from src.contracts import UNSET, Maybe, chosen
+from src.robot.core.camera_world import CameraWorldDecline
 from src.robot.drivers.sim.arm import IsaacRobotArm
 from src.robot.drivers.sim.robot_models import ur_model_spec
 from src.utility.log_cfg import create_logger
@@ -32,6 +36,11 @@ from src.willy_sim.config import (
 )
 from src.willy_sim.constants import BOOTSTRAP_LOG_FILE, WILLY_SIM_LOG_DIR
 from src.willy_sim.grippers import MOUNTED_GRIPPERS, MountedGripperSpec, sim_mount_for
+from src.willy_sim.harness.camera_world import (
+    CellCameraWorld,
+    SimCameraWorld,
+    hold_camera_world_decline,
+)
 from src.willy_sim.harness.coverage import warn_if_out_of_frame
 from src.willy_sim.harness.reach import warn_if_unreachable
 from src.willy_sim.scene import SceneHandles, build_combined_scene
@@ -259,6 +268,9 @@ class SimCell:
     #: The standalone gripper Isaac mounted, derived from the hand and the arm asset, or ``None`` where
     #: the asset's baked variant carries the hand. A record stamps its name (``cell_identity``).
     mount: MountedGripperSpec | None = None
+    #: The camera world the arm's motions stand on: a decline held for the cell's life, or a wired
+    #: world. ``None`` for an ik or RMPflow cell that stated neither.
+    camera_world: CellCameraWorld | None = None
 
 
 def bootstrap_sim_cell(
@@ -272,6 +284,7 @@ def bootstrap_sim_cell(
     extra_profiles: Sequence[str] | None = None,
     post_scene_hook: Callable[[Any], None] | None = None,
     motion_planner: Maybe[str] = UNSET,
+    camera_world: "Maybe[CameraWorldDecline | SimCameraWorld]" = UNSET,
 ) -> SimCell:
     """Boot the combined arm and gripper Isaac cell from the sim config tree.
 
@@ -291,6 +304,11 @@ def bootstrap_sim_cell(
     before ``arm.connect()``, which is the first play. A runner uses it to author extra physics
     prims that must exist before play, such as the Isaac surface gripper, which the gripper
     extension registers only at play. Leaving it ``None`` changes nothing.
+
+    ``camera_world`` is what the arm's motions stand on. A cuRobo cell states it or is refused
+    before the arm is built: a ``CameraWorldDecline`` naming the runner, held for the cell's life,
+    or ``SimCameraWorld("overhead")`` for a live world from the overhead camera. An ik or RMPflow
+    cell needs neither, because nothing plans against a world there.
     """
     # ``robot_model`` selects a second profile layer ("sim,ur3e"), so the whole robot-dependent
     # config, meaning the reach-limited scene geometry, safe_pose and the safety kinematics model,
@@ -315,10 +333,23 @@ def bootstrap_sim_cell(
     # ``model_copy``, which validates nothing and would let a name no registry holds reach the Isaac
     # boot. The camera section is untouched, so the one cross-section rule on AppConfig, the primary
     # camera calibrated in one place, cannot change here.
+    #
+    # The hand's own widths and envelope come with it, the way the loader derives them for a hand
+    # named in YAML: the dump holds the tree hand's numbers in every one of those keys, so they are
+    # dropped before the new hand fills them. A tree naming no hand that states widths loses them
+    # here; no shipped sim chain does, because the sim layer names its hand.
     if hand is not None:
+        from src.config.hand_numbers import HAND_KEYS, apply_named_hand
+
         merged = robot.model_dump()
+        for key, _ in HAND_KEYS:
+            *parents, leaf = key.split(".")
+            node = merged
+            for part in parents:
+                node = node[part]
+            node.pop(leaf)
         merged["gripper"]["model"] = hand
-        robot = RobotConfig.model_validate(merged)
+        robot = RobotConfig.model_validate(apply_named_hand(merged))
     # Which gripper Isaac puts on the arm, derived rather than configured: a second key for it could
     # name another hand than robot.gripper.model. Refuses, before the boot, a cell that names no hand,
     # a name the cell's own registry does not hold, and a hand the sim has no mount for.
@@ -391,7 +422,25 @@ def bootstrap_sim_cell(
             exact_mesh_collision=(robot.safety.self_collision.backend or "").lower() == "fcl",
         )
     )
+    # The camera world, stated before the arm is built. A cuRobo motion with neither a world nor a
+    # decline is refused, so a runner that stated nothing would boot Isaac for 60 s and then refuse
+    # its first move.
+    if not chosen(camera_world):
+        if _planner == "curobo":
+            raise ValueError(
+                "bootstrap_sim_cell: this cell plans with cuRobo, and every cuRobo motion needs a live "
+                "camera world or a decline. Pass camera_world=CameraWorldDecline('<runner>: <why no "
+                "camera world>'), or camera_world=SimCameraWorld('overhead') for a live world from the "
+                "overhead camera"
+            )
+    elif isinstance(camera_world, SimCameraWorld):
+        _refuse_a_sim_camera_world(camera_world, robot, planner=_planner, safety=safety)
+    elif not isinstance(camera_world, CameraWorldDecline):
+        raise TypeError(f"camera_world is a CameraWorldDecline or a SimCameraWorld, not {camera_world!r}")
     arm = IsaacRobotArm(driver_cfg, safety_preflight=preflight)
+    held: CellCameraWorld | None = None
+    if isinstance(camera_world, CameraWorldDecline):
+        held = hold_camera_world_decline(arm, camera_world, ExitStack())
     # The cell's own geometry, underneath whatever the runner registers. ``set_world`` replaces the
     # planner's world, so a runner that declares its bin walls would drop the bench with them. The
     # declaration is the one the guard reads, so a cell has a single description of its furniture.
@@ -432,6 +481,8 @@ def bootstrap_sim_cell(
         session=arm.session, gripper_prim_path=sim.gripper_prim_path, profile=gripper_profile,
     )
     gripper.connect()
+    if isinstance(camera_world, SimCameraWorld):
+        held = _wire_sim_camera_world(camera_world, arm, handles, robot)
     # Announce the cuRobo and Coal anchoring once, right before the runner's run loop. A "curobo"
     # run with a missing cuRobo env refuses, so this is not the last warning before a degraded run;
     # it stays because Coal is the other engine, and its absence is still a quieter check rather
@@ -440,16 +491,67 @@ def bootstrap_sim_cell(
         driver_cfg.motion_planner, robot_config=_robot_yml, kinematics_model=_kin_model,
     )
     # One line that identifies the cell a later result belongs to: which robot, which end-effector,
-    # how many objects, and whether the ``camera_to_base`` the calculator reasons in exists at all.
+    # how many objects, whether the ``camera_to_base`` the calculator reasons in exists at all, and
+    # which camera world the arm's motions stand on.
     _LOG.info(
-        "sim cell up in %.1f s: robot=%s gripper=%s planner=%s objects=%d camera_to_base=%s%s",
+        "sim cell up in %.1f s: robot=%s gripper=%s planner=%s objects=%d camera_to_base=%s "
+        "camera_world=%s%s",
         time.perf_counter() - started, sim.robot_model,
         mount.name if mount is not None else f"baked:{ur_model_spec(sim.robot_model).baked_gripper_variant}",
         driver_cfg.motion_planner,
         len(handles.object_specs), "SET" if handles.camera_to_base is not None else "NONE",
+        held.render() if held is not None else "not stated",
         f" degraded={list(degraded)}" if degraded else "",
     )
     return SimCell(
         arm=arm, gripper=gripper, handles=handles, cfg=cfg, robot=robot, sim=sim, dwell=dwell,
-        degraded_engines=degraded, mount=mount,
+        degraded_engines=degraded, mount=mount, camera_world=held,
     )
+
+
+def _refuse_a_sim_camera_world(request: SimCameraWorld, robot: RobotConfig, *, planner: str,
+                               safety: bool) -> None:
+    """Refuse, before the arm is built, a live camera world this boot cannot honour. Config pure."""
+    if request.rig_id != "overhead":
+        raise ValueError(
+            f"camera_world=SimCameraWorld({request.rig_id!r}): only the overhead camera is authored by "
+            "every boot, so it is the one Isaac camera a live world is built from"
+        )
+    if not safety:
+        raise ValueError("camera_world=SimCameraWorld needs safety=True: a live world is handed to the "
+                         "arm's planner and its self filter, which read the preflight's hand")
+    if planner != "curobo":
+        raise ValueError(
+            f"camera_world=SimCameraWorld on the {planner!r} planner: only cuRobo plans against a world"
+        )
+    from src.robot.execution.camera_world_wiring import CameraWorldPlan
+    from src.willy_sim.perception.camera_owner import IsaacCameraOwner
+
+    plan = CameraWorldPlan.from_config(robot, [IsaacCameraOwner.rig_for(request.rig_id)],
+                                       primary_rig_id=request.rig_id)
+    if not plan.rig_ids:
+        raise ValueError(
+            f"camera_world=SimCameraWorld({request.rig_id!r}) and this tree gives no live world: "
+            f"{plan.reason}. Add the sim_camera_world profile layer, which enables "
+            "safety.planning_world with the scene's table as its support plane"
+        )
+
+
+def _wire_sim_camera_world(request: SimCameraWorld, arm: IsaacRobotArm, handles: SceneHandles,
+                           robot: RobotConfig) -> CellCameraWorld:
+    """Build the live world from the Isaac overhead camera and hand it to the arm.
+
+    The world places the camera by the extrinsic fitted from rendered depth, not by the scene's
+    hand-built matrix, which is exact only on the optical axis. The grasp keeps the hand-built one,
+    and the boot line prints the angle between the two. A boot that builds no world is refused.
+    """
+    from src.robot.execution.robot import Robot
+    from src.willy_sim.perception.camera_owner import IsaacCameraOwner
+
+    owner = IsaacCameraOwner.from_scene(arm.session, handles, rig_id=request.rig_id)
+    wired = Robot.from_parts(arm=arm, gripper=None, lock_key=None, cameras=[owner], robot_config=robot)
+    wiring = wired.camera_world
+    if wiring is None or wiring.world is None:
+        reason = getattr(wiring, "reason", "no wiring")
+        raise ValueError(f"camera_world=SimCameraWorld({request.rig_id!r}) built no live world: {reason}")
+    return CellCameraWorld(decline=None, wiring=wiring, fit_angle_deg=owner.fit_angle_deg)

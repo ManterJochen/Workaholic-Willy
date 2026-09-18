@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.robot.core import RobotConnectionError
 from src.robot.core.arm_capabilities import DigitalIOPort, SupportsDigitalIO
+from src.robot.core.gripper import HoldEvidence
 
 from ..constants import VACUUM_GRIPPER_LOG_FILE, create_robot_logger
 
@@ -191,6 +192,17 @@ class VacuumGripper:
         if self._ok_pin is None:
             return self._vacuum_on
         return bool(self._io.get_digital_input(self._ok_pin, port=self._port))
+
+    def hold_evidence(self) -> HoldEvidence:
+        """The vacuum switch as evidence.
+
+        UNMEASURED with no switch wired, whatever the vacuum was commanded to.
+        """
+        self._require_connected("hold_evidence")
+        if self._ok_pin is None:
+            return HoldEvidence.UNMEASURED
+        held = bool(self._io.get_digital_input(self._ok_pin, port=self._port))
+        return HoldEvidence.HELD if held else HoldEvidence.EMPTY
 
     # --- internals --------------------------------------------------------
     def _require_connected(self, what: str) -> None:

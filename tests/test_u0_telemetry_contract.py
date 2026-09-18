@@ -133,12 +133,16 @@ EXPECTED_U_PLUS_FIELDS: tuple[tuple[str, str], ...] = (
     ("rl_sequencing_action_proposed", "rl_sequencing"),
     ("rl_sequencing_action_baseline", "rl_sequencing"),
     ("rl_sequencing_action_agree", "rl_sequencing"),
+    # By owner decision, the weakest camera world behind the attempt's typed motions, written by the record
+    # serializer. Covered by ``tests/test_k1_record_logging.py``.
+    ("camera_world", "camera_world"),
+    ("camera_world_reason", "camera_world"),
 )
 
 
 class UPlusTelemetryContractTests(unittest.TestCase):
     def test_version_locked(self) -> None:
-        self.assertEqual(EXTRA_TELEMETRY_VERSION, 1)
+        self.assertEqual(EXTRA_TELEMETRY_VERSION, 2)
         self.assertEqual(MANIFEST_VERSION, 1)
         self.assertEqual(BASELINE_REPORT_VERSION, 1)
 
@@ -208,6 +212,20 @@ class UPlusAuditTypeRulesTests(unittest.TestCase):
             "predicted_success_probability",
             audit_extra_record(record),
         )
+
+    def test_the_camera_world_fields_are_typed(self) -> None:
+        from src.robot.core.camera_world import CameraWorldUse
+
+        for use in CameraWorldUse:
+            if use is CameraWorldUse.UNSTATED:
+                continue
+            with self.subTest(use=use.value):
+                record = _base_record(camera_world=use.value, camera_world_reason="bench check")
+                self.assertEqual(audit_extra_record(record), ())
+        for bad in ("sideways", 3, "unstated", "PLANNED"):
+            with self.subTest(bad=bad):
+                self.assertEqual(audit_extra_record(_base_record(camera_world=bad)), ("camera_world",))
+        self.assertEqual(audit_extra_record(_base_record(camera_world_reason=3)), ("camera_world_reason",))
 
     def test_non_negative_int_rejects_negative(self) -> None:
         record = _base_record(fused_view_count=-1)

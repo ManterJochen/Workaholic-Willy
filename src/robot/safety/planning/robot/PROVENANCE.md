@@ -55,8 +55,8 @@ Four things about that generator are load-bearing:
   two agree on this arm to under a thousandth of a millimetre, which is one of the six measurements
   that licensed the change. Four links of the family did not agree, and each difference was a mesh
   origin offset the simulator's URDFs omit and UR declares. `bundles.json` beside the bundles records
-  each one's source and a hash over its arrays, so every bundle can be rebuilt from the pinned STLs
-  and compared.
+  every bundle's source, its arm or hand, and a hash over its arrays, so every arm bundle can be
+  rebuilt from the pinned STLs and compared.
 - It gates every write. A bake is compared with the bundle already committed for the same model, and
   a difference beyond the ceilings refuses the write unless the caller names what moved. That gate
   must pass before a new model's bundle is trusted, because a wrong frame here corrupts a safety
@@ -146,30 +146,34 @@ sits in every committed arm bundle, so one map covers all of them; a different h
 This mattered more than it looks. `scripts/curobo/build_ur_config.py` carried its own copy of the fit
 and always used the Robotiq bundle, under a comment calling it model independent. It is independent
 of the arm and not of the hand, so a cell running the Schunk had a safety guard that read the right
-bundle through its variant key and a planner that modelled a Robotiq. The on-box script now
-reads the committed map for the gripper it is told about:
+bundle through its variant key and a planner that modelled a Robotiq. The on-box script builds the
+arm alone, and the planner's sidecar adds the map of the hand the cell names (`robot.gripper.model`)
+as a body link when it starts, so no build can name the wrong hand:
 
 ```
-python scripts/curobo/build_ur_config.py ur5e --gripper schunk_egu50
+ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e
 ```
 
-A gripper nobody has baked a bundle for is fitted from its own mesh, which is the path a customer
-with a vendor STL takes:
+A gripper nobody has baked a bundle for gets its body first and its map from that body, the path
+[`docs/runbooks/your_own_gripper.md`](../../../../../docs/runbooks/your_own_gripper.md) walks: the
+body from its registry numbers (`scripts/grippers/write_hand_from_dimensions.py`), from vendor STL or
+OBJ files (`scripts/grippers/write_hand_from_mesh.py`) or from a USD
+(`scripts/grippers/bake_gripper_variant.py`), then the map from
+`scripts/curobo/fit_cover_spheres.py --hand <name> --write`. A planner reads cover fits only: a cell
+whose map is not a cover fit of its hand's own bundle is refused, and the grid fit in
+`gripper_spheres.py` stays for measuring and comparing, with a command line that writes no map.
 
-```
-.venv/Scripts/python.exe -m src.robot.safety.planning.robot.build_gripper_spheres     --mesh vendor/eoat.stl --gripper eoat --scale-to-mm 1000 --cell-mm 34 --rmax-mm 17     --origin mounting_face --out eoat_gripper_spheres.yml
-```
+The grid fit's `--cell-mm` and `--rmax-mm` have no default, and that is deliberate. The pairing of
+34.0 with 24.0 is this repository's 2F-85 finger cell size against its palm radius cap: a combination
+describing no part of any gripper, including the one both halves were measured from. A default that
+looks calibrated is worse than one that looks arbitrary. The grid fit used 44 mm cells capped at 24 mm
+for a palm and 34 mm capped at 17 mm for a finger blade.
 
-Nothing on that path has a default, and that is deliberate. The pairing of `--cell-mm` 34.0 with
-`--rmax-mm` 24.0 is this repository's 2F-85 finger cell size against its palm radius cap: a
-combination describing no part of any gripper, including the one both halves were measured from. A
-default that looks calibrated is worse than one that looks arbitrary. The shipped bundles use 44 mm
-cells capped at 24 mm for a palm and 34 mm capped at 17 mm for a finger blade.
-
-Three things the file cannot check and a person has to: the mesh must be in the `tool0` axes,
-`--scale-to-mm` must be right, and `--origin` must say where the numbers start. Metres read as
-millimetres is a hand a thousand times too small, and it plans happily straight through everything it
-should have hit.
+Three things a mesh file cannot say and a person has to: which vendor axis is the approach and which
+the closing, the scale, and where the numbers start. The mesh writer takes all three as arguments with
+no default and refuses a mirror, and the hand bundle check then refuses fingers that do not lie along
+the model axis. Metres read as millimetres is still a hand a thousand times too small, so measure the
+jaw off the written body (`scripts/grippers/measure_jaw_from_bundle.py`) before trusting it.
 
 ## Gripper: Robotiq Hand-E
 
@@ -186,17 +190,19 @@ centre, grasp centre 135.75 mm from the gripper's own mounting face.
 
 ### One bundle per hand, composed onto the arm
 
-A hand bundle is `{hand}_hand_meshes.npz` and holds the hand alone: the `gripper`, `lfinger` and
-`rfinger` meshes at DH frame 6, the origin its numbers start from, and `hand__admitted_arms`, the
-arms it was proven on. `environment.compose_collision_meshes(model, hand)` takes the arm's own
-bundle, drops its 2F-85 and puts the hand in, so every arm link is the arm's committed bytes whatever
-hand it carries.
+A hand bundle is `{hand}_hand_meshes.npz` and holds the hand alone, and nothing composes one that
+holds more or less (`planning/_hand_bundle.py`): the `gripper`, `lfinger` and `rfinger` meshes at DH
+frame 6 and the origin its numbers start from. `environment.compose_collision_meshes(model, hand)`
+takes the arm's own bundle, drops its 2F-85 and puts the hand in, so every arm link is the arm's
+committed bytes whatever hand it carries.
 
 A gripper used to need one arm-plus-hand file per arm, and a missing one dropped the whole cell to
 the capsule proxy, the arm included. Measured: `schunk_egu50` on a ur3e did exactly that, because
-only a ur5e file was ever baked for it. It still refuses, now for the right reason and as
-`variant_model_mismatch` from the admitted arms record: the Schunk is proven on a ur5e only. A
-freshly baked hand records no arm, so it is admitted to one by evidence and never by being written.
+only a ur5e file was ever baked for it. A hand bundle records no arms: which arms a hand may be
+composed onto is measured, one evidence file per combination under
+[`evidence/`](evidence/), and the matrix measured the Schunk at rung b1 on the ur3, ur3e, ur5e, ur10
+and ur10e at both placements, and on the ur5 at +Z. A freshly baked hand is admitted to an arm by
+running `scripts/curobo/matrix_gate.py`, never by being written.
 
 ### The coupling, and why a map says where it starts
 
@@ -208,8 +214,9 @@ is the flange.
 The Hand-E asset is a standalone vendor model with no coupling part in it at all, and its housing
 measures 99.20 mm, the published body length. Its numbers therefore start at the gripper's own
 mounting face, and whatever plate sits between that face and the flange is not in them. Every sphere
-map carries `_provenance.origin`, one of `flange` or `mounting_face`, and the planner refuses to
-place a `mounting_face` map without the coupling rather than assuming zero. Assuming zero puts every
+map carries `_provenance.origin`, one of `flange` or `mounting_face`, and a cell whose hand map
+starts at the mounting face refuses to build without `robot.gripper.coupling_plates` rather than
+assuming zero (`hand.py`). Assuming zero puts every
 sphere one plate too close to the flange, which is optimistic in the one direction a planner must not
 be, and the file looks entirely reasonable either way.
 
@@ -237,7 +244,7 @@ link frame, joint limits, `default_q` and `self_collision_ignore`.
 
 The hand is not in it. The gripper spheres in this folder become a fixed link under `tool0` that the
 sidecar of the planner adds when it starts, placed from `robot.gripper.model`,
-`robot.gripper.coupling_plates_mm` and the declared tool frame (`safety/planning/body_link.py`).
+`robot.gripper.coupling_plates` and the declared tool frame (`safety/planning/body_link.py`).
 Measured over all 18 arm and hand pairs: the composed robot and the per-hand descriptor it replaced
 agree on every sphere position to 1.19e-7 m and on the `check_js` verdict of all 1,482 poses.
 
@@ -252,7 +259,8 @@ The exact cuRobo schema is produced on the target box by `scripts/curobo/build_u
 written into the ignored content directory under `ext_deps/`. That is where the descriptor physically
 lives at runtime; this folder is its committed geometry authority and label. The descriptor records
 its arm and the fact that it carries no hand under `_provenance`, and a planner refuses one built for
-another arm, and one that models a hand of its own.
+another arm, and one that models a hand of its own. A planner is kept only on a combination a committed
+evidence file measured ([`evidence/`](evidence/)).
 
 ## A descriptor build reproduces
 
@@ -271,13 +279,13 @@ a different link each time. An arm in that state is one whose map has not been f
 Planner collision-awareness is simulation-grade and is not a certified functional-safety stop. A real
 cell still needs the vendor safety-rated stop.
 
-The `tool0` gripper spheres here are frame-correct and derived from committed data in this
-repository. The complete assembled descriptor and any statement about real planning quality are
+The sphere maps here are frame-correct and derived from committed data in this repository. The
+complete assembled descriptor and any statement about real planning quality are
 on-box measurements, and the engines they need are not present in a plain checkout.
 
-A hand bundle carries no arm, so re-baking an arm bundle cannot unpair a hand from it. What a hand
-bundle does carry is the arms it was proven on, and a hand is admitted to an arm by that record
-alone: a cell pairing a hand with an arm nobody measured it on is refused rather than guessed at.
+A hand bundle carries no arm, so re-baking an arm bundle cannot unpair a hand from it. A hand is
+admitted to an arm by a committed evidence file for that combination alone: a planner on a pairing
+nobody measured is refused rather than guessed at.
 
 ## Licences
 

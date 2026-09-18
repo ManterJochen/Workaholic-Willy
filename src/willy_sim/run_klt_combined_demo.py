@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from src.robot.core.camera_world import CameraWorldDecline
 
 CINE_EYE = [1.55, -1.45, 1.55]        # elevated 3/4 view that sees into a 146 mm-deep bin (the eye _h39d_binpick_record uses)
 CINE_TARGET = [0.45, -0.02, 0.05]
@@ -104,6 +105,7 @@ def record_jaw(out: str, *, deep: bool, hold_steps: int = HOLD) -> int:
         headless=True, prompt=GREEN, enable_bin=True,
         bin_half_width_mm=146.5, bin_half_width_y_mm=94.7, bin_height_mm=bin_h, finger_tool=True,
         motion_planner="curobo", real_klt_bin=klt,
+        camera_world=CameraWorldDecline("run_klt_combined_demo: this runner plans without a live camera world"),
     )
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]
 
@@ -174,7 +176,8 @@ def record_suction_deep(out: str, *, hold_steps: int = HOLD, lift_mm: float = 13
     green = SimObjectConfig(name="klt_target", shape="cube", size_mm=(40.0, 40.0, 40.0),
                             position_mm=(450.0, 0.0, 20.0), mass_kg=0.15, color=(0.20, 0.65, 0.30))
     cell = bootstrap_sim_cell(None, headless=True, scene_kwargs={
-        "objects_override": [green], "bin_walls": fixtures, "real_klt_bin": (450.0, 0.0, KLT_Z_MM)})
+        "objects_override": [green], "bin_walls": fixtures, "real_klt_bin": (450.0, 0.0, KLT_Z_MM)},
+            camera_world=CameraWorldDecline("run_klt_combined_demo: this runner plans without a live camera world"))
     arm, handles, sim = cell.arm, cell.handles, cell.sim
     session = arm.session
     app = getattr(session, "app", None)

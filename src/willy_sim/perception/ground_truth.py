@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
+from src.contracts import UNSET, Maybe
 from src.robot.drivers.sim.adapter import metres_to_millimetres
 from src.robot.grasping.types.perception import PerceptionFrame
 from src.utility.log_cfg import create_logger
@@ -131,8 +132,12 @@ class GroundTruthPerceptionSource:
         warmup_steps: int = 2,
         ground_truth_depth: bool = False,
         grasp_lift_mm: float = 0.0,
+        camera_name: Maybe[str] = UNSET,
     ) -> None:
         self._camera = camera
+        #: The name the cell's live planner world gives this camera, so the pick loop offers its
+        #: masks under it.
+        self.camera_name: Maybe[str] = camera_name
         self._target = target_prim_path
         self._session = session
         self._warmup = max(0, warmup_steps)
@@ -176,8 +181,12 @@ class GroundTruthPerceptionSource:
         # graspable points and no candidates. A mode that acquires more than once per pick hits
         # that; a single acquire per pick does not. IsaacVisionPerceptionSource pumps the same way.
         app = getattr(self._session, "app", None)
+        shutter: float | None = None
         for _ in range(self._warmup):
             if self._session is not None:
+                # The shutter is the render step whose buffers are read, so the stamp is the clock
+                # read just before it.
+                shutter = time.time()
                 self._session.step(render=True)
                 if app is not None:
                     app.update()
@@ -192,12 +201,15 @@ class GroundTruthPerceptionSource:
         # the buffer still comes back empty. So this re-reads only while the buffers are unusable
         # and reports how many extra pumps it needed. A fixed extra count is what fails
         # intermittently.
+        if shutter is None:
+            shutter = time.time()
         depth_mm, frame, mask = self._read_buffers()
         for extra in range(1, _BUFFER_RETRIES + 1):
             if _buffers_usable(depth_mm, mask):
                 break
             if self._session is None:
                 break                       # no session to pump; report what the camera gave us
+            shutter = time.time()
             self._session.step(render=True)
             if app is not None:
                 app.update()
@@ -227,7 +239,7 @@ class GroundTruthPerceptionSource:
             # than raised, and it travels on as an ordinary no_valid_grasp. Whether the target was
             # occluded or the prim path is wrong is only decidable here.
             self._log.warning(
-                "%s not present in the instance-id segmentation; emitting an EMPTY mask", self._target,
+                "%s not present in the instance-id segmentation; emitting an empty mask", self._target,
             )
             mask = np.zeros(depth_mm.shape, dtype=bool)
 
@@ -261,7 +273,7 @@ class GroundTruthPerceptionSource:
             intrinsics=intrinsics,
             segmentations=(seg,),
             rgb=rgb,
-            timestamp=time.time(),
+            timestamp=shutter,
             surface_depth_map=rendered_depth_mm,
         )
 
@@ -292,9 +304,13 @@ class MultiObjectGroundTruthPerceptionSource:
         ground_truth_depth: bool = False,
         grasp_lift_mm: float = 0.0,
         grasp_top_penetration_mm: float | None = None,
+        camera_name: Maybe[str] = UNSET,
     ) -> None:
         # targets: a list of (prim_path, label) pairs, one per object in the clutter scene.
         self._camera = camera
+        #: The name the cell's live planner world gives this camera, so the pick loop offers its
+        #: masks under it.
+        self.camera_name: Maybe[str] = camera_name
         self._targets = list(targets)
         self._session = session
         self._warmup = max(0, warmup_steps)
@@ -332,8 +348,12 @@ class MultiObjectGroundTruthPerceptionSource:
     def acquire(self) -> PerceptionFrame:
         started = time.perf_counter()
         app = getattr(self._session, "app", None)
+        shutter: float | None = None
         for _ in range(self._warmup):
             if self._session is not None:
+                # The shutter is the render step whose buffers are read, so the stamp is the clock
+                # read just before it.
+                shutter = time.time()
                 self._session.step(render=True)
                 if app is not None:
                     app.update()
@@ -343,10 +363,13 @@ class MultiObjectGroundTruthPerceptionSource:
         # failure surfaces three frames away as a shape error about something else, or, in a mode
         # that acquires more than once per pick, as a silent `no_valid_grasp` on the second acquire
         # while the first acquire found candidates at the same pose.
+        if shutter is None:
+            shutter = time.time()
         depth_mm, frame = self._read_buffers()
         for extra in range(1, _BUFFER_RETRIES + 1):
             if _buffers_usable(depth_mm, None) or self._session is None:
                 break
+            shutter = time.time()
             self._session.step(render=True)
             if app is not None:
                 app.update()
@@ -421,7 +444,7 @@ class MultiObjectGroundTruthPerceptionSource:
             intrinsics=intrinsics,
             segmentations=tuple(segmentations),
             rgb=rgb,
-            timestamp=time.time(),
+            timestamp=shutter,
             surface_depth_map=rendered_depth_mm,
         )
 

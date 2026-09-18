@@ -37,11 +37,13 @@ and WXYZ happens in `world.py`, which owns that wire format for both sources.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Sequence
 
 import numpy as np
+
+from src.robot.core.keep_out import KeepOutBox
 
 __all__ = [
     "DepthView",
@@ -57,6 +59,7 @@ __all__ = [
     "WorldBuildTuning",
     "build_perceived_boxes",
     "build_voxel_field",
+    "target_keep_out_box",
     "voxel_grid_extent",
 ]
 
@@ -85,6 +88,9 @@ class DropReason(StrEnum):
     SELF = "self"
     #: Real, in reach, and there was no collision slot left for it.
     NO_SLOT = "no_slot"
+    #: Inside a keep-out box a caller handed over: the target of the motion, left out of every
+    #: view.
+    KEEP_OUT = "keep_out"
 
 
 @dataclass(frozen=True, slots=True)
@@ -489,6 +495,8 @@ class PerceivedWorld:
     #: and an operator can read; this is what lets the planner see everything rather than the nearest
     #: few. Both come from one pass over one cloud, so they cannot describe different cells.
     voxels: "VoxelField | None" = None
+    #: Points each keep-out box took out, by box name. Empty when no box was handed over.
+    keep_out_points: dict[str, int] = field(default_factory=dict)
 
     @property
     def is_empty(self) -> bool:
@@ -532,6 +540,7 @@ class PerceivedWorld:
             "dropped_obstacles": self.dropped_obstacle_count,
             "source_timestamp": self.source_timestamp,
             "voxels": None if self.voxels is None else self.voxels.to_dict(),
+            "keep_out_points": dict(self.keep_out_points),
         }
 
 
@@ -542,6 +551,7 @@ def build_perceived_boxes(
     tuning: WorldBuildTuning | None = None,
     self_body: "SelfBody | None" = None,
     near_point_mm: Sequence[float] | None = None,
+    keep_out: Sequence[KeepOutBox] = (),
 ) -> PerceivedWorld:
     """Turn what the cameras see into the obstacles a planner should route around.
 
@@ -567,6 +577,11 @@ def build_perceived_boxes(
     near_point_mm
         What "nearest" is measured from when the slot budget bites. Normally the goal of the motion
         about to be planned. Defaults to the base origin.
+    keep_out
+        Boxes in BASE whose points are no obstacle for this motion, normally the target a pick is
+        closing on (``target_keep_out_box``). Their points leave every view right after the self
+        filter, so they reach neither a box nor the voxel field, and the count each box took is
+        reported by name.
 
     Raises
     ------
@@ -585,6 +600,7 @@ def build_perceived_boxes(
         )
 
     dropped_points: dict[str, int] = {}
+    keep_out_points: dict[str, int] = {}
     per_view_points: list[np.ndarray] = []
     per_view_pixels: list[np.ndarray] = []
     per_view_index: list[np.ndarray] = []
@@ -643,7 +659,11 @@ def build_perceived_boxes(
     def _empty() -> PerceivedWorld:
         return PerceivedWorld(
             boxes=(), dropped_points=dropped_points, dropped_clusters={},
-            considered_points=0, source_timestamp=oldest,
+            considered_points=0, source_timestamp=oldest, keep_out_points=keep_out_points,
+            voxels=(
+                build_voxel_field(np.empty((0, 3)), limits=limits, tuning=tuning)
+                if tuning.voxel_field_mm > 0.0 else None
+            ),
         )
 
     if points_base.shape[0] == 0:
@@ -653,6 +673,17 @@ def build_perceived_boxes(
         on_self = self_body.contains(points_base)
         dropped_points[DropReason.SELF] = int(np.count_nonzero(on_self))
         points_base, pixels, view_of = points_base[~on_self], pixels[~on_self], view_of[~on_self]
+        if points_base.shape[0] == 0:
+            return _empty()
+
+    if keep_out:
+        kept_out = np.zeros(points_base.shape[0], dtype=bool)
+        for box in keep_out:
+            inside_box = box.contains(points_base)
+            keep_out_points[box.name] = keep_out_points.get(box.name, 0) + int(np.count_nonzero(inside_box))
+            kept_out |= inside_box
+        dropped_points[DropReason.KEEP_OUT] = int(np.count_nonzero(kept_out))
+        points_base, pixels, view_of = points_base[~kept_out], pixels[~kept_out], view_of[~kept_out]
         if points_base.shape[0] == 0:
             return _empty()
 
@@ -734,7 +765,50 @@ def build_perceived_boxes(
             build_voxel_field(points, limits=limits, tuning=tuning)
             if tuning.voxel_field_mm > 0.0 else None
         ),
+        keep_out_points=keep_out_points,
     )
+
+
+def target_keep_out_box(
+    points_base_mm: Any,
+    *,
+    name: str,
+    limits: WorldBuildLimits,
+    tuning: WorldBuildTuning | None = None,
+) -> KeepOutBox | None:
+    """The box a perceived world would fit around a target, as the space that world leaves out for it.
+
+    The target's BASE points pass the filters every obstacle passes: the plane clearance, the limits,
+    and the largest cluster on the ``cluster_voxel_mm`` grid, which leaves a flying pixel and a strip
+    of bench that bled into a mask behind. The box is then the one ``_oriented_box`` fits, grown by
+    ``margin_mm`` and carried down to the plane when ``floor_to_plane`` is on, so the target leaves
+    exactly the space it would otherwise fill. ``None`` when no point survives.
+    """
+    tuning = tuning or WorldBuildTuning()
+    points = np.asarray(points_base_mm, dtype=np.float64).reshape(-1, 3)
+    points = points[np.all(np.isfinite(points), axis=1)]
+    plane = limits.support_plane_top_mm
+    if plane is not None:
+        points = points[points[:, 2] > float(plane) + float(limits.plane_clearance_mm)]
+    inside = (
+        (points[:, 0] >= limits.x_mm[0]) & (points[:, 0] <= limits.x_mm[1])
+        & (points[:, 1] >= limits.y_mm[0]) & (points[:, 1] <= limits.y_mm[1])
+        & (points[:, 2] >= limits.z_mm[0]) & (points[:, 2] <= limits.z_mm[1])
+    )
+    points = points[inside]
+    if points.shape[0] == 0:
+        return None
+    labels = _cluster(points, float(tuning.cluster_voxel_mm))
+    ids, counts = np.unique(labels, return_counts=True)
+    member = labels == ids[int(np.argmax(counts))]
+    centre, dims, yaw = _oriented_box(
+        points[member], float(tuning.margin_mm),
+        floor_mm=float(plane) if (tuning.floor_to_plane and plane is not None) else None,
+    )
+    box_to_base = np.eye(4)
+    box_to_base[:3, :3] = [[math.cos(yaw), -math.sin(yaw), 0.0], [math.sin(yaw), math.cos(yaw), 0.0], [0.0, 0.0, 1.0]]
+    box_to_base[:3, 3] = centre
+    return KeepOutBox.from_matrix(name, box_to_base, tuple(d / 2.0 for d in dims))
 
 
 def voxel_grid_extent(
@@ -763,7 +837,12 @@ def voxel_grid_extent(
 def build_voxel_field(
     points_mm: np.ndarray, *, limits: WorldBuildLimits, tuning: WorldBuildTuning
 ) -> "VoxelField | None":
-    """The kept points as a distance field over the cell, or `None` when there is nothing to say.
+    """The kept points as a distance field over the cell, or `None` when the cell configured no field.
+
+    A cell with a field and nothing in it gets a field that is free everywhere, never `None`. The
+    planner keeps the last field it was sent until another replaces it, so a refresh that sent
+    nothing would leave behind whatever was seen before: a part that has since been taken away, or
+    the target a pick has just taken out of the world.
 
     The grid spans the declared workspace and sits on the support plane, because that is the volume
     the arm is allowed into and the volume the planner reserved storage for. A point outside it was
@@ -782,9 +861,9 @@ def build_voxel_field(
     a field rather than a shell: without the inside half, a thin surface has no depth and an
     optimiser stepping over it lands on the far side having never seen it.
     """
-    if points_mm.shape[0] == 0 or tuning.voxel_field_mm <= 0.0:
+    if tuning.voxel_field_mm <= 0.0:
         return None
-    from scipy import ndimage  # noqa: PLC0415 - kept out of import time, this is the only user
+    from scipy import ndimage  # noqa: PLC0415 (kept out of import time, this is the only user)
 
     voxel = float(tuning.voxel_field_mm)
     floor_mm = float(limits.support_plane_top_mm or 0.0)
@@ -793,11 +872,21 @@ def build_voxel_field(
                     dtype=np.float64)
     shape = np.maximum(np.round((high - low) / voxel).astype(int), 1)
 
-    index = np.floor((points_mm - low) / voxel).astype(np.int64)
+    index = np.floor((np.asarray(points_mm, dtype=np.float64).reshape(-1, 3) - low) / voxel).astype(np.int64)
     inside = np.all((index >= 0) & (index < shape), axis=1)
     index = index[inside]
+    # The centre of the grid the voxels were indexed into, not of the span. The grid is rounded to
+    # whole voxels, and the planner puts a voxel centre half a voxel inside the low corner of the
+    # pose, so a centre taken from the span would move every obstacle by half the rounding.
+    centre = low + shape * voxel / 2.0
+    dims = (float(shape[0] * voxel), float(shape[1] * voxel), float(shape[2] * voxel))
     if index.shape[0] == 0:
-        return None
+        # Nothing to measure a distance to: every voxel is free by more than the grid is long.
+        free = float(np.linalg.norm(shape * voxel)) - float(tuning.margin_mm)
+        return VoxelField(
+            field=np.full(int(np.prod(shape)), free, dtype=np.float32), dims_mm=dims, voxel_size_mm=voxel,
+            center_mm=(float(centre[0]), float(centre[1]), float(centre[2])), occupied=0,
+        )
 
     occupancy = np.zeros(tuple(int(n) for n in shape), dtype=bool)
     occupancy[index[:, 0], index[:, 1], index[:, 2]] = True
@@ -816,13 +905,9 @@ def build_voxel_field(
     # obstacle.
     field = (outside - within - float(tuning.margin_mm)).astype(np.float32)
 
-    # The centre of the grid the voxels were indexed into, not of the span. The grid is rounded to
-    # whole voxels, and the planner puts a voxel centre half a voxel inside the low corner of the
-    # pose, so a centre taken from the span would move every obstacle by half the rounding.
-    centre = low + shape * voxel / 2.0
     return VoxelField(
         field=field.reshape(-1),
-        dims_mm=(float(shape[0] * voxel), float(shape[1] * voxel), float(shape[2] * voxel)),
+        dims_mm=dims,
         voxel_size_mm=voxel,
         center_mm=(float(centre[0]), float(centre[1]), float(centre[2])),
         occupied=occupied,

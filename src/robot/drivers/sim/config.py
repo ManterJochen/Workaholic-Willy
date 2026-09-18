@@ -89,7 +89,7 @@ class SimRobotConfig:
     backend: Literal["isaac"] = "isaac"
     enabled: bool = False
     # Which UR model this sim cell drives. The key selects the Lula solver config, the
-    # Isaac USD, with the cell's hand the cuRobo {key}_{hand}.yml, and the safety kinematics_model, which
+    # Isaac USD, the cuRobo willy_{key}.yml, and the safety kinematics_model, which
     # src.robot.drivers.sim.robot_models sets out. The default "ur5e" leaves an existing
     # cell unchanged.
     robot_model: str = "ur5e"

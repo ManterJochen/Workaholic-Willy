@@ -94,3 +94,18 @@ def lift_mm_since(obj: IsaacRigidPrim, z0: float) -> float:
 def gate_passed(n_pass: int, runs: int, pass_fraction: float) -> bool:
     """The shared gate verdict: ``n_pass`` reaches ``int(pass_fraction * runs)``, and at least 1."""
     return n_pass >= max(1, int(pass_fraction * runs))
+
+
+def last_line_motion(service: Any) -> str:
+    """What the last pick's policy read the arm to keep of a straight line, for the per-run log line.
+
+    It is the value of ``PolicyReport.line_motion`` (``checked``, ``controller_line``, ``teleport``,
+    ``not_kept``), ``not said`` for an arm that reports none, and ``no policy ran`` for a pick that
+    ended before the policy was asked.
+    """
+    orchestrator = getattr(getattr(service, "runtime", None), "orchestrator", None)
+    report = getattr(orchestrator, "_last_policy_report", None)
+    if report is None:
+        return "no policy ran"
+    motion = getattr(report, "line_motion", None)
+    return "not said" if motion is None else str(getattr(motion, "value", motion))

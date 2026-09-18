@@ -52,14 +52,22 @@ python -m src.robot.execution.real_cell --check
 python -m src.robot.execution.real_cell --check --profile ur3e
 ```
 
-Against the shipped configuration tree as a UR cell this reports three blocking items, and that is
+Against the shipped configuration tree as a UR cell this reports seven blocking items, and that is
 the normal state of a fresh cell rather than a fault.
 
 | Blocking | Why it stops you | What it looks like if you skip it |
 |---|---|---|
-| `gripper.tool_frame.source` is `undeclared` | nobody has said where the grasp centre sits on the flange | a top-down grasp commanding z = 37 mm drives the flange there and the fingertips through the bench |
-| `safety.payload` has `enforce: true` and `mass_kg: 0.0` | `connect()` refuses, because pushing `setPayload(0.0)` would overwrite the controller's model of a mounted tool | you drive to the cell and cannot connect |
-| no `CAMERA->BASE` resolver | grasps stay in the camera frame | every motion returns `INVALID_TARGET`, which reads as a cell that hangs |
+| `tool frame`: `gripper.tool_frame.source` is `undeclared` | nobody has said where the grasp centre sits on the flange | a top-down grasp commanding z = 37 mm drives the flange there and the fingertips through the bench |
+| `payload`: `safety.payload` has `enforce: true` and `mass_kg: 0.0` | `connect()` refuses, because pushing `setPayload(0.0)` would overwrite the controller's model of a mounted tool | you drive to the cell and cannot connect |
+| `camera -> base`: no CAMERA to BASE resolver | grasps stay in the camera frame | every motion returns `INVALID_TARGET`, which reads as a cell that hangs |
+| `camera world`: no live camera world for the planner | the base tree plans with cuRobo, and a cuRobo motion needs a live camera world or a decline; the pick service declines nothing | every pick motion is refused as `UNSUPPORTED` before it moves, naming the missing world |
+| `planner margin`: `safety.self_collision.planner_margin_mm` is undeclared | the base tree plans with cuRobo, and a planner never starts without the clearance it keeps; undeclared is not zero | the first planned move is refused as `CONTROLLER_REJECTED`, before the arm moves |
+| `carried part`: `safety.planning_world.payload.length_mm` is undeclared | the base tree plans with cuRobo, which models the part a grasp carries, and no length is implied for it | the attach is declined and every lift and transit after a grasp is planned as if the hand were empty; declare the length, or `enabled: false` for a cell that carries nothing |
+| `hand`: `gripper.model` is unset | the exact-mesh guard checks the hand `robot.gripper.model` names, and the base tree names none so that no overlay inherits one | the cell refuses to build, naming the key |
+
+A box without the cuRobo environment or without Coal blocks on two more rows, `cuRobo environment`
+and `exact mesh engine`: they are facts about the machine the checklist runs on, and they clear
+when the `ext_deps` install is on the box.
 
 Four more items are reported as warnings and never block: an unset self-collision kinematics model,
 no declared fixtures, no declared planning world, and no record log path.
@@ -68,7 +76,8 @@ Two rows are reported `[bench]` and never block, because no interface answers th
 
 * the controller must be powered, with brakes released, in Remote Control, with no pendant program
   owning it, because `ur_rtde` uploads a control script and is refused otherwise;
-* the end effector's electrical side. The Robotiq URCap opens port 63352 and is not any pip package;
+* the end effector's electrical side, named for the configured driver, whose row reads the pins and
+  the address from the configuration. The Robotiq URCap opens port 63352 and is not any pip package;
   a vacuum tool needs its 24 V supply and its solenoid. The schema accepts I/O pins 0 to 7 on any
   bank and does not know how many outputs the bank you named actually has, so a pin the tool block
   does not carry validates cleanly and switches nothing.
@@ -77,8 +86,8 @@ A blocking checklist does not necessarily stop you connecting. A cell with block
 connect and then refuse every motion, which is the failure that reads as a broken robot. What
 refuses the connect is the driver's own preflight, not this checklist.
 
-`config/robot/robot.ur5e.yaml` is the worked example for a real bench. It leaves exactly those three
-items unset on purpose and writes them out as commented blocks saying what to measure, so the
+`config/robot/robot.ur5e.yaml` is the worked example for a real bench. It leaves the first three of
+those items unset on purpose and writes them out as commented blocks saying what to measure, so the
 shipped refusals stay armed.
 
 ### 3. Does the whole software path work, with no hardware?
@@ -175,19 +184,21 @@ python -m src.robot.safety.planning --doctor --model ur3e --hand robotiq_2f85   
 
 The difference between the two matters here. `--check` is spawn-free: `cuRobo planner: AVAILABLE`
 means the sidecar's Python exists on disk and nothing more, and the banner says so in the same
-breath, because the robot descriptor `{model}_{hand}.yml`, the hand being `robot.gripper.model` or
-`--hand`, lives inside the cuRobo installation in a separate environment this process deliberately
-does not spawn. A UR3e with a 2F-85 and no `ur3e_robotiq_2f85.yml` passes that gate and fails later,
-inside the sidecar. `--doctor` does spawn it, and reports whether the descriptor is present. Once
-the sidecar is up it reports the descriptor's `_provenance`, and the driver refuses a descriptor
-built for another arm, another hand or another plate, or one that records none.
+breath, because the robot descriptor `willy_{model}.yml`, one per arm with no hand in it, lives
+inside the cuRobo installation in a separate environment this process deliberately does not spawn.
+A UR3e with no `willy_ur3e.yml` passes that gate and fails later, inside the sidecar. `--doctor`
+does spawn it, and reports whether the descriptor is present. Once the sidecar is up it reports the
+descriptor's `_provenance` and hashes, and the driver refuses a descriptor built for another arm,
+one that carries a hand, or one that records nothing; it then keeps the planner only on a
+combination of arm, hand, plate, placement and margin that a committed evidence file measured (the
+checklist's `planner margin` row says which file).
 
 To list what descriptors exist by hand, in the cuRobo environment:
 
 ```bash
 "$WILLY_CUROBO_PYTHON" -c "from curobo.content import get_content_root; import os, glob; \
   d = os.path.join(str(get_content_root()), 'configs', 'robot'); \
-  print(sorted(os.path.basename(p) for p in glob.glob(d + '/ur*_*.yml')))"
+  print(sorted(os.path.basename(p) for p in glob.glob(d + '/willy_ur*.yml')))"
 ```
 
 If your model is missing, build it with `scripts/curobo/build_ur_config.py`, on the box and against
@@ -250,7 +261,10 @@ one session, because three of them share the same setup.
    and in the gravity compensation behind `get_tcp_wrench()`. `connect()` refuses a declared mass
    left at an all-zero centre of gravity for exactly this reason, before it opens a socket.
 3. **Measure the flange to grasp-centre transform**, same session, and set `gripper.tool_frame`:
-   * `offset_mm`, where the grasp centre sits;
+   * `offset_mm`, where the grasp centre sits. `--check` holds it to the hand: along the declared
+     approach it should be the registry's `grasp_centre_mm` plus the coupling plates, and the
+     `grasp centre` row warns beyond 1 mm. Whichever of the bench and the registry file is wrong is
+     the one to correct;
    * `rotation_quat_xyzw`, which flange axis the jaws close along. This half never crashes. Ninety
      degrees out produces run after run of logged successes with the jaws closing across the wrong
      object axis, and hand-eye calibration cannot catch it, because it solves for whatever frame
@@ -270,8 +284,10 @@ one session, because three of them share the same setup.
    not free at runtime.
 5. **Declare the bench** under `safety.self_collision.fixtures`. With none declared there is no
    surface in the collision world, so nothing refuses a motion that goes through it. Declare
-   `safety.planning_world` too: without it cuRobo plans against its own generic table, and the
-   one-shot guard cannot see the difference, because that guard judges a destination and not a path.
+   `safety.planning_world` too, with a measured `support_plane` and `perceived.enabled`: a cuRobo
+   cell plans every pick motion against the live world the calibrated cameras build, and the one-shot
+   guard cannot stand in for it, because that guard judges a destination and not a path. Without that
+   world a cell with a calibrated RGB-D rig refuses to build, and the `camera world` row blocks.
 6. **Set `grasping.record_log_path`.** A bring-up with no telemetry cannot be diagnosed afterwards,
    and it gives the soak, KPI and offline learning tooling nothing to read.
 7. **Set `safety.self_collision.kinematics_model`** explicitly to the arm you are holding.
@@ -337,6 +353,8 @@ rule; 3 an exception escaped a pick.
 
 - [`ur3e_cell_bringup.md`](ur3e_cell_bringup.md), the configuration and geometry side, verified in
   simulation.
+- [`your_own_gripper.md`](your_own_gripper.md), a gripper this repository never shipped, up to a
+  planner that starts.
 - [`real_cell` package](../../src/robot/execution/real_cell/README.md), what the runner does at each
   stage, and the calibration command in full.
 - [UR driver](../../src/robot/drivers/ur/README.md), the SDK and the connect-time refusals.

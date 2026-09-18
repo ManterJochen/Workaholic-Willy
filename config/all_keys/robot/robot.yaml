@@ -373,33 +373,46 @@ robot:
     # The registry name of the hand bolted on: the stem of a file under config/grippers/, for example
     # robotiq_2f85. Lower case letters, digits and underscores only. The schema checks only that shape,
     # so a name no registry file defines, or the short name 2f85, still passes; `python -m src.config`
-    # refuses both against the tree's registry. It is the only name a hand has: the sim derives from it
-    # which gripper Isaac puts on the arm, the self collision guard its mesh bundle, and a cell whose
-    # guard reads hand geometry refuses to build while it is unset.
+    # refuses both against the tree's registry. It is the only name a hand has: the loader fills the
+    # hand's widths and collision envelope from its registry file wherever the profile chain leaves them
+    # unset, and refuses a stated one that differs; the sim derives from it which gripper Isaac puts on
+    # the arm, the self collision guard its mesh bundle, and a cell whose guard reads hand geometry
+    # refuses to build while it is unset.
     # [default: null]
     model: null
 
-    # The plates between the arm flange and the hand's own mounting face, in mm; their sum is where a
-    # hand whose sphere map starts at its mounting face sits on the flange. null is no measurement, and
+    # The plates between the arm flange and the hand's own mounting face. Their thicknesses sum to where
+    # a hand whose sphere map starts at its mounting face sits on the flange. null is no measurement, and
     # such a hand (the Hand-E) refuses to build until the plates are written; [] says the hand is bolted
-    # straight to the flange. A hand its arm asset already placed (the 2F-85) refuses any plate. Same
-    # bench measurement as the plate term in tool_frame.offset_mm.
+    # straight to the flange. A hand its arm asset already placed (the 2F-85) refuses any plate.
+    # Each plate is a name, a thickness_mm (the same bench measurement as the plate term in
+    # tool_frame.offset_mm) and an optional cross_section_mm, the two half extents across the approach in
+    # the hand model's closing and binormal axes. A plate with a cross section becomes collision geometry;
+    # one without places the hand, becomes no body, and is named as a gap nobody measured.
     # [default: null]
-    coupling_plates_mm: null
+    #
+    #   coupling_plates:
+    #     - name: tool_changer              # what the plate is, named when it declares no cross section
+    #       thickness_mm: 48.0              # how far it holds the hand out along the approach
+    #       cross_section_mm: [45.0, 45.0]  # half extents across the approach; [default: null]
+    coupling_plates: null
 
     # Physical opening of the mounted gripper, in mm. Default is the Robotiq 2F-85 (85 mm), the end-effector
     # this project ships. The Robotiq driver anchors its count map on this value, so it must be the real
-    # physical open width, not a policy ceiling.
+    # physical open width, not a policy ceiling. A cell that names a hand takes the hand's jaw.aperture_mm
+    # unless it states this, and a stated value that differs is refused.
     # [default: 85.0]
     max_width_mm: 85.0
 
     # Smallest MEANINGFUL grip, a policy floor NOT the physical closed width (the 2F-85 closes to 0 mm).
-    # The driver's count map is anchored on 0, so this only clamps commanded widths.
+    # The driver's count map is anchored on 0, so this only clamps commanded widths. A cell that names a
+    # hand takes the hand's floor unless it states one between that floor and the aperture.
     # [default: 5.0]
     min_width_mm: 5.0
 
     # The PHYSICAL closed width: what ``get_width_mm()`` reads when the jaws are shut on nothing. Default
-    # 0.0 = the Robotiq 2F-85 (fingers touching).
+    # 0.0 = the Robotiq 2F-85 (fingers touching). A cell that names a hand takes the hand's own, and a
+    # stated value that differs is refused.
     # [default: 0.0]
     closed_width_mm: 0.0
 
@@ -834,17 +847,22 @@ robot:
       # Whether the planner is told that the gripper is CARRYING something.
       payload:
 
-        # Whether the trajectory planner is told that the gripper is CARRYING something.
-        # [default: false]
-        enabled: false
+        # Whether the trajectory planner is told that the gripper is carrying something. Until the cell
+        # declares `length_mm` nothing is attached, and the real cell checklist's `carried part` row
+        # blocks a cuRobo UR; a cell that never carries a part says so with false.
+        # [default: true]
+        enabled: true
 
-        # Collision spheres the planner reserves for the carried part. 
+        # Collision spheres the planner reserves for the carried part once `length_mm` is declared,
+        # whether or not the planning world is enabled. A cuRobo planner then starts only on an evidence
+        # file measured with them (scripts/curobo/matrix_gate.py --attach).
         # [default: 16]
         sphere_slots: 16
 
-        # How far the carried part extends along the approach axis, in mm.
-        # [default: 120.0]
-        length_mm: 120.0
+        # How far the longest carried part hangs past the fingertips along the approach axis, in mm.
+        # No length is implied: a cell that declares none models no carried part.
+        # [default: null]
+        length_mm: null
 
         # Added to the jaw opening on both lateral axes when the carried part is described to the planner.
         # [default: 10.0]
@@ -1876,7 +1894,10 @@ robot:
       # [default: 10.0]
       depth_band_near_pct: 10.0
 
-    # Which gripper collision envelope the calculator filters grasp candidates against.
+    # Which gripper collision envelope the calculator filters grasp candidates against. The defaults
+    # below are the 2F-85 for a cell that names no hand. A cell that names one (robot.gripper.model) takes
+    # kind and every parallel_jaw number it leaves unset from that hand's registry file, and a stated
+    # value that differs is refused at load.
     gripper_geometry:
 
       # Chooses WHICH collision envelope every grasp candidate is filtered against: a two-finger + palm box

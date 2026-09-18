@@ -41,6 +41,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 # the shared per-robot table in run_eih_pick, one source of truth for both the calibration seed and
 # the pick's oracle fallback.
 from src.willy_sim.run_eih_pick import init_viewpose  # noqa: E402
+from src.robot.core.camera_world import CameraWorldDecline  # noqa: E402
 DEFAULT_SAVE_DIR = "logs/calibration"
 
 #: Same reasoning, and the same file, as the eye-to-hand runner: the wrist transform this solves is
@@ -66,6 +67,8 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
             "marker_kind": marker_kind, "aruco_length_mm": he.marker_length_mm,
             "aruco_dict_name": he.aruco_dict_name,
         },
+        camera_world=CameraWorldDecline(
+            "run_eih_calibrate: eye-in-hand calibration sweep, before CAMERA to TOOL exists"),
     )
     arm, gripper, handles, sim = cell.arm, cell.gripper, cell.handles, cell.sim
     # Namespace the artifacts per robot_model so a UR3e run cannot overwrite the UR5e's.
@@ -104,8 +107,10 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     )
 
     print("\n========== EIH CALIBRATION (CalibrationRoutine) ==========", flush=True)
-    # 1) initial empirical oracle (camera must see the table here).
-    arm.move(init_viewpose(sim.robot_model))
+    # 1) initial empirical oracle (camera must see the table here). The camera world is declined for
+    # this move, because CAMERA to TOOL does not exist yet.
+    with arm.without_camera_world("eye-in-hand calibration: the camera view pose, before CAMERA to TOOL exists"):
+        arm.move(init_viewpose(sim.robot_model))
     arm.session.step_n(15)
     app = getattr(arm.session, "app", None)
     warmup = int(scene.render_warmup_steps)

@@ -189,7 +189,15 @@ def _model_at(path_parts: list[str]) -> tuple[type, str] | None:
                 return annotation
             model_args = [a for a in args if isinstance(a, type) and issubclass(a, BaseModel)]
             if not model_args:
-                return None
+                # ``list[M] | None`` arrives as ``(list[M], NoneType)``: neither branch is a model,
+                # and the model sits one level further in. The walk descends through the branch
+                # that still has arguments, or an optional list of models such as
+                # ``robot.gripper.coupling_plates`` reads as undocumented for a typing reason.
+                nested = [a for a in args if a is not type(None) and typing.get_args(a)]
+                if not nested:
+                    return None
+                annotation = nested[0]
+                continue
             annotation = model_args[0]
         return None
 

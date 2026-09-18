@@ -88,9 +88,12 @@ grasping:
 ```
 
 The shipped defaults are the dimensions of `ParallelJawGripperModel()` built with no arguments, so
-leaving the block unset changes nothing. The parallel-jaw numbers are measured off a real
-two-finger gripper's collision shapes at the worst case over its aperture range, because every
-millimetre understated is finger hidden from the clearance check and pointing at the support surface.
+leaving the block unset on a cell that names no hand changes nothing. A cell that names a hand
+(`robot.gripper.model`) does not write this block: the loader fills every unset number and the kind
+from that hand's registry file, and refuses a stated one that differs. The parallel-jaw numbers are
+measured off a real two-finger gripper's collision shapes at the worst case over its aperture range,
+because every millimetre understated is finger hidden from the clearance check and pointing at the
+support surface.
 
 ## Traps
 

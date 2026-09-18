@@ -35,6 +35,7 @@ from src.willy_sim.gso_assets import GSO_BY_LABEL, gso_object_spec
 from src.willy_sim.harness.bootstrap import bootstrap_sim_cell
 from src.willy_sim.run_multiview_pick import _bin_preset_walls
 from src.willy_sim.scene import SceneAppearance
+from src.robot.core.camera_world import CameraWorldDecline
 
 DEFAULT_OUT = "logs/demo/industrial_suction_demo.mp4"
 # Cinematic camera (metres): an elevated front-right 3/4 view of the cell aimed at the package. The same
@@ -155,7 +156,9 @@ def record_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, fps: int 
         mount_visible_suction_cup(stage, ARM_PRIM, SUCTION_CUP, hide_jaw=True)
         _author_industrial_cell(stage)
 
-    cell = bootstrap_sim_cell(None, headless=headless, scene_kwargs=scene_kwargs, post_scene_hook=_mount_cup)
+    cell = bootstrap_sim_cell(None, headless=headless, scene_kwargs=scene_kwargs, post_scene_hook=_mount_cup,
+                              camera_world=CameraWorldDecline(
+                                  "run_industrial_suction_demo: this runner plans without a live camera world"))
     arm, handles, sim = cell.arm, cell.handles, cell.sim
     session = arm.session
     app = getattr(session, "app", None)

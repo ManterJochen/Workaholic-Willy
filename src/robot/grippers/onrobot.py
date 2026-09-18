@@ -36,6 +36,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable
 
 from ..constants import ONROBOT_GRIPPER_LOG_FILE, create_robot_logger
+from ..core.gripper import HoldEvidence
 from .onrobot_modbus import UNIT_QUICK_CHANGER, ModbusError, OnRobotRG, RGStatus
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
@@ -210,6 +211,15 @@ class OnRobotGripper:
         switches are wired. The status word carries it directly.
         """
         return bool(self._require_connected().status() & RGStatus.GRIP_DETECTED)
+
+    def hold_evidence(self) -> HoldEvidence:
+        """The status word as evidence: GRIP_DETECTED is HELD, anything else EMPTY."""
+        detected = bool(self._require_connected().status() & RGStatus.GRIP_DETECTED)
+        return HoldEvidence.HELD if detected else HoldEvidence.EMPTY
+
+    def width_is_measured(self) -> bool:
+        """``get_width_mm`` reads the actual opening register."""
+        return True
 
     # --- internals ------------------------------------------------------------------------------
 

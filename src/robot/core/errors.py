@@ -13,6 +13,7 @@ Hierarchy::
         |       `-- RobotSingularityRisk   (target too close to a singularity)
         +-- RobotEmergencyStop      (e-stop / protective stop active)
         +-- CameraWorldUnavailable  (a camera could not vouch for the cell after its attempts)
+        +-- PerceptionFrameMoved    (a wrist camera took no still pick frame after its attempts)
         `-- IsaacNotAvailableError  (sim/SDK backend not installed on this host)
 """
 
@@ -109,6 +110,34 @@ class CameraWorldUnavailable(RobotError):
         super().__init__(
             f"camera {self.camera!r} could not vouch for the cell after {self.attempts} reading(s) "
             f"({verdict}): {self.reason}"
+        )
+
+
+class PerceptionFrameMoved(RobotError):
+    """Raised when a wrist camera could not take a pick frame with the tool held still, after its attempts.
+
+    The frame is placed by where the tool stood when the shutter opened, and a frame taken while
+    the tool moved beyond the rig's shutter tolerance is placed by no single pose. The pick stops
+    rather than grasping at a place the camera never saw from: an arm that moves while a camera
+    takes the frame a pick is placed by is a fault of the cell.
+    """
+
+    def __init__(
+        self, *, camera: str, attempts: int, moved_mm: float, turned_deg: float, tolerance_mm: float,
+        tolerance_deg: float,
+    ) -> None:
+        #: The camera that could not take a still frame, as the cell names it.
+        self.camera = str(camera)
+        #: How many grabs were made, the first included.
+        self.attempts = int(attempts)
+        #: How far the tool moved and turned across the last grab.
+        self.moved_mm = float(moved_mm)
+        self.turned_deg = float(turned_deg)
+        super().__init__(
+            f"camera {self.camera!r} took {self.attempts} frame(s) and the tool moved across each grab, last by "
+            f"{self.moved_mm:.3f} mm and {self.turned_deg:.3f} deg against the rig's shutter tolerance of "
+            f"{float(tolerance_mm):g} mm and {float(tolerance_deg):g} deg, so no pose places a frame of it: the arm "
+            "has to hold still while this camera takes a pick frame"
         )
 
 

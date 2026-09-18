@@ -68,6 +68,15 @@ And one where a world has two cameras:
         and the plan stops. The second camera blind raises naming it after its fresh-frame attempts,
         and registers nothing. REQUIRED.
 
+And two where a motion leaves space out of the world it plans against:
+
+  7b.1  The wall both fixed cameras see stops the plan; held as a target box through ``keeping_out``
+        the plan goes through; forgotten, it stops the plan again. REQUIRED.
+  7e.1  A part drawn between the 2F-85's pads at the chain's goal stops the plan without the goal
+        region and plans with it, the refresh counting the points it left out and the stamp carrying
+        them; a post drawn where a finger closes still stops the plan with the region in force.
+        REQUIRED.
+
 A recorded step prints its numbers and the decision it feeds, and never changes the exit code: its
 answer is a measurement, not a pass.
 """
@@ -95,6 +104,7 @@ sys.path.insert(0, str(_ROOT))
 
 from src.config.schema.robot import RobotConfig  # noqa: E402
 from src.robot.core.errors import CameraWorldUnavailable  # noqa: E402
+from src.robot.core.keep_out import SegmentationOffer, keeping_out  # noqa: E402
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm  # noqa: E402
 from src.robot.safety.planning import CuroboUnavailableError  # noqa: E402
 from src.robot.safety.planning.curobo_client import CuroboPlanClient  # noqa: E402
@@ -804,6 +814,150 @@ def _step_two_cameras(client: CuroboPlanClient, tuning: WorldBuildTuning) -> dic
     return entry
 
 
+def _step_two_camera_target(client: CuroboPlanClient, tuning: WorldBuildTuning) -> dict[str, Any]:
+    """7b.1: a target both fixed cameras see plans with the held offer, and stops again once forgotten.
+
+    The wall stands for a part the pick is reaching into. Seen by both cameras it stops the plan.
+    Offered as a target box alone, held through ``keeping_out`` on an arm that carries the world, it
+    leaves both views and the plan goes through; after the block the world has the wall back and the
+    plan stops again.
+    """
+    from types import SimpleNamespace
+
+    world = LivePlannerWorld(
+        cameras=(
+            CameraView(name="overhead", depth_source=_FixedCamera(_CAMERA_X_MM), camera_to_base=_CAMERA_TO_BASE),
+            CameraView(name="side", depth_source=_FixedCamera(_SIDE_CAMERA_X_MM),
+                       camera_to_base=_camera_to_base_at(_SIDE_CAMERA_X_MM)),
+        ),
+        declared=(_BENCH,),
+        limits=_LIMITS,
+        tuning=tuning,
+        max_age_ms=5000.0,
+    )
+    arm = SimpleNamespace(live_planner_world=world)
+    half_t, half_w = _WALL_THICKNESS_MM / 2.0, _WALL_WIDTH_MM / 2.0
+    top = _block_points((_WALL_X_MM - half_t, -half_w, _WALL_HEIGHT_MM), (_WALL_X_MM + half_t, half_w, _WALL_HEIGHT_MM))
+    entry: dict[str, Any] = {}
+
+    client.set_voxels(None)
+    client.set_world([_BENCH])
+    seen = refresh_planner_world(source=world, client=client, self_envelope=_SELF)
+    entry["seen"] = seen.render()
+    entry["seen_plan_stopped"] = seen.ok and not _plan(client)
+
+    offer = SegmentationOffer(captured_at_s=time.time(), target_points_base_mm=top, target_label="wall")
+    with keeping_out(arm, offer) as scope:
+        world.drop_cached_frames()
+        held = refresh_planner_world(source=world, client=client, self_envelope=_SELF)
+        entry["held"] = held.render()
+        entry["held_world_wired"] = scope.world_wired
+        entry["held_plans"] = held.ok and bool(_plan(client))
+
+    world.drop_cached_frames()
+    after = refresh_planner_world(source=world, client=client, self_envelope=_SELF)
+    entry["forgotten"] = after.render()
+    entry["forgotten_plan_stopped"] = after.ok and not _plan(client)
+    entry["passed"] = bool(entry["seen_plan_stopped"] and entry["held_plans"] and entry["forgotten_plan_stopped"])
+    client.set_voxels(None)
+    client.set_world([_BENCH])
+    return entry
+
+
+class _PointsCamera:
+    """The mast camera over the bench, seeing ``points_base_mm`` as their nearest surface."""
+
+    def __init__(self, points_base_mm: np.ndarray) -> None:
+        self.depth = _Camera._bench()
+        points = np.asarray(points_base_mm, dtype=np.float64)
+        camera = (np.linalg.inv(_CAMERA_TO_BASE) @ np.column_stack([points, np.ones(len(points))]).T).T[:, :3]
+        cols = np.rint(_FX * camera[:, 0] / camera[:, 2] + _CX).astype(int)
+        rows = np.rint(_FY * camera[:, 1] / camera[:, 2] + _CY).astype(int)
+        seen = (camera[:, 2] > 0.0) & (cols >= 0) & (cols < _SHAPE[1]) & (rows >= 0) & (rows < _SHAPE[0])
+        np.minimum.at(self.depth, (rows[seen], cols[seen]), camera[seen, 2])
+
+    def grab_surface_depth(self) -> DepthSnapshot:
+        return DepthSnapshot(depth_mm=self.depth.copy(), intrinsics=_INTRINSICS, timestamp=time.time())
+
+
+def _local_block(box_to_base_mm: np.ndarray, x: Sequence[float], y: Sequence[float], z: Sequence[float]) -> np.ndarray:
+    """A solid block, 1 mm apart, spanning ``x``, ``y`` and ``z`` in a box's own axes, as BASE points."""
+    xs, ys, zs = np.meshgrid(*(np.arange(lo, hi + 1e-9, 1.0) for lo, hi in (x, y, z)), indexing="ij")
+    local = np.column_stack([xs.ravel(), ys.ravel(), zs.ravel(), np.ones(xs.size)])
+    return (box_to_base_mm @ local.T).T[:, :3]
+
+
+def _step_jaw_region(client: CuroboPlanClient, tuning: WorldBuildTuning, voxel_mm: float) -> dict[str, Any]:
+    """7e.1: a part between the pads at the goal leaves the world with the goal region, a post at a finger stays.
+
+    The goal is the chain's own flange goal, and its TCP is that goal on this cell's declared tool
+    frame, which is how a driver places the region. The part is drawn inside the region, 60 mm across
+    the closing axis, so the camera sees its top: without the region it is an obstacle the goal stands
+    in and the plan stops; with ``goal_keep_out`` the refresh leaves it out, counts the points, and the
+    plan goes through. The post is drawn 46 to 54 mm out along the closing axis, where a finger closes
+    and outside the region: with the region in force it still stops the plan.
+    """
+    from types import SimpleNamespace
+
+    from src.robot.drivers.ur.tool_frame import tool_frame_matrix
+    from src.robot.safety.planning.hand import planner_hand
+    from src.robot.safety.planning.self_envelope import goal_keep_out
+
+    cell = _probe_cell(voxel_mm)
+    frame = cell.gripper.tool_frame
+    flange = np.eye(4)
+    flange[:3, :3] = _quat_matrix(_GOAL_QUAT_WXYZ)
+    flange[:3, 3] = np.asarray(_GOAL_POS_M, dtype=np.float64) * 1000.0
+    tcp = flange @ tool_frame_matrix(frame.offset_mm, frame.rotation_quat_xyzw)
+    hand = planner_hand(cell)
+    goal = goal_keep_out(SimpleNamespace(planner_hand=lambda arm=None: hand), None, tcp)
+    entry: dict[str, Any] = {"tcp_mm": [round(float(v), 2) for v in tcp[:3, 3]], "reason": goal.reason}
+    if goal.region is None:
+        entry["passed"] = False
+        return entry
+    entry["region"] = goal.region.render()
+    part = _local_block(goal.region.matrix(), (-30.0, 30.0), (-10.0, 10.0), (-15.0, 15.0))
+    post = _local_block(goal.region.matrix(), (46.0, 54.0), (-10.0, 10.0), (-15.0, 15.0))
+    entry["part_inside_region"] = bool(goal.region.contains(part).all())
+    entry["post_outside_region"] = not bool(goal.region.contains(post).any())
+
+    def world(points: np.ndarray) -> LivePlannerWorld:
+        return LivePlannerWorld(
+            cameras=(CameraView(name="overhead", depth_source=_PointsCamera(points), camera_to_base=_CAMERA_TO_BASE),),
+            declared=(_BENCH,),
+            limits=_LIMITS,
+            tuning=tuning,
+            max_age_ms=5000.0,
+        )
+
+    client.set_voxels(None)
+    client.set_world([_BENCH])
+    bare = refresh_planner_world(source=world(part), client=client, self_envelope=_SELF)
+    entry["without_region"] = bare.render()
+    entry["without_region_plan_stopped"] = bare.ok and not _plan(client)
+
+    kept = refresh_planner_world(source=world(part), client=client, self_envelope=_SELF, goal_keep_out=goal)
+    stamp = kept.camera_world()
+    entry["with_region"] = kept.render()
+    entry["goal_points"] = None if kept.keep_out is None else kept.keep_out.goal_points
+    entry["stamp"] = None if stamp is None else stamp.render()
+    entry["with_region_plans"] = kept.ok and bool(_plan(client))
+
+    finger = refresh_planner_world(source=world(np.vstack([part, post])), client=client, self_envelope=_SELF,
+                                   goal_keep_out=goal)
+    entry["post_at_a_finger"] = finger.render()
+    entry["post_plan_stopped"] = finger.ok and not _plan(client)
+    entry["passed"] = bool(
+        entry["part_inside_region"] and entry["post_outside_region"]
+        and entry["without_region_plan_stopped"] and entry["with_region_plans"] and entry["post_plan_stopped"]
+        and (entry["goal_points"] or 0) > 0
+        and stamp is not None and stamp.keep_out is not None
+    )
+    client.set_voxels(None)
+    client.set_world([_BENCH])
+    return entry
+
+
 def _step_sign(
     client: CuroboPlanClient, extent: "tuple[tuple[float, float, float], float]"
 ) -> dict[str, Any]:
@@ -1095,12 +1249,14 @@ def main(argv: "list[str] | None" = None) -> int:
         steps.update(_step_camera_faults(client, tuning))
         steps["5e.1"] = _step_wrist_camera(client, tuning)
         steps["5f.1"] = _step_two_cameras(client, tuning)
+        steps["7b.1"] = _step_two_camera_target(client, tuning)
+        steps["7e.1"] = _step_jaw_region(client, tuning, args.voxel_mm)
         steps["4a.7"] = _step_hand(client)
     finally:
         logging.getLogger("CuroboPlanClient").setLevel(logging.INFO)
         client.close()
 
-    required = ("4a.1", "4a.2", "4a.3", "4a.6", "4a.9", "4e.1", "4e.2", "4e.3", "5e.1", "5f.1")
+    required = ("4a.1", "4a.2", "4a.3", "4a.6", "4a.9", "4e.1", "4e.2", "4e.3", "5e.1", "5f.1", "7b.1", "7e.1")
     report["steps"] = steps
     failing = [k for k in required if steps[k].get("passed") is False]
     report["required_failing"] = failing

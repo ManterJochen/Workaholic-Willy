@@ -9,7 +9,7 @@ run one attempt or a campaign of them.
 Everything here drives a robot through the `RobotArm` and `Gripper` Protocols in
 [`robot/core`](../core/README.md), so one body of code drives a UR arm, a KUKA arm, the Isaac
 simulator backend or the dummy driver. No vendor SDK is imported at module top level; importing
-this package loads none of them, because its 23 public names resolve lazily on first attribute
+this package loads none of them, because its 28 public names resolve lazily on first attribute
 access.
 
 Order is enforced rather than described. Preflight before build, because a blocking configuration
@@ -27,7 +27,7 @@ seam refuses a query that is not in `Frame.BASE`.
 
 | File or subpackage | Role |
 | --- | --- |
-| `__init__.py` | The lazy re-export surface. Exactly 23 top-level names, listed below. |
+| `__init__.py` | The lazy re-export surface. Exactly 28 top-level names, listed below. |
 | `cell.py` | `Cell`: a cell as one noun, with four steps in the order that makes them safe. `preflight()` needs no hardware, `build()` is idempotent, `safety()` needs a build but commands nothing, `connected()` is the only step that touches a cell. Narration is the caller's: the steps are separate methods. |
 | `pick_run.py` | `PickRun`, `PickRunReport`, `PassRule`, `Recording`, `PickAttempt`, `PickOutcome`: N picks under one connect, one verdict over them, one frozen report. |
 | `lifecycle.py` | `connect_cell` / `disconnect_cell` / `ConnectedCell` / `TeardownReport` / `NoRealGripper`. Bringing a cell up is a transaction: a gripper that refuses rolls the arm back, and a cell whose end-effector could not be built is refused before the arm is commanded. Teardown reports, never raises, and is never silent. |
@@ -36,13 +36,17 @@ seam refuses a query that is not in `Frame.BASE`.
 | `ik_service.py` | `RobotArmIKService` (the only place grasping reaches a controller for reachability), `CachedIKService` (an LRU quantiser), `URAnalyticIKService` (optional offline analytic IK). |
 | `runtime_pick.py` | `RuntimePickService`, `PickSessionReport`, `PickTimings`. `from_robot_config` takes its arm and gripper from `robot_parts.py`. |
 | `robot_parts.py` | `resolve_arm` and `build_gripper`: the arm and the gripper a `RobotConfig` describes, with the readiness gate and every `NullGripper` substitution, built without a pick service. Plus `build_sim_driver_config`, the single Pydantic-to-driver `SimRobotConfig` conversion that `resolve_arm` and the simulator runners share. It imports none of the grasping stack. |
-| `robot.py` | `Robot`: the arm and the gripper as one noun, with no pick service. `from_config(robot_config, gripper=UNSET)` builds both through `robot_parts.py` (`gripper=None` builds the arm alone), `from_parts(arm=, gripper=, lock_key=UNSET)` wraps handles already built and refuses an arm with a controller of its own when no lock key derives, `connected()` takes the `CellLock` and runs the enter and exit `ConnectedCell` runs (`lifecycle.py`), `safety()` reads the built arm, and `without_camera_world(reason)` declines the camera world for every motion of the robot's arm inside a `with` block, bound to that arm. A sibling of `Cell`, which still builds through the pick service. The real-cell calibration command builds its arm this way, with `gripper=None`. |
+| `robot.py` | `Robot`: the arm and the gripper as one noun, with no pick service. `from_config(robot_config, gripper=UNSET)` builds both through `robot_parts.py` (`gripper=None` builds the arm alone), `from_parts(arm=, gripper=, lock_key=UNSET)` wraps handles already built and refuses an arm with a controller of its own when no lock key derives, `connected()` takes the `CellLock` and runs the enter and exit `ConnectedCell` runs (`lifecycle.py`), `cameras=UNSET` on both factories takes open camera owners (primary first), builds the live planner world from them under the tree's planning block (`robot_config`, else `arm.config`), hands it to the arm's `set_live_planner_world` and keeps it as `camera_world`; the robot never opens or releases a camera, and `camera_world_line()` says what the arm holds. The wrist cameras among those cameras are resolved first (`wrist_bodies.py`) and handed to the arm, and `wrist_body_line()` names them. `safety()` reads the built arm, and `without_camera_world(reason)` declines the camera world for every motion of the robot's arm inside a `with` block, bound to that arm. `grasp(width_mm)`, `release()` and `is_holding()` are the hand verbs, and `pick` and `place` put them at the end of a straight line; all five delegate to `handling.py`. A sibling of `Cell`, which still builds through the pick service. The real-cell calibration command builds its arm this way, with `gripper=None`. |
+| `handling.py` | The hand verbs `Robot` delegates to, and `pick` and `place` built on them (`HandlingReport`, `HandlingOutcome`). `grasp(robot, width_mm)` commands the width with no force, reads back the width, whether it was measured and the gripper's `HoldEvidence`, and hands a held or unmeasured hold to the arm's `CarriesPayload` model; a measured empty close attaches nothing. `release(robot)` opens to `max_width_mm` and detaches unless the gripper still measures a part (`RELEASE_NOT_CONFIRMED`). `is_holding(robot)` commands nothing. A gripper that raises is stopped once and reported as `GRIPPER_FAULT`; no gripper, a gripper that holds nothing or a closed link is `REFUSED` with nothing commanded. Each returns a frozen `HandReport` (`render()`, `to_dict()`). It imports nothing above `robot.core`. |
+| `wrist_bodies.py` | `WristBodies.from_config(robot_cfg, camera_cfg, data_dir=None)` and `.from_owners(robot_cfg, owners)`: the wrist cameras a cell's arm carries, as `body_link.WristBody` values, resolved once for the real cell build, `Robot`, `PlannerStart`, the calibration command and the desk row. Only a cell whose planner is cuRobo or whose guard reads hand geometry resolves any. `WristBodyRequired` refuses an enabled eye_in_hand rig without a body, a body nothing places, a calibration without its flange to TCP record or with one the cell no longer holds, and a camera the repository's registry does not stand for. `hand_to(arm)` hands them over through `set_wrist_bodies`. |
+| `planner_start.py` | `PlannerStart.from_robot_config(robot_config, data_dir=None, camera=UNSET).run()` builds a real UR arm alone and starts its cuRobo planner through the driver's own `start_planner()`, the path the first planned move takes, then stops it. The frozen `PlannerStartReport` says whether it started, what the sidecar loaded and which evidence file admits it, or the refusal verbatim (`exit_code` 0 or 1). No camera opened, no controller. Handed the camera section, it resolves the wrist cameras first and starts the planner with them, and the report's `wrist_bodies` line names them. `Cell.start_planner()` (with its tree's camera section) and `real_cell --start-planner` call it. |
 | `cell_lock.py` | `CellLock`, `CellBusy`, `cell_lock_key`: one owner per cell, keyed on the controller address. The command-line runner and the operator console take the same lock. |
 | `calibration_watchdog.py` | Pure-function drift and out-of-distribution evaluators. Stateless: the rolling history lives on the service. |
 | [`autonomous_grasp/`](autonomous_grasp/README.md) | `AutonomousGraspService`, the composition root: mode selection, the fail-closed decision gate, uncertainty fusion, the drift watchdog, latency telemetry, the reinforcement-learning shadow router, the bounded recovery loop, and the two cell builders. |
 | [`real_cell/`](real_cell/README.md) | `python -m src.robot.execution.real_cell`: the command-line surface over `Cell` and `PickRun`, plus the configuration preflight and the per-camera hand-eye calibration a real cell needs. |
 
-The 23 lazy names: `Robot`, `PassRule`, `PickAttempt`, `PickOutcome`, `PickRun`, `PickRunReport`,
+The 28 lazy names: `Robot`, `HandReport`, `HandOutcome`, `PayloadState`, `HandlingReport`,
+`HandlingOutcome`, `PassRule`, `PickAttempt`, `PickOutcome`, `PickRun`, `PickRunReport`,
 `Recording`, `PoseProvider`, `CalibrationRoutine`, `CalibrationResult`, `MarkerPoseProvider`,
 `RobotArmIKService`, `CachedIKService`, `URAnalyticIKService`, `PickSessionReport`, `PickTimings`,
 `RuntimePickService`, `AutonomousGraspService`, `AutonomousGraspReport`, `AutonomousGraspOutcome`,
@@ -85,8 +89,18 @@ from src.robot.execution import Robot
 robot = Robot.from_config(load_robot_section())   # gripper=None builds the arm alone
 print(robot.safety().render())
 with robot.connected() as live:                   # lock, arm, then gripper
-    live.gripper.set_width_mm(40.0)
+    print(robot.grasp(40.0).render())             # close, read the hold, model the part
+    print(robot.release().render())
+    picked = robot.pick(grasp_pose, 40.0)         # standoff, a line in, grasp, a line out
+    print(picked.render())
 ```
+
+`pick(pose, width_mm, *, standoff_mm=80.0, squeeze_mm=1.0, pre_open_mm=UNSET, camera_world=UNSET,
+keep_out=UNSET)` and `place(pose, *, standoff_mm=80.0, camera_world=UNSET)` refuse before any command a
+robot with no usable gripper, a closed link, a pose not in BASE, a camera world the arm would refuse
+(`ReadsCameraWorld`) and an arm that keeps no line or does not say (`KeepsLines`). Then they drive a
+planned standoff, a line in, the hand verb and a line out, each motion after the arm's own steady gate
+where its tree asks for one, and return a frozen `HandlingReport`.
 
 ## Traps
 

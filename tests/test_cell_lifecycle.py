@@ -311,6 +311,7 @@ class NeitherCallerWritesTheOrderTests(unittest.TestCase):
         "src/robot/execution/real_cell/__main__.py",
         "src/robot/execution/real_cell/calibrate.py",
         "src/robot/execution/robot.py",
+        "src/robot/execution/handling.py",
     )
 
     @staticmethod

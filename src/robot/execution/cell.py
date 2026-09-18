@@ -34,6 +34,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 
     from src.config.schema import AppConfig
     from src.config.schema.robot import RobotConfig
+    from src.robot.execution.planner_start import PlannerStartReport
 
 __all__ = ["Cell", "CellNotBuilt"]
 
@@ -87,8 +88,10 @@ class Cell:
     app_config: "Maybe[AppConfig]" = UNSET
     #: A dummy arm and a synthetic scene: the whole path at a desk, no camera, no robot.
     is_rehearsal: bool = False
-    #: The config tree ``robot_config`` came from, whose gripper registry answers for the cell's hand.
-    #: ``None`` is the repository's tree, which is what a caller loading the default tree gets.
+    #: The config tree ``robot_config`` came from. ``None`` is the repository's tree, which is what a
+    #: caller loading the default tree gets. The hand resolves from the repository's registry either
+    #: way; a tree whose own ``grippers/`` describes the named hand differently is refused at the desk
+    #: and at the build.
     data_dir: "str | Path | None" = None
     _service: Any = field(default=None, repr=False)
 
@@ -134,11 +137,27 @@ class Cell:
         Touches no hardware and needs no build, which is what makes it the first step.
         """
         # The camera half of the same tree, because a cell's CAMERA to BASE is declared on its
-        # primary rig. With no tree supplied it is the default tree, the one `build` would open.
+        # primary rig. With no tree supplied it is the tree at `data_dir`, and the default tree, the
+        # one `build` would open, when that is `None`.
         from src.config import load_config  # noqa: PLC0415
 
-        app_config = self.app_config if chosen(self.app_config) else load_config()
-        return run_config_preflight(self.robot_config, camera=app_config.camera)
+        app_config = self.app_config if chosen(self.app_config) else load_config(self.data_dir)
+        return run_config_preflight(self.robot_config, camera=app_config.camera, data_dir=self.data_dir)
+
+    def start_planner(self) -> "PlannerStartReport":
+        """Start this cell's planner through its driver, with every refusal its first planned move meets, and stop it.
+
+        Builds the arm alone, opens no camera and asks no controller, so it belongs beside the
+        preflight rather than after the build: a customer's combination is proven to start at a desk.
+        """
+        from src.config import load_config  # noqa: PLC0415
+        from src.robot.execution.planner_start import PlannerStart  # noqa: PLC0415
+
+        # The camera half of the same tree, as the preflight reads it: its rigs say which wrist
+        # cameras the arm carries, and the planner starts with them.
+        app_config = self.app_config if chosen(self.app_config) else load_config(self.data_dir)
+        return PlannerStart.from_robot_config(self.robot_config, data_dir=self.data_dir,
+                                              camera=app_config.camera).run()
 
     def build(self) -> Any:
         """Construct the service: drivers, perception, the grasp stack. Idempotent.

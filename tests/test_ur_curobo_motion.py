@@ -8,12 +8,15 @@ and every fail-closed branch (no env / no plan / not connected / moveJ reject / 
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
 from src.geometry import Frame, Pose
 from src.robot.core import MotionStatus
 from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES, CuroboUrPlanner
+from src.robot.drivers.ur.planner_frame import planner_pose
 from src.robot.safety.planning import CuroboUnavailableError, JointCheckVerdict
 
 
@@ -213,13 +216,15 @@ def test_move_converts_goal_and_executes_waypoints() -> None:
     traj = [[0.0, 0.1, 0.2, 0.3, 0.4, 0.5], [0.6, 0.7, 0.8, 0.9, 1.0, 1.1]]
     client = _FakeClient(UR_ARM_JOINT_NAMES, traj)
     conn = _FakeConn([1, 2, 3, 4, 5, 6])
-    result = _planner(conn, client).move(_pose())
+    planner = _planner(conn, client)
+    result = planner.execute(planner.plan(_pose()), _pose())
 
     assert result.status is MotionStatus.EXECUTED
-    # goal: mm→m and XYZW[0,0,0,1] → WXYZ[1,0,0,0].
+    # goal: mm→m and XYZW[0,0,0,1] → WXYZ[1,0,0,0], then into the planner's base, half a turn about Z from the
+    # controller's (Step 8f): this test pinned the goal unturned, which is the goal mirrored through the base axis.
     start, pos_m, quat_wxyz = client.plan_args
-    assert pos_m == pytest.approx([0.1, 0.2, 0.3])
-    assert quat_wxyz == pytest.approx([1.0, 0.0, 0.0, 0.0])
+    assert pos_m == pytest.approx([-0.1, -0.2, 0.3])
+    assert quat_wxyz == pytest.approx([0.0, 0.0, 0.0, 1.0])
     assert start == pytest.approx([1, 2, 3, 4, 5, 6])  # identity remap (names == UR order)
     # both waypoints executed via moveJ, in order.
     assert conn.moves == [pytest.approx(traj[0]), pytest.approx(traj[1])]
@@ -231,7 +236,8 @@ def test_joint_order_remap_when_client_names_permuted() -> None:
     traj = [[10.0, 11.0, 12.0, 13.0, 14.0, 15.0]]  # in permuted (reversed) order
     client = _FakeClient(permuted, traj)
     conn = _FakeConn([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])  # UR order
-    result = _planner(conn, client).move(_pose())
+    planner = _planner(conn, client)
+    result = planner.execute(planner.plan(_pose()), _pose())
 
     assert result.status is MotionStatus.EXECUTED
     # start sent to the planner is the UR-order current joints reordered into planner (reversed) order.
@@ -244,16 +250,15 @@ def test_joint_order_remap_when_client_names_permuted() -> None:
 def test_fail_closed_when_env_unavailable() -> None:
     client = _FakeClient(UR_ARM_JOINT_NAMES, [], unavailable=True)
     conn = _FakeConn([0] * 6)
-    result = _planner(conn, client).move(_pose())
-    assert result.status is MotionStatus.CONTROLLER_REJECTED
+    with pytest.raises(CuroboUnavailableError):
+        _planner(conn, client).plan(_pose())
     assert conn.moves == []  # no blind motion
 
 
 def test_fail_closed_when_no_plan() -> None:
     client = _FakeClient(UR_ARM_JOINT_NAMES, None)  # cuRobo found nothing
     conn = _FakeConn([0] * 6)
-    result = _planner(conn, client).move(_pose())
-    assert result.status is MotionStatus.TIMEOUT
+    assert not _planner(conn, client).plan(_pose())
     assert conn.moves == []
 
 
@@ -276,9 +281,9 @@ def test_a_refused_plan_says_which_links_touched_and_still_fails_safe() -> None:
     planner = _planner(conn, client)
 
     with mock.patch.object(planner.logger, "warning") as warned:
-        result = planner.move(_pose())
+        planned = planner.plan(_pose())
 
-    assert result.status is MotionStatus.TIMEOUT
+    assert not planned
     assert conn.moves == []
     assert planner.last_refusal is client.last_refusal
     said = " ".join(str(call) for call in warned.call_args_list)
@@ -290,37 +295,22 @@ def test_a_client_that_names_no_refusal_is_the_planner_it_always_was() -> None:
     client = _FakeClient(UR_ARM_JOINT_NAMES, None)
     assert not hasattr(client, "last_refusal")
     planner = _planner(_FakeConn([0] * 6), client)
-    assert planner.move(_pose()).status is MotionStatus.TIMEOUT
+    assert not planner.plan(_pose())
     assert planner.last_refusal is None
-
-
-def test_fail_when_not_connected() -> None:
-    client = _FakeClient(UR_ARM_JOINT_NAMES, [[0] * 6])
-    conn = _FakeConn([0] * 6, connected=False)
-    result = _planner(conn, client).move(_pose())
-    assert result.status is MotionStatus.CONNECTION_ERROR
 
 
 def test_reject_when_movej_returns_false() -> None:
     client = _FakeClient(UR_ARM_JOINT_NAMES, [[0] * 6])
     conn = _FakeConn([0] * 6, move_ok=False)
-    result = _planner(conn, client).move(_pose())
+    result = _planner(conn, client).execute([[0.0] * 6], _pose())
     assert result.status is MotionStatus.CONTROLLER_REJECTED
 
 
 def test_connection_error_when_movej_raises() -> None:
     client = _FakeClient(UR_ARM_JOINT_NAMES, [[0] * 6])
     conn = _FakeConn([0] * 6, raise_move=True)
-    result = _planner(conn, client).move(_pose())
+    result = _planner(conn, client).execute([[0.0] * 6], _pose())
     assert result.status is MotionStatus.CONNECTION_ERROR
-
-
-def test_invalid_frame_rejected() -> None:
-    client = _FakeClient(UR_ARM_JOINT_NAMES, [[0] * 6])
-    conn = _FakeConn([0] * 6)
-    bad = Pose.identity(Frame.CAMERA, label="cam")
-    result = _planner(conn, client).move(bad)
-    assert result.status is MotionStatus.INVALID_TARGET
 
 
 def test_set_world_and_close() -> None:
@@ -343,7 +333,7 @@ def test_a_joint_path_is_checked_against_the_registered_world() -> None:
     """Start, register the declared world, then ask. Nothing is sent to the controller."""
     client = _FakeClient(UR_ARM_JOINT_NAMES, [])
     conn = _FakeConn([1, 2, 3, 4, 5, 6])
-    bench = [{"name": "bench", "dims": [1.0, 1.0, 0.1], "pose": [0, 0, 0, 1, 0, 0, 0]}]
+    bench: list[dict[str, Any]] = [{"name": "bench", "dims": [1.0, 1.0, 0.1], "pose": [0, 0, 0, 1, 0, 0, 0]}]
     planner = CuroboUrPlanner(
         conn, client_factory=lambda: client, world_cuboids=bench, require_registration=False
     )
@@ -351,7 +341,9 @@ def test_a_joint_path_is_checked_against_the_registered_world() -> None:
 
     assert verdict.valid
     assert client.calls == ["start", "set_world", "check_joints"], client.calls
-    assert client.world == bench, "the check ran against a world the planner never got"
+    # In the planner's base, half a turn about Z from the controller's (Step 8f).
+    turned = [dict(box, pose=planner_pose(box["pose"])) for box in bench]
+    assert client.world == turned, "the check ran against a world the planner never got"
     assert conn.moves == [], "checking a path commanded a motion"
     assert client.checked == [[0.0] * 6, [0.1] * 6]
 

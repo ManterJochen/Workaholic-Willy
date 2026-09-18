@@ -39,7 +39,7 @@ _GOOD_FRAME = {"source": "willy", "offset_mm": [0.0, 132.0, 0.0],
 def _cell(hand: str, *, model: str = "ur5e", margin: float = 4.0, plates=None) -> RobotConfig:
     gripper: dict = {"model": hand, "tool_frame": _GOOD_FRAME}
     if plates is not None:
-        gripper["coupling_plates_mm"] = list(plates)
+        gripper["coupling_plates"] = [{"name": f"plate_{i}", "thickness_mm": float(mm)} for i, mm in enumerate(plates)]
     return RobotConfig.model_validate({
         "vendor": "ur",
         "ur": {"model": model, "motion_planner": "curobo"},

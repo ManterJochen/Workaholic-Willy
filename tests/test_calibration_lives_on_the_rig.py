@@ -157,7 +157,7 @@ class ThePrimaryResolverFollowsItsRigTests(unittest.TestCase):
 
 
 class OneLoaderOpensEveryArtifactTests(unittest.TestCase):
-    _LOADERS = {"load_extrinsics", "load_cam_to_tool"}
+    _LOADERS = {"load_extrinsics", "load_cam_to_tool", "load_cam_to_tool_artifact"}
     _ONLY = "src/calibration/rig_calibration.py"
 
     @classmethod

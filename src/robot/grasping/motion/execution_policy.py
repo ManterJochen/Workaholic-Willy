@@ -25,7 +25,6 @@ This module imports no vendor driver. It talks only to the
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import cast
@@ -43,6 +42,8 @@ from src.robot.core import (
     ObjectDetectingGripper,
     RobotArm,
 )
+from src.robot.core.arm_capabilities import LineMotion, line_motion_of
+from src.robot.core.camera_world import weakest_camera_world
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 
@@ -79,20 +80,6 @@ class PolicyOutcome(str, Enum):
     The dense-mode approach-validation fallback in the orchestrator surfaces this. No motion was
     commanded.
     """
-
-
-def weakest_camera_world(stamps: Sequence[CameraWorldStamp]) -> CameraWorldStamp | None:
-    """The camera-world stamp a report reads for a run of motions.
-
-    The first stamp in command order that does not vouch answers, because one approach planned
-    with no camera world is what a reader of the whole pick has to see, however many motions
-    around it were planned. When every stamp vouches, the last one answers. ``None`` when no
-    typed motion was commanded.
-    """
-    for stamp in stamps:
-        if not stamp.vouched:
-            return stamp
-    return stamps[-1] if stamps else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +122,10 @@ class PolicyReport:
     motion_status: MotionStatus | None = None
     motion_message: str = ""
     camera_worlds: tuple[CameraWorldStamp, ...] = ()
+    #: What the arm said it keeps of a straight line, read before anything was commanded. ``None``
+    #: for an arm that does not say, which keeps the interpolated approach. Not carried into the
+    #: grasp record.
+    line_motion: LineMotion | None = None
 
     @property
     def camera_world(self) -> CameraWorldStamp | None:
@@ -222,14 +213,6 @@ class GraspExecutionPolicy:
     # only: YCB, with its fixed graspable axis, needs a shape-aware yaw to the nearest reachable
     # orientation instead.
     align_closing_to_base_x: bool = False
-    # When True the approach is driven as a single goal, the grasp pose itself, so the global planner
-    # (cuRobo) plans the whole collision-free descent instead of tracking the interpolated waypoints
-    # from standoff to grasp. The waypoint decomposition is a blind-IK construct: cuRobo plans each tiny
-    # segment in isolation and the final tight one near the obstacles returns no plan, whereas one goal
-    # from park to grasp solves, measured as mp_l2_reach park to grasp EXECUTED against NONE for the
-    # per-segment descent. The default False drives every approach waypoint. The gripper is still
-    # pre-opened before the move and the retreat lifts are unchanged.
-    planner_owns_approach: bool = False
 
     def __post_init__(self) -> None:
         if self.approach_steps < 2:
@@ -262,6 +245,22 @@ class GraspExecutionPolicy:
                     "FrameResolver wired (require_base_frame_grasp=True)"
                 ),
             )
+        # What the arm keeps of a straight line, read once before anything is commanded. An arm that
+        # says it keeps lines gets a planned move to the standoff, one line to the grasp and line
+        # lifts: the final descent is the motion a finger meets a part or a wall on, and it must not
+        # be planned around the part it reaches into. An arm that keeps none is refused here, before
+        # the pre-open, as the robot's hand verbs refuse it. An arm that does not say keeps the
+        # interpolated waypoints.
+        reading = line_motion_of(self.arm)
+        line_motion = None if reading is None else reading.motion
+        if reading is not None and reading.motion is LineMotion.NOT_KEPT:
+            return PolicyReport(
+                outcome=PolicyOutcome.MOTION_FAILED,
+                waypoints=(),
+                motion_status=MotionStatus.UNSUPPORTED,
+                motion_message=f"this arm keeps no straight line for the final descent: {reading.reason}",
+                line_motion=line_motion,
+            )
         # Forget any part from a previous pick. Detaching here rather than on release means a
         # stale attachment cannot survive a failed pick, a recovery, or a runner that never released:
         # the planner is only ever told about a part between a confirmed close and the next attempt.
@@ -286,14 +285,13 @@ class GraspExecutionPolicy:
         # a failed pick still says what stood behind the motion that failed.
         stamps: list[CameraWorldStamp] = []
         approach = waypoints[:-self.retreat_steps]  # all but the retreat lift(s)
-        if self.planner_owns_approach:
-            # cuRobo plans the full collision-free descent to the grasp itself, so only the grasp is
-            # driven, as the last approach waypoint, and the interpolated standoff and approach
-            # segments the blind-IK path needs are skipped.
-            approach = approach[-1:]
-        for pose in approach:
+        legs: list[tuple[Pose, bool]] = [(pose, False) for pose in approach]
+        if reading is not None:
+            # The standoff, planned, then one line to the grasp.
+            legs = [(approach[0], False), (approach[-1], True)]
+        for pose, linear in legs:
             try:
-                result = self._drive_to(pose)
+                result = self._drive_to(pose, linear=linear)
             except CameraWorldUnavailable:
                 # A camera that could not vouch for the cell is a fault of the cell, so it leaves the
                 # pick and PickRun stops the campaign on it rather than retrying a grasp.
@@ -306,6 +304,7 @@ class GraspExecutionPolicy:
                     motion_status=last_status,
                     motion_message=last_message,
                     camera_worlds=tuple(stamps),
+                    line_motion=line_motion,
                 )
             if result is not None:
                 last_status = result.status
@@ -319,6 +318,7 @@ class GraspExecutionPolicy:
                         motion_status=result.status,
                         motion_message=result.message,
                         camera_worlds=tuple(stamps),
+                        line_motion=line_motion,
                     )
             commanded.append(pose)
 
@@ -341,6 +341,7 @@ class GraspExecutionPolicy:
                         motion_status=last_status,
                         motion_message=last_message,
                         camera_worlds=tuple(stamps),
+                        line_motion=line_motion,
                     )
 
         # The planner learns what it is carrying, before the first motion that carries it. A lift,
@@ -348,17 +349,17 @@ class GraspExecutionPolicy:
         # part out of a bin that part is the geometry most likely to meet a wall.
         attach = getattr(self.arm, "attach_payload", None)
         if callable(attach):
-            # ⛔ THE COMMANDED WIDTH IS NOT THE WIDTH OF THE PART. On the adaptive branch the command
-            # is `grip_width - close_squeeze_mm`, a number the jaws deliberately never reach, so the
-            # planner was carrying the size of something that was never measured. Reading the jaws is
-            # a real measurement and, since a close now waits for the fingers, a settled one.
+            # The commanded width is not the width of the part. On the adaptive branch the command
+            # is `grip_width` less `close_squeeze_mm`, a number the jaws never reach by design, so it
+            # is the size of something nobody measured. Reading the jaws is a measurement and, since
+            # a close waits for the fingers, a settled one.
             attach(self._measured_or_commanded_width(grasp))
 
         # Retreat: command each interpolated lift waypoint, one per retreat_step; the default of 1 is
         # the single full lift.
         for pose in waypoints[-self.retreat_steps:]:
             try:
-                result = self._drive_to(pose)
+                result = self._drive_to(pose, linear=reading is not None)
             except CameraWorldUnavailable:
                 raise  # out of the pick, for the reason the approach gives
             except Exception as exc:  # noqa: BLE001 (propagate via report)
@@ -370,6 +371,7 @@ class GraspExecutionPolicy:
                     motion_status=last_status,
                     motion_message=last_message,
                     camera_worlds=tuple(stamps),
+                    line_motion=line_motion,
                 )
             if result is not None:
                 last_status = result.status
@@ -384,6 +386,7 @@ class GraspExecutionPolicy:
                         motion_status=result.status,
                         motion_message=result.message,
                         camera_worlds=tuple(stamps),
+                        line_motion=line_motion,
                     )
             commanded.append(pose)
 
@@ -394,13 +397,14 @@ class GraspExecutionPolicy:
             motion_status=last_status,
             motion_message=last_message,
             camera_worlds=tuple(stamps),
+            line_motion=line_motion,
         )
 
     # ------------------------------------------------------------------
     # Motion adapter
     # ------------------------------------------------------------------
 
-    def _drive_to(self, pose: Pose) -> MotionResult | None:
+    def _drive_to(self, pose: Pose, *, linear: bool = False) -> MotionResult | None:
         """Drive ``arm`` to ``pose`` via the best available surface.
 
         Prefers the typed :meth:`RobotArm.move` contract, which every
@@ -432,7 +436,8 @@ class GraspExecutionPolicy:
                 )
         typed_move = getattr(self.arm, "move", None)
         if callable(typed_move):
-            return typed_move(pose)
+            # Only a line passes the keyword, so a planned move is the plain call any arm accepts.
+            return typed_move(pose, linear=True) if linear else typed_move(pose)
         self.arm.move_to(pose)
         return None
 
@@ -444,7 +449,7 @@ class GraspExecutionPolicy:
         """What the jaws actually hold, falling back to what they were told.
 
         The fallback is not a nicety: a gripper that cannot report a width, or one whose read fails
-        mid-cell, must still attach SOMETHING or the planner goes back to lifting the part as if the
+        mid-cell, must still attach something or the planner goes back to lifting the part as if the
         hand were empty. A commanded width is a worse number than a measured one and a much better
         number than none.
         """
@@ -452,7 +457,7 @@ class GraspExecutionPolicy:
         if callable(read):
             try:
                 measured = float(read())
-            except Exception:  # noqa: BLE001 - a failed read is not a failed pick
+            except Exception:  # noqa: BLE001 (a failed read is not a failed pick)
                 measured = float("nan")
             if measured == measured and measured > 0.0:  # not NaN
                 return measured

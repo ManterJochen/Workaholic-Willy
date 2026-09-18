@@ -218,6 +218,7 @@ def load_robot_section(
     # The whole-tree order: the file first, then the overlay, which can supply a robot block the
     # file does not have.
     _apply_env_adaptation_overlay(raw)
+    _apply_named_hand(raw, root, chain)
     if raw.get("robot") is None:
         raise ConfigError(
             f"there is no robot section: {path} and its profile overlays are absent or leave the "
@@ -377,6 +378,31 @@ def _validate_section(
         raise ConfigError(_describe_validation_error(exc, root, profile, prefix=prefix)) from exc
 
 
+def _apply_named_hand(raw: dict[str, Any], root: Path, profile: str) -> None:
+    """A named hand supplies its unset widths and envelope, and a contradiction is refused.
+
+    It runs after every merge and overlay, so what a profile leaves unset is what the chain as a
+    whole leaves unset, and before validation, so the schema judges the numbers the cell will run.
+    Both doors call it: the whole tree and the robot section. The numbers come from the repository
+    registry whatever tree is loaded, because that registry is the one authority: a tree's own
+    grippers/ may repeat a hand, and the validator and the desk refuse one that differs.
+    """
+    if raw.get("robot") is None:
+        return
+    from .hand_numbers import apply_named_hand
+
+    def stated_in() -> dict[str, str]:
+        try:
+            from ._provenance import index_origins
+
+            return {key: origin.location(root) for key, origin in index_origins(root, profile_layers(profile)).items()
+                    if key.startswith("robot.")}
+        except Exception:  # noqa: BLE001 (where a number was written is for the sentence; never mask the refusal)
+            return {}
+
+    raw["robot"] = apply_named_hand(raw["robot"], stated_in=stated_in, data_dir=root)
+
+
 @lru_cache(maxsize=8)
 def _load_cached(root_str: str, profile: str) -> AppConfig:
     root = Path(root_str)
@@ -391,6 +417,7 @@ def _load_cached(root_str: str, profile: str) -> AppConfig:
         raw["robot"] = robot
 
     _apply_env_adaptation_overlay(raw)
+    _apply_named_hand(raw, root, profile)
 
     runtime = _load_optional_section(root / "app" / "runtime.yaml", "runtime", profile)
     if runtime is not None:

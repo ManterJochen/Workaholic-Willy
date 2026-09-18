@@ -31,6 +31,7 @@ import numpy as np
 from src.willy_sim.gso_assets import GSO_BY_LABEL, SUCTION_TARGET_LABELS, gso_object_spec
 from src.willy_sim.harness.bootstrap import bootstrap_sim_cell
 from src.willy_sim.harness.gate import GateResult, gate_passed
+from src.robot.core.camera_world import CameraWorldDecline
 
 # A generous "the object rose with the cup" bound: a real seal lifts it to ~the retreat height; a much larger
 # jump is a physics fling (the descent rammed it). Separates a genuine carry from a ram.
@@ -88,7 +89,9 @@ def run_suction_gate(
         mount_visible_suction_cup(stage, ARM_PRIM, SUCTION_CUP, hide_jaw=True)
 
     cell = bootstrap_sim_cell(data_dir, headless=headless, scene_kwargs={"objects_override": [spec]},
-                              post_scene_hook=_mount_cup)
+                              post_scene_hook=_mount_cup,
+                              camera_world=CameraWorldDecline(
+                                  "run_industrial_suction_pick: this runner plans without a live camera world"))
     arm, handles, sim = cell.arm, cell.handles, cell.sim
     session = arm.session
     gate = sim.scene_setup.gate

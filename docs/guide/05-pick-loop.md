@@ -96,7 +96,7 @@ are in the [autonomous_grasp README](../../src/robot/execution/autonomous_grasp/
 | 3 | generate and rank | `calculator.compute_result` per segmentation | typed failure reasons: `empty_mask`, `no_valid_depth`, `no_candidates_generated`, `all_collided`, `all_table_conflict`, `all_out_of_workspace`, `ik_failed`, `topology_risk_rejected`. Each segmentation is computed with the *other* masks as neighbour clutter, then the best score wins |
 | 4 | route the failure | `_decide_action` | maps reasons onto `rescan`, `relocate` or `exhausted`. `relocate` needs a `viewpoint_planner`; without one it degrades to `rescan` |
 | 5 | execute | `src/robot/grasping/motion/execution_policy.py` | `CAMERA_FRAME_REJECTED` when the grasp is not in the BASE frame and `require_base_frame_grasp` is on. Checked before any waypoint is built |
-| 6 | move | the same, `_drive_to` | the arm driver's `SafetyPreflight` refuses inside `move()`. The refusal comes back as the policy outcome `MOTION_FAILED`, carrying a `[safety:<guard>/<reason>]` message, and the service maps it to `EXECUTION_FAILED` |
+| 6 | move | the same, `_drive_to` | an arm that says it keeps straight lines (`KeepsLines`: a cuRobo UR or sim arm, an ik UR, the dummy, the simulator mock) drives a planned move to the standoff, one line to the grasp and line lifts; one that keeps none (a sim on ik or RMPflow, a path nothing can judge) is refused before the jaws open as `MOTION_FAILED`, status `unsupported`, with the arm's reason; one that does not say keeps the interpolated approach. The arm driver's `SafetyPreflight` refuses inside `move()`. The refusal comes back as the policy outcome `MOTION_FAILED`, carrying a `[safety:<guard>/<reason>]` message, and the service maps it to `EXECUTION_FAILED` |
 | 7 | close and check | the same | `OBJECT_NOT_DETECTED` if the gripper implements `ObjectDetectingGripper` and reports nothing held |
 | 8 | log | `service.py`, `_maybe_log_record` | never refuses. Record logging is wrapped so a logging failure cannot break a pick |
 
@@ -104,7 +104,7 @@ Between stages 3 and 5 sit the optional layers: the shadow success probability, 
 uncertainty rerank, the learned-ranker shadow and the multi-view commit gate. At defaults each is a
 no-op that stamps a skip reason and returns. Section 7 says what turns them on.
 
-Two things about this chain are easy to get wrong.
+Three things about this chain are easy to get wrong.
 
 **Safety is not in the pick loop.** `SafetyPreflight` is constructed inside each *arm driver* and
 called from that driver's `move()`. The UR, KUKA and simulator drivers build one; the dummy driver
@@ -116,6 +116,12 @@ the legacy bool surface. If you write a fake arm, implement `move()`.
 **A fixed close width bites at the grasp point.** `close_width_mm` is a policy value unless
 `_resolve_close_width` derives one, and a fixed narrow close will not lift a wide object. The failure
 looks like a grasp-quality problem.
+
+**The jaws open before the approach.** The default policy `from_robot_config` builds opens the jaws to
+the hand's `max_width_mm` before the first motion (`pre_open_width_mm`: 85 mm on the 2F-85, 49.99 on the
+Hand-E), so a close onto a wider part never reaches the gripper as an opening. `from_components` does
+the same when it builds its own policy, which it does only with a `frame_resolver`. A policy you pass
+in keeps what you set, and `None` there means the jaws stay where the last close left them.
 
 ## 3. The smallest working pick
 
@@ -230,6 +236,9 @@ for i in range(max_picks):
         break          # stop and diagnose with section 9, do not keep swinging
     # place the object, then loop; the next pick() re-perceives from scratch
 ```
+
+The service does not place. From Python without a pick service, `Robot.pick` and `Robot.place` pick
+and place at known poses in BASE, a straight line in and out ([06](06-grippers.md)).
 
 A gripper-level "nothing held" surfaces here as `VERIFICATION_FAILED`; there is no
 `AutonomousGraspOutcome.OBJECT_NOT_DETECTED`. `CANCELLED` is deliberately not a failure: an operator
@@ -381,7 +390,10 @@ it means updating the KPI, taxonomy and reinforcement-learning consumers togethe
 `extra` are worth knowing: `safety_rejected` is set from membership in a fixed outcome set, so a
 metric can count safety refusals without string-matching, and `verification` falls back to an
 explicitly labelled ground-truth-lift block when a simulator runner stamped a lift, so a simulated
-lift can never be mistaken for a real verification.
+lift can never be mistaken for a real verification. At extra telemetry version 2, `extra` also
+carries `camera_world` and `camera_world_reason`: the weakest camera world behind the attempt's typed
+motions (`planned`, `declined`, `unplanned` or `missing`, with an empty reason on `planned`). Both are
+absent when no typed motion stated one, and a runner's own `extra` cannot overwrite them.
 
 **What consumes it.**
 
@@ -425,16 +437,26 @@ attempts each carry an index, an action and typed reasons.
 `report.pick_report.camera_worlds` holds one stamp per typed motion of the last attempt, read weakest
 first through `camera_world`. On a dummy arm, an `ik` cell or the simulator mock every stamp reads
 `UNPLANNED` with the driver's reason, so the rehearsal prints
-`camera     0 of 5 motion(s) vouched; camera world  UNPLANNED  DummyRobotArm has no planner`. That is
-the honest answer rather than a fault. On a cuRobo cell with no camera world wired the stamps read
-`MISSING`, and a decline reads `DECLINED`: `camera_world=CameraWorldDecline(reason)` on `move` or
-`move_to_joints`, or a `with arm.without_camera_world(reason):` block. On a cell whose live camera
-world is wired (`safety.planning_world.enabled`), a declined planned motion is refused before
-planning: the pick ends `execution_failed`, status `unsupported`, with a message starting
-`Refused before planning`. Such a world is built from every enabled RGB-D rig that declares its
-calibration, the primary first, and one of them that cannot answer stops every planned motion.
-Nothing reads `PLANNED`. The console names `MISSING` and `DECLINED` in the event sentence and carries
-every other use only in the payload, and the grasp record does not carry the stamp.
+`camera     0 of 3 motion(s) vouched; camera world  UNPLANNED  DummyRobotArm has no planner`. That is
+the honest answer rather than a fault. On a cuRobo cell with no camera world wired and nothing
+declined, every planned motion is refused before planning: the pick ends `execution_failed`, status
+`unsupported`, stamp `MISSING`, with a message starting `Refused before planning: this cell plans
+with cuRobo, no live camera world is wired`. A calibrated cuRobo cell whose cameras give no world
+does not build at all, and the checklist's `camera world` row says so first. A decline reads
+`DECLINED`: `camera_world=CameraWorldDecline(reason)` on `move` or `move_to_joints`, or a
+`with arm.without_camera_world(reason):` block. On a cell whose live camera world is wired
+(`safety.planning_world.enabled`), a declined planned motion is refused before planning: the pick
+ends `execution_failed`, status `unsupported`, with a message starting `Refused before planning`.
+Such a world is built from every enabled RGB-D rig that declares its calibration, the primary first,
+and one of them that cannot answer stops every planned motion. Every refresh on such a world also
+leaves out the space between the open jaws at the motion's goal: the hand's registry jaw laid on the
+declared TCP, with no padding, so a part between the fingers is no obstacle at the goal while a post
+where a finger closes still is. A part wider than the fingers keeps its box, which is why the pick
+also holds its target out of the world through every motion of the attempt. A `PLANNED` stamp says
+what was left out, as `kept out: goal region left out N point(s)`. No recorded run reads `PLANNED`.
+The console names `MISSING` and `DECLINED` in the event sentence and carries every other use only in the
+payload, and the grasp record carries the weakest stamp's use and reason as `extra.camera_world` and
+`extra.camera_world_reason`.
 
 **The arm refused.** A safety rejection surfaces as `execution_failed` with a motion message prefixed
 `[safety:<guard>/<reason>]`. Guard order and verdicts: [04](04-robot-and-safety.md). Two things belong
@@ -473,7 +495,7 @@ the KUKA driver has never met a controller at all, and Franka and ROS 2 are empt
 raise on `create_arm`. In order:
 
 1. **Run the preflight and clear the blocking items.** `real_cell --check` reports each with its fix.
-   Against the shipped tree as a UR cell it finds three, and every one would otherwise surface at the
+   Against the shipped tree as a UR cell it finds six, and every one would otherwise surface at the
    bench as a different-looking failure. Details: [04](04-robot-and-safety.md), procedure:
    [real_cell_first_pick.md](../runbooks/real_cell_first_pick.md).
 2. **Get a `PerceptionSource` for your camera.** A RealSense is already covered by
@@ -488,9 +510,10 @@ raise on `create_arm`. In order:
 6. **Start in `easy`.** Its recovery allow-list is locked empty, so it never produces recovery motion.
    `closed_loop` needs both a refiner and a verifier wired and refuses the pick otherwise, so it is
    not where a bring-up starts.
-7. **Re-measure after every change, and never transfer a planner margin between robot models.** A
-   thinner-linked arm reads as permanently self-colliding at the larger arm's margin and finds no plan
-   at all ([04](04-robot-and-safety.md)).
+7. **Re-measure after every change, and never carry a planner margin to a robot nobody measured it
+   on.** A thinner-linked arm reads as permanently self-colliding at a 10 mm margin and finds no plan
+   at all. Every UR runs 4 mm, measured, and a cuRobo cell starts its planner only with a committed
+   evidence file for its margin ([04](04-robot-and-safety.md)).
 
 **Not in scope, and not reachable by wiring code:** certified functional safety. The planner's
 collision awareness and the exact-mesh guard are simulation-grade risk *reduction*. A real cell still

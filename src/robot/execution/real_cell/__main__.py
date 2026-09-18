@@ -3,6 +3,7 @@
     python -m src.robot.execution.real_cell --check              # config checklist, nothing else
     python -m src.robot.execution.real_cell --rehearse --runs 3 --profile console_dummy
     python -m src.robot.execution.real_cell --dry-run            # real config, build only, no motion
+    python -m src.robot.execution.real_cell --start-planner      # the planner starts and stops, no controller
     python -m src.robot.execution.real_cell --runs 10            # the real cell
 
 ``AutonomousGraspService.from_robot_config`` is the composition root this project points at. This
@@ -21,8 +22,9 @@ The four stages, and what each one proves:
                  controller's actual tool frame and its payload, and fails closed on either.
   4. Pick        ``service.pick()`` per run, with the typed outcome and reason printed per attempt.
 
-Exit codes: 0 all runs succeeded (or --check/--dry-run passed); 1 preflight blocked or the build
-refused; 2 the cell connected but at least one pick did not succeed; 3 an unexpected error.
+Exit codes: 0 all runs succeeded (or --check/--dry-run passed, or --start-planner started); 1
+preflight blocked, the build refused or the planner start was refused; 2 the cell connected but at
+least one pick did not succeed; 3 an unexpected error.
 
 Nothing below the rehearsal path has run against a physical controller. ``--rehearse`` is the same
 wiring with a dummy arm and a synthetic scene.
@@ -128,6 +130,9 @@ def main(argv: "list[str] | None" = None) -> int:
     ap.add_argument("--profile", type=str, default=None,
                     help="config profile chain, e.g. 'ur3e' or 'ur3e,tiltcam'")
     ap.add_argument("--data-dir", type=str, default=None, help="override the config tree root")
+    ap.add_argument("--start-planner", action="store_true",
+                    help="build the arm alone, start its planner the way its first planned move does (every "
+                         "refusal included), stop it, and exit 0 if it started. No camera, no controller")
     args = ap.parse_args(argv)
 
     # ---- 1. Config ---------------------------------------------------------------------------
@@ -145,6 +150,16 @@ def main(argv: "list[str] | None" = None) -> int:
     cell = (Cell.rehearsal(robot_cfg, data_dir=args.data_dir) if args.rehearse
             else Cell.from_robot_config(robot_cfg, prompt=args.prompt, app_config=app_cfg,
                                         data_dir=args.data_dir))
+    if args.start_planner:
+        # One question, and not the checklist's. Whether this cell's planner starts is answered by the
+        # driver's own start path, which carries every refusal that matters to it; a checklist block
+        # elsewhere (a camera nobody calibrated yet) is not a reason to leave it unasked. `--check` is
+        # the checklist.
+        print(f"\n=== PLANNER === start and stop, no controller, profile={_profile_banner(args.profile)}",
+              flush=True)
+        started = cell.start_planner()
+        print(started.render(), flush=True)
+        return started.exit_code
     vendor = "dummy (rehearsal)" if args.rehearse else cell.vendor
     print(f"\n=== 1. CONFIG === vendor={vendor} profile={_profile_banner(args.profile)}", flush=True)
 

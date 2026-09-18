@@ -44,10 +44,9 @@ declared = config.safety.self_collision.model_copy(update={"fixtures": [FixtureB
 #    out of it. Both ends are clear: the last configuration stops a tenth short of the dip, which is
 #    the last point on the way in that the guard still accepts. Everything that reaches the bench lies
 #    between them, so an endpoint check has nothing to find.
-#    Measured on a ur5e: the way in sweeps 6962 mm of arm travel and the way back out 696 mm, so at a
-#    10 mm collision margin this is about 766 samples. A full round trip would be 13924 mm and about
-#    1393 samples, which is judged too: the cuRobo client splits a path longer than one request across
-#    requests, and the exact mesh gate here is a loop. What that costs is time, about 2.2 ms a sample.
+#    Measured on a ur5e with a 2F-85, its reach in every joint's radius: in 8257 mm, out 826 mm, about
+#    909 samples at a 10 mm margin; a round trip is 16514 mm and about 1652 samples, judged too, since
+#    the cuRobo client splits a long path across requests. It costs time, about 2.2 ms a sample.
 arm = create_arm(RobotVendor.from_string(config.vendor), config=config)
 home = np.asarray(config.home_joint_positions or home_joints_default(), dtype=np.float64)
 dip = np.asarray([3.14, -0.8, 2.0, -2.15, -1.57, 0.0])

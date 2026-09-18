@@ -5,8 +5,9 @@ planner. The UR arm reads that world only inside its cuRobo planner, so on `moti
 announced a protection that never runs, which is exactly the kind of sentence this library may not print.
 
 A stereo rig is told at the same place (Step 4e). It has no depth of its own, so a world built on it would
-answer no frame to every refresh and every planned motion would raise; the cell gets no world and a
-warning that names the rig instead.
+answer no frame to every refresh and every planned motion would raise. An ik cell gets no world and a
+warning that names the rig; a cuRobo cell, whose every motion would then be refused, does not build (an
+owner decision, held in tests/test_camera_world_wiring.py).
 
 The sentences are `CameraWorldWiring.render()`, logged once by the cell. The rig here is a calibrated
 RGB-D rig of a cell that enables the world, and for the stereo row its owner answers a real `StereoFrame`.
@@ -84,7 +85,7 @@ class TheWiringLogNamesThePlannerTests(unittest.TestCase):
     def test_a_stereo_rig_wires_no_world_and_says_why(self) -> None:
         pair = np.zeros((4, 4, 3), dtype=np.uint8)
 
-        text, arm = self._wire("curobo", frame=StereoFrame(left=pair, right=pair))
+        text, arm = self._wire("ik", frame=StereoFrame(left=pair, right=pair))
 
         arm.set_live_planner_world.assert_not_called()
         self.assertIn("stereo", text)

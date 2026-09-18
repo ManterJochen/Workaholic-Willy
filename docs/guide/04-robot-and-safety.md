@@ -195,14 +195,18 @@ A simulation cell names its hand in `robot.gripper.model`, and the mount follows
 `ur3e.usd` bakes no gripper variant, so the simulator mounts the named hand standalone, while the
 `ur5e` and `ur10e` assets bake the 2F-85 as a variant. A hand the simulator has no mount for is
 refused by name before the simulator boots, instead of surfacing as a late gripper connect failure
-on a bare 6-DoF arm.
+on a bare 6-DoF arm. That is where a customer's own hand stands: it runs its chain on a real cell,
+which never asks for a simulator mount, and a mount needs its USD asset, the rotation that puts its
+approach on wrist +Y and a measured `tcp_offset_mm`
+([`src/willy_sim/grippers.py`](../../src/willy_sim/grippers.py)).
 
 ---
 
 ## 3. Declaring an end-effector
 
 `robot.gripper.vendor` picks the driver `create_gripper` builds; `min_width_mm` and `max_width_mm`
-are the physical opening floor and ceiling. `GripperVendor` has eight members: `robotiq`, `onrobot`,
+are the physical opening floor and ceiling, and a cell that names a hand takes them from its
+registry file (below). `GripperVendor` has eight members: `robotiq`, `onrobot`,
 `vacuum`, `jaw_io`, `dummy` and `none` have drivers, and `franka_hand` and `schunk` are reserved names
 with none. Two sub-blocks configure the digital-I/O end-effectors, `robot.gripper.vacuum.*` and
 `robot.gripper.jaw_io.*`, and one configures the Modbus one, `robot.gripper.onrobot.*`. In
@@ -211,10 +215,17 @@ and `robot.sim.suction_cup` picks a suction cup.
 
 `robot.gripper.model` names the hand by its registry file, `config/grippers/<model>.yaml`
 (`robotiq_2f85`, `robotiq_hande` and `schunk_egu50` today, read by `src.config.grippers.load_gripper`).
-Nothing on the pick path reads the key. The schema cannot see the registry, so a name no file defines
-passes it, but `python -m src.config` does not: it refuses that name, a short name such as `2f85`, and
-a registry file it cannot read. The steps that take the labeller, the network conditioning and the
-planner descriptor from the key are the ones that refuse such a name at build.
+The loader reads the key. A named hand fills `robot.gripper.max_width_mm`, `min_width_mm`,
+`closed_width_mm` and every `robot.grasping.gripper_geometry` number a profile leaves unset from the
+repository's registry file, and a profile that states one differently is refused at load, naming the
+key, both values and both files (`min_width_mm` is a policy floor and is admitted from the hand's own
+floor up to its aperture, `finger_pad_overlap_mm` at or above the hand's). The self-collision guard
+and the planner load the hand's bundle and sphere map by the name, and the deep calculator and the
+simulator's mount take the hand from it. The schema cannot see the registry, so a name no file
+defines passes it, but loading the tree does not: that name, a short name such as `2f85` and a
+registry file that cannot be read are refused, and `python -m src.config` says so. A hand this
+repository never shipped gets its body, sphere map, retract and evidence through
+[your_own_gripper.md](../runbooks/your_own_gripper.md).
 
 Three things belong here rather than in [06](06-grippers.md), because they are properties of the
 composition rather than of a gripper:
@@ -431,6 +442,19 @@ configurations, and the disagreement runs one way: the proxy accepts configurati
 distance is zero. The price is roughly two orders of magnitude in per-check time, which is still small
 against a move.
 
+A wrist camera is part of the arm. A rig that declares `camera.cameras.rigs[<id>].body` names a camera
+model from `config/cameras/` (the housing as a box in the colour optical frame), a `margin_mm` and a
+`bracket`, and the rig's eye-in-hand calibration places it on the flange: the recorded flange to TCP
+times `CAMERA -> TOOL`. On a cell whose planner is cuRobo or whose guard reads hand geometry, the
+planner loads it as the link `wrist_camera_<rig>`, the exact guard holds it as a part on frame 6 and
+checks it against `wrist_2` as well as every farther link and fixture, the self filter keeps a fixed
+camera from registering the housing as an obstacle beside the arm, and a carried part stays checked
+against it. The combination evidence stays keyed by arm, hand, plate, placement and margin, with its
+hashes formed without the camera; what stands in for a measurement is a proof, run at the desk and
+when the planner starts, that the sphere fill holds every point of every grown box. Such a cell
+refuses an enabled eye-in-hand rig without a body, a body its calibration cannot place, and a camera
+the repository's registry does not hold. The Isaac wrist camera is not a rig and carries no body.
+
 ### 5.2 Does this robot actually have exact-mesh authority?
 
 Bundles are per robot, `{model}_collision_meshes.npz`, and a present ur5e bundle says nothing about a
@@ -442,11 +466,15 @@ rotation the declared tool frame derives, so one hand file serves every arm.
 
 Call `mesh_backend_status(model)` from `src.robot.safety._fcl_self_collision` for each model that
 matters. The tokens are `ok`, `unknown_model`, `no_bundle`, `no_hand_bundle`,
-`variant_model_mismatch` and `no_engine`, and `tests/test_status_tokens_are_documented.py`
+`hand_bundle_refused` and `no_engine`, and `tests/test_status_tokens_are_documented.py`
 fails if this sentence falls behind the code, in both directions: a token the guard can
 return that this sentence omits, and a token this sentence names that the guard cannot
-return. `no_hand_bundle` means the named hand has no bundle of its own, and `variant_model_mismatch`
-that its bundle records only other arms as proven, so composing it onto this one would be a guess.
+return. `no_hand_bundle` means the named hand has no bundle of its own, and `hand_bundle_refused`
+that it has one the guard cannot place: a part other than the gripper and its two fingers, a missing
+or malformed array, or fingers that do not lie along the model's +Y. Which arms a hand may be
+composed onto is not a token: it is measured, one committed evidence file per combination under
+`src/robot/safety/planning/robot/evidence/`, and a cuRobo cell starts no planner on a combination
+without one.
 `unknown_model` means there is no bundled DH row for that key, so anything that is not a UR has no
 exact-mesh authority, ever. `no_bundle` is recoverable by baking one with
 [`scripts/isaac/bake_ur_meshes_from_urdf.py`](../../scripts/isaac/bake_ur_meshes_from_urdf.py) in the
@@ -484,8 +512,10 @@ commanded, with the same guards a joint move gets: joint limits, self-collision 
 and payload. There is no key that switches them off and no stride: a path that grazes a fixture
 halfway and lands clear is exactly what an endpoint check cannot see. The step comes from the
 collision margin, which is the coarsest sampling the check can survive, and the reach is read off the
-arm, so a robot whose reach does not derive is refused rather than sampled by a number nobody
-measured.
+arm and what its flange carries: the hand's sphere map as the guard places it, a wrist camera's fill
+and a declared carried part. For the last joint, which turns about the tool axis, a carried point
+counts by its distance off that axis. A robot or a hand whose reach does not derive is refused
+rather than sampled by a number nobody measured.
 
 [`src/robot/safety/continuous_monitor.py`](../../src/robot/safety/continuous_monitor.py) runs the exact-mesh
 backend over **every** interpolation waypoint of a move, with a clearance margin and a fail-safe of its
@@ -532,6 +562,19 @@ closed: `robot.ur.motion_planner` is a real config key (`ik` or `curobo`, shippe
 cuRobo unavailable the move returns `CONTROLLER_REJECTED`, while no collision-free plan returns
 `TIMEOUT`. It never falls back to blind IK.
 
+**A cuRobo motion also needs a camera world or a decline.** Every verb of a cuRobo UR arm and of a
+non-mock cuRobo simulator arm first asks whether a live camera world is wired or the caller declined
+one, and refuses before planning when neither holds: `UNSUPPORTED`, stamp `MISSING`, message
+`Refused before planning: this cell plans with cuRobo, no live camera world is wired to this arm and
+nothing declined one`. `move_joint` and `move_linear` raise `RobotMotionRejected` carrying that
+result, and `move_home` returns False. A decline is `camera_world=CameraWorldDecline("<why>")` on
+`move` or `move_to_joints`, or `with arm.without_camera_world("<why>"):` around any verb. The world
+itself is `safety.planning_world` with a calibrated RGB-D rig ([05](05-pick-loop.md)); a cuRobo cell
+whose calibrated rig gives no world is refused at the build and blocked by the checklist's
+`camera world` row. Every simulator runner states its choice at boot
+(`bootstrap_sim_cell(camera_world=...)`), and a cuRobo boot that states nothing is refused before the
+arm is built.
+
 The simulator used to degrade. Its planner is a dataclass field rather than a YAML key, which
 `python -m src.config explain robot.sim.motion_planner` will tell you outright, and with cuRobo
 missing the resolution latched unavailability, emitted one warning and returned `ik` for the rest of
@@ -539,8 +582,9 @@ that arm's life. What an operator saw was a cell that kept running and picked ba
 configurations the self-collision guard correctly refuses, so the run reported a low rate with nothing
 tying it back. That latch is gone. A cuRobo simulator arm that cannot reach its sidecar refuses its
 motions, `resolve_runner_planner` refuses the run one layer up, and `--motion-planner ik` is how you
-say a run is deliberately unplanned. Rather than trusting a count of which runners take that flag, run
-`grep -l -- "--motion-planner" src/willy_sim/run_*.py`.
+say a run is deliberately unplanned. A pick on such a run is refused before the jaws open: ik keeps
+no straight line, and the pick's descent is one. Rather than trusting a count of which runners take
+that flag, run `grep -l -- "--motion-planner" src/willy_sim/run_*.py`.
 
 That silence is what the boot gate stopped first, and it still runs. `require_motion_stack` in
 [`src/willy_sim/harness/bootstrap.py`](../../src/willy_sim/harness/bootstrap.py) runs before the simulator
@@ -553,7 +597,7 @@ configured system and must not be reported as one. It is scoped honestly, since 
 held to cuRobo. Reproduce it off-box:
 
 ```powershell
-python -c "from src.willy_sim.harness.bootstrap import require_motion_stack; require_motion_stack('curobo', robot_config='ur5e_robotiq_2f85.yml', kinematics_model='ur5e', exact_mesh_collision=True)"
+python -c "from src.willy_sim.harness.bootstrap import require_motion_stack; require_motion_stack('curobo', robot_config='willy_ur5e.yml', kinematics_model='ur5e', exact_mesh_collision=True)"
 ```
 
 **The planner-margin handshake.** cuRobo plans against spheres; the guard re-checks exact meshes.
@@ -564,11 +608,13 @@ bad grasping rather than as a rejected plan. `apply_self_collision_margin` in
 margin to each link's self-collision buffer, because the planner subtracts both links' buffers from a
 pair distance.
 
-`planner_margin_mm` is per robot and must be measured, not copied. The shipped layers record 10.0 for
-the UR5e in `robot.sim.yaml` and 4.0 for the UR3e in `robot.ur3e.yaml`, each with its reasoning in the
-comment: a thinner-linked arm reads as permanently self-colliding once every sphere is inflated to the
-larger arm's value, and finds no plan at all. `robot.ur5e.yaml` leaves the key at its 0.0 default and
-says why. Read those comments before setting yours. The honest limit is stated in the module: spheres
+`planner_margin_mm` must be measured, not copied. `robot.sim.yaml` and `robot.ur3e.yaml` both record
+4.0, each with its reasoning in the comment: against the fitted sphere map a UR5 finds no retract at
+all at 8 or 10 mm, and a thinner-linked arm reads as permanently self-colliding once every sphere is
+inflated to a larger arm's value, and finds no plan at all. `robot.ur5e.yaml` leaves the key
+undeclared and says why: a UR cell that plans with cuRobo and declares no margin refuses to start its
+planner, and a committed evidence file has to have measured its combination at that margin. Read
+those comments before setting yours. The honest limit is stated in the module: spheres
 are not meshes, so the buffer is a cushion, not a proof, and it is the guard, never the planner, that
 decides what actually executes. The wire contract and the real-UR waypoint execution are in
 [`src/robot/safety/planning/README.md`](../../src/robot/safety/planning/README.md). That round trip is
@@ -579,7 +625,7 @@ unexercisable off a real cell; the logic is exercised with a fake planner.
 ## 7. Bring-up, and where to look when it goes wrong
 
 `python -m src.robot.execution.real_cell --check` is the checklist, and it touches nothing. Run
-against the shipped tree as a UR cell it reports **three blocking items**, and that is the correct
+against the shipped tree as a UR cell it reports **seven blocking items**, and that is the correct
 default state of a freshly configured real cell rather than a defect:
 
 | Blocking item | What it looks like at the bench if you skip it |
@@ -587,8 +633,16 @@ default state of a freshly configured real cell rather than a defect:
 | `gripper.tool_frame.source` is `undeclared` | nobody has said where the grasp centre sits on the flange, so a top-down grasp commanding z = 37 mm drives the flange there and the fingertips through the bench |
 | `safety.payload` has `enforce: true` and `mass_kg: 0.0` | `connect()` refuses this outright, which is better seen at a desk than after driving to the cell. It would otherwise push a zero payload and leave the controller's protective-stop model under-reading a mounted tool |
 | no `CAMERA->BASE` resolver | perception reports grasps in the camera frame; without a resolver the driver rejects every motion as `INVALID_TARGET`. Fail-closed and correct, and at the bench it looks exactly like a cell that hangs |
+| no live camera world for the planner | the base tree plans with cuRobo, and a cuRobo motion needs a live camera world or a decline, while the pick service declines nothing. Every pick motion is refused as `UNSUPPORTED` before the arm moves, naming the missing world |
+| `safety.self_collision.planner_margin_mm` is undeclared | the base tree plans with cuRobo, and a planner never starts without the clearance it keeps, since undeclared is not zero. The first planned move is refused as `CONTROLLER_REJECTED`, before the arm moves |
+| `safety.planning_world.payload.length_mm` is undeclared | the base tree plans with cuRobo, which models the part a grasp carries, and no length is implied for it. The attach is declined and every lift and transit after a grasp is planned as if the hand were empty. Declare how far the longest part hangs past the fingertips, or `enabled: false` for a cell that carries nothing |
+| `gripper.model` is unset | the exact-mesh guard checks the hand this key names, and the base tree names none so that no overlay inherits one. The cell refuses to build, naming the key |
 
-[`config/robot/robot.ur5e.yaml`](../../config/robot/robot.ur5e.yaml) leaves exactly those three unset
+A box without the cuRobo environment or without Coal blocks on two more rows, `cuRobo environment`
+and `exact mesh engine`: they are facts about the machine the checklist runs on, and they clear when
+the `ext_deps` install is on the box.
+
+[`config/robot/robot.ur5e.yaml`](../../config/robot/robot.ur5e.yaml) leaves the first three unset
 **on purpose**, as the worked example for a real bench, and carries each one as a commented block
 saying what to measure. Its own rule decides which keys carry a value: a wrong value that fails closed
 ships as an example with its assumption stated, so a workspace box that is too small refuses a motion

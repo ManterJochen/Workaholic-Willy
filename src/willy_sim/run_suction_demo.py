@@ -26,6 +26,7 @@ from typing import Any
 import numpy as np
 
 from src.willy_sim.harness.bootstrap import bootstrap_sim_cell
+from src.robot.core.camera_world import CameraWorldDecline
 
 DEFAULT_OUT = "logs/demo/suction_pick_demo.mp4"
 # Cinematic camera (metres): an elevated front-right 3/4 view of the cell, aimed at the workspace. The
@@ -56,7 +57,9 @@ def record_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, fps: int 
     from src.willy_sim.suction_mount import SUCTION_CUP, mount_visible_suction_cup
 
     # bootstrap_sim_cell starts the SimulationApp; the isaacsim.* namespaces only exist after that.
-    cell = bootstrap_sim_cell(None, headless=headless)
+    cell = bootstrap_sim_cell(None, headless=headless,
+                              camera_world=CameraWorldDecline(
+                                  "run_suction_demo: this runner plans without a live camera world"))
     arm, handles, sim = cell.arm, cell.handles, cell.sim
     session = arm.session
     app = getattr(session, "app", None)

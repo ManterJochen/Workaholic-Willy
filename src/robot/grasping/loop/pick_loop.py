@@ -24,6 +24,7 @@ next-best-view solver plug in without changes to this file.
 from __future__ import annotations
 
 import logging
+from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import (
@@ -38,7 +39,9 @@ from typing import (
 
 import numpy as np
 
+from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose, Transform
+from src.robot.core.keep_out import SegmentationOffer, keeping_out
 from src.robot.core import (
     CameraWorldStamp,
     CameraWorldUse,
@@ -492,6 +495,56 @@ _RELOCATE_REASONS = frozenset(
     }
 )
 
+def segmentation_offer_from_frame(
+    frame: "PerceptionFrame",
+    target_index: "int | None",
+    *,
+    camera: "Maybe[str]",
+    camera_to_base_mm: "np.ndarray | None",
+) -> "SegmentationOffer | None":
+    """What one ranked perception frame offers a live planner world, or ``None`` when it can offer nothing.
+
+    Every segmentation's mask under its label (``object_<index>`` for an unnamed one) and the
+    target's mask to exclude, for ``camera``; and the target's surface in BASE, from
+    ``surface_depth_map`` where the frame carries one and ``depth_map`` otherwise, placed by
+    ``camera_to_base_mm``. With no camera only the target's points are offered, and with neither a
+    camera nor points, or a frame that carries no capture time, nothing is.
+    """
+    segmentations = tuple(frame.segmentations)
+    labelled = tuple(
+        (str(getattr(seg, "label", "") or f"object_{index}"), mask)
+        for index, seg in enumerate(segmentations)
+        if (mask := getattr(seg, "mask", None)) is not None
+    )
+    exclude: tuple = ()
+    target_label = ""
+    points = None
+    if target_index is not None and 0 <= target_index < len(segmentations):
+        target = segmentations[target_index]
+        target_label = str(getattr(target, "label", "") or f"object_{target_index}")
+        target_mask = getattr(target, "mask", None)
+        if target_mask is not None:
+            exclude = (target_mask,)
+            if camera_to_base_mm is not None:
+                from src.robot.grasping.multiview.scene_geometry import to_base_mm
+
+                surface = getattr(frame, "surface_depth_map", None)
+                depth = surface if surface is not None else frame.depth_map
+                base = to_base_mm(np.asarray(target_mask).astype(bool), depth, frame.intrinsics, camera_to_base_mm)
+                points = base if base.shape[0] else None
+    stamp = getattr(frame, "timestamp", None)
+    if stamp is None:
+        return None
+    if not chosen(camera):
+        if points is None:
+            return None
+        return SegmentationOffer(captured_at_s=float(stamp), target_points_base_mm=points, target_label=target_label)
+    return SegmentationOffer(
+        captured_at_s=float(stamp), camera=camera, labelled_masks=labelled, exclude_masks=exclude,
+        target_points_base_mm=points, target_label=target_label,
+    )
+
+
 @dataclass
 class BinPickingOrchestrator:
     """Drive the perceive, grasp, execute loop with failure-aware retries.
@@ -768,6 +821,13 @@ class BinPickingOrchestrator:
     # _best_result_over_segmentations so _execute can map the camera-frame neighbour cloud into the
     # candidate (BASE) frame before the swept-volume check. Reset per pick.
     _pending_camera_to_base: "Transform | None" = field(default=None, init=False, repr=False)
+    #: The keep-out scope of the attempt that is running: the target held out of the arm's live
+    #: world from the offer until the pick ends or the arm moves to look again. Opened fresh by
+    #: every run.
+    _keep_out: ExitStack = field(default_factory=ExitStack, init=False, repr=False)
+    #: Whether this run already said that its target stays an obstacle, so the line is written once
+    #: per run.
+    _keep_out_unplaced_said: bool = field(default=False, init=False, repr=False)
     # What the multi-camera geometry fusion actually did this frame (cameras that contributed,
     # objects fused). Empty while fusion is off, so the telemetry stays byte-identical.
     _fusion_geometry_telemetry: dict = field(default_factory=dict, init=False, repr=False)
@@ -1002,10 +1062,15 @@ class BinPickingOrchestrator:
             self.scene_fusion.clear()
         emit(self.on_progress, PickStage.PICK_STARTED, attempt_total=self.max_attempts)
         report: PickReport | None = None
+        self._keep_out = ExitStack()
+        self._keep_out_unplaced_said = False
         try:
             report = self._execute_pick()
             return report
         finally:
+            # First, so the target is back in the world before anything else this pick left behind
+            # is read.
+            self._keep_out.close()
             self._finalize_sequencing_shadow()
             self._finalize_perception_shadow()
             self._finalize_recovery_shadow()
@@ -1133,6 +1198,8 @@ class BinPickingOrchestrator:
                 if action == "rescan":
                     continue
                 if action == "relocate" and self.viewpoint_planner is not None:
+                    # The move to look again plans against the cell with the last target back in it.
+                    self._keep_out.close()
                     if self._relocate_camera():
                         continue
                     return PickReport(
@@ -1278,6 +1345,7 @@ class BinPickingOrchestrator:
                     # which runs SafetyPreflight. No-op (byte-identical) when no viewpoint_planner
                     # is wired or the planner is exhausted: the loop re-acquires at the same pose.
                     if self.viewpoint_planner is not None:
+                        self._keep_out.close()
                         self._relocate_camera()
                     continue
                 # Budget exhausted (or no policy with allowed=False,
@@ -2226,7 +2294,7 @@ class BinPickingOrchestrator:
     def _offer_masks_to_planner_world(
         self, frame: "PerceptionFrame", target_index: "int | None"
     ) -> None:
-        """Tell the planner world which object this attempt is reaching for, and what the rest are.
+        """Tell the planner world which object this attempt is reaching for, and hold it out for the attempt.
 
         Two things come out of this and only one is optional. The names let a refusal say
         which object refused instead of printing a number. The target has to be left out of
@@ -2237,26 +2305,52 @@ class BinPickingOrchestrator:
         to offer and this loop has no business knowing what one is. An arm that answers
         `None` costs one attribute lookup per attempt.
 
-        The masks carry the frame capture time, not the time of this call. They age exactly
-        like the frame they came from, so a target mask from half a second ago stops being
-        used rather than cutting a hole in the world where the object no longer is.
+        The offer (``segmentation_offer_from_frame``) carries the frame's masks under the
+        perception source's camera name and the target's BASE points, placed by the CAMERA to BASE
+        this frame was ranked with, never a second resolve. It is held through ``keeping_out`` for
+        every motion of the attempt, closed when the pick ends or the arm moves to look again. A
+        source that names no camera offers the target's box alone; one that names no camera and has
+        no transform offers nothing, and the target stays an obstacle, which this says once per run.
         """
         world = getattr(self.arm, "live_planner_world", None)
         if world is None:
             return
-        labelled = [
-            (str(getattr(seg, "label", "") or f"object_{index}"), mask)
-            for index, seg in enumerate(frame.segmentations)
-            if (mask := getattr(seg, "mask", None)) is not None
-        ]
-        exclude = []
-        if target_index is not None and 0 <= target_index < len(frame.segmentations):
-            target_mask = getattr(frame.segmentations[target_index], "mask", None)
-            if target_mask is not None:
-                exclude.append(target_mask)
-        world.offer_segmentation(
-            labelled_masks=labelled, exclude_masks=exclude, timestamp=frame.timestamp
+        transform = self._pending_camera_to_base
+        offer = segmentation_offer_from_frame(
+            frame, target_index, camera=self._perception_camera_name(),
+            camera_to_base_mm=None if transform is None else np.asarray(transform.to_matrix(), dtype=np.float64),
         )
+        self._keep_out.close()
+        if offer is None:
+            if not self._keep_out_unplaced_said:
+                _LOG.warning(
+                    "the target stays an obstacle in the planner world: the perception source names no camera the "
+                    "masks belong to and the frame has no CAMERA to BASE to place the target's box"
+                )
+                self._keep_out_unplaced_said = True
+            return
+        self._keep_out.enter_context(keeping_out(self.arm, offer))
+
+    def _perception_camera_name(self) -> "Maybe[str]":
+        """The camera the perception source's frames come from, or unset when it names none.
+
+        A camera's rig id where the source streams from a rig (``streamer.rig_id``), else the name a
+        source states (``camera_name``). A stated name that is not this loop's ``primary_camera_id``
+        is a misbuilt cell: the masks would be offered under a camera whose image they are not from.
+        """
+        rig_id = getattr(getattr(self.perception, "streamer", None), "rig_id", None)
+        named = getattr(self.perception, "camera_name", UNSET)
+        name: Maybe[str] = UNSET
+        if isinstance(rig_id, str) and rig_id.strip():
+            name = rig_id
+        elif chosen(named) and isinstance(named, str) and named.strip():
+            name = named
+        if chosen(name) and self.primary_camera_id and name != self.primary_camera_id:
+            raise ValueError(
+                f"the perception source names camera {name!r} and this loop's primary_camera_id is "
+                f"{self.primary_camera_id!r}: its masks would be offered under a camera whose image they are not from"
+            )
+        return name
 
     def _best_result_over_segmentations(
         self, frame: PerceptionFrame

@@ -15,7 +15,7 @@ without Isaac raises `IsaacNotAvailableError`.
 | --- | --- |
 | `arm.py` | `IsaacRobotArm` and `ISAAC_CAPABILITIES`: Lula FK and IK, the flange-to-TCP transform, multi-seed IK resolve, interpolated `move_joint`, the cuRobo and RMPflow approach, and the typed `move()`. |
 | `session.py` | `IsaacSimSession`: the Isaac app lifecycle (`start`, `stop`, `step`, `step_n`). It lazily boots the `SimulationApp`, opens the scene and owns the `World`. |
-| `robot_models.py` | The model registry: a `robot_model` key maps to the Lula config name, the Isaac USD path, the cuRobo `{model}_{hand}.yml`, the baked gripper variant if any, and reach, payload and workspace limits. |
+| `robot_models.py` | The model registry: a `robot_model` key maps to the Lula config name, the Isaac USD path, the cuRobo `willy_{model}.yml`, the baked gripper variant if any, and reach, payload and workspace limits. |
 | `config.py` | `SimRobotConfig` and `SimCameraConfig`, frozen pure-Python config dataclasses with no Isaac import, safe to build, validate and serialise anywhere. |
 | `adapter.py` | The unit and convention conversions: millimetres against metres, XYZW against Isaac WXYZ, rotation matrix to quaternion, and `Pose` and `JointPositions` round-trips, all tagged `Frame.BASE`. |
 | `_isaac_protocols.py` | Structural `Protocol` stubs for the lazy Isaac runtime surface, so type checking stays clean without importing `isaacsim`. Annotation-only. |
@@ -54,10 +54,12 @@ grip.connect()
 ## Load-bearing details
 
 **Model-selectable, and the config wins.** `SimRobotConfig.robot_model` (`ur5e` by default, or
-`ur3e` or `ur10e`) selects the Lula solver and RMPflow config, the Isaac USD and, with the hand
-the cell's preflight models, the cuRobo `{model}_{hand}.yml` together, through `robot_models.py`.
-An arm with no hand there plans nothing, and a descriptor whose `_provenance` names another hand
-refuses at start. The end-effector frame `tool0` and the six arm
+`ur3e` or `ur10e`) selects the Lula solver and RMPflow config, the Isaac USD and the cuRobo
+`willy_{model}.yml` together, through `robot_models.py`. The hand the cell's preflight models is
+added to that planner as a body link when it starts, and an arm with no hand there plans nothing.
+A descriptor built for another arm or carrying a hand refuses at start, and so does a combination
+of arm, hand, plate, placement and margin that no committed evidence file measured. The
+end-effector frame `tool0` and the six arm
 joint names are shared by every UR e-series, so they stay constants. A disagreeing
 `WILLY_CUROBO_ROBOT` environment variable is loudly ignored, because planning one cell against
 another robot's geometry produces no visible symptom.
@@ -109,10 +111,13 @@ guard rejects.
 - `stop()` is best-effort and never raises: outside mock mode it re-commands the current joint
   positions so the drive holds station instead of tracking a stale target, and drops the preflight
   continuity memo. It does not interrupt a `move()` already iterating its waypoint loop.
-- `move()` honours an optional `SafetyPreflight`, but the `linear`, `vel` and `acc` keyword
-  arguments are accepted for Protocol parity and are not applied. `move_joint` accepts velocity and
-  acceleration for the same reason and does not apply them either, because the drive is
-  position-controlled and walks fixed waypoints at a fixed cadence.
+- `move()` honours an optional `SafetyPreflight`. With cuRobo outside mock mode and a preflight
+  wired, `linear=True` is a checked line: the straight TCP line is sampled, and every sample is
+  solved and judged before the arm walks them. The `ik` and `rmpflow` planners drop `linear` and
+  drive to the pose, and `line_motion()` reads that as `NOT_KEPT` before anything moves. The `vel`
+  and `acc` keyword arguments are accepted for Protocol parity and are not applied. `move_joint`
+  accepts velocity and acceleration for the same reason and does not apply them either, because the
+  drive is position-controlled and walks fixed waypoints at a fixed cadence.
 - This package owns no camera class. `SimCameraConfig` is consumed by the `willy_sim` scene and
   perception code and by the calibration routine in `execution`, not here.
 

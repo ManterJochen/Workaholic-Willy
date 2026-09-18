@@ -57,6 +57,10 @@ from src.robot.grasping.motion.execution_policy import (
 )
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 
+#: These tests exercise the connection and frame refusals of a non-mock cuRobo sim arm, which since Step 6 refuses a
+#: motion with neither a live camera world nor a decline before anything else (owner Q1 A), so they decline.
+_DECLINED = "unit double: this test exercises the connection and frame refusals, and no camera world is wired to it"
+
 
 # ---------------------------------------------------------------------------
 # Stage 2 fixtures: typed-move fake
@@ -208,6 +212,99 @@ class PolicyTypedMoveTests(unittest.TestCase):
         self.assertIsNone(report.motion_status)
         self.assertEqual(report.motion_message, "")
         self.assertGreater(len(arm.calls), 0)
+
+
+class _LineArm(_TypedArm):
+    """A typed arm that says what it keeps of a line and records the keyword each move was asked with."""
+
+    def __init__(self, reading: object, *, refuse_lines: bool = False) -> None:
+        super().__init__()
+        self.reading = reading
+        self.refuse_lines = refuse_lines
+        self.linear: list[bool] = []
+
+    def line_motion(self) -> object:
+        return self.reading
+
+    def move(self, pose: Pose, **kwargs: object) -> MotionResult:
+        linear = bool(kwargs.get("linear", False))
+        self.linear.append(linear)
+        if self.refuse_lines and linear:
+            return MotionResult.failed(MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+                                       message="lfinger|fixture:seen_00: mesh distance 0.4 mm")
+        return super().move(pose)
+
+
+class _RecordingGripper:
+    min_width_mm = 0.0
+    max_width_mm = 85.0
+    is_connected = True
+
+    def __init__(self) -> None:
+        self.widths: list[float] = []
+
+    def set_width_mm(self, width_mm: float, **_: object) -> None:
+        self.widths.append(float(width_mm))
+
+    def get_width_mm(self) -> float:
+        return self.widths[-1] if self.widths else self.max_width_mm
+
+
+def _reading(motion: str, reason: str = "the reason the arm gives"):  # noqa: ANN202
+    from src.robot.core.arm_capabilities import LineMotion, LineReading
+
+    return LineReading(LineMotion(motion), reason)
+
+
+class ThePolicyDescendsInOneLineTests(unittest.TestCase):
+    """An arm that keeps lines gets a planned standoff, one line in and lines out."""
+
+    def test_the_final_descent_is_one_checked_line_after_a_planned_standoff(self) -> None:
+        from src.robot.core.arm_capabilities import LineMotion
+
+        arm = _LineArm(_reading("checked"))
+        policy = GraspExecutionPolicy(arm=arm, gripper=None, approach_steps=4)
+
+        report = policy.execute(_grasp())
+
+        self.assertIs(report.outcome, PolicyOutcome.EXECUTED)
+        self.assertEqual([False, True, True], arm.linear)
+        labels = [pose.label for pose in arm.move_calls]
+        self.assertEqual(["approach_00", "approach_03", "retreat"], labels)
+        self.assertIs(LineMotion.CHECKED, report.line_motion)
+
+    def test_an_arm_that_keeps_no_line_is_refused_before_the_pre_open(self) -> None:
+        arm = _LineArm(_reading("not_kept", "the motion planner of this arm is 'ik', which drops the linear flag"))
+        gripper = _RecordingGripper()
+        policy = GraspExecutionPolicy(arm=arm, gripper=gripper, pre_open_width_mm=85.0)  # type: ignore[arg-type]
+
+        report = policy.execute(_grasp())
+
+        self.assertIs(report.outcome, PolicyOutcome.MOTION_FAILED)
+        self.assertIs(report.motion_status, MotionStatus.UNSUPPORTED)
+        self.assertIn("drops the linear flag", report.motion_message)
+        self.assertEqual([], arm.move_calls)
+        self.assertEqual([], gripper.widths)
+
+    def test_the_chunked_retreat_is_lines(self) -> None:
+        arm = _LineArm(_reading("controller_line"))
+        policy = GraspExecutionPolicy(arm=arm, gripper=None, approach_steps=3, retreat_steps=4)
+
+        report = policy.execute(_grasp())
+
+        self.assertIs(report.outcome, PolicyOutcome.EXECUTED)
+        self.assertEqual([False, True, True, True, True, True], arm.linear)
+
+    def test_a_refused_line_closes_nothing(self) -> None:
+        arm = _LineArm(_reading("checked"), refuse_lines=True)
+        gripper = _RecordingGripper()
+        policy = GraspExecutionPolicy(arm=arm, gripper=gripper, pre_open_width_mm=85.0)  # type: ignore[arg-type]
+
+        report = policy.execute(_grasp())
+
+        self.assertIs(report.outcome, PolicyOutcome.MOTION_FAILED)
+        self.assertIs(report.motion_status, MotionStatus.SELF_COLLISION_REJECTED)
+        self.assertEqual([85.0], gripper.widths, "the jaws closed after a refused descent")
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +466,7 @@ class SimDriverSkeletonTests(unittest.TestCase):
         # kinematics RobotConnectionError. The real RMPflow+IK path is exercised on-box.
         arm = IsaacRobotArm(self._config())
         arm._connected = True  # type: ignore[attr-defined]
+        self.enterContext(arm.without_camera_world(_DECLINED))
         result = arm.move(
             Pose(
                 position_mm=np.array([400.0, 0.0, 300.0]),
@@ -383,6 +481,7 @@ class SimDriverSkeletonTests(unittest.TestCase):
     def test_typed_move_invalid_frame_returns_invalid_target(self) -> None:
         arm = IsaacRobotArm(self._config())
         arm._connected = True  # type: ignore[attr-defined]
+        self.enterContext(arm.without_camera_world(_DECLINED))
         result = arm.move(
             Pose(
                 position_mm=np.zeros(3),
@@ -394,6 +493,7 @@ class SimDriverSkeletonTests(unittest.TestCase):
 
     def test_typed_move_when_disconnected_returns_connection_error(self) -> None:
         arm = IsaacRobotArm(self._config())
+        self.enterContext(arm.without_camera_world(_DECLINED))
         result = arm.move(
             Pose(
                 position_mm=np.zeros(3),
@@ -492,7 +592,7 @@ class SimMockModeTests(unittest.TestCase):
 
     def test_mock_stop_is_safe_noop_and_workspace_accepts_base(self) -> None:
         # L3.3: stop() is a best-effort no-op in mock_mode (never raises); is_inside_workspace returns
-        # True (the sim driver owns no box — it is enforced by the preflight WorkspaceGuard per L2.1).
+        # True, because the sim driver owns no box: the preflight WorkspaceGuard enforces it (L2.1).
         arm = IsaacRobotArm(self._config())
         arm.connect()
         arm.stop()  # must not raise

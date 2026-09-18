@@ -75,8 +75,10 @@ python -m src.robot.drivers.ur --measure 4=1 --watch 0 --yes # drive a pin and t
 ## Post-close verification
 
 `ObjectDetectingGripper` is the opt-in extension that answers whether the end-effector is holding
-something. Four drivers implement it and they differ in how much they know:
+something. Five drivers implement it and they differ in how much they know:
 
+- `robotiq` reads gOBJ, which tells fingers that stalled on something from fingers that reached their
+  target.
 - `jaw_io` reads a reed pair, which distinguishes closed on nothing from closed on a part. This is
   the first real post-close evidence available to a solenoid jaw.
 - `onrobot` reads the grip-detected bit out of the status word directly.
@@ -84,7 +86,14 @@ something. Four drivers implement it and they differ in how much they know:
   reports the commanded state, which is the honest answer as far as the driver knows.
 - The simulated suction gripper polls the physical bond.
 
-`robotiq`, `dummy` and `null` do not implement it, so a gate written against it stays inert on those.
+`dummy` and `null` do not implement it, so a gate written against it stays inert on those.
+
+Several of these answer with the command where nothing is wired, so `hold_evidence()`
+(`ReportsHoldEvidence`) says whether the answer is a measurement: `HELD` or `EMPTY` from gOBJ, the
+status word, a vacuum switch, a part sensor, the reeds or the bond, and `UNMEASURED` otherwise and
+always while the jaws are open. `width_is_measured()` (`MeasuresWidth`) says which widths are read
+rather than commanded: the Robotiq, the OnRobot, and the Isaac jaw off mock. The robot's hand verbs
+read these two rather than `is_object_detected()`.
 
 `jaw_io` also has an unusual connect rule, and it differs from the suction driver on purpose. Suction
 asserts off on connect, because releasing a cup that was left latched is cheap. A jaw gripper left
@@ -202,7 +211,7 @@ None of the real drivers reports force or current.
 
 ## See also
 
-- [`../core/`](../core/README.md) for the `Gripper`, `ObjectDetectingGripper` and `GripperVendor` contracts
+- [`../core/`](../core/README.md) for the `Gripper`, `ObjectDetectingGripper`, `ReportsHoldEvidence`, `MeasuresWidth` and `GripperVendor` contracts
 - [`../drivers/ur/`](../drivers/ur/README.md) for the arm that owns the digital I/O these drivers switch
 - [`../grasping/suction/`](../grasping/suction/README.md) for the analytical suction seal and wrench score
 - [`../grasping/collision/`](../grasping/collision/README.md) for the envelope models that share the cup geometry

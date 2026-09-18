@@ -54,11 +54,11 @@ robot:
     # bundle carries, so this bed names that hand; a UR cell whose guard reads hand geometry
     # refuses to build without one.
     model: robotiq_2f85
-    # This bed refuses to build its arm, on purpose. The frame below approaches along flange
-    # +Z, the UR tool axis, and every committed hand model holds the hand along flange +Y,
-    # which is how the Isaac asset mounts it (measured). Until the hand's axis on a real flange
-    # is measured and a model that holds it is committed, the guard and the planner would
-    # check a hand 90 degrees from this one, so the build says that instead.
+    # The frame below approaches along flange +Z, the UR tool axis. Every committed hand model
+    # holds the hand along flange +Y, which is how the Isaac asset mounts it (measured), and the
+    # placement derived from this frame turns the model onto +Z for the guard, the planner and
+    # the self filter, so this bed builds its arm. The frame is declared, not measured: the
+    # first real cell measures approach, clocking and plate at bring up.
     tool_frame:
       # `willy` means the controller runs a bare flange and this driver composes the
       # transform, which is what URSim is: no tool is configured on it. Declaring

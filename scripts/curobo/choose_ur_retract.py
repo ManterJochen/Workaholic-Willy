@@ -84,15 +84,49 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _hands(arm: str, placement: HandPlacement) -> "list[Hand]":
+def _hands(
+    arm: str, placement: HandPlacement, *, hands: "list[str] | None" = None, plates: "list[float] | None" = None,
+) -> "list[Hand]":
+    """The hands and plates this run judges on ``arm``: every registry hand, or the ``hands`` named.
+
+    A mounting face hand is judged at ``plates`` (the shipped 0 and 20 mm when none are named), a flange hand at 0. A
+    hand with a body and no planner map is skipped by name in a run that did not name it, so one hand nobody fitted
+    does not stop the others. A hand named but not judgeable is refused before anything starts.
+    """
     out: list[Hand] = []
-    for hand in available_grippers():
+    for hand in hands or available_grippers():
         if not _hand_bundle(arm, hand).is_file():
             print(f"  {hand}: no bundle carries its meshes, so it cannot be judged; skipped")
             continue
-        plates = MOUNTING_FACE_PLATES_MM if _origin(hand) == "mounting_face" else (0.0,)
-        out.extend(Hand(arm, hand, plate, placement) for plate in plates)
+        if not (MAPS / f"{hand}_gripper_spheres.yml").is_file():
+            print(f"  {hand}: it has a body and no planner map, so the planner cannot be asked about it; skipped. "
+                  f"Fit it: scripts/curobo/fit_cover_spheres.py --hand {hand} --write")
+            continue
+        judged = (tuple(plates) if plates else MOUNTING_FACE_PLATES_MM) if _origin(hand) == "mounting_face" else (0.0,)
+        out.extend(Hand(arm, hand, plate, placement) for plate in judged)
     return out
+
+
+def _refusal_before_anything(hands: "list[str]", plates: "list[float]") -> "str | None":
+    """Why a run naming ``hands`` and ``plates`` cannot judge them, said before any judge or sidecar starts."""
+    from src.robot.safety.planning.environment import hand_mesh_bundle, hand_writers_sentence
+
+    known = available_grippers()
+    for hand in hands:
+        if hand not in known:
+            return f"{hand!r} is not a hand the registry holds; it holds {', '.join(known)}"
+        if not hand_mesh_bundle(hand).is_file():
+            return f"{hand} has no body to judge: {hand_writers_sentence(hand)}"
+        if not (MAPS / f"{hand}_gripper_spheres.yml").is_file():
+            return f"{hand} has no planner map, so the planner cannot be asked about it: fit it with scripts/curobo/fit_cover_spheres.py --hand {hand} --write"
+    if any(plate < 0.0 for plate in plates):
+        return f"a plate is a thickness, and {min(plates):g} mm is not one"
+    if hands and any(plate != 0.0 for plate in plates) and all(_origin(hand) != "mounting_face" for hand in hands):
+        return (
+            f"{', '.join(hands)} start at the flange, so no plate sits between them and it: --plate-mm "
+            f"{', '.join(f'{plate:g}' for plate in plates)} is judged only for a hand whose map starts at its mounting face"
+        )
+    return None
 
 
 class PlannerJudge:
@@ -115,7 +149,7 @@ class PlannerJudge:
         }}
         # Always stated and never left out. A hand whose map starts at its own mounting face refuses a cell that
         # does not say what sits between that face and the flange, and an empty list is the way to say "nothing does".
-        gripper["coupling_plates_mm"] = [float(plate_mm)] if plate_mm else []
+        gripper["coupling_plates"] = ([{"name": "plate", "thickness_mm": float(plate_mm)}] if plate_mm else [])
         link = HandLink.from_hand(planner_hand(RobotConfig.model_validate(
             {"vendor": "ur", "gripper": gripper})))
         self.client = CuroboPlanClient(
@@ -202,7 +236,8 @@ def _report_cell_poses(hands: "list[Hand]") -> None:
         print(f"  [report] {name}: {worst[0]:.1f} mm with {worst[1]} at {worst[2]}")
 
 
-def main(argv: "list[str] | None" = None) -> int:
+def parser() -> argparse.ArgumentParser:
+    """The chooser's command line, on its own so a printed command can be parsed back."""
     parser = argparse.ArgumentParser(description="Choose and commit one retract per arm, judged on the exact meshes.")
     parser.add_argument("arms", nargs="*", help="arms to judge; every arm with a committed bundle when empty")
     parser.add_argument("--planner-margin-mm", type=float, default=4.0,
@@ -221,11 +256,27 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--max-steps", type=int, default=6, help="how many steps the search may walk on each joint")
     parser.add_argument("--tool-rotation-xyzw", type=float, nargs=4, default=list(SIM_TOOL_ROTATION_XYZW))
     parser.add_argument("--check", action="store_true", help="recompute and exit 1 when the committed table differs")
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    parser.add_argument("--hand", action="append", default=None,
+                        help="judge only this registry hand (repeatable); every other row of the table stays as it is")
+    parser.add_argument("--plate-mm", action="append", type=float, default=None,
+                        help="judge a mounting face hand at this plate (repeatable); the shipped 0 and 20 mm when none is named")
+    return parser
 
+
+def main(argv: "list[str] | None" = None) -> int:
+    args = parser().parse_args(sys.argv[1:] if argv is None else argv)
+
+    hands_named = list(args.hand or [])
+    plates_named = [float(v) for v in args.plate_mm or []]
+    refused_up_front = _refusal_before_anything(hands_named, plates_named)
+    if refused_up_front is not None:
+        print(f"  {refused_up_front}; nothing judged, nothing written", file=sys.stderr)
+        return 2
     placement = HandPlacement.from_quaternion_xyzw(tuple(args.tool_rotation_xyzw))
     arms = args.arms or [arm for arm in ANCHORS if collision_mesh_bundle(arm).is_file()]
-    skipped = [arm for arm in ANCHORS if arm not in arms]
+    # From the files, not from which arms this run names, so a run for one arm does not write every other arm down
+    # as having no bundle.
+    skipped = [arm for arm in ANCHORS if not collision_mesh_bundle(arm).is_file()]
     envelope = planner_envelope_rad()
 
     table: dict[str, Any] = {
@@ -238,7 +289,7 @@ def main(argv: "list[str] | None" = None) -> int:
             "max_steps": args.max_steps,
             "placement": f"{placement.approach}{placement.closing}",
             "tool_rotation_xyzw": [float(v) for v in args.tool_rotation_xyzw],
-            "plates_mm_judged_for_mounting_face_hands": list(MOUNTING_FACE_PLATES_MM),
+            "plates_mm_judged_for_mounting_face_hands": sorted(plates_named) if plates_named else list(MOUNTING_FACE_PLATES_MM),
             "engine": "",
             "arms_without_a_bundle": skipped,
             "planner_margin_mm": float(args.planner_margin_mm),
@@ -247,8 +298,11 @@ def main(argv: "list[str] | None" = None) -> int:
     }
 
     refused: list = []
+    #: The pairs the planner could not be asked about. A refusal for them is recorded, and it replaces nothing the
+    #: table holds: an arm with no descriptor on this box is not a judgement about it.
+    not_asked: list = []
     for arm in arms:
-        hands = _hands(arm, placement)
+        hands = _hands(arm, placement, hands=hands_named or None, plates=plates_named or None)
         if not hands:
             print(f"  {arm} has no hand to judge; nothing written")
             return 2
@@ -263,10 +317,10 @@ def main(argv: "list[str] | None" = None) -> int:
             try:
                 planner = PlannerJudge(arm, hand.hand, hand.plate_mm, args.tool_rotation_xyzw, margin)
             except Exception as exc:  # noqa: BLE001 (an arm with no descriptor cannot be asked, and says so)
-                # ur16e lands here: it has a bundle and no descriptor, because its vendor sphere map does not
-                # describe that arm. A pair the planner cannot be asked about has no retract, and saying which
-                # of the two halves is missing is the whole point of writing it down.
+                # An arm with a bundle and no descriptor lands here. A pair the planner cannot be asked about has
+                # no retract, and saying which of the two halves is missing is the whole point of writing it down.
                 print(f"  NOT ASKED: {type(exc).__name__}: {exc}", flush=True)
+                not_asked.append((arm, hand.hand, float(hand.plate_mm), float(margin)))
                 refused.append({"arm": arm, "hand": hand.hand, "plate_mm": float(hand.plate_mm),
                                 "planner_margin_mm": float(margin),
                                 "reason": f"the planner could not be asked: {exc}"})
@@ -331,6 +385,22 @@ def main(argv: "list[str] | None" = None) -> int:
                   f"{mesh_pair}, spheres {depth} mm", flush=True)
 
     table["rule"]["pairs_with_no_retract"] = refused
+    # One run merges into TABLE rather than over it. A run judges some arms at one placement and every other row
+    # stays, so judging a real flange's +Z never throws away the +Y rows the sim cell starts from.
+    if TABLE.is_file():
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        from src.robot.safety.planning.robot.retract_table import retract_changes
+
+        committed = yaml.safe_load(TABLE.read_text(encoding="utf-8")) or {}
+        try:
+            table = merge_judged(committed, table, not_asked=not_asked)
+        except ValueError as exc:
+            print(f"  {exc}; nothing written")
+            return 1
+        # What this run moved, and the evidence it invalidates, printed before --check or a write.
+        for change in retract_changes(committed, table):
+            print(f"  [moved] {change.render()}")
 
     text = yaml.safe_dump(table, sort_keys=False, default_flow_style=False)
     if args.check:
@@ -343,7 +413,8 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"{TABLE.name} is what this box measures")
         return 0
     TABLE.write_text(text, encoding="utf-8")
-    print(f"\nwrote {TABLE}: {len(table['retracts'])} arm and hand pair(s), {len(refused)} with no retract")
+    print(f"\nwrote {TABLE}: {len(table['retracts'])} arm and hand pair(s) over every placement, {len(refused)} with no "
+          f"retract in this run")
     print(json.dumps({f"{row['arm']}/{row['hand']}@{row['plate_mm']:g}": row['steps']
                       for row in table['retracts']}))
     return 0

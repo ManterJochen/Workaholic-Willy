@@ -289,7 +289,7 @@ class Console:
         from src.robot.execution.real_cell.preflight import run_config_preflight
 
         config, robot = self.resolved()
-        return run_config_preflight(robot, camera=config.camera)
+        return run_config_preflight(robot, camera=config.camera, data_dir=self.root)
 
     def require_idle(self) -> None:
         """Guard for anything that changes the cell. Raises :class:`RunLocked`, never queues."""

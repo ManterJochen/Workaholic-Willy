@@ -53,9 +53,12 @@ from typing import Any
 import numpy as np
 
 from ._ur_kinematics import UR_DH_TABLES_M
+from .planning._declared_body import Box
+from .planning._hand_bundle import HAND_PARTS, hand_bundle_refusal
 from .planning._hand_placement import HandPlacement
 from .planning.environment import (
     COLLISION_MESH_DIR,
+    hand_writers_sentence,
     compose_collision_meshes,
     hand_mesh_bundle,
     import_collision_engine,
@@ -79,12 +82,14 @@ _STATUS_HINTS = {
     "no_engine": "Install Coal (WILLY_COAL_PREFIX) or python-fcl; expected/accepted on macOS + CI.",
     "no_hand_bundle": (
         "the hand robot.gripper.model names has no bundle of its own, safety/data/{hand}_hand_meshes.npz, to "
-        "compose onto this arm. Bake it: python scripts/grippers/bake_gripper_variant.py <hand> --write. "
-        "Until then this cell has no exact-mesh self-collision authority."
+        "compose onto this arm: "
+        + hand_writers_sentence("{hand}")
+        + ". Until then this cell has no exact-mesh self-collision authority."
     ),
-    "variant_model_mismatch": (
-        "the hand's bundle records only other arms as proven (hand__admitted_arms): nothing has shown that this "
-        "hand composed onto this arm is where the hand is. Prove the pairing before this arm is guarded with it."
+    "hand_bundle_refused": (
+        "the hand bundle safety/data/{hand}_hand_meshes.npz is not a hand the guard can place: it holds a part other "
+        "than gripper, lfinger and rfinger, misses one, carries a malformed array, or holds its fingers off the model's "
+        "+Y. Write it again with its axes stated. Until then this cell has no exact-mesh self-collision authority."
     ),
 }
 
@@ -151,8 +156,15 @@ class _EngineAdapter:
 class MeshSelfCollisionBackend:
     """Holds the per-link BVH models and runs the exact pairwise and fixture distance checks."""
 
-    def __init__(self, adapter: _EngineAdapter, meshes: dict[str, tuple[np.ndarray, np.ndarray, int]]) -> None:
+    def __init__(
+        self, adapter: _EngineAdapter, meshes: dict[str, tuple[np.ndarray, np.ndarray, int]],
+        wrist_parts: "frozenset[str]" = frozenset(),
+    ) -> None:
         self._a = adapter
+        #: Parts a wrist camera adds on frame 6. They are checked against wrist_2 on frame 5, which the
+        #: pair rule skips for everything else on the flange, because a housing sticks out sideways and
+        #: can reach it.
+        self._wrist = frozenset(wrist_parts)
         self.engine = adapter.kind  # 'coal' or 'fcl', surfaced for telemetry
         self._models: dict[str, Any] = {}
         self._frame: dict[str, int] = {}
@@ -201,11 +213,14 @@ class MeshSelfCollisionBackend:
                 wc[name] = R @ self._sph_c[name] + t
         # ---- link against link, skipping frames within 1 of each other, which are the
         # adjacent joints and the rigid wrist and gripper cluster ----
+        # A wrist camera's part is skipped only on its own frame, so against wrist_2, one frame in, it
+        # stays checked.
         for i in range(len(self._names)):
             ni = self._names[i]
             for j in range(i + 1, len(self._names)):
                 nj = self._names[j]
-                if abs(self._frame[ni] - self._frame[nj]) <= 1:
+                gap = abs(self._frame[ni] - self._frame[nj])
+                if gap == 0 or (gap == 1 and ni not in self._wrist and nj not in self._wrist):
                     continue
                 if broadphase and (float(np.linalg.norm(wc[ni] - wc[nj]))
                                    - self._sph_r[ni] - self._sph_r[nj] > min_distance_mm):
@@ -237,10 +252,15 @@ def mesh_backend_status(
     It returns ``"ok"``; ``"unknown_model"``, where there is no bundled DH chain and the
     link meshes cannot be placed; ``"no_bundle"``, where there is no
     ``{model}_collision_meshes.npz``; ``"no_hand_bundle"``, where the named hand has no
-    ``{hand}_hand_meshes.npz`` to compose onto the arm; ``"variant_model_mismatch"``,
-    where the hand's bundle records only other arms as proven; or ``"no_engine"``, where
+    ``{hand}_hand_meshes.npz`` to compose onto the arm; ``"hand_bundle_refused"``, where it
+    has one and ``_hand_bundle.hand_bundle_refusal`` refuses it; or ``"no_engine"``, where
     neither Coal nor python-fcl imports, which is the accepted condition on a host
     without either.
+
+    There is no ``variant_model_mismatch`` token. Which arms a hand may be composed onto is
+    measured, one evidence file per combination (``planning/evidence.py``), and a guard that
+    also asked a list of arms recorded in the bundle would be a second admission beside the
+    evidence, answering for arms nobody measured in either direction.
 
     ``mesh_name`` names the hand whose own bundle is composed onto the arm at load, and
     ``None`` is the arm bundle as it stands, which carries the 2F-85.
@@ -263,34 +283,19 @@ def mesh_backend_status(
         hand_path = folder / hand_mesh_bundle(mesh_name).name
         if not hand_path.exists():
             return "no_hand_bundle"
-        if model.lower() not in _admitted_arms(hand_path):
-            return "variant_model_mismatch"
+        with np.load(hand_path, allow_pickle=True) as data:
+            if hand_bundle_refusal({key: data[key] for key in data.files}, name=hand_path.name) is not None:
+                return "hand_bundle_refused"
     mod, kind = import_collision_engine()
     if mod is None or kind is None:
         return "no_engine"
     return "ok"
 
 
-#: The record a hand bundle carries of the arms it was proven on: for the three committed hands, the
-#: arms whose per arm file it reproduced when it was cut; for a freshly baked hand, none. Any other
-#: arm has nothing behind it.
-_ADMITTED_KEY = "hand__admitted_arms"
-
-
-def _admitted_arms(hand_path: Path) -> frozenset[str]:
-    """The arms ``hand_path`` was proven on, lower case. An unreadable or unstamped bundle admits none."""
-    try:
-        with np.load(hand_path) as data:
-            if _ADMITTED_KEY not in data.files:
-                return frozenset()
-            return frozenset(str(arm).lower() for arm in np.asarray(data[_ADMITTED_KEY]).reshape(-1))
-    except Exception:  # noqa: BLE001 (a bundle nobody can read proves no pairing)
-        return frozenset()
-
-
 #: The bundle arrays that belong to the hand rather than the arm. `wrist_3` shares their frame and
-#: is arm, which is why this is a list of names and not "everything at frame 6".
-_HAND_PARTS = ("gripper", "lfinger", "rfinger")
+#: is arm, which is why this is a list of names and not "everything at frame 6". Owned by
+#: ``planning/_hand_bundle``.
+_HAND_PARTS = HAND_PARTS
 
 #: The npz key a standalone-asset bake stamps, and the value that obliges a reader to add a plate.
 _ORIGIN_KEY = "gripper__origin"
@@ -308,6 +313,8 @@ def make_backend(
     coupling_mm: float = 0.0,
     *,
     placement: HandPlacement | None = None,
+    coupling_boxes: "tuple[Box, ...] | list[Box]" = (),
+    wrist_parts: "dict[str, np.ndarray] | None" = None,
 ) -> MeshSelfCollisionBackend | None:
     """Build the mesh backend for ``model``, Coal where available and python-fcl otherwise, or ``None``.
 
@@ -328,8 +335,15 @@ def make_backend(
     ``placement`` is where the resolved hand sits on the flange, as ``PlannerHand``
     resolved it, and it is applied to the hand parts after the plate. ``None`` is a guard
     built without a hand, on the hand models' own axes. A refused placement never reaches
-    here, because the cell refuses to build first.
+    here, because the cell refuses to build first. ``coupling_boxes`` are the plates the cell
+    declared with a cross section, added as parts of their own (:func:`composed_parts`).
+
+    ``wrist_parts`` are a wrist camera's parts as ``body_link.WristBody.guard_parts`` gives them
+    (``<name>__v``, ``__f``, ``__frame``), added beside what :func:`composed_parts` holds and
+    checked against wrist_2. A part whose name is already held is refused before any engine is
+    built, so nothing is overwritten in silence.
     """
+    wrist = _wrist_meshes(wrist_parts or {})
     status = mesh_backend_status(model, mesh_dir, mesh_name)
     if status != "ok":
         _LOGGER.warning(
@@ -342,6 +356,46 @@ def make_backend(
     mod, kind = import_collision_engine()
     if mod is None or kind is None:  # narrowing only; status "ok" already proved the import
         return None
+    meshes = composed_parts(model, mesh_dir, mesh_name, coupling_mm,
+                            placement=placement, coupling_boxes=coupling_boxes)
+    clash = sorted(set(meshes) & set(wrist))
+    if clash:
+        raise ValueError(f"the wrist camera part(s) {clash} are already held by the guard's arm, hand or plates")
+    meshes.update(wrist)
+    # A cell without a camera hands the backend no wrist argument at all; only a camera's parts are named.
+    marked: dict[str, frozenset[str]] = {"wrist_parts": frozenset(wrist)} if wrist else {}
+    try:
+        return MeshSelfCollisionBackend(_EngineAdapter(mod, kind), meshes, **marked)
+    except Exception:  # noqa: BLE001 (any engine construction failure falls back to capsules)
+        return None
+
+
+def _wrist_meshes(parts: "dict[str, np.ndarray]") -> dict[str, tuple[np.ndarray, np.ndarray, int]]:
+    """``<name>__v``/``__f``/``__frame`` arrays as the guard's ``(vertices, faces, frame)`` parts."""
+    names = sorted({key.rsplit("__", 1)[0] for key in parts})
+    return {name: (np.asarray(parts[f"{name}__v"], dtype=np.float64), np.asarray(parts[f"{name}__f"]),
+                   int(np.asarray(parts[f"{name}__frame"]).reshape(-1)[0]))
+            for name in names}
+
+
+def composed_parts(
+    model: str,
+    mesh_dir: str | None = None,
+    mesh_name: str | None = None,
+    coupling_mm: float = 0.0,
+    *,
+    placement: HandPlacement | None = None,
+    coupling_boxes: "tuple[Box, ...] | list[Box]" = (),
+) -> dict[str, tuple[np.ndarray, np.ndarray, int]]:
+    """The arrays the exact-mesh guard judges, placed, before any engine is asked to hold them.
+
+    Separate from :func:`make_backend` so the combination evidence hashes what the guard holds
+    (``planning.evidence.guard_sha256``) rather than a second assembly of the same idea. A hash
+    with two producers that can drift apart proves nothing about the cell it admits. A wrist
+    camera's parts, which the guard also holds, are not here: the evidence is keyed without the
+    camera, and the planner start proves the camera's cover instead
+    (``body_link.wrist_body_refusal``).
+    """
     data = compose_collision_meshes(model, mesh_name, mesh_dir)
     names = sorted({k.split("__")[0] for k in data if not k.endswith("__origin")})
     # A mounting-face bundle is not where the hand is. It starts at the gripper's own mounting
@@ -354,11 +408,11 @@ def make_backend(
         _LOGGER.warning(
             "%s is stamped origin=%r, so its gripper meshes start at the hand's MOUNTING FACE and a "
             "coupling plate has to be added before they are where the hand is. "
-            "The coupling is 0.0 (robot.gripper.coupling_plates_mm sums to nothing, or the guard was "
+            "The coupling is 0.0 (robot.gripper.coupling_plates sums to nothing, or the guard was "
             "built without a hand), so nothing was added and this guard models "
             "the hand one plate closer to the flange than it is. That is the conservative direction "
             "for arm-versus-hand, and the planner's hand link reads the same plates, so it models the "
-            "hand there too. Measure the plate once and set robot.gripper.coupling_plates_mm and "
+            "hand there too. Measure the plate once and set robot.gripper.coupling_plates and "
             "robot.gripper.tool_frame.offset_mm from it.",
             f"{mesh_name}_hand_meshes.npz", origin,
         )
@@ -366,10 +420,44 @@ def make_backend(
     for n in names:
         verts = place_hand_vertices(n, data[f"{n}__v"], origin=origin, coupling_mm=coupling_mm, placement=placement)
         meshes[n] = (verts, data[f"{n}__f"], int(data[f"{n}__frame"][0]))
-    try:
-        return MeshSelfCollisionBackend(_EngineAdapter(mod, kind), meshes)
-    except Exception:  # noqa: BLE001 (any engine construction failure falls back to capsules)
-        return None
+    # The plates a cell measured across, as bodies. They sit between the flange and the hand's
+    # mounting face, nearer the wrist than the hand is. A plate that declared only a thickness is
+    # not here: it still places the hand, and the cell names it instead.
+    for part, arrays in _coupling_parts(coupling_boxes, placement).items():
+        meshes[part] = arrays
+    return meshes
+
+
+#: The frame a coupling body sits in: tool0, which is DH frame 6 and the hand's own. A plate is
+#: bolted to the flange, so the guard's pair rule skips it against wrist_3 and wrist_2 exactly as it
+#: skips the hand.
+_COUPLING_FRAME = 6
+
+
+def _coupling_parts(
+    boxes: "tuple[Box, ...] | list[Box]", placement: HandPlacement | None,
+) -> dict[str, tuple[np.ndarray, np.ndarray, int]]:
+    """The declared plates as guard parts, turned by the placement like the hand they carry.
+
+    The boxes are written in the hand model's own axes, where the stack grows along the approach, so
+    a declared tool frame turns them with everything else. There is no plate shift: the boxes already
+    sit between the flange at zero and the hand's mounting face one stack out.
+    """
+    if not len(boxes):
+        return {}
+    from .planning._declared_body import boxes_to_parts
+
+    arrays = boxes_to_parts(list(boxes), frame=_COUPLING_FRAME)
+    turn = placement is not None and not placement.is_identity
+    parts: dict[str, tuple[np.ndarray, np.ndarray, int]] = {}
+    for key in [k for k in arrays if k.endswith("__v")]:
+        name = key[: -len("__v")]
+        vertices = np.asarray(arrays[key], dtype=np.float64)
+        if turn:
+            assert placement is not None  # narrowing only
+            vertices = vertices @ np.asarray(placement.rotation, dtype=np.float64).T
+        parts[name] = (vertices, np.asarray(arrays[f"{name}__f"]), _COUPLING_FRAME)
+    return parts
 
 
 def place_hand_vertices(

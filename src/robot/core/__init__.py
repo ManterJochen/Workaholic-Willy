@@ -6,8 +6,8 @@ package that pipelines, planners and the application layer depend on directly.
 
 Public exports:
 
-* :class:`RobotArm`, :class:`Gripper`, :class:`ObjectDetectingGripper` are the driver
-  `Protocol`s.
+* :class:`RobotArm`, :class:`Gripper`, :class:`ObjectDetectingGripper` and
+  :class:`StoppableGripper` are the driver `Protocol`s.
 * :class:`RobotVendor`, :class:`GripperVendor` are the canonical driver identifiers.
 * :class:`JointPositions` is the typed joint-vector wrapper, in radians.
 * :class:`RobotCapabilities` holds the declarative driver feature flags.
@@ -17,7 +17,8 @@ Public exports:
   say whether a camera world stood behind a motion, carried on its result;
   :func:`without_camera_world`, :func:`active_decline`, :func:`resolve_camera_world`,
   :func:`stamp_result` and the :class:`DeclinesCameraWorld` capability say how a driver
-  declines, reads a decline and stamps its motions.
+  declines, reads a decline and stamps its motions, and :func:`camera_world_refusal` with
+  ``NO_CAMERA_WORLD_MESSAGE`` says which stamped motions a driver refuses before they move.
 * :class:`RobotError` and its subclasses are the vendor-neutral error hierarchy.
 
 The numerics contract mirrors :mod:`src.geometry`: translations in millimetres,
@@ -39,17 +40,20 @@ from .arm_capabilities import (
 )
 from .camera_world import (
     DECLINE_ON_A_LIVE_WORLD_MESSAGE,
+    NO_CAMERA_WORLD_MESSAGE,
     CameraWorldDecline,
     CameraWorldStamp,
     CameraWorldUse,
     DeclinesCameraWorld,
     active_decline,
+    camera_world_refusal,
     resolve_camera_world,
     stamp_result,
     without_camera_world,
 )
 from .capabilities import RobotCapabilities
 from .errors import (
+    PerceptionFrameMoved,
     CameraWorldUnavailable,
     IsaacNotAvailableError,
     RobotConnectionError,
@@ -59,7 +63,7 @@ from .errors import (
     RobotMotionRejected,
     RobotSingularityRisk,
 )
-from .gripper import Gripper, ObjectDetectingGripper
+from .gripper import Gripper, ObjectDetectingGripper, StoppableGripper
 from .gripper_vendor import GripperVendor
 from .joint_positions import JointPositions
 from .motion_result import (
@@ -76,6 +80,7 @@ __all__ = [
     "CameraWorldStamp",
     "CameraWorldUse",
     "DECLINE_ON_A_LIVE_WORLD_MESSAGE",
+    "NO_CAMERA_WORLD_MESSAGE",
     "DeclinesCameraWorld",
     "CameraWorldUnavailable",
     "DigitalIOPort",
@@ -88,6 +93,7 @@ __all__ = [
     "MotionStatus",
     "NO_PLAN_FAIL_SAFE_MESSAGE",
     "ObjectDetectingGripper",
+    "StoppableGripper",
     "RobotArm",
     "RobotCapabilities",
     "RobotConnectionError",
@@ -105,6 +111,7 @@ __all__ = [
     "SupportsRobotStatus",
     "Wrench",
     "active_decline",
+    "camera_world_refusal",
     "resolve_camera_world",
     "stamp_result",
     "without_camera_world",

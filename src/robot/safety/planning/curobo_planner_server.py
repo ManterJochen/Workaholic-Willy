@@ -18,13 +18,16 @@ through the client, or standalone:
 Protocol, one JSON object per line:
   startup -> {"status":"ready","joint_names":[...],"default_q":[...],"dt":float,"start_pos_m":[...],
               "start_quat_wxyz":[...],"descriptor":{...}|null,"arm_descriptor_sha256":hex,
-              "urdf_sha256":hex|null,"composed_sha256":hex,"bodies":[...],"measure_only":true?,"refusal":{...}?}
+              "urdf_sha256":hex|null,"composed_sha256":hex,"bodies":[...],"wrist_bodies":[...]?,
+              "wrist_bodies_sha256":hex?,"measure_only":true?,"refusal":{...}?}
               |   {"status":"error","reason":str,"refusal":{...}?}
 
 The robot config is loaded once and composed as one dict by ``_curobo_body_links``: the
 descriptor named on the command line, the guard's margin, then a payload link. The two
 sha256 fields over configs are canonical JSON, and the URDF one is over the file the
-kinematics resolved with line endings normalised.
+kinematics resolved with line endings normalised. A wrist camera's body is loaded on top,
+and ``composed_sha256`` is taken over the config without it, the one the combination
+evidence names.
   request <- {"start_joints":[6 rad],"goal_pos_m":[x,y,z],"goal_quat_wxyz":[w,x,y,z]}
              {"cmd":"fk","joints":[6 rad]}   |   {"cmd":"shutdown"}
              {"cmd":"check_js","joints":[[6 rad],...]}   |   {"cmd":"explain_js","joints":[[6 rad],...]}
@@ -220,9 +223,10 @@ try:
     from _curobo_body_links import (  # type: ignore[import-not-found]
         ENV_BODY_LINKS,
         ENV_DEFAULT_Q,
+        ENV_WRIST_BODY_LINKS,
         body_report,
         canonical_sha256,
-        compose_with_counts,
+        compose_for_cell,
     )
     from _curobo_margin import ENV_SELF_COLLISION_MARGIN_MM  # type: ignore[import-not-found]
     from _curobo_pairs import SphereLayout, deepest_pairs  # type: ignore[import-not-found]
@@ -269,8 +273,16 @@ try:
     _chosen_q = json.loads(_default_q_env) if _default_q_env else None
     if _chosen_q is not None and not isinstance(_chosen_q, list):
         raise ValueError(f"{ENV_DEFAULT_Q} holds no JSON list of joint values")
-    _COMPOSED, _margin_links, _attach_added = compose_with_counts(
-        _raw, bodies=_bodies, margin_mm=_margin_mm, attach_spheres=_attach_spheres, default_q=_chosen_q,
+    # A wrist camera's body, loaded on top of the config the combination evidence names. The
+    # evidence is keyed without it, so the hash below is taken over the config without it, and
+    # compose_for_cell refuses a camera whose composition wrote anywhere but its own links. No
+    # wrist body leaves the composition as it is for a cell without a camera.
+    _wrist_sent = json.loads(os.environ.get(ENV_WRIST_BODY_LINKS) or "[]")
+    if not isinstance(_wrist_sent, list) or not all(isinstance(_body, dict) for _body in _wrist_sent):
+        raise ValueError(f"{ENV_WRIST_BODY_LINKS} holds no JSON list of body links")
+    _COMPOSED, _EVIDENCE, _margin_links, _attach_added, _wrist_links = compose_for_cell(
+        _raw, bodies=_bodies, wrist_bodies=_wrist_sent, margin_mm=_margin_mm, attach_spheres=_attach_spheres,
+        default_q=_chosen_q,
     )
     if _chosen_q is not None:
         print(f"[retract] {[round(float(v), 4) for v in _chosen_q]} from the cell, for this arm and "
@@ -279,6 +291,17 @@ try:
     for _row in _body_rows:
         print(f"[bodies] {_row['link']} under {_row['parent']}: {_row['spheres']} sphere(s) at "
               f"{_row['fixed_transform']}", file=sys.stderr, flush=True)
+    # What the camera was sent with rides along, so the client can prove the cover it loaded and
+    # a person can read which camera and which dimensions the planner holds.
+    _wrist_rows = [
+        {**_row, **{_key: _sent.get(_key) for _key in ("rig_id", "model", "margin_mm", "boxes")}}
+        for _row, _sent in zip(body_report(_COMPOSED, _wrist_links), _wrist_sent)
+    ]
+    for _row in _wrist_rows:
+        print(f"[wrist] {_row['link']} ({_row['model']}, grown {_row['margin_mm']} mm) under {_row['parent']}: "
+              f"{_row['spheres']} sphere(s)", file=sys.stderr, flush=True)
+    _WRIST: dict = ({"wrist_bodies": _wrist_rows, "wrist_bodies_sha256": canonical_sha256(_wrist_rows)}
+                    if _wrist_rows else {})
     if _margin_mm > 0.0:
         if _margin_links:
             print(f"[margin] +{_margin_mm:g} mm guard clearance on {_margin_links} links", file=sys.stderr, flush=True)
@@ -300,7 +323,9 @@ try:
     # the composed config as canonical JSON, and the URDF the kinematics resolved.
     _descriptor = _raw.get("_provenance")
     _arm_descriptor_sha256 = canonical_sha256(_raw.get("robot_cfg", _raw))
-    _composed_sha256 = canonical_sha256(_COMPOSED)
+    # Over the evidence config: the loaded one without the wrist camera, which for a cell
+    # without one is the loaded config itself.
+    _composed_sha256 = canonical_sha256(_EVIDENCE)
     _planner = MotionPlanner(
         MotionPlannerCfg.create(
             robot=copy.deepcopy(_COMPOSED),
@@ -457,7 +482,7 @@ if _READY_REFUSAL is not None:
     if not _MEASURE_ONLY:
         _emit({"status": "error", "reason": _refusal_sentence(_READY_REFUSAL), "refusal": _READY_REFUSAL,
                "descriptor": _descriptor if isinstance(_descriptor, dict) else None,
-               "arm_descriptor_sha256": _arm_descriptor_sha256, "composed_sha256": _composed_sha256})
+               "arm_descriptor_sha256": _arm_descriptor_sha256, "composed_sha256": _composed_sha256, **_WRIST})
         sys.exit(1)
 #: Said in the ready line so a measuring client can read the refusal a driver would have
 #: been stopped by, and so a client that wanted a planner refuses this sidecar rather than
@@ -470,7 +495,7 @@ _emit({"status": "ready", "joint_names": list(_planner.joint_names), "default_q"
        "dt": _DT, "start_pos_m": _sp, "start_quat_wxyz": _sq,
        "descriptor": _descriptor if isinstance(_descriptor, dict) else None,
        "arm_descriptor_sha256": _arm_descriptor_sha256, "urdf_sha256": _urdf_sha256,
-       "composed_sha256": _composed_sha256, "bodies": _body_rows, **_MEASURING})
+       "composed_sha256": _composed_sha256, "bodies": _body_rows, **_WRIST, **_MEASURING})
 
 for _line in sys.stdin:
     _line = _line.strip()
@@ -622,8 +647,9 @@ for _line in sys.stdin:
     if cmd == "attach":
         # Hang a box on the tool, so every later plan routes the carried part around
         # the world as well. dims_m are full side lengths, and pose is
-        # [x, y, z, qw, qx, qy, qz] in the tool frame. A UR hand approaches along tool0
-        # +Y, so the client sends the part's centre past the fingertips on +Y.
+        # [x, y, z, qw, qx, qy, qz] in the tool frame. The client sends the part's centre
+        # past the fingertips along the hand's placed approach: +Y on the Isaac cell, +Z on
+        # a UR declaring its own flange axis.
         #
         # It is refused while measuring: a payload changes the robot the gate is measuring,
         # and the evidence names none.

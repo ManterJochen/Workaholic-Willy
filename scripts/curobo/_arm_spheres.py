@@ -1,7 +1,8 @@
 """Which arm spheres a cuRobo UR descriptor keeps, judged against the committed mesh of their own link.
 
-``build_ur_config.py`` starts from Isaac's Lula spheres and adds spheres fitted to the arm's committed collision
-bundle. Isaac's vendor spheres reach well past the parts they stand for: wrist_1 spheres up to 55.8 mm past the link's
+``build_ur_config.py`` reads the committed cover fit, so this judgement runs only for an arm with no fit, on the Lula
+fallback: the build starts from Isaac's Lula spheres and adds spheres fitted to the arm's committed collision bundle.
+Isaac's vendor spheres reach well past the parts they stand for: wrist_1 spheres up to 55.8 mm past the link's
 hull on ur10, a forearm sphere 79.6 mm on ur10e, while every surface fit sphere reaches 10 mm. A descriptor that keeps
 them starts in self collision at wrist_1 where the exact meshes are clear, and then cannot plan at all: five of the 21
 descriptors do exactly that.

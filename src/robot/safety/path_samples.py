@@ -41,6 +41,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 __all__ = [
+    "LINE_MAX_CHORD_OFF_MM",
+    "LINE_MAX_JOINT_STEP_RAD",
     "MAX_PATH_SAMPLES",
     "LineSamples",
     "PathSamples",
@@ -61,6 +63,28 @@ __all__ = [
 #: is a path somebody should have planned in legs. It is not a number to tune: if a real move ever
 #: reaches it, the thing to change is the move or the margin, not this.
 MAX_PATH_SAMPLES = 20_000
+
+#: How far one joint may turn between two neighbouring samples of a checked line before the line is
+#: taken to have left the arm's branch. On the Isaac dense cell a 10 mm step turns 0.03 rad and the
+#: jump into the other wrist family 3.14 rad; on URSim the controller's own IK turns the elbow and
+#: wrist 1 by about 0.026 rad a step, against each other. Both drivers read this one number.
+#:
+#: It is not the path gate's step bound. The sum |dq_j| * r_j bounds how far any point of the arm can
+#: move, and it adds two joints turning against each other as if both carried the arm the same way:
+#: on URSim a continuous 50 mm lift sums to 27 to 31 mm a step while no link origin moves more than
+#: 10 mm, so a line gate reading the sum refuses every step as a branch change. A step the sum cannot
+#: vouch for is filled in joint space instead.
+LINE_MAX_JOINT_STEP_RAD = 0.35
+
+#: How far the straight joint-space line between two neighbouring solutions of a controller-run line
+#: may put the flange off the line the controller runs, measured at its midpoint. A joint jump is not
+#: the only branch change: near a stretched elbow the two elbow branches are 0.30 rad apart and reach
+#: the same flange pose, and nothing turns more than ``LINE_MAX_JOINT_STEP_RAD``. On the ur5e chain a
+#: continuous 10 mm step of the URSim line puts the midpoint 0.03 mm off, a 35 mm shoulder step
+#: 0.22 mm, and that elbow flip 2.29 mm. It is the check that a judged fill describes what moveL
+#: executes, so it belongs where a controller runs the line; where the driver walks the joint line
+#: itself, the fill is what executes.
+LINE_MAX_CHORD_OFF_MM = 1.0
 
 #: Absorbs the float noise of an exact multiple: ``999.0`` computed as ``(999 / 850) * 850`` can land
 #: a machine epsilon above, and a plain ceil would then ask for one step more than the geometry needs.

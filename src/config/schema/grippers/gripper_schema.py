@@ -4,9 +4,10 @@ A registry file holds, for one hand, the numbers the labeller's ``JawModel``
 (``datagen/grasps/verdict.py``), the network's ``JAW_GEOMETRY``
 (``src/robot/grasping/deep/net/gripper.py``), the runtime envelope
 ``grasping.gripper_geometry.parallel_jaw`` and the actuation widths in ``robot.gripper`` state, and
-``robot.gripper.model`` names the file. No consumer reads the registry: the hand a cell uses is decided
-by ``robot.gripper.vendor``, the sim gripper profile and the planner bundles, and the sim profile opens
-the 2F-85 to 87.1 mm where the registry file says 85.0.
+``robot.gripper.model`` names the file. The loader fills the widths and the envelope from it
+(``src/config/hand_numbers.py``), and the guard, the planner bundles, the deep calculator and the sim's
+mount take the hand from it. The sim gripper profile does not: it opens the 2F-85 to 87.1 mm where the
+registry file says 85.0.
 
 The vocabulary is the grasp frame the envelope uses: X closes between the contacts, Y is the binormal, Z
 is the approach, and z = 0 is the grasp centre.
@@ -52,6 +53,15 @@ class ParallelJawSpec(StrictModel):
 
     model_config = ConfigDict(allow_inf_nan=False)
 
+    #: How far the grasp centre sits from the hand's own origin along the approach: the flange for a
+    #: hand baked off a mounted asset, the hand's own mounting face for a standalone one, the same
+    #: origin the collision bundle declares. Every other number in this block is relative to that
+    #: centre, so without it the block describes a shape and not where the shape sits, and a hand
+    #: nobody baked cannot be placed on an arm at all. Measured off the bundle by
+    #: scripts/grippers/measure_jaw_from_bundle.py. The desk reads it too: the ``grasp centre``
+    #: preflight row holds a real cell's declared ``tool_frame.offset_mm`` along the approach to this
+    #: number plus the coupling plates.
+    grasp_centre_mm: float = Field(gt=0.0, le=1000.0)
     #: The physical open width.
     aperture_mm: float = Field(gt=0.0)
     #: The smallest grip that counts as a grip. A policy floor about the part, not the tool.
@@ -72,6 +82,12 @@ class ParallelJawSpec(StrictModel):
     pad_behind_mm: float = Field(ge=0.0)
     palm_depth_mm: float = Field(gt=0.0, le=500.0)
     palm_width_mm: float = Field(gt=0.0, le=500.0)
+    #: The housing's full extent along the closing axis: twice its furthest reach from the grasp axis,
+    #: measured off the bundle by scripts/grippers/measure_jaw_from_bundle.py. Optional, because only
+    #: an envelope written from these numbers reads it. That writer refuses a hand that leaves it
+    #: unset, since the fingers' outer face does not bound the housing: the EGU-50's housing reaches
+    #: 2.25 mm past it.
+    palm_thickness_mm: float | None = Field(default=None, gt=0.0, le=500.0)
     #: False when the palm numbers are an estimate. A consumer that checks the housing says so.
     palm_measured: bool
     friction_coefficient: float = Field(gt=0.0)
@@ -118,6 +134,30 @@ class GripperSpec(StrictModel):
     #: Where the numbers came from, in words a person can check.
     source: str = Field(min_length=1)
     jaw: ParallelJawSpec
+    #: The ``robot.gripper.vendor`` drivers that can actuate this hand, or ``None`` where the file says
+    #: nothing. A real UR profile naming the hand with a driver not listed is refused at load. ``none``
+    #: and ``dummy``, a flange with nothing actuated yet and a desk stand-in, are always admitted and
+    #: are not listed.
+    drivers: tuple[str, ...] | None = None
+
+    @field_validator("drivers")
+    @classmethod
+    def _drivers_are_gripper_vendors(cls, drivers: "tuple[str, ...] | None") -> "tuple[str, ...] | None":
+        if drivers is None:
+            return None
+        # Lazy, as GripperConfig's vendor check: the enum is a pure StrEnum and the config layer
+        # imports no runtime.
+        from src.robot.core.gripper_vendor import GripperVendor
+
+        if not drivers:
+            raise ValueError("drivers is empty: leave it out when the file says nothing about which driver actuates it")
+        canonical = tuple(GripperVendor.from_string(name).value for name in drivers)
+        always = {GripperVendor.NONE.value, GripperVendor.DUMMY.value}
+        if always & set(canonical):
+            raise ValueError(f"drivers lists {sorted(always & set(canonical))}, which are always admitted: leave them out")
+        if len(set(canonical)) != len(canonical):
+            raise ValueError(f"drivers repeats a name: {list(drivers)}")
+        return canonical
 
     @field_validator("aliases")
     @classmethod

@@ -16,6 +16,7 @@ from typing import Any
 
 import numpy as np
 
+from src.contracts import UNSET, Maybe
 from src.robot.drivers.sim.adapter import metres_to_millimetres
 from src.robot.grasping.types.perception import PerceptionFrame
 from src.robot.perception.mask_completion import (
@@ -84,6 +85,7 @@ class MultiObjectVisionPerceptionSource:
         session: Any | None = None,
         warmup_steps: int = 20,
         mask_completion: MaskCompletion = DEFAULT_MASK_COMPLETION,
+        camera_name: Maybe[str] = UNSET,
     ) -> None:
         # Either a ready-made perception backend, or the detector and segmenter a runner passes.
         # The pair is composed into the same backend here rather than chained inside acquire().
@@ -99,6 +101,9 @@ class MultiObjectVisionPerceptionSource:
 
             backend = TwoStageBackend(detector=detector, segmenter=segmenter)
         self._camera = camera
+        #: The name the cell's live planner world gives this camera, so the pick loop offers its
+        #: masks under it.
+        self.camera_name: Maybe[str] = camera_name
         self._backend = backend
         self._prompt = prompt
         # Canonical object labels, the spawn names. They build the multi-phrase detect prompt so
@@ -184,11 +189,17 @@ class MultiObjectVisionPerceptionSource:
     def acquire(self) -> PerceptionFrame:
         started = time.perf_counter()
         app = getattr(self._session, "app", None) if self._session is not None else None
+        shutter: float | None = None
         for _ in range(self._warmup):
             if self._session is not None:
+                # The shutter is the render step whose buffers are read, so the stamp is the clock
+                # read just before it.
+                shutter = time.time()
                 self._session.step(render=True)
             if app is not None:
                 app.update()
+        if shutter is None:
+            shutter = time.time()
 
         depth_mm = metres_to_millimetres(np.asarray(self._camera.get_depth(), dtype=np.float64))
         depth_mm = np.where(np.isfinite(depth_mm), depth_mm, 0.0)
@@ -264,7 +275,7 @@ class MultiObjectVisionPerceptionSource:
         # `grasping.geometry`; the picture the rest of the stack reasons from is the measurement.
         return PerceptionFrame(
             depth_map=depth_mm, intrinsics=intrinsics, segmentations=tuple(segmentations), rgb=rgb,
-            timestamp=time.time(), surface_depth_map=rendered_depth_mm,
+            timestamp=shutter, surface_depth_map=rendered_depth_mm,
         )
 
 
@@ -304,6 +315,7 @@ class IsaacVisionPerceptionSource:
         session: Any | None = None,
         warmup_steps: int = 20,
         grasp_depth_offset_mm: float = 0.0,
+        camera_name: Maybe[str] = UNSET,
     ) -> None:
         # Two construction paths, kept apart because they ground differently. This source is
         # single-object: with a detector and a segmenter it calls ``detect``, the best match for
@@ -316,6 +328,9 @@ class IsaacVisionPerceptionSource:
                 "segmenter=..."
             )
         self._camera = camera
+        #: The name the cell's live planner world gives this camera, so the pick loop offers its
+        #: masks under it.
+        self.camera_name: Maybe[str] = camera_name
         self._backend = backend
         self._detector = detector
         self._segmenter = segmenter
@@ -353,15 +368,21 @@ class IsaacVisionPerceptionSource:
     def acquire(self) -> PerceptionFrame:
         started = time.perf_counter()
         app = getattr(self._session, "app", None) if self._session is not None else None
+        shutter: float | None = None
         for _ in range(self._warmup):
             if self._session is not None:
+                # The shutter is the render step whose buffers are read, so the stamp is the clock
+                # read just before it.
+                shutter = time.time()
                 self._session.step(render=True)
             if app is not None:
                 app.update()
+        if shutter is None:
+            shutter = time.time()
 
         depth_mm = metres_to_millimetres(np.asarray(self._camera.get_depth(), dtype=np.float64))
         depth_mm = np.where(np.isfinite(depth_mm), depth_mm, 0.0)
-        intrinsics = np.asarray(self._camera.get_intrinsics_matrix(), dtype=np.float64)
+        intrinsics =np.asarray(self._camera.get_intrinsics_matrix(), dtype=np.float64)
 
         frame = self._camera.get_current_frame()
         rgba = frame.get("rgb") if isinstance(frame, Mapping) else None
@@ -425,5 +446,5 @@ class IsaacVisionPerceptionSource:
             )
         return PerceptionFrame(
             depth_map=depth_mm, intrinsics=intrinsics, segmentations=segmentations, rgb=rgb,
-            timestamp=time.time(), surface_depth_map=rendered_depth_mm,
+            timestamp=shutter, surface_depth_map=rendered_depth_mm,
         )

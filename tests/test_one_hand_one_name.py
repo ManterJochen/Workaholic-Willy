@@ -42,7 +42,7 @@ def _robot(model: str | None = "robotiq_2f85", plates: list[float] | None = None
     """A UR tree naming ``model``, with the payload guard off so nothing else about the tree is under test."""
     gripper: dict[str, Any] = {"model": model}
     if plates is not None:
-        gripper["coupling_plates_mm"] = plates
+        gripper["coupling_plates"] = [{"name": f"plate_{i}", "thickness_mm": float(mm)} for i, mm in enumerate(plates)]
     return RobotConfig.model_validate(
         {"vendor": "ur", "safety": {"payload": {"enforce": False}}, "gripper": gripper}
     )
@@ -72,9 +72,13 @@ class _Captured:
 
     def __call__(
         self, model: str, mesh_dir: str | None = None, mesh_name: str | None = None, coupling_mm: float = 0.0,
-        *, placement: Any = None,
+        *, placement: Any = None, coupling_boxes: Any = (),
     ) -> None:
-        self.calls.append({"model": model, "mesh_name": mesh_name, "coupling_mm": coupling_mm})
+        # ⛔ A STUB POORER THAN THE THING IT STANDS FOR cannot fail the way the thing fails, and one richer
+        # cannot either. Every argument the guard passes is recorded here, so adding one to `make_backend`
+        # without teaching this stub is a TypeError rather than a silently untested path.
+        self.calls.append({"model": model, "mesh_name": mesh_name, "coupling_mm": coupling_mm,
+                           "coupling_boxes": tuple(coupling_boxes)})
         return None
 
 
@@ -173,7 +177,7 @@ class TheCouplingPlatesTests(unittest.TestCase):
 
         with self.assertRaises(ConfigError) as caught:
             planner_hand(_robot("robotiq_hande"))
-        self.assertIn("robot.gripper.coupling_plates_mm", str(caught.exception))
+        self.assertIn("robot.gripper.coupling_plates", str(caught.exception))
         self.assertIn("mounting_face", str(caught.exception))
 
     def test_no_plate_said_out_loud_is_an_answer(self) -> None:
@@ -186,17 +190,19 @@ class TheCouplingPlatesTests(unittest.TestCase):
 
         with self.assertRaises(ConfigError) as caught:
             planner_hand(_robot("robotiq_2f85", plates=[5.0]))
-        self.assertIn("robot.gripper.coupling_plates_mm", str(caught.exception))
+        self.assertIn("robot.gripper.coupling_plates", str(caught.exception))
         self.assertIn("flange", str(caught.exception))
 
     def test_a_negative_plate_is_refused_by_the_schema(self) -> None:
         # The bound, not the key: before the key existed the same call was refused as an unknown field.
+        # UM8 tightened it from ge to gt: a plate is a body now, and a slab of no thickness places nothing
+        # and collides with nothing, so it is a line somebody should delete rather than a zero to carry.
         with self.assertRaises(ValidationError) as caught:
             _robot("robotiq_hande", plates=[-1.0])
-        self.assertEqual([e["type"] for e in caught.exception.errors()], ["greater_than_equal"])
+        self.assertEqual([e["type"] for e in caught.exception.errors()], ["greater_than"])
 
     def test_the_key_is_unset_by_default(self) -> None:
-        self.assertIsNone(RobotConfig().gripper.coupling_plates_mm)
+        self.assertIsNone(RobotConfig().gripper.coupling_plates)
 
 
 class AnUnsetHandRefusesTests(unittest.TestCase):
@@ -285,7 +291,7 @@ class TheTwoHandKeysAreRefusedAtLoadTests(_ScratchTree):
         message = self._load_error("couplingkey")
         self.assertIn("robot.safety.self_collision.coupling_mm", message)
         self.assertIn("removed on purpose", message)
-        self.assertIn("robot.gripper.coupling_plates_mm", message)
+        self.assertIn("robot.gripper.coupling_plates", message)
 
     def test_the_schema_refuses_both_keys(self) -> None:
         for key, value in (("collision_mesh_variant", "robotiq_hande"), ("coupling_mm", 20.0)):
@@ -302,7 +308,7 @@ class TheGuardTakesItsHandFromTheRobotConfigTests(unittest.TestCase):
         captured = _Captured()
         with mock.patch(_FCL, captured):
             guard.exact_mesh_engine(arm)
-        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": "robotiq_hande", "coupling_mm": 20.0}])
+        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": "robotiq_hande", "coupling_mm": 20.0, "coupling_boxes": ()}])
         self.assertEqual(guard.hand.model, "robotiq_hande")
 
     def test_a_guard_built_directly_keeps_the_arm_bundle(self) -> None:
@@ -313,7 +319,7 @@ class TheGuardTakesItsHandFromTheRobotConfigTests(unittest.TestCase):
         captured = _Captured()
         with mock.patch(_FCL, captured):
             guard.exact_mesh_engine(_ur_arm())
-        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": None, "coupling_mm": 0.0}])
+        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": None, "coupling_mm": 0.0, "coupling_boxes": ()}])
 
     def test_a_guard_built_directly_has_no_hand(self) -> None:
         from src.robot.safety.self_collision import SelfCollisionGuard
@@ -329,7 +335,7 @@ class TheGuardTakesItsHandFromTheRobotConfigTests(unittest.TestCase):
                 "ur5e", 180.0, (), ContinuousGuardProfile(enabled=True, margin_mm=8.0),
                 variant="robotiq_hande", coupling_mm=20.0,
             )
-        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": "robotiq_hande", "coupling_mm": 20.0}])
+        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": "robotiq_hande", "coupling_mm": 20.0, "coupling_boxes": ()}])
 
 
 class TheRealCellPreflightNamesTheHandTests(unittest.TestCase):

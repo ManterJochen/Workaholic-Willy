@@ -13,6 +13,13 @@ Two families, both selected by a config key and driven by the vendor-neutral sim
 * Suction cups: :data:`SUCTION_CUPS`, keyed by ``SimConfig.suction_cup``. Each entry is a
   :class:`~src.robot.grippers.sim.SuctionCupProfile` (cup geometry plus vacuum threshold); a finer
   cup is a new entry, not new code.
+
+A registry hand with no entry in :data:`MOUNTED_GRIPPERS` is a real-cell hand. The real cell never
+asks for a sim mount, so a hand described with the scripts under ``scripts/grippers/`` runs its
+chain on a real arm, and Isaac refuses it by name before the boot. Mounting it takes three things
+nothing here can derive: the hand's USD asset, the rotation that puts its approach on wrist +Y, and
+a measured ``tcp_offset_mm`` whose composed :meth:`MountedGripperSpec.flange_to_tcp_offset_mm` puts
+the grasp centre where the registry file says it is. The EGU-50 is the precedent.
 """
 
 from __future__ import annotations
@@ -195,17 +202,16 @@ MOUNTED_GRIPPERS: dict[str, MountedGripperSpec] = {
 def resolve_mounted_gripper(name: str) -> MountedGripperSpec:
     """A mount spec by its name. Refuses a name it does not know.
 
-    MEASURED 2026-09-10: the two call sites disagreed about an unknown name. One used ``.get()`` and
-    carried on, which SKIPS the flange->TCP correction and leaves the cell composing the 2F-85's
-    132 mm for whatever is actually mounted; the other subscripted the dict and raised a bare
-    ``KeyError`` several steps later, naming nothing. Three shipped robot profiles named
-    ``robotiq_hande``, which is a real :class:`GripperProfile` and not a mountable spec, so both
-    behaviours were reachable from the config tree.
+    An unknown name is refused here rather than handled at each call site. A ``.get()`` that carried
+    on would skip the flange->TCP correction and leave the cell composing the 2F-85's 132 mm for
+    whatever is actually mounted, and a subscript would raise a bare ``KeyError`` several steps later,
+    naming nothing. A name such as ``robotiq_hande``, which is a real :class:`GripperProfile` and not
+    a mountable spec, is reachable from the config tree.
 
-    ⚠ A profile is not a mount. ``ROBOTIQ_HANDE_PROFILE`` describes how to DRIVE the joints of a
-    Hand-E; a :class:`MountedGripperSpec` additionally needs the USD asset, the mount rotation and a
-    MEASURED ``tcp_offset_mm``. Until somebody measures those on the asset, the Hand-E cannot be
-    mounted in the sim, and saying so here is cheaper than a wrong offset that looks like a grip.
+    A profile is not a mount. ``ROBOTIQ_HANDE_PROFILE`` describes how to drive the joints of a
+    Hand-E; a :class:`MountedGripperSpec` also needs the USD asset, the mount rotation and a measured
+    ``tcp_offset_mm``. Until those are measured on the asset, the Hand-E cannot be mounted in the
+    sim, and saying so here is cheaper than a wrong offset that looks like a grip.
     """
     spec = MOUNTED_GRIPPERS.get(name)
     if spec is None:
@@ -230,7 +236,8 @@ def sim_mount_for(
     Refuses, as a ``ConfigError``: a cell that names no hand; a name the registry does not hold, or a
     short name; and a hand the sim cannot mount, because a :class:`GripperProfile` says how to drive a
     hand's joints and a mount also needs its USD asset, its mount rotation and a measured
-    ``tcp_offset_mm``.
+    ``tcp_offset_mm``. That last refusal is the one a customer's hand meets: it is a real-cell hand
+    until those three are measured (see the module docstring).
     """
     if not hand:
         raise ConfigError(

@@ -109,7 +109,10 @@ class TheGuardNamesWhatItCannotComposeTests(unittest.TestCase):
             shutil.copyfile(_DATA / "ur5e_collision_meshes.npz", pathlib.Path(tmp) / "ur5e_collision_meshes.npz")
             self.assertEqual(mesh_backend_status("ur5e", tmp, "robotiq_hande"), "no_hand_bundle")
 
-    def test_a_hand_on_an_arm_it_was_not_proven_on(self) -> None:
+    def test_an_old_admission_list_in_a_bundle_admits_and_refuses_nothing(self) -> None:
+        """⛔ UM lane S22 retired `hand__admitted_arms`. A bundle written before that still carries one, and it
+        must not come back to life: a list naming only the ur5e does not refuse the ur3e, because admission is the
+        committed evidence now and a second mechanism beside it would answer for pairings nobody measured."""
         from src.robot.safety._fcl_self_collision import mesh_backend_status
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,8 +121,7 @@ class TheGuardNamesWhatItCannotComposeTests(unittest.TestCase):
             hand = dict(np.load(_DATA / "robotiq_hande_hand_meshes.npz"))
             hand["hand__admitted_arms"] = np.array(["ur5e"])
             np.savez_compressed(folder / "robotiq_hande_hand_meshes.npz", **hand)
-            self.assertEqual(mesh_backend_status("ur3e", tmp, "robotiq_hande"), "variant_model_mismatch")
-            self.assertIn(mesh_backend_status("ur5e", None, "robotiq_hande"), {"ok", "no_engine"})
+            self.assertIn(mesh_backend_status("ur3e", tmp, "robotiq_hande"), {"ok", "no_engine"})
 
 
 class _Recorder:
@@ -141,7 +143,7 @@ class TheCallersPassThePlacementTests(unittest.TestCase):
 
         return planner_hand(RobotConfig.model_validate({
             "vendor": "ur",
-            "gripper": {"model": "robotiq_hande", "coupling_plates_mm": [20.0], "tool_frame": self._UR_FRAME},
+            "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "plate", "thickness_mm": 20.0}], "tool_frame": self._UR_FRAME},
         }))
 
     def test_the_one_shot_guard(self) -> None:

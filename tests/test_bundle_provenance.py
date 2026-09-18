@@ -23,12 +23,26 @@ import numpy as np
 _DATA = Path(__file__).resolve().parents[1] / "src" / "robot" / "safety" / "data"
 _INDEX = _DATA / "bundles.json"
 
-#: Every way a bundle in this repository was produced. A source outside this set is a bundle nobody can rebuild.
+#: Every way a bundle in this repository is produced, arms and hands. A source outside this set is a bundle nobody can
+#: rebuild. The last three are the ways a CUSTOMER hand gets a body (customer chain lane C1a): from its registry numbers,
+#: from one standalone hand USD, or from a vendor mesh.
 _SOURCES = {
     "isaac_usd": "the composed Isaac articulation, read by scripts/isaac/bake_ur_collision_meshes.py",
     "isaac_importer_visual_hull": "convex hulls of the visual meshes in Isaac's URDF importer assets",
     "ur_description_stl": "Universal Robots' own collision STL files, through the rendered description",
+    "registry_dimensions": "an envelope from a hand's registry numbers, written by scripts/grippers/write_hand_from_dimensions.py",
+    "standalone_usd": "one standalone hand USD, baked by scripts/grippers/bake_gripper_variant.py",
+    "vendor_mesh": "a vendor STL or OBJ, written by scripts/grippers/write_hand_from_mesh.py",
 }
+
+#: A record key a hand bundle may carry, as a note names one.
+_RECORD_KEY = __import__("re").compile(r"\bhand__[a-z_]+")
+
+
+def _keys_a_note_names_that_a_bundle_lacks(note: str, bundle: Path) -> list[str]:
+    with np.load(bundle, allow_pickle=True) as data:
+        carried = set(data.files)
+    return sorted({key for key in _RECORD_KEY.findall(note) if key not in carried})
 
 
 def arrays_sha256(path: Path) -> str:
@@ -99,6 +113,33 @@ class TheBundlesSayWhereTheyCameFromTests(unittest.TestCase):
             with self.subTest(bundle=name):
                 self.assertIn(entry["source"], _SOURCES)
                 self.assertTrue(entry["note"].strip(), "a source with no note is a word, not a provenance")
+
+    def test_no_note_names_a_record_key_its_bundle_does_not_carry(self) -> None:
+        """A note that cites a retired key describes a bundle that is gone (UM lane S22 retired hand__admitted_arms)."""
+        for name, entry in sorted(self.index["bundles"].items()):
+            with self.subTest(bundle=name):
+                self.assertEqual(_keys_a_note_names_that_a_bundle_lacks(entry["note"], _DATA / name), [])
+
+    def test_the_note_check_sees_a_key_a_bundle_lacks(self) -> None:
+        """⭐ THE CONTROL: the scan reports a retired key and accepts one the bundle carries."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            bundle = Path(folder) / "scratch_hand_meshes.npz"
+            np.savez(bundle, hand__source=np.asarray(["dimensions"]), gripper__v=np.zeros((3, 3)))
+            self.assertEqual(_keys_a_note_names_that_a_bundle_lacks("records hand__admitted_arms", bundle),
+                             ["hand__admitted_arms"])
+            self.assertEqual(_keys_a_note_names_that_a_bundle_lacks("records hand__source", bundle), [])
+
+    def test_each_hand_writer_has_a_source_this_file_and_the_index_accept(self) -> None:
+        for source in ("registry_dimensions", "standalone_usd", "vendor_mesh"):
+            with self.subTest(source=source):
+                self.assertIn(source, _SOURCES)
+                self.assertIn(source, self.index["sources"])
+
+    def test_the_index_and_this_file_name_one_set_of_sources(self) -> None:
+        """⭐ THE CONTROL: a token added on one side only is a source one reader accepts and the other refuses."""
+        self.assertEqual(sorted(self.index["sources"]), sorted(_SOURCES))
 
     def test_an_arm_bundle_says_which_arm_and_a_hand_bundle_says_which_hand(self) -> None:
         for name, entry in sorted(self.index["bundles"].items()):

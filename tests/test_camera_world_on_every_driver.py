@@ -2,9 +2,9 @@
 
 The owner decided that with cuRobo every motion plans against a world built from a current camera
 image unless the caller declines, and that the answer travels with the motion. This file pins what each
-driver says today, before any world is handed to a cell: a motion no planner planned says UNPLANNED and
-why, a planned motion with no camera world says MISSING, a caller's decline says DECLINED, and a
-decline on an arm whose live camera world is wired is refused before the planner is asked.
+driver says before any world is handed to a cell: a motion no planner planned says UNPLANNED and why, a
+planned motion with no camera world says MISSING and is refused before it moves, a caller's decline says
+DECLINED, and a decline on an arm whose live camera world is wired is refused before the planner is asked.
 
 The stamp is read off the built arm, never off config: the console_dummy profile leaves the base tree's
 ``motion_planner: curobo`` on a dummy arm, and a dummy plans nothing.
@@ -91,6 +91,10 @@ def _ur_curobo(planner: object | None = None, *, live_world: object | None = Non
                                              message="curobo"),
     )
     arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
+    # And the plan's end. This double hands back one trajectory whatever it is asked, which a real planner never
+    # does, and what this file reads is not where a plan ends: the UR driver refuses a plan off its goal before
+    # anything moves (Step 8f), and tests/test_the_planner_sees_the_cell_where_the_controller_has_it.py holds that half.
+    arm._plan_end_refusal = lambda goal, joints, pose: None  # type: ignore[method-assign]
     # The path gate too. This file is about the camera world stamp, and the preflight above holds
     # one accepting stand-in rather than a self collision guard, which a judged path refuses for
     # its own good reasons (tests/test_planned_paths_are_judged.py holds that half).
@@ -181,7 +185,7 @@ class TheStampMatrixTests(unittest.TestCase):
         class _Refreshing(_FakePlanner):
             last_world_refresh: object = None
 
-            def refresh_world(self, *, near_point_mm: object = None) -> None:
+            def refresh_world(self, *, near_point_mm: object = None, goal_keep_out: object = None) -> None:
                 self.last_world_refresh = WorldRefresh(
                     verdict=WorldVerdict.FRESH, sent=1, registered=1, build_ms=0.0, register_ms=0.0, age_ms=5.0,
                     dropped_obstacles=0, cameras=("overhead",), captured_at_s=100.0,
@@ -201,7 +205,9 @@ class TheStampMatrixTests(unittest.TestCase):
         planner = MagicMock()
         planner.plan.return_value = [[0.0] * 6, [0.1] * 6]
         arm = _ur_curobo(planner)
-        self.assertIs(arm.move(_pose()), planner.execute.return_value)
+        # Declined, so what is read is the planner double's result and not the refusal of a motion with no world.
+        with arm.without_camera_world("the planner double's own result is what this test reads"):
+            self.assertIs(arm.move(_pose()), planner.execute.return_value)
 
 
 class TheSimArmTests(unittest.TestCase):
@@ -219,12 +225,14 @@ class TheSimArmTests(unittest.TestCase):
         arm._articulation = object()  # type: ignore[assignment]
         arm._kin_solver = object()  # type: ignore[assignment]
         arm._rmpflow = object()  # type: ignore[assignment]
-        arm._resolve_ik = lambda pose: _JOINTS  # type: ignore[method-assign]
+        arm._resolve_ik = lambda pose, **_: _JOINTS  # type: ignore[method-assign]
         arm._get_curobo_client = MagicMock(  # type: ignore[method-assign]
             side_effect=CuroboUnavailableError("no cuRobo environment on this host"))
         drove = []
         arm._drive_to_target = lambda pose, joints: drove.append(pose)  # type: ignore[method-assign]
-        result = arm.move(_pose())
+        # Declined: without a decline the move is refused before the sidecar is asked, and this pins the sidecar.
+        with arm.without_camera_world("the sidecar that cannot start is what this test reads"):
+            result = arm.move(_pose())
         self.assertIs(result.status, MotionStatus.CONTROLLER_REJECTED)
         self.assertIn("cuRobo planner unavailable", result.message or "")
         self.assertEqual([], drove, "the arm drove the blind path anyway")
@@ -249,8 +257,10 @@ class TheSimArmTests(unittest.TestCase):
         self.assertEqual(declined.camera_world, expected)
 
     def test_a_curobo_arm_with_no_live_world_says_missing(self) -> None:
+        """And is refused before it reads the connection: a planned motion needs a world or a decline."""
         result = _sim_unconnected().move(_pose())
-        self.assertIs(result.status, MotionStatus.CONNECTION_ERROR)
+        self.assertIs(result.status, MotionStatus.UNSUPPORTED)
+        self.assertEqual(result.message, cw.NO_CAMERA_WORLD_MESSAGE)
         self.assertEqual(result.camera_world, _SIM_NO_WORLD)
 
     def test_a_curobo_joint_move_is_judged_against_the_world_planned_or_not(self) -> None:

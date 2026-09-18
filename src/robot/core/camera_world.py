@@ -8,18 +8,24 @@ motions reads it from there.
 
 There are five answers, and the default promises nothing. A result built without a stamp is UNSTATED:
 nobody said whether the planner knew what the cameras saw, so a reader must not assume it did. Only
-PLANNED vouches. DECLINED is a caller's decision and MISSING is the absence of one: a planner planned
-the motion with no camera world, and nobody declined. Nothing enforces the rule, so such a motion is
-stamped MISSING rather than refused.
+PLANNED vouches. DECLINED is a caller's decision and MISSING is the absence of one: a planner would
+plan or check the motion with no camera world, and nobody declined. Such a motion does not run: it is
+refused before planning, and the MISSING stamp rides on the refusal.
 
 Every driver in this repository stamps its two typed verbs, ``move`` and ``move_to_joints``, from what
-the arm knows as it moves: UNPLANNED and why where no planner planned the motion, MISSING where a
-planner planned it with no camera world, DECLINED where the caller declined one. Where a live camera
-world is wired and nothing declined it, a ``move`` says PLANNED when the refresh made for that motion
-vouched for the cell, naming the cameras and the capture time of the oldest image, and UNSTATED when
-no refresh made for it did: the motion was refused before one ran, or its planner reports none. An
-arm that stamps nothing, such as a caller's own, keeps saying UNSTATED, which is what the default is
-for.
+the arm knows as it moves: UNPLANNED and why where no planner planned the motion, MISSING on the
+refusal of a motion a planner would plan with no camera world, DECLINED where the caller declined one.
+Where a live camera world is wired and nothing declined it, a ``move`` says PLANNED when the refresh
+made for that motion vouched for the cell, naming the cameras and the capture time of the oldest image,
+and UNSTATED when no refresh made for it did: the motion was refused before one ran, or its planner
+reports none. An arm that stamps nothing, such as a caller's own, keeps saying UNSTATED, which is what
+the default is for.
+
+A PLANNED stamp also says what its world left out. ``keep_out`` is the refresh's
+:class:`~src.robot.core.keep_out.KeepOutSummary` when a goal region or a held target box was in force:
+the space between the jaws at the motion's goal, how many points it took out or why there was none, and
+each held box. It is ``None`` when nothing was in force, and on every other use, and a stamp that
+carries ``None`` renders no kept-out clause.
 
 A decline is a keyword on the verb or a block around several motions (:func:`without_camera_world`),
 with a reason either way. The block is bound to one arm, because two arms can run in one process, and
@@ -46,20 +52,25 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from src.contracts import Maybe, chosen
+from src.contracts import UNSET, Maybe, chosen
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from .keep_out import KeepOutSummary
     from .motion_result import MotionResult
 
 __all__ = [
     "DECLINE_ON_A_LIVE_WORLD_MESSAGE",
+    "NO_CAMERA_WORLD_MESSAGE",
     "CameraWorldDecline",
     "CameraWorldStamp",
     "CameraWorldUse",
     "DeclinesCameraWorld",
+    "ReadsCameraWorld",
     "active_decline",
+    "camera_world_refusal",
     "resolve_camera_world",
     "stamp_result",
+    "weakest_camera_world",
     "without_camera_world",
 ]
 
@@ -77,8 +88,8 @@ class CameraWorldUse(StrEnum):
     #: No planner planned this motion or checked its path against a world, so none was consulted, with
     #: a reason: a cell with no planner, or a verb that neither plans nor checks on a cell that has one.
     UNPLANNED = "unplanned"
-    #: A planner planned or checked this motion with no camera world, and nobody declined one, with a
-    #: reason.
+    #: A planner would plan or check this motion with no camera world, and nobody declined one, with a
+    #: reason. A driver refuses such a motion before planning, and the stamp rides on the refusal.
     MISSING = "missing"
 
 
@@ -139,6 +150,10 @@ class CameraWorldStamp:
     reason: str = ""
     cameras: tuple[str, ...] = ()
     captured_at_s: float | None = None
+    #: What the refresh behind a PLANNED stamp left out of its world (a goal region, held boxes), or
+    #: ``None`` when nothing was kept out. Every other use carries ``None``: nothing was planned
+    #: against a world.
+    keep_out: "KeepOutSummary | None" = None
 
     def __post_init__(self) -> None:
         use = self.use
@@ -154,6 +169,8 @@ class CameraWorldStamp:
         # The fields that must stay empty are compared with the empty value of their own type, not
         # tested for truth: None, [] or "" in their place is refused too, so a stamp that is accepted
         # equals the one its factory builds, hashes, and survives to_dict().
+        if self.keep_out is not None and use is not CameraWorldUse.PLANNED:
+            raise ValueError(f"a {use.value} camera world keeps nothing out, because no world was planned against")
         if use is CameraWorldUse.UNSTATED:
             if self.reason != "" or self.cameras != () or self.captured_at_s is not None:
                 raise ValueError("an unstated camera world carries nothing, because nothing was said")
@@ -181,13 +198,16 @@ class CameraWorldStamp:
         return cls(use=CameraWorldUse.UNSTATED)
 
     @classmethod
-    def planned(cls, *, cameras: Sequence[str], captured_at_s: float) -> "CameraWorldStamp":
+    def planned(
+        cls, *, cameras: Sequence[str], captured_at_s: float, keep_out: "KeepOutSummary | None" = None,
+    ) -> "CameraWorldStamp":
         if isinstance(cameras, str):
             raise TypeError(
                 f"cameras is a sequence of camera names, and {cameras!r} is one name: pass "
                 f"({cameras!r},)"
             )
-        return cls(use=CameraWorldUse.PLANNED, cameras=tuple(cameras), captured_at_s=captured_at_s)
+        return cls(use=CameraWorldUse.PLANNED, cameras=tuple(cameras), captured_at_s=captured_at_s,
+                   keep_out=keep_out)
 
     @classmethod
     def declined(cls, decline: CameraWorldDecline) -> "CameraWorldStamp":
@@ -213,7 +233,8 @@ class CameraWorldStamp:
         head = f"camera world  {self.use.value.upper()}"
         if self.use is CameraWorldUse.PLANNED:
             cameras = ", ".join(_one_line_ascii(name) for name in self.cameras)
-            return f"{head}  cameras {cameras}, image captured at {self.captured_at_s:.3f} s"
+            text = f"{head}  cameras {cameras}, image captured at {self.captured_at_s:.3f} s"
+            return text if self.keep_out is None else f"{text}; kept out: {self.keep_out.render()}"
         if self.use is CameraWorldUse.UNSTATED:
             return f"{head}  nothing said whether the planner knew what the cameras saw"
         return f"{head}  {_one_line_ascii(self.reason)}"
@@ -226,6 +247,7 @@ class CameraWorldStamp:
             "reason": self.reason,
             "cameras": list(self.cameras),
             "captured_at_s": self.captured_at_s,
+            "keep_out": None if self.keep_out is None else self.keep_out.to_dict(),
         }
 
 
@@ -245,7 +267,36 @@ DECLINE_ON_A_LIVE_WORLD_MESSAGE = (
 The planner is handed that world before every plan, and nothing registers the declared world in its
 place for one motion, so planning anyway would plan against the world that was declined. The status is
 ``UNSUPPORTED``: the cell cannot do what the caller asked, and the controller is never reached.
+
+The refusal is also the lasting answer on a calibrated cell: once a rig's calibration is wired into a
+live world, the world is mandatory for that arm, and a decline cannot put it aside.
 """
+
+NO_CAMERA_WORLD_MESSAGE = (
+    "Refused before planning: this cell plans with cuRobo, no live camera world is wired to this arm "
+    "and nothing declined one. Wire safety.planning_world with a calibrated camera, or decline with a "
+    "reason. Nothing moved."
+)
+"""The message of the refusal of a planned or checked motion with neither a world nor a decline.
+
+Every motion a cuRobo cell plans or checks stands on a live camera world or on a decline that says why
+it needs none. A motion with neither is refused before its body, with ``UNSUPPORTED`` and the MISSING
+stamp, so it reads no connection, starts no planner and runs no guard.
+"""
+
+
+def camera_world_refusal(stamp: "CameraWorldStamp", *, live_world_wired: bool) -> str | None:
+    """Why a motion stamped ``stamp`` is refused before it moves, or ``None`` where it may run. Pure.
+
+    MISSING is refused: a planned or checked motion needs a live world or a decline. DECLINED is refused
+    where a live world is wired, because the planner cannot set that world aside for one motion. PLANNED,
+    UNSTATED and UNPLANNED run.
+    """
+    if stamp.use is CameraWorldUse.MISSING:
+        return NO_CAMERA_WORLD_MESSAGE
+    if stamp.use is CameraWorldUse.DECLINED and live_world_wired:
+        return DECLINE_ON_A_LIVE_WORLD_MESSAGE
+    return None
 
 
 def without_camera_world(arm: object, reason: str) -> AbstractContextManager[CameraWorldDecline]:
@@ -358,3 +409,36 @@ class DeclinesCameraWorld(Protocol):
     def without_camera_world(self, reason: str) -> AbstractContextManager[CameraWorldDecline]:
         """Decline the camera world for every motion this arm commands inside the ``with`` block."""
         ...
+
+
+@runtime_checkable
+class ReadsCameraWorld(Protocol):
+    """Capability extension: this arm says, before it moves, the camera world a ``move`` would carry.
+
+    A verb that commands a gripper before its first motion refuses a camera world the motion would be
+    refused for before that command, not after it. The reading is the stamp the arm gives a ``move``,
+    taken as the arm stands: it opens no connection and starts no planner. Only a motion's own refresh
+    can say PLANNED, so a wired world reads as a move without a vouching refresh would.
+    """
+
+    def camera_world_for_move(self, camera_world: Maybe[CameraWorldDecline] = UNSET) -> CameraWorldStamp:
+        """The stamp a ``move`` with ``camera_world`` would carry if no refresh vouched for it."""
+        ...
+
+    def live_camera_world_wired(self) -> bool:
+        """Whether a live camera world is wired to this arm."""
+        ...
+
+
+def weakest_camera_world(stamps: Sequence[CameraWorldStamp]) -> CameraWorldStamp | None:
+    """The camera-world stamp a report reads for a run of motions.
+
+    The first stamp in command order that does not vouch answers, because one approach planned
+    with no camera world is what a reader of the whole pick has to see, however many motions
+    around it were planned. When every stamp vouches, the last one answers. ``None`` when no
+    typed motion was commanded.
+    """
+    for stamp in stamps:
+        if not stamp.vouched:
+            return stamp
+    return stamps[-1] if stamps else None

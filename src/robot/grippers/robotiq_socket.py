@@ -93,22 +93,7 @@ _NOTHING_LISTENING = (
 )
 
 
-#: `gFLT` values from the 2-finger register map. ⚠ Robotiq numbers these differently on the
-#: 3-Finger and the EPick, so :meth:`RobotiqSocket.fault_text` reports an unlisted code by number
-#: rather than inventing a meaning for it.
-_FAULTS = {
-    5: "action delayed, activation must be completed first",
-    7: "activation bit not set",
-    9: "communication chip not ready",
-    10: "changing mode fault, the automatic release is still in progress",
-    11: "automatic release completed",
-    13: "activation fault, check for a mechanical obstruction",
-    14: "changing mode fault, check for an obstruction",
-    15: "automatic release fault, review the emergency-release procedure",
-}
-
-
-#: `gFLT` values from the 2-finger register map. ⚠ Robotiq numbers these differently on the
+#: `gFLT` values from the 2-finger register map. Robotiq numbers these differently on the
 #: 3-Finger and the EPick, so :meth:`RobotiqSocket.fault_text` reports an unlisted code by number
 #: rather than inventing a meaning for it.
 _FAULTS = {

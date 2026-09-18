@@ -31,7 +31,7 @@ command line can never disagree.
 | --- | --- |
 | `runs.py` | The three nouns a Python caller reaches for: `RecordLog`, `SoakGate` and `Baseline`, plus `SoakSource`, `GateKeyStatus`, `KpiRollup`, `SoakVerdict`. The CLI modes are shims over these |
 | `kpi.py` | `compute_kpis` and `KpiSummary`: success, first-attempt, dead-loop, safety-rejection, dense-recovery and false-positive rates, plus the median cycle time. `UNMEASURABLE_KPIS` and `unmeasurable_kpis` name the rates a given record set cannot measure |
-| `telemetry_catalog.py` | The per-outcome required-field catalog, the additive extra-field type contract, the presence and type audits, and the `rl_*` telemetry contract |
+| `telemetry_catalog.py` | The per-outcome required-field catalog, the additive extra-field type contract, the presence and type audits, the `rl_*` telemetry contract, and, from `EXTRA_TELEMETRY_VERSION` 2, the `camera_world` group the record serializer writes |
 | `soak.py` | The deterministic seed-locked synthetic soak generator and the consolidated thirteen-key gate (`build_soak_report`, `SOAK_DEFAULT_ATTEMPTS = 2400`) |
 | `baseline_report.py` | Per-pack KPI, SLO and telemetry blocks, the runtime-SLO aggregate, per-mode wall-time p95, the adaptation block, and `compare_kpi_deltas` |
 | `canonical_datasets.py` | Deterministic on-disk JSONL fixtures and a SHA-256 manifest |

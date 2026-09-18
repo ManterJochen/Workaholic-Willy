@@ -102,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
                 descriptor = curobo_arm_descriptor(model)
             except ValueError as exc:
                 descriptor = f"<none: {exc}>"
-        report = run_doctor(model=model, robot_config=descriptor, gripper=gripper)
+        report = run_doctor(model=model, robot_config=descriptor, gripper=gripper, cell=stack.cell, data_dir=args.data)
         if args.json:
             print(json.dumps(
                 {

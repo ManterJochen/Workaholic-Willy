@@ -3,12 +3,16 @@
 The descriptor is read once and composed here, so that one set of bytes is what the planner, ``Kinematics`` and the
 check_js checker all hold. The order is load bearing:
 
-  1. body links (:func:`apply_body_links`): the hand, later a plate or a camera, each a fixed link under the tool frame
+  1. body links (:func:`apply_body_links`): the hand, a plate, a wrist camera, each a fixed link under the tool frame
      with its own spheres, buffer and ignore list;
   2. the guard's margin (``_curobo_margin``), which raises only buffers already in the table, so a body added after it
      would plan without the margin;
   3. the payload link (``_curobo_attach``), which is ignored against every link whose ignore list names the tool frame,
-     so a hand added after it would collide with the part it holds.
+     so a hand added after it would collide with the part it holds; a wrist camera stays checked against it.
+
+A wrist camera's body is composed on top of the config the combination evidence names. :func:`compose_for_cell`
+composes both, and refuses unless removing the camera's links from the loaded config gives back the evidence config
+exactly, so ``composed_sha256`` can keep naming the evidence config while the planner loads the camera too.
 
 :func:`canonical_sha256` names a config by its content: sorted keys and compact separators, so key order and line
 endings in the file a dict came from do not change it, and any changed value or list order does.
@@ -42,22 +46,33 @@ except ImportError:  # loaded by the sidecar as a plain sibling, with no package
     from _curobo_margin import apply_self_collision_margin  # type: ignore[import-not-found,no-redef]
 
 __all__ = [
+    "COUPLING_JOINT",
+    "COUPLING_LINK",
+    "COUPLING_REACH_MM",
     "ENV_BODY_LINKS",
     "ENV_DEFAULT_Q",
+    "ENV_WRIST_BODY_LINKS",
     "HAND_IGNORE",
     "HAND_JOINT",
     "HAND_LINK",
     "HAND_PARENT",
+    "WRIST_BODY_IGNORE",
+    "WRIST_BODY_PREFIX",
+    "WRIST_BODY_REACH_MM",
     "BodyLinkError",
     "apply_body_links",
     "apply_default_q",
     "body_report",
     "canonical_sha256",
+    "compose_for_cell",
     "compose_sidecar_config",
     "compose_with_counts",
+    "coupling_body_link",
     "fixed_transform_wxyz",
     "hand_body_link",
     "rotation_to_wxyz",
+    "without_links",
+    "wrist_body_link",
 ]
 
 #: Env var the client hands the body links to the sidecar in, as a JSON list. Unset or empty adds none.
@@ -75,6 +90,37 @@ HAND_PARENT = "tool0"
 HAND_JOINT = "hand_joint"
 #: The links a hand is never checked against: the flange frame, and the two wrist links the exact guard skips too.
 HAND_IGNORE = ("tool0", "wrist_3_link", "wrist_2_link")
+
+#: The link the declared coupling plates are added as. One link for the whole stack, because the plates are bolted to
+#: each other and to the flange and never move relative to it. It ignores exactly what the hand ignores, for the same
+#: reason: it is bolted to those links.
+COUPLING_LINK = "coupling"
+COUPLING_JOINT = "coupling_joint"
+
+#: How far the plates' spheres may reach past the plates, in millimetres. Not a free choice: the one arm link a
+#: coupling is ever checked against is wrist_1 (it is nearer the flange than the hand, and the hand's own binding
+#: partner is wrist_1 in every pair the retract table judged), and the cover fit of the arm gives wrist_1 8 mm out of
+#: the same table. So the plate is covered at the budget of the link it meets, rather than at a number picked for it.
+COUPLING_REACH_MM = 8.0
+
+#: Env var the client hands a wrist camera's body links in, as a JSON list. It is apart from ``ENV_BODY_LINKS`` so
+#: the bytes of that one, and the config the evidence names, stay the same for a cell with a camera and without one.
+ENV_WRIST_BODY_LINKS = "WILLY_CUROBO_WRIST_BODY_LINKS"
+
+#: A wrist camera's link is ``wrist_camera_<rig id>``. The prefix is how the composition tells a camera from the hand
+#: holding the part, and how the evidence config is recovered from the loaded one.
+WRIST_BODY_PREFIX = "wrist_camera_"
+
+#: How far a camera's spheres may reach past its grown boxes, in millimetres: the budget the cover fit of the arm
+#: gives wrist_1 and wrist_2, the two arm links a camera on the flange can meet.
+WRIST_BODY_REACH_MM = 8.0
+
+#: The links a camera is never checked against: the flange frame and wrist_3, which it is bolted to, and the hand and
+#: the plates, which are bolted to the same flange. wrist_1 and wrist_2 stay checked, as does a carried part.
+WRIST_BODY_IGNORE = ("tool0", "wrist_3_link", HAND_LINK, COUPLING_LINK)
+
+#: The arm links a camera body may never ignore, because they are the ones it can hit.
+_WRIST_BODY_NEVER_IGNORES = ("wrist_1_link", "wrist_2_link")
 
 #: The one arm link a hand on a UR flange is always checked against. The hand ignores wrist_2 and wrist_3, as the exact
 #: guard skips them, so wrist_1 is where a hand in the wrong place shows.
@@ -122,6 +168,78 @@ def hand_body_link(
         "slots": 0,
         "buffer_m": 0.0,
         "ignore": list(HAND_IGNORE),
+    }
+
+
+def coupling_body_link(
+    *,
+    boxes: Sequence[Any],
+    rotation: Sequence[Sequence[float]],
+    reach_mm: float = COUPLING_REACH_MM,
+) -> "dict[str, Any] | None":
+    """The declared coupling plates as one body under tool0, or ``None`` where a cell declared none.
+
+    ``boxes`` are :class:`_declared_body.Box` in the hand model's own axes, stacked from the flange along the
+    approach; ``rotation`` is where that frame sits on tool0, the same R_TM the hand link carries. The plates do not
+    move relative to the flange, so the link's transform is that rotation with no translation.
+
+    ``None`` is the answer for every shipped cell: the one plate this repository declares is the Hand-E's 20 mm
+    adapter, whose cross section nobody measured, so it holds the hand out and becomes no body. A body the planner
+    cannot see is a false clear, and a body invented from a guessed width is a false collide nobody can tell from a
+    measured one, so the plate is named instead.
+    """
+    from ._declared_body import box_spheres
+
+    listed = list(boxes)
+    if not listed:
+        return None
+    spheres: list[dict[str, Any]] = []
+    for box in listed:
+        spheres.extend(box_spheres(box, reach_mm=float(reach_mm)))
+    return {
+        "link": COUPLING_LINK,
+        "parent": HAND_PARENT,
+        "joint": COUPLING_JOINT,
+        "fixed_transform": fixed_transform_wxyz(rotation, [0.0, 0.0, 0.0]),
+        "spheres": spheres,
+        "slots": 0,
+        "buffer_m": 0.0,
+        "ignore": list(HAND_IGNORE),
+    }
+
+
+def wrist_body_link(
+    *,
+    rig_id: str,
+    boxes: Sequence[Any],
+    rotation: Sequence[Sequence[float]],
+    translation_m: Sequence[float],
+    reach_mm: float = WRIST_BODY_REACH_MM,
+) -> dict[str, Any]:
+    """A wrist camera's grown boxes as one body under tool0, in the shape :func:`apply_body_links` reads.
+
+    ``boxes`` are :class:`_declared_body.Box` in the colour camera's optical frame, already grown by the rig's margin.
+    ``rotation`` and ``translation_m`` place that frame on tool0: the recorded flange to TCP times the calibrated
+    CAMERA to TOOL. The spheres stay in the optical frame, which is the link's own.
+    """
+    from ._declared_body import box_spheres
+
+    listed = list(boxes)
+    if not listed:
+        raise BodyLinkError(f"the wrist camera of rig {rig_id!r} has no boxes, so it has no body to plan with")
+    spheres: list[dict[str, Any]] = []
+    for box in listed:
+        spheres.extend(box_spheres(box, reach_mm=float(reach_mm)))
+    link = f"{WRIST_BODY_PREFIX}{rig_id}"
+    return {
+        "link": link,
+        "parent": HAND_PARENT,
+        "joint": f"{link}_joint",
+        "fixed_transform": fixed_transform_wxyz(rotation, translation_m),
+        "spheres": spheres,
+        "slots": 0,
+        "buffer_m": 0.0,
+        "ignore": list(WRIST_BODY_IGNORE),
     }
 
 
@@ -232,6 +350,18 @@ def apply_body_links(
                 f"the hand ignores {_HAND_NEVER_IGNORES}, the one link whose distance to the hand shows a wrong "
                 "placement, so a hand in the wrong place would plan with nothing noticing"
             )
+        if link.startswith(WRIST_BODY_PREFIX):
+            if parent != tool_frame:
+                raise BodyLinkError(
+                    f"wrist camera {link!r} hangs from {parent!r}, and a camera is placed on the flange by its "
+                    f"calibration, so it hangs from the tool frame {tool_frame!r}"
+                )
+            blind = [name for name in _WRIST_BODY_NEVER_IGNORES if name in ignore]
+            if blind:
+                raise BodyLinkError(
+                    f"wrist camera {link!r} ignores {blind}, the arm links a camera on the flange can hit, so a "
+                    "housing driven into the wrist would plan with nothing noticing"
+                )
         body_spheres = [
             {"center": [float(v) for v in sphere["center"]], "radius": float(sphere["radius"])}
             for sphere in body.get("spheres") or ()
@@ -347,8 +477,98 @@ def compose_with_counts(
     if default_q is not None:
         apply_default_q(composed, default_q)
     composed, margin_links = apply_self_collision_margin(composed, float(margin_mm))
-    composed, attach_added = apply_attached_object_link(composed, spheres=int(attach_spheres))
+    composed, attach_added = apply_attached_object_link(composed, spheres=int(attach_spheres),
+                                                        checked_prefixes=(WRIST_BODY_PREFIX,))
     return composed, margin_links, attach_added
+
+
+def without_links(config: Mapping[str, Any], links: Sequence[str]) -> dict[str, Any]:
+    """``config`` with every trace of ``links`` removed from the kinematics tables, and nothing else touched.
+
+    Removed are the link's ``extra_links`` entry, its place in ``collision_link_names``, and its own key in
+    ``collision_spheres``, ``self_collision_buffer`` and ``self_collision_ignore``. What another link's entries say
+    about it stays, so a composition that wrote outside the link's own keys shows up as a difference rather than being
+    cleaned away.
+    """
+    out = copy.deepcopy(dict(config))
+    names = set(links)
+    kinematics = out["robot_cfg"]["kinematics"]
+    kinematics["collision_link_names"] = [name for name in kinematics.get("collision_link_names") or ()
+                                          if name not in names]
+    for table in ("extra_links", "collision_spheres", "self_collision_buffer", "self_collision_ignore"):
+        held = kinematics.get(table)
+        if isinstance(held, dict):
+            kinematics[table] = {key: value for key, value in held.items() if key not in names}
+    return out
+
+
+def _first_difference(left: Any, right: Any, path: str = "") -> str:
+    """The first key path at which two JSON values differ, for a refusal a person can follow."""
+    if isinstance(left, dict) and isinstance(right, dict):
+        for key in sorted(set(left) | set(right)):
+            if key not in left or key not in right:
+                return f"{path}.{key}".lstrip(".")
+            found = _first_difference(left[key], right[key], f"{path}.{key}")
+            if found:
+                return found
+        return ""
+    if isinstance(left, list) and isinstance(right, list):
+        if len(left) != len(right):
+            return f"{path} (length {len(left)} against {len(right)})".lstrip(".")
+        for index, (a, b) in enumerate(zip(left, right)):
+            found = _first_difference(a, b, f"{path}[{index}]")
+            if found:
+                return found
+        return ""
+    return "" if left == right else (path.lstrip(".") or "the whole config")
+
+
+def compose_for_cell(
+    config: Mapping[str, Any],
+    *,
+    bodies: Sequence[Mapping[str, Any]] = (),
+    wrist_bodies: Sequence[Mapping[str, Any]] = (),
+    margin_mm: float = 0.0,
+    attach_spheres: int = 0,
+    default_q: "Sequence[float] | None" = None,
+) -> tuple[dict[str, Any], dict[str, Any], int, bool, list[str]]:
+    """``(loaded, evidence, margin_links, attach_added, wrist_links)``: what the planner loads, and what evidence names.
+
+    The combination evidence is keyed by arm, hand, plate, placement and margin, and formed without a wrist camera.
+    ``evidence`` is :func:`compose_with_counts` over ``bodies`` alone, byte for byte what a cell without a camera
+    composes; ``loaded`` adds ``wrist_bodies`` on top. This refuses unless ``loaded`` without the camera's links is
+    ``evidence`` exactly, which turns the reading of every step into a check: each writes only its own link's keys,
+    the margin raises buffers link by link, and the payload's ignore entries skip the camera. Without a wrist body the
+    two are the same config.
+    """
+    for body in bodies:
+        if str(body.get("link") or "").startswith(WRIST_BODY_PREFIX):
+            raise BodyLinkError(
+                f"{body.get('link')!r} is a wrist camera sent among the bodies the evidence names; a camera is sent "
+                "as a wrist body, so the evidence stays keyed without it"
+            )
+    for body in wrist_bodies:
+        if not str(body.get("link") or "").startswith(WRIST_BODY_PREFIX):
+            raise BodyLinkError(
+                f"{body.get('link')!r} was sent as a wrist body and is not named {WRIST_BODY_PREFIX}<rig>, so the "
+                "evidence config could not be told apart from it"
+            )
+    evidence, margin_links, attach_added = compose_with_counts(
+        config, bodies=bodies, margin_mm=margin_mm, attach_spheres=attach_spheres, default_q=default_q)
+    if not wrist_bodies:
+        return evidence, evidence, margin_links, attach_added, []
+    loaded, _, _ = compose_with_counts(
+        config, bodies=[*bodies, *wrist_bodies], margin_mm=margin_mm, attach_spheres=attach_spheres,
+        default_q=default_q)
+    wrist_links = [str(body.get("link")) for body in wrist_bodies]
+    stripped = without_links(loaded, wrist_links)
+    if stripped != evidence:
+        raise BodyLinkError(
+            f"adding the wrist camera {wrist_links} changed the config outside its own links, at "
+            f"{_first_difference(stripped, evidence)}, so the combination evidence would no longer name the robot "
+            "the planner loads"
+        )
+    return loaded, evidence, margin_links, attach_added, wrist_links
 
 
 def compose_sidecar_config(

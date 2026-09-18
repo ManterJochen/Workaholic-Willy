@@ -27,6 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from src.willy_sim.run_dense_pick import build_service
+from src.robot.core.camera_world import CameraWorldDecline
 
 DEFAULT_OUT = "logs/demo/ycb_vision_demo.mp4"
 # Cinematic camera (metres): an elevated front-right 3/4 view aimed at the YCB workspace (objects at
@@ -81,6 +82,7 @@ def record_demo(*, out_path: str = DEFAULT_OUT, prompt: str = "the sugar box", h
     service, arm, gripper, handles, cfg, target_idx, target_label = build_service(
         prompt=prompt, headless=headless, ycb=True, vision=True,
         natural_aim=True, continuous_guard=True,  # pick the clean IK branch and guard it (no self-collision)
+        camera_world=CameraWorldDecline("run_dense_demo: this runner plans without a live camera world"),
     )
     session = arm.session
     app = getattr(session, "app", None)

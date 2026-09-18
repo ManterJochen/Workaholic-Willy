@@ -51,15 +51,15 @@ class GraspingVerificationConfig(StrictModel):
     width_delta_max_mm: float | None = Field(default=10.0, ge=0.0, le=50.0)
     post_lift_vision_check: bool = Field(default=False)
     vision_displacement_iou_max: float = Field(default=0.2, ge=0.0, le=1.0)
-    #: ⚠ **IT GOVERNS `INCONCLUSIVE`, NOT `FAILED`, AND ITS OLD DESCRIPTION SAID OTHERWISE.**
+    #: It governs `INCONCLUSIVE`, not `FAILED`.
     #: A `FAILED` verification is refused one clause earlier and unconditionally
     #: (`service.py`: `outcome is FAILED or (outcome is INCONCLUSIVE and fail_closed)`), so this
     #: flag only ever decides what an INCONCLUSIVE result does.
     #:
-    #: ⛔ AND ON A CONFIG-BUILT CELL IT DECIDES NOTHING. The verifier `from_robot_config` builds is a
+    #: On a config-built cell it decides nothing. The verifier `from_robot_config` builds is a
     #: `CompositeGraspVerifier` with rule `all_must_pass`, and that branch returns only FAILED or
     #: PASSED: an inconclusive child is resolved inside the composite by `require_all_conclusive`
-    #: below and never reaches this flag. It bites for a CALLER-SUPPLIED verifier, which is how the
+    #: below and never reaches this flag. It bites for a caller-supplied verifier, which is how the
     #: sim runners and a Python caller reach the pick path. Two keys answer one question; this one is
     #: the older and the narrower, and `require_all_conclusive` is the one a config should set.
     fail_closed: bool = Field(default=True)
@@ -1469,6 +1469,10 @@ class GraspingParallelJawGeometryConfig(StrictModel):
     Every value flows straight into
     :class:`src.robot.grasping.collision.ParallelJawGripperModel`. The finger dimensions are
     measured off Isaac's Robotiq 2F-85 collision shapes; the palm dimensions are not measured.
+
+    These defaults describe the 2F-85 for a cell that names no hand. A cell that names one
+    (``robot.gripper.model``) takes every value it leaves unset from that hand's registry file, and a
+    stated value that differs is refused at load.
     """
 
     # Measured off the 2F-85's own collision shapes in this frame, swept across the whole aperture
@@ -1923,8 +1927,9 @@ class GraspingGripperGeometryConfig(StrictModel):
 
     ``kind`` picks the active model and the matching sub-block sizes it; ``outer_margin_mm`` inflates
     whichever is chosen. Defaults reproduce the built-in parallel-jaw envelope byte-for-byte, so
-    leaving this unset changes nothing. Set ``kind: suction`` for a vacuum end-effector so
-    suction candidates are checked against a cup envelope, not a finger envelope.
+    leaving this unset on a cell that names no hand changes nothing; a cell that names a hand takes
+    ``kind`` and the parallel-jaw numbers from its registry file. Set ``kind: suction`` for a vacuum
+    end-effector so suction candidates are checked against a cup envelope, not a finger envelope.
     """
 
     kind: Literal["parallel_jaw", "suction"] = Field(default="parallel_jaw")
@@ -2085,7 +2090,8 @@ class RobotGraspingConfig(StrictModel):
         default_factory=GraspingGripperGeometryConfig,
         description=(
             "Gripper collision envelope the calculator filters grasp candidates against "
-            "(parallel-jaw or suction-cup). Default parallel_jaw with the shipped dims -> byte-identical."
+            "(parallel-jaw or suction-cup). Unset on a cell naming a hand: that hand's registry numbers. "
+            "Unset on a cell naming none: parallel_jaw with the 2F-85 dims -> byte-identical."
         ),
     )
 

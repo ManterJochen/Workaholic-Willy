@@ -291,7 +291,7 @@ class WarmupTests(unittest.TestCase):
 
 
 class AWristSourceStampsTheToolPoseTests(unittest.TestCase):
-    """A source handed the arm's reader reads the TCP after its warm-ups, just before the real grab."""
+    """A source handed the arm's reader reads the TCP after its warm-ups, just before the real grab and again after it."""
 
     def test_the_pose_is_read_after_the_warm_ups_and_immediately_before_the_real_grab(self) -> None:
         events: list[str] = []
@@ -312,10 +312,10 @@ class AWristSourceStampsTheToolPoseTests(unittest.TestCase):
         streamer.grab = logged_grab  # type: ignore[method-assign]
         s = RealSenseVisionPerceptionSource(
             streamer=streamer, detector=_FakeDetector([]), segmenter=_FakeSegmenter(), prompt="x", warmup_grabs=2)
-        s.stamp_tool_pose_with(reader)
+        s.stamp_tool_pose_with(reader, motion_tolerance=(1.0, 0.5), attempts=1)
         frame = s.acquire()
 
-        self.assertEqual(events, ["grab", "grab", "pose", "grab"])
+        self.assertEqual(events, ["grab", "grab", "pose", "grab", "pose"])
         self.assertEqual(frame.tool_pose, pose)
 
     def test_a_source_nobody_stamps_carries_no_pose(self) -> None:

@@ -355,6 +355,10 @@ class IsaacGripper:
         q = np.asarray(self._articulation.get_joint_positions(), dtype=np.float64)
         return self._profile.angle_to_width(float(q[self._joint_index]))
 
+    def width_is_measured(self) -> bool:
+        """Off mock ``get_width_mm`` reads the finger joint; the mock echoes the command."""
+        return not self._mock_mode
+
     def open(self) -> None:
         """Open the jaws fully, to the profile ``max_width_mm``."""
         self.set_width_mm(self.max_width_mm)

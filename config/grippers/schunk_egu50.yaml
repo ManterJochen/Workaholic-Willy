@@ -8,9 +8,9 @@
 # grasp centre is the midpoint of the flat jaw face, 159.1 mm from the flange, and the sim mount grasps there too.
 # The mount's earlier centre, 144.1 mm from the flange and 7.5 mm below the face, was tuned for one 30 mm cube.
 #
-# A known under-model: along the closing axis the housing reaches 79.30 mm to one side, 2.25 mm past the finger's
-# outer face at full open, and a box envelope built from these numbers does not carry that corner. The exact mesh
-# guard and the planner read the bundle, which has it.
+# Along the closing axis the housing reaches 79.30 mm to one side, 2.25 mm past the finger's outer face at full
+# open. palm_thickness_mm carries that corner into a box envelope built from these numbers: 158.6, twice the
+# reach, so the box is wider than the housing on its short side, which is the safe direction.
 gripper:
   model: schunk_egu50
   kind: parallel_jaw
@@ -22,7 +22,13 @@ gripper:
     82.50 mm deep behind the finger box and 72.00 mm across the binormal. The aperture and the shut width are the
     sim profile's, the 5.0 mm minimum grip is the policy floor every hand here carries, the 2.0 mm envelope overlap
     is the modelling margin the other hands carry, and the friction is a default.
+  # No drivers list: this repository has no Schunk driver and nothing measured which of its drivers actuates
+  # this hand, so the file says nothing and no gripper.vendor is refused for it.
   jaw:
+    # Where the grasp centre sits along the approach, from this hand's own bundle origin. Every other
+    # number here is relative to it, so without it these numbers are a shape with no place on an arm:
+    # measured off schunk_egu50_hand_meshes.npz, from the flange.
+    grasp_centre_mm: 159.1
     aperture_mm: 84.1
     min_width_mm: 5.0
     closed_width_mm: 4.1
@@ -37,6 +43,7 @@ gripper:
     pad_behind_mm: 7.5
     palm_depth_mm: 82.5
     palm_width_mm: 72.0
+    palm_thickness_mm: 158.6
     palm_measured: true
     friction_coefficient: 0.5
     friction_is_default: true

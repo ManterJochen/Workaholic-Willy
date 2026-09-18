@@ -19,8 +19,8 @@ from typing import Any
 import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
-from src.geometry import Frame, Pose
-from src.geometry.quaternion import angle_between
+from src.geometry import Pose
+from src.robot.core.shutter_motion import ShutterMotion
 from src.robot.safety.planning.live_world import DepthSnapshot
 
 __all__ = ["RigDepthSource"]
@@ -116,11 +116,12 @@ class RigDepthSource:
         )
 
     def _held_still(self, before: Pose, after: Pose) -> bool:
-        """Whether the tool stayed inside the rig's tolerance across the grab, both poses read in BASE."""
+        """Whether the tool stayed inside the rig's tolerance across the grab, by the rule the pick frame uses too.
+
+        Both poses have to be read in BASE (``ShutterMotion``).
+        """
         tolerance = self._motion_tolerance
-        if chosen(tolerance) and before.frame is Frame.BASE and after.frame is Frame.BASE:
-            max_mm, max_deg = tolerance
-            moved_mm = float(np.linalg.norm(after.position_mm - before.position_mm))
-            turned_deg = float(np.degrees(angle_between(before.quaternion_xyzw, after.quaternion_xyzw)))
-            return moved_mm <= float(max_mm) and turned_deg <= float(max_deg)
-        return False
+        if not chosen(tolerance):
+            return False
+        max_mm, max_deg = tolerance
+        return ShutterMotion.between(before, after, tolerance_mm=max_mm, tolerance_deg=max_deg).within

@@ -7,6 +7,9 @@
 # because `robot.ur5e.yaml` already does, and layers apply left to right. On its own this
 # profile merges onto the base `robot.yaml`, which already sets `vendor: ur`, and produces a
 # cell that still has no tool frame and no weighed payload, so it is not a cell; the pair is.
+# Alone it is also refused at build: both rigs declare their calibration, the base leaves
+# `safety.planning_world` off, and a calibrated cuRobo cell with no live camera world does not
+# build. `robot.ur5e.yaml` enables that world on its bench.
 #
 # The camera inventory is the other half, in `camera/cam.eth2.yaml`. The two files share
 # one vocabulary: the rig ids `cam_left` and `cam_right` there are the camera ids here, and
@@ -128,9 +131,9 @@ robot:
 #      WILLY_PROFILE=ur5e,eth2 python -m src.robot.execution.real_cell --check
 #      WILLY_PROFILE=ur5e,eth2 python -m src.robot.execution.real_cell --rehearse
 #
-#    `--check` reads the primary rig's `extrinsics` only, never the second camera's. It
-#    does not open the file either, so a green check with a missing artifact still fails when
-#    the cell is built.
+#    `--check` reads whether the rigs declare `extrinsics`: the camera to base row the
+#    primary's, the camera world row every enabled RGB-D rig's. It opens none of the files,
+#    so a green check with a missing artifact still fails when the cell is built.
 #
 # What this cell does not do: the operator console's live view reads the primary camera
 # only, and offers no camera selector, so the second view appears in telemetry rather than

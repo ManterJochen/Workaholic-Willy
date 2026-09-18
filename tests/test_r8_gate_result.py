@@ -50,3 +50,17 @@ def test_gate_passed_math() -> None:
     assert gate_passed(1, 10, 0.0) is True        # max(1, 0) = 1
     assert gate_passed(0, 10, 0.0) is False
     assert gate_passed(5, 5, 1.0) is True
+
+
+def test_the_per_run_line_says_what_the_policy_read_of_a_line() -> None:
+    from types import SimpleNamespace
+
+    from src.robot.core.arm_capabilities import LineMotion
+    from src.willy_sim.harness.gate import last_line_motion
+
+    def service(report: object) -> object:
+        return SimpleNamespace(runtime=SimpleNamespace(orchestrator=SimpleNamespace(_last_policy_report=report)))
+
+    assert last_line_motion(service(SimpleNamespace(line_motion=LineMotion.CHECKED))) == "checked"
+    assert last_line_motion(service(SimpleNamespace(line_motion=None))) == "not said"
+    assert last_line_motion(service(None)) == "no policy ran"

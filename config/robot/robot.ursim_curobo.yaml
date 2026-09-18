@@ -5,6 +5,10 @@
 # turns the planner on, so the bed measures every verb planned or path checked, against a controller
 # that answers like the real one.
 #
+# The bed has no camera, so it has no live camera world: every verb has to decline one
+# with `without_camera_world`, as the bed probe in scripts/ursim does, or it is refused before
+# planning, and `real_cell --check` blocks on its `camera world` row.
+#
 # The sidecar runs on the host, not in the container. `CuroboPlanClient` spawns it over pipes with the
 # cuRobo environment's own python, so the container's missing GPU decides nothing here; what decides
 # it is whether that environment is installed on the machine running this repository.

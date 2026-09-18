@@ -18,6 +18,7 @@ upward. Build it through the registry: `create_arm(RobotVendor.UR, config=cfg.ro
 | `connection.py` | `URConnection`, the RTDE boundary and the only `ur_rtde` import site. |
 | `motion.py` | `MotionController`: workspace-validated, velocity and acceleration clamped, singularity-aware point-to-point moves. |
 | `curobo_motion.py` | `CuroboUrPlanner`: plan a global collision-free joint trajectory through `safety.planning`, then execute it waypoint by waypoint over `moveJ`. Fail-closed, with no blind-IK fallback. |
+| `planner_frame.py` | `PlannerFrameClient` and `planner_pose`, the one place this driver talks to the planner through: every pose handed in is turned from the controller's base into the planner's, half a turn about Z, and every pose handed back is turned out again. |
 | `tool_frame.py` | Derive the controller's active tool frame from FK and the bundled DH table, and compare it with what config declares. `derive_active_tool_frame`, `tool_frame_matrix`, `compare_tool_frames`, `ToolFrameMismatch`. |
 | `pose.py` | The `URPose` value object, millimetres and axis-angle radians internally, and its conversions. |
 | `pose_adapter.py` | `pose_to_urpose` and `urpose_to_pose`, the only bridge between `URPose` and `Pose`. |
@@ -35,10 +36,13 @@ upward. Build it through the registry: `create_arm(RobotVendor.UR, config=cfg.ro
 - `move(pose, *, linear, vel, acc, register, camera_world) -> MotionResult`, the typed path. It
   pre-resolves IK, runs `SafetyPreflight`, and returns a precise `MotionStatus` on rejection. Where
   `robot.ur.motion_planner` is `curobo` it routes through `CuroboUrPlanner` instead of controller
-  IK. The result carries a camera-world stamp: UNPLANNED on `ik`, MISSING on `curobo` with no live
-  world, DECLINED for a decline, PLANNED when the refresh this motion made vouched.
-  `move_to_joints` stamps the same way, because on `curobo` its path is checked against that
-  world. `without_camera_world(reason)` declines the camera world for a block of motions.
+  IK. The result carries a camera-world stamp: UNPLANNED on `ik`, DECLINED for a decline, PLANNED
+  when the refresh this motion made vouched. On `curobo` a motion with neither a live world nor a
+  decline is refused before planning, `UNSUPPORTED` stamped MISSING, and so is every other verb:
+  `move_joint` and `move_linear` raise `RobotMotionRejected` carrying the result, and `move_home`
+  returns False. `move_to_joints` stamps the same way, because on `curobo` its path is checked
+  against that world. `without_camera_world(reason)` declines the camera world for a block of
+  motions.
 - `move_to(...) -> bool`, the boolean path through `MotionController`, plus `move_linear` and
   `move_joint` (which raise `RobotMotionRejected` where the preflight denies the move),
   `move_to_joints`, `move_home`, `stop`, `wait_until_steady`, and the asynchronous `amove_to` and
@@ -48,7 +52,13 @@ upward. Build it through the registry: `create_arm(RobotVendor.UR, config=cfg.ro
   `capabilities`.
 - `attach_payload(grip_width_mm)` and `detach_payload()` tell the cuRobo planner that the gripper is
   carrying a part. `attach_payload` returns `False` where nothing was attached, which includes the
-  ordinary case of a cell that plans with `ik`.
+  ordinary case of a cell that plans with `ik` and a cell that declares no
+  `safety.planning_world.payload.length_mm`; `payload_declined_reason()` names the key or the hand
+  that stops it, and `payload_model()` says what the last attach left in force.
+- `line_motion()` says what `move(pose, linear=True)` keeps of the line before anything moves:
+  CONTROLLER_LINE on `ik`, CHECKED on `curobo` where every sample can be judged, NOT_KEPT with the
+  preflight's own sentence otherwise. `camera_world_for_move(camera_world)` is the stamp a `move`
+  starts from. Neither opens a connection or starts a planner.
 - Optional capabilities, feature-checked with `isinstance(arm, SupportsForceTorque)`:
   `SupportsDigitalIO` for digital and analog I/O, `SupportsForceTorque` for `get_tcp_wrench` and
   `get_joint_torques`, and `SupportsRobotStatus` for `get_robot_status`,
@@ -148,6 +158,25 @@ plan exists, and it never falls back to blind IK, so a cell with no cuRobo envir
 at all. Check that environment with `python -m src.robot.safety.planning --doctor` before
 commissioning. The alternative, `ik`, is the controller's calibrated IK and a straight `moveJ` or
 `moveL` line, which knows nothing about the cell and will drive through anything in it.
+
+**The planner's base is not the controller's.** The cuRobo planner is rooted at UR's URDF
+`base_link`, the DH base turned half a turn about Z; the controller, the DH chain, the Coal guard and
+every pose a cell declares are in the DH base. Handed unturned, a plan to a flange raised 100 mm ends
+1019.28 mm and 180 degrees from its goal and a box in the fingers reads clear
+(`scripts/curobo/probe_ur_planner_frame.py` measures both). `planner_frame.py` turns every pose at the
+one place the glue talks to the planner, and `_drive_curobo` reads where a plan ends on the DH chain
+before the first waypoint moves, refusing a plan more than 5 mm or 6 degrees from its goal. The Isaac
+cell never meets it: its world, its goals and its planner all sit in `base_link`.
+
+**A checked line refuses a branch, not a continuous step.** Every sample is the controller's own IK
+seeded on the one before, the first on the joints the arm stands at. A joint turning more than
+0.35 rad between two samples is a branch change, and so is a step whose joint line puts the flange
+more than 1 mm off the line moveL runs (the two elbow branches near full stretch are 0.30 rad apart);
+both refuse the line and name where. A continuous step whose sum |dq_j| * r_j is above the path
+gate's step is filled in joint space, so the gate still judges configurations no further apart than
+its bound. That sum is not a branch test: on URSim the elbow and wrist 1 turn against each other on a
+continuous 50 mm lift, which sums to 27 to 31 mm a step while no link origin moves more than 10 mm,
+and a gate refusing on it refuses nearly every line a real UR runs.
 
 **`robot.ur.model` is a safety key, not a label.** It selects the safety DH chain, the exact-mesh
 collision bundle and the cuRobo robot config. Setting it wrong computes every self-collision verdict

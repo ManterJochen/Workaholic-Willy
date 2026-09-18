@@ -52,7 +52,7 @@ reclassifying anything.
 | `ik_quality.py` | `IKQualityGuard` |
 | `self_collision.py` | `SelfCollisionGuard`, with the capsule and exact-mesh backends |
 | `payload.py` | `PayloadGuard` |
-| `path_samples.py` | `PathSamples` and `LineSamples` with `joint_path_samples` and `line_samples`: a move turned into the configurations a checker judges, with the step derived from the reach |
+| `path_samples.py` | `PathSamples` and `LineSamples` with `joint_path_samples` and `line_samples`: a move turned into the configurations a checker judges, with the step derived from the reach. `LINE_MAX_JOINT_STEP_RAD` and `LINE_MAX_CHORD_OFF_MM` are what a checked line calls a branch change, the first on both drivers and the second on the UR alone |
 | `continuity.py` | `MotionContinuityGuard` |
 | `singularity.py` | Jacobian and singular-value analysis helpers, and `SingularityGuard` |
 | `continuous_monitor.py` | the opt-in per-control-step collision-avoidance monitor |
@@ -61,20 +61,22 @@ reclassifying anything.
 | `_ur_kinematics.py` | the UR DH tables, `ur_link_origins_mm` and `ur_link_transforms_mm` |
 | `_fcl_self_collision.py` | the exact mesh-against-mesh backend |
 | [`planning/`](planning/README.md) | the trajectory-planner sidecar and the anchor for both external engines |
-| `data/` | the committed collision-mesh bundles |
+| `data/` | the committed collision-mesh bundles and `bundles.json`, their index |
 
 ## The collision-mesh bundles ship
 
-`data/` holds four committed bundles: `ur5e_collision_meshes.npz`, `ur3e_collision_meshes.npz`,
-`ur10e_collision_meshes.npz` and `schunk_egu50_collision_meshes.npz`, the last being the ur5e arm
-with a different gripper. They are
-per-DH-frame vertex and face arrays, so no config is needed to find them: with
-`self_collision.mesh_dir` left at `null` the guard loads the bundle for its own model out of this
-directory. `mesh_dir` names an alternate directory for a bundle you baked yourself.
+`data/` holds seven committed arm bundles, `{model}_collision_meshes.npz` for `ur3`, `ur3e`,
+`ur5`, `ur5e`, `ur10`, `ur10e` and `ur16e`, baked from Universal Robots' own collision STL files, and
+one hand bundle each for `robotiq_2f85`, `robotiq_hande` and `schunk_egu50`,
+`{hand}_hand_meshes.npz`, composed onto the arm when the guard loads. `bundles.json` beside them
+records each bundle's source, which is one of the sources the index declares, and a hash over its
+arrays. They are per-DH-frame vertex and face arrays, so no config is needed to find them: with
+`self_collision.mesh_dir` left at `null` the guard loads the bundles for its own model and hand out
+of this directory. `mesh_dir` names an alternate directory for a bundle you baked yourself.
 
 A model gets exact meshes as soon as `{model}_collision_meshes.npz` lands beside these, with no code
-change. The bundle for another hand is derived from `robot.gripper.model`, for a cell running an
-end-effector other than the baked Robotiq 2F-85.
+change, and the hand bundle is derived from `robot.gripper.model`. A model with no bundle falls back
+to the capsule path.
 
 ## The exact-mesh guard falls back rather than failing closed
 
@@ -120,7 +122,9 @@ Make a context with `context_for_pose(...)` or `context_for_joints(...)`; evalua
 whole path with `gate_joint_path(samples, *, arm=None, command=...)` or, from a planner's waypoints,
 with `gate_planned_path(waypoints, *, arm=None, command=...)`; clear the memo with `reset()`;
 translate a rejection with the static `as_motion_result(...)`. Introspect through `guards`,
-`guard_names`, `omitted_guards` and `path_step_mm`.
+`guard_names`, `omitted_guards` and `path_step_mm`. `path_judge_refusal(arm)` returns, before any
+motion, the sentence a path gate would refuse that arm with, or `None` where every sample can be
+judged.
 
 The path gates have no off switch and no stride. They refuse rather than judge a path with the
 capsule proxy or with no self-collision guard at all, and a refusal names the sample.
@@ -143,14 +147,15 @@ Joint limits. The envelope resolves in this order: explicit `min_deg` and `max_d
 the built-in `UR_JOINT_LIMITS_DEG` table, which is the manufacturer envelope of plus or minus 360
 degrees per axis for `ur3`, `ur3e`, `ur5`, `ur5e`, `ur10`, `ur10e`, `ur16e` and `ur20`; otherwise
 `UNAVAILABLE`. `margin_deg` comes off both ends. KUKA and the sim have no built-in table, so a cell
-either supplies limits in YAML or the guard fails closed. Since 2026-09-10 that last case is refused
-at build instead: `create_arm` calls `assert_joint_limit_table_available(arm)`, and an arm that wires
-this guard with no table to enforce raises `JointLimitTableMissing` naming
+either supplies limits in YAML or the guard fails closed. That last case is refused at build rather
+than at the first move: `create_arm` calls `assert_joint_limit_table_available(arm)`, and an arm that
+wires this guard with no table to enforce raises `JointLimitTableMissing` naming
 `robot.safety.joint_limits.min_deg` and `max_deg`. Measured on the shipped `web` profile, which is
-`vendor: kuka` with both keys `null`, the cell used to build and then answer `controller_rejected` to
-every move, naming the controller for a missing config key. An arm whose `safety_preflight` is `None`,
-as the dummy has it, or whose operator set `joint_limits.enforce: false`, is silent there: those are
-stated decisions and `SafetyAttestation` is what reports them.
+`vendor: kuka` with both keys `null`: without that refusal the cell builds and then answers
+`controller_rejected` to every move, naming the controller for a missing config key. An arm whose
+`safety_preflight` is `None`, as the dummy has it, or whose operator set
+`joint_limits.enforce: false`, is silent there: those are stated decisions and `SafetyAttestation`
+is what reports them.
 
 IK quality. On a pre-resolved `target_joints`: non-finite rejects; a wrong DoF rejects and needs
 `arm`; a per-axis jump over `max_jump_rad` rejects; proximity closer than `limit_proximity_deg` to a
@@ -196,8 +201,10 @@ commanded, using the same guards as a joint move: joint limits, self-collision i
 fixtures, and payload. There is no key that switches them off and no stride. The sim applies each
 waypoint to the articulation and a real UR runs them in turn, so a path that grazes a fixture halfway
 and lands clear is exactly what an endpoint check cannot see. The step comes from the collision
-margin, which is the coarsest sampling the check can survive, and the reach is read off the arm, so a
-robot whose reach does not derive is refused rather than sampled by a number nobody measured.
+margin, which is the coarsest sampling the check can survive, and the reach is read off the arm and
+what its flange carries (the hand as the guard places it, a wrist camera's fill and a declared
+carried part), so a robot or a hand whose reach does not derive is refused rather than sampled by a
+number nobody measured.
 
 `ContinuousCollisionMonitor` runs the exact-mesh backend over every interpolation waypoint of a move,
 arm against itself and arm against fixtures, with a clearance margin that stops before contact and a

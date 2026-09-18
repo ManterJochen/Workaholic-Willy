@@ -38,6 +38,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ...core import RobotConnectionError
+from ...core.gripper import HoldEvidence
 
 __all__ = [
     "SuctionCupProfile",
@@ -240,6 +241,17 @@ class IsaacSuctionGripper:
         if self._mock_mode or self._view is None:
             return self._vacuum_on
         return self._is_closed()
+
+    def hold_evidence(self) -> HoldEvidence:
+        """The surface gripper's bond as evidence.
+
+        UNMEASURED in mock or without a view, whatever was commanded.
+        """
+        if not self._connected:
+            raise RobotConnectionError("IsaacSuctionGripper is not connected.")
+        if self._mock_mode or self._view is None:
+            return HoldEvidence.UNMEASURED
+        return HoldEvidence.HELD if self._is_closed() else HoldEvidence.EMPTY
 
     # ---- internals ------------------------------------------------------
 

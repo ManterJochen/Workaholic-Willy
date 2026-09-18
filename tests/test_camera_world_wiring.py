@@ -390,18 +390,27 @@ class APlannedStampNamesEveryWorldCameraTests(unittest.TestCase):
                 self.assertEqual(stamp.captured_at_s, now - 2.0)
 
 
-class ThePickLoopsMasksLandOnThePrimaryViewTests(unittest.TestCase):
+class AnOfferNamesItsCameraTests(unittest.TestCase):
 
-    def test_the_pick_loops_masks_land_on_the_primary_view(self) -> None:
+    def test_an_offer_names_its_camera_and_an_unnamed_offer_with_masks_is_refused(self) -> None:
+        from src.robot.safety.planning.perceived import PerceptionGeometryError
+
         cfg = _cell()
         plan = CameraWorldPlan.from_config(cfg, (_rig("side"), _rig("overhead")), primary_rig_id="overhead")
         wiring = CameraWorldWiring.from_cameras(cfg, plan=plan,
                                                 cameras={"overhead": _Owner("overhead"), "side": _Owner("side")})
         assert wiring.world is not None
 
-        wiring.world.offer_segmentation(labelled_masks=[("red cube", np.ones((40, 40), dtype=bool))])
+        wiring.world.offer_segmentation(camera="side", labelled_masks=[("red cube", np.ones((40, 40), dtype=bool))])
+        self.assertEqual(set(wiring.world._labels), {"side"})  # noqa: SLF001
+        with self.assertRaises(PerceptionGeometryError):
+            wiring.world.offer_segmentation(labelled_masks=[("red cube", np.ones((40, 40), dtype=bool))])
 
-        self.assertEqual(set(wiring.world._labels), {"overhead"})  # noqa: SLF001
+    def test_the_primary_first_refusal_names_the_offer_rule(self) -> None:
+        plan = CameraWorldPlan.from_config(_cell(), (_rig("overhead", calibrated=False), _rig("side")),
+                                           primary_rig_id="overhead")
+        self.assertIn("offers its masks under the primary's name", plan.reason)
+        self.assertIn("refuses", plan.reason)
 
 
 class AWorldCameraThatCannotOpenRefusesTheBuildTests(unittest.TestCase):
@@ -458,3 +467,46 @@ class ARebuiltCellOpensEveryWorldCameraAgainTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _ComponentsReached(RuntimeError):
+    """Raised by the patched components builder: the build got past every refusal and would open a camera."""
+
+
+class ACuroboCellWhoseCamerasGiveNoWorldDoesNotBuildTests(unittest.TestCase):
+    """By owner decision a calibrated rig makes the world mandatory on a cuRobo cell, refused before a camera opens."""
+
+    def _build(self, cfg: RobotConfig, app: SimpleNamespace) -> None:
+        with patch.object(cells, "build_real_components", side_effect=_ComponentsReached):
+            cells.build_real_cell(cfg, app_config=app)  # type: ignore[arg-type]
+
+    def test_a_curobo_cell_whose_calibrated_rig_yields_no_world_is_refused_before_a_camera_opens(self) -> None:
+        with self.assertRaises(CellBuildRefused) as refused:
+            self._build(_cell(world=False), _app(_rig("overhead")))
+        self.assertIn("safety.planning_world.enabled", str(refused.exception))
+        self.assertIn("'overhead'", str(refused.exception))
+
+        with self.assertRaises(CellBuildRefused) as primary:
+            self._build(_cell(), _app(_rig("overhead", calibrated=False), _rig("side")))
+        self.assertIn("primary rig 'overhead'", str(primary.exception))
+
+    def test_the_controls_an_ik_cell_and_an_uncalibrated_cell_build(self) -> None:
+        with self.assertRaises(_ComponentsReached):
+            self._build(_cell(world=False, planner="ik"), _app(_rig("overhead")))
+        # Uncalibrated: the cell builds with no world, and every planned motion needs a decline.
+        with self.assertRaises(_ComponentsReached):
+            self._build(_cell(world=False), _app(_rig("overhead", calibrated=False)))
+
+    def test_a_stereo_answer_on_a_curobo_cell_refuses_the_build(self) -> None:
+        owners = {"overhead": _Owner("overhead", answer="stereo"), "side": _Owner("side")}
+        with self.assertRaises(CellBuildRefused) as refused:
+            _wire(_cell(), _app(_rig("overhead"), _rig("side")), owners)
+        self.assertIn("built no live world", str(refused.exception))
+        self.assertEqual((1, 1), (owners["side"].opened, owners["side"].released),
+                         "the camera opened for the world was not given back")
+
+    def test_the_control_a_stereo_answer_on_an_ik_cell_warns_and_builds(self) -> None:
+        owners = {"overhead": _Owner("overhead", answer="stereo")}
+        with self.assertLogs(cells.__name__, level="WARNING"):
+            _, arm = _wire(_cell(planner="ik"), _app(_rig("overhead")), owners)
+        arm.set_live_planner_world.assert_not_called()  # type: ignore[attr-defined]

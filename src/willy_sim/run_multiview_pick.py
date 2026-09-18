@@ -47,6 +47,7 @@ from src.robot.grasping.multiview.localize import (
     fuse_scene_points_base,
     fuse_view_localizations,
 )
+from src.robot.core.camera_world import CameraWorldDecline
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from collections.abc import Iterable
@@ -720,6 +721,7 @@ def run_multiview_gate(
         grasp_lift_mm=grasp_lift_mm, ground_truth_depth=ground_truth_depth,
         mode=grasp_mode, config_subpolicies=config_subpolicies, ik_service=ik_service,
         multi_object_perception=not single_mask_perception, clear_any_object=clear_any,
+        camera_world=CameraWorldDecline("run_multiview_pick: this runner plans without a live camera world"),
     )
     print(f"[grasp-mode] service built in mode={grasp_mode!r} "
           f"(config_subpolicies={config_subpolicies})", flush=True)

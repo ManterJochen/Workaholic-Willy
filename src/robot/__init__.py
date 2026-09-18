@@ -9,8 +9,10 @@ Quick start::
     cfg = load_config()
     with create_arm(RobotVendor.from_string(cfg.robot.vendor), config=cfg.robot) as bot:
         pose = bot.get_tcp_pose()         # vendor-neutral Pose, Frame.BASE
-        bot.move_linear(target_pose)      # Pose-typed
-        bot.move_home()                   # driver-provided home move
+        # A cuRobo UR arm refuses a motion with no live camera world and no decline.
+        with bot.without_camera_world("bench move: no camera watches the cell"):
+            bot.move_linear(target_pose)  # Pose-typed
+            bot.move_home()               # driver-provided home move
 
 Architecture
 ------------

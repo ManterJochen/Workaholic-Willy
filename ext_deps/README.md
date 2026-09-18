@@ -90,9 +90,10 @@ powershell -ExecutionPolicy Bypass -File scripts\ext_deps\install.ps1
 ```
 
 From nothing to a verified stack. It bootstraps micromamba into this folder, builds both
-environments from `locks/`, clones and pins cuRobo, installs both of its kernel backends, generates
-the ur5e and ur3e descriptors, and ends by running the doctor, so its exit code means "this box can
-plan" rather than "the downloads finished".
+environments from `locks/`, clones and pins cuRobo, installs both of its kernel backends, fetches
+the pinned UR arm meshes, generates one descriptor per UR arm with no hand in it, and ends by
+running the doctor, so its exit code means "this box can plan" rather than "the downloads
+finished".
 
 `-Clean` deletes the targets first, which is how to test that it really does rebuild from nothing.
 `-Component coal|curobo` does one of them.
@@ -335,9 +336,9 @@ rt.kernel_backend = 'pybind'
 
 ### 3. Robot configs (assembled, not shipped)
 
-cuRobo ships `ur10e` and `franka` but no `ur5e` or `ur3e`. One script assembles either from on-box
-ingredients, the URDF rendered from the vendored description of Universal Robots plus collision
-spheres fitted to that arm's own committed mesh bundle, writing `<model>.urdf` and
+cuRobo ships `ur10e` and `franka` but no `ur5e` or `ur3e`. One script assembles every UR arm from
+committed ingredients, the URDF rendered from the vendored description of Universal Robots plus
+collision spheres fitted to that arm's own committed mesh bundle, writing `<model>.urdf` and
 `willy_<model>.yml` into the content directory of the clone, one descriptor per arm with no hand in
 it. The hand a cell names is added as a fixed link when its planner starts, so `--gripper` and
 `--coupling-mm` are refused here by name:

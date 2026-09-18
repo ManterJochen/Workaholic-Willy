@@ -19,10 +19,11 @@ to configure and no `python -m` entry point.
 | File | Role |
 | --- | --- |
 | `robot_arm.py` | The `RobotArm` Protocol, the manipulator surface. |
-| `gripper.py` | The `Gripper` Protocol and the opt-in `ObjectDetectingGripper` extension. |
-| `arm_capabilities.py` | Opt-in arm capability Protocols `SupportsDigitalIO`, `SupportsForceTorque` and `SupportsRobotStatus`, with the value types `Wrench`, `RobotStatus`, `RobotMode`, `SafetyMode` and `DigitalIOPort`. |
+| `gripper.py` | The `Gripper` Protocol and the opt-in extensions `ObjectDetectingGripper`, `StoppableGripper`, `ReportsHoldEvidence` (a `HoldEvidence` of `HELD`, `EMPTY` or `UNMEASURED`) and `MeasuresWidth`, with `hold_evidence_of` and `width_is_measured_of` reading the last two on any gripper. |
+| `arm_capabilities.py` | Opt-in arm capability Protocols `SupportsDigitalIO`, `SupportsForceTorque`, `SupportsRobotStatus`, `KeepsLines` and `CarriesPayload`, with the value types `Wrench`, `RobotStatus`, `RobotMode`, `SafetyMode`, `DigitalIOPort`, `LineMotion`, `LineReading` and `PayloadModel`, and `line_motion_of`. |
 | `motion_result.py` | The typed outcome contract: `MotionStatus`, `MotionCommand`, `MotionResult`, and `NO_PLAN_FAIL_SAFE_MESSAGE`. |
-| `camera_world.py` | `CameraWorldStamp`, `CameraWorldUse` and `CameraWorldDecline`: whether a camera world stood behind a motion, carried on its `MotionResult`. Also how a driver declines and stamps: `without_camera_world`, `active_decline`, `resolve_camera_world`, `stamp_result`, the `DeclinesCameraWorld` capability and `DECLINE_ON_A_LIVE_WORLD_MESSAGE`. |
+| `keep_out.py` | `KeepOutBox`, a box in BASE whose inside is no obstacle for one motion (`from_jaw`, `contains`, `render`, `to_dict`), and `SegmentationOffer`, what one perception frame hands a planner world: masks for the camera that took them, the target's BASE points, and the shutter time they age by. Masks without a named camera are refused. `keeping_out(arm, offer)` is the block that holds an offer in the arm's live planner world for every motion inside it and forgets it after, also when the body raises (`KeepOutScope.world_wired` is false on an arm with no world). The pick loop holds its target this way for each attempt. `GoalKeepOut` and `KeepOutSummary` carry a motion's goal region and what a refresh left out. |
+| `camera_world.py` | `CameraWorldStamp`, `CameraWorldUse` and `CameraWorldDecline`: whether a camera world stood behind a motion, carried on its `MotionResult`. Also how a driver declines, stamps and refuses: `without_camera_world`, `active_decline`, `resolve_camera_world`, `stamp_result`, `camera_world_refusal`, the `DeclinesCameraWorld` and `ReadsCameraWorld` capabilities, `DECLINE_ON_A_LIVE_WORLD_MESSAGE` and `NO_CAMERA_WORLD_MESSAGE`, and `weakest_camera_world`, the stamp a report of several motions reads. |
 | `joint_positions.py` | `JointPositions`, an immutable validated vector of joint angles in radians. |
 | `capabilities.py` | `RobotCapabilities`, the descriptor a driver advertises about itself. |
 | `vendor.py`, `gripper_vendor.py` | The `RobotVendor` and `GripperVendor` enums, used as config values and registry keys. |
@@ -39,13 +40,19 @@ to configure and no `python -m` entry point.
 
 `Gripper` carries `is_connected`, `min_width_mm`, `max_width_mm`, `connect`, `disconnect`,
 `activate`, `set_width_mm` and `get_width_mm`. `ObjectDetectingGripper` adds
-`is_object_detected() -> bool` for post-close verification.
+`is_object_detected() -> bool` for post-close verification. `ReportsHoldEvidence` adds
+`hold_evidence()`, what the gripper measured about a hold and never its command, and `MeasuresWidth`
+adds `width_is_measured()`, whether `get_width_mm` reads a sensor. `StoppableGripper` adds `stop()`,
+which halts the jaws where they are without commanding a width.
 
-The three capability Protocols are opt-in and absent-safe. A driver implements one only if the
+The arm capability Protocols are opt-in and absent-safe. A driver implements one only if the
 hardware offers it, and a caller checks with `isinstance` and falls back when it does not.
 `SupportsDigitalIO` reads and writes controller pins, `SupportsForceTorque` returns a `Wrench` in
 newtons and newton-metres, and `SupportsRobotStatus` reports a `RobotStatus` through
 `get_robot_status()` and clears an active protective stop through `recover_from_protective_stop()`.
+`KeepsLines` says before a move what `move(pose, linear=True)` keeps of the line (`CHECKED`,
+`CONTROLLER_LINE`, `TELEPORT` or `NOT_KEPT`, with the reason), and `CarriesPayload` models a part in
+the gripper and says why it models none.
 A gate written against a capability no attached driver implements
 is inert by construction, which is the intended behaviour rather than a silent failure.
 
@@ -65,11 +72,11 @@ the constructors `.executed()`, `.failed()` and `.from_bool()`, each taking `cam
 stamp in `camera_world.py` says whether a world built from a current camera image stood behind the
 motion. There are five uses: `UNSTATED` (nothing was said, the default), `PLANNED` (the only one
 that vouches), `DECLINED` (a caller's decision), `UNPLANNED` (no planner planned this motion or
-checked its path) and `MISSING` (a planner planned or checked it with no camera world, and nobody
-declined). The last three each
-carry a mandatory reason, and the stamp takes part in equality where `exception` does not. The
-`repr` shows the stamp only when it says something, so a result built without one prints what the
-generated repr prints.
+checked its path) and `MISSING` (a planner would plan or check it with no camera world, and nobody
+declined, so the motion is refused and the stamp rides on the refusal). The last three each carry a
+mandatory reason, and the stamp takes part in equality where `exception` does not. The `repr` shows
+the stamp only when it says something, so a result built without one prints what the generated repr
+prints.
 
 Every driver stamps `move` and `move_to_joints`, read off the built arm and never off config: the
 `console_dummy` profile keeps `ur.motion_planner: curobo` on a dummy arm, whose motions say
@@ -78,7 +85,7 @@ Every driver stamps `move` and `move_to_joints`, read off the built arm and neve
 | arm | `move` | `move_to_joints` |
 | --- | --- | --- |
 | UR, `ik` | `UNPLANNED` | `UNPLANNED` |
-| UR, `curobo` | `DECLINED` for a decline, else `MISSING` with no live world, else `PLANNED` when the refresh this motion made vouched, else `UNSTATED` | as `move`: nothing plans the joint move, and its path is checked against the refreshed world |
+| UR, `curobo` | `DECLINED` for a decline, else `MISSING` on an `UNSUPPORTED` refusal with no live world, else `PLANNED` when the refresh this motion made vouched, else `UNSTATED` | as `move`: nothing plans the joint move, and its path is checked against the refreshed world |
 | Isaac, `mock_mode` | `UNPLANNED` | `UNPLANNED` |
 | Isaac, `curobo` | as the UR, and a sidecar that cannot start refuses the move | as `move`: its path is checked against the refreshed world, and planned against it with `plan_joint_moves` |
 | Isaac, `rmpflow` | `UNPLANNED`, because a reactive policy consults no camera world | `UNPLANNED` |
@@ -89,7 +96,11 @@ A decline is `camera_world=CameraWorldDecline(reason)` on the verb or a block,
 arm and held in a `ContextVar`, so it does not follow into a thread started inside it. A motion no
 planner plans or checks says `UNPLANNED` whatever was declined. A declined planned or checked motion
 on an arm whose live camera world is wired is refused before the planner is asked, as `UNSUPPORTED` with
-`DECLINE_ON_A_LIVE_WORLD_MESSAGE`. `resolve_camera_world` is that precedence as one pure function,
+`DECLINE_ON_A_LIVE_WORLD_MESSAGE`. A planned or checked motion with neither a live world nor a decline
+is refused the same way, with `NO_CAMERA_WORLD_MESSAGE`, before the body of every verb,
+`move_joint`, `move_linear` and `move_home` included. `camera_world_refusal(stamp, live_world_wired=)`
+is that rule as one pure function, and `camera_world_required` on the UR and the non-mock Isaac cuRobo
+arms says an arm applies it. `resolve_camera_world` is the precedence as one pure function,
 and `stamp_result` replaces only a `MotionResult` whose stamp is `UNSTATED`. `DeclinesCameraWorld` is
 a capability rather than a `RobotArm` member, so a caller's own arm still satisfies the Protocol and
 its results keep saying `UNSTATED`.

@@ -251,8 +251,8 @@ class OneHandOnEveryArmTests(unittest.TestCase):
 
     It used to be one arm plus hand file per arm, and naming the arm in a config key is how a cell that changes arms
     kept the bundle for the old one. Measured before this: `schunk_egu50` on a ur3e tripped `variant_model_mismatch`,
-    which dropped the whole cell to the capsule proxy. A hand bundle carries no arm, and records the arms it was proven
-    on instead.
+    which dropped the whole cell to the capsule proxy. A hand bundle carries no arm, and which arms it may be composed
+    onto is measured, one evidence file per combination.
     """
 
     def test_the_hand_composes_onto_both_arms(self) -> None:
@@ -264,14 +264,20 @@ class OneHandOnEveryArmTests(unittest.TestCase):
                 self.assertIn("gripper__v", composed)
                 self.assertIn("forearm__v", composed)
 
-    def test_a_hand_proven_on_one_arm_is_not_offered_to_another(self) -> None:
-        """The control. Composing the arm in must not turn into finding something for every
-        combination: the Schunk was proven on a ur5e only, and a ur3e cell must still be told."""
-        from src.robot.safety._fcl_self_collision import mesh_backend_status
+    def test_composing_every_pair_is_not_admitting_every_pair(self) -> None:
+        """The control. Composing the arm in must not turn into finding something for every combination.
 
-        self.assertEqual(
-            mesh_backend_status("ur3e", None, "schunk_egu50"), "variant_model_mismatch"
-        )
+        The guard composes the Schunk onto any arm with a bundle since UM lane S22 retired the inherited list, and
+        what still has to tell a cell no is the evidence: the matrix measured the ur3e with it and could measure
+        nothing for the ur5, where the retract rule found no pose at all."""
+        from src.robot.safety._fcl_self_collision import mesh_backend_status
+        from src.robot.safety.planning.evidence import evidence_path
+
+        self.assertIn(mesh_backend_status("ur3e", None, "schunk_egu50"), {"ok", "no_engine"})
+        common = {"hand": "schunk_egu50", "coupling_mm": 0.0, "approach": "+Y", "closing": "+X",
+                  "planner_margin_mm": 4.0, "attach_spheres": 0}
+        self.assertTrue(evidence_path(arm="ur3e", **common).is_file())  # type: ignore[arg-type]
+        self.assertFalse(evidence_path(arm="ur5", **common).is_file())  # type: ignore[arg-type]
         for arm in ("ur5e", "ur3e"):
             with self.subTest(arm=arm):
                 self.assertEqual(mesh_backend_status(arm, None, "robotiq_hande"), "ok")

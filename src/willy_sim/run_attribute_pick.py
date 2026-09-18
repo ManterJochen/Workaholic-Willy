@@ -44,6 +44,7 @@ from src.config.schema.robot.sim_schema import SimObjectConfig
 from src.willy_sim.harness.cli import add_cell_arguments, cell_profile_kwargs
 from src.willy_sim.harness.gate import GateResult
 from src.willy_sim.harness.instrumentation import cell_identity, write_run_result
+from src.robot.core.camera_world import CameraWorldDecline
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.app import ModelsConfig
@@ -272,6 +273,7 @@ def build_cell(
         data_dir, headless=headless,
         scene_kwargs={"objects_override": attribute_specs()},
         **(cell_kwargs or {}),
+        camera_world=CameraWorldDecline("run_attribute_pick: this runner plans without a live camera world"),
     )
     from src.willy_sim.run_dense_pick import wire_safety_guards
 

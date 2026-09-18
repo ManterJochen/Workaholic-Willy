@@ -175,7 +175,7 @@ robot:
       # would then reject: cuRobo plans against a sphere model while the guard re-checks the exact
       # meshes, and with no margin at all the two disagree by fractions of a millimetre and the
       # plan loses. cuRobo returns UR5e plans at 9.44 to 9.47 mm against this 10.000 mm guard,
-      # costing 3 of 10 picks to what reads as bad grasping. It is not derived from
+      # and every such plan is a pick lost to what reads as bad grasping. It is not derived from
       # `min_distance_mm`, because how much margin a planner can absorb depends on how tightly its
       # spheres fit that arm carrying that hand.
       #
@@ -202,8 +202,7 @@ robot:
     # sim derives from it which gripper Isaac puts on the arm: the ur5e and ur10e assets bake this hand
     # as a variant, every other arm mounts it standalone.
     model: robotiq_2f85
-    max_width_mm: 85.0          # Robotiq 2F-85 opening
-    min_width_mm: 5.0
+    # Its widths and envelope come from grippers/robotiq_2f85.yaml: 85 mm open, a 5 mm floor.
 
     # The sim cell declares its tool frame in the same place a real cell does, so the flange-to-TCP
     # transform has one owner and both halves of it are visible to config. `source: "willy"` says

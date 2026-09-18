@@ -7,7 +7,7 @@ cells that work today. Captured on the unchanged tree (2026-09-15), for the thre
 the sim's declared tool frame and an undeclared one:
 
 * the self filter's hand spheres, and the carried part capsule and box hung from their tip;
-* the planner's tool0 spheres for each committed map, placed as the builder places them (the Hand-E one 20 mm plate out);
+* the planner's tool0 spheres for each committed map, placed as the builder placed them (the Hand-E one 20 mm plate out);
 * for six arms and each hand, a sha256 of every (name, vertices, faces, frame) the exact mesh guard would be handed,
   taken with the collision engine patched out, so it runs where Coal does not.
 
@@ -35,6 +35,30 @@ which reads the same map. After the refit the filter masks the whole hand and ab
 space around it. What this golden still protects is B2 and B3: a transposed rotation or a plate added along
 the wrong axis would move these arrays too, and nothing else here changed.
 
+⚠ ``guard_meshes`` was re-blessed a third time on 2026-09-17, and it is a change of ADMISSION, not of geometry.
+UM lane S22 retired ``hand__admitted_arms``, the list each hand bundle carried of the arms it was proven on, because
+which arms a hand may be composed onto is measured now, one committed file per combination. The five pairings the
+list refused are the only rows that moved, and every row that carried geometry before carries the same bytes:
+
+===================  ========================  ========================================
+pairing              before                    after
+===================  ========================  ========================================
+ur3/schunk_egu50     variant_model_mismatch    ok, and the composed parts are recorded
+ur3e/schunk_egu50    variant_model_mismatch    ok, and the composed parts are recorded
+ur5/schunk_egu50     variant_model_mismatch    ok, and the composed parts are recorded
+ur10/schunk_egu50    variant_model_mismatch    ok, and the composed parts are recorded
+ur10e/schunk_egu50   variant_model_mismatch    ok, and the composed parts are recorded
+===================  ========================  ========================================
+
+That the guard composes them is not that a planner may start on them: a cuRobo cell still needs the evidence file,
+and the ur5 with the EGU-50 has none, because the retract rule found no pose for that pair at all.
+
+``planner_tool0`` was captured through ``scripts/curobo/_gripper_placement.py``, the builder's own placement, until
+UM lane S24 deleted it: since S11 no build places a hand, and the planner's sidecar adds the hand link
+``body_link.HandLink`` derives. The half now reads that link, its map's spheres moved by its fixed transform, and
+was held to the same golden bytes when it moved: a sum with an exact identity rotation adds the plate to one
+coordinate and zero to the others, which is the arithmetic the old placement did.
+
 Floats are kept as ``repr`` strings: the claim is byte identity, not closeness. Regenerate only on purpose:
 
     .venv/Scripts/python.exe tests/test_identity_placement_is_byte_identical.py --write
@@ -43,15 +67,12 @@ Floats are kept as ``repr`` strings: the claim is byte identity, not closeness. 
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import pathlib
 import sys
 import unittest
 from typing import Any
 from unittest import mock
-
-import yaml
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:  # pragma: no cover - direct runs with --write
@@ -78,7 +99,7 @@ def _planner_hand(hand: str, frame: dict[str, Any]) -> Any:
 
     gripper: dict[str, Any] = {"model": hand, "tool_frame": frame}
     if hand in _PLATES:
-        gripper["coupling_plates_mm"] = _PLATES[hand]
+        gripper["coupling_plates"] = [{"name": f"plate_{i}", "thickness_mm": float(mm)} for i, mm in enumerate(_PLATES[hand])]
     return planner_hand(RobotConfig.model_validate({"vendor": "ur", "gripper": gripper}))
 
 
@@ -109,19 +130,17 @@ def _filter_capture() -> dict[str, Any]:
 
 
 def _planner_capture() -> dict[str, Any]:
-    path = _ROOT / "scripts" / "curobo" / "_gripper_placement.py"
-    spec = importlib.util.spec_from_file_location("_gripper_placement_for_golden", path)
-    assert spec is not None and spec.loader is not None
-    placement = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(placement)
-    maps = _ROOT / "src" / "robot" / "safety" / "planning" / "robot"
+    """The hand link the planner sends under the sim frame, its spheres moved into tool0 by the link's own transform."""
+    from src.robot.safety.planning.body_link import HandLink
+
     out: dict[str, Any] = {}
     for hand_name in _HANDS:
-        data = yaml.safe_load((maps / f"{hand_name}_gripper_spheres.yml").read_text(encoding="utf-8"))
-        origin = data["_provenance"]["origin"]
-        coupling = sum(_PLATES[hand_name]) if origin == placement.MOUNTING_FACE else None
-        placed = placement.place_tool0_spheres(data["collision_spheres"]["tool0"], origin=origin, coupling_mm=coupling)
-        out[hand_name] = [[_r(s["center"]), _r(s["radius"])] for s in placed]
+        link = HandLink.from_hand(_planner_hand(hand_name, _SIM_FRAME))
+        # The sim frame derives exactly the identity, so the transform is a translation and the sum is exact.
+        assert link.placement.is_identity and link.fixed_transform[3:] == (1.0, 0.0, 0.0, 0.0), link.render()
+        shift = link.fixed_transform[:3]
+        out[hand_name] = [[_r([c + t for c, t in zip(centre, shift, strict=True)]), _r(radius)]
+                          for centre, radius in link.spheres]
     return out
 
 

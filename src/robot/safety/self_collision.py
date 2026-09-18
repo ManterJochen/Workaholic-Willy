@@ -113,6 +113,9 @@ class SelfCollisionGuard:
         # means not yet built, or unavailable.
         self._fcl_backend: object | None = None
         self._fcl_backend_built = False
+        #: A wrist camera's bodies (``body_link.WristBody``), handed in before the exact-mesh backend
+        #: is built.
+        self._wrist_bodies: tuple[object, ...] = ()
         #: Why the exact-mesh backend is available or not once built. The tokens are defined
         #: by ``_fcl_self_collision.mesh_backend_status``, and ``None`` means it is not built
         #: yet. It is surfaced so a degraded cell is inspectable rather than silent.
@@ -381,6 +384,16 @@ class SelfCollisionGuard:
         return float(self._min_distance_mm)
 
     @property
+    def mesh_dir(self) -> str | None:
+        """The folder this guard reads its bundles from, or ``None`` for the committed one.
+
+        Public because the combination evidence hashes the geometry the guard composes from it, and
+        a cell pointed at another folder is judging another robot.
+        """
+        held = getattr(self._config, "mesh_dir", None)
+        return None if held is None else str(held)
+
+    @property
     def hand(self) -> "Maybe[PlannerHand]":
         """The hand this guard models, or ``UNSET`` where it keeps the arm bundle's own."""
         return self._hand
@@ -412,6 +425,25 @@ class SelfCollisionGuard:
             return None
         return str(capabilities.model)
 
+    def set_wrist_bodies(self, bodies: "Sequence[object]") -> None:
+        """Hold a wrist camera's bodies (``body_link.WristBody``) in the exact-mesh backend.
+
+        Only before the backend is built. It is built once, on the first judged path or joint
+        evaluation, and a body handed in after that would be a camera the guard says it holds and
+        does not. An empty sequence clears them.
+        """
+        if self._fcl_backend_built:
+            raise RuntimeError(
+                "the exact mesh guard was already built, so a wrist camera handed in now would not be in it: hand the "
+                "cell's wrist bodies to the arm before its first judged path"
+            )
+        self._wrist_bodies = tuple(bodies)
+
+    @property
+    def wrist_bodies(self) -> "tuple[object, ...]":
+        """The wrist camera bodies this guard holds or will hold, empty for an arm that carries no camera."""
+        return self._wrist_bodies
+
     def _exact_mesh_backend(self, model: str) -> object | None:
         """Build the exact-mesh backend once for ``model`` and cache it, ``None`` included."""
         if not self._fcl_backend_built:  # build the BVH models once, caching None too
@@ -423,8 +455,18 @@ class SelfCollisionGuard:
             # reaches a guard, because the cell refuses to build first, and ``None`` is only a guard
             # built without a hand.
             placement = hand.placement if chosen(hand) and chosen(hand.placement) else None
+            # The plates the cell measured across, as bodies. They sit between the flange and the
+            # hand's mounting face, nearer the wrist than the hand does.
+            boxes = hand.coupling_boxes if chosen(hand) else ()
+            # A wrist camera's parts, passed only when the arm carries one, so a cell without a
+            # camera calls the builder with the same arguments.
+            wrist: dict = {}
+            for body in self._wrist_bodies:
+                wrist.update(body.guard_parts())  # type: ignore[attr-defined]
+            carried: dict = {"wrist_parts": wrist} if wrist else {}
             self._fcl_backend = make_backend(
                 model, self._config.mesh_dir, variant, coupling_mm=coupling_mm, placement=placement,
+                coupling_boxes=boxes, **carried,
             )
             self._fcl_backend_built = True
             # The config asked for the exact-mesh backend. Falling back to the coarser
@@ -434,6 +476,12 @@ class SelfCollisionGuard:
             # the reason, which lets telemetry and the boot banner show a degraded
             # cell.
             self._fcl_status = mesh_backend_status(model, self._config.mesh_dir, variant)
+            # An envelope built from a registry block is guarded like any scanned hand, and a reader
+            # must not have to guess which of the two it holds: the two hands that could be measured
+            # needed 5.73 mm and 9.50 mm of inflation before an envelope enclosed them, so a cell run
+            # this way has that much less room and no way to see it in the geometry itself.
+            if chosen(hand) and hand.models_an_envelope and hand.provenance is not None:
+                _LOGGER.info("SelfCollisionGuard: %s", hand.provenance.render())
             if self._fcl_backend is None:
                 _LOGGER.warning(
                     "SelfCollisionGuard: backend='fcl' requested for model %r but the exact-mesh backend is "

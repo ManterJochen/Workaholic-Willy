@@ -34,7 +34,7 @@ from src.contracts import UNSET, Maybe, chosen
 from src.robot.constants import CUROBO_CLIENT_LOG_FILE, create_robot_logger
 
 from ._curobo_attach import ENV_ATTACH_SPHERES
-from ._curobo_body_links import ENV_BODY_LINKS, ENV_DEFAULT_Q
+from ._curobo_body_links import ENV_BODY_LINKS, ENV_DEFAULT_Q, ENV_WRIST_BODY_LINKS
 from ._curobo_margin import ENV_SELF_COLLISION_MARGIN_MM
 from ._curobo_protocol import (
     ENV_MEASURE_ONLY,
@@ -502,14 +502,16 @@ class SidecarIdentity:
     ``provenance`` is the ``_provenance`` block of the descriptor, naming the arm, hand and
     plate it was built for, and ``None`` where the sidecar reported none. The hashes are the
     sidecar's own: ``arm_descriptor_sha256`` over the descriptor's ``robot_cfg`` and
-    ``composed_sha256`` over the config the planner loaded, both canonical JSON through
-    ``_curobo_body_links.canonical_sha256``, and ``urdf_sha256`` over the URDF its
-    kinematics resolved, line endings normalised. ``bodies`` names the body links composed
-    in.
+    ``composed_sha256`` over the config the planner loaded without a wrist camera's body, both
+    canonical JSON through ``_curobo_body_links.canonical_sha256``, and ``urdf_sha256`` over
+    the URDF its kinematics resolved, line endings normalised. ``bodies`` names the body links
+    the evidence config holds, ``wrist_bodies`` the wrist cameras loaded on top of it, and
+    ``wrist_bodies_sha256`` the hash of those rows.
 
     Each is UNSET where the sidecar did not say it, never ``''`` or ``None``: a sidecar
-    older than these fields says nothing, and an empty value would read as one. The drivers
-    refuse on the provenance; nothing refuses on the hashes yet.
+    older than these fields says nothing, and an empty value would read as one. A sidecar
+    handed no wrist body reports neither wrist field. The drivers refuse on the provenance
+    and the hashes, and on the wrist bodies (``body_link.wrist_body_refusal``).
     """
 
     provenance: dict[str, object] | None = None
@@ -520,6 +522,11 @@ class SidecarIdentity:
     #: builds it: link, parent, fixed transform, sphere and slot counts, the spheres' hash,
     #: buffer and ignore list.
     bodies: Maybe[tuple[dict[str, object], ...]] = UNSET
+    #: One row per wrist camera the sidecar loaded on top of the evidence config: the
+    #: ``body_report`` row plus the rig, the camera model, the margin and the grown boxes it
+    #: was sent with.
+    wrist_bodies: Maybe[tuple[dict[str, object], ...]] = UNSET
+    wrist_bodies_sha256: Maybe[str] = UNSET
 
     @property
     def body_names(self) -> tuple[str, ...]:
@@ -534,12 +541,19 @@ class SidecarIdentity:
         well_formed = isinstance(bodies, list) and all(
             isinstance(row, dict) and isinstance(row.get("link"), str) for row in bodies
         )
+        wrist = ready.get("wrist_bodies")
+        wrist_well_formed = isinstance(wrist, list) and all(
+            isinstance(row, dict) and isinstance(row.get("link"), str) for row in wrist
+        )
         return cls(
             provenance=dict(descriptor) if isinstance(descriptor, dict) else None,
             arm_descriptor_sha256=_reported_sha256(ready.get("arm_descriptor_sha256")),
             urdf_sha256=_reported_sha256(ready.get("urdf_sha256")),
             composed_sha256=_reported_sha256(ready.get("composed_sha256")),
             bodies=tuple(dict(row) for row in bodies) if well_formed and isinstance(bodies, list) else UNSET,
+            wrist_bodies=(tuple(dict(row) for row in wrist) if wrist_well_formed and isinstance(wrist, list)
+                          else UNSET),
+            wrist_bodies_sha256=_reported_sha256(ready.get("wrist_bodies_sha256")),
         )
 
     @classmethod
@@ -577,6 +591,10 @@ class SidecarIdentity:
             f"  composed sha256: {said(self.composed_sha256)}",
             f"  body links: {bodies}",
         ]
+        if chosen(self.wrist_bodies):
+            lines.append("  wrist cameras: " + ("; ".join(
+                f"{row.get('link')} ({row.get('model')}), {row.get('spheres')} spheres" for row in self.wrist_bodies
+            ) or "none"))
         return "\n".join(lines).encode("ascii", "backslashreplace").decode("ascii")
 
     def to_dict(self) -> dict[str, Any]:
@@ -587,6 +605,8 @@ class SidecarIdentity:
             "urdf_sha256": self.urdf_sha256 if chosen(self.urdf_sha256) else None,
             "composed_sha256": self.composed_sha256 if chosen(self.composed_sha256) else None,
             "bodies": [dict(row) for row in self.bodies] if chosen(self.bodies) else None,
+            "wrist_bodies": [dict(row) for row in self.wrist_bodies] if chosen(self.wrist_bodies) else None,
+            "wrist_bodies_sha256": self.wrist_bodies_sha256 if chosen(self.wrist_bodies_sha256) else None,
         }
 
 
@@ -606,6 +626,7 @@ class CuroboPlanClient:
         mesh_cache: int | None = None,
         voxel_grid: str | None = None,
         body_links: Sequence[Mapping[str, Any]] = (),
+        wrist_body_links: Sequence[Mapping[str, Any]] = (),
         measure_only: bool = False,
         default_q: "Sequence[float] | None" = None,
     ) -> None:
@@ -628,6 +649,10 @@ class CuroboPlanClient:
         #: cell names, placed by its declared tool frame. Empty adds nothing, and a driver
         #: then refuses the sidecar for having no hand.
         self._body_links = [dict(body) for body in body_links]
+        #: A wrist camera's bodies, loaded on top of the config the evidence names. Sent in their
+        #: own variable, so a cell without a camera sends the same bytes as a client that knows no
+        #: wrist bodies.
+        self._wrist_body_links = [dict(body) for body in wrist_body_links]
         # Slots for the two other kinds of obstacle. Both are reserved when the planner is
         # BUILT, so they are decided here and never again: a mesh or a voxel grid sent to a
         # planner that reserved none has nowhere to go. 0 and empty leave the sidecar as it was.
@@ -1321,6 +1346,11 @@ class CuroboPlanClient:
             env[ENV_BODY_LINKS] = json.dumps(self._body_links, sort_keys=True)
         else:
             env.pop(ENV_BODY_LINKS, None)
+        # The same for a wrist camera: an inherited value would load a housing this cell does not carry.
+        if self._wrist_body_links:
+            env[ENV_WRIST_BODY_LINKS] = json.dumps(self._wrist_body_links, sort_keys=True)
+        else:
+            env.pop(ENV_WRIST_BODY_LINKS, None)
         if self._reserved:
             env[ENV_CUROBO_MESH_CACHE] = str(self._mesh_cache)
             if self._voxel_grid:
@@ -1355,10 +1385,11 @@ class CuroboPlanClient:
         """Hang a box on the tool so later plans route the carried part around the world too.
 
         ``dims_m`` are full side lengths, and ``pose`` is ``[x, y, z, qw, qx, qy, qz]``
-        in the tool frame. A UR hand approaches along tool0 +Y, so a part in its jaws sits
-        at ``[0, y, 0, 1, 0, 0, 0]`` with ``y`` past the fingertips
-        (``self_envelope.carried_part_box``). ``joints`` is the configuration the part was
-        grasped in, which is where the attachment is fitted.
+        in the tool frame. The hand's placement says which tool0 axis it approaches along,
+        +Y on the Isaac cell and +Z on a UR declaring its own flange axis, and
+        ``self_envelope.carried_part_box`` puts the part's centre past the fingertips on
+        that axis. ``joints`` is the configuration the part was grasped in, which is where
+        the attachment is fitted.
 
         It returns ``False`` where the sidecar could not attach, including the case of a
         sidecar started without a sphere budget, which therefore has no link to hang

@@ -55,7 +55,7 @@ def _hand(name: str = "robotiq_2f85") -> Any:
     origin = yaml.safe_load(text.read_text(encoding="utf-8"))["_provenance"]["origin"]
     gripper: dict[str, Any] = {"model": name}
     if origin == "mounting_face":
-        gripper["coupling_plates_mm"] = [20.0]
+        gripper["coupling_plates"] = [{"name": "plate", "thickness_mm": 20.0}]
     return planner_hand(RobotConfig.model_validate({"vendor": "ur", "gripper": gripper}))
 
 

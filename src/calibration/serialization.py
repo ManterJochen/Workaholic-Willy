@@ -25,11 +25,16 @@ load; a mismatch raises :class:`ExtrinsicsError` rather than coercing.
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+import numpy as np
+
+from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, GeometryError, Transform, transform_from_dict, transform_to_dict
 from src.utility.log_cfg import create_logger
 
@@ -46,16 +51,71 @@ logger = create_logger(
 #: the multi-camera registry loads into an EyeInHandFrameResolver.
 CAM_TO_TOOL_SCHEMA: str = "willy.calibration.cam_to_tool/1"
 
+#: The same artifact with the flange to TCP the solve was made against recorded beside it. The tool
+#: pose the routine read was the flange times that frame, so CAMERA to TOOL holds only while the cell
+#: holds that frame. Written when the caller hands the record in; a caller without one writes ``/1``,
+#: byte for byte.
+CAM_TO_TOOL_SCHEMA_V2: str = "willy.calibration.cam_to_tool/2"
+
 __all__ = [
     "CAM_TO_TOOL_SCHEMA",
+    "CAM_TO_TOOL_SCHEMA_V2",
     "EXTRINSICS_SCHEMA",
+    "FlangeToTcp",
     "extrinsics_from_dict",
     "extrinsics_to_dict",
     "load_cam_to_tool",
+    "load_cam_to_tool_artifact",
     "load_extrinsics",
     "save_cam_to_tool",
     "save_extrinsics",
 ]
+
+
+@dataclass(frozen=True)
+class FlangeToTcp:
+    """The flange to TCP an eye-in-hand solve was made against, and where the cell took it from.
+
+    ``source`` is the tool frame mode: ``willy`` when the driver composes the declared frame itself,
+    so the record is the declared numbers; ``polyscope`` when the controller applies its own tool
+    setting, so the record is the frame the driver derived from the controller at connect.
+    ``matrix_mm`` is the 4x4 homogeneous transform as rows, translation in millimetres. A record
+    that is not a finite rigid transform raises :class:`ExtrinsicsError`.
+    """
+
+    source: Literal["willy", "polyscope"]
+    matrix_mm: tuple[tuple[float, ...], ...]
+
+    def __post_init__(self) -> None:
+        if self.source not in ("willy", "polyscope"):
+            raise ExtrinsicsError(f"FlangeToTcp: source must be 'willy' or 'polyscope', got {self.source!r}")
+        rows = self.matrix_mm
+        if len(rows) != 4 or any(len(row) != 4 for row in rows):
+            raise ExtrinsicsError("FlangeToTcp: matrix_mm must be four rows of four numbers")
+        if not all(math.isfinite(value) for row in rows for value in row):
+            raise ExtrinsicsError("FlangeToTcp: matrix_mm holds a number that is not finite")
+        matrix = np.asarray(rows, dtype=np.float64)
+        if not np.allclose(matrix[3], (0.0, 0.0, 0.0, 1.0), atol=1e-12):
+            raise ExtrinsicsError(f"FlangeToTcp: the last row must be 0 0 0 1, got {list(matrix[3])}")
+        rotation = matrix[:3, :3]
+        if (not np.allclose(rotation @ rotation.T, np.eye(3), atol=1e-9)
+                or not np.isclose(np.linalg.det(rotation), 1.0, atol=1e-9)):
+            raise ExtrinsicsError("FlangeToTcp: matrix_mm is not a rigid transform (its rotation is not orthonormal)")
+
+    @classmethod
+    def from_matrix(cls, source: Any, matrix: Any) -> "FlangeToTcp":
+        """The record of a 4x4 array-like."""
+        array = np.asarray(matrix, dtype=np.float64)
+        if array.shape != (4, 4):
+            raise ExtrinsicsError(f"FlangeToTcp: expected a 4x4 matrix, got shape {array.shape}")
+        return cls(source=source, matrix_mm=tuple(tuple(float(v) for v in row) for row in array))
+
+    def matrix(self) -> np.ndarray:
+        """The record as a 4x4 float64 array."""
+        return np.asarray(self.matrix_mm, dtype=np.float64)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"source": self.source, "matrix_mm": [list(row) for row in self.matrix_mm]}
 
 
 def extrinsics_to_dict(ext: Extrinsics) -> dict[str, Any]:
@@ -171,12 +231,17 @@ def load_extrinsics(path: str | Path) -> Extrinsics:
 # ----------------------------------------------------------------------
 # Eye-in-hand CAMERA->TOOL calibration transform for a wrist camera
 # ----------------------------------------------------------------------
-def save_cam_to_tool(path: str | Path, transform: Transform, *, rig_id: str) -> Path:
+def save_cam_to_tool(
+    path: str | Path, transform: Transform, *, rig_id: str, flange_to_tcp: Maybe[FlangeToTcp] = UNSET,
+) -> Path:
     """Atomically persist an eye-in-hand ``CAMERA -> TOOL`` calibration transform as versioned JSON.
 
     ``transform`` must be ``Transform(from_frame=CAMERA, to_frame=TOOL)`` with translation in mm:
     the static half an :class:`EyeInHandFrameResolver` composes with the live TCP. Wrong frames
     or a blank ``rig_id`` raise :class:`ExtrinsicsError`.
+
+    A ``flange_to_tcp`` handed in writes ``/2`` with the record beside the transform. Left unset,
+    the function writes ``/1``, byte for byte the artifact without a record.
     """
     if transform.from_frame is not Frame.CAMERA or transform.to_frame is not Frame.TOOL:
         raise ExtrinsicsError(
@@ -185,10 +250,11 @@ def save_cam_to_tool(path: str | Path, transform: Transform, *, rig_id: str) -> 
         )
     if not str(rig_id).strip():
         raise ExtrinsicsError("save_cam_to_tool: rig_id must be a non-empty string")
-    payload = json.dumps(
-        {"schema": CAM_TO_TOOL_SCHEMA, "transform": transform_to_dict(transform), "rig_id": str(rig_id)},
-        indent=2, sort_keys=True,
-    )
+    body: dict[str, Any] = {"schema": CAM_TO_TOOL_SCHEMA, "transform": transform_to_dict(transform),
+                            "rig_id": str(rig_id)}
+    if chosen(flange_to_tcp):
+        body = {**body, "schema": CAM_TO_TOOL_SCHEMA_V2, "flange_to_tcp": flange_to_tcp.to_dict()}
+    payload = json.dumps(body, indent=2, sort_keys=True)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
@@ -204,20 +270,39 @@ def save_cam_to_tool(path: str | Path, transform: Transform, *, rig_id: str) -> 
 
 
 def load_cam_to_tool(path: str | Path) -> Transform:
-    """Load an eye-in-hand ``CAMERA -> TOOL`` transform written by :func:`save_cam_to_tool`.
+    """Load an eye-in-hand ``CAMERA -> TOOL`` transform written by :func:`save_cam_to_tool`, ``/1`` or ``/2``.
 
-    The schema and the stored frame pair are both checked here, so a CAMERA->BASE artifact
-    written by :func:`save_extrinsics` cannot enter as a wrist calibration.
+    The schema and the stored frame pair are both checked, so a CAMERA->BASE artifact written by
+    :func:`save_extrinsics` cannot enter as a wrist calibration.
     """
+    return _read_cam_to_tool(path)[0]
+
+
+def load_cam_to_tool_artifact(path: str | Path) -> tuple[Transform, Maybe[FlangeToTcp]]:
+    """The ``CAMERA -> TOOL`` transform and the flange to TCP it was solved against, ``UNSET`` for a ``/1`` artifact."""
+    return _read_cam_to_tool(path)
+
+
+def _read_cam_to_tool(path: str | Path) -> tuple[Transform, Maybe[FlangeToTcp]]:
     raw = Path(path).read_text(encoding="utf-8")
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ExtrinsicsError(f"load_cam_to_tool: {path!s} is not valid JSON") from exc
-    if not isinstance(data, Mapping) or data.get("schema") != CAM_TO_TOOL_SCHEMA:
+    schema = data.get("schema") if isinstance(data, Mapping) else None
+    if schema not in (CAM_TO_TOOL_SCHEMA, CAM_TO_TOOL_SCHEMA_V2):
         raise ExtrinsicsError(
-            f"load_cam_to_tool: expected schema {CAM_TO_TOOL_SCHEMA!r}, got {getattr(data, 'get', lambda _: None)('schema')!r}"
+            f"load_cam_to_tool: expected schema {CAM_TO_TOOL_SCHEMA!r} or {CAM_TO_TOOL_SCHEMA_V2!r}, got {schema!r}"
         )
+    record: Maybe[FlangeToTcp] = UNSET
+    if schema == CAM_TO_TOOL_SCHEMA_V2:
+        held = data.get("flange_to_tcp")
+        if not isinstance(held, Mapping):
+            raise ExtrinsicsError(f"load_cam_to_tool: {path!s} is {CAM_TO_TOOL_SCHEMA_V2!r} and holds no flange_to_tcp")
+        try:
+            record = FlangeToTcp.from_matrix(held.get("source"), held.get("matrix_mm"))
+        except (TypeError, ValueError) as exc:
+            raise ExtrinsicsError(f"load_cam_to_tool: {path!s} holds an invalid flange_to_tcp") from exc
     try:
         transform = transform_from_dict(data["transform"])
     except (GeometryError, TypeError, ValueError, KeyError) as exc:
@@ -227,5 +312,6 @@ def load_cam_to_tool(path: str | Path) -> Transform:
             "load_cam_to_tool: stored transform must be CAMERA -> TOOL; got "
             f"{transform.from_frame.value} -> {transform.to_frame.value}"
         )
-    logger.info("CAMERA->TOOL transform loaded: %s (rig=%s).", path, data.get("rig_id"))
-    return transform
+    logger.info("CAMERA->TOOL transform loaded: %s (rig=%s, flange to TCP %s).", path, data.get("rig_id"),
+                record.source if chosen(record) else "not recorded")
+    return transform, record

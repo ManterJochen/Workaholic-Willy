@@ -28,6 +28,7 @@ from src.willy_sim.harness.cli import add_cell_arguments, cell_profile_kwargs
 from src.willy_sim.harness.gate import (
     GateResult,
     gate_passed,
+    last_line_motion,
     lift_mm_since,
     reset_object_to_home_z0,
 )
@@ -39,6 +40,9 @@ from src.willy_sim.harness.instrumentation import (
 )
 from src.willy_sim.harness.modes import mode_service_kwargs, resolve_demo_mode
 from src.willy_sim.perception import GroundTruthPerceptionSource
+from src.robot.core.camera_world import CameraWorldDecline
+from src.willy_sim.harness.camera_world import SimCameraWorld
+from src.contracts import UNSET, Maybe
 
 
 #: Far clip (m) for the overhead camera on the rendered-depth path, swept without editing code:
@@ -51,6 +55,7 @@ _RENDERED_FAR_CLIP_M = float(os.environ.get("WILLY_M1_FAR_CLIP_M", "1.0e6"))
 
 def build_service(
     *,
+    camera_world: "Maybe[CameraWorldDecline | SimCameraWorld]" = UNSET,
     headless: bool = True,
     data_dir: str | None = None,
     mode: str = "easy",   # "easy" | "auto" | "closed_loop" (see willy_sim/harness/modes.py)
@@ -85,7 +90,8 @@ def build_service(
     from src.robot.grasping.calculator_factory import build_calculator
 
     # The byte-identical boot prefix (fail-closed arm + session + scene + gripper) is shared.
-    cell = bootstrap_sim_cell(data_dir, headless=headless, **(cell_kwargs or {}))
+    cell = bootstrap_sim_cell(data_dir, headless=headless, **(cell_kwargs or {}),
+                              camera_world=camera_world)
     arm, gripper, handles, cfg, sim = cell.arm, cell.gripper, cell.handles, cell.cfg, cell.sim
     _dwell = cell.dwell  # the steady-state dwell gate
     from src.willy_sim.run_dense_pick import wire_safety_guards  # opt-in guards, default-off
@@ -181,6 +187,7 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
     service, arm, gripper, handles, cfg, cell = build_service(
         headless=headless, data_dir=data_dir, mode=mode, cell_kwargs=cell_kwargs,
         radial_closing=radial_closing, ground_truth_depth=ground_truth_depth,
+        camera_world=CameraWorldDecline("run_m1_pick: known-pose pick, no camera world in this runner"),
     )
     if debug_frames:  # render the grasp-point overlay per pick. M1 ground-truth perception carries
         service.enable_debug_image_rendering()  # no usable rgb on Isaac 5.1, so no frame; M2 does.
@@ -207,6 +214,7 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
         passed = bool(succeeded and lift_mm >= gate.lift_threshold_mm)
         results.append({"run": i, "succeeded": succeeded, "lift_mm": round(lift_mm, 1), "passed": passed})
         print(f"RUN {i}: succeeded={succeeded} lift_mm={lift_mm:.1f} passed={passed}", flush=True)
+        print(f"RUN {i}: line_motion={last_line_motion(service)}", flush=True)
         # Telemetry on stdout, not via logs/robot/robot.log. That file is a RotatingFileHandler on
         # Windows: while anything else holds it the writes are dropped, so a line read back from it
         # cannot be attributed to any particular run. This run's stdout goes to its own redirect, so

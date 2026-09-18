@@ -28,6 +28,7 @@ from collections.abc import Callable
 from typing import Any
 
 from src.config.schema.robot import GripperConfig
+from src.robot.core.gripper import HoldEvidence
 
 from ..constants import GRIPPER_LOG_FILE, create_robot_logger
 
@@ -111,8 +112,8 @@ class GripperController:
 
         self._driver: Any | None = None
         self._activated: bool = False
-        #: Warn ONCE per controller about a seam that cannot confirm motion. A per-command warning
-        #: would be noise, and no warning at all is the silence this whole file was audited for.
+        #: Warn once per controller about a seam that cannot confirm motion. A per-command warning
+        #: is noise, and no warning at all hides that no wait happens.
         self._warned_no_wait: bool = False
 
     # ------------------------------------------------------------------
@@ -258,25 +259,24 @@ class GripperController:
         self._wait_for_the_fingers(drv)
 
     def _wait_for_the_fingers(self, drv: Any) -> None:
-        """Block until the gripper says the motion is over. ⛔ `ack` IS NOT MOTION.
+        """Block until the gripper says the motion is over, because ``ack`` is not motion.
 
-        MEASURED 2026-09-10: :meth:`set_width_mm` returned as soon as the URCap daemon answered
-        ``ack``, which means the daemon accepted the line and nothing more. The next statement in the
-        pick path is the retreat lift, so the arm left while the fingers were still travelling.
+        The URCap daemon answers ``ack`` once it accepts the line, and that says nothing more.
+        Returning on it would let the next statement in the pick path, the retreat lift, move the
+        arm while the fingers still travel.
 
-        A driver seam without ``wait_for_motion`` keeps the old fire-and-forget behaviour and says so
-        once per connection, because a silent absence here is indistinguishable from a wait that
-        happened.
+        A driver seam without ``wait_for_motion`` stays fire-and-forget and says so once per
+        connection, because a silent absence here is indistinguishable from a wait that happened.
         """
         wait = getattr(drv, "wait_for_motion", None)
         if wait is not None:
             try:
                 wait()
             except Exception:
-                # ⛔ A WAIT THAT FAILED LEAVES THE FINGERS TRAVELLING. `GTO` is still set, so the
-                # jaws go on closing while the caller unwinds: a fault, or a deadline reached while
-                # a protective stop holds the cell, both end here. This is the one place that knows
-                # the motion did not finish AND holds the connection that can end it.
+                # A wait that failed leaves the fingers travelling: `GTO` is still set, so the
+                # jaws go on closing while the caller unwinds. A fault and a deadline reached while
+                # a protective stop holds the cell both end here, the one place that knows the
+                # motion did not finish and holds the connection that can end it.
                 self.stop()
                 raise
             return
@@ -291,11 +291,11 @@ class GripperController:
             return
 
     def stop(self) -> None:
-        """Halt the jaws where they are. ⚠ DOES NOT RELEASE and does not command a width.
+        """Halt the jaws where they are. It does not release and does not command a width.
 
-        On this protocol that means clearing ``GTO``; ``SPE 0`` is minimum speed and would not stop
-        anything. A driver seam without a halt says so rather than pretending, because "the gripper
-        was stopped" is exactly the belief that must not be free.
+        On this protocol a halt clears ``GTO``; ``SPE 0`` is the minimum speed and stops nothing.
+        A driver seam without a halt says so, because a caller must not come to believe the
+        gripper was stopped when it was not.
         """
         drv = self._driver
         if drv is None:
@@ -309,7 +309,7 @@ class GripperController:
             return
         try:
             halt()
-        except Exception as exc:  # noqa: BLE001 - a failed halt must not mask the original fault
+        except Exception as exc:  # noqa: BLE001 (a failed halt must not mask the original fault)
             self.logger.error("the gripper did not stop: %s", exc)
 
     def get_width_mm(self) -> float:
@@ -319,25 +319,22 @@ class GripperController:
         return float(self._count_to_mm(count))
 
     def is_object_detected(self) -> bool:
-        """Whether the fingers STALLED on something rather than reaching the commanded width.
+        """Whether the fingers stalled on something rather than reaching the commanded width.
 
-        ⭐ **THIS IS THE ONLY POST-GRASP EVIDENCE THE ROBOTIQ PROTOCOL OFFERS**, and until
-        2026-09-10 this class did not implement it. MEASURED that day: ``GripperController`` was the
-        only real jaw gripper in the repo that was not an ``ObjectDetectingGripper`` (``jaw_io``,
-        ``onrobot``, ``vacuum`` and the sim gripper all were), so the fail-closed gate in
-        ``GraspExecutionPolicy`` was skipped for the one gripper this project ships and an empty
-        close was recorded as a successful pick. ``robotiq_socket.object_status()`` was implemented
-        and read by nothing.
+        This is the only post-grasp evidence the Robotiq protocol offers, read through
+        ``robotiq_socket.object_status()``. It makes this class an ``ObjectDetectingGripper``, as
+        ``jaw_io``, ``onrobot``, ``vacuum`` and the sim gripper are, so the fail-closed gate in
+        ``GraspExecutionPolicy`` runs for this gripper and an empty close is not recorded as a
+        successful pick.
 
-        The register distinguishes exactly the two cases that matter::
+        The register distinguishes the two cases that matter::
 
             STOPPED_CLOSING   the fingers stalled while closing   -> a part is held
-            AT_POSITION       the fingers reached the target      -> holding NOTHING
+            AT_POSITION       the fingers reached the target      -> holding nothing
 
-        ⛔ **FAILS CLOSED, AND THAT IS A DELIBERATE ASYMMETRY.** A driver behind the
-        ``driver_factory`` seam that cannot answer returns ``False`` here, because "no evidence" is
-        not "holding": claiming a grasp nobody can confirm is the exact defect this method exists to
-        end. A seam double that wants the gate to pass has to grow an ``object_status()``.
+        It fails closed, on purpose. A driver behind the ``driver_factory`` seam that cannot answer
+        returns ``False`` here, because no evidence is not a hold, and a grasp nobody can confirm is
+        not claimed. A seam double that wants the gate to pass implements ``object_status()``.
         """
         drv = self._require_connected()
         status_fn = getattr(drv, "object_status", None)
@@ -349,9 +346,29 @@ class GripperController:
             )
             return False
         status = status_fn()
-        # STOPPED_OPENING counts too: the jaws were obstructed on the way OUT, which is still contact
+        # STOPPED_OPENING counts too: the jaws were obstructed on the way out, which is still contact
         # with something. AT_POSITION and MOVING are not evidence of a hold.
         return int(status) in (1, 2)
+
+    def hold_evidence(self) -> HoldEvidence:
+        """gOBJ as evidence: 1 or 2 is HELD, 3 is EMPTY.
+
+        0, the fingers still moving, and a seam that cannot report gOBJ are UNMEASURED.
+        """
+        drv = self._require_connected()
+        status_fn = getattr(drv, "object_status", None)
+        if status_fn is None:
+            return HoldEvidence.UNMEASURED
+        status = int(status_fn())
+        if status in (1, 2):
+            return HoldEvidence.HELD
+        if status == 3:
+            return HoldEvidence.EMPTY
+        return HoldEvidence.UNMEASURED
+
+    def width_is_measured(self) -> bool:
+        """``get_width_mm`` reads the fingers' position register."""
+        return True
 
     # ------------------------------------------------------------------
     # Context manager sugar

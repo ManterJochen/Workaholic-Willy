@@ -189,6 +189,7 @@ class TheTableIsReadStrictlyTests(unittest.TestCase):
         self.table = Path(self.enterContext(__import__("tempfile").TemporaryDirectory())) / "ur_retract.yaml"
         self.table.write_text(
             "rule:\n"
+            "  placement: +Y+X\n"
             "  guard_margin_mm: 10.0\n"
             "  reserve_mm: 5.0\n"
             "  pairs_with_no_retract: []\n"
@@ -206,9 +207,9 @@ class TheTableIsReadStrictlyTests(unittest.TestCase):
         """⭐ Each hand reads ITS pose. Measured 2026-09-16: ur3 needs one pose for the 2F-85 and another three
         steps away for the Hand-E, because the planner's sphere model refuses the first with that hand on.
         """
-        self.assertEqual(self.rule.read_retract("ur5", "robotiq_2f85", 0.0, table_path=self.table),
+        self.assertEqual(self.rule.read_retract("ur5", "robotiq_2f85", 0.0, placement="+Y+X", table_path=self.table),
                          [0.0, -1.0, 0.9, 0.0, -0.05, 0.0])
-        self.assertEqual(self.rule.read_retract("ur5", "robotiq_hande", 20.0, table_path=self.table),
+        self.assertEqual(self.rule.read_retract("ur5", "robotiq_hande", 20.0, placement="+Y+X", table_path=self.table),
                          [0.0, -1.0, 0.9, 0.0, 0.0, -0.75])
 
     def test_a_margin_the_pair_was_not_judged_at_refuses(self) -> None:
@@ -216,7 +217,7 @@ class TheTableIsReadStrictlyTests(unittest.TestCase):
         margin is part of the question, so it is part of the key.
         """
         with self.assertRaises(self.rule.RetractMissing) as caught:
-            self.rule.read_retract("ur5", "robotiq_2f85", 0.0, 4.0, table_path=self.table)
+            self.rule.read_retract("ur5", "robotiq_2f85", 0.0, 4.0, placement="+Y+X", table_path=self.table)
         self.assertIn("10.0", str(caught.exception))
 
     def test_an_arm_a_hand_or_a_plate_the_table_never_judged_refuses(self) -> None:
@@ -226,8 +227,252 @@ class TheTableIsReadStrictlyTests(unittest.TestCase):
         for arm, hand, plate in cases:
             with self.subTest(arm=arm, hand=hand, plate=plate):
                 with self.assertRaises(self.rule.RetractMissing) as ctx:
-                    self.rule.read_retract(arm, hand, plate, table_path=self.table)
+                    self.rule.read_retract(arm, hand, plate, placement="+Y+X", table_path=self.table)
                 self.assertIn("choose_ur_retract.py", str(ctx.exception))
+
+
+class TheRetractBelongsToThePlacementTests(unittest.TestCase):
+    """UM lane S23. The same joints hold a +Z hand somewhere else than a +Y one, so a row judged at one placement is not
+    a retract for the other, and the table says which placement each row was judged at."""
+
+    def setUp(self) -> None:
+        self.rule = _rule()
+        self.table = Path(self.enterContext(__import__("tempfile").TemporaryDirectory())) / "ur_retract.yaml"
+        self.table.write_text(
+            "rule:\n"
+            "  placement: +Y+X\n"
+            "  pairs_with_no_retract:\n"
+            "  - arm: ur5\n    hand: robotiq_hande\n    plate_mm: 20.0\n    planner_margin_mm: 4.0\n"
+            "    placement: +Z+X\n    reason: 'the rule found no pose'\n"
+            "retracts:\n"
+            "  - arm: ur5\n    hand: robotiq_2f85\n    plate_mm: 0.0\n    planner_margin_mm: 4.0\n"
+            "    retract: [0.0, -1.0, 0.9, 0.0, -0.05, 0.0]\n"
+            "  - arm: ur5\n    hand: robotiq_2f85\n    plate_mm: 0.0\n    planner_margin_mm: 4.0\n"
+            "    placement: +Z+X\n    tool_rotation_xyzw: [0.0, 0.0, 0.0, 1.0]\n"
+            "    retract: [0.0, -1.0, 0.9, 0.0, 0.0, 0.5]\n"
+            "  - arm: ur5\n    hand: robotiq_hande\n    plate_mm: 20.0\n    planner_margin_mm: 4.0\n"
+            "    retract: [0.0, -1.0, 0.9, 0.0, 0.0, -0.75]\n",
+            encoding="utf-8",
+        )
+
+    def test_each_placement_reads_its_own_row(self) -> None:
+        self.assertEqual(self.rule.read_retract("ur5", "robotiq_2f85", 0.0, 4.0, placement="+Y+X", table_path=self.table),
+                         [0.0, -1.0, 0.9, 0.0, -0.05, 0.0])
+        self.assertEqual(self.rule.read_retract("ur5", "robotiq_2f85", 0.0, 4.0, placement="+Z+X", table_path=self.table),
+                         [0.0, -1.0, 0.9, 0.0, 0.0, 0.5])
+
+    def test_a_placement_the_pair_was_not_judged_at_refuses_and_names_both(self) -> None:
+        """⭐ THE CONTROL. Before S23 the reader ignored the placement, and a +Z cell started from the +Y pose."""
+        with self.assertRaises(self.rule.RetractMissing) as caught:
+            self.rule.read_retract("ur5", "robotiq_2f85", 0.0, 4.0, placement="+Z+Y", table_path=self.table)
+        for part in ("+Y+X", "+Z+X", "+Z+Y", "--tool-rotation-xyzw"):
+            self.assertIn(part, str(caught.exception))
+
+    def test_a_refusal_counts_only_at_its_own_placement(self) -> None:
+        with self.assertRaises(self.rule.RetractMissing) as caught:
+            self.rule.read_retract("ur5", "robotiq_hande", 20.0, 4.0, placement="+Z+X", table_path=self.table)
+        self.assertIn("found no retract", str(caught.exception))
+        self.assertEqual(self.rule.read_retract("ur5", "robotiq_hande", 20.0, 4.0, placement="+Y+X", table_path=self.table),
+                         [0.0, -1.0, 0.9, 0.0, 0.0, -0.75])
+
+    def test_the_committed_table_says_which_placement_it_judged(self) -> None:
+        import yaml
+
+        from src.robot.safety.planning.robot.retract_table import TABLE_PATH, placement_of
+
+        table = yaml.safe_load(Path(TABLE_PATH).read_text(encoding="utf-8"))
+        self.assertEqual(table["rule"]["placement"], "+Y+X")
+        self.assertTrue(all(placement_of(row, table) in ("+Y+X", "+Z+X") for row in table["retracts"]))
+        self.assertEqual(len(self.rule.read_retract("ur5e", "robotiq_2f85", 0.0, 4.0, placement="+Y+X")), 6)
+
+
+class OneRunGoesIntoTheTableNotOverItTests(unittest.TestCase):
+    """``merge_judged``: a run at a real flange's +Z must never throw away the +Y rows the sim cell starts from."""
+
+    @staticmethod
+    def _row(arm: str, hand: str, plate: float, retract: float) -> dict:
+        return {"arm": arm, "hand": hand, "plate_mm": plate, "planner_margin_mm": 4.0,
+                "anchor": [0.0] * 6, "retract": [retract] * 6}
+
+    def _base(self) -> dict:
+        return {"rule": {"guard_margin_mm": 10.0, "placement": "+Y+X", "tool_rotation_xyzw": [-0.7, 0.0, 0.0, 0.7],
+                         "engine": "coal", "planner_margin_mm": 4.0, "pairs_with_no_retract": []},
+                "retracts": [self._row("ur3", "robotiq_2f85", 0.0, 1.0), self._row("ur5e", "robotiq_2f85", 0.0, 2.0),
+                             self._row("ur5e", "robotiq_hande", 20.0, 3.0)]}
+
+    def _run(self, placement: str, rows: list, *, refused: "list | None" = None, **rule: object) -> dict:
+        rotation = [0.0, 0.0, 0.0, 1.0] if placement == "+Z+X" else [-0.7, 0.0, 0.0, 0.7]
+        return {"rule": {"guard_margin_mm": 10.0, "placement": placement, "tool_rotation_xyzw": rotation,
+                         "engine": "coal", "planner_margin_mm": 4.0, "pairs_with_no_retract": refused or [], **rule},
+                "retracts": rows}
+
+    def test_the_committed_table_merged_with_itself_is_the_same_bytes(self) -> None:
+        """⭐ The merge must not reformat what it keeps: a full run at the table's own placement that finds the same
+        rows writes the committed file again, byte for byte."""
+        import yaml
+
+        from src.robot.safety.planning.robot.retract_table import TABLE_PATH, merge_judged
+
+        text = Path(TABLE_PATH).read_text(encoding="utf-8")
+        table = yaml.safe_load(text)
+        base = table["rule"]["placement"]
+        # What a full run at the table's own placement hands the merge: its rows and refusals, naming no placement.
+        run = {"rule": {**table["rule"], "pairs_with_no_retract": [row for row in table["rule"]["pairs_with_no_retract"]
+                                                                   if not row.get("placement")]},
+               "retracts": [row for row in table["retracts"] if not row.get("placement")]}
+        merged = merge_judged(yaml.safe_load(text), run)
+        self.assertEqual(yaml.safe_dump(merged, sort_keys=False, default_flow_style=False), text)
+        self.assertTrue(any(row.get("placement") not in (None, base) for row in merged["retracts"]),
+                        "the control needs a table that holds another placement, or it proves nothing about keeping one")
+
+    def test_a_run_carrying_another_placement_is_refused(self) -> None:
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        stray = {**self._row("ur5e", "robotiq_2f85", 0.0, 9.0), "placement": "+Z+X"}
+        with self.assertRaises(ValueError) as caught:
+            merge_judged(self._base(), self._run("+Y+X", [stray]))
+        self.assertIn("one placement", str(caught.exception))
+
+    def test_a_plus_z_run_keeps_every_plus_y_row_and_says_where_its_own_sit(self) -> None:
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        base = self._base()
+        merged = merge_judged(base, self._run("+Z+X", [self._row("ur5e", "robotiq_2f85", 0.0, 9.0)]))
+        self.assertEqual(merged["rule"]["placement"], "+Y+X")
+        self.assertEqual(merged["retracts"][:3], self._base()["retracts"])
+        added = merged["retracts"][3]
+        self.assertEqual(added["placement"], "+Z+X")
+        self.assertEqual(added["tool_rotation_xyzw"], [0.0, 0.0, 0.0, 1.0])
+        self.assertEqual(list(added)[:6], ["arm", "hand", "plate_mm", "planner_margin_mm", "placement", "tool_rotation_xyzw"])
+
+    def test_a_second_plus_z_run_replaces_its_rows_rather_than_adding_them(self) -> None:
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        once = merge_judged(self._base(), self._run("+Z+X", [self._row("ur5e", "robotiq_2f85", 0.0, 9.0)]))
+        twice = merge_judged(once, self._run("+Z+X", [self._row("ur5e", "robotiq_2f85", 0.0, 8.0)]))
+        self.assertEqual(len(twice["retracts"]), 4)
+        self.assertEqual(twice["retracts"][3]["retract"], [8.0] * 6)
+
+    def test_a_run_for_one_arm_keeps_the_other_arms_where_they_were(self) -> None:
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        merged = merge_judged(self._base(), self._run("+Y+X", [self._row("ur5e", "robotiq_2f85", 0.0, 7.0),
+                                                              self._row("ur5e", "robotiq_hande", 20.0, 3.0)]))
+        self.assertEqual([row["retract"][0] for row in merged["retracts"]], [1.0, 7.0, 3.0])
+        self.assertNotIn("placement", merged["retracts"][1])
+
+    def test_rows_under_another_rule_are_not_kept_beside_new_ones(self) -> None:
+        """⭐ THE CONTROL. A table is one rule; a +Z run at another guard margin would sit beside +Y rows it contradicts."""
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        with self.assertRaises(ValueError) as caught:
+            merge_judged(self._base(), self._run("+Z+X", [], guard_margin_mm=8.0))
+        self.assertIn("guard_margin_mm", str(caught.exception))
+
+    def test_a_refusal_of_one_placement_does_not_erase_the_other(self) -> None:
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        refused = [{"arm": "ur5e", "hand": "robotiq_hande", "plate_mm": 20.0, "planner_margin_mm": 4.0, "reason": "none"}]
+        merged = merge_judged(self._base(), self._run("+Z+X", [], refused=refused))
+        self.assertEqual(len(merged["retracts"]), 3)
+        self.assertEqual(merged["rule"]["pairs_with_no_retract"][0]["placement"], "+Z+X")
+
+
+class ARunReplacesOnlyWhatItJudgedTests(unittest.TestCase):
+    """C3c. A run for one hand, one plate or one margin replaces exactly the pairs it judged, and a pair the planner
+    could not be asked about is no judgement at all."""
+
+    @staticmethod
+    def _committed() -> dict:
+        import yaml
+
+        from src.robot.safety.planning.robot.retract_table import TABLE_PATH
+
+        return yaml.safe_load(Path(TABLE_PATH).read_text(encoding="utf-8"))
+
+    @classmethod
+    def _run(cls, rows: list, *, refused: "list | None" = None, **rule: object) -> dict:
+        base = dict(cls._committed()["rule"])
+        base.update({"placement": "+Z+X", "tool_rotation_xyzw": [0.0, 0.0, 0.0, 1.0], "pairs_with_no_retract": refused or []})
+        base.update(rule)
+        return {"rule": base, "retracts": rows}
+
+    @staticmethod
+    def _row(hand: str, plate: float, margin: float, value: float) -> dict:
+        return {"arm": "ur5e", "hand": hand, "plate_mm": plate, "planner_margin_mm": margin, "anchor": [0.0] * 6,
+                "retract": [value] * 6}
+
+    @staticmethod
+    def _z_rows(table: dict, arm: str = "ur5e") -> list:
+        return [row for row in table["retracts"] if row.get("placement") == "+Z+X" and row["arm"] == arm]
+
+    def test_a_run_for_one_hand_keeps_every_other_hands_row_on_that_arm(self) -> None:
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        committed = self._committed()
+        merged = merge_judged(self._committed(), self._run([self._row("acme_2f", 0.0, 4.0, 7.0)]))
+        self.assertEqual(self._z_rows(merged)[:len(self._z_rows(committed))], self._z_rows(committed))
+        self.assertEqual(merged["retracts"][-1]["hand"], "acme_2f")
+        self.assertEqual(merged["retracts"][:len(committed["retracts"])], committed["retracts"])
+
+    def test_a_pair_the_planner_could_not_be_asked_keeps_its_committed_row(self) -> None:
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        committed = self._committed()
+        refusal = {"arm": "ur5e", "hand": "robotiq_2f85", "plate_mm": 0.0, "planner_margin_mm": 4.0,
+                   "reason": "the planner could not be asked: no descriptor"}
+        merged = merge_judged(self._committed(), self._run([], refused=[refusal]),
+                              not_asked=[("ur5e", "robotiq_2f85", 0.0, 4.0)])
+        self.assertEqual(merged["retracts"], committed["retracts"])
+        self.assertEqual(merged["rule"]["pairs_with_no_retract"], committed["rule"]["pairs_with_no_retract"])
+
+    def test_a_judged_refusal_does_replace_its_row(self) -> None:
+        """⭐ THE CONTROL: a pair the rule really refused is a judgement, and the row it replaces goes."""
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        refusal = {"arm": "ur5e", "hand": "robotiq_2f85", "plate_mm": 0.0, "planner_margin_mm": 4.0,
+                   "reason": "every candidate refused"}
+        merged = merge_judged(self._committed(), self._run([], refused=[refusal]))
+        self.assertNotIn("robotiq_2f85", [row["hand"] for row in self._z_rows(merged)])
+        self.assertIn("every candidate refused", [row["reason"] for row in merged["rule"]["pairs_with_no_retract"]])
+
+    def test_a_run_at_another_planner_margin_goes_in_beside(self) -> None:
+        import yaml
+
+        from src.robot.safety.planning.robot.retract_table import merge_judged, read_retract
+
+        merged = merge_judged(self._committed(), self._run([self._row("robotiq_2f85", 0.0, 6.0, 6.0)], planner_margin_mm=6.0))
+        self.assertEqual(merged["rule"]["planner_margin_mm"], 4.0)
+        folder = Path(self.enterContext(__import__("tempfile").TemporaryDirectory()))
+        table = folder / "ur_retract.yaml"
+        table.write_text(yaml.safe_dump(merged, sort_keys=False), encoding="utf-8")
+        self.assertEqual(read_retract("ur5e", "robotiq_2f85", 0.0, 6.0, placement="+Z+X", table_path=table), [6.0] * 6)
+        self.assertNotEqual(read_retract("ur5e", "robotiq_2f85", 0.0, 4.0, placement="+Z+X", table_path=table), [6.0] * 6)
+
+    def test_a_run_at_another_plate_goes_in_beside_and_the_rule_lists_every_plate(self) -> None:
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        committed = self._committed()
+        merged = merge_judged(self._committed(), self._run([self._row("robotiq_hande", 35.0, 4.0, 3.5)],
+                                                           plates_mm_judged_for_mounting_face_hands=[35.0]))
+        plates = sorted(row["plate_mm"] for row in self._z_rows(merged) if row["hand"] == "robotiq_hande")
+        self.assertEqual(plates, [0.0, 20.0, 35.0])
+        self.assertEqual(merged["rule"]["plates_mm_judged_for_mounting_face_hands"], [0.0, 20.0, 35.0])
+        self.assertEqual(len(merged["retracts"]), len(committed["retracts"]) + 1)
+
+    def test_a_shared_rule_key_that_differs_names_both_values(self) -> None:
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        with self.assertRaises(ValueError) as caught:
+            merge_judged(self._committed(), self._run([self._row("acme_2f", 0.0, 4.0, 1.0)], engine="fcl"))
+        self.assertIn("coal", str(caught.exception))
+        self.assertIn("fcl", str(caught.exception))
+
+    def test_a_not_asked_pair_the_run_recorded_nothing_for_is_refused(self) -> None:
+        from src.robot.safety.planning.robot.retract_table import merge_judged
+
+        with self.assertRaises(ValueError):
+            merge_judged(self._committed(), self._run([]), not_asked=[("ur5e", "robotiq_2f85", 0.0, 4.0)])
 
 
 if __name__ == "__main__":

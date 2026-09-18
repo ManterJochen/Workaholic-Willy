@@ -163,7 +163,7 @@ class SelfCollisionSafetyConfig(StrictModel):
     kinematics_model: str | None = Field(default=None)
 
     # The hand's mesh bundle and its coupling plate are not keys here. The guard derives both from
-    # the hand the cell names, robot.gripper.model and robot.gripper.coupling_plates_mm, through
+    # the hand the cell names, robot.gripper.model and robot.gripper.coupling_plates, through
     # ``safety.planning.hand.planner_hand``; ``schema/_removed.py`` refuses a tree that still writes
     # ``collision_mesh_variant`` or ``coupling_mm``.
 
@@ -325,12 +325,15 @@ class AttachedPayloadConfig(StrictModel):
 
     The box is not the part. Its lateral extents come from the jaw opening at the grasp, which
     measures the part at the grasp line and says nothing about the rest of it, and ``length_mm`` is a
-    declared worst case rather than a measurement.
+    declared worst case rather than a measurement: how far the longest part this cell carries hangs
+    past the fingertips along the approach. No length is implied. A cell that declares none models no
+    carried part and reserves no payload spheres, and the checklist's ``carried part`` row says so;
+    one that declares a length reserves ``sphere_slots`` whether or not the planning world is enabled.
     """
 
-    enabled: bool = Field(default=False)
+    enabled: bool = Field(default=True)
     sphere_slots: int = Field(default=16, ge=4, le=128)
-    length_mm: float = Field(default=120.0, gt=0.0, le=2000.0)
+    length_mm: float | None = Field(default=None, gt=0.0, le=2000.0)
     lateral_margin_mm: float = Field(default=10.0, ge=0.0, le=500.0)
 
 
@@ -342,7 +345,7 @@ class PlannerMeshConfig(StrictModel):
     down between the walls. The same goes for a machine with an opening, a fixture with a slot, or
     anything else whose useful part is the space inside it.
 
-    ⛔ THE GUARD CANNOT READ A MESH. The path guard and the one-shot guards work on boxes, so
+    The guard cannot read a mesh. The path guard and the one-shot guards work on boxes, so
     geometry declared here is known to the planner and to nothing else. That is not a gap to paper
     over silently: if this shape must also be enforced, declare the parts of it that matter as
     ``self_collision.fixtures`` boxes as well, and accept that a box around a hollow is solid.
@@ -423,7 +426,7 @@ class PerceivedWorldConfig(StrictModel):
     #: to be left out and the report has to say what; a distance field carries everything the cameras
     #: saw at the resolution it is cut to.
     #:
-    #: ⛔ The planner allocates the grid when it STARTS. The volume comes from the workspace limits
+    #: The planner allocates the grid when it starts. The volume comes from the workspace limits
     #: and the resolution from this key, and both have to be settled before the sidecar spawns: a
     #: planner started without a voxel reservation refuses the field, and refusing the field refuses
     #: the motion rather than planning against half a cell.

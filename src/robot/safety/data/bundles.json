@@ -1,21 +1,21 @@
 {
  "bundles": {
   "robotiq_2f85_hand_meshes.npz": {
-   "arrays_sha256": "a2fec9f8d15a018433d04fe707c0b507c2836fdd1ee23cc99eae1edac9292b7f",
+   "arrays_sha256": "16ff74333d8985f761c979873a0bafe095373b10ad734adfbf8a2f50cdd2882c",
    "hand": "robotiq_2f85",
    "note": "the 2F-85 as the composed Isaac UR5e articulation carries it, so its numbers start at the flange: measured, the standalone asset in its own root frame reproduces these arrays to 0.00 mm on all six corners of the palm",
    "source": "isaac_usd"
   },
   "robotiq_hande_hand_meshes.npz": {
-   "arrays_sha256": "aa42656a6e0d2c1ffcf8b8862a70fe3f2e343dfe139d68952a2cd917a5d0cea6",
+   "arrays_sha256": "331cc52b6f81e2b6f1b37857de767e7a227db9aafbcbe6099399a7cc22acbebe",
    "hand": "robotiq_hande",
    "note": "the standalone Isaac Hand-E asset, which carries no coupling part, so its numbers start at the gripper's own mounting face and a cell must declare the plate between that face and the flange",
-   "source": "isaac_usd"
+   "source": "standalone_usd"
   },
   "schunk_egu50_hand_meshes.npz": {
-   "arrays_sha256": "0b20047c3774233dd501aa20e37a3d6a86067ced6e4ab0f87d6ea67916c752d0",
+   "arrays_sha256": "f838deb69a9a8699871df84bf8e313a0cd9c2cb0101a9a9eba961e3fa50ba723",
    "hand": "schunk_egu50",
-   "note": "the standalone Isaac EGU-50 asset, admitted on a ur5e only, which its hand__admitted_arms records",
+   "note": "the EGU-50 as the sim harness mounts it on the Isaac UR5e articulation, baked in that composed frame and cut out of it, so its numbers start at the flange; no preset in this repository bakes it again",
    "source": "isaac_usd"
   },
   "ur10_collision_meshes.npz": {
@@ -65,7 +65,10 @@
  "sources": {
   "isaac_importer_visual_hull": "scripts/isaac/bake_ur_meshes_from_urdf.py over Isaac's URDF importer assets, hulls of visuals",
   "isaac_usd": "scripts/isaac/bake_ur_collision_meshes.py, reading a composed Isaac articulation",
-  "ur_description_stl": "scripts/isaac/bake_ur_meshes_from_urdf.py over Universal Robots' own collision STL files, through the URDF rendered from their pinned description (scripts/curobo/_ur_description.py)"
+  "registry_dimensions": "scripts/grippers/write_hand_from_dimensions.py, an envelope of boxes from a hand's registry numbers, inflated by a stated margin",
+  "standalone_usd": "scripts/grippers/bake_gripper_variant.py over one standalone hand USD, its bodies named on the command line or by a preset",
+  "ur_description_stl": "scripts/isaac/bake_ur_meshes_from_urdf.py over Universal Robots' own collision STL files, through the URDF rendered from their pinned description (scripts/curobo/_ur_description.py)",
+  "vendor_mesh": "scripts/grippers/write_hand_from_mesh.py over a vendor STL or OBJ, turned into the bundle frame by a stated scale and rotation"
  },
  "what": "Where each committed collision bundle's geometry came from, and a hash of the arrays the guard loads. A bundle is the exact mesh guard's whole authority and the file itself says nothing about its source, so this is what lets one be rebuilt, compared with another reader's, or retired. arrays_sha256 is over the arrays in name order, never over the .npz, because a zip carries a timestamp and the same arrays written twice give two different files."
 }

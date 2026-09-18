@@ -37,6 +37,7 @@ from src.willy_sim.harness.bootstrap import bootstrap_sim_cell
 from src.willy_sim.perception import MultiObjectGroundTruthPerceptionSource
 from src.willy_sim.run_eih_pick import topdown_view_pose
 from src.robot.grasping.scoring.occlusion import occlusion_ratio
+from src.robot.core.camera_world import CameraWorldDecline
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.willy_sim.harness.bootstrap import SimCell
@@ -131,6 +132,7 @@ def run_probe(
     cell: SimCell = bootstrap_sim_cell(
         data_dir, headless=headless, safety=True,
         scene_kwargs={"objects_override": _stacked_specs()},
+        camera_world=CameraWorldDecline("run_occlusion_probe: this runner plans without a live camera world"),
     )
     arm, sim = cell.arm, cell.sim
     session = arm.session

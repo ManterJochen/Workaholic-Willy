@@ -28,6 +28,7 @@ from src.geometry.conversions import axis_angle_to_quaternion_xyzw
 from src.geometry.quaternion import multiply
 from src.robot.grasping.multiview.fusion import FusionConfig, SceneFusion
 from src.robot.grasping.loop.pick_loop import CommitPolicy
+from src.robot.core.camera_world import CameraWorldDecline
 
 _RADIUS_MM = 25.0
 _LENGTH_MM = 120.0
@@ -89,7 +90,8 @@ def _corridor(fusion, anchor):
 def run_proof(*, k=4, tau=0.05, tilt_deg=18.0, ring_mm=45.0, view_height_mm=275.0,
               headless=True, data_dir=None) -> bool:
     service, arm, gripper, handles, cfg, _view_pose, _cell = build_service(
-        headless=headless, data_dir=data_dir, view_height_mm=view_height_mm
+        headless=headless, data_dir=data_dir, view_height_mm=view_height_mm,
+        camera_world=CameraWorldDecline("run_commit_gate: this runner plans without a live camera world"),
     )
     orch = service.runtime.orchestrator
     resolver = orch.frame_resolver

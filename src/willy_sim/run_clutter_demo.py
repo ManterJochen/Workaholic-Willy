@@ -26,6 +26,7 @@ from src.willy_sim.run_eih_pick import (
     topdown_view_pose,
 )
 from src.willy_sim.run_fused_pick import OBJECT_PRIM, _clutter_specs, _select_by_prompt
+from src.robot.core.camera_world import CameraWorldDecline
 
 DEFAULT_OUT = "logs/demo/clutter_pick_demo.mp4"
 # Cinematic camera (metres): an elevated front-right 3/4 view of the cell, aimed at the workspace.
@@ -55,6 +56,7 @@ def record_clutter_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, f
     service, arm, gripper, handles, cfg, _vp, _cell = build_service(
         headless=headless, objects_override=objects, wrist_target_prim=chosen_prim,
         continuous_guard=True,  # continuous guard on the EIH closed-form path; natural_aim does not apply
+        camera_world=CameraWorldDecline("run_clutter_demo: this runner plans without a live camera world"),
     )
     session = arm.session
     app = getattr(session, "app", None)

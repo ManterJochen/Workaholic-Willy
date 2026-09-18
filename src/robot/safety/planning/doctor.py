@@ -38,7 +38,9 @@ import sys
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
+from src.contracts import UNSET, chosen
 from src.robot.constants import PLANNING_DOCTOR_LOG_FILE, create_robot_logger
 
 from .environment import (
@@ -520,6 +522,7 @@ def _probe_gripper(model: str, gripper: str | None) -> tuple[Probe, ...]:
     from src.config.grippers import load_gripper
     from src.config.loader import ConfigError
 
+    from .environment import hand_writers_sentence, sphere_map_writer_sentence
     from .hand import guard_variant_for, sphere_map_path
     from .robot.gripper_spheres import MOUNTING_FACE, SphereFitError, bundle_origin
 
@@ -548,9 +551,21 @@ def _probe_gripper(model: str, gripper: str | None) -> tuple[Probe, ...]:
             f"gripper bundle ({gripper} on {model})",
             ProbeStatus.MISSING,
             f"absent: {bundle}",
-            f"a hand is its own bundle, composed onto every arm when the guard loads. Bake it: "
-            f"python scripts/grippers/bake_gripper_variant.py {gripper} --write",
+            f"a hand is its own bundle, composed onto every arm when the guard loads: {hand_writers_sentence(gripper)}",
         ),)
+    if guard_variant_for(gripper) is not None:
+        import numpy as np
+
+        from ._hand_bundle import hand_bundle_refusal
+
+        with np.load(bundle, allow_pickle=True) as data:
+            refused = hand_bundle_refusal({key: data[key] for key in data.files}, name=bundle.name)
+        if refused is not None:
+            return (Probe(
+                f"gripper bundle ({gripper} on {model})", ProbeStatus.BROKEN, refused,
+                "write the hand bundle again with its axes stated, closing X, approach +Y and binormal Z; the guard "
+                "refuses to compose it until then",
+            ),)
     probes.append(Probe(f"gripper bundle ({gripper} on {model})", ProbeStatus.OK, str(bundle)))
 
     spheres = sphere_map_path(gripper)
@@ -559,9 +574,8 @@ def _probe_gripper(model: str, gripper: str | None) -> tuple[Probe, ...]:
             f"gripper sphere map ({gripper})",
             ProbeStatus.MISSING,
             f"absent: {spheres}",
-            "the planner adds this hand as a body link from this map, so this hand cannot be planned with. "
-            "Write it: python -m src.robot.safety.planning.robot.build_gripper_spheres "
-            f"--variant {gripper} --out {spheres.name}",
+            "the planner adds this hand as a body link from this map, so this hand cannot be planned with: "
+            f"{sphere_map_writer_sentence(gripper)}",
         ))
         return tuple(probes)
 
@@ -576,7 +590,7 @@ def _probe_gripper(model: str, gripper: str | None) -> tuple[Probe, ...]:
             ProbeStatus.WARN,
             f"{spheres.name} holds the hand from its own mounting face, so where it sits depends on the "
             f"coupling plate this cell declares",
-            "check that robot.gripper.coupling_plates_mm is the plate measured on this cell: the planner "
+            "check that robot.gripper.coupling_plates holds the plate measured on this cell: the planner "
             "places its hand link by that sum, and the exact mesh guard shifts the same hand by it.",
         ))
     else:
@@ -584,13 +598,73 @@ def _probe_gripper(model: str, gripper: str | None) -> tuple[Probe, ...]:
     return tuple(probes)
 
 
+def _probe_planner_combination(
+    cell: Any, gripper: str | None, *, data_dir: "str | Path | None" = None,
+) -> "tuple[Probe, ...]":
+    """The retract row and the evidence file the first planned move of ``cell`` looks up."""
+    from src.config.loader import ConfigError
+
+    if not chosen(cell):
+        if not gripper:
+            return ()
+        return (Probe(
+            "planner combination", ProbeStatus.MISSING,
+            "no cell was loaded, so the retract row and the evidence file a planner start looks up could not be asked",
+            "run the doctor with --profile <the cell's profile chain>, so it reads the cell's placement, plates and margins",
+        ),)
+    if str(getattr(getattr(cell, "ur", None), "motion_planner", "")) != "curobo":
+        said = "no planner starts on this cell, so no retract row and no evidence file is looked up"
+        return (Probe("retract row", ProbeStatus.OK, said), Probe("combination evidence", ProbeStatus.OK, said))
+
+    from .evidence import desk_evidence_refusal
+    from .hand import planner_hand
+    from .margin import declared_planner_margin
+    from .robot.retract_table import RetractMissing, read_retract
+
+    self_collision = cell.safety.self_collision
+    arm = str(getattr(self_collision, "kinematics_model", None) or cell.ur.model)
+    margin = declared_planner_margin(self_collision)
+    row: Probe
+    try:
+        hand = planner_hand(cell, data_dir=data_dir)
+    except ConfigError as exc:
+        row = Probe("retract row", ProbeStatus.MISSING, str(exc), "fix the hand the cell names")
+    else:
+        if not chosen(hand) or not chosen(margin) or not chosen(hand.placement):
+            row = Probe("retract row", ProbeStatus.MISSING,
+                        "the cell names no hand, no planner margin, or a tool frame that places no hand, so no row can be "
+                        "looked up", "declare robot.gripper.model, safety.self_collision.planner_margin_mm and the tool frame")
+        else:
+            placement = f"{hand.placement.approach}{hand.placement.closing}"
+            try:
+                read_retract(arm, hand.model, float(hand.coupling_mm), float(margin), placement=placement)
+                row = Probe("retract row", ProbeStatus.OK,
+                            f"{arm} with {hand.model} at a {float(hand.coupling_mm):g} mm plate, {placement}, a "
+                            f"{float(margin):g} mm planner margin")
+            except RetractMissing as exc:
+                row = Probe("retract row", ProbeStatus.MISSING, str(exc),
+                            "run the choose_ur_retract.py command the detail ends with, then commit the table")
+    refused, evidence = desk_evidence_refusal(cell, data_dir=data_dir)
+    if refused is not None or evidence is None:
+        combination = Probe("combination evidence", ProbeStatus.MISSING, refused or "no evidence admits this cell",
+                            "run the matrix_gate.py command the detail ends with, then commit the file it writes")
+    else:
+        combination = Probe("combination evidence", ProbeStatus.OK, f"{evidence.path.name}: {evidence.render()}")
+    return (row, combination)
+
+
 def run_doctor(
-    *, model: str = "ur5e", robot_config: str | None = None, gripper: str | None = None
+    *, model: str = "ur5e", robot_config: str | None = None, gripper: str | None = None, cell: Any = UNSET,
+    data_dir: "str | Path | None" = None,
 ) -> DoctorReport:
     """Load every external engine and report what this box can do.
 
     The event log is read once, before the probes, so a block that happens during a
     probe is still in the window when the probes classify their own failures.
+
+    ``data_dir`` is the tree ``cell`` was loaded from, ``None`` for the repository's: the
+    combination probe resolves the hand against it, so a tree that describes the hand
+    differently is named here as it is at the desk.
     """
     blocks = code_integrity_blocks()
     logger.info("motion-stack doctor starting for model %r, gripper %r (robot config %s)",
@@ -600,6 +674,7 @@ def run_doctor(
         _probe_mesh_bundle(model),
         *_probe_gripper(model, gripper),
         *_probe_curobo(blocks, robot_config or curobo_robot_config(), gripper=gripper),
+        *_probe_planner_combination(cell, gripper, data_dir=data_dir),
     )
     # The levels follow what the operator has to do. A BLOCKED or BROKEN engine is a
     # returned failure, since nothing raises here, and MISSING or WARN means a documented

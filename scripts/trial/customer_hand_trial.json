@@ -1,0 +1,743 @@
+{
+ "about": "The customer chain trial: docs/runbooks/your_own_gripper.md run in a copy of the tree with two hands whose answers are known. Read with scripts/trial/README.md.",
+ "env": {
+  "set": {
+   "WILLY_CUROBO_PYTHON": "$ORIG/ext_deps/curobo_env/python.exe",
+   "WILLY_COAL_PREFIX": "$ORIG/ext_deps/coal_env",
+   "WILLY_CUROBO_STDERR": "$LOGS/sidecar_stderr.log"
+  },
+  "unset": [
+   "PYTHONPATH",
+   "WILLY_PROJECT_ROOT",
+   "WILLY_LOG_DIR",
+   "WILLY_PROFILE",
+   "WILLY_CUROBO_ROBOT",
+   "WILLY_CUROBO_CONTENT",
+   "WILLY_ADAPTATION_OVERLAY"
+  ]
+ },
+ "bindings": {
+  "ORIG": "D:/dev/Workaholic-Willy",
+  "PY": "D:/dev/Workaholic-Willy/.venv/Scripts/python.exe",
+  "CONTENT": "D:/dev/Workaholic-Willy/ext_deps/curobo/curobo/content",
+  "ARM": "ur10e",
+  "ROT": "0 0 0 1",
+  "MASS_KG": "1.2",
+  "COG_Z_MM": "60"
+ },
+ "phases": [
+  {
+   "name": "P0 the original, read only",
+   "steps": [
+    {
+     "id": "p0-snapshot",
+     "cwd": "$ORIG",
+     "run": "$PY scripts/trial/tree_copy.py snapshot --tree $ORIG --curobo-content $CONTENT --out $LOGS/p0_snapshot.json",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "snapshot of"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "P1 the copy and its isolation",
+   "steps": [
+    {
+     "id": "p1-copy",
+     "cwd": "$ORIG",
+     "timeout_s": 3600,
+     "run": "$PY scripts/trial/tree_copy.py copy --original $ORIG --copy $ROOT --also assets/meshes --also assets/models/grasp_ranker --also assets/models/success_probability --also logs/p5/datasets/v1_proof",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "copied"
+      ]
+     }
+    },
+    {
+     "id": "p1-complete",
+     "cwd": "$ORIG",
+     "timeout_s": 3600,
+     "run": "$PY scripts/trial/tree_copy.py complete --original $ORIG --copy $ROOT",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "every one present with identical bytes"
+      ]
+     }
+    },
+    {
+     "id": "p1-neutral-import",
+     "cwd": "$LOGS",
+     "run": "$PY -c \"import importlib.util; print('src spec', importlib.util.find_spec('src'))\"",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "src spec None"
+      ]
+     }
+    },
+    {
+     "id": "p1-where",
+     "run": "$PY scripts/trial/tree_copy.py where --expect-root $ROOT --expect-curobo-python $ORIG/ext_deps/curobo_env/python.exe --expect-engine coal",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "collision engine",
+       "coal"
+      ],
+      "stdout_lacks": [
+       "OUTSIDE",
+       "WRONG"
+      ]
+     }
+    },
+    {
+     "id": "p1-control-gate",
+     "timeout_s": 1800,
+     "run": "$PY scripts/curobo/matrix_gate.py --arm ur10e --hand robotiq_hande --coupling-mm 0 --planner-margin-mm 4 --tool-rotation-xyzw $ROT --evidence-dir $LOGS/control --write",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       ": b1 ("
+      ]
+     }
+    },
+    {
+     "id": "p1-control-gate-bytes",
+     "run": "$PY -c \"import filecmp, sys; print('same', filecmp.cmp(sys.argv[1], sys.argv[2], shallow=False))\" $LOGS/control/ur10e_robotiq_hande_c0mm_+Z+X_m4mm_a0.json src/robot/safety/planning/robot/evidence/ur10e_robotiq_hande_c0mm_+Z+X_m4mm_a0.json",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "same True"
+      ]
+     }
+    },
+    {
+     "id": "p1-retract-check",
+     "timeout_s": 3600,
+     "run": "$PY scripts/curobo/choose_ur_retract.py ur10e --tool-rotation-xyzw $ROT --check",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "ur_retract.yaml is what this box measures"
+      ]
+     }
+    },
+    {
+     "id": "p1-table-before",
+     "run": "$PY -c \"import shutil, sys; shutil.copyfile(sys.argv[1], sys.argv[2]); print('kept')\" src/robot/safety/planning/robot/ur_retract.yaml $LOGS/table_before.yaml",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "kept"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "P2 acme_dims, a hand from its numbers",
+   "bindings": {
+    "HAND": "acme_dims",
+    "CELL": "acme_dims_ur10e",
+    "ORIGIN": "flange",
+    "INFLATION_MM": "10",
+    "COUPLING_MM": "0",
+    "TCP_MM": "140.0",
+    "GRASP_CENTRE_MM": "140.0",
+    "SOURCE": "Invented for the customer chain trial, physically plausible, grasp centre from the flange.",
+    "APERTURE_MM": "60.0",
+    "MIN_WIDTH_MM": "4.0",
+    "CLOSED_WIDTH_MM": "1.0",
+    "FINGER_AHEAD_MM": "11.0",
+    "FINGER_BEHIND_MM": "34.0",
+    "FINGER_LENGTH_MM": "36.0",
+    "FINGER_THICKNESS_MM": "10.0",
+    "FINGER_WIDTH_MM": "20.0",
+    "FINGER_PAD_OVERLAP_MM": "2.0",
+    "PAD_LENGTH_MM": "22.0",
+    "PAD_AHEAD_MM": "11.0",
+    "PAD_BEHIND_MM": "11.0",
+    "PALM_DEPTH_MM": "106.0",
+    "PALM_WIDTH_MM": "70.0",
+    "PALM_THICKNESS_MM": "80.0"
+   },
+   "steps": [
+    {
+     "runbook": "diagnose-doctor",
+     "timeout_s": 600,
+     "expect": {
+      "exit": 1,
+      "stdout_has": [
+       "acme_dims"
+      ]
+     }
+    },
+    {
+     "runbook": "diagnose-desk",
+     "timeout_s": 600,
+     "expect": {
+      "exit": 1,
+      "stdout_has": [
+       "acme_dims_ur10e"
+      ]
+     }
+    },
+    {
+     "runbook": "registry-file",
+     "expect": {
+      "files_exist": [
+       "config/grippers/acme_dims.yaml"
+      ]
+     }
+    },
+    {
+     "runbook": "registry-validate",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "acme_dims"
+      ]
+     }
+    },
+    {
+     "id": "p2-doctor-names-the-writers",
+     "timeout_s": 600,
+     "run": "$PY -m src.robot.safety.planning --doctor --model $ARM --hand $HAND",
+     "expect": {
+      "exit": 1,
+      "stdout_has": [
+       "write_hand_from_dimensions.py"
+      ]
+     }
+    },
+    {
+     "runbook": "dims-measure",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "gripper: 100 x 126 x 90 mm centred at (0, 53, 0) mm",
+       "lfinger: 30 x 67 x 40 mm centred at (-35, 127.5, 0) mm",
+       "rfinger: 30 x 67 x 40 mm centred at (35, 127.5, 0) mm"
+      ]
+     }
+    },
+    {
+     "runbook": "dims-write",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "wrote",
+       "registry_dimensions"
+      ],
+      "files_exist": [
+       "src/robot/safety/data/acme_dims_hand_meshes.npz"
+      ]
+     }
+    },
+    {
+     "id": "p2-bounds",
+     "run": "$PY scripts/trial/customer_hands.py bounds --hand acme_dims",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "hand-computed bounds"
+      ]
+     }
+    },
+    {
+     "id": "p2-chooser-before-the-map",
+     "timeout_s": 600,
+     "run": "$PY scripts/curobo/choose_ur_retract.py $ARM --hand $HAND --tool-rotation-xyzw $ROT",
+     "expect": {
+      "exit": 2,
+      "stderr_has": [
+       "fit_cover_spheres.py --hand acme_dims --write",
+       "nothing judged, nothing written"
+      ]
+     }
+    },
+    {
+     "id": "p2-table-unmoved-by-the-refusal",
+     "run": "$PY scripts/trial/retract_checks.py table-diff --before $LOGS/table_before.yaml --after src/robot/safety/planning/robot/ur_retract.yaml",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "moved nothing"
+      ]
+     }
+    },
+    {
+     "runbook": "spheres-curve",
+     "timeout_s": 3600,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "reach"
+      ]
+     }
+    },
+    {
+     "runbook": "spheres-write",
+     "timeout_s": 3600,
+     "expect": {
+      "exit": 0,
+      "files_exist": [
+       "src/robot/safety/planning/robot/acme_dims_gripper_spheres.yml"
+      ]
+     }
+    },
+    {
+     "runbook": "spheres-ruler",
+     "timeout_s": 1800,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "[measure] acme_dims_gripper_spheres.yml"
+      ]
+     }
+    },
+    {
+     "runbook": "retract-choose",
+     "timeout_s": 3600,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "ur10e with acme_dims",
+       "wrote"
+      ]
+     }
+    },
+    {
+     "id": "p2-table-diff",
+     "run": "$PY scripts/trial/retract_checks.py table-diff --before $LOGS/table_before.yaml --after src/robot/safety/planning/robot/ur_retract.yaml --added ur10e/acme_dims@0",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "moved nothing"
+      ]
+     }
+    },
+    {
+     "runbook": "retract-check",
+     "timeout_s": 3600,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "ur_retract.yaml is what this box measures"
+      ]
+     }
+    },
+    {
+     "runbook": "evidence-gate",
+     "timeout_s": 1800,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       ": b1 (",
+       " 0 false clears",
+       " 0 attribution disagreements"
+      ],
+      "files_exist": [
+       "src/robot/safety/planning/robot/evidence/ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+      ]
+     }
+    },
+    {
+     "runbook": "cell-layer",
+     "expect": {
+      "files_exist": [
+       "config/robot/robot.acme_dims_ur10e.yaml"
+      ]
+     }
+    },
+    {
+     "runbook": "cell-validate",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "OK"
+      ]
+     }
+    },
+    {
+     "id": "p2-derived",
+     "run": "$PY scripts/trial/cell_probes.py derived --profile $ARM,$CELL",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "all 13 hand keys are acme_dims's registry numbers"
+      ]
+     }
+    },
+    {
+     "runbook": "verify-desk",
+     "timeout_s": 600,
+     "expect": {
+      "exit": 1,
+      "stdout_has": [
+       "[BLOCK] camera -> base",
+       "[BLOCK] camera world",
+       "2 blocking,",
+       "ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json admits",
+       "inflated 10 mm",
+       "origin flange, coupling 0 mm"
+      ]
+     }
+    },
+    {
+     "runbook": "verify-doctor",
+     "timeout_s": 900,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "retract row",
+       "ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+      ],
+      "stdout_lacks": [
+       "[missing]",
+       "[broken]",
+       "[blocked]"
+      ]
+     }
+    },
+    {
+     "runbook": "verify-planner-start",
+     "timeout_s": 900,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "STARTED and stopped",
+       "admitted by ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+      ]
+     }
+    },
+    {
+     "hide": "src/robot/safety/planning/robot/evidence/ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+    },
+    {
+     "id": "p2-planner-start-without-its-evidence",
+     "timeout_s": 900,
+     "run": "$PY -m src.robot.execution.real_cell --start-planner --profile $ARM,$CELL",
+     "expect": {
+      "exit": 1,
+      "stdout_has": [
+       "REFUSED",
+       "ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+      ]
+     }
+    },
+    {
+     "restore": "src/robot/safety/planning/robot/evidence/ur10e_acme_dims_c0mm_+Z+X_m4mm_a0.json"
+    },
+    {
+     "runbook": "ik-layer",
+     "expect": {
+      "files_exist": [
+       "config/robot/robot.acme_dims_ur10e_ik.yaml"
+      ]
+     }
+    },
+    {
+     "runbook": "verify-ik-desk",
+     "timeout_s": 600,
+     "expect": {
+      "exit": 1,
+      "stdout_has": [
+       "[BLOCK] camera -> base",
+       "1 blocking,",
+       "no planner runs on this cell"
+      ]
+     }
+    },
+    {
+     "id": "p2-build-arm-ik",
+     "run": "$PY scripts/trial/cell_probes.py build-arm --profile $ARM,$CELL,${CELL}_ik",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "hand acme_dims"
+      ]
+     }
+    },
+    {
+     "id": "p2-table-after",
+     "run": "$PY -c \"import shutil, sys; shutil.copyfile(sys.argv[1], sys.argv[2]); print('kept')\" src/robot/safety/planning/robot/ur_retract.yaml $LOGS/table_after_acme_dims.yaml",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "kept"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "P3 acme_mesh, a hand from vendor STL files of the Hand-E",
+   "bindings": {
+    "HAND": "acme_mesh",
+    "CELL": "acme_mesh_ur10e",
+    "ORIGIN": "mounting_face",
+    "COUPLING_MM": "0",
+    "TCP_MM": "136.2",
+    "GRASP_CENTRE_MM": "136.2",
+    "MESH_DIR": "$LOGS/acme_mesh_vendor",
+    "SCALE_TO_MM": "1000",
+    "CLOSING": "-Y",
+    "APPROACH": "+Z",
+    "BINORMAL": "-X",
+    "MOUNT_FACE_MM": "12.5",
+    "SOURCE": "The committed Hand-E exported as vendor STL files by scripts/trial/customer_hands.py, for the customer chain trial.",
+    "APERTURE_MM": "49.99",
+    "MIN_WIDTH_MM": "5.0",
+    "CLOSED_WIDTH_MM": "0.0",
+    "FINGER_AHEAD_MM": "10.45",
+    "FINGER_BEHIND_MM": "36.53",
+    "FINGER_LENGTH_MM": "36.53",
+    "FINGER_THICKNESS_MM": "10.80",
+    "FINGER_WIDTH_MM": "29.24",
+    "FINGER_PAD_OVERLAP_MM": "2.0",
+    "PAD_LENGTH_MM": "20.91",
+    "PAD_AHEAD_MM": "10.45",
+    "PAD_BEHIND_MM": "10.46",
+    "PALM_DEPTH_MM": "104.12",
+    "PALM_WIDTH_MM": "75.00",
+    "PALM_THICKNESS_MM": "75.0"
+   },
+   "steps": [
+    {
+     "id": "p3-export-stl",
+     "run": "$PY scripts/trial/customer_hands.py export-stl --from robotiq_hande --out $LOGS/acme_mesh_vendor",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "mount_face_mm"
+      ]
+     }
+    },
+    {
+     "runbook": "mesh-write",
+     "timeout_s": 900,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "wrote",
+       "vendor_mesh"
+      ],
+      "files_exist": [
+       "src/robot/safety/data/acme_mesh_hand_meshes.npz"
+      ]
+     }
+    },
+    {
+     "id": "p3-compare-with-the-hande",
+     "run": "$PY scripts/trial/customer_hands.py compare acme_mesh robotiq_hande --tolerance-mm 0.001 --jaw-centre-mm 136.2",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "the same hand"
+      ]
+     }
+    },
+    {
+     "runbook": "mesh-measure",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "49.99"
+      ]
+     }
+    },
+    {
+     "runbook": "registry-file",
+     "expect": {
+      "files_exist": [
+       "config/grippers/acme_mesh.yaml"
+      ]
+     }
+    },
+    {
+     "runbook": "registry-validate",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "acme_mesh"
+      ]
+     }
+    },
+    {
+     "runbook": "spheres-write",
+     "timeout_s": 5400,
+     "expect": {
+      "exit": 0,
+      "files_exist": [
+       "src/robot/safety/planning/robot/acme_mesh_gripper_spheres.yml"
+      ]
+     }
+    },
+    {
+     "runbook": "retract-choose",
+     "timeout_s": 3600,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "ur10e with acme_mesh",
+       "wrote"
+      ]
+     }
+    },
+    {
+     "id": "p3-table-diff",
+     "run": "$PY scripts/trial/retract_checks.py table-diff --before $LOGS/table_after_acme_dims.yaml --after src/robot/safety/planning/robot/ur_retract.yaml --added ur10e/acme_mesh@0,ur10e/acme_mesh@20",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "moved nothing"
+      ]
+     }
+    },
+    {
+     "runbook": "retract-check",
+     "timeout_s": 3600,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "ur_retract.yaml is what this box measures"
+      ]
+     }
+    },
+    {
+     "id": "p3-guard-agrees-with-the-hande",
+     "timeout_s": 1800,
+     "run": "$PY scripts/trial/retract_checks.py guard-agree --arm ur10e --hand acme_mesh --reference robotiq_hande --coupling-mm 0 --tool-rotation-xyzw $ROT --tolerance-mm 0.001",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "agree",
+       "over 1482 poses"
+      ]
+     }
+    },
+    {
+     "id": "p3-guard-tells-two-hands-apart",
+     "timeout_s": 1800,
+     "run": "$PY scripts/trial/retract_checks.py guard-agree --arm ur10e --hand acme_dims --reference robotiq_hande --coupling-mm 0 --tool-rotation-xyzw $ROT --tolerance-mm 1.0",
+     "expect": {
+      "exit": 1,
+      "stdout_has": [
+       "DISAGREE"
+      ]
+     }
+    },
+    {
+     "runbook": "evidence-gate",
+     "timeout_s": 1800,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       ": b1 (",
+       " 0 false clears",
+       " 0 attribution disagreements"
+      ],
+      "files_exist": [
+       "src/robot/safety/planning/robot/evidence/ur10e_acme_mesh_c0mm_+Z+X_m4mm_a0.json"
+      ]
+     }
+    },
+    {
+     "runbook": "cell-layer",
+     "expect": {
+      "files_exist": [
+       "config/robot/robot.acme_mesh_ur10e.yaml"
+      ]
+     }
+    },
+    {
+     "runbook": "cell-validate",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "OK"
+      ]
+     }
+    },
+    {
+     "id": "p3-derived",
+     "run": "$PY scripts/trial/cell_probes.py derived --profile $ARM,$CELL",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "all 13 hand keys are acme_mesh's registry numbers"
+      ]
+     }
+    },
+    {
+     "runbook": "verify-desk",
+     "timeout_s": 600,
+     "expect": {
+      "exit": 1,
+      "stdout_has": [
+       "[BLOCK] camera -> base",
+       "[BLOCK] camera world",
+       "2 blocking,",
+       "ur10e_acme_mesh_c0mm_+Z+X_m4mm_a0.json admits",
+       "origin mounting_face, coupling 0 mm"
+      ]
+     }
+    },
+    {
+     "runbook": "verify-planner-start",
+     "timeout_s": 900,
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "STARTED and stopped",
+       "admitted by ur10e_acme_mesh_c0mm_+Z+X_m4mm_a0.json"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "P4 the original did not move, checked before the suite so the tree may be worked on while it runs",
+   "steps": [
+    {
+     "id": "p6-compare",
+     "cwd": "$ORIG",
+     "run": "$PY scripts/trial/tree_copy.py compare --tree $ORIG --before $LOGS/p0_snapshot.json",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       "unchanged since the snapshot"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "P5 the suite in the copy",
+   "steps": [
+    {
+     "id": "p5-suite",
+     "timeout_s": 14400,
+     "run": "$PY -m pytest tests/ --ignore=tests/test_no_foreign_corpus.py --deselect tests/test_recovery_policy.py::CommittedArtifactTests::test_committed_artifact_reproduces_from_packs --deselect tests/test_ranking_shadow_and_pairwise_logistic.py::CommittedArtifactSha256Tests::test_cli_regenerates_byte_identical_artifact -p no:cacheprovider --no-cov -rfE",
+     "expect": {
+      "exit": 0,
+      "stdout_has": [
+       " passed"
+      ]
+     }
+    }
+   ],
+   "why_left_out": {
+    "tests/test_no_foreign_corpus.py": "runs git ls-files in the repository root, and the copy carries no .git",
+    "tests/test_recovery_policy.py::CommittedArtifactTests::test_committed_artifact_reproduces_from_packs": "train_recovery._hash_pack_paths hashes the packs' absolute paths, so the committed artifact reproduces only in the checkout it was generated in, and a copy is not that checkout",
+    "tests/test_ranking_shadow_and_pairwise_logistic.py::CommittedArtifactSha256Tests::test_cli_regenerates_byte_identical_artifact": "red in the copy's full suite twice and green alone in the same copy, with its dataset splits byte identical to the original's; the sibling that compares the numbers passes. A byte identity that depends on suite order or on ignored local state"
+   }
+  }
+ ]
+}

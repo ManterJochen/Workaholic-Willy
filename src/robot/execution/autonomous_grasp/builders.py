@@ -1019,7 +1019,8 @@ def build_runtime(
     fail-closed default policy cannot be pre-constructed the way ``from_components``
     does. The runtime builds its own default policy first, and
     ``require_base_frame_grasp`` is then set on it when a resolver is wired and the
-    caller supplied no explicit policy. A caller-supplied policy is left untouched.
+    caller supplied no explicit policy, and its jaws open to the hand's ``max_width_mm``
+    before the approach. A caller-supplied policy is left untouched.
     """
 
     runtime = RuntimePickService.from_robot_config(
@@ -1034,14 +1035,6 @@ def build_runtime(
         policy=policy,
         arm=arm,
         gripper=gripper,
-    )
-    logger.info(
-        "runtime pick service built: arm=%s gripper=%s sampling=%s max_attempts=%d "
-        "standoff=%.1f mm retreat=%.1f mm frame_resolver=%s",
-        type(arm).__name__ if arm is not None else "from-config",
-        type(gripper).__name__ if gripper is not None else "from-config",
-        profile.sampling_mode.value, int(resolved_max_attempts), float(standoff_mm), float(retreat_mm),
-        type(frame_resolver).__name__ if frame_resolver is not None else "none",
     )
     if frame_resolver is not None:
         runtime.orchestrator.frame_resolver = frame_resolver
@@ -1061,6 +1054,25 @@ def build_runtime(
                     getattr(dwell, "require_steady_before_motion", False)
                 )
                 built_policy.steady_timeout_s = float(getattr(dwell, "steady_timeout_s", 5.0))
+            # Open the jaws to the hand's width before the approach, as `from_components` does. Without
+            # it the arm descends with the jaws wherever the previous close left them, and a close onto
+            # a wider part reaches the gripper as an opening. The width is the hand's own, not a
+            # constant: the 2F-85 opens 85 mm and the Hand-E 49.99. It does not depend on a resolver.
+            built_gripper = built_policy.gripper
+            max_width = getattr(built_gripper, "max_width_mm", None) if built_gripper is not None else None
+            if built_policy.pre_open_width_mm is None and max_width is not None:
+                built_policy.pre_open_width_mm = float(max_width)
+    policy_built = runtime.orchestrator.policy
+    pre_open = getattr(policy_built, "pre_open_width_mm", None) if policy_built is not None else None
+    logger.info(
+        "runtime pick service built: arm=%s gripper=%s sampling=%s max_attempts=%d "
+        "standoff=%.1f mm retreat=%.1f mm frame_resolver=%s pre_open=%s",
+        type(arm).__name__ if arm is not None else "from-config",
+        type(gripper).__name__ if gripper is not None else "from-config",
+        profile.sampling_mode.value, int(resolved_max_attempts), float(standoff_mm), float(retreat_mm),
+        type(frame_resolver).__name__ if frame_resolver is not None else "none",
+        f"{float(pre_open):.2f} mm" if pre_open is not None else "none",
+    )
     return runtime
 
 

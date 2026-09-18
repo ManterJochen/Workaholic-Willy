@@ -2,10 +2,10 @@
   "$defs": {
     "AttachedPayloadConfig": {
       "additionalProperties": false,
-      "description": "Whether the planner is told that the gripper is carrying something.\n\nThe planner's collision model ends at the gripper, so every transit, lift, place and retreat after\na successful close is planned as if the hand were empty. On a cell carrying a part out of a bin\nthat part is the geometry most likely to meet a wall.\n\nIt blocks on geometry rather than on principle: against the real planner (ur5e, a wall at\nx = 250 mm) a 300 x 300 x 50 mm plate turns a 61-waypoint plan into no plan, while a 20 mm cube\nstill plans.\n\nThe box is not the part. Its lateral extents come from the jaw opening at the grasp, which\nmeasures the part at the grasp line and says nothing about the rest of it, and ``length_mm`` is a\ndeclared worst case rather than a measurement.",
+      "description": "Whether the planner is told that the gripper is carrying something.\n\nThe planner's collision model ends at the gripper, so every transit, lift, place and retreat after\na successful close is planned as if the hand were empty. On a cell carrying a part out of a bin\nthat part is the geometry most likely to meet a wall.\n\nIt blocks on geometry rather than on principle: against the real planner (ur5e, a wall at\nx = 250 mm) a 300 x 300 x 50 mm plate turns a 61-waypoint plan into no plan, while a 20 mm cube\nstill plans.\n\nThe box is not the part. Its lateral extents come from the jaw opening at the grasp, which\nmeasures the part at the grasp line and says nothing about the rest of it, and ``length_mm`` is a\ndeclared worst case rather than a measurement: how far the longest part this cell carries hangs\npast the fingertips along the approach. No length is implied. A cell that declares none models no\ncarried part and reserves no payload spheres, and the checklist's ``carried part`` row says so;\none that declares a length reserves ``sphere_slots`` whether or not the planning world is enabled.",
       "properties": {
         "enabled": {
-          "default": false,
+          "default": true,
           "title": "Enabled",
           "type": "boolean"
         },
@@ -17,11 +17,18 @@
           "type": "number"
         },
         "length_mm": {
-          "default": 120.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 2000.0,
-          "title": "Length Mm",
-          "type": "number"
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 2000.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Length Mm"
         },
         "sphere_slots": {
           "default": 16,
@@ -68,6 +75,50 @@
         }
       },
       "title": "BlockerGraphSchemaConfig",
+      "type": "object"
+    },
+    "CouplingPlateConfig": {
+      "additionalProperties": false,
+      "description": "One plate between the arm flange and the hand's own mounting face: what holds the hand out, and what it is.\n\nThe thickness places the hand and the cross section collides, and neither number is written twice. The\nstack's thicknesses sum to where the hand sits. The cross section is the two half extents across the\napproach, so a 90 mm quick change coupler is ``[45.0, 45.0]``.\n\nA plate without a cross section becomes no body, and the cell says its name rather than inventing a\nwidth. Measured by ``scripts/curobo/probe_plate_body.py``: the Hand-E's 20 mm plate over the 1,483 judged\nposes, against the exact guard's 10 mm, turns 0 to 2 of about 950 clear poses per arm at a UR flange\nradius, the worst grazing at 8.944 mm; at a coupler's 45 mm it is 0 to 25. So an unmeasured plate is a\nsmall hole and an unmeasured coupler is not, and the difference is what the caller declares.",
+      "properties": {
+        "cross_section_mm": {
+          "anyOf": [
+            {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cross Section Mm"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "thickness_mm": {
+          "exclusiveMinimum": 0.0,
+          "title": "Thickness Mm",
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "thickness_mm"
+      ],
+      "title": "CouplingPlateConfig",
       "type": "object"
     },
     "DummyConfig": {
@@ -699,7 +750,7 @@
     },
     "GraspingGripperGeometryConfig": {
       "additionalProperties": false,
-      "description": "Which gripper collision envelope the calculator filters grasp candidates against.\n\n``kind`` picks the active model and the matching sub-block sizes it; ``outer_margin_mm`` inflates\nwhichever is chosen. Defaults reproduce the built-in parallel-jaw envelope byte-for-byte, so\nleaving this unset changes nothing. Set ``kind: suction`` for a vacuum end-effector so\nsuction candidates are checked against a cup envelope, not a finger envelope.",
+      "description": "Which gripper collision envelope the calculator filters grasp candidates against.\n\n``kind`` picks the active model and the matching sub-block sizes it; ``outer_margin_mm`` inflates\nwhichever is chosen. Defaults reproduce the built-in parallel-jaw envelope byte-for-byte, so\nleaving this unset on a cell that names no hand changes nothing; a cell that names a hand takes\n``kind`` and the parallel-jaw numbers from its registry file. Set ``kind: suction`` for a vacuum\nend-effector so suction candidates are checked against a cup envelope, not a finger envelope.",
       "properties": {
         "kind": {
           "default": "parallel_jaw",
@@ -847,7 +898,7 @@
     },
     "GraspingParallelJawGeometryConfig": {
       "additionalProperties": false,
-      "description": "Parallel-jaw collision envelope (mm) in the local grasp frame (X closes, Y binormal, Z approach).\n\nEvery value flows straight into\n:class:`src.robot.grasping.collision.ParallelJawGripperModel`. The finger dimensions are\nmeasured off Isaac's Robotiq 2F-85 collision shapes; the palm dimensions are not measured.",
+      "description": "Parallel-jaw collision envelope (mm) in the local grasp frame (X closes, Y binormal, Z approach).\n\nEvery value flows straight into\n:class:`src.robot.grasping.collision.ParallelJawGripperModel`. The finger dimensions are\nmeasured off Isaac's Robotiq 2F-85 collision shapes; the palm dimensions are not measured.\n\nThese defaults describe the 2F-85 for a cell that names no hand. A cell that names one\n(``robot.gripper.model``) takes every value it leaves unset from that hand's registry file, and a\nstated value that differs is refused at load.",
       "properties": {
         "finger_length_mm": {
           "default": 39.98,
@@ -1629,12 +1680,11 @@
           "title": "Closed Width Mm",
           "type": "number"
         },
-        "coupling_plates_mm": {
+        "coupling_plates": {
           "anyOf": [
             {
               "items": {
-                "minimum": 0.0,
-                "type": "number"
+                "$ref": "#/$defs/CouplingPlateConfig"
               },
               "type": "array"
             },
@@ -1643,7 +1693,7 @@
             }
           ],
           "default": null,
-          "title": "Coupling Plates Mm"
+          "title": "Coupling Plates"
         },
         "jaw_io": {
           "$ref": "#/$defs/JawIOGripperConfig"
@@ -2260,7 +2310,7 @@
     },
     "PlannerMeshConfig": {
       "additionalProperties": false,
-      "description": "A piece of the cell the planner routes around as the shape it is, rather than as a box.\n\nThe one case that pays for itself is a container. As a box a tote is solid, so a cell that\ndeclares one can never reach into it; as a mesh it keeps its hollow and the planner takes the arm\ndown between the walls. The same goes for a machine with an opening, a fixture with a slot, or\nanything else whose useful part is the space inside it.\n\n\u26d4 THE GUARD CANNOT READ A MESH. The path guard and the one-shot guards work on boxes, so\ngeometry declared here is known to the planner and to nothing else. That is not a gap to paper\nover silently: if this shape must also be enforced, declare the parts of it that matter as\n``self_collision.fixtures`` boxes as well, and accept that a box around a hollow is solid.\n\n``path`` is read by the planning sidecar, in its own process, so it has to be a path that process\ncan open. Anything trimesh loads works: STL, OBJ, PLY, GLB.",
+      "description": "A piece of the cell the planner routes around as the shape it is, rather than as a box.\n\nThe one case that pays for itself is a container. As a box a tote is solid, so a cell that\ndeclares one can never reach into it; as a mesh it keeps its hollow and the planner takes the arm\ndown between the walls. The same goes for a machine with an opening, a fixture with a slot, or\nanything else whose useful part is the space inside it.\n\nThe guard cannot read a mesh. The path guard and the one-shot guards work on boxes, so\ngeometry declared here is known to the planner and to nothing else. That is not a gap to paper\nover silently: if this shape must also be enforced, declare the parts of it that matter as\n``self_collision.fixtures`` boxes as well, and accept that a box around a hollow is solid.\n\n``path`` is read by the planning sidecar, in its own process, so it has to be a path that process\ncan open. Anything trimesh loads works: STL, OBJ, PLY, GLB.",
       "properties": {
         "center_mm": {
           "default": [
@@ -2643,7 +2693,7 @@
         },
         "gripper_geometry": {
           "$ref": "#/$defs/GraspingGripperGeometryConfig",
-          "description": "Gripper collision envelope the calculator filters grasp candidates against (parallel-jaw or suction-cup). Default parallel_jaw with the shipped dims -> byte-identical."
+          "description": "Gripper collision envelope the calculator filters grasp candidates against (parallel-jaw or suction-cup). Unset on a cell naming a hand: that hand's registry numbers. Unset on a cell naming none: parallel_jaw with the 2F-85 dims -> byte-identical."
         },
         "isotropic_radial_closing": {
           "default": false,

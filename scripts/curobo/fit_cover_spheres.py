@@ -19,6 +19,17 @@ that are not watertight: 7 of 45 of them, where a ray test disagrees with the wi
 
 The spheres are written in the body's own DH frame, which is the frame the bundle holds and the frame the descriptor
 builder places from, so nothing here has to know how an arm is posed.
+
+A hand nobody shipped gets its map here once its body is written (``scripts/grippers/write_hand_from_dimensions.py``,
+``write_hand_from_mesh.py`` or ``bake_gripper_variant.py``). Read its trade first, then write the map:
+
+    .venv/Scripts/python.exe scripts/curobo/fit_cover_spheres.py --hand <name> --curve
+    .venv/Scripts/python.exe scripts/curobo/fit_cover_spheres.py --hand <name> --write
+
+The plan asks every hand for a 12 mm reach within 256 spheres for the gripper and 128 per finger. A body that does not
+fit says so, and says whether the reach was not tried (below twice its sample spacing) or did not fit within the cap.
+A ``--cap`` or ``--reach-mm`` passed to ``--write`` is recorded in the map's provenance under ``overrides``, so a map
+fitted to other numbers than the plan's says which.
 """
 
 from __future__ import annotations
@@ -70,6 +81,27 @@ def _bundle_origin(bundle: Path) -> str:
     return str(module.bundle_origin(bundle))
 
 DATA = REPO / "src/robot/safety/data"
+
+
+def _hand_bundle():
+    """``planning/_hand_bundle.py`` by path: numpy only, the one rule every hand bundle reader and writer asks."""
+    import importlib.util
+
+    name = "willy_hand_bundle"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, REPO / "src/robot/safety/planning/_hand_bundle.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+def _arrays(bundle: Path) -> dict:
+    import numpy as np
+
+    with np.load(bundle, allow_pickle=True) as data:
+        return {key: data[key] for key in data.files}
 MAPS = REPO / "src/robot/safety/planning/robot"
 
 @dataclass(frozen=True)
@@ -128,6 +160,13 @@ SEEDS_PER_ROUND = 1024
 class Body(MeshBody):
     """One body of a bundle, plus the ladder walk that finds the smallest reach it can be covered at."""
 
+    def below_sampling(self, reach_mm: float) -> bool:
+        """Whether ``reach_mm`` lies below twice this body's sample spacing, where the fitter is never asked.
+
+        The one rule the fit, the curve and a refusal read, so a rung skipped is never reported as a rung missed.
+        """
+        return reach_mm / 1000.0 < 2.0 * self.spacing_m
+
     def fit(self, *, cap: int, ladder_mm=LADDER_MM, seed: int = 0):
         """The smallest reach on the ladder whose cover fits ``cap`` spheres, or ``None``.
 
@@ -136,7 +175,7 @@ class Body(MeshBody):
         """
         for reach_mm in ladder_mm:
             reach = reach_mm / 1000.0
-            if reach < 2.0 * self.spacing_m:
+            if self.below_sampling(reach_mm):
                 continue  # below twice the sampling the fitter refuses, and it is right to
             fitted = cover_body(
                 self.points, self.normals, distance=self.distance, inside=self.inside,
@@ -154,7 +193,7 @@ class Body(MeshBody):
         This is the curve a person reads before picking a cap."""
         for reach_mm in ladder_mm:
             reach = reach_mm / 1000.0
-            if reach < 2.0 * self.spacing_m:
+            if self.below_sampling(reach_mm):
                 # Never tried, which is a different answer from did not fit, and has to read as one.
                 yield reach_mm, None, True
                 continue
@@ -171,11 +210,13 @@ class Body(MeshBody):
 
 
 def fit_bundle(bundle: Path, plan: "dict[str, Ask]", *, seed: int = 0,
-               cap: "int | None" = None, reach_mm: "float | None" = None) -> "tuple[dict, list[dict]]":
+               cap: "int | None" = None, reach_mm: "float | None" = None,
+               target: str = "--hand <name> or --arm <model>") -> "tuple[dict, list[dict]]":
     """Every body of one bundle, fitted to what the plan asks of it and verified on points it never saw.
 
     ``cap`` and ``reach_mm`` override the plan for the whole bundle, which is how a measurement is taken. A
-    map that gets committed is written from the plan.
+    map that gets committed is written from the plan. ``target`` is the ``--hand`` or ``--arm`` this bundle was
+    named by, for the ``--curve`` command a refusal ends in.
     """
     spheres: dict = {}
     rows: list[dict] = []
@@ -184,12 +225,20 @@ def fit_bundle(bundle: Path, plan: "dict[str, Ask]", *, seed: int = 0,
         asked_cap = cap if cap is not None else ask.cap
         ladder = (reach_mm,) if reach_mm else (ask.reach_mm,)
         body = Body(load_meshes(bundle, [name]), samples=SAMPLES, seed=seed)
+        curve = (f".venv/Scripts/python.exe scripts/curobo/fit_cover_spheres.py {target} --bodies {name} --curve")
+        if body.below_sampling(ladder[0]):
+            # Never tried, which is a different answer from did not fit: a larger cap cannot help it.
+            raise SystemExit(
+                f"{bundle.name}/{name}: a reach of {ladder[0]:g} mm was not tried: it is below twice this body's "
+                f"{body.spacing_m * 1000.0:.2f} mm sample spacing, where the fitter cannot tell a hole from a gap "
+                f"between samples. Ask for a reach of at least {2.0 * body.spacing_m * 1000.0:.2f} mm; {curve} "
+                f"reports every reach this body can be asked for.")
         fitted = body.fit(cap=asked_cap, seed=seed, ladder_mm=ladder)
         if fitted is None:
             raise SystemExit(
                 f"{bundle.name}/{name}: a reach of {ladder[0]:g} mm does not cover this body within "
                 f"{asked_cap} spheres. It is asked for that reach because: {ask.why}. Ask for more reach, or "
-                f"raise the cap on purpose; --curve reports the whole count against reach trade first.")
+                f"raise the cap on purpose; {curve} reports the whole count against reach trade first.")
         checked = body.verify(fitted)
         spheres[name] = {
             "frame": ask.frame,
@@ -307,6 +356,11 @@ def main(argv: "list[str] | None" = None) -> int:
         out, what = MAPS / f"{args.hand}_gripper_spheres.yml", f"{args.hand} hand bodies"
     if not bundle.is_file():
         raise SystemExit(f"no bundle at {bundle}")
+    if args.hand:
+        # A hand the guard refuses to compose gets no map either: the planner would model a hand the guard cannot.
+        refused = _hand_bundle().hand_bundle_refusal(_arrays(bundle), name=bundle.name)
+        if refused is not None:
+            raise SystemExit(refused)
     if args.bodies:
         wanted = [name.strip() for name in args.bodies.split(",")]
         unknown = [name for name in wanted if name not in plan]
@@ -328,7 +382,8 @@ def main(argv: "list[str] | None" = None) -> int:
                     handle.write(json.dumps({"bundle": bundle.name, "curve": True, **row}) + "\n")
         return 0
 
-    spheres, rows = fit_bundle(bundle, plan, seed=args.seed, cap=args.cap, reach_mm=args.reach_mm)
+    target = f"--arm {args.arm}" if args.arm else f"--hand {args.hand}"
+    spheres, rows = fit_bundle(bundle, plan, seed=args.seed, cap=args.cap, reach_mm=args.reach_mm, target=target)
     total = sum(row["spheres"] for row in rows)
     print(f"[fit] {total} spheres over {len(rows)} bodies, reaching at most "
           f"{max(row['fresh_reach_max_mm'] for row in rows):.1f} mm past the geometry", flush=True)

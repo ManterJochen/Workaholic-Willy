@@ -57,7 +57,7 @@ than a marginal lift. Every other runner's numbers are yours to measure on your 
 | Runner | Scenario |
 | --- | --- |
 | `run_m1_pick.py` | known-pose pick with ground-truth perception, so a failure is motion or geometry |
-| `run_m2_pick.py` | real-vision pick, with the detector and segmenter in the loop |
+| `run_m2_pick.py` | real-vision pick, with the detector and segmenter in the loop. The reference cell: by default it plans against a live camera world from the overhead camera, adding the `sim_camera_world` profile layer; `--decline-camera-world "<why>"` boots the control run without it |
 | `run_eih_pick.py` | eye-in-hand pick: the camera rides the wrist and re-perceives from where it moved |
 | `run_dense_pick.py` | dense-clutter pick, with `--vision` and `--mode dense_autonomous` |
 | `run_fused_pick.py` | dual-camera fused pick: overhead coarse scan, then wrist refine and grasp |
@@ -65,6 +65,12 @@ than a marginal lift. Every other runner's numbers are yours to measure on your 
 | `run_industrial_bin_pick.py` | two side cameras localize the prompted part in a tray of mixed parts |
 | `run_attribute_pick.py` | four objects where the noun alone is never enough, as a route comparison |
 | `run_eth_calibrate.py`, `run_eih_calibrate.py` | eye-to-hand and eye-in-hand calibration through the real `CalibrationRoutine` |
+
+Every policy pick on a cuRobo sim arm is a planned move to the standoff, one checked line down to
+the grasp and line lifts, and the M1, M2 and dense runners print what the policy read of the arm's
+line on each run (`line_motion=`). A sim arm on ik or RMPflow keeps no straight line, so its policy
+picks are refused before the jaws open: `run_dense_pick --motion-planner ik` or `rmpflow` and
+`run_curobo_demo --record blind` record a refusal, not a pick.
 
 Beyond the pick gates: cinematic recorders (`run_dense_demo`, `run_dense_demo_endgame`,
 `run_sorting_demo`, `run_bin_clearing_demo`, `run_klt_combined_demo`, `run_clutter_demo`,
@@ -87,10 +93,10 @@ else, which is the single most common way an hour disappears here.
 | --- | --- |
 | `config.py` | `load_sim_config`, which loads the repository `config` tree under the `sim` profile, plus `require_robot`, `sim_driver_config`, `sim_safety_preflight` and `sim_profile_chain` |
 | `harness/` | The shared runner seams, below |
-| `perception/` | `PerceptionSource` implementations: `ground_truth.py` (single and multi-object, runnable on CPU) and `vision.py` (the real detector and segmenter, on box) |
+| `perception/` | `PerceptionSource` implementations: `ground_truth.py` (single and multi-object, runnable on CPU) and `vision.py` (the real detector and segmenter, on box), plus `camera_owner.py`, the Isaac overhead camera as the camera owner a live planner world is built from. Each perception source stamps a frame with the clock read just before the last render step whose buffers it reads, and takes `camera_name=`, the name the live world gives its camera, under which the pick loop offers its masks (`run_m2_pick` passes `overhead`) |
 | `scene/` | Isaac scene authoring: `build.py`, `cameras.py` (overhead and wrist, with their frame transforms), `markers.py`, `constants.py` |
 | `calibration/` | `hand_eye.py`, the marker-pose sources and hemisphere viewpoints around the real `CalibrationRoutine`, and `paths.py` |
-| `grippers.py` | Which end-effector to mount, jaw or suction, as config-selected data |
+| `grippers.py` | Which end-effector to mount, jaw or suction, as config-selected data. The mount follows `robot.gripper.model`; a per-run `hand=` override in the bootstrap brings that hand's widths and envelope as the loader would. A registry hand with no mount here is a real-cell hand and is refused by name in Isaac. |
 | `gso_assets.py` | Loader that converts scanned-object meshes to USD for realistic scenes |
 | `suction_mount.py` | Authors an Isaac surface-gripper suction anchor on the wrist |
 | `shake_label.py` | Native physics shake-test labeller, held or dropped, via kicks and gravity overload |
@@ -99,8 +105,8 @@ The seams in `harness/`:
 
 | Seam | What it gives |
 | --- | --- |
-| `bootstrap_sim_cell(...) -> SimCell` | The shared boot prefix: load the sim-profile config, audit reach and camera coverage, probe the motion stack, build a fail-closed `IsaacRobotArm`, start the session, author the scene, connect the arm and then the gripper. `SimCell` exposes `arm`, `gripper`, `handles`, `cfg`, `robot`, `sim`, `dwell` and `degraded_engines`. |
-| `GateResult` and helpers | `GateResult.to_dict()` emits exactly the key set its runner expects, plus `reset_object_to_home_z0()`, `lift_mm_since()` and `gate_passed()`. The per-pick loop and the scoring stay per-runner, deliberately not shared. |
+| `bootstrap_sim_cell(...) -> SimCell` | The shared boot prefix: load the sim-profile config, audit reach and camera coverage, probe the motion stack, build a fail-closed `IsaacRobotArm`, start the session, author the scene, connect the arm and then the gripper. `SimCell` exposes `arm`, `gripper`, `handles`, `cfg`, `robot`, `sim`, `dwell`, `degraded_engines`, `mount` and `camera_world`. A cuRobo cell must pass `camera_world=`, or it is refused before the arm is built: a `CameraWorldDecline` naming the runner, held for the cell's life, or `SimCameraWorld("overhead")` from `harness/camera_world.py`, which fits the overhead camera's CAMERA to BASE from rendered depth (`perception/camera_owner.py`) and wires a live world through `Robot.from_parts`. Every runner states one at its boot call. |
+| `GateResult` and helpers | `GateResult.to_dict()` emits exactly the key set its runner expects, plus `reset_object_to_home_z0()`, `lift_mm_since()`, `gate_passed()` and `last_line_motion()`, what the last pick's policy read the arm to keep of a straight line. The per-pick loop and the scoring stay per-runner, deliberately not shared. |
 | `RunnerEnv.from_env(...)` | The 17 `WILLY_*` runner knobs in one place, with their context-aware defaults preserved. |
 | `mode_service_kwargs`, `resolve_demo_mode` | Map a mode string to a typed `GraspMode` plus the sub-policy arguments it needs. |
 | `reach.py`, `coverage.py` | Geometry checks that run before the Isaac boot: whether a configured point is inside the arm's reach sphere, and whether the scene is inside the camera frame. |

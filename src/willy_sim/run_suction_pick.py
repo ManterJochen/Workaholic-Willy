@@ -30,6 +30,7 @@ import numpy as np
 from src.willy_sim.harness.bootstrap import SimCell, bootstrap_sim_cell
 from src.willy_sim.scene import OBJECT_PRIM
 from src.willy_sim.suction_mount import SUCTION_CUP, SuctionCupSpec
+from src.robot.core.camera_world import CameraWorldDecline
 
 
 def _write(path: str, lines: list[str]) -> None:
@@ -67,7 +68,9 @@ def run_suction_score(
         gpath_holder["path"] = mount_suction_cup(stage, ARM_PRIM, SUCTION_CUP)
 
     cell = bootstrap_sim_cell(data_dir, headless=headless,
-                              post_scene_hook=_author_hook if mount_cup else None)
+                              post_scene_hook=_author_hook if mount_cup else None,
+                              camera_world=CameraWorldDecline(
+                                  "run_suction_pick: this runner plans without a live camera world"))
     try:
         return _score_booted_cell(
             cell, cup_path=gpath_holder["path"], out_path=out_path, reach_best=reach_best,
@@ -213,7 +216,9 @@ def run_h74_vs_jaw(
         name=name, shape="cube", size_mm=size_mm,
         position_mm=(450.0, 0.0, float(size_mm[2]) / 2.0), mass_kg=float(mass_g) / 1000.0, color=color,
     )
-    cell = bootstrap_sim_cell(data_dir, headless=headless, scene_kwargs={"objects_override": [obj]})
+    cell = bootstrap_sim_cell(data_dir, headless=headless, scene_kwargs={"objects_override": [obj]},
+                              camera_world=CameraWorldDecline(
+                                  "run_suction_pick: this runner plans without a live camera world"))
     try:
         return _h74_booted_cell(cell, size_mm=size_mm, mass_g=mass_g, out_path=out_path)
     finally:
@@ -371,7 +376,9 @@ def run_suction_pick_lift(
     contact, the physics-real stand-in for the vacuum bond, because Isaac's binary surface gripper will
     not form one on a non-root articulation link. Returns 0 iff the object rose at least half ``lift_mm``.
     """
-    cell = bootstrap_sim_cell(data_dir, headless=headless)
+    cell = bootstrap_sim_cell(data_dir, headless=headless,
+                              camera_world=CameraWorldDecline(
+                                  "run_suction_pick: this runner plans without a live camera world"))
     try:
         return _pick_booted_cell(
             cell, out_path=out_path, payload_g=payload_g, min_quality=min_quality,
@@ -578,7 +585,9 @@ def run_probe(*, headless: bool = True, data_dir: str | None = None,
     # Normal boot: the known-pose build_service path (default object, baked 2F-85, so the IK reaches
     # top-down), plus the hook.
     cell = bootstrap_sim_cell(data_dir, headless=headless,
-                              post_scene_hook=_author_hook if mount_cup else None)
+                              post_scene_hook=_author_hook if mount_cup else None,
+                              camera_world=CameraWorldDecline(
+                                  "run_suction_pick: this runner plans without a live camera world"))
     arm, sim = cell.arm, cell.sim
     from src.willy_sim.grippers import resolve_suction_cup
     cup = resolve_suction_cup(sim, override=suction_cup)
@@ -739,6 +748,7 @@ def run_suction_klt_probe(
     cell = bootstrap_sim_cell(
         data_dir, headless=headless,
         scene_kwargs={"objects_override": [obj], "bin_walls": fixtures},
+        camera_world=CameraWorldDecline("run_suction_pick: this runner plans without a live camera world"),
     )
     try:
         return _klt_probe_booted_cell(
@@ -942,7 +952,9 @@ def run_suction_klt_pick(
     scene_kwargs: dict = {"objects_override": [obj], "bin_walls": fixtures}
     if real_klt:
         scene_kwargs["real_klt_bin"] = (cx, cy, klt_z_mm)
-    cell = bootstrap_sim_cell(data_dir, headless=headless, scene_kwargs=scene_kwargs)
+    cell = bootstrap_sim_cell(data_dir, headless=headless, scene_kwargs=scene_kwargs,
+                              camera_world=CameraWorldDecline(
+                                  "run_suction_pick: this runner plans without a live camera world"))
     try:
         return _pick_booted_cell(
             cell, out_path=out_path, payload_g=payload_g, min_quality=0.05, seal_threshold=seal_threshold,

@@ -31,9 +31,14 @@ from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.safety._fcl_self_collision import mesh_backend_status
 from src.robot.safety.planning import CuroboUnavailableError, JointCheckVerdict
 
+#: Said where each arm is built: these doubles plan or check with cuRobo and carry no camera world, so every
+#: motion they command declines it, as a cuRobo cell must since the world became mandatory.
+_DECLINED = "unit double: this test exercises the planner and the guard on a cuRobo arm, and no camera world is wired to it"
+
 #: Clear, and where the fake controller says the arm is standing.
 _HERE = (0.0, -1.5, 1.5, 0.0, 0.0, 0.0)
-#: Clear, a short move away: about 260 mm of arm travel, so 27 samples at a 10 mm margin.
+#: Clear, a short move away: about 295 mm of travel with the 2F-85 counted in the base joint's radius,
+#: so 30 samples at a 10 mm margin.
 _THERE = (0.2, -1.5, 1.5, 0.0, 0.0, 0.0)
 #: A finger folded into the forearm. The exact mesh backend refuses it.
 _FOLDED = (1.95, 0.38, -1.33, -0.55, 2.00, 0.79)
@@ -97,6 +102,7 @@ class TheWholeJointPathIsJudgedTests(unittest.TestCase):
     def test_the_planner_sees_the_line_from_here_to_the_goal(self) -> None:
         planner = _RecordingPlanner()
         arm = _arm(planner=planner)
+        self.enterContext(arm.without_camera_world(_DECLINED))
         arm.move_joint(JointPositions(_THERE))
 
         assert planner.checked is not None
@@ -106,6 +112,7 @@ class TheWholeJointPathIsJudgedTests(unittest.TestCase):
 
     def test_one_movej_reaches_the_controller_and_it_is_the_goal(self) -> None:
         arm = _arm()
+        self.enterContext(arm.without_camera_world(_DECLINED))
         arm.move_joint(JointPositions(_THERE))
         self.assertEqual(1, arm._conn.moveJ.call_count)
         np.testing.assert_allclose(arm._conn.moveJ.call_args.args[0], _THERE, atol=1e-9)
@@ -114,6 +121,7 @@ class TheWholeJointPathIsJudgedTests(unittest.TestCase):
         """The endpoint is clear and the middle is not, which is the whole reason for the change."""
         planner = _RecordingPlanner()
         arm = _arm(planner=planner, here=_FOLDED)
+        self.enterContext(arm.without_camera_world(_DECLINED))
         # From the fold to a clear configuration a third of a radian away: the ends are clear and
         # the fold itself is the first sample.
         with self.assertRaises(RobotMotionRejected) as caught:
@@ -124,6 +132,7 @@ class TheWholeJointPathIsJudgedTests(unittest.TestCase):
 
     def test_the_refusal_carries_the_typed_result(self) -> None:
         arm = _arm(here=_FOLDED)
+        self.enterContext(arm.without_camera_world(_DECLINED))
         with self.assertRaises(RobotMotionRejected) as caught:
             arm.move_joint(JointPositions((1.95, 0.38, -1.33, -0.55, 1.65, 0.79)))
         result = caught.exception.result
@@ -139,6 +148,7 @@ class TheWholeJointPathIsJudgedTests(unittest.TestCase):
             )
         )
         arm = _arm(planner=planner)
+        self.enterContext(arm.without_camera_world(_DECLINED))
         with self.assertRaises(RobotMotionRejected) as caught:
             arm.move_joint(JointPositions(_THERE))
         self.assertIn("sample 4 of 27", str(caught.exception))
@@ -148,6 +158,7 @@ class TheWholeJointPathIsJudgedTests(unittest.TestCase):
         """Fail closed. A cell configured for cuRobo does not quietly move without it."""
         planner = _RecordingPlanner(CuroboUnavailableError("no GPU env"))
         arm = _arm(planner=planner)
+        self.enterContext(arm.without_camera_world(_DECLINED))
         with self.assertRaises(RobotMotionRejected) as caught:
             arm.move_joint(JointPositions(_THERE))
         self.assertIn("cuRobo", str(caught.exception))
@@ -157,6 +168,7 @@ class TheWholeJointPathIsJudgedTests(unittest.TestCase):
     def test_a_disconnected_arm_says_so_before_any_guard_runs(self) -> None:
         """A path starts at the current joints, and a disconnected arm has none to give."""
         arm = _arm(connected=False)
+        self.enterContext(arm.without_camera_world(_DECLINED))
         with self.assertRaises(RobotConnectionError):
             arm.move_joint(JointPositions(_THERE))
         self.assertEqual(0, arm._conn.moveJ.call_count)
@@ -171,12 +183,14 @@ class TheTypedTwinReturnsWhatTheOtherRaisesTests(unittest.TestCase):
 
     def test_a_clear_path_executes(self) -> None:
         arm = _arm()
+        self.enterContext(arm.without_camera_world(_DECLINED))
         result = arm.move_to_joints(JointPositions(_THERE))
         self.assertIs(MotionStatus.EXECUTED, result.status)
         self.assertEqual(1, arm._conn.moveJ.call_count)
 
     def test_a_guard_refusal_is_typed(self) -> None:
         arm = _arm(here=_FOLDED)
+        self.enterContext(arm.without_camera_world(_DECLINED))
         result = arm.move_to_joints(JointPositions((1.95, 0.38, -1.33, -0.55, 1.65, 0.79)))
         self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, result.status)
         self.assertEqual(0, arm._conn.moveJ.call_count)
@@ -187,18 +201,24 @@ class TheTypedTwinReturnsWhatTheOtherRaisesTests(unittest.TestCase):
                 valid=False, first_invalid=1, checked=27, reason="the cuRobo check refuses sample 1"
             )
         )
-        result = _arm(planner=planner).move_to_joints(JointPositions(_THERE))
+        arm = _arm(planner=planner)
+        self.enterContext(arm.without_camera_world(_DECLINED))
+        result = arm.move_to_joints(JointPositions(_THERE))
         self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, result.status)
 
     def test_an_unavailable_sidecar_is_typed(self) -> None:
         planner = _RecordingPlanner(CuroboUnavailableError("no GPU env"))
-        result = _arm(planner=planner).move_to_joints(JointPositions(_THERE))
+        arm = _arm(planner=planner)
+        self.enterContext(arm.without_camera_world(_DECLINED))
+        result = arm.move_to_joints(JointPositions(_THERE))
         self.assertIs(MotionStatus.CONTROLLER_REJECTED, result.status)
         self.assertIn("cuRobo", result.message or "")
 
     def test_a_disconnected_arm_is_typed(self) -> None:
         """Today this raises out of the driver, which a typed verb should never do."""
-        result = _arm(connected=False).move_to_joints(JointPositions(_THERE))
+        arm = _arm(connected=False)
+        self.enterContext(arm.without_camera_world(_DECLINED))
+        result = arm.move_to_joints(JointPositions(_THERE))
         self.assertIs(MotionStatus.CONNECTION_ERROR, result.status)
 
 
@@ -212,6 +232,7 @@ class HomeTakesTheCheckedPathTests(unittest.TestCase):
     def test_home_goes_through_the_check_and_sends_one_movej(self) -> None:
         planner = _RecordingPlanner()
         arm = _arm(planner=planner)
+        self.enterContext(arm.without_camera_world(_DECLINED))
         arm._home_joints = list(_THERE)
         self.assertTrue(arm.move_home())
         self.assertIsNotNone(planner.checked)
@@ -230,6 +251,7 @@ class HomeTakesTheCheckedPathTests(unittest.TestCase):
     def test_the_async_twin_runs_the_same_body(self) -> None:
         planner = _RecordingPlanner()
         arm = _arm(planner=planner)
+        self.enterContext(arm.without_camera_world(_DECLINED))
         arm._home_joints = list(_THERE)
         self.assertTrue(asyncio.run(arm.amove_home()))
         self.assertIsNotNone(planner.checked)

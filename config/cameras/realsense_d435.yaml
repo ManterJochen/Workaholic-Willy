@@ -1,0 +1,24 @@
+# The Intel RealSense D435 housing, as the smallest box around the drawing's maximum extents, written in the
+# colour camera's optical frame (x to the right in the image, y down, z out of the lens), in millimetres.
+# The eye in hand calibration places this frame on the flange, so nothing else places the housing.
+#
+# size_mm: Table 3-52 maximum width 90.15, height 25.15, depth 25.15 (nominal 90 x 25 x 25).
+# x: Table 4-19 puts the left imager, the depth origin, 17.5 mm from the centreline of the tripod hole, which is the
+#    housing's centreline; the xacro puts the colour camera 15 mm from the depth origin on the other side
+#    (d435_cam_depth_to_color_offset 0.015, housing centre at -d435_cam_depth_py). In the optical frame the housing
+#    centre is 17.5 mm to the right of the depth origin and the colour camera 15 mm to its left: 32.5.
+# y: the imagers sit at half the housing height (d435_cam_depth_pz is d435_cam_height/2): 0.
+# z: Table 4-16 puts depth zero 4.2 mm behind the front cover glass, and the xacro the glass 0.1 mm inside the
+#    front plate (d435_glass_to_front), with the colour camera on the depth zero plane (its nominal extrinsics).
+#    The front plate is at +4.3 and the back at 4.3 - 25.15 = -20.85, so the centre is at -8.275.
+camera:
+  model: realsense_d435
+  source: >-
+    Intel RealSense D400 Series Datasheet, document 337029-017, revision 019, October 2024: Table 3-52 (mechanical
+    dimensions), Table 4-16 (depth start point), Table 4-19 (depth origin X-Y); with realsense-ros
+    realsense2_description/urdf/_d435.urdf.xacro at commit 97c15bdb1abd3ae2e833518ce502de960748cdd6 (Apache 2.0) for
+    the colour camera's offset from the depth origin and the cover glass inset
+  optical_frame: color
+  housing:
+    size_mm: [90.15, 25.15, 25.15]
+    centre_mm: [32.5, 0.0, -8.275]

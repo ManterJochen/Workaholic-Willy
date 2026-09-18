@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.robot.core import RobotConnectionError
 from src.robot.core.arm_capabilities import DigitalIOPort, SupportsDigitalIO
+from src.robot.core.gripper import HoldEvidence
 
 from ..constants import JAW_IO_GRIPPER_LOG_FILE, create_robot_logger
 
@@ -328,6 +329,28 @@ class JawIOGripper:
         if state is JawState.UNKNOWN:
             return self._closed
         return state is JawState.HOLDING
+
+    def hold_evidence(self) -> HoldEvidence:
+        """The wired feedback as evidence, never the command.
+
+        UNMEASURED while the jaws are commanded open, whatever a part pin reads, because open
+        jaws hold nothing and the reeds read between the stops during travel. Closed, a part pin
+        that reads high is HELD and low is EMPTY. With no part pin, ``JawState.HOLDING`` is HELD,
+        ``JawState.CLOSED_EMPTY`` is EMPTY, and any other reed state, or no reeds at all, is
+        UNMEASURED.
+        """
+        self._require_connected("hold_evidence")
+        if not self._closed:
+            return HoldEvidence.UNMEASURED
+        if self._part_pin is not None:
+            held = bool(self._io.get_digital_input(self._part_pin, port=self._port))
+            return HoldEvidence.HELD if held else HoldEvidence.EMPTY
+        state = self._read_state()
+        if state is JawState.HOLDING:
+            return HoldEvidence.HELD
+        if state is JawState.CLOSED_EMPTY:
+            return HoldEvidence.EMPTY
+        return HoldEvidence.UNMEASURED
 
     def read_jaw_state(self) -> JawState:
         """The sensed jaw state, for operators and bring-up. Not part of any Protocol."""

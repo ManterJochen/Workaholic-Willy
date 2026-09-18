@@ -12,6 +12,7 @@ import numpy as np
 
 from src.willy_sim.run_dense_pick import build_service, require_robot
 from src.robot.core import JointPositions
+from src.robot.core.camera_world import CameraWorldDecline
 
 
 def main() -> int:
@@ -20,6 +21,7 @@ def main() -> int:
     service, arm, gripper, handles, cfg, target_idx, target_label = build_service(
         headless=True, enable_bin=True, bin_half_width_mm=110.0, bin_half_width_y_mm=130.0,
         bin_height_mm=bin_h, finger_tool=True,
+        camera_world=CameraWorldDecline("_h39d_binpick_record: this runner plans without a live camera world"),
     )
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]
     from isaacsim.core.utils.viewports import set_camera_view  # type: ignore[import-not-found]

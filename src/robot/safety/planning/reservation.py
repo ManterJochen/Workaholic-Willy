@@ -9,8 +9,8 @@ has nowhere to put either.
 
 The counts are derived rather than configured: as many boxes as the cell declares plus the perceived
 boxes it allows, never fewer than 16; one mesh slot per declared mesh; a grid only where a live scene
-asks for one; payload spheres only where a carried part is declared. A profile that declares none of
-these starts the sidecar with 16 boxes and nothing else.
+asks for one; payload spheres only where a carried part's length is declared, with the planning world
+on or off. A profile that declares none of these starts the sidecar with 16 boxes and nothing else.
 """
 
 from __future__ import annotations
@@ -94,7 +94,10 @@ class PlannerReservation:
 
     @classmethod
     def from_config(cls, *, robot_cfg: "RobotConfig") -> "PlannerReservation":
-        """The reservation this cell's config asks for. A disabled planning world asks for the defaults.
+        """The reservation this cell's config asks for.
+
+        A disabled planning world asks for the defaults and the payload spheres a declared carried
+        part asks for.
 
         Raises
         ------
@@ -102,9 +105,17 @@ class PlannerReservation:
             When the declared world names an obstacle twice, the same refusal registration would meet.
         """
         world_cfg = getattr(robot_cfg.safety, "planning_world", None)
+        # Payload spheres from one rule, world on or off: an enabled payload with a declared length.
+        # Every start reads this number, the planner reserving them and the evidence lookup naming
+        # them, so the two agree.
+        spheres = 0
+        payload = getattr(world_cfg, "payload", None) if world_cfg is not None else None
+        if (payload is not None and bool(getattr(payload, "enabled", False))
+                and payload.length_mm is not None):
+            spheres = int(payload.sphere_slots)
         if world_cfg is None or not bool(getattr(world_cfg, "enabled", False)):
             return cls.from_parts(
-                declared_cuboids=0, perceived_boxes=0, meshes=0, grid_extent=None, sphere_slots=0
+                declared_cuboids=0, perceived_boxes=0, meshes=0, grid_extent=None, sphere_slots=spheres
             )
         declared = len(
             build_planner_cuboids(
@@ -119,10 +130,6 @@ class PlannerReservation:
             limits = planner_world_limits(robot_cfg)
             if limits is not None:
                 extent = voxel_grid_extent(limits, float(perceived.voxel_field_mm))
-        spheres = 0
-        payload = getattr(world_cfg, "payload", None)
-        if payload is not None and bool(getattr(payload, "enabled", False)):
-            spheres = int(payload.sphere_slots)
         return cls.from_parts(
             declared_cuboids=declared,
             perceived_boxes=perceived_boxes,

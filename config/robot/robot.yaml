@@ -67,18 +67,14 @@ robot:
 
   gripper:
     vendor: "robotiq"
-    max_width_mm: 85.0         # the mounted gripper's physical open width, here the Robotiq
-                               # 2F-85. The Robotiq driver anchors its count map on this value, so
-                               # a number set as a policy ceiling lands every commanded width short.
-    min_width_mm: 5.0          # smallest meaningful grip: a policy floor, not the physical closed
-                               # width, which is closed_width_mm. It clamps commanded widths only;
-                               # the count map in robotiq.py is anchored on 0.
-    closed_width_mm: 0.0       # the physical closed width: what get_width_mm() reads with the jaws
-                               # shut on nothing, 0 mm on a 2F-85. Kept apart from min_width_mm
-                               # because grasp verification asks whether the jaws collapsed on
-                               # nothing and reads this key: the 5 mm policy floor in its place
-                               # puts that threshold at 7 mm and reports a genuinely held 6 mm part
-                               # as an empty grasp.
+    # max_width_mm, min_width_mm and closed_width_mm are not written here. A hand named by
+    # robot.gripper.model supplies its own aperture, policy floor and closed width from its registry
+    # file, and a cell naming none keeps the schema defaults, which are the 2F-85's 85, 5 and 0 mm.
+    # They are three keys because they answer three questions. The driver's count map is anchored on
+    # the aperture, so a number set as a policy ceiling lands every commanded width short. The floor
+    # is a policy about the part and never the mechanism. The closed width is what get_width_mm()
+    # reads with the jaws shut on nothing, which grasp verification reads: the 5 mm policy floor in
+    # its place puts that threshold at 7 mm and reports a genuinely held 6 mm part as an empty grasp.
 
     # Which hand this is, by registry name: the stem of a file in the grippers/ directory beside
     # robot/, for example robotiq_2f85. Name the hand by its model name: 2f85 is the short name
@@ -91,11 +87,17 @@ robot:
     # hand geometry, and it refuses with a sentence until a profile names the hand.
     # model: robotiq_2f85
 
-    # The plates between the flange and the hand's own mounting face, in mm; their sum is where the
-    # hand sits. Only a hand whose sphere map starts at its mounting face takes them (the Hand-E,
+    # The plates between the flange and the hand's own mounting face; their thicknesses sum to where
+    # the hand sits. Only a hand whose sphere map starts at its mounting face takes them (the Hand-E,
     # whose layer writes them), and it refuses to build without; a hand its arm asset already placed
     # (the 2F-85) refuses any. [] says the hand is bolted straight to the flange.
-    # coupling_plates_mm: [20.0]
+    #
+    # A plate that also declares `cross_section_mm`, the two half extents across the approach, becomes
+    # a collision body; one without places the hand and is named as a gap nobody measured.
+    # coupling_plates:
+    #   - name: tool_changer
+    #     thickness_mm: 48.0
+    #     cross_section_mm: [45.0, 45.0]
 
     # Where the grasp centre sits on the flange. Left undeclared here on purpose: this is a
     # per-cell bench measurement of the coupling plate plus the gripper, and a plausible-looking
@@ -128,7 +130,9 @@ robot:
     #   offset_mm: [0.0, 132.0, 0.0]
     #   rotation_quat_xyzw: [-0.70710678, 0.0, 0.0, 0.70710678]   # -90 deg about flange X
     # Measure them on the real coupling before trusting them, and take safety.payload.cog_mm in the
-    # same bench session.
+    # same bench session. The registry's grasp_centre_mm for the 2F-85 (grippers/robotiq_2f85.yaml)
+    # is 146.5, an estimate off the pad face, and the `grasp centre` preflight row warns on 132 until
+    # one of the two is measured.
     tool_frame:
       source: "undeclared"
 
@@ -179,8 +183,8 @@ robot:
     # limit. The static lists below are read first and override everything else. With them null a
     # UR falls back to the built-in factory table in safety/joint_limits.py, plus or minus 360 deg
     # on every axis, and no other vendor has one: no driver reads joint limits from RTDE telemetry.
-    # With neither source the guard fails closed while enforce is true, and since 2026-09-10 that
-    # cell is refused at build by create_arm rather than one move at a time: measured on the web
+    # With neither source the guard fails closed while enforce is true, and that cell is refused
+    # at build by create_arm rather than one move at a time: measured on the web
     # profile, a kuka cell came up and answered controller_rejected to every motion, naming the
     # controller for a missing key here. The two lists are set
     # together or not at all, one entry per axis, with min_deg below max_deg on every axis.
@@ -250,9 +254,10 @@ robot:
       min_distance_mm: 10.0
       # planner_margin_mm is deliberately absent here, in the manner of robot.gripper.model. It is
       # the clearance the planner keeps, and how much of it an arm can absorb depends on the arm
-      # and the hand: a UR5e plans fine at 10, a UR3e finds no plan at all at 10 and is fine at 4.
-      # A UR cell that plans with cuRobo declares it in its own profile, or it refuses to start a
-      # planner rather than inheriting a number nobody measured for that pair.
+      # and the hand: every UR plans at 4, and the UR5 finds no retract at all at 8 or 10. A UR
+      # cell that plans with cuRobo declares it in its own profile, or it refuses to start a
+      # planner rather than inheriting a number nobody measured for that pair, and a committed
+      # evidence file has to have measured the combination at that margin.
       link_radii_mm: null
       mesh_dir: null
       fixtures: []
@@ -281,6 +286,12 @@ robot:
     # `perceived.fresh_frame_attempts` more readings stops the motion with an error, not a refusal.
     # Every enabled RGB-D rig that declares its calibration feeds that world, the primary first, so
     # a second calibrated camera that cannot answer stops every planned motion too.
+    #
+    # On a cuRobo cell this block is not optional once a rig declares its calibration: a planned
+    # motion with neither a live world nor a decline is refused before planning, so such a cell
+    # with the block off does not build, and the checklist's `camera world` row blocks it first. An
+    # uncalibrated cell builds, and every planned motion then needs
+    # `robot.without_camera_world("<why>")`.
     planning_world:
       enabled: false
       # Measure three things at the bench and this block is done. `height_mm` is the top surface of
@@ -349,18 +360,21 @@ robot:
       # Refuse to plan when the declared world could not be registered with the planner. False
       # logs the failure and plans on against the planner's own boot world instead.
       require_registration: true
-      # Tell the planner the gripper is carrying something. Off by default, and with it off every
-      # lift, transit and place after a successful close is planned as if the hand were empty, which
-      # on a cell lifting a part out of a bin is the geometry most likely to meet a wall. The box is
-      # as wide as the jaws closed plus `lateral_margin_mm`, and as long as `length_mm`, which is a
-      # declared worst case rather than a measurement: the grasp knows the part at the grasp line
-      # and nothing about the rest of it. `sphere_slots` is the collision budget the planner keeps;
-      # 16 fits the automatic sphere fit for a hand-sized box, 4 does not, and too few raises rather
-      # than degrading.
+      # Tell the planner the gripper is carrying something. On by default; with it off, or with no
+      # `length_mm` declared, every lift, transit and place after a successful close is planned as if
+      # the hand were empty, which on a cell lifting a part out of a bin is the geometry most likely
+      # to meet a wall. The box is as wide as the jaws closed plus `lateral_margin_mm`, and as long as
+      # `length_mm`, which is a declared worst case rather than a measurement: the grasp knows the
+      # part at the grasp line and nothing about the rest of it. `sphere_slots` is the collision
+      # budget the planner keeps; 16 fits the automatic sphere fit for a hand-sized box, 4 does not,
+      # and too few raises rather than degrading.
       payload:
-        enabled: false
+        enabled: true
         sphere_slots: 16
-        length_mm: 120.0
+        # How far the longest part this cell carries hangs past the fingertips, along the approach.
+        # No length is implied: a cuRobo UR cell declares one, or models no carried part and the
+        # checklist blocks.
+        length_mm: null
         lateral_margin_mm: 10.0
 
   # ----------------------------------------------------------------------

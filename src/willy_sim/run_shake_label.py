@@ -23,6 +23,7 @@ import numpy as np
 from src.utility.log_cfg import create_logger
 from src.willy_sim.constants import SHAKE_LABEL_LOG_FILE, WILLY_SIM_LOG_DIR
 from src.willy_sim.shake_label import ShakeConfig, run_shake_test
+from src.robot.core.camera_world import CameraWorldDecline
 
 #: Results are written here (flush + fsync per run) so an Isaac teardown crash cannot swallow them.
 _DEFAULT_OUT = "logs/shake/shake_results.jsonl"
@@ -68,7 +69,8 @@ def run_shake_gate(
 
     # build_service boots the SimulationApp; isaacsim.* imports must come after it (Kit requirement).
     service, arm, gripper, handles, cfg, _cell = build_service(
-        headless=headless, data_dir=data_dir, mode=mode
+        headless=headless, data_dir=data_dir, mode=mode,
+        camera_world=CameraWorldDecline("run_shake_label: this runner plans without a live camera world"),
     )
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]  # noqa: E402
 

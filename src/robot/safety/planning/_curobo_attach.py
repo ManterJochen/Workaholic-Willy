@@ -62,7 +62,8 @@ _KINEMATICS_PATH = ("robot_cfg", "kinematics")
 
 
 def apply_attached_object_link(
-    config: dict[str, Any], *, spheres: int = DEFAULT_ATTACH_SPHERES, parent_link: str | None = None
+    config: dict[str, Any], *, spheres: int = DEFAULT_ATTACH_SPHERES, parent_link: str | None = None,
+    checked_prefixes: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], bool]:
     """Return ``(config_copy, added)`` with a payload link declared on the robot tool frame.
 
@@ -72,6 +73,11 @@ def apply_attached_object_link(
     ``parent_link`` defaults to the first ``tool_frames`` entry of the config, which is
     the frame the rest of this stack treats as the tool, ``tool0`` on every UR. Passing
     it explicitly is for a robot whose payload does not hang from its tool frame.
+
+    ``checked_prefixes`` names links that stay checked against the payload although they
+    ignore the tool frame. A wrist camera's body hangs from tool0 and is not the hand
+    holding the part, so a part reaching its housing is a collision. Empty leaves every
+    neighbour ignoring the payload.
     """
     if spheres <= 0:
         return config, False
@@ -131,14 +137,14 @@ def apply_attached_object_link(
     # all. `franka.yml` lists `attached_object` under its hand and both fingers for the
     # same reason.
     kin["self_collision_ignore"] = _with_payload_ignored(
-        kin.get("self_collision_ignore"), parent=str(parent)
+        kin.get("self_collision_ignore"), parent=str(parent), checked_prefixes=checked_prefixes,
     )
 
     return out, True
 
 
 def _with_payload_ignored(
-    ignore: Any, *, parent: str
+    ignore: Any, *, parent: str, checked_prefixes: tuple[str, ...] = (),
 ) -> dict[str, list[str]]:
     """Add the payload to the ignore list of the parent link and everything adjacent to it.
 
@@ -153,7 +159,7 @@ def _with_payload_ignored(
     }
     neighbours = {parent}
     for link, ignored in table.items():
-        if parent in ignored:
+        if parent in ignored and not link.startswith(tuple(checked_prefixes)):
             neighbours.add(link)
     for link in neighbours:
         entries = table.setdefault(link, [])

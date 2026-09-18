@@ -65,7 +65,7 @@ retracts:
     - wrist_2_link
   bundles:
     arm: a385594520437e85e89e0a9c29ad1aec92db74252781d19e99393dfd8f777d32
-    robotiq_2f85: 454b000441a450c86fcfa8f1ddade5bda3b17ca8ebedee62e88c4ec85e322d71
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3/rmpflow/ur3_robot_description.yaml
 - arm: ur3
   hand: robotiq_hande
@@ -107,7 +107,7 @@ retracts:
     - wrist_2_link
   bundles:
     arm: a385594520437e85e89e0a9c29ad1aec92db74252781d19e99393dfd8f777d32
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3/rmpflow/ur3_robot_description.yaml
 - arm: ur3
   hand: robotiq_hande
@@ -149,7 +149,7 @@ retracts:
     - wrist_1_link
   bundles:
     arm: a385594520437e85e89e0a9c29ad1aec92db74252781d19e99393dfd8f777d32
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3/rmpflow/ur3_robot_description.yaml
 - arm: ur3
   hand: schunk_egu50
@@ -191,7 +191,7 @@ retracts:
     - wrist_1_link
   bundles:
     arm: a385594520437e85e89e0a9c29ad1aec92db74252781d19e99393dfd8f777d32
-    schunk_egu50: ed4170b7321bc970111bc669644505d3a06e9c932ebe0d77f46f5e6abaa9dc45
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3/rmpflow/ur3_robot_description.yaml
 - arm: ur3e
   hand: robotiq_2f85
@@ -231,7 +231,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: 212d4037f935578e6a50156f884ae4bd4637132f3343e14dfce9c76fda28e420
-    robotiq_2f85: 454b000441a450c86fcfa8f1ddade5bda3b17ca8ebedee62e88c4ec85e322d71
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3e/rmpflow/ur3e_robot_description.yaml
 - arm: ur3e
   hand: robotiq_hande
@@ -271,7 +271,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: 212d4037f935578e6a50156f884ae4bd4637132f3343e14dfce9c76fda28e420
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3e/rmpflow/ur3e_robot_description.yaml
 - arm: ur3e
   hand: robotiq_hande
@@ -311,7 +311,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: 212d4037f935578e6a50156f884ae4bd4637132f3343e14dfce9c76fda28e420
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3e/rmpflow/ur3e_robot_description.yaml
 - arm: ur3e
   hand: schunk_egu50
@@ -351,7 +351,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: 212d4037f935578e6a50156f884ae4bd4637132f3343e14dfce9c76fda28e420
-    schunk_egu50: ed4170b7321bc970111bc669644505d3a06e9c932ebe0d77f46f5e6abaa9dc45
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3e/rmpflow/ur3e_robot_description.yaml
 - arm: ur5
   hand: robotiq_2f85
@@ -393,7 +393,7 @@ retracts:
     - wrist_1_link
   bundles:
     arm: 03f883b31286cbc2185c5e7e92281cd3707cf95c2348dc3013c05e1db84b421a
-    robotiq_2f85: 454b000441a450c86fcfa8f1ddade5bda3b17ca8ebedee62e88c4ec85e322d71
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5/rmpflow/ur5_robot_description.yaml
 - arm: ur5
   hand: robotiq_hande
@@ -435,7 +435,7 @@ retracts:
     - wrist_1_link
   bundles:
     arm: 03f883b31286cbc2185c5e7e92281cd3707cf95c2348dc3013c05e1db84b421a
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5/rmpflow/ur5_robot_description.yaml
 - arm: ur5
   hand: robotiq_hande
@@ -477,7 +477,7 @@ retracts:
     - wrist_1_link
   bundles:
     arm: 03f883b31286cbc2185c5e7e92281cd3707cf95c2348dc3013c05e1db84b421a
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5/rmpflow/ur5_robot_description.yaml
 - arm: ur5e
   hand: robotiq_2f85
@@ -517,7 +517,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: f732a2622e83a60f912ffd6413f2663ef5f62f573443acf933839b2c421b4fdd
-    robotiq_2f85: 454b000441a450c86fcfa8f1ddade5bda3b17ca8ebedee62e88c4ec85e322d71
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5e/rmpflow/ur5e_robot_description.yaml
 - arm: ur5e
   hand: robotiq_hande
@@ -557,7 +557,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: f732a2622e83a60f912ffd6413f2663ef5f62f573443acf933839b2c421b4fdd
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5e/rmpflow/ur5e_robot_description.yaml
 - arm: ur5e
   hand: robotiq_hande
@@ -597,7 +597,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: f732a2622e83a60f912ffd6413f2663ef5f62f573443acf933839b2c421b4fdd
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5e/rmpflow/ur5e_robot_description.yaml
 - arm: ur5e
   hand: schunk_egu50
@@ -637,7 +637,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: f732a2622e83a60f912ffd6413f2663ef5f62f573443acf933839b2c421b4fdd
-    schunk_egu50: ed4170b7321bc970111bc669644505d3a06e9c932ebe0d77f46f5e6abaa9dc45
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5e/rmpflow/ur5e_robot_description.yaml
 - arm: ur10
   hand: robotiq_2f85
@@ -679,7 +679,7 @@ retracts:
     - wrist_1_link
   bundles:
     arm: ed232b94ace364697d1ebed3a223c0a79adc7d089900f878d811a9e3fe565b79
-    robotiq_2f85: 454b000441a450c86fcfa8f1ddade5bda3b17ca8ebedee62e88c4ec85e322d71
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10/rmpflow/ur10_robot_description.yaml
 - arm: ur10
   hand: robotiq_hande
@@ -721,7 +721,7 @@ retracts:
     - wrist_1_link
   bundles:
     arm: ed232b94ace364697d1ebed3a223c0a79adc7d089900f878d811a9e3fe565b79
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10/rmpflow/ur10_robot_description.yaml
 - arm: ur10
   hand: robotiq_hande
@@ -763,7 +763,7 @@ retracts:
     - wrist_1_link
   bundles:
     arm: ed232b94ace364697d1ebed3a223c0a79adc7d089900f878d811a9e3fe565b79
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10/rmpflow/ur10_robot_description.yaml
 - arm: ur10
   hand: schunk_egu50
@@ -805,7 +805,7 @@ retracts:
     - wrist_1_link
   bundles:
     arm: ed232b94ace364697d1ebed3a223c0a79adc7d089900f878d811a9e3fe565b79
-    schunk_egu50: ed4170b7321bc970111bc669644505d3a06e9c932ebe0d77f46f5e6abaa9dc45
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10/rmpflow/ur10_robot_description.yaml
 - arm: ur10e
   hand: robotiq_2f85
@@ -845,7 +845,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: c6d3c8349edec690745d4a97a49587ed6a8729ef360442160f35afee19f9ea4d
-    robotiq_2f85: 454b000441a450c86fcfa8f1ddade5bda3b17ca8ebedee62e88c4ec85e322d71
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10e/rmpflow/ur10e_robot_description.yaml
 - arm: ur10e
   hand: robotiq_hande
@@ -885,7 +885,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: c6d3c8349edec690745d4a97a49587ed6a8729ef360442160f35afee19f9ea4d
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10e/rmpflow/ur10e_robot_description.yaml
 - arm: ur10e
   hand: robotiq_hande
@@ -925,7 +925,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: c6d3c8349edec690745d4a97a49587ed6a8729ef360442160f35afee19f9ea4d
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10e/rmpflow/ur10e_robot_description.yaml
 - arm: ur10e
   hand: schunk_egu50
@@ -965,7 +965,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: c6d3c8349edec690745d4a97a49587ed6a8729ef360442160f35afee19f9ea4d
-    schunk_egu50: ed4170b7321bc970111bc669644505d3a06e9c932ebe0d77f46f5e6abaa9dc45
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10e/rmpflow/ur10e_robot_description.yaml
 - arm: ur16e
   hand: robotiq_2f85
@@ -1005,7 +1005,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: fa45cf2c8bb588659bf67ee677dd9f1950301da0c54e0a724d2c5cba3afe8df4
-    robotiq_2f85: 454b000441a450c86fcfa8f1ddade5bda3b17ca8ebedee62e88c4ec85e322d71
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur16e/rmpflow/ur16e_robot_description.yaml
 - arm: ur16e
   hand: robotiq_hande
@@ -1045,7 +1045,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: fa45cf2c8bb588659bf67ee677dd9f1950301da0c54e0a724d2c5cba3afe8df4
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur16e/rmpflow/ur16e_robot_description.yaml
 - arm: ur16e
   hand: robotiq_hande
@@ -1085,7 +1085,7 @@ retracts:
     anchor_pair: null
   bundles:
     arm: fa45cf2c8bb588659bf67ee677dd9f1950301da0c54e0a724d2c5cba3afe8df4
-    robotiq_hande: 66b73f0b000c42fcaead40b366d505f31913db9952c125005f33a2dd08474155
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur16e/rmpflow/ur16e_robot_description.yaml
 - arm: ur16e
   hand: schunk_egu50
@@ -1125,5 +1125,1125 @@ retracts:
     anchor_pair: null
   bundles:
     arm: fa45cf2c8bb588659bf67ee677dd9f1950301da0c54e0a724d2c5cba3afe8df4
-    schunk_egu50: ed4170b7321bc970111bc669644505d3a06e9c932ebe0d77f46f5e6abaa9dc45
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
   anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur16e/rmpflow/ur16e_robot_description.yaml
+- arm: ur5e
+  hand: robotiq_2f85
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 19.454
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 416.233
+    anchor_clearance_mm: 19.454
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: f732a2622e83a60f912ffd6413f2663ef5f62f573443acf933839b2c421b4fdd
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5e/rmpflow/ur5e_robot_description.yaml
+- arm: ur5e
+  hand: robotiq_hande
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 19.454
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 416.233
+    anchor_clearance_mm: 19.454
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: f732a2622e83a60f912ffd6413f2663ef5f62f573443acf933839b2c421b4fdd
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5e/rmpflow/ur5e_robot_description.yaml
+- arm: ur5e
+  hand: robotiq_hande
+  plate_mm: 20.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 19.454
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 416.233
+    anchor_clearance_mm: 19.454
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: f732a2622e83a60f912ffd6413f2663ef5f62f573443acf933839b2c421b4fdd
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5e/rmpflow/ur5e_robot_description.yaml
+- arm: ur5e
+  hand: schunk_egu50
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 19.454
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 416.233
+    anchor_clearance_mm: 19.454
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: f732a2622e83a60f912ffd6413f2663ef5f62f573443acf933839b2c421b4fdd
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5e/rmpflow/ur5e_robot_description.yaml
+- arm: ur3e
+  hand: robotiq_2f85
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 19.388
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 255.579
+    anchor_clearance_mm: 19.388
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: 212d4037f935578e6a50156f884ae4bd4637132f3343e14dfce9c76fda28e420
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3e/rmpflow/ur3e_robot_description.yaml
+- arm: ur3e
+  hand: robotiq_hande
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 19.388
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 255.579
+    anchor_clearance_mm: 19.388
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: 212d4037f935578e6a50156f884ae4bd4637132f3343e14dfce9c76fda28e420
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3e/rmpflow/ur3e_robot_description.yaml
+- arm: ur3e
+  hand: robotiq_hande
+  plate_mm: 20.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 19.388
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 255.579
+    anchor_clearance_mm: 19.388
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: 212d4037f935578e6a50156f884ae4bd4637132f3343e14dfce9c76fda28e420
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3e/rmpflow/ur3e_robot_description.yaml
+- arm: ur3e
+  hand: schunk_egu50
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 19.388
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 252.741
+    anchor_clearance_mm: 19.388
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: 212d4037f935578e6a50156f884ae4bd4637132f3343e14dfce9c76fda28e420
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3e/rmpflow/ur3e_robot_description.yaml
+- arm: ur3
+  hand: robotiq_2f85
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 2
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.5
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 14.489
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 259.488
+    anchor_clearance_mm: 14.67
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: 4.053
+    anchor_pair:
+    - forearm_link
+    - wrist_2_link
+  bundles:
+    arm: a385594520437e85e89e0a9c29ad1aec92db74252781d19e99393dfd8f777d32
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3/rmpflow/ur3_robot_description.yaml
+- arm: ur3
+  hand: robotiq_hande
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 2
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.5
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 14.489
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 262.101
+    anchor_clearance_mm: 14.67
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: 4.053
+    anchor_pair:
+    - forearm_link
+    - wrist_2_link
+  bundles:
+    arm: a385594520437e85e89e0a9c29ad1aec92db74252781d19e99393dfd8f777d32
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3/rmpflow/ur3_robot_description.yaml
+- arm: ur3
+  hand: robotiq_hande
+  plate_mm: 20.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 2
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.5
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 14.489
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 262.101
+    anchor_clearance_mm: 14.67
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: 4.053
+    anchor_pair:
+    - forearm_link
+    - wrist_2_link
+  bundles:
+    arm: a385594520437e85e89e0a9c29ad1aec92db74252781d19e99393dfd8f777d32
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3/rmpflow/ur3_robot_description.yaml
+- arm: ur3
+  hand: schunk_egu50
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 2
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.5
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 14.489
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 244.403
+    anchor_clearance_mm: 14.67
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: 4.053
+    anchor_pair:
+    - forearm_link
+    - wrist_2_link
+  bundles:
+    arm: a385594520437e85e89e0a9c29ad1aec92db74252781d19e99393dfd8f777d32
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur3/rmpflow/ur3_robot_description.yaml
+- arm: ur5
+  hand: robotiq_2f85
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - -1
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - -0.25
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 13.781
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 355.402
+    anchor_clearance_mm: 14.382
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: 0.383
+    anchor_pair:
+    - forearm_link
+    - wrist_2_link
+  bundles:
+    arm: 03f883b31286cbc2185c5e7e92281cd3707cf95c2348dc3013c05e1db84b421a
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5/rmpflow/ur5_robot_description.yaml
+- arm: ur5
+  hand: robotiq_hande
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - -1
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - -0.25
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 13.781
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 355.402
+    anchor_clearance_mm: 14.382
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: 0.383
+    anchor_pair:
+    - forearm_link
+    - wrist_2_link
+  bundles:
+    arm: 03f883b31286cbc2185c5e7e92281cd3707cf95c2348dc3013c05e1db84b421a
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5/rmpflow/ur5_robot_description.yaml
+- arm: ur5
+  hand: robotiq_hande
+  plate_mm: 20.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - -1
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - -0.25
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 13.781
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 355.402
+    anchor_clearance_mm: 14.382
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: 0.383
+    anchor_pair:
+    - forearm_link
+    - wrist_2_link
+  bundles:
+    arm: 03f883b31286cbc2185c5e7e92281cd3707cf95c2348dc3013c05e1db84b421a
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5/rmpflow/ur5_robot_description.yaml
+- arm: ur5
+  hand: schunk_egu50
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.0
+  - 0.9
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - -1
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.0
+  - 0.9
+  - -0.25
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 13.781
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 343.987
+    anchor_clearance_mm: 14.382
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: 0.383
+    anchor_pair:
+    - forearm_link
+    - wrist_2_link
+  bundles:
+    arm: 03f883b31286cbc2185c5e7e92281cd3707cf95c2348dc3013c05e1db84b421a
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur5/rmpflow/ur5_robot_description.yaml
+- arm: ur10
+  hand: robotiq_2f85
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - -1.57
+  - -1.57
+  - -1.57
+  - -1.57
+  - 1.57
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - -1.57
+  - -1.57
+  - -1.57
+  - -1.57
+  - 1.57
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 18.357
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 499.792
+    anchor_clearance_mm: 18.357
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: ed232b94ace364697d1ebed3a223c0a79adc7d089900f878d811a9e3fe565b79
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10/rmpflow/ur10_robot_description.yaml
+- arm: ur10
+  hand: robotiq_hande
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - -1.57
+  - -1.57
+  - -1.57
+  - -1.57
+  - 1.57
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - -1.57
+  - -1.57
+  - -1.57
+  - -1.57
+  - 1.57
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 18.357
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 502.046
+    anchor_clearance_mm: 18.357
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: ed232b94ace364697d1ebed3a223c0a79adc7d089900f878d811a9e3fe565b79
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10/rmpflow/ur10_robot_description.yaml
+- arm: ur10
+  hand: robotiq_hande
+  plate_mm: 20.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - -1.57
+  - -1.57
+  - -1.57
+  - -1.57
+  - 1.57
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - -1.57
+  - -1.57
+  - -1.57
+  - -1.57
+  - 1.57
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 18.357
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 482.046
+    anchor_clearance_mm: 18.357
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: ed232b94ace364697d1ebed3a223c0a79adc7d089900f878d811a9e3fe565b79
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10/rmpflow/ur10_robot_description.yaml
+- arm: ur10
+  hand: schunk_egu50
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - -1.57
+  - -1.57
+  - -1.57
+  - -1.57
+  - 1.57
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - -1.57
+  - -1.57
+  - -1.57
+  - -1.57
+  - 1.57
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 18.357
+    nearest_pair: forearm|wrist_2
+    lowest_z_mm: 481.613
+    anchor_clearance_mm: 18.357
+    anchor_nearest_pair: forearm|wrist_2
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: ed232b94ace364697d1ebed3a223c0a79adc7d089900f878d811a9e3fe565b79
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10/rmpflow/ur10_robot_description.yaml
+- arm: ur10e
+  hand: robotiq_2f85
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.2
+  - 1.1
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.2
+  - 1.1
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 24.079
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 637.726
+    anchor_clearance_mm: 24.079
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: c6d3c8349edec690745d4a97a49587ed6a8729ef360442160f35afee19f9ea4d
+    robotiq_2f85: 2eaa0f5b45f26da92c7b704093363c3acadb845cce0945c7435846624ffd2f83
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10e/rmpflow/ur10e_robot_description.yaml
+- arm: ur10e
+  hand: robotiq_hande
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.2
+  - 1.1
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.2
+  - 1.1
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 24.079
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 637.726
+    anchor_clearance_mm: 24.079
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: c6d3c8349edec690745d4a97a49587ed6a8729ef360442160f35afee19f9ea4d
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10e/rmpflow/ur10e_robot_description.yaml
+- arm: ur10e
+  hand: robotiq_hande
+  plate_mm: 20.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.2
+  - 1.1
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.2
+  - 1.1
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 24.079
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 637.726
+    anchor_clearance_mm: 24.079
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: c6d3c8349edec690745d4a97a49587ed6a8729ef360442160f35afee19f9ea4d
+    robotiq_hande: c2d2e34aafdce2990666d639da199d14516adadabc273bdfb45f900035ce5a40
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10e/rmpflow/ur10e_robot_description.yaml
+- arm: ur10e
+  hand: schunk_egu50
+  plate_mm: 0.0
+  planner_margin_mm: 4.0
+  placement: +Z+X
+  tool_rotation_xyzw:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  anchor:
+  - 0.0
+  - -1.2
+  - 1.1
+  - 0.0
+  - 0.0
+  - 0.0
+  steps:
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  retract:
+  - 0.0
+  - -1.2
+  - 1.1
+  - 0.0
+  - 0.0
+  - 0.0
+  candidates_tried: 1
+  exact:
+    clearance_mm: 24.079
+    nearest_pair: wrist_1|wrist_3
+    lowest_z_mm: 637.726
+    anchor_clearance_mm: 24.079
+    anchor_nearest_pair: wrist_1|wrist_3
+  spheres:
+    depth_mm: null
+    pair: null
+    anchor_depth_mm: null
+    anchor_pair: null
+  bundles:
+    arm: c6d3c8349edec690745d4a97a49587ed6a8729ef360442160f35afee19f9ea4d
+    schunk_egu50: 2d34e27b676d3b378d732cd04353bfd5f823263ae6c8f4898dfa079ae81d69cc
+  anchor_source: Isaac Lula default_q, motion_policy_configs/universal_robots/ur10e/rmpflow/ur10e_robot_description.yaml

@@ -489,9 +489,11 @@ def set_keys(
         plan.append((key, value, path, top_key, key[len(prefix):].lstrip(".")))
 
     # Snapshot every file the group touches before editing any of them; `None` marks one that did not
-    # exist, so a rollback deletes it instead of writing an empty file back.
-    snapshot: dict[Path, str | None] = {
-        path: (path.read_text(encoding="utf-8") if path.exists() else None)
+    # exist, so a rollback deletes it instead of writing an empty file back. Bytes rather than text: a
+    # text round trip rewrites every line ending to the platform's, so an LF file on Windows would
+    # come back CRLF.
+    snapshot: dict[Path, bytes | None] = {
+        path: (path.read_bytes() if path.exists() else None)
         for _k, _v, path, _t, _d in plan
     }
     try:
@@ -503,7 +505,7 @@ def set_keys(
             if before is None:
                 path.unlink(missing_ok=True)
             else:
-                path.write_text(before, encoding="utf-8")
+                path.write_bytes(before)
         _reload(root, profile)
         return WriteResult(
             applied=False, keys=tuple(items), files=tuple(snapshot), refused=WriteRefused.INVALID_VALUE,

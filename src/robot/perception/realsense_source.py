@@ -20,12 +20,15 @@ proven answer.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from src.robot.core.errors import PerceptionFrameMoved
+from src.robot.core.shutter_motion import ShutterMotion
 from src.robot.grasping.types.perception import PerceptionFrame
 from src.robot.perception.mask_completion import (
     DEFAULT_MASK_COMPLETION,
@@ -119,6 +122,10 @@ class RealSenseVisionPerceptionSource:
         #: through `stamp_tool_pose_with`, because the arm does not exist yet when this source is
         #: built.
         self._tool_pose_reader: Callable[[], Pose] | None = None
+        #: The rig's shutter tolerance, and how many more grabs a frame taken while the tool moved
+        #: gets. Both are bound with the reader.
+        self._motion_tolerance: tuple[float, float] = (0.0, 0.0)
+        self._frame_attempts = 0
 
     # ------------------------------------------------------------------ label canonicalisation
     def _canonical_label(self, gdino_label: str) -> str:
@@ -208,26 +215,66 @@ class RealSenseVisionPerceptionSource:
             except Exception:  # noqa: BLE001 (teardown reports nothing it can fix)
                 pass
 
-    def stamp_tool_pose_with(self, reader: Callable[[], Pose]) -> None:
-        """Stamp every frame from now on with the TCP, read by ``reader`` just before the real grab.
+    def stamp_tool_pose_with(
+        self, reader: Callable[[], Pose], *, motion_tolerance: tuple[float, float], attempts: int,
+    ) -> None:
+        """Stamp every frame with the TCP at its shutter, and grab again while the tool moved.
 
         For a camera on the wrist, whose grasp is placed by where the tool was when the shutter
         opened. With an unstamped frame the eye-in-hand resolver reads the arm when the grasp is
         resolved, and every millimetre the tool travelled in between goes into the grasp.
-        ``reader`` is the arm's own ``get_tcp_pose``. No check that the tool held still across the
-        grab runs here.
+        ``reader`` is the arm's own ``get_tcp_pose``, read before and after the real grab.
+        ``motion_tolerance`` is the rig's ``(shutter_motion_tolerance_mm,
+        shutter_motion_tolerance_deg)``, judged by the rule the live world judges it by
+        (``ShutterMotion``). A frame taken while the tool moved beyond it is grabbed again, without
+        the warm-ups, up to ``attempts`` more times, and then the acquire raises
+        ``PerceptionFrameMoved``.
         """
         if not callable(reader):
             raise TypeError(f"stamp_tool_pose_with takes the arm's TCP reader, not {type(reader).__name__}")
+        max_mm, max_deg = (float(v) for v in motion_tolerance)
+        if not (math.isfinite(max_mm) and math.isfinite(max_deg)) or max_mm < 0.0 or max_deg < 0.0:
+            raise ValueError(f"a shutter motion tolerance is two finite non-negative numbers, not {motion_tolerance!r}")
+        if int(attempts) < 0:
+            raise ValueError(f"attempts counts the grabs after the first and cannot be negative, not {attempts!r}")
         self._tool_pose_reader = reader
+        self._motion_tolerance = (max_mm, max_deg)
+        self._frame_attempts = int(attempts)
+
+    def _grab(self) -> "tuple[Any, Pose | None, float]":
+        """The real grab: the frame, the tool pose at its shutter, and its capture time.
+
+        The capture time is the one the camera owner read before its grab when the frame carries
+        it, else a clock read here just before the grab, never after: age decides whether a frame
+        may still be planned against.
+        """
+        reader = self._tool_pose_reader
+        if reader is None:
+            before_grab = time.time()
+            rgbd = self._streamer.grab()
+            return rgbd, None, _captured_at(rgbd, before_grab)
+        max_mm, max_deg = self._motion_tolerance
+        motion = None
+        for _ in range(1 + self._frame_attempts):
+            before = reader()
+            before_grab = time.time()
+            rgbd = self._streamer.grab()
+            after = reader()
+            motion = ShutterMotion.between(before, after, tolerance_mm=max_mm, tolerance_deg=max_deg)
+            if motion.within:
+                return rgbd, before, _captured_at(rgbd, before_grab)
+        assert motion is not None
+        raise PerceptionFrameMoved(
+            camera=str(getattr(self._streamer, "rig_id", "") or "camera"), attempts=1 + self._frame_attempts,
+            moved_mm=motion.moved_mm, turned_deg=motion.turned_deg, tolerance_mm=max_mm, tolerance_deg=max_deg,
+        )
 
     def acquire(self) -> PerceptionFrame:
         for _ in range(self._warmup_grabs):
             self._streamer.grab()  # discard: let auto-exposure / white-balance settle on real hardware
 
-        # After the warm-ups and immediately before the real grab, the read nearest the shutter.
-        tool_pose = None if self._tool_pose_reader is None else self._tool_pose_reader()
-        rgbd = self._streamer.grab()
+        # After the warm-ups, the real grab, with the tool pose read around it on a wrist camera.
+        rgbd, tool_pose, captured_at_s = self._grab()
         bgr = np.ascontiguousarray(np.asarray(rgbd.color))          # detector/segmenter take OpenCV BGR
         depth_mm = np.asarray(rgbd.depth, dtype=np.float64)         # uint16 mm as float; 0 == hole
         # A copy, not the same array, and that is the point of keeping both fields. Their
@@ -274,9 +321,16 @@ class RealSenseVisionPerceptionSource:
         # `surface_depth_map` stays, and now carries the same measurement without the sensor
         # noise a harness may add to `depth_map`: the planner's obstacle world is built from it,
         # and an obstacle that flickers frame to frame is worse than one that is slightly wrong.
-        # `time.time` rather than a monotonic clock because a consumer compares this against its
-        # own wall clock to decide whether the world is too old to plan against.
+        # The shutter time, on the `time.time` clock rather than a monotonic one, because a
+        # consumer compares it against its own wall clock to decide whether the world is too old
+        # to plan against.
         return PerceptionFrame(
             depth_map=depth_mm, intrinsics=intrinsics, segmentations=tuple(segmentations), rgb=rgb,
-            timestamp=time.time(), surface_depth_map=rendered_depth_mm, tool_pose=tool_pose,
+            timestamp=captured_at_s, surface_depth_map=rendered_depth_mm, tool_pose=tool_pose,
         )
+
+
+def _captured_at(frame: Any, before_grab: float) -> float:
+    """The owner's capture time when the frame carries one, else the clock read just before the grab."""
+    captured = getattr(frame, "captured_at_s", None)
+    return float(captured) if isinstance(captured, (int, float)) else float(before_grab)

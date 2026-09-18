@@ -106,7 +106,7 @@ class TheHandComposesOntoTheArmDescriptorTests(unittest.TestCase):
         from src.robot.safety.planning.hand import planner_hand
 
         hand = planner_hand(RobotConfig.model_validate({"vendor": "ur", "gripper": {
-            "model": "robotiq_hande", "coupling_plates_mm": [20.0], "tool_frame": _SIM}}))
+            "model": "robotiq_hande", "coupling_plates": [{"name": "plate", "thickness_mm": 20.0}], "tool_frame": _SIM}}))
         return HandLink.from_hand(hand).to_dict()
 
     def test_the_arm_descriptor_takes_the_hand(self) -> None:

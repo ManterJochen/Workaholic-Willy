@@ -60,6 +60,23 @@ class CellBuildRefused(RuntimeError):
     """
 
 
+def _refuse_a_tree_hand(robot_cfg: "RobotConfig", data_dir: "str | Path | None") -> None:
+    """Raise :class:`CellBuildRefused` when the tree at ``data_dir`` describes the named hand differently.
+
+    The hand's body, sphere map, retract rows and evidence were written from the repository's
+    registry, so a cell run from a tree whose own copy disagrees would plan with one hand while its
+    calculator reads another.
+    """
+    from src.config.grippers import tree_hand_refusal
+
+    if data_dir is None:
+        return  # the repository's own tree: nothing to compare
+    model = robot_cfg.gripper.model
+    refusal = tree_hand_refusal(model, data_dir=data_dir) if model else None
+    if refusal is not None:
+        raise CellBuildRefused(refusal)
+
+
 def build_rehearsal_components(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,
                                ) -> tuple[Any, Any, Any, Any, Any]:
     """``(calculator, perception, frame_resolver, multi_camera, camera_calculators)`` for a desk.
@@ -420,17 +437,34 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
     :func:`build_real_components` for what happened while the two could disagree.
 
     ``data_dir`` is that tree's root, whose gripper registry answers for the cell's hand; ``None``
-    is the repository's tree.
+    is the repository's tree. A tree that describes the named hand differently from the
+    repository's registry is refused first, before a camera opens.
     """
     from src.config import load_config
 
     from .service import AutonomousGraspService
+
+    _refuse_a_tree_hand(robot_cfg, data_dir)
 
     # Resolved once, here, and handed to both readers below. It used to be read here a second time
     # with a comment explaining that the loader caches, so the two reads return the same object.
     # That comment was true and it was not about the right thing: two calls agreeing with each
     # other says nothing about whether either is the tree the caller asked for, and they were not.
     app_cfg = app_config if chosen(app_config) else load_config()
+    # The wrist cameras the arm carries, resolved before any camera opens: a body this cell cannot
+    # place is a refusal that has no device to give back.
+    from src.robot.execution.wrist_bodies import WristBodies, WristBodyRequired
+
+    try:
+        wrist = WristBodies.from_config(robot_cfg, app_cfg.camera, data_dir=data_dir)
+    except WristBodyRequired as exc:
+        raise CellBuildRefused(str(exc)) from exc
+    # A calibrated camera makes the world mandatory, refused before any camera opens: a cuRobo UR
+    # cell whose calibrated rig yields no world would refuse every motion, and the pick service
+    # declines none.
+    refusal = _world_refusal(robot_cfg, app_cfg)
+    if refusal is not None:
+        raise CellBuildRefused(refusal)
     calculator, perception, resolver, multi_camera, calculators = build_real_components(
         robot_cfg, prompt, app_config=app_cfg, data_dir=data_dir)
     rig_id = app_cfg.camera.cameras.primary_rig_id
@@ -449,7 +483,9 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
             camera=app_cfg.camera,
             **overrides,
         )
-        _stamp_wrist_pick_frames(service, perception)
+        _stamp_wrist_pick_frames(robot_cfg, service, perception)
+        # Before the world, because the world's self filter reads the bodies the arm holds.
+        _wire_wrist_bodies(service, wrist)
         _wire_live_planner_world(robot_cfg, service, perception, app_cfg=app_cfg)
     except BaseException:
         # A refused build gives the cameras back past the components as well.
@@ -462,20 +498,81 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
     return service
 
 
-def _stamp_wrist_pick_frames(service: Any, perception: Any) -> None:
-    """Give a wrist camera's pick source the arm's TCP reader, so frames carry the shutter pose.
+def _plans_with_curobo(robot_cfg: Any) -> bool:
+    """Whether this is a UR tree whose planner is cuRobo, where every motion needs a world or a decline.
+
+    Read off the tree as ``hand.wrist_body_reader`` reads it, because the schema defaults
+    ``motion_planner`` to curobo for every vendor and a dummy or KUKA tree would otherwise count.
+    """
+    return (str(getattr(robot_cfg, "vendor", "") or "") == "ur"
+            and getattr(getattr(robot_cfg, "ur", None), "motion_planner", None) == "curobo")
+
+
+def _world_refusal(robot_cfg: Any, app_cfg: Any) -> "str | None":
+    """Why this cell may not build without a world (``CameraWorldPlan.refusal``), or ``None``. Opens nothing."""
+    from src.robot.execution.camera_world_wiring import CameraWorldPlan
+
+    section = getattr(getattr(app_cfg, "camera", None), "cameras", None)
+    rigs = getattr(section, "rigs", None)
+    if not _plans_with_curobo(robot_cfg) or rigs is None:
+        return None
+    plan = CameraWorldPlan.from_config(robot_cfg, rigs, primary_rig_id=str(getattr(section, "primary_rig_id", "")))
+    return plan.refusal()
+
+
+def _wire_wrist_bodies(service: Any, wrist: Any) -> None:
+    """Hand the service's arm this cell's wrist camera bodies, or refuse an arm that cannot hold them."""
+    from src.robot.execution.wrist_bodies import WristBodyRequired
+
+    orchestrator: Any = getattr(getattr(service, "runtime", None), "orchestrator", None)
+    try:
+        wrist.hand_to(getattr(orchestrator, "arm", None))
+    except (WristBodyRequired, ValueError, RuntimeError) as exc:
+        raise CellBuildRefused(str(exc)) from exc
+
+
+def _stamp_wrist_pick_frames(robot_cfg: Any, service: Any, perception: Any) -> None:
+    """Give every wrist camera's pick source the arm's TCP reader, its rig's tolerance and attempts.
 
     Decided by the resolver the root built, because the resolver is what reads the tool pose: an
-    eye-in-hand resolver composes it into every grasp, and a fixed camera's resolver never asks. A
-    wrist cell whose frames go unstamped places each grasp by where the tool is when the grasp is
-    resolved, not by where it was when the camera saw the part.
+    eye-in-hand resolver composes it into every grasp, and a fixed camera's resolver never asks. So
+    the primary is bound when the root's resolver is eye in hand, and so is every fused source whose
+    resolver in ``camera_frame_resolvers`` is. A wrist cell whose frames go unstamped places each
+    grasp by where the tool is when the grasp is resolved, not by where it was when the camera saw
+    the part. A stamped frame carries the pose at its shutter, and one taken while the arm moved
+    beyond the rig's shutter tolerance is taken again up to
+    ``safety.planning_world.perceived.fresh_frame_attempts`` more times before the pick stops.
+
+    Each rig's calibration also has to have been solved against the flange to TCP this cell
+    declares, whether or not the rig declares a body: a wrist frame is placed by CAMERA to TOOL, and
+    a calibration made against another tool frame puts every grasp off by the difference.
     """
+    from src.calibration.rig_calibration import flange_to_tcp_refusal
     from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver
 
     orchestrator: Any = getattr(getattr(service, "runtime", None), "orchestrator", None)
-    if not isinstance(getattr(orchestrator, "frame_resolver", None), EyeInHandFrameResolver):
+    sources = []
+    if isinstance(getattr(orchestrator, "frame_resolver", None), EyeInHandFrameResolver):
+        sources.append(perception)
+    resolvers = getattr(orchestrator, "camera_frame_resolvers", None) or {}
+    fused = getattr(getattr(orchestrator, "multi_camera_perception", None), "sources", None) or {}
+    for cam_id, source in fused.items():
+        if source is not perception and isinstance(resolvers.get(cam_id), EyeInHandFrameResolver):
+            sources.append(source)
+    if not sources:
         return
-    perception.stamp_tool_pose_with(orchestrator.arm.get_tcp_pose)
+    attempts = int(robot_cfg.safety.planning_world.perceived.fresh_frame_attempts)
+    for source in sources:
+        calibration = source.streamer.camera.calibration()
+        stale = flange_to_tcp_refusal(calibration, robot_cfg.gripper.tool_frame)
+        if stale is not None:
+            raise CellBuildRefused(stale)
+        source.stamp_tool_pose_with(
+            orchestrator.arm.get_tcp_pose,
+            motion_tolerance=(float(calibration.shutter_motion_tolerance_mm),
+                              float(calibration.shutter_motion_tolerance_deg)),
+            attempts=attempts,
+        )
 
 
 def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception: Any, *, app_cfg: Any) -> None:
@@ -541,6 +638,11 @@ def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception:
 
     if wiring.world is None:
         _give_back(OpenedCameras(tuple(opened)))
+        if _plans_with_curobo(robot_cfg):
+            # The plan named cameras and they built no world (a stereo answer, a wrist rig with no
+            # tool reader). On a cuRobo cell that refuses every motion, so the build is refused.
+            raise CellBuildRefused(
+                f"this cell plans with cuRobo and its calibrated cameras built no live world: {wiring.reason}")
         log.warning("%s", wiring.render())
         return
     if opened:
@@ -584,8 +686,13 @@ def build_rehearsal_cell(robot_cfg: "RobotConfig", *, data_dir: "str | Path | No
 
     Idempotent: a caller that already swapped the vendor gets the same result. The CLI still swaps
     it, because its preflight and its banner need the swapped config.
+
+    A tree that describes the named hand differently from the repository's registry is refused
+    first, with the same sentence the real cell and the desk give.
     """
     from .service import AutonomousGraspService
+
+    _refuse_a_tree_hand(robot_cfg, data_dir)
 
     robot_cfg = robot_cfg.model_copy(update={"vendor": "dummy"})
     calculator, perception, resolver, _no_cameras, _one_lens = (

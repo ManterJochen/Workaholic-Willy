@@ -44,6 +44,7 @@ def _cell(
     max_boxes: int = 8,
     enabled: bool = True,
     payload: bool = False,
+    length_mm: "float | None" = None,
     planner: str = "curobo",
     planner_margin_mm: "float | None" = 4.0,
 ) -> RobotConfig:
@@ -70,7 +71,7 @@ def _cell(
                 "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
                 "perceived": {"voxel_field_mm": voxel_mm, "max_boxes": max_boxes},
                 "meshes": [{"name": f"tote{i}", "path": f"assets/tote{i}.obj"} for i in range(meshes)],
-                "payload": {"enabled": payload, "sphere_slots": 16},
+                "payload": {"enabled": payload, "sphere_slots": 16, "length_mm": length_mm},
             },
         },
     })
@@ -124,7 +125,7 @@ class TheReservationTests(_NoPlannerEnvironment):
         from src.robot.safety.planning.reservation import PlannerReservation
 
         reservation = PlannerReservation.from_config(
-            robot_cfg=_cell(fixtures=15, meshes=1, voxel_mm=30.0, payload=True)
+            robot_cfg=_cell(fixtures=15, meshes=1, voxel_mm=30.0, payload=True, length_mm=120.0)
         )
 
         # The bench and fifteen walls, plus the eight perceived boxes the cell allows.
@@ -151,6 +152,35 @@ class TheReservationTests(_NoPlannerEnvironment):
         self.assertEqual(
             reservation, PlannerReservation(cuboid_slots=16, mesh_slots=0, voxel_grid="", sphere_slots=0)
         )
+
+
+class TheCarriedPartReservesOnlyWhatItDeclaresTests(_NoPlannerEnvironment):
+    """Step 8e (O1 A): payload spheres are reserved where a length is declared, world on or off, and nowhere else."""
+
+    def test_a_payload_with_a_length_reserves_its_spheres_with_the_world_off(self) -> None:
+        from src.robot.safety.planning.reservation import PlannerReservation
+
+        reservation = PlannerReservation.from_config(robot_cfg=_cell(enabled=False, payload=True, length_mm=60.0))
+
+        self.assertEqual(16, reservation.sphere_slots)
+
+    def test_a_payload_without_a_length_reserves_nothing(self) -> None:
+        from src.robot.safety.planning.reservation import PlannerReservation
+
+        reservation = PlannerReservation.from_config(robot_cfg=_cell(payload=True))
+
+        self.assertEqual(0, reservation.sphere_slots)
+        self.assertIn("no payload spheres", reservation.render())
+
+    def test_the_shipped_sim_tree_reserves_no_payload_spheres(self) -> None:
+        """The control, green before and after: no shipped tree declares a length, so every start stays _a0."""
+        from src.config import load_robot_config
+        from src.robot.safety.planning.reservation import PlannerReservation
+
+        for profile in ("sim", "console_dummy"):
+            with self.subTest(profile):
+                reservation = PlannerReservation.from_config(robot_cfg=load_robot_config(profile=profile))
+                self.assertEqual(0, reservation.sphere_slots)
 
 
 class TheClientsCarryTheReservationTests(_NoPlannerEnvironment):

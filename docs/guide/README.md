@@ -103,9 +103,10 @@ Two consequences worth carrying between guides:
   world-Z rose by at least `robot.sim.gate.lift_threshold_mm`, which the tree sets to `50.0`. The
   real-cell runner requires unanimity and has no independent confirmation, which is why it prints
   its rule beside its verdict.
-- **A failing run does not say why.** Each runner prints one line per pick, `succeeded`, `lift_mm`
-  and `passed`, and then a gate line. None of them carries a reason. Attributing a failure needs
-  record logging, which is `grasping.record_log_path` and off by default.
+- **A failing run says little about why.** Each runner prints one line per pick, `succeeded`,
+  `lift_mm` and `passed`, and then a gate line. `run_m2_pick` adds a reason beside its rate: each run
+  that did not pick, with the report's failure summary and the motion's message. Attributing a
+  failure beyond that needs record logging, which is `grasping.record_log_path` and off by default.
 
 ## Related documents
 

@@ -469,17 +469,18 @@ class AutonomousGraspService:
                 standoff_mm=standoff_mm,
                 retreat_mm=retreat_mm,
                 require_base_frame_grasp=True,
-                # ⛔ WITHOUT THIS THE JAWS ARE NEVER OPENED ON THE REAL PATH. MEASURED 2026-09-10:
-                # `pre_open_width_mm` defaults to None, only the willy_sim runners ever set it, and
-                # nothing on this path releases either. So the arm descended with the jaws wherever
-                # the previous close left them, and the next close to a WIDER target arrived at the
-                # gripper as an opening: it dropped the held part onto the new grasp point and
-                # gripped nothing, while the attempt was recorded as EXECUTED.
+                # Without this the jaws are never opened on the real path. `pre_open_width_mm`
+                # defaults to None; the willy_sim runners set it, as does the policy
+                # `from_robot_config` builds (builders.py), and nothing on this path releases
+                # either. The arm then descends with the jaws wherever the previous close left
+                # them, and the next close to a wider target reaches the gripper as an opening:
+                # measured, it dropped the held part onto the new grasp point and gripped nothing,
+                # while the attempt was recorded as EXECUTED.
                 #
-                # ⚠ This does not make the service place parts, and it is not meant to. It moves the
+                # This does not make the service place parts, and it is not meant to. It moves the
                 # unavoidable opening from the grasp point to the cell's own start pose, before the
                 # approach, where it is expected. A caller that needs the part kept must place it
-                # between picks, which was always the contract and was simply never reachable.
+                # between picks.
                 #
                 # Derived from the hand rather than a constant: the 2F-85 opens 85 mm and the Hand-E
                 # 49.99, and a number written here would be right for one of them.

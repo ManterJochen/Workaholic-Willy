@@ -23,6 +23,11 @@ from src.robot.core import JointPositions, MotionStatus, RobotMotionRejected
 from src.robot.safety import SafetyPreflight
 from src.robot.safety.decision import SafetyDecision, SafetyReason
 from src.robot.safety.guard import SafetyContext
+from tests._plan_end import pose_where_it_ends
+
+#: Said where each arm is built: these doubles plan or check with cuRobo and carry no camera world, so every
+#: motion they command declines it, as a cuRobo cell must since the world became mandatory.
+_DECLINED = "unit double: this test exercises the planner and the guard on a cuRobo arm, and no camera world is wired to it"
 
 
 class _RefusingGuard:
@@ -271,10 +276,12 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
     def test_the_box_is_applied_to_the_planned_move(self) -> None:
         guard = _AcceptingGuard("workspace")
         arm = self._curobo_arm(SafetyPreflight([guard]))
+        self.enterContext(arm.without_camera_world(_DECLINED))
         planner = MagicMock()
         planner.plan.return_value = [[0.0] * 6, [0.1] * 6]
         arm._curobo_ur = planner
-        arm.move(_pose(400.0, 0.0, 300.0))
+        # The goal is where the plan ends: the UR driver refuses a plan off its goal before any gate (Step 8f).
+        arm.move(pose_where_it_ends(arm, [0.1] * 6))
         self.assertGreaterEqual(guard.calls, 1, "the workspace guard never saw the planned move")
 
     def test_a_refusal_stops_the_move_before_execution(self) -> None:
@@ -282,7 +289,8 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
         planner = MagicMock()
         planner.plan.return_value = [[0.0] * 6, [0.1] * 6]
         arm._curobo_ur = planner
-        arm.move(_pose(400.0, 0.0, 300.0))
+        # The goal is where the plan ends: the UR driver refuses a plan off its goal before any gate (Step 8f).
+        arm.move(pose_where_it_ends(arm, [0.1] * 6))
         planner.execute.assert_not_called()
 
     def test_the_gate_sees_curobos_OWN_final_joints(self) -> None:
@@ -296,11 +304,12 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
                 return super().evaluate(ctx)
 
         arm = self._curobo_arm(SafetyPreflight([_Recorder("workspace")]))
+        self.enterContext(arm.without_camera_world(_DECLINED))
         planner = MagicMock()
         final = [0.2, -1.1, 1.0, -0.5, 1.4, 0.3]
         planner.plan.return_value = [[0.0] * 6, final]
         arm._curobo_ur = planner
-        arm.move(_pose(400.0, 0.0, 300.0))
+        arm.move(pose_where_it_ends(arm, final))
         self.assertEqual(seen["joints"], final)
         self.assertTrue(seen["pose"], "and a pose, or the box cannot be applied at all")
 

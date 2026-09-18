@@ -16,6 +16,8 @@ from api.schemas import PreflightCheckOut, PreflightOut, Status
 from src.contracts import UNSET, Maybe
 
 if TYPE_CHECKING:  # pragma: no cover
+    from pathlib import Path
+
     from src.config.schema import CameraConfig
     from src.config.schema.robot.robot_schema import RobotConfig
     from src.robot.execution.real_cell.preflight import PreflightReport
@@ -51,7 +53,7 @@ def to_wire(report: "PreflightReport", *, profile: str | None, vendor: str) -> P
 
 
 def to_wire_for(robot: "RobotConfig", *, profile: str | None,
-                camera: "Maybe[CameraConfig]" = UNSET) -> PreflightOut:
+                camera: "Maybe[CameraConfig]" = UNSET, data_dir: "str | Path | None" = None) -> PreflightOut:
     """Run the checklist and serialise it. The one path both routers use.
 
     Named ``to_wire``, not ``render``. Both functions here mean serialise-to-wire and return a
@@ -61,16 +63,18 @@ def to_wire_for(robot: "RobotConfig", *, profile: str | None,
     """
     from src.robot.execution.real_cell.preflight import run_config_preflight
 
-    return to_wire(run_config_preflight(robot, camera=camera), profile=profile, vendor=str(robot.vendor))
+    return to_wire(run_config_preflight(robot, camera=camera, data_dir=data_dir), profile=profile,
+                   vendor=str(robot.vendor))
 
 
 def to_wire_for_console(cell: Console) -> PreflightOut:
     """The checklist for the console's tree, with both halves from one read.
 
-    The camera to base row reads the primary rig's calibration in the camera section.
+    The camera to base row reads the primary rig's calibration in the camera section, and the hand
+    rows read the console's tree.
     """
     config, robot = cell.resolved()
-    return to_wire_for(robot, profile=cell.profile, camera=config.camera)
+    return to_wire_for(robot, profile=cell.profile, camera=config.camera, data_dir=cell.root)
 
 
 @router.get("/preflight", response_model=PreflightOut, summary="Is this cell runnable?")

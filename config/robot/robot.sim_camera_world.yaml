@@ -1,0 +1,22 @@
+# The Isaac reference cell with a live camera world: the planner plans against what the overhead
+# camera sees.
+#
+# Layered on top of `sim`, as `WILLY_PROFILE=sim,sim_camera_world`. `run_m2_pick` adds it by default
+# and boots with `camera_world=SimCameraWorld("overhead")`; every other runner declines the camera
+# world by name and does not take this layer. It is a layer of its own so that the plain `sim` tree,
+# which every other runner loads, keeps its planning world off.
+#
+# The support plane is the scene's table (`robot.sim.scene_setup.table`: 800 x 800 x 400 mm centred
+# at x 450, top at z 0), placed at the table top, so the planner keeps the arm above the surface the
+# cube stands on. `perceived` keeps its defaults, and no carried part length is declared, so the
+# planner reserves no attach slots: every committed ur5e evidence file was measured without them, and
+# a planner start with slots would find no file.
+robot:
+  safety:
+    planning_world:
+      enabled: true
+      support_plane:
+        height_mm: 0.0
+        extent_mm: [800.0, 800.0]
+        thickness_mm: 50.0
+        center_mm: [450.0, 0.0]

@@ -212,6 +212,61 @@ class TheGraspTheAttemptActuallyMadeTests(unittest.TestCase):
         self.assertEqual(BaselineSARExtractor().extract(rec.to_dict()).action, ACTION_REJECT)
 
 
+def _stamped_report(*stamps: object) -> SimpleNamespace:
+    report = _report(AutonomousGraspOutcome.EXECUTION_FAILED)
+    report.pick_report = SimpleNamespace(camera_worlds=stamps, attempts=(), calculator_telemetry={},
+                                         executed_grasp=None)
+    return report
+
+
+class TheRecordCarriesTheCameraWorldTests(unittest.TestCase):
+    """By owner decision the record says which camera world stood behind the attempt's motions, weakest first."""
+
+    def test_a_declined_pick_writes_its_camera_world(self) -> None:
+        from src.robot.core.camera_world import CameraWorldDecline, CameraWorldStamp
+
+        declined = CameraWorldStamp.declined(CameraWorldDecline("run_m1_pick: known-pose pick"))
+        rec = to_attempt_record(_stamped_report(declined, declined), attempt_id="c1")
+        self.assertEqual(("declined", "run_m1_pick: known-pose pick"),
+                         (rec.extra["camera_world"], rec.extra["camera_world_reason"]))
+
+    def test_a_refused_pick_writes_missing_and_a_planned_pick_writes_planned(self) -> None:
+        from src.robot.core.camera_world import CameraWorldStamp
+
+        planned = CameraWorldStamp.planned(cameras=("overhead",), captured_at_s=12.5)
+        missing = CameraWorldStamp.missing("no live camera world is wired to this arm")
+        refused = to_attempt_record(_stamped_report(planned, missing, planned), attempt_id="c2")
+        self.assertEqual(("missing", "no live camera world is wired to this arm"),
+                         (refused.extra["camera_world"], refused.extra["camera_world_reason"]))
+        clean = to_attempt_record(_stamped_report(planned, planned), attempt_id="c3")
+        self.assertEqual(("planned", ""), (clean.extra["camera_world"], clean.extra["camera_world_reason"]))
+        self.assertNotIn("overhead", str(clean.to_dict()), "the record carried the cameras, not only the use")
+
+    def test_an_unstamped_or_unstated_pick_writes_nothing(self) -> None:
+        from src.robot.core.camera_world import CameraWorldStamp
+
+        for label, report in (("no pick report", _report(AutonomousGraspOutcome.EXECUTION_FAILED)),
+                              ("no stamps", _stamped_report()),
+                              ("unstated", _stamped_report(CameraWorldStamp.unstated()))):
+            with self.subTest(label):
+                extra = to_attempt_record(report, attempt_id="c4").extra
+                self.assertNotIn("camera_world", extra)
+                self.assertNotIn("camera_world_reason", extra)
+
+    def test_a_malformed_stamp_still_writes_the_record(self) -> None:
+        rec = to_attempt_record(_stamped_report("missing", object()), attempt_id="c5")
+        self.assertEqual("c5", rec.attempt_id)
+        self.assertNotIn("camera_world", rec.extra)
+
+    def test_a_caller_extra_cannot_overwrite_the_stamp(self) -> None:
+        from src.robot.core.camera_world import CameraWorldStamp
+
+        missing = CameraWorldStamp.missing("no live camera world is wired to this arm")
+        rec = to_attempt_record(_stamped_report(missing), attempt_id="c6",
+                                extra={"camera_world": "planned", "camera_world_reason": ""})
+        self.assertEqual("missing", rec.extra["camera_world"])
+
+
 class KpiSourcingTests(unittest.TestCase):
     def test_safety_rejection_rate_now_sourced(self) -> None:
         # The whole point of K1: a real record built from a fail-closed report makes the previously-dead

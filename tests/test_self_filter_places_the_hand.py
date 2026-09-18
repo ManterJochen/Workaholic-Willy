@@ -26,7 +26,7 @@ def _hand(frame: dict[str, Any], model: str = "robotiq_hande") -> Any:
 
     gripper: dict[str, Any] = {"model": model, "tool_frame": frame}
     if model == "robotiq_hande":
-        gripper["coupling_plates_mm"] = [20.0]
+        gripper["coupling_plates"] = [{"name": "plate", "thickness_mm": 20.0}]
     return planner_hand(RobotConfig.model_validate({"vendor": "ur", "gripper": gripper}))
 
 

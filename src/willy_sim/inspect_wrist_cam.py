@@ -37,6 +37,7 @@ from src.willy_sim.scene import (
     mount_wrist_camera,
 )
 from src.geometry import Frame, Pose
+from src.robot.core.camera_world import CameraWorldDecline
 
 CACHE_DIR = "logs/willy_sim"
 
@@ -83,7 +84,9 @@ def main() -> None:
             offset[idx] = val
 
     # The shared boot prefix. This diagnostic builds the arm without a safety preflight.
-    cell = bootstrap_sim_cell(args.data_dir, headless=not args.gui, safety=False)
+    cell = bootstrap_sim_cell(args.data_dir, headless=not args.gui, safety=False,
+                              camera_world=CameraWorldDecline(
+                                  "inspect_wrist_cam: a diagnostic that looks through the wrist camera, no camera world"))
     arm, gripper = cell.arm, cell.gripper
     gripper.open()  # open jaw so the object is visible from the wrist
 

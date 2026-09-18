@@ -5,11 +5,14 @@ It is the real-hardware counterpart of the cuRobo path in the Isaac sim driver,
 process-isolated cuRobo planner, :class:`~src.robot.safety.planning.CuroboPlanClient`,
 for a global collision-free joint trajectory to a Cartesian goal, then executes that
 trajectory on the UR controller waypoint by waypoint through the ``ur_rtde`` ``moveJ``.
+Every pose reaches the planner through :class:`.planner_frame.PlannerFrameClient`,
+because the planner is rooted half a turn about Z from the controller's base.
 
 It is fail-closed. Where the cuRobo environment or service is unavailable, or no
-collision-free plan exists, it does not fall back to blind IK: it returns a typed
-failure, :attr:`MotionStatus.CONTROLLER_REJECTED` or :attr:`MotionStatus.TIMEOUT`, so a
-real cell never moves on an unplanned path.
+collision-free plan exists, nothing falls back to blind IK: :meth:`CuroboUrPlanner.plan`
+raises or returns ``None``, and the UR arm turns that into a typed failure,
+:attr:`MotionStatus.CONTROLLER_REJECTED` or :attr:`MotionStatus.TIMEOUT`, so a real cell
+never moves on an unplanned path.
 
 The scope is honest. The cuRobo round-trip against a real robot and a real cuRobo GPU
 environment is bucket 3, because neither exists here. The planning and execution logic,
@@ -22,11 +25,12 @@ needs the vendor safety-rated stop.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
-from src.geometry import Frame, Pose
+from src.contracts import UNSET, Maybe
+from src.geometry import Pose
 from src.robot.constants import UR_CUROBO_LOG_FILE, create_robot_logger
 from src.robot.core import MotionCommand, MotionResult, MotionStatus
 from src.robot.core.errors import CameraWorldUnavailable
@@ -39,7 +43,10 @@ from src.robot.safety.planning.curobo_client import SidecarIdentity, StateRefusa
 from src.robot.safety.planning.live_world import WorldRefresh, refresh_planner_world
 from src.robot.safety.planning.world import merge_planner_worlds
 
+from .planner_frame import PlannerFrameClient
+
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.robot.core.keep_out import GoalKeepOut
     from src.robot.safety.planning.reservation import PlannerReservation
     from src.robot.safety.planning.live_world import LivePlannerWorld
     from src.robot.safety.planning.perceived import SelfEnvelope
@@ -171,7 +178,12 @@ class CuroboUrPlanner:
             return self._client
 
         if self._client is None:
-            client = self._client_factory()
+            # The planner's base is not the controller's. Every pose this glue hands the planner
+            # is in the controller's DH base, and the planner is rooted at UR's URDF base_link,
+            # half a turn away, so the client is seen through the turn from here on: goals,
+            # boxes, meshes and the live scene go in turned, and a pose the planner reports comes
+            # back turned. Joints are the same numbers in both.
+            client = cast("CuroboPlanClient", PlannerFrameClient(self._client_factory()))
             if self._reservation is not None:
                 # For the same reason as the spheres below, and first: the slots have to be in the
                 # sidecar environment before it spawns, and an injected factory never sees the config.
@@ -242,7 +254,9 @@ class CuroboUrPlanner:
         """
         self._live_world = world
 
-    def _refresh_world(self, *, near_point_mm: "Sequence[float] | None" = None) -> None:
+    def _refresh_world(
+        self, *, near_point_mm: "Sequence[float] | None" = None, goal_keep_out: "Maybe[GoalKeepOut]" = UNSET,
+    ) -> None:
         """Hand the planner the cell as the cameras see it, or refuse to plan.
 
         Called immediately before every plan rather than once at startup. A world
@@ -271,6 +285,7 @@ class CuroboUrPlanner:
                 self_envelope=envelope,
                 near_point_mm=near_point_mm,
                 require_registration=self._require_registration,
+                goal_keep_out=goal_keep_out,
             )
         except CameraWorldUnavailable as exc:
             # Raised on, not refused: a camera that stayed silent, blind or stale through its attempts
@@ -295,7 +310,9 @@ class CuroboUrPlanner:
             )
         self.logger.info("%s", refresh.render())
 
-    def refresh_world(self, *, near_point_mm: "Sequence[float] | None" = None) -> None:
+    def refresh_world(
+        self, *, near_point_mm: "Sequence[float] | None" = None, goal_keep_out: "Maybe[GoalKeepOut]" = UNSET,
+    ) -> None:
         """Refresh the planner world now, for a caller that judges its own path before asking the planner.
 
         The arm's path guard learns the perceived obstacles from this refresh, so the arm calls it
@@ -303,7 +320,7 @@ class CuroboUrPlanner:
         camera reading per motion, and both authorities judging the same cell. Raises what
         :meth:`_refresh_world` raises.
         """
-        self._refresh_world(near_point_mm=near_point_mm)
+        self._refresh_world(near_point_mm=near_point_mm, goal_keep_out=goal_keep_out)
 
     @property
     def last_world_refresh(self) -> "WorldRefresh | None":
@@ -316,8 +333,9 @@ class CuroboUrPlanner:
         """Tell the planner the gripper is carrying a box, so later plans route the box around too.
 
         ``dims_mm`` are the sides of the box along the tool0 axes and ``centre_mm`` is its
-        centre in tool0, as ``self_envelope.carried_part_box`` places them. A distance along
-        tool0 +Z alone would not follow the hand, which approaches along another axis. It
+        centre in tool0, as ``self_envelope.carried_part_box`` places them, along the hand's placed
+        approach. A distance along tool0 +Z alone would not follow a hand that approaches along
+        another axis, as the Isaac cell's hand does. It
         returns ``False`` where the planner could not attach, including a sidecar
         started with no sphere budget: a cell that cannot model its payload carries on
         and says so rather than stopping mid-pick.
@@ -369,6 +387,16 @@ class CuroboUrPlanner:
                          "routing against whatever world it last had", len(merged), exc)
             return 0
 
+    def start(self) -> SidecarIdentity:
+        """Start the planning server the way the first planned move does, and say what it loaded.
+
+        Every refusal that move meets on the way is raised here as it would be there, a
+        ``CuroboUnavailableError`` naming it: the client factory's (margin, hand, retract row), the
+        descriptor and evidence check, and the world registration. A started server is kept, so a move
+        after this plans on it.
+        """
+        return SidecarIdentity.from_client(self._client_or_start())
+
     def close(self) -> None:
         """Shut down the planning server (idempotent)."""
         if self._client is not None:
@@ -379,10 +407,11 @@ class CuroboUrPlanner:
     # Planning + execution
     # ------------------------------------------------------------------
 
-    def plan(self, pose: Pose) -> list[list[float]] | None:
+    def plan(self, pose: Pose, *, goal_keep_out: "Maybe[GoalKeepOut]" = UNSET) -> list[list[float]] | None:
         """Plan from tool0 to ``pose`` in BASE with cuRobo, returning the trajectory in UR order.
 
-        It returns ``None`` where no plan exists.
+        It returns ``None`` where no plan exists. ``goal_keep_out`` is the space between the jaws at
+        the goal, which the refresh before the plan leaves out.
 
         Raises
         ------
@@ -398,7 +427,7 @@ class CuroboUrPlanner:
         client = self._client_or_start()
         # The goal decides which obstacles matter when the slot budget bites, so it goes in
         # as plain numbers rather than as whatever array type the pose happens to carry.
-        self._refresh_world(near_point_mm=[float(v) for v in pose.position_mm])
+        self._refresh_world(near_point_mm=[float(v) for v in pose.position_mm], goal_keep_out=goal_keep_out)
         start = self._to_client_order(current_ur, client.joint_names)
         traj = client.plan(start, goal_pos_m, goal_quat_wxyz)
         if not traj:
@@ -453,8 +482,9 @@ class CuroboUrPlanner:
         if refresh:
             # The goal decides which obstacles matter when the slot budget bites, and the goal of
             # a joint path is its last configuration. Its flange position is not known here
-            # without FK, so this refresh runs without a near point. The arm refreshes near the
-            # goal flange itself and asks with `refresh=False`.
+            # without FK, so this refresh runs without a near point and without a goal region. The
+            # arm refreshes near the goal flange itself, with the region at the goal's TCP, and asks
+            # with `refresh=False`.
             self._refresh_world()
         ordered = [self._to_client_order(list(c), client.joint_names) for c in configs]
         return client.check_joints(ordered)
@@ -490,41 +520,6 @@ class CuroboUrPlanner:
             )
         self.logger.info("cuRobo trajectory executed on UR: %d waypoints", len(traj_ur))
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose, message="curobo")
-
-    def move(self, pose: Pose, *, vel: float | None = None, acc: float | None = None) -> MotionResult:
-        """Plan from tool0 to ``pose`` in BASE with cuRobo and execute it, failing closed."""
-        if pose.frame is not Frame.BASE:
-            return MotionResult.failed(
-                MotionStatus.INVALID_TARGET,
-                MotionCommand.MOVE_TO,
-                target_pose=pose,
-                message=f"CuroboUrPlanner requires Frame.BASE; got {pose.frame!r}",
-            )
-        if not self._conn.is_connected:
-            return MotionResult.failed(
-                MotionStatus.CONNECTION_ERROR,
-                MotionCommand.MOVE_TO,
-                target_pose=pose,
-                message="CuroboUrPlanner requires an open UR connection.",
-            )
-        try:
-            traj_ur = self.plan(pose)
-        except CuroboUnavailableError as exc:
-            return MotionResult.failed(
-                MotionStatus.CONTROLLER_REJECTED,
-                MotionCommand.MOVE_TO,
-                target_pose=pose,
-                message=f"cuRobo planner unavailable: {exc}",
-                exception=exc,
-            )
-        if not traj_ur:
-            return MotionResult.failed(
-                MotionStatus.TIMEOUT,
-                MotionCommand.MOVE_TO,
-                target_pose=pose,
-                message="cuRobo found no collision-free plan; failing safe (no blind motion).",
-            )
-        return self.execute(traj_ur, pose, vel=vel, acc=acc)
 
     # ------------------------------------------------------------------
     # Joint-order remap between the planner and UR

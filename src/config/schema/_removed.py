@@ -33,8 +33,16 @@ REMOVED_KEYS: Final[dict[str, str]] = {
         "name a hand has. Name the hand in robot.gripper.model and delete this key."
     ),
     "robot.safety.self_collision.coupling_mm": (
-        "the guard's coupling is the sum of robot.gripper.coupling_plates_mm, the plates between "
-        "the flange and the hand's own mounting face. Write the plates there and delete this key."
+        "the guard's coupling is the sum of the thicknesses in robot.gripper.coupling_plates, the "
+        "plates between the flange and the hand's own mounting face: write the plates there and "
+        "delete this key."
+    ),
+    "robot.gripper.coupling_plates_mm": (
+        "a plate is one thing with a thickness and, where it was measured across, a cross section, "
+        "so it is now robot.gripper.coupling_plates: a list of {name, thickness_mm, "
+        "cross_section_mm}. The thicknesses sum to exactly what this list of millimetres used to "
+        "say, and a plate that declares cross_section_mm also becomes collision geometry instead of "
+        "an empty gap between the flange and the hand."
     ),
     "robot.safety.planning_world.perceived.self_radius_mm": (
         "the self filter fits one capsule per link to the committed arm bundle and takes the "

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -35,8 +35,8 @@ from .safety_schema import (
     RobotSafetyConfig,
     AttachedPayloadConfig,
     PerceivedWorldConfig,
-    PlanningWorldConfig,
     PlannerMeshConfig,
+    PlanningWorldConfig,
     SelfCollisionSafetyConfig,
     SupportPlaneConfig,
 )
@@ -336,6 +336,41 @@ class OnRobotGripperConfig(StrictModel):
     use_fingertip_offset: bool = False
 
 
+class CouplingPlateConfig(StrictModel):
+    """One plate between the arm flange and the hand's own mounting face: what holds the hand out, and what it is.
+
+    The thickness places the hand and the cross section collides, and neither number is written twice. The
+    stack's thicknesses sum to where the hand sits. The cross section is the two half extents across the
+    approach, so a 90 mm quick change coupler is ``[45.0, 45.0]``.
+
+    A plate without a cross section becomes no body, and the cell says its name rather than inventing a
+    width. Measured by ``scripts/curobo/probe_plate_body.py``: the Hand-E's 20 mm plate over the 1,483 judged
+    poses, against the exact guard's 10 mm, turns 0 to 2 of about 950 clear poses per arm at a UR flange
+    radius, the worst grazing at 8.944 mm; at a coupler's 45 mm it is 0 to 25. So an unmeasured plate is a
+    small hole and an unmeasured coupler is not, and the difference is what the caller declares.
+    """
+
+    #: What it is, so a cell that declares no cross section can be told which plate is missing one.
+    name: str = Field(min_length=1)
+    #: How far it holds the hand out along the approach, in millimetres. It is the same bench
+    #: measurement as the plate term in ``tool_frame.offset_mm``.
+    thickness_mm: float = Field(gt=0.0)
+    #: The two half extents across the approach, in the hand model's own axes (closing, then
+    #: binormal). ``None``, the default, is a plate nobody measured across: it still holds the hand out
+    #: and it becomes no body.
+    cross_section_mm: tuple[float, float] | None = Field(default=None)
+
+    @model_validator(mode="after")
+    def _check_cross_section(self) -> CouplingPlateConfig:
+        if self.cross_section_mm is not None and min(self.cross_section_mm) <= 0.0:
+            raise ValueError(
+                f"plate {self.name!r}: cross_section_mm holds the two half extents across the approach and both "
+                f"must be positive; got {list(self.cross_section_mm)}. A plate of no width is not a body, and a "
+                f"plate nobody measured across declares no cross section at all rather than zero."
+            )
+        return self
+
+
 class GripperConfig(StrictModel):
     """Gripper vendor, physical opening limits and the per-vendor wiring blocks.
 
@@ -349,29 +384,38 @@ class GripperConfig(StrictModel):
     #: (``robotiq_2f85``), loaded by ``src.config.grippers.load_gripper``. ``None``, the default,
     #: changes nothing. A set value is lower case letters, digits and underscores, so it can never read
     #: as a profile overlay or reach outside the registry. A name no registry file defines still
-    #: passes: a schema is validated without a data directory, so it cannot see which files exist.
-    #: `python -m src.config`, the sim's mount derivation, the labeller, the deep calculator and the
-    #: self collision guard refuse it. The guard loads its mesh bundle by this name
-    #: (``safety.planning.hand.planner_hand``), and a cell whose guard reads hand geometry refuses to
-    #: build while it is unset.
+    #: passes the schema, which is validated without a data directory, and the loader refuses it. The
+    #: loader also fills the hand's widths and collision envelope from its file where the profile
+    #: chain leaves them unset (``src/config/hand_numbers.py``). The guard loads its mesh bundle by
+    #: this name (``safety.planning.hand.planner_hand``), and a cell whose guard reads hand geometry
+    #: refuses to build while it is unset.
     model: str | None = Field(default=None, pattern=MODEL_NAME_PATTERN)
-    #: The plates between the arm flange and the hand's own mounting face, in mm. Their sum is where a
-    #: hand whose sphere map starts at its mounting face sits on the flange, and the self collision
-    #: guard adds it to that hand's meshes. ``None``, the default, is no measurement: such a hand
-    #: refuses at build until the plates are written, and ``[]`` says it is bolted straight to the
-    #: flange. A hand whose map already sits at the flange (the 2F-85, placed by its arm asset)
-    #: refuses any plate. It is the same bench measurement as the plate term in
-    #: ``tool_frame.offset_mm``.
-    coupling_plates_mm: list[Annotated[float, Field(ge=0.0)]] | None = Field(default=None)
+    #: The plates between the arm flange and the hand's own mounting face. Their thicknesses sum to
+    #: where a hand whose sphere map starts at its mounting face sits on the flange, and the self
+    #: collision guard adds that sum to the hand's meshes. ``None``, the default, is no measurement:
+    #: such a hand refuses at build until the plates are written, and ``[]`` says it is bolted
+    #: straight to the flange. A hand whose map already sits at the flange (the 2F-85, placed by its
+    #: arm asset) refuses any plate.
+    #:
+    #: Each plate also carries what it is, where somebody measured it: a plate with a
+    #: ``cross_section_mm`` becomes collision geometry through the declared body writer, and one
+    #: without becomes a named gap instead. The thickness is written once, in the plate, so it is
+    #: never checked against a second statement of itself.
+    coupling_plates: list[CouplingPlateConfig] | None = Field(default=None)
     #: Physical opening of the mounted gripper, in mm. The default 85 mm is the Robotiq 2F-85,
     #: the end-effector this project ships. The Robotiq driver anchors its count map on this
-    #: value, so it must be the real physical open width, not a policy ceiling.
+    #: value, so it must be the real physical open width, not a policy ceiling. A cell that names a
+    #: hand takes it from the hand's ``jaw.aperture_mm`` unless it states it, and a stated value that
+    #: differs is refused.
     max_width_mm: float = Field(default=85.0, gt=0.0)
     #: Smallest meaningful grip, a policy floor, not the physical closed width (the 2F-85 closes to
-    #: 0 mm). The driver's count map is anchored on 0, so this only clamps commanded widths.
+    #: 0 mm). The driver's count map is anchored on 0, so this only clamps commanded widths. A cell
+    #: that names a hand takes the hand's floor unless it states one between that floor and the
+    #: aperture.
     min_width_mm: float = Field(default=5.0, ge=0.0)
     #: The physical closed width: what ``get_width_mm()`` reads when the jaws are shut on nothing.
-    #: 0.0 is the Robotiq 2F-85, fingers touching.
+    #: 0.0 is the Robotiq 2F-85, fingers touching. A cell that names a hand takes the hand's own,
+    #: and a stated value that differs is refused.
     #:
     #: Separate from ``min_width_mm``, and the separation is load-bearing.
     #: ``WidthDeltaGripperVerifier``, the only grasp verifier a jaw cell can use since the Robotiq
@@ -397,6 +441,17 @@ class GripperConfig(StrictModel):
     #: anywhere; the real-arm driver is what refuses it.
     tool_frame: ToolFrameConfig = Field(default_factory=ToolFrameConfig)
 
+    @property
+    def coupling_mm(self) -> float | None:
+        """How far the plate stack holds the hand off the flange, or ``None`` where nobody has measured it.
+
+        The one place the stack is summed, so a reader never adds the thicknesses itself and no second
+        answer can exist. ``None`` and ``0.0`` are different answers: undeclared against bolted straight on.
+        """
+        if self.coupling_plates is None:
+            return None
+        return float(sum(plate.thickness_mm for plate in self.coupling_plates))
+
     @field_validator("vendor")
     @classmethod
     def _validate_gripper_vendor(cls, v: str) -> str:
@@ -416,17 +471,17 @@ class GripperConfig(StrictModel):
                 f"min_width_mm ({self.min_width_mm}) must be < "
                 f"max_width_mm ({self.max_width_mm})"
             )
-        # ⛔ THE THIRD WIDTH JOINED THE MODEL AND NEVER JOINED THIS RULE. `closed_width_mm` anchors
-        # the driver's count map: `_mm_to_count` spans `max_width_mm - closed_width_mm` and guards a
-        # non-positive span with `else 0.0`, which does not raise -- it collapses the entire map onto
-        # the closed end. MEASURED 2026-09-10 with closed 60.0 against max 50.0: 50 mm, 25 mm, 5 mm
-        # and `open()` all came out as count 255, a full close at full speed, and the config loaded
-        # clean. It is refused here rather than in the driver because a cell that cannot open its
-        # hand is not a cell, and the earliest honest refusal is the cheapest one.
+        # The third width belongs in this rule too. `closed_width_mm` anchors the driver's count map:
+        # `_mm_to_count` spans max_width_mm minus closed_width_mm and guards a non-positive span with
+        # `else 0.0`, which does not raise but collapses the entire map onto the closed end. With
+        # closed 60.0 against max 50.0, 50 mm, 25 mm, 5 mm and `open()` all came out as count 255, a
+        # full close at full speed, while the config loaded clean. It is refused here rather than in
+        # the driver because a cell that cannot open its hand is not a cell, and the earliest refusal
+        # is the cheapest one.
         if self.closed_width_mm >= self.max_width_mm:
             raise ValueError(
                 f"closed_width_mm ({self.closed_width_mm}) must be < max_width_mm "
-                f"({self.max_width_mm}): it is the PHYSICAL gap with the jaws shut, so a value at or "
+                f"({self.max_width_mm}): it is the physical gap with the jaws shut, so a value at or "
                 f"above the stroke leaves no travel to map. The driver's count map spans "
                 f"max_width_mm - closed_width_mm and would collapse, turning every commanded width, "
                 f"open() included, into a full close."

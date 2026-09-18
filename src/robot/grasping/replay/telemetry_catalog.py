@@ -138,7 +138,7 @@ def audit_records(
 #: field already published here is a breaking change and requires a
 #: deliberate, documented schema-version bump on
 #: :class:`GraspAttemptRecord` itself.
-EXTRA_TELEMETRY_VERSION: int = 1
+EXTRA_TELEMETRY_VERSION: int = 2
 
 
 def _is_str_or_none(v: Any) -> bool:
@@ -147,6 +147,15 @@ def _is_str_or_none(v: Any) -> bool:
 
 def _is_bool_or_none(v: Any) -> bool:
     return v is None or isinstance(v, bool)
+
+
+#: The camera-world uses a record may carry: every spoken use. UNSTATED is never written, because
+#: a record that says nothing about the camera world leaves the key out.
+_RECORDED_CAMERA_WORLD_USES: frozenset[str] = frozenset({"planned", "declined", "unplanned", "missing"})
+
+
+def _is_camera_world_use_or_none(v: Any) -> bool:
+    return v is None or (isinstance(v, str) and v in _RECORDED_CAMERA_WORLD_USES)
 
 
 def _is_finite_number_or_none(v: Any) -> bool:
@@ -375,6 +384,13 @@ EXTRA_TELEMETRY_FIELDS: tuple[tuple[str, str, Any], ...] = (
     ("rl_sequencing_action_proposed", "rl_sequencing", _is_str_or_none),
     ("rl_sequencing_action_baseline", "rl_sequencing", _is_str_or_none),
     ("rl_sequencing_action_agree", "rl_sequencing", _is_bool_or_none),
+    # camera world. The weakest camera world behind the attempt's typed
+    # motions, read by the record serializer from the pick report's stamps.
+    # Absent when no typed motion was commanded or every stamp is UNSTATED.
+    # The reason is "" on ``planned``, which declines nothing; the cameras
+    # and the capture time stay on the report.
+    ("camera_world", "camera_world", _is_camera_world_use_or_none),
+    ("camera_world_reason", "camera_world", _is_str_or_none),
 )
 
 

@@ -476,3 +476,53 @@ cameras:
       #     # eye_to_hand rig, which does not move with the arm.
       #     # [default: null]
       #     shutter_motion_tolerance_deg: null
+      #     # (eye_in_hand rig with a body.) How far, in millimetres, the flange to TCP this rig's
+      #     # calibration recorded may lie from the one the cell holds now before the rig is refused,
+      #     # because its body and its pick frame were placed from a tool frame the arm no longer has.
+      #     # Required and above 0 on a rig that declares a body, with no default; refused on an
+      #     # eye_to_hand rig. On a polyscope cell the frame is derived from the controller at connect,
+      #     # so the value is measured on the cell; on a willy cell the comparison is exact. Too small
+      #     # refuses a cell over the derivation's noise; too large lets a stale body and pick frame
+      #     # through.
+      #     # [default: null]
+      #     record_tolerance_mm: null
+      #     # (eye_in_hand rig with a body.) The same bound on rotation, in degrees: how far the
+      #     # recorded flange to TCP may turn from the one the cell holds now before the rig is refused.
+      #     # Required and above 0 on a rig that declares a body, with no default; refused on an
+      #     # eye_to_hand rig.
+      #     # [default: null]
+      #     record_tolerance_deg: null
+
+      # (RGB-D rig.) The body the arm carries when this camera is mounted on it: a housing from the
+      # camera registry, a bracket and a margin. Null is a camera the arm does not carry. A declared
+      # body is placed on the flange by the rig's eye in hand calibration and carried by the cuRobo
+      # planner, the exact mesh guard and the self filter. Refused at load on an eye_to_hand rig, on a
+      # stereo rig, and on a rig id that is not letters, digits and underscores; a rig with a body
+      # needs `extrinsics.record_tolerance_mm` and `record_tolerance_deg`. A cell whose planner or
+      # guard reads geometry refuses an enabled eye_in_hand rig without one, because a wrist camera
+      # left without a body is a housing no collision model sees.
+      # [default: null]
+      #
+      #   body:
+      #     # The camera model, the stem of a file under `config/cameras/`, for example
+      #     # realsense_d435. The repository's registry is the one authority for its housing, so
+      #     # `python -m src.config` refuses a name no file describes and a tree whose own `cameras/`
+      #     # describes the camera differently. Naming another model changes the housing every
+      #     # collision model carries.
+      #     # [REQUIRED - no default]
+      #     model: realsense_d435
+      #     # How far every box of the body is grown before a collision model reads it, in
+      #     # millimetres, above 0 and at most 100. There is no default: it covers the cable, the
+      #     # drawing's tolerance and how well the bracket was measured, which are facts about the
+      #     # cell. A larger margin refuses more poses near the camera; a smaller one lets the housing
+      #     # come closer to the cell.
+      #     # [REQUIRED - no default]
+      #     margin_mm: 5.0
+      #     # The bracket that holds the camera on the arm, as a box in the colour camera's optical
+      #     # frame (x right in the image, y down, z out of the lens), grown by margin_mm like the
+      #     # housing. Required: write `bracket: null` for a camera held by nothing the planner must
+      #     # model. A bracket left out of the body is a part of the arm no collision model sees.
+      #     # [REQUIRED - no default]
+      #     bracket:
+      #       size_mm: [60.0, 10.0, 40.0]     # full extent along x, y and z, each above 0, at most 1000
+      #       centre_mm: [30.0, 18.0, -30.0]  # the box centre, each within 1000 mm of the lens

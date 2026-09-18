@@ -42,6 +42,9 @@ def test_bootstrap_module_imports_without_isaac() -> None:
         # The standalone gripper Isaac mounted, derived from the hand and the arm asset, or None where the asset's
         # baked variant carries the hand; the record stamp reads it (lane (i) i4).
         "mount",
+        # The camera world the arm's motions stand on: the decline held for the cell's life, or the wired world
+        # (an owner decision).
+        "camera_world",
     }
 
 

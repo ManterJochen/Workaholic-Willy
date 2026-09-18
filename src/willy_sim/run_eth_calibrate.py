@@ -35,6 +35,7 @@ from src.willy_sim.scene import (
     mount_tool_aruco_marker,
 )
 from src.geometry.matrix import invert_homogeneous
+from src.robot.core.camera_world import CameraWorldDecline
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.calibration.quality import QualityBandsMm
@@ -100,7 +101,9 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     from src.robot.execution import CalibrationRoutine
 
     # The shared boot prefix, with no fixed marker: the eye-to-hand marker rides the tool.
-    cell = bootstrap_sim_cell(data_dir, headless=headless, **(cell_kwargs or {}))
+    cell = bootstrap_sim_cell(data_dir, headless=headless, **(cell_kwargs or {}),
+                              camera_world=CameraWorldDecline(
+                                  "run_eth_calibrate: eye-to-hand calibration sweep, before CAMERA to BASE exists"))
     arm, gripper, sim = cell.arm, cell.gripper, cell.sim
     # Namespace the artifacts per robot_model so a UR3e run cannot overwrite the UR5e's.
     if save_dir == DEFAULT_SAVE_DIR:

@@ -439,5 +439,15 @@ class ConverterRefusalTests(unittest.TestCase):
         self.assertIn("no perceived obstacle", world.render())
 
 
+class NoKeepOutTests(unittest.TestCase):
+    def test_no_keep_out_adds_no_dropped_points_key(self) -> None:
+        depth = _bench_depth()
+        _put_block(depth, centre_xy_mm=(150.0, 0.0), size_xy_mm=(60.0, 60.0), height_mm=80.0)
+        world = build_perceived_boxes(views=[_view(depth)], limits=_LIMITS, keep_out=())
+        self.assertNotIn("keep_out", world.dropped_points)
+        self.assertEqual({}, dict(world.keep_out_points))
+        self.assertEqual({}, world.to_dict()["keep_out_points"])
+
+
 if __name__ == "__main__":
     unittest.main()

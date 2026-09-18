@@ -129,7 +129,8 @@ class RobotArm(Protocol):
         :class:`~src.robot.core.camera_world.DeclinesCameraWorld` also declines a block
         of motions, and says on the result what stood behind this one: a joint move that
         no planner plans or checks says UNPLANNED whatever was declined, and one whose
-        path is checked against a live camera world stamps as :meth:`move` does. See
+        path is checked against a live camera world stamps as :meth:`move` does and
+        leaves the space between the jaws at its goal out of that world. See
         :meth:`move` for the rest.
         """
         ...
@@ -224,9 +225,11 @@ class RobotArm(Protocol):
 
         ``linear=True`` asks for a straight line, and not every path keeps it. The UR
         driver's ``move_to`` sends a ``moveL`` whatever the planner, and KUKA sends
-        ``LIN``. The typed :meth:`move` on a cuRobo UR drops the flag and plans free
-        space. The sim driver drops it on every planner, its ik and RMPflow paths
-        ending in a joint move, although its capabilities report ``supports_linear_move``.
+        ``LIN``. The typed :meth:`move` keeps it on a cuRobo UR and a cuRobo sim arm,
+        whose lines are sampled and judged before any of them moves. The sim's ik and
+        RMPflow paths drop it and end in a joint move, although its capabilities report
+        ``supports_linear_move``. A driver that implements
+        :class:`~src.robot.core.arm_capabilities.KeepsLines` says which before it moves.
 
         ``register=False`` tells the driver not to add ``pose`` to any internal
         diversity or sampling history. A calibration routine or another per-pose
@@ -295,10 +298,14 @@ class RobotArm(Protocol):
         declines a block of motions, and says on
         :attr:`MotionResult.camera_world` what stood behind this one:
         UNPLANNED where no planner planned or checked it, DECLINED for a
-        decline, MISSING for a planned or checked motion with no camera
-        world, PLANNED where the refresh made for this motion vouched for the
-        cell, and UNSTATED where a live camera world is wired and nothing
-        vouched for it. On an arm whose live camera world is wired, a
+        decline, MISSING on the ``UNSUPPORTED`` refusal of a planned or
+        checked motion with neither a camera world nor a decline, PLANNED
+        where the refresh made for this motion vouched for the cell, and
+        UNSTATED where a live camera world is wired and nothing vouched for
+        it. That refresh leaves the space between the jaws at the motion's
+        goal out of the world, laid out by the hand's registry jaw on the
+        declared TCP with no padding, and a PLANNED stamp carries what it left
+        out as ``keep_out``. On an arm whose live camera world is wired, a
         declined planned or checked motion is refused with ``UNSUPPORTED``
         before the planner is asked. An arm that stamps nothing leaves every
         result UNSTATED.

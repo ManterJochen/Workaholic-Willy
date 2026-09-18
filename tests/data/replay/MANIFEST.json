@@ -1,5 +1,5 @@
 {
-  "extra_telemetry_version": 1,
+  "extra_telemetry_version": 2,
   "label_policy_global": "label := (final_outcome == 'succeeded'); Extra overrides may add audit-time corrections via extra.verification_failed_after_success, mirroring the locked KPI semantics.",
   "manifest_version": 1,
   "packs": [

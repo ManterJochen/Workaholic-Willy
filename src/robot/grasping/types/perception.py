@@ -148,12 +148,22 @@ class MappedCameraRig:
         choose between degrading and refusing when a camera is missing, could never observe a
         missing camera, because the exception left before the comparison ran. Both of its branches
         were unreachable with the only rig implementation in the tree.
+
+        The one raise that passes through is ``PerceptionFrameMoved``: a wrist camera that took no
+        still frame is a fault of the cell, not a camera that failed.
         """
+        from src.robot.core.errors import PerceptionFrameMoved
+
         self.last_failures.clear()
         observations: list[CameraObservation] = []
         for name, source in self.sources.items():
             try:
                 observations.append(CameraObservation(camera_id=name, frame=source.acquire()))
+            except PerceptionFrameMoved:
+                # Not a camera that failed but an arm that moved while a wrist camera took its
+                # frame: a fault of the cell, which stops the pick rather than degrading it to the
+                # cameras that happened to be still.
+                raise
             except Exception as exc:  # noqa: BLE001 (one camera's failure is not the rig's)
                 self.last_failures[name] = f"{type(exc).__name__}: {exc}"
         return tuple(observations)

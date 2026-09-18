@@ -47,7 +47,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from src.config.loader import ConfigError
-from src.contracts import UNSET
+from src.contracts import UNSET, chosen
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import RobotConfig
@@ -119,6 +119,8 @@ def _snippet(camera_id: str, mode: str, path: str) -> str:
     tolerances = "" if mode == "eye_to_hand" else (
         "          # shutter_motion_tolerance_mm: <measure: how far the tool may travel while a frame is taken>\n"
         "          # shutter_motion_tolerance_deg: <measure: how far the tool may turn while a frame is taken>\n"
+        "          # record_tolerance_mm: <measure, when the rig declares a body: how far the connect derives the tool frame apart>\n"
+        "          # record_tolerance_deg: <measure, when the rig declares a body: the same in degrees>\n"
     )
     return (
         "camera:\n"
@@ -130,6 +132,24 @@ def _snippet(camera_id: str, mode: str, path: str) -> str:
         f"          artifact_path: {path}\n"
         + tolerances
     )
+
+
+def _flange_to_tcp_record(robot_cfg: Any, arm: Any) -> Any:
+    """The flange to TCP the arm's tool pose applied during the sweep, as an eye in hand artifact keeps it.
+
+    The solve is CAMERA to TOOL against ``get_tcp_pose``, which is the flange times this frame, so the
+    body a wrist camera declares is placed from it and a later tool frame that differs refuses the rig.
+    Read from the arm while it is still connected: the declared frame on a ``willy`` cell, the frame
+    derived from the controller at connect on a ``polyscope`` cell. ``UNSET`` for an arm that does not
+    say which frame it applies and for an ``undeclared`` cell, and the artifact is then written as ``/1``.
+    """
+    from src.calibration.serialization import FlangeToTcp
+
+    source = robot_cfg.gripper.tool_frame.source
+    matrix = getattr(arm, "active_tool_frame", None)
+    if source not in ("willy", "polyscope") or matrix is None:
+        return UNSET
+    return FlangeToTcp.from_matrix(source, matrix)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -160,7 +180,52 @@ def build_parser() -> argparse.ArgumentParser:
                     help="build the arm and open the camera, then stop before any motion")
     ap.add_argument("--profile", default=None, help="WILLY_PROFILE chain for this run")
     ap.add_argument("--data-dir", default=None, help="override the config tree root")
+    ap.add_argument("--unmodelled-wrist-body", dest="unmodelled_wrist_body", default=None, metavar="REASON",
+                    help="sweep a wrist camera whose declared body cannot be placed yet (no calibration, no record, "
+                         "or a stale one), without its body in the planner and the guard, and say why. Printed and "
+                         "logged; refused without a reason")
     return ap
+
+
+def _wrist_body_for_sweep(robot_cfg: Any, rig: Any, *, data_dir: Any, reason: "str | None") -> Any:
+    """``(bodies, refusal)`` for an eye in hand sweep of ``rig``.
+
+    On a cell that reads geometry, a rig without a body is refused, and so is a body the registry cannot
+    stand for, whatever the reason. A body that cannot be placed yet is refused unless ``reason`` says
+    why the sweep may run without it, and the sweep then runs with no wrist body. On any other cell
+    nothing is read.
+    """
+    from types import SimpleNamespace
+
+    from src.config.cameras import load_camera, tree_camera_refusal
+    from src.config.loader import ConfigError
+    from src.robot.execution.wrist_bodies import WristBodies, WristBodyRequired
+    from src.robot.safety.planning.hand import wrist_body_reader
+
+    reader = wrist_body_reader(robot_cfg)
+    key = f"camera.cameras.rigs[{rig.rig_id!r}]"
+    if reader is None:
+        return None, None
+    if getattr(rig, "body", None) is None:
+        return None, (f"{key} is swept eye_in_hand and declares no body, and this cell reads geometry ({reader}): the "
+                      f"camera's housing would be invisible to the planner and the guard during the sweep. Declare "
+                      f"{key}.body")
+    registry = tree_camera_refusal(rig.body.model, data_dir=data_dir)
+    if registry is None:
+        try:
+            load_camera(rig.body.model)
+        except ConfigError as exc:
+            registry = str(exc)
+    if registry is not None:
+        return None, f"{key}.body: {registry}"
+    try:
+        return WristBodies.from_config(robot_cfg, SimpleNamespace(cameras=SimpleNamespace(rigs=[rig])),
+                                       data_dir=data_dir), None
+    except WristBodyRequired as exc:
+        if reason and reason.strip():
+            return None, None
+        return None, (f"{exc}. To sweep this camera before its body can be placed, say why: "
+                      '--unmodelled-wrist-body "<reason>"')
 
 
 def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR0915
@@ -180,6 +245,13 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
     except (SystemExit, ConfigError) as exc:
         print(f"[config] REFUSED: {exc}", flush=True)
         return _EXIT_CONFIG
+    wrist = None
+    if args.mode == "eye_in_hand":
+        wrist, wrist_refusal = _wrist_body_for_sweep(robot_cfg, rig, data_dir=args.data_dir,
+                                                     reason=args.unmodelled_wrist_body)
+        if wrist_refusal is not None:
+            print(f"[config] REFUSED: {wrist_refusal}", flush=True)
+            return _EXIT_CONFIG
     settings = cfg.camera.hand_eye.eye_to_hand
     marker_mm = args.marker_length_mm or float(getattr(settings, "marker_length_mm", 50.0))
     print(f"  rig        {rig.rig_id!r} ({rig.source})", flush=True)
@@ -246,6 +318,27 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
     # What this arm will refuse, read off the built arm and printed above the --dry-run exit,
     # because that is the question a dry run is asked.
     print(robot.safety().render(), flush=True)
+    # The sweep hands the robot no camera, so on a cuRobo arm every motion needs a decline, and the
+    # routine declines each sweep move for itself.
+    print(f"  {robot.camera_world_line()}; this sweep declines for itself", flush=True)
+    # The camera on the arm. Placed from its previous calibration and handed to the arm before it
+    # moves, or swept without a body because the operator said why, which is printed and logged like
+    # a decline.
+    if wrist is not None:
+        try:
+            wrist.hand_to(robot.arm)
+        except Exception as exc:  # noqa: BLE001 (an arm that cannot hold the camera does not sweep)
+            print(f"[build] REFUSED: {type(exc).__name__}: {exc}", flush=True)
+            handle.release()
+            return _EXIT_CONFIG
+        print(f"  {wrist.line()}", flush=True)
+    elif args.mode == "eye_in_hand" and args.unmodelled_wrist_body:
+        import logging
+
+        declined = (f"wrist camera {rig.rig_id!r} swept without its body in the planner and the guard: "
+                    f"{args.unmodelled_wrist_body.strip()}")
+        print(f"  !! {declined}", flush=True)
+        logging.getLogger(__name__).warning(declined)
 
     if args.dry_run:
         print("\n--dry-run: built cleanly and the camera answered. Stopping before any motion.",
@@ -269,6 +362,7 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
     # run uses, so this file writes no connect or disconnect of its own. A refused connect is
     # answered before the sweep starts; a sweep that raises is reported once the arm is down.
     failure: Exception | None = None
+    record: Any = None
     try:
         with robot.connected(announce=_narrate) as live:
             try:
@@ -285,6 +379,8 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
                     seed=0,
                     dataset_save_path=f"{out_dir}/{args.mode}_{rig.rig_id}_dataset.json",
                 )
+                # While the arm is still connected, because on a polyscope cell the frame is known only then.
+                record = _flange_to_tcp_record(robot_cfg, robot.arm)
             except Exception as exc:  # noqa: BLE001
                 # Reported below, once the arm is down.
                 failure = exc
@@ -346,7 +442,9 @@ def main(argv: "list[str] | None" = None) -> int:  # noqa: PLR0911, PLR0912, PLR
     else:
         assert result.transform is not None                     # guarded by `carrier` above
         written = save_cam_to_tool(f"{out_dir}/eih_{rig.rig_id}.json", result.transform,
-                                   rig_id=rig.rig_id)
+                                   rig_id=rig.rig_id, flange_to_tcp=record)
+        print(f"  flange to TCP     {'recorded on ' + record.source if chosen(record) else 'not recorded'}",
+              flush=True)
     print(f"  written           {written}", flush=True)
     print(f"  dataset           {result.dataset_path}", flush=True)
     print("\nPaste this into the camera section so the camera reaches the pick path. Until its rig\n"

@@ -9,7 +9,8 @@ identity. The guard measured a hand 45 degrees from where the cell says it is, a
 planner refuses it at start (``HandLink.from_hand``); an ik cell never starts a planner, so nothing refused at all.
 
 That is the implied default for a safety identity the owner refused on 13.09. The cell refuses at build now, and the
-guard refuses to be constructed with a hand it cannot place.
+guard refuses to be constructed with a hand it cannot place. Since UM lane S23 ``approach_refusal`` is gone and the
+placement refusal is the only one a declared frame meets, so a +Z frame builds and everything below still refuses.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def _cell(quaternion: "tuple[float, float, float, float]", planner: str = "ik") 
         "ur": {"model": "ur5e", "motion_planner": planner},
         "gripper": {
             "model": "robotiq_hande",
-            "coupling_plates_mm": [20.0],
+            "coupling_plates": [{"name": "plate", "thickness_mm": 20.0}],
             "tool_frame": {"source": "willy", "offset_mm": [0.0, 132.0, 0.0],
                            "rotation_quat_xyzw": list(quaternion)},
         },

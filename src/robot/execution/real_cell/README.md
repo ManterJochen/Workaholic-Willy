@@ -7,6 +7,7 @@ that makes a bring-up survivable, and the per-camera hand-eye calibration multi-
 python -m src.robot.execution.real_cell --check              # the checklist, touches nothing
 python -m src.robot.execution.real_cell --rehearse --runs 3 --profile console_dummy  # whole path, no hardware
 python -m src.robot.execution.real_cell --dry-run            # real config, build only, no motion
+python -m src.robot.execution.real_cell --start-planner --profile ur3e  # does the planner start? no controller
 python -m src.robot.execution.real_cell --runs 10 --profile ur3e
 ```
 
@@ -32,10 +33,11 @@ runner, which is the check that the shim carries no logic of its own.
 | Pick | `PickRun` | one typed outcome and reason per attempt, judged by a stated rule |
 | Down | the session's teardown | gripper first, then arm, then cameras, reported and never swallowed |
 
-Exit codes: `0` the campaign passed, or `--check` and `--dry-run` were satisfied; `1` the preflight
-blocked, the build refused, or the connect refused; `2` the cell connected and the campaign did not
-pass its rule; `3` an exception escaped a pick. The codes past the first come from
-`PickRunReport.exit_code`, so the library and the command line cannot disagree.
+Exit codes: `0` the campaign passed, `--check` and `--dry-run` were satisfied, or `--start-planner`
+started; `1` the preflight blocked, the build refused, the connect refused, or the planner start was
+refused; `2` the cell connected and the campaign did not pass its rule; `3` an exception escaped a
+pick. The codes past the first come from `PickRunReport.exit_code`, so the library and the command
+line cannot disagree.
 
 The verdict rule is unanimity: every pick must succeed. That is stricter than the simulator
 gate, which configures `pass_fraction: 0.8` and additionally refuses to accept the service's own
@@ -48,7 +50,7 @@ run. From Python it is an argument:
 
 ## Why the preflight exists
 
-Run `--check` against the shipped configuration tree as a UR cell and it reports three blocking
+Run `--check` against the shipped configuration tree as a UR cell and it reports seven blocking
 items. That is the default state of a freshly configured real cell, and every one of them would
 otherwise be discovered separately, at the bench, as a different-looking failure.
 
@@ -57,24 +59,58 @@ otherwise be discovered separately, at the bench, as a different-looking failure
 | `gripper.tool_frame.source` is `undeclared` | nobody has said where the grasp centre sits on the flange, so a top-down grasp commanding z = 37 mm drives the flange there and the fingertips through the bench |
 | `safety.payload` has `enforce: true` and `mass_kg: 0.0` | `connect()` refuses this outright, which is better seen here than after driving to the cell. It would otherwise push a zero payload and leave the controller's protective-stop model under-reading a mounted tool |
 | no `CAMERA->BASE` resolver | perception reports grasps in the camera frame; without a resolver the driver rejects every motion as `INVALID_TARGET`. Fail-closed and correct, and at the bench it looks exactly like a cell that hangs |
+| no live camera world | the base tree plans with cuRobo, where a motion needs a live camera world or a decline, and the pick service declines nothing. Every pick motion is refused as `UNSUPPORTED` before it moves, naming the missing world |
+| `safety.self_collision.planner_margin_mm` is undeclared | the base tree plans with cuRobo, and a planner never starts without the clearance it keeps, since undeclared is not zero. The first planned move is refused as `CONTROLLER_REJECTED`, before the arm moves |
+| `safety.planning_world.payload.length_mm` is undeclared | the base tree plans with cuRobo, which models the part a grasp carries, and no length is implied for it. The attach is declined and every lift and transit after a grasp is planned as if the hand were empty. Declare how far the longest part hangs past the fingertips, or `enabled: false` for a cell that carries nothing |
+| `robot.gripper.model` is unset | the exact-mesh guard checks the hand this key names, and the base tree names none so that no overlay inherits one. The cell refuses to build, naming the key |
 
-`config/robot/robot.ur5e.yaml` is the worked example for a real bench, and it leaves exactly those
-three unset on purpose. Its own rule decides which keys carry a value: a wrong value that fails
-closed ships as an example with its assumption stated, so a workspace box that is too small refuses
-a motion visibly and the operator widens it. A wrong value that fails open does not ship at all,
-because a plausible tool frame or payload drives the arm into the bench and logs a success. The
+A box without the cuRobo environment or without Coal blocks on two more rows, `cuRobo environment`
+and `exact mesh engine`: they are facts about the machine the checklist runs on, and they clear
+when the `ext_deps` install is on the box.
+
+`config/robot/robot.ur5e.yaml` is the worked example for a real bench, and it leaves the first
+three of those unset on purpose. Its own rule decides which keys carry a value: a wrong value that
+fails closed ships as an example with its assumption stated, so a workspace box that is too small
+refuses a motion visibly and the operator widens it. A wrong value that fails open does not ship at
+all, because a plausible tool frame or payload drives the arm into the bench and logs a success. The
 three appear in that file as commented blocks saying what to measure.
 
 A blocking item does not necessarily stop you connecting. A cell with a blocking checklist can
 connect and then refuse every motion, which is the failure that reads as a broken robot. What
 refuses the connect is the driver's own preflight, not this checklist.
 
+Once the tool frame is declared, a `grasp centre` row holds it to the hand: the offset along the
+declared approach should be the registry's `grasp_centre_mm` plus the coupling plates, and zero
+across it. It warns beyond 1 mm and does not block yet: the 2F-85's registry number, 146.5 mm, is
+an estimate that every shipped 2F-85 profile's 132 mm disagrees with, and it is measured before the
+row may stop a cell.
+
+A `gripper driver` row states the driver the build constructs for `robot.gripper.vendor` on the UR
+arm the config builds, from the same `gripper_driver_verdict` the build reads. It blocks exactly
+where the build would put a `NullGripper` on the flange, and warns for `none` and `dummy` on a real
+arm.
+
+A `wrist camera body` row runs the resolution the build, `Robot` and the planner start run
+(`execution/wrist_bodies.py`). It is OK naming each camera the arm carries, its grown boxes, sphere
+count and the calibration that placed it, with its cover proven. On a real cell it blocks for an
+enabled eye_in_hand rig without a body, a body nothing places, a calibration without its flange to
+TCP record or with a stale one, a camera the repository's registry does not stand for, and a
+checklist handed no camera section.
+
+A `camera world` row, on a UR cell, says whether its cameras give the planner a live world, from
+the same `CameraWorldPlan` the build reads. It is OK naming the cameras and warns on `ik`, where no
+planner reads one. It blocks on `curobo` without one, because every planned motion with neither a
+world nor a decline is refused and the pick service declines nothing, and it blocks for a checklist
+handed no camera section. A cuRobo cell whose calibrated rig gives no world does not build either
+(`CellBuildRefused`, before a camera opens). The row opens no device.
+
 Four further items are reported as warnings and never block: an unset self-collision kinematics
-model, no declared fixtures, no declared planning world, and no record log path. Two more are
+model, no declared fixtures, no declared planning world boxes, and no record log path. Two more are
 reported as `[bench]`, because no interface answers them: the controller must be powered with
 brakes released, in Remote Control, with no pendant program owning it, since `ur_rtde` uploads a
-control script and the controller refuses it otherwise; and the end-effector's electrical side, the
-Robotiq URCap that opens port 63352 or a vacuum solenoid's supply.
+control script and the controller refuses it otherwise; and the end-effector's electrical side for
+the configured driver: the Robotiq URCap that opens port 63352, the vacuum ejector's output pins and
+24 V supply, the jaw solenoid's close and open pins, or the OnRobot Compute Box's address.
 
 ## The rehearsal
 
@@ -104,6 +140,11 @@ it. What that no longer exercises is your own gripper branch, and nothing at a d
 
 1. `python -m src.robot.drivers.doctor --require ur`, the SDK is installed.
 2. `python -m src.robot.execution.real_cell --check`, fix everything blocking.
+   On a `motion_planner: curobo` cell, `--start-planner` then builds the arm alone and starts its
+   planner the way the first planned move does, with every refusal that move meets (margin, hand,
+   retract row, descriptor, evidence), and stops it, exiting 0 when it started. It opens no camera
+   and asks no controller, so it runs at a desk. The library twin is `Cell.start_planner()` and
+   `execution.planner_start.PlannerStart`.
 3. `python -m src.robot.safety.planning --doctor`, the planner environment, before any motion.
 4. `python -m src.robot.perception --prompt "..."`, the camera and the models, no robot.
 5. Calibrate each camera, one command per rig, then `--dry-run`, then `--runs 1`, then a campaign.
@@ -134,12 +175,20 @@ fused, so the file, the rig and the fusion map name one camera.
 It builds the arm through `Robot.from_config(robot_config, gripper=None)`. The arm-vendor readiness
 gate runs first, and no gripper is built or connected: a Robotiq does not run its activation stroke
 beside the board, and a gripper this tree cannot build does not block a calibration. `--dry-run`
-prints the arm, the cell lock and the safety attestation, then stops without taking the lock. The
+prints the arm, the cell lock, the safety attestation and the camera world line, then stops without
+taking the lock. The
 sweep connects through `Robot.connected()`, which runs the enter and the exit this runner's pick runs
 use, so it takes the same cell lock as this runner and the operator console: while either holds the
 controller the sweep is refused and names the holder. On the way out the arm comes down and the lock
 is given back before the camera is. Every move declines the camera world with a reason naming the
 mounting, because the sweep produces the transform a camera world needs.
+
+An eye in hand sweep on a UR arm writes `eih_<rig_id>.json` as `willy.calibration.cam_to_tool/2`,
+with the flange to TCP the arm applied while it swept. On a cell that reads geometry the camera's
+body is part of the sweep: a rig without a body is refused, a body its previous calibration places
+is handed to the arm before it moves, and a body that cannot be placed yet (no calibration, no
+record, a stale one) sweeps only with `--unmodelled-wrist-body "<reason>"`, printed and logged,
+with no body in the planner and the guard.
 
 Writing the artifact is half the job. Until its rig declares it, in
 `camera.cameras.rigs[<rig_id>].extrinsics`, the cell has no CAMERA->BASE for that camera: a real
@@ -151,7 +200,8 @@ loader refuses a wrist block until they are written.
 A cell that enables `safety.planning_world` builds that world from every enabled RGB-D rig that
 declares its calibration, the primary first, and opens the ones the pick does not already hold. One
 of them that cannot answer stops every planned motion, so calibrating a second camera on such a cell
-is also a decision about what stops it.
+is also a decision about what stops it. On a cuRobo cell a declared calibration makes that world
+mandatory: a cell whose calibrated rigs give no world is refused at build.
 
 | Flag | Why |
 | --- | --- |

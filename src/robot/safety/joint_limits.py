@@ -143,6 +143,14 @@ class JointLimitGuard:
         """
         return resolve_joint_limits_deg(self._config, vendor=vendor, model=model)
 
+    @property
+    def margin_deg(self) -> float:
+        """How many degrees off each end of a range this guard keeps.
+
+        A caller reads it to land a value inside the range the guard admits.
+        """
+        return self._margin_deg
+
     def evaluate(self, ctx: SafetyContext) -> SafetyDecision:
         joints = ctx.target_joints
         if joints is None:

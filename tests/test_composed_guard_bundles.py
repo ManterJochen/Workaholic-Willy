@@ -17,9 +17,9 @@ arms' geometry moved where Isaac's URDFs disagreed with UR's own description, an
 with a different vertex order. The arm half is therefore held against the arm's OWN committed bundle, which is
 what composition promises, and the record's arm hashes are checked for shape rather than for bytes.
 
-Each hand bundle also records the arms it was proven equal on (``hand__admitted_arms``). The EGU-50 was baked on a ur5e
-only, and on every other arm the guard answers ``variant_model_mismatch``; composition must not quietly turn that into
-exact meshes before evidence admits the pairing (UM10).
+Until UM lane S22 each hand bundle also recorded the arms it was proven equal on (``hand__admitted_arms``), and
+the guard refused every other arm by it. That list is retired: which arms a hand may be composed onto is measured,
+one committed evidence file per combination, so a bundle carries no list that could answer for a pairing.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ class TheComposedGuardIsWhatTheFilesHeldTests(unittest.TestCase):
         cls.records = json.loads(_RECORDS.read_text(encoding="utf-8"))
 
     #: The arrays the ARM bundle owns. Everything else in a composed set came from the hand, including the hand's
-    #: own records (``gripper__origin``, ``hand__admitted_arms``), so the split is stated from the arm's side.
+    #: own record (``gripper__origin``), so the split is stated from the arm's side.
     ARM_KEYS = frozenset(
         f"{link}__{suffix}"
         for link in ("shoulder", "upper_arm", "forearm", "wrist_1", "wrist_2", "wrist_3")
@@ -114,11 +114,11 @@ class TheComposedGuardIsWhatTheFilesHeldTests(unittest.TestCase):
         self.assertNotEqual(_digest(composed["forearm__v"]),
                             self.records["ur3e/robotiq_hande"]["arrays"]["forearm__v"])
 
-    def test_each_hand_names_the_arms_it_was_proven_on(self) -> None:
-        expected = {"robotiq_2f85": set(_ARMS), "robotiq_hande": set(_ARMS), "schunk_egu50": {"ur5e"}}
-        for hand, arms in expected.items():
+    def test_no_hand_bundle_carries_an_admission_list_any_more(self) -> None:
+        """⛔ UM lane S22. A list left in a committed bundle would read as the answer to which arms a hand may carry."""
+        for hand in ("robotiq_2f85", "robotiq_hande", "schunk_egu50"):
             with self.subTest(hand=hand), np.load(environment.hand_mesh_bundle(hand)) as data:
-                self.assertEqual({str(a) for a in np.asarray(data["hand__admitted_arms"]).reshape(-1)}, arms)
+                self.assertNotIn("hand__admitted_arms", data.files)
 
     def test_no_record_key_reaches_the_guard(self) -> None:
         """The guard takes every key not ending in __origin as a mesh name, so a record key must never pass through."""

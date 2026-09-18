@@ -38,16 +38,16 @@ from src.contracts import chosen
 
 from .._ur_kinematics import ur_link_transforms_mm
 from .environment import collision_mesh_bundle, hand_mesh_bundle
-from .hand import approach_refusal
 from .perceived import LinkCapsule, SelfEnvelope
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.robot.core.keep_out import GoalKeepOut
     from src.robot.safety.preflight import SafetyPreflight
 
     from .hand import PlannerHand
 
 __all__ = [
-    "arm_capsules", "carried_part_box", "hand_spheres", "payload_capsule", "self_envelope",
+    "arm_capsules", "carried_part_box", "goal_keep_out", "hand_spheres", "payload_capsule", "self_envelope",
     "yawed_link_transforms_mm",
 ]
 
@@ -248,8 +248,8 @@ def self_envelope(
 
     ``payload`` is ``(length_mm, lateral_margin_mm)`` while a part is attached. ``None`` comes back
     when the guard resolves no model, the model has no committed bundle, no hand is named, or the
-    declared tool frame disagrees with the hand model: the world then refuses rather than filtering a
-    body it cannot place.
+    declared tool frame places no hand (``hand_spheres``): the world then refuses rather than
+    filtering a body it cannot place.
     """
     kinematics = preflight.self_kinematics(arm)
     if kinematics is None:
@@ -258,12 +258,48 @@ def self_envelope(
     frames = yawed_link_transforms_mm(model, joints, yaw_deg)
     capsules = arm_capsules(model)
     hand = preflight.planner_hand(arm)
-    if frames is None or capsules is None or not chosen(hand) or approach_refusal(hand) is not None:
+    if frames is None or capsules is None or not chosen(hand):
         return None
     spheres = hand_spheres(hand, model)
     if spheres is None:
         return None
     body = capsules + spheres
+    # A wrist camera's housing and bracket, the fill the planner carries, so a fixed camera does not
+    # register the housing as an obstacle beside the arm.
+    body = body + tuple(
+        LinkCapsule(frame=_FLANGE_FRAME, start_mm=centre, end_mm=centre, radius_mm=radius)
+        for wrist in preflight.wrist_bodies(arm) for centre, radius in wrist.envelope_spheres_mm()  # type: ignore[attr-defined]
+    )
     if payload is not None:
         body = body + (payload_capsule(hand, spheres, length_mm=payload[0], lateral_margin_mm=payload[1]),)
     return SelfEnvelope(frames_mm=tuple(frames), capsules=body)
+
+
+def goal_keep_out(preflight: Any, arm: Any, tcp_to_base_mm: Any) -> "GoalKeepOut":
+    """The space between ``arm``'s jaws at a goal whose TCP stands at ``tcp_to_base_mm``, or why none.
+
+    Laid out by the hand's registry jaw (``KeepOutBox.from_jaw``) on the declared TCP, the frame the
+    verb, the planner and the grasp calculator all place the goal with. There is no region for a hand
+    that is not a ``PlannerHand``, so a guard double that answers anything to every question builds
+    none; for a hand whose declared tool frame places no hand on the flange; and for a goal whose TCP
+    is not known. Each says why.
+    """
+    from src.robot.core.keep_out import GoalKeepOut, KeepOutBox
+
+    from .hand import PlannerHand
+
+    hand = None if preflight is None else preflight.planner_hand(arm)
+    if not isinstance(hand, PlannerHand):
+        return GoalKeepOut(region=None, reason=(
+            "this arm's planner reads no hand, so no space between its jaws is left out at the goal"))
+    if not chosen(hand.placement):
+        return GoalKeepOut(region=None, reason=(
+            f"the hand {hand.model} has no placement on the flange, so no goal region is placed: "
+            f"{hand.placement_refusal}"))
+    if tcp_to_base_mm is None:
+        return GoalKeepOut(region=None, reason="the TCP at this goal is not known, so no goal region is placed")
+    jaw = hand.jaw
+    return GoalKeepOut(region=KeepOutBox.from_jaw(
+        aperture_mm=jaw.aperture_mm, finger_width_mm=jaw.finger_width_mm, pad_ahead_mm=jaw.pad_ahead_mm,
+        pad_behind_mm=jaw.pad_behind_mm, tcp_to_base_mm=tcp_to_base_mm,
+    ))

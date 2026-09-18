@@ -49,6 +49,9 @@ from src.robot.safety.planning.perceived import LinkCapsule, SelfEnvelope
 from src.robot.safety.planning.perceived import WorldBuildLimits
 from src.robot.safety.planning.world import planner_cuboid
 
+#: The decline these path tests run under: they read the planner and the guard, and no camera world is wired.
+_PATH_ONLY = "unit double: this test reads the path judge, and no camera world is wired to the arm"
+
 #: Clear, and where the fake controller says the arm is standing.
 _HERE = (0.0, -1.5, 1.5, 0.0, 0.0, 0.0)
 #: Clear, a short joint move away (tests/test_ur_checked_joint_verbs.py measured both).
@@ -152,10 +155,13 @@ def _ur(world: LivePlannerWorld, client: _Client, events: list[str]) -> URRobotA
     config = RobotConfig.model_validate({
         "vendor": "ur",
         "ur": {"motion_planner": "curobo"},
-        "safety": {"payload": {"enforce": False}, "ik_quality": {"enforce": False}},
-        # The frame of the one hand model this tree holds, approaching along flange +Y: a UR declaring the real
-        # flange's +Z refuses to build until a model of that hand exists (Step 4g). For this tool-down pose it puts
-        # the flange where the +Z frame did, which is what the near-point assertions read.
+        "safety": {"payload": {"enforce": False}, "ik_quality": {"enforce": False},
+                   # The margin every UR cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
+                   # so this used to pass without it; the evidence check reads the margin to find its file (S22), and meets it here.
+                   "self_collision": {"planner_margin_mm": 4.0}},
+        # The Isaac cell's frame, approaching along flange +Y. From Step 4g until UM lane S23 a UR declaring the real
+        # flange's +Z refused to build, which is why this fixture carries +Y; for this tool-down pose it puts the
+        # flange where the +Z frame did, which is what the near-point assertions read.
         "gripper": {"model": "robotiq_2f85", "tool_frame": {
             "source": "polyscope",
             "offset_mm": (0.0, 132.0, 0.0),
@@ -175,6 +181,10 @@ def _ur(world: LivePlannerWorld, client: _Client, events: list[str]) -> URRobotA
     arm.ik = lambda pose, *, seed=None: JointPositions(_HERE)  # type: ignore[method-assign]
     arm._home_joints = list(_THERE)
     arm._curobo_client_factory = lambda: client  # type: ignore[assignment, return-value]
+    # And the plan's end. This client hands back one trajectory whatever it is asked, which a real planner never
+    # does, and what this file reads is not where a plan ends: the UR driver refuses a plan off its goal before
+    # anything moves (Step 8f), and tests/test_the_planner_sees_the_cell_where_the_controller_has_it.py holds that half.
+    arm._plan_end_refusal = lambda goal, joints, pose: None  # type: ignore[method-assign]
     guard = arm._preflight
     for name, label in (
         ("set_perceived_obstacles", "world"),
@@ -195,7 +205,7 @@ def _sim(*, client: _Client, world: LivePlannerWorld | None = None) -> IsaacRobo
     arm._rmpflow = object()  # type: ignore[assignment]
     arm._arm_subset = MagicMock()
     arm._arm_subset.get_joint_positions.return_value = np.asarray(_HERE, dtype=np.float64)
-    arm._resolve_ik = lambda pose: JointPositions(_HERE)  # type: ignore[method-assign]
+    arm._resolve_ik = lambda pose, **_: JointPositions(_HERE)  # type: ignore[method-assign]
     arm.get_joint_positions = lambda: JointPositions(_HERE)  # type: ignore[method-assign]
     arm.get_tcp_pose = lambda: _pose(x=300.0)  # type: ignore[method-assign]
     arm._get_curobo_client = lambda: client  # type: ignore[method-assign, assignment, return-value]
@@ -367,7 +377,11 @@ class TheSimVerbsTests(unittest.TestCase):
 
 
 class TheSimMoveJointIsPathCheckedTests(unittest.TestCase):
-    """Owner, Q11: the public sim joint verb judges the line, not the destination alone."""
+    """Owner, Q11: the public sim joint verb judges the line, not the destination alone.
+
+    These arms plan with cuRobo and hold no world, so each test declines: without it the move is refused before the
+    line is judged, and a refused path would read as the camera world's refusal.
+    """
 
     @staticmethod
     def _refusal() -> MotionResult:
@@ -379,6 +393,7 @@ class TheSimMoveJointIsPathCheckedTests(unittest.TestCase):
     def test_the_sim_move_joint_is_path_checked(self) -> None:
         client = _Client()
         arm = _sim(client=client)
+        self.enterContext(arm.without_camera_world(_PATH_ONLY))
 
         arm.move_joint(JointPositions(_THERE))
 
@@ -390,6 +405,7 @@ class TheSimMoveJointIsPathCheckedTests(unittest.TestCase):
 
     def test_a_refused_path_raises_with_the_typed_refusal_and_drives_nothing(self) -> None:
         arm = _sim(client=_Client())
+        self.enterContext(arm.without_camera_world(_PATH_ONLY))
         refusal = self._refusal()
         _mock(arm._preflight).gate_planned_path.return_value = refusal
 
@@ -401,6 +417,7 @@ class TheSimMoveJointIsPathCheckedTests(unittest.TestCase):
 
     def test_move_home_reports_a_refused_path_rather_than_raising(self) -> None:
         arm = _sim(client=_Client())
+        self.enterContext(arm.without_camera_world(_PATH_ONLY))
         _mock(arm._preflight).gate_planned_path.return_value = self._refusal()
 
         self.assertFalse(arm.move_home())
@@ -489,6 +506,36 @@ class AMoveOnAVouchedWorldSaysPlannedTests(unittest.TestCase):
 
         self.assertIs(result.status, MotionStatus.EXECUTED, result.message)
         self.assertIs(result.camera_world.use, CameraWorldUse.PLANNED, result.camera_world.render())
+
+
+class AKeepOutScopeDoesNotLoosenADeclineTests(unittest.TestCase):
+    """Holding a target out of the world changes the world, never the rule that a decline on a live world is refused."""
+
+    def test_a_declined_sim_motion_inside_a_scope_is_still_refused(self) -> None:
+        from src.robot.core.camera_world import DECLINE_ON_A_LIVE_WORLD_MESSAGE, CameraWorldDecline
+        from src.robot.core.keep_out import SegmentationOffer, keeping_out
+
+        world = _world(_Camera(silent=False))
+        arm = _sim(client=_Client(), world=world)
+        offer = SegmentationOffer(captured_at_s=time.time(), target_points_base_mm=np.array([[0.0, 0.0, 100.0]]))
+        with keeping_out(arm, offer) as scope:
+            self.assertTrue(scope.world_wired)
+            result = arm.move(_pose(x=300.0), camera_world=CameraWorldDecline("a declined move inside a pick"))
+        self.assertIs(MotionStatus.UNSUPPORTED, result.status)
+        self.assertEqual(DECLINE_ON_A_LIVE_WORLD_MESSAGE, result.message)
+
+    @unittest.skipUnless(_mesh_backend_available(), "the UR arm's path guard needs the exact mesh engine")
+    def test_a_declined_ur_motion_inside_a_scope_is_still_refused(self) -> None:
+        from src.robot.core.camera_world import DECLINE_ON_A_LIVE_WORLD_MESSAGE, CameraWorldDecline
+        from src.robot.core.keep_out import SegmentationOffer, keeping_out
+
+        world = _world(_Camera(silent=False))
+        arm = _ur(world, _Client(joint_names=UR_ARM_JOINT_NAMES), [])
+        offer = SegmentationOffer(captured_at_s=time.time(), target_points_base_mm=np.array([[0.0, 0.0, 100.0]]))
+        with keeping_out(arm, offer):
+            result = arm.move(_pose(x=300.0), camera_world=CameraWorldDecline("a declined move inside a pick"))
+        self.assertIs(MotionStatus.UNSUPPORTED, result.status)
+        self.assertEqual(DECLINE_ON_A_LIVE_WORLD_MESSAGE, result.message)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ from src.willy_sim.run_sorting_demo import (
     _setup_cine,
     _write_mp4,
 )
+from src.robot.core.camera_world import CameraWorldDecline
 
 # --- cinematic framing (metres): elevated front-right 3/4 view seeing both bins + the robot ---
 CINE_POS_M = (2.55, -2.4, 1.9)
@@ -439,7 +440,8 @@ def record_clearing(out: str, *, headless: bool = True, fps: int = 24, capture_e
 
     cell = bootstrap_sim_cell(None, headless=headless, scene_kwargs={
         "objects_override": _objects(), "bin_walls": src_walls + dst_walls, "appearance": appearance,
-    }, post_scene_hook=_hook)
+    }, post_scene_hook=_hook,
+        camera_world=CameraWorldDecline("run_bin_clearing_demo: this runner plans without a live camera world"))
     arm, gripper, handles, sim, cfg = cell.arm, cell.gripper, cell.handles, cell.sim, cell.cfg
     session = arm.session
     import omni.usd  # type: ignore[import-not-found]  # available now that bootstrap booted Isaac

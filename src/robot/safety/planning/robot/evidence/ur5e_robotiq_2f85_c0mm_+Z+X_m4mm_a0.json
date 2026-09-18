@@ -1,0 +1,25 @@
+{
+ "approach": "+Z",
+ "arm": "ur5e",
+ "arm_descriptor_sha256": "4c6eb15028eb1b3de8a96844793dcfaec47c062cd3479e22f0e19670287c0f3e",
+ "attach_spheres": 0,
+ "closing": "+X",
+ "composed_sha256": "5187aa9cb4f4eff963fabb696b002b2e248d36aa5e219b5314a261fa2342b437",
+ "coupling_mm": 0.0,
+ "criterion": "b1",
+ "guard_margin_mm": 10.0,
+ "guard_sha256": "af4382d319115115f4a35e55a463708f9e41b43c4ca4e637f81f37e72a33f895",
+ "hand": "robotiq_2f85",
+ "hand_map_sha256": "2581f304fb69d1b4f4d36deeb958c97a60517844248e3982be76066b24a28d2e",
+ "measured": {
+  "attribution_disagreements": 0,
+  "control_mm": 0.00015158335449427796,
+  "false_clears": 0,
+  "poses": 1482,
+  "poses_sha256": "98050afdd8aeaeddf38c8a3c940148097cd81a7dc5bc05b4797f275313d02d86",
+  "refused": 620,
+  "retract_clear": true
+ },
+ "planner_margin_mm": 4.0,
+ "urdf_sha256": "9c02c314f678f3bc792e13c82e24b00c2d7c2d05cc7963f156e911b967aaccc5"
+}

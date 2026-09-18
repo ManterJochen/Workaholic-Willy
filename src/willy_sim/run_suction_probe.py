@@ -32,6 +32,7 @@ import numpy as np
 from src.config.schema.robot import SimObjectConfig
 from src.willy_sim.harness.bootstrap import bootstrap_sim_cell
 from src.willy_sim.scene import OBJECT_PRIM
+from src.robot.core.camera_world import CameraWorldDecline
 
 PROBE_PRIM = "/World/SuctionProbe"
 GRIPPER_PRIM = f"{PROBE_PRIM}/SurfaceGripper"
@@ -100,7 +101,9 @@ def run_probe(*, headless: bool = True, data_dir: str | None = None,
     print("=== H7 surface-gripper ATTACH probe ===", flush=True)
     # A flat box (60x60x20 mm) so a top suction has a big sealable face; a single object lands on OBJECT_PRIM.
     box = SimObjectConfig(name="flat box", size_mm=(60.0, 60.0, 20.0), position_mm=(450.0, 0.0, 10.0), mass_kg=0.05)
-    cell = bootstrap_sim_cell(data_dir, headless=headless, scene_kwargs={"objects_override": [box]})
+    cell = bootstrap_sim_cell(data_dir, headless=headless, scene_kwargs={"objects_override": [box]},
+                              camera_world=CameraWorldDecline(
+                                  "run_suction_probe: this runner plans without a live camera world"))
     arm, session = cell.arm, cell.arm.session
 
     import omni.usd  # type: ignore[import-not-found]

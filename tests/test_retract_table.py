@@ -6,13 +6,14 @@ own candidate family, at ur3's committed pose the meshes clear the Hand-E by 13.
 model calls the same pose a self collision, so the sidecar never becomes ready and the cell does not come up.
 The rule now takes the first pose BOTH models accept, and the pose that works is different for each hand.
 
-``src/robot/safety/planning/robot/ur_retract.yaml`` holds one retract per arm, chosen by the rule on the exact
-meshes with every registry hand. The descriptor builder reads it in the cuRobo environment, where neither Coal nor the
-bundles can be loaded, so nothing there can check the numbers: these are the checks.
+``src/robot/safety/planning/robot/ur_retract.yaml`` holds one retract per arm, hand, plate, planner margin and
+placement, chosen by the rule on the exact meshes and the planner's spheres. Every shipped hand is asked about on every
+arm, and a customer's hand on the arms its profiles name (owner, 2026-09-17). The descriptor builder reads the table in
+the cuRobo environment, where neither Coal nor the bundles can be loaded, so nothing there can check the numbers: these
+are the checks.
 
 What this file can check off the box is the table against itself and against the committed bundles. What it cannot is
-the distances, which only Coal can measure; ``tests/test_retract_clears_the_guard.py`` does that where an engine is
-installed, and ``choose_ur_retract.py --check`` does it on the box.
+the distances, which only Coal can measure; ``choose_ur_retract.py --check`` does that on the box.
 """
 
 from __future__ import annotations
@@ -30,6 +31,57 @@ from src.robot.safety.planning.environment import collision_mesh_bundle, hand_me
 
 _ROOT = Path(__file__).resolve().parents[1]
 _TABLE = _ROOT / "src" / "robot" / "safety" / "planning" / "robot" / "ur_retract.yaml"
+
+
+#: The hands this repository ships. Each is judged on every arm the table judges (owner decision 4 of 2026-09-17), so a
+#: cell can put any of them on any arm; any other registry hand is a customer's, judged on the arms its profiles name.
+_SHIPPED_HANDS = frozenset({"robotiq_2f85", "robotiq_hande", "schunk_egu50"})
+
+
+def _arms_a_profile_names(hand: str) -> set[str]:
+    """Every arm a robot profile layer that names ``hand`` states, read from the layer itself.
+
+    Read rather than loaded: a cell layer chains on its arm's layer (``--profile ur10e,acme_2f_ur10e``), so loaded alone
+    it inherits the base tree's arm, and MEASURED 2026-09-17 in the customer chain trial that asked for a ur5e row
+    nobody needs. A layer that names the hand and states no arm raises, naming itself: a customer layer states
+    ``safety.self_collision.kinematics_model``, the arm its guard models.
+    """
+    arms: set[str] = set()
+    for path in sorted((_ROOT / "config" / "robot").glob("robot.*.yaml")):
+        robot = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("robot") or {}
+        if (robot.get("gripper") or {}).get("model") != hand:
+            continue
+        stated = (((robot.get("safety") or {}).get("self_collision") or {}).get("kinematics_model")
+                  or (robot.get("ur") or {}).get("model"))
+        if not stated:
+            raise AssertionError(f"{path.name} names the hand {hand} and no arm: state "
+                                 f"safety.self_collision.kinematics_model, the arm its guard models")
+        arms.add(str(stated))
+    return arms
+
+
+def _pairs_nobody_asked(table: dict, *, hands, profile_arms) -> list[str]:
+    """One sentence per (arm, hand) the table should have asked about and did not, ending in the command that asks."""
+    from src.robot.safety.planning.robot.retract_table import retract_command
+
+    rule = table["rule"]
+    rows, refused = table["retracts"], rule["pairs_with_no_retract"]
+    asked = {(row["arm"], row["hand"]) for row in (*rows, *refused)}
+    judged_arms = sorted({arm for arm, _ in asked})
+    missing = []
+    for hand in sorted(hands):
+        arms = judged_arms if hand in _SHIPPED_HANDS else sorted(profile_arms(hand))
+        for arm in arms:
+            if (arm, hand) in asked:
+                continue
+            example = next((row for row in (*rows, *refused) if row["hand"] == hand), {})
+            placement = str(example.get("placement") or rule["placement"])
+            command = retract_command(arm, hand, float(example.get("plate_mm", 0.0)),
+                                      float(rule["planner_margin_mm"]), placement)
+            whose = "a shipped hand, judged on every arm" if hand in _SHIPPED_HANDS else "named on this arm by a profile"
+            missing.append(f"{arm} was never asked about {hand} ({whose}): run {command} on a box with the cuRobo "
+                           f"environment, and commit the table it writes")
+    return missing
 
 
 def _module(name: str):
@@ -77,15 +129,45 @@ class TheCommittedTableTests(unittest.TestCase):
                              sorted(anchors))
 
     def test_every_arm_was_asked_about_every_hand_the_registry_holds(self) -> None:
-        """Judged or refused, but never simply absent: a pair nobody asked about is the state this replaced."""
-        asked: dict = {}
-        for row in self.rows:
-            asked.setdefault(row["arm"], set()).add(row["hand"])
-        for row in self.rule["pairs_with_no_retract"]:
-            asked.setdefault(row["arm"], set()).add(row["hand"])
-        for arm, hands in sorted(asked.items()):
-            with self.subTest(arm=arm):
-                self.assertEqual(sorted(hands), sorted(available_grippers()))
+        """Judged or refused, but never simply absent: a pair nobody asked about is the state this replaced.
+
+        Scoped by the owner's decision 4 of 2026-09-17: a shipped hand on every arm the table judges, a customer's
+        hand on the arms its profiles name. A missing pair is named with the chooser command that asks it.
+        """
+        missing = _pairs_nobody_asked(self.table, hands=available_grippers(), profile_arms=_arms_a_profile_names)
+        self.assertEqual(missing, [], "\n" + "\n".join(missing))
+
+    def test_a_pair_nobody_asked_about_is_named_with_the_run_that_asks_it(self) -> None:
+        """Customer chain lane C1e: a customer who judged one arm learns which pair is missing and what to run."""
+        table = yaml.safe_load(_TABLE.read_text(encoding="utf-8"))
+
+        def other(row: dict) -> bool:
+            return not (row["arm"] == "ur3" and row["hand"] == "schunk_egu50")
+
+        table["retracts"] = [row for row in table["retracts"] if other(row)]
+        table["rule"]["pairs_with_no_retract"] = [row for row in table["rule"]["pairs_with_no_retract"] if other(row)]
+        missing = _pairs_nobody_asked(table, hands=available_grippers(), profile_arms=_arms_a_profile_names)
+        self.assertEqual(len(missing), 1, missing)
+        for part in ("ur3", "schunk_egu50", "choose_ur_retract.py ur3 --hand schunk_egu50", "--tool-rotation-xyzw"):
+            self.assertIn(part, missing[0])
+
+    def test_the_committed_table_passes_the_same_method(self) -> None:
+        """⭐ THE CONTROL: the unmodified table through the same method, so the removal is what fails the one above."""
+        self.assertEqual(_pairs_nobody_asked(self.table, hands=available_grippers(),
+                                             profile_arms=_arms_a_profile_names), [])
+
+    def test_a_customer_hand_is_asked_only_on_the_arms_its_profiles_name(self) -> None:
+        """Owner decision 4: a shipped hand on every arm, a customer's on the arms its profiles name."""
+        hands = [*available_grippers(), "acme_2f"]
+        missing = _pairs_nobody_asked(self.table, hands=hands, profile_arms=lambda hand: {"ur10e"})
+        self.assertEqual(len(missing), 1, missing)
+        self.assertIn("ur10e was never asked about acme_2f", missing[0])
+        self.table["retracts"].append({"arm": "ur10e", "hand": "acme_2f", "plate_mm": 0.0})
+        self.assertEqual(_pairs_nobody_asked(self.table, hands=hands, profile_arms=lambda hand: {"ur10e"}), [])
+
+    def test_the_shipped_hands_are_the_registry_s_shipped_hands(self) -> None:
+        """⭐ THE CONTROL on the scope: a shipped hand dropped from the set would quietly stop being asked everywhere."""
+        self.assertLessEqual(_SHIPPED_HANDS, set(available_grippers()))
 
     def test_every_recorded_clearance_clears_the_guard_with_its_reserve(self) -> None:
         needed = float(self.rule["guard_margin_mm"]) + float(self.rule["reserve_mm"])

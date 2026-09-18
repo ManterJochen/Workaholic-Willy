@@ -117,8 +117,9 @@ def _sentence(event: "PickProgress") -> tuple[Severity, str]:
             sentence = f"{sentence} ({event.motion_status})"
         severity = Severity.WARN
     if event.camera_world in _SPOKEN_CAMERA_WORLDS:
-        # Appended at the event's own severity: a missing or declined camera world is a fact about
-        # how the motions were planned, not a failure of the attempt.
+        # Appended at the event's own severity: a declined camera world is a fact about how the
+        # motions were planned, and a missing one rides on a refused motion whose status already set
+        # the severity.
         sentence = (
             f"{sentence} Camera world: {str(event.camera_world).upper()} "
             f"({event.camera_world_reason})."

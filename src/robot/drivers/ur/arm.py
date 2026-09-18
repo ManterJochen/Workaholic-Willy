@@ -5,22 +5,20 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import re
-
-import numpy as np
-
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING
+
+import numpy as np
 
 from src.config.schema.robot import RobotConfig
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, FrameMismatchError, Pose
+from src.geometry.quaternion import angle_between
 from src.robot.constants import HOME_JOINTS_DEFAULT, UR_ARM_LOG_FILE, create_robot_logger
 from src.robot.core import (
-    DECLINE_ON_A_LIVE_WORLD_MESSAGE,
     NO_PLAN_FAIL_SAFE_MESSAGE,
     CameraWorldDecline,
     CameraWorldStamp,
-    CameraWorldUse,
     DigitalIOPort,
     JointPositions,
     MotionCommand,
@@ -37,18 +35,25 @@ from src.robot.core import (
     SafetyMode,
     Wrench,
     active_decline,
+    camera_world_refusal,
     resolve_camera_world,
     stamp_result,
 )
+from src.robot.core.arm_capabilities import LineMotion, LineReading, PayloadModel
 from src.robot.core.camera_world import without_camera_world as _without_camera_world
-from src.geometry.quaternion import angle_between
 from src.robot.safety import (
     LineSamples,
     PathSamples,
     SafetyPreflight,
     line_samples,
 )
-from src.robot.safety._ur_kinematics import ur_series_twin
+from src.robot.safety._ur_kinematics import ur_link_transforms_mm, ur_series_twin
+from src.robot.safety.path_samples import (
+    LINE_MAX_CHORD_OFF_MM,
+    LINE_MAX_JOINT_STEP_RAD,
+    MAX_PATH_SAMPLES,
+    joint_path_samples,
+)
 from src.robot.safety.planning import CuroboPlanClient, CuroboUnavailableError
 from src.robot.safety.planning.hand import planner_hand
 from src.robot.safety.workspace import WorkspaceGuard
@@ -59,13 +64,15 @@ from .pose import URPose
 from .pose_adapter import pose_to_urpose, urpose_to_pose
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from collections.abc import Callable, Sequence
+    from typing import Any
+
     from src.robot.safety.planning.curobo_client import SidecarIdentity
     from src.robot.safety.planning.live_world import (
         LivePlannerWorld,
         WorldRefresh,
     )
     from src.robot.safety.planning.perceived import SelfEnvelope
-    from collections.abc import Callable
 
     from .curobo_motion import CuroboUrPlanner
 
@@ -171,8 +178,13 @@ class URRobotArm(RobotArm):
         #: The part the gripper carries while one is attached, as (length_mm, lateral_margin_mm) from
         #: planning_world.payload. The self filter grows the hand by it; None when nothing is attached.
         self._attached_payload: tuple[float, float] | None = None
+        #: Whether the planner took the part the last attach handed it.
+        self._payload_in_planner = False
         self._curobo_client_factory = curobo_client_factory
         self._curobo_ur: CuroboUrPlanner | None = None
+        #: The flange to TCP the controller applied when this arm last connected, derived by the tool
+        #: frame check on a ``polyscope`` cell; None before a connect and after a disconnect.
+        self._observed_tool_frame: "np.ndarray | None" = None
         #: The cell as the cameras see it, asked immediately before every plan. Handed in by
         #: whatever composes the cell rather than built here: a driver may not reach up into
         #: perception, and this one only ever asks. `None` is the unchanged path, where the
@@ -406,6 +418,7 @@ class URRobotArm(RobotArm):
             )
         d_t, d_r = compare_tool_frames(observed, expected)
         self._refuse_if_the_series_twin_fits_better(joints, controller_tcp, expected, d_t)
+        self._observed_tool_frame = None
         if d_t > tf.verify_tolerance_mm or d_r > 5.0:
             # No disconnect here, because connect() rolls the connection back for any
             # failure of this check.
@@ -421,10 +434,36 @@ class URRobotArm(RobotArm):
                 f"from THAT model's DH table, so a wrong model produces a wrong distance here. "
                 f"Derived as inv(DH flange) @ getForwardKinematics; no PolyScope read required."
             )
+        # A wrist camera placed from a recorded frame is stale once the controller applies another
+        # one. Checked before the frame is kept, so a refused connect keeps nothing.
+        if tf.source == "polyscope":
+            for body in self._preflight.wrist_bodies(self):
+                stale = body.record_refusal("polyscope", observed)  # type: ignore[attr-defined]
+                if stale is not None:
+                    raise RobotConnectionError(stale)
+        self._observed_tool_frame = np.asarray(observed, dtype=np.float64).copy()
         self.logger.info(
             "tool frame verified: source=%s, controller matches within %.2f mm / %.2f deg",
             tf.source, d_t, d_r,
         )
+
+    @property
+    def active_tool_frame(self) -> "np.ndarray | None":
+        """The flange to TCP :meth:`get_tcp_pose` applies now, as a 4x4 in millimetres, or None where
+        it is not known.
+
+        On a ``willy`` cell the driver composes the declared frame itself, so it is the declared matrix,
+        connected or not. On a ``polyscope`` cell the controller applies its own tool setting, so it is
+        the frame the tool frame check derived from the controller at the last connect, and None before
+        a connect and after a disconnect. An ``undeclared`` cell has none. An eye in hand calibration
+        records this beside its solve.
+        """
+        source = self.config.gripper.tool_frame.source
+        if source == "willy":
+            return self._declared_tool_matrix()
+        if source == "polyscope" and self._observed_tool_frame is not None:
+            return self._observed_tool_frame.copy()
+        return None
 
     #: How much better the twin has to explain the controller before this refuses, in mm. Small
     #: on purpose: the two hypotheses are not close. A correct cell reads about 0 mm for its own
@@ -607,11 +646,35 @@ class URRobotArm(RobotArm):
             self._conn.disconnect()
             raise
 
+    def start_planner(self) -> "SidecarIdentity":
+        """Start this arm's cuRobo planner through the path its first planned move takes, and say what it loaded.
+
+        No controller is asked: the planner is built from this arm's config, so a cell can learn at a desk
+        whether its planner starts. Every refusal the first move would meet is raised here, as a
+        ``CuroboUnavailableError`` naming it: an undeclared planner margin, no hand, an unplaceable hand, a
+        missing retract row, a descriptor built for another robot, and a combination no committed evidence
+        file measured. A cell whose ``motion_planner`` is not ``curobo`` starts no planner and is refused
+        saying so.
+        """
+        if self._motion_planner != "curobo":
+            raise CuroboUnavailableError(
+                f"robot.ur.motion_planner is {self._motion_planner!r}, so this cell starts no planner: its moves are "
+                f"solved by the controller's IK and judged by the exact mesh guard alone"
+            )
+        return self._curobo_ur_planner().start()
+
+    def stop_planner(self) -> None:
+        """Shut down the planner :meth:`start_planner` or a move started. Idempotent, and the connection is untouched."""
+        if self._curobo_ur is not None:
+            self._curobo_ur.close()
+            self._curobo_ur = None
+
     def disconnect(self) -> None:
         """Close the RTDE connection, and shut down the cuRobo planning server where one was started."""
         if self._curobo_ur is not None:
             self._curobo_ur.close()
             self._curobo_ur = None
+        self._observed_tool_frame = None
         self._conn.disconnect()
 
     def __enter__(self) -> URRobotArm:
@@ -811,7 +874,13 @@ class URRobotArm(RobotArm):
         :meth:`_judge_joint_move`, and the ``moveJ`` is sent here rather than through
         ``MotionController.move_home``: that method sends an unclamped command at the
         controller's own defaults, and a move that was judged has to be the move that runs.
+        With neither a camera world nor a decline in scope on a cuRobo cell it is refused
+        first, and logged.
         """
+        refused = self._refused_for_camera_world(self._move_camera_world(UNSET), MotionCommand.MOVE_HOME)
+        if refused is not None:
+            self.logger.error("move_home REFUSED by %s: %s", refused.status, refused.message)
+            return False
         if not self._home_is_admissible("move_home"):
             return False
         joints = JointPositions(np.asarray(self._home_joints, dtype=np.float64))
@@ -900,19 +969,36 @@ class URRobotArm(RobotArm):
         vouched for the cell and UNSTATED when none did, which is why it is read after the motion. A
         declined motion on an arm whose live camera world is wired is refused with ``UNSUPPORTED``
         before the planner is asked, because the planner is handed that world before every plan and
-        cannot set it aside for one motion.
+        cannot set it aside for one motion. A MISSING motion, with neither a world nor a decline, is
+        refused the same way (``NO_CAMERA_WORLD_MESSAGE``), before it reads a connection or starts a
+        planner.
         """
         stamp = self._move_camera_world(camera_world)
-        if stamp.use is CameraWorldUse.DECLINED and self._live_world is not None:
-            return MotionResult.failed(
-                MotionStatus.UNSUPPORTED, MotionCommand.MOVE_TO, target_pose=pose,
-                message=DECLINE_ON_A_LIVE_WORLD_MESSAGE, camera_world=stamp,
-            )
+        refused = self._refused_for_camera_world(stamp, MotionCommand.MOVE_TO, target_pose=pose)
+        if refused is not None:
+            return refused
         before = self._planner_refresh()
         unstamped = self._move_unstamped(pose, linear=linear, vel=vel, acc=acc, register=register)
         after = self._planner_refresh()
         vouched = after.camera_world() if after is not None and after is not before else None
         return stamp_result(unstamped, self._move_camera_world(camera_world, planned=vouched))
+
+    def _refused_for_camera_world(
+        self, stamp: CameraWorldStamp, command: MotionCommand, *,
+        target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+    ) -> MotionResult | None:
+        """The ``UNSUPPORTED`` result a motion stamped ``stamp`` is refused with before its body, or ``None``.
+
+        One rule for every verb (``core.camera_world.camera_world_refusal``): MISSING is refused, and
+        DECLINED is refused where a live world is wired.
+        """
+        message = camera_world_refusal(stamp, live_world_wired=self._live_world is not None)
+        if message is None:
+            return None
+        return MotionResult.failed(
+            MotionStatus.UNSUPPORTED, command, target_pose=target_pose, target_joints=target_joints,
+            message=message, camera_world=stamp,
+        )
 
     def _move_camera_world(
         self, keyword: Maybe[CameraWorldDecline], *, planned: CameraWorldStamp | None = None
@@ -1072,7 +1158,7 @@ class URRobotArm(RobotArm):
         # reported back to the caller stays the TCP pose they asked for.
         goal = self._pose_to_flange(pose)
         try:
-            traj_ur = planner.plan(goal)
+            traj_ur = planner.plan(goal, **self._goal_keep_out(self._tcp_of_pose(pose)))
         except CuroboUnavailableError as exc:
             return MotionResult.failed(
                 MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
@@ -1083,6 +1169,14 @@ class URRobotArm(RobotArm):
                 MotionStatus.TIMEOUT, MotionCommand.MOVE_TO, target_pose=pose,
                 message=NO_PLAN_FAIL_SAFE_MESSAGE,
             )
+        # The plan ends on its goal, or nothing moves. The planner answers in its own base, half
+        # a turn from the controller's, and a plan to the goal mirrored through the base axis
+        # would pass every gate below, because they judge the configuration it returned and not
+        # where that configuration puts the flange. The Isaac driver checks this after executing;
+        # here it is read before the first waypoint moves.
+        rejected = self._plan_end_refusal(goal, traj_ur[-1], pose)
+        if rejected is not None:
+            return rejected
         # The workspace box belongs here too. `gate_joint_target` deliberately skips it,
         # and that is right for a joint-only command: the guard reads `target_pose`, so
         # on a joint context it accepts for want of a Cartesian target and un-skipping it
@@ -1157,7 +1251,7 @@ class URRobotArm(RobotArm):
         carries on and says so.
         """
         cfg = getattr(getattr(self.config.safety, "planning_world", None), "payload", None)
-        if cfg is None or not bool(cfg.enabled) or self._motion_planner != "curobo":
+        if cfg is None or self._payload_config_declined() is not None:
             return False
         from src.robot.safety.planning.self_envelope import carried_part_box, hand_spheres
 
@@ -1165,6 +1259,7 @@ class URRobotArm(RobotArm):
         # The self filter covers the part from here on, whatever the planner answers: a part the
         # planner could not attach is still in the gripper and still in front of the cameras.
         self._attached_payload = (length, float(cfg.lateral_margin_mm))
+        self._payload_in_planner = False
         # The planner carries the same part where the hand holds it: along the approach, from the fingertips.
         kinematics = self._preflight.self_kinematics(self)
         hand = self._preflight.planner_hand(self)
@@ -1183,11 +1278,73 @@ class URRobotArm(RobotArm):
             joints = self.get_joint_positions().tolist()
         except RobotConnectionError:
             return False
-        return self._curobo_ur_planner().attach_payload(joints, dims_mm, centre_mm)
+        self._payload_in_planner = bool(self._curobo_ur_planner().attach_payload(joints, dims_mm, centre_mm))
+        return self._payload_in_planner
+
+    def _payload_config_declined(self) -> str | None:
+        """Why this arm's configuration models no carried part, or ``None``; reads no hand and starts no planner."""
+        cfg = getattr(getattr(self.config.safety, "planning_world", None), "payload", None)
+        if cfg is None or not bool(cfg.enabled):
+            return ("safety.planning_world.payload.enabled is false, so neither the planner nor the self filter "
+                    "models a part in the gripper")
+        if self._motion_planner != "curobo":
+            return (f"robot.ur.motion_planner is {self._motion_planner!r}, and only the cuRobo planner carries a "
+                    "part in the gripper")
+        if cfg.length_mm is None:
+            return ("safety.planning_world.payload.length_mm is undeclared, so neither the planner nor the self "
+                    "filter models a part in the gripper: declare how far the longest part hangs past the fingertips")
+        return None
+
+    def payload_declined_reason(self) -> str | None:
+        """Why this arm models no carried part, naming the key or the hand, or ``None`` where it can.
+
+        The configuration first, then the hand the guard places: the same checks
+        :meth:`attach_payload` makes, in the same order. It starts no planner and opens no
+        connection.
+        """
+        declined = self._payload_config_declined()
+        if declined is not None:
+            return declined
+        from src.robot.safety.planning.self_envelope import hand_spheres
+
+        kinematics = self._preflight.self_kinematics(self)
+        hand = self._preflight.planner_hand(self)
+        if kinematics is None or not chosen(hand) or hand_spheres(hand, kinematics[0]) is None:
+            return ("this cell's guard places no hand model on a known arm, so there is no fingertip to hang a part "
+                    "from")
+        return None
+
+    def payload_model(self) -> PayloadModel:
+        """What models the part the gripper carries now: what the last attach left in force."""
+        if self._attached_payload is None:
+            return PayloadModel.NONE
+        return PayloadModel.PLANNER_AND_FILTER if self._payload_in_planner else PayloadModel.FILTER_ONLY
+
+    def line_motion(self) -> LineReading:
+        """What a ``move(pose, linear=True)`` on this arm keeps of the line, read before moving.
+
+        On ik the controller draws the line with ``moveL`` and only the endpoint is gated. On
+        cuRobo every sample is solved and judged by the exact mesh guard and the planner, and
+        one ``moveL`` runs, unless the path cannot be judged, which the preflight says in the
+        sentence its gate would refuse with.
+        """
+        if self._motion_planner != "curobo":
+            return LineReading(LineMotion.CONTROLLER_LINE, (
+                f"robot.ur.motion_planner is {self._motion_planner!r}: the controller draws the line and only its "
+                "end is judged"))
+        if self._preflight is None:
+            return LineReading(LineMotion.NOT_KEPT, "no safety preflight is wired, so the line runs unjudged")
+        refusal = self._preflight.path_judge_refusal(self)
+        if refusal is not None:
+            return LineReading(LineMotion.NOT_KEPT, refusal)
+        return LineReading(LineMotion.CHECKED, (
+            "every sample of the line is solved and judged by the exact mesh guard and the planner before one moveL "
+            "runs"))
 
     def detach_payload(self) -> bool:
         """Forget the carried part. Safe to call when nothing was ever attached."""
         self._attached_payload = None
+        self._payload_in_planner = False
         if self._curobo_ur is None:
             return True
         return self._curobo_ur.detach_payload()
@@ -1196,7 +1353,10 @@ class URRobotArm(RobotArm):
         """Lazily build the real-UR cuRobo execution glue bound to this arm's RTDE connection."""
         if self._curobo_ur is None:
             from src.robot.safety.planning.reservation import PlannerReservation
-            from src.robot.safety.planning.world import build_planner_cuboids, build_planner_meshes
+            from src.robot.safety.planning.world import (
+                build_planner_cuboids,
+                build_planner_meshes,
+            )
 
             from .curobo_motion import CuroboUrPlanner
 
@@ -1204,7 +1364,7 @@ class URRobotArm(RobotArm):
             # falls through to WILLY_CUROBO_ROBOT or ur5e.yml, so a real UR3e would be
             # planned against UR5e link lengths, on hardware, with nothing saying so. The
             # real-UR cuRobo path is fail-closed and never degrades to blind IK, so a
-            # missing {model}_{hand}.yml stops the cell instead, which is the correct failure.
+            # missing willy_{model}.yml stops the cell instead, which is the correct failure.
             #
             # The cell own geometry goes with it, or the planner routes through it.
             # Without this the planner knows its robot model and a generic table and
@@ -1239,9 +1399,9 @@ class URRobotArm(RobotArm):
                 # passed one straight through.
                 on_perceived_obstacles=self._preflight.set_perceived_obstacles,
             )
-            payload_cfg = getattr(world_cfg, "payload", None)
-            if payload_cfg is not None and bool(getattr(payload_cfg, "enabled", False)):
-                self._curobo_ur.enable_payload(int(payload_cfg.sphere_slots))
+            # The attach spheres the reservation counts, the same number the evidence lookup names.
+            if reservation.sphere_slots:
+                self._curobo_ur.enable_payload(int(reservation.sphere_slots))
         return self._curobo_ur
 
     @property
@@ -1254,6 +1414,29 @@ class URRobotArm(RobotArm):
         """
         return self._live_world
 
+    def set_wrist_bodies(self, bodies: "Sequence[Any]") -> None:
+        """Hand this arm the wrist cameras it carries (``body_link.WristBody``), before its planner or
+        guard is built.
+
+        The planner loads them on top of the config its combination evidence names, the exact mesh guard
+        and the self filter hold them, and the planner start proves their cover. Refused once the planner
+        was built or the guard judged a path, because a camera handed in then would be one they say they
+        hold and do not. On a ``willy`` cell each body's recorded flange to TCP has to be the declared
+        frame; a ``polyscope`` cell compares it at connect. An empty sequence clears them.
+        """
+        if self._curobo_ur is not None:
+            raise RuntimeError(
+                "this arm's planner was already built, so a wrist camera handed in now would not be in it: hand the "
+                "cell's wrist bodies to the arm before its first planned move or planner start"
+            )
+        listed = tuple(bodies)
+        if self.config.gripper.tool_frame.source == "willy":
+            for body in listed:
+                stale = body.record_refusal("willy", self._declared_tool_matrix())
+                if stale is not None:
+                    raise ValueError(stale)
+        self._preflight.set_wrist_bodies(listed)
+
     def set_live_planner_world(self, world: "LivePlannerWorld | None") -> None:
         """Hand this arm the thing that answers what the cell looks like right now.
 
@@ -1263,6 +1446,24 @@ class URRobotArm(RobotArm):
         self._live_world = world
         if self._curobo_ur is not None:
             self._curobo_ur.set_live_world(world)
+
+    @property
+    def camera_world_required(self) -> bool:
+        """Whether every motion of this arm needs a live camera world or a decline: true on cuRobo."""
+        return self._motion_planner == "curobo"
+
+    def camera_world_for_move(self, camera_world: Maybe[CameraWorldDecline] = UNSET) -> CameraWorldStamp:
+        """The camera world a :meth:`move` with ``camera_world`` would carry, read as the arm is now.
+
+        The stamp :meth:`move` starts from before a refresh vouches for it: UNPLANNED on ik,
+        MISSING on cuRobo with no live world and no decline, DECLINED for a decline. It reads no
+        connection and starts no planner.
+        """
+        return self._move_camera_world(camera_world)
+
+    def live_camera_world_wired(self) -> bool:
+        """Whether a live camera world is wired to this arm."""
+        return self._live_world is not None
 
     def without_camera_world(self, reason: str) -> AbstractContextManager[CameraWorldDecline]:
         """Decline the camera world for every motion this arm commands inside the ``with`` block.
@@ -1302,10 +1503,13 @@ class URRobotArm(RobotArm):
         """
         from src.robot.drivers.sim.robot_models import curobo_arm_descriptor
         from src.robot.safety.planning._curobo_body_links import BodyLinkError
-        from src.robot.safety.planning.body_link import HandLink
+        from src.robot.safety.planning.body_link import HandLink, coupling_bodies
         from src.robot.safety.planning.margin import planner_margin_refusal
-        from src.robot.safety.planning.robot.retract_table import RetractMissing, read_retract
         from src.robot.safety.planning.reservation import PlannerReservation
+        from src.robot.safety.planning.robot.retract_table import (
+            RetractMissing,
+            read_retract,
+        )
 
         # No implied margin. A UR cell that plans with cuRobo says what clearance its planner keeps,
         # or it does not plan: an undeclared margin read as 0 lets the sidecar propose paths at
@@ -1342,11 +1546,15 @@ class URRobotArm(RobotArm):
             # model with another: on a ur3 the anchor works with the 2F-85 and refuses with the Hand-E.
             try:
                 default_q = read_retract(str(self.config.ur.model), hand.model, float(hand.coupling_mm),
-                                        margin_mm)
+                                        margin_mm,
+                                        placement=f"{link.placement.approach}{link.placement.closing}")
             except RetractMissing as exc:
                 raise CuroboUnavailableError(str(exc)) from exc
             client = CuroboPlanClient(
-                robot_config=robot_yml, self_collision_margin_mm=margin_mm, body_links=[link.to_dict()],
+                robot_config=robot_yml, self_collision_margin_mm=margin_mm,
+                body_links=[link.to_dict(), *coupling_bodies(hand)],
+                # The wrist cameras this arm was handed, read when the planner is built.
+                wrist_body_links=[body.link() for body in self._preflight.wrist_bodies(self)],  # type: ignore[attr-defined]
                 default_q=default_q,
             )
             client.reserve_world(reservation)
@@ -1355,10 +1563,19 @@ class URRobotArm(RobotArm):
         return build
 
     def _descriptor_check(self) -> "Callable[[SidecarIdentity], str | None]":
-        """What the planner asks of the sidecar it started: this arm's descriptor, no hand in it, this cell's hand added."""
+        """What the planner asks of the sidecar it started: this arm's descriptor, no hand in it, this cell's hand added,
+        and a committed evidence file that measured exactly that combination.
+
+        The descriptor check comes first because it says which robot the sidecar loaded, and the evidence
+        check then asks whether anybody measured that robot. A sidecar that reports no hashes is refused
+        rather than trusted, because an unreported hash is not a hash that matched.
+        """
         from src.robot.safety.planning._curobo_body_links import BodyLinkError
-        from src.robot.safety.planning.body_link import HandLink
+        from src.robot.safety.planning.body_link import HandLink, wrist_body_refusal
+        from src.robot.safety.planning.evidence import planner_evidence_refusal
         from src.robot.safety.planning.hand import descriptor_refusal
+        from src.robot.safety.planning.margin import declared_planner_margin
+        from src.robot.safety.planning.reservation import PlannerReservation
 
         hand = self._preflight.planner_hand(self)
         model = str(self.config.ur.model)
@@ -1372,7 +1589,28 @@ class URRobotArm(RobotArm):
         except BodyLinkError as exc:
             unplaced = str(exc)
             return lambda identity: unplaced
-        return lambda identity: descriptor_refusal(identity, link, arm=model)
+        sc = self.config.safety.self_collision
+        declared = declared_planner_margin(sc)
+        attach = PlannerReservation.from_config(robot_cfg=self.config).sphere_slots
+
+        def check(identity: "SidecarIdentity") -> "str | None":
+            said = descriptor_refusal(identity, link, arm=model)
+            if said is not None:
+                return said
+            # The wrist cameras the sidecar loaded are exactly this arm's, and their cover is proven
+            # complete: the evidence below is keyed without them.
+            said = wrist_body_refusal(identity, self._preflight.wrist_bodies(self))  # type: ignore[arg-type]
+            if said is not None:
+                return said
+            if not chosen(declared):
+                return ("safety.self_collision.planner_margin_mm is undeclared, so no evidence can be looked up: "
+                        "the margin is part of what a file measured")
+            return planner_evidence_refusal(
+                identity, hand, link, arm=model, planner_margin_mm=float(declared),
+                guard_margin_mm=float(sc.min_distance_mm), attach_spheres=int(attach), mesh_dir=sc.mesh_dir,
+            )
+
+        return check
 
     async def amove_to(
         self,
@@ -1495,14 +1733,12 @@ class URRobotArm(RobotArm):
         when none did. Nothing plans a joint move on this driver; on cuRobo its path is checked
         against that refreshed world, which is what PLANNED says here. A declined joint move on an
         arm whose live camera world is wired is refused with ``UNSUPPORTED`` before its path is
-        judged.
+        judged, and so is a MISSING joint move, with neither a world nor a decline.
         """
         stamp = self._move_camera_world(camera_world)
-        if stamp.use is CameraWorldUse.DECLINED and self._live_world is not None:
-            return MotionResult.failed(
-                MotionStatus.UNSUPPORTED, MotionCommand.MOVE_JOINTS, target_joints=joints,
-                message=DECLINE_ON_A_LIVE_WORLD_MESSAGE, camera_world=stamp,
-            )
+        refused = self._refused_for_camera_world(stamp, MotionCommand.MOVE_JOINTS, target_joints=joints)
+        if refused is not None:
+            return refused
         before = self._planner_refresh()
         unstamped = self._move_to_joints_unstamped(
             joints, velocity=velocity, acceleration=acceleration,
@@ -1572,6 +1808,7 @@ class URRobotArm(RobotArm):
         here = [float(v) for v in self._conn.get_joint_positions()]
         refused = self._refresh_before_the_path_gate(
             near_point_mm=self._flange_mm(joints), command=command, target_joints=joints,
+            goal_tcp_mm=self._tcp_at_joints_mm(joints),
         )
         if refused is not None:
             return refused
@@ -1616,8 +1853,12 @@ class URRobotArm(RobotArm):
         command: MotionCommand,
         target_joints: JointPositions | None = None,
         target_pose: Pose | None = None,
+        goal_tcp_mm: "np.ndarray | None" = None,
     ) -> "MotionResult | None":
         """Refresh the live camera world before a path is judged; ``None`` means judging may start.
+
+        ``goal_tcp_mm`` is the TCP at the path's goal, where the space between the jaws is left out
+        of the world; ``None`` records why no region was placed.
 
         The local path guard learns the perceived obstacles from the refresh. Run inside the
         planner's check, after that guard, it would leave the guard judging this path against the
@@ -1631,7 +1872,7 @@ class URRobotArm(RobotArm):
         if self._live_world is None:
             return None
         try:
-            self._curobo_ur_planner().refresh_world(near_point_mm=near_point_mm)
+            self._curobo_ur_planner().refresh_world(near_point_mm=near_point_mm, **self._goal_keep_out(goal_tcp_mm))
         except CuroboUnavailableError as exc:
             return MotionResult.failed(
                 MotionStatus.CONTROLLER_REJECTED, command,
@@ -1639,6 +1880,80 @@ class URRobotArm(RobotArm):
                 message=f"cuRobo planner unavailable: {exc}", exception=exc,
             )
         return None
+
+    #: How far a plan's last configuration may put the flange from the flange goal it was planned
+    #: to: the tolerance the Isaac driver holds an executed cuRobo plan to (``drivers/sim/arm.py``
+    #: ``_MOVE_POS_TOL_MM``, ``_MOVE_ORI_TOL_DEG``). A base half a turn out misses by about a
+    #: metre and 180 degrees, far outside either.
+    _PLAN_END_TOL_MM = 5.0
+    _PLAN_END_TOL_DEG = 6.0
+
+    def _plan_end_refusal(self, goal: Pose, last_joints: "Sequence[float]", pose: Pose) -> "MotionResult | None":
+        """A refusal when the plan's last configuration does not put the flange on ``goal``, or ``None`` when it does.
+
+        Read on the DH chain, which is the controller's own frame, so a planner that answers in
+        another base is caught here rather than on the robot. ``goal`` is the flange goal the
+        planner was handed and ``pose`` the TCP pose the caller asked for, which the refusal names.
+        """
+        from src.robot.safety._ur_kinematics import ur_link_transforms_mm
+
+        model = str(self.config.ur.model)
+        frames = ur_link_transforms_mm(model, np.asarray([float(v) for v in last_joints], dtype=np.float64))
+        if frames is None:
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+                message=(f"robot.ur.model {model!r} has no DH chain here, so where this plan ends cannot be read, and "
+                         "a plan whose end nobody read does not move"),
+            )
+        end = np.asarray(frames[-1], dtype=np.float64)
+        target = np.asarray(goal.to_matrix(), dtype=np.float64)
+        error_mm = float(np.linalg.norm(end[:3, 3] - target[:3, 3]))
+        cosine = (float(np.trace(end[:3, :3].T @ target[:3, :3])) - 1.0) / 2.0
+        error_deg = float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
+        if error_mm <= self._PLAN_END_TOL_MM and error_deg <= self._PLAN_END_TOL_DEG:
+            return None
+        return MotionResult.failed(
+            MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+            message=(f"the plan ends {error_mm:.1f} mm and {error_deg:.1f} deg from its goal (at most "
+                     f"{self._PLAN_END_TOL_MM:g} mm and {self._PLAN_END_TOL_DEG:g} deg), read on the controller's own "
+                     "kinematics, so nothing moved: a planner answering in another base than the controller's ends "
+                     "here"),
+        )
+
+    def _goal_keep_out(self, goal_tcp_mm: "np.ndarray | None") -> "dict[str, Any]":
+        """The goal region's keyword for a refresh, or nothing on an arm that holds no live world.
+
+        A region is computed only where a world is refreshed, so an arm with no world keeps the
+        unchanged path. An undeclared tool frame places no TCP, and the refresh records that no
+        region was placed and why.
+        """
+        if self._live_world is None:
+            return {}
+        from src.robot.core.keep_out import GoalKeepOut
+        from src.robot.safety.planning.self_envelope import goal_keep_out
+
+        if goal_tcp_mm is None:
+            reason = ("robot.gripper.tool_frame is undeclared, so the TCP at this goal is not known and no goal region "
+                      "is placed") if self._declared_tool_matrix() is None else (
+                "the TCP at this goal is not known, so no goal region is placed")
+            return {"goal_keep_out": GoalKeepOut(region=None, reason=reason)}
+        return {"goal_keep_out": goal_keep_out(self._preflight, self, goal_tcp_mm)}
+
+    def _tcp_of_pose(self, pose: Pose) -> "np.ndarray | None":
+        """A TCP goal as a 4x4, or ``None`` when the tool frame is undeclared and the pose is the flange's."""
+        if self._declared_tool_matrix() is None:
+            return None
+        return np.asarray(pose.to_matrix(), dtype=np.float64)
+
+    def _tcp_at_joints_mm(self, joints: JointPositions) -> "np.ndarray | None":
+        """The TCP at ``joints``: the flange frame the chain ends in times the declared tool frame, or ``None``."""
+        from src.robot.safety._ur_kinematics import ur_link_transforms_mm
+
+        tool = self._declared_tool_matrix()
+        frames = ur_link_transforms_mm(str(self.config.ur.model), np.asarray(joints.tolist(), dtype=np.float64))
+        if tool is None or frames is None:
+            return None
+        return np.asarray(frames[-1], dtype=np.float64) @ tool
 
     def _flange_mm(self, joints: JointPositions) -> "list[float] | None":
         """Where the flange stands at ``joints``, in BASE millimetres; ``None`` for a model with no chain.
@@ -1670,10 +1985,11 @@ class URRobotArm(RobotArm):
         On a cuRobo cell the line is sampled in the frame the controller interpolates,
         because that is the frame in which the motion is actually straight: the bare flange
         in ``willy`` mode, the declared tool in ``polyscope`` mode. Every sample is solved by
-        the controller's own inverse kinematics, seeded with the previous solution, so the
-        configurations judged are the ones the controller will pass through rather than a
-        second opinion from a different solver. Then the local guards judge all of them, and
-        the planner judges the same list against its world.
+        the controller's own inverse kinematics, seeded with the previous solution and the
+        first with the joints the arm stands at, so the configurations judged are the ones the
+        controller will pass through rather than a second opinion from a different solver. Then
+        the local guards judge all of them, and the planner judges the same list against its
+        world.
 
         It is not free: one RTDE round trip per sample, and the samples are as dense as the
         collision margin asks for. A line is the one motion in this stack that nothing plans,
@@ -1732,6 +2048,64 @@ class URRobotArm(RobotArm):
             samples, pose=pose, owns_tool=owns_tool, radii=radii, command=command,
         )
 
+    def _line_step_refusal(
+        self,
+        previous: "Sequence[float]",
+        solved: "Sequence[float]",
+        *,
+        index: int,
+        count: int,
+        bound_mm: float,
+        pose: Pose,
+        command: MotionCommand,
+    ) -> "MotionResult | None":
+        """Why the step from ``previous`` to ``solved`` is not part of one continuous line, or ``None`` when it is.
+
+        A branch change is a joint jumping, or a chord off the line. It is not the sum
+        |dq_j| * r_j against the step bound: that sum adds two joints turning against each other
+        as if both carried the arm the same way, and on URSim a continuous lift sums to 27 mm a
+        step while no link origin moves more than 10 mm. A jump is one joint turning more than a
+        continuous line does. A branch change with no jump, the two elbow branches near full
+        stretch, reaches the same flange pose from two configurations 0.30 rad apart, and it
+        shows where the judged fill and moveL part: the joint line between them puts the flange
+        off the line the controller runs.
+        """
+        where = "the joints the arm stands at" if index == 0 else f"sample {index}"
+        turned = [abs(b - a) for a, b in zip(previous, solved)]
+        joint = max(range(len(turned)), key=turned.__getitem__)
+        if turned[joint] > LINE_MAX_JOINT_STEP_RAD:
+            return MotionResult.failed(
+                MotionStatus.IK_QUALITY_REJECTED, command, target_pose=pose,
+                message=(
+                    f"the controller changed IK branch between {where} and sample {index + 1} of {count} of this "
+                    f"line: joint {joint + 1} turns {turned[joint]:.2f} rad in one step of at most {bound_mm:.1f} mm, "
+                    f"where a continuous line turns no joint more than {LINE_MAX_JOINT_STEP_RAD} rad. The arm would "
+                    f"take a route none of these samples describes"
+                ),
+            )
+        model = str(self.config.ur.model)
+        middle = [(a + b) / 2.0 for a, b in zip(previous, solved)]
+        frames = [ur_link_transforms_mm(model, np.asarray(q, dtype=np.float64)) for q in (previous, solved, middle)]
+        if any(chain is None for chain in frames):
+            return MotionResult.failed(
+                MotionStatus.UNSUPPORTED, command, target_pose=pose,
+                message=(f"robot.ur.model {model!r} has no DH chain here, so whether this line's samples are one "
+                         "branch cannot be read, and a line nobody read is not run"),
+            )
+        start, end, mid = (np.asarray(chain[-1], dtype=np.float64)[:3, 3] for chain in frames)  # type: ignore[index]
+        off_mm = float(np.linalg.norm(mid - (start + end) / 2.0))
+        if off_mm > LINE_MAX_CHORD_OFF_MM:
+            return MotionResult.failed(
+                MotionStatus.IK_QUALITY_REJECTED, command, target_pose=pose,
+                message=(
+                    f"the controller changed IK branch between {where} and sample {index + 1} of {count} of this "
+                    f"line: no joint jumps, but the joint line between the two solutions puts the flange "
+                    f"{off_mm:.2f} mm off the line moveL runs, more than {LINE_MAX_CHORD_OFF_MM} mm, so what would "
+                    f"be judged is not what the controller would drive"
+                ),
+            )
+        return None
+
     def _judge_line_samples(
         self,
         samples: "LineSamples",
@@ -1744,7 +2118,12 @@ class URRobotArm(RobotArm):
         """Solve every sample of a line and hand the configurations to both authorities."""
         assert self._preflight is not None  # noqa: S101 (the caller checked)
         configs: list[tuple[float, ...]] = []
-        seed: JointPositions | None = None
+        # The line starts at the joints the arm stands at. moveL starts there whatever an
+        # unseeded solution of the start pose says, so sample 0 is solved seeded on them and
+        # judged against them like every later sample: a start on another branch is refused
+        # rather than judged as if the arm were in it.
+        seed: JointPositions = JointPositions([float(v) for v in self._conn.get_joint_positions()])
+        bound = samples.step_bound_mm if samples.step_bound_mm > 0.0 else float(self._preflight.path_step_mm or 0.0)
         for index, sample in enumerate(samples.poses):
             tcp = self._pose_from_flange(sample) if owns_tool else sample
             if not self._guard.is_inside_workspace(self._coerce_urpose(tcp)):
@@ -1767,28 +2146,42 @@ class URRobotArm(RobotArm):
                     ),
                     exception=exc,
                 )
-            if seed is not None:
-                swept = sum(
-                    abs(b - a) * radius
-                    for a, b, radius in zip(seed.tolist(), solved.tolist(), radii)
-                )
-                if swept > samples.step_bound_mm + 1e-6:
+            previous = seed.tolist()
+            refused = self._line_step_refusal(
+                previous, solved.tolist(), index=index, count=len(samples.poses), bound_mm=bound, pose=pose,
+                command=command,
+            )
+            if refused is not None:
+                return refused
+            # The path gate is told a bound on how far any point moves between two configurations
+            # it judges, and the sum |dq_j| * r_j is the one bound that holds without the geometry.
+            # Where a continuous step is more than the sum can vouch for, the joint line between
+            # its two solutions is judged too, at the line's own step; the chord check above is
+            # what says that joint line is the motion moveL runs.
+            if bound > 0.0:
+                try:
+                    filled = joint_path_samples(previous, solved.tolist(), reach_mm=radii, max_step_mm=bound)
+                except ValueError as exc:
                     return MotionResult.failed(
-                        MotionStatus.IK_QUALITY_REJECTED, command, target_pose=pose,
-                        message=(
-                            f"the controller changed IK branch between samples {index} and "
-                            f"{index + 1} of this line: {swept:.1f} mm of arm travel for a step "
-                            f"bounded at {samples.step_bound_mm:.1f} mm. The arm would take a route "
-                            f"none of these samples describes"
-                        ),
+                        MotionStatus.UNSUPPORTED, command, target_pose=pose,
+                        message=f"sample {index + 1} of {len(samples.poses)} of this line cannot be judged: {exc}",
                     )
+                configs.extend(filled.configs[1:-1])
             configs.append(tuple(solved.tolist()))
+            if len(configs) > MAX_PATH_SAMPLES:
+                return MotionResult.failed(
+                    MotionStatus.UNSUPPORTED, command, target_pose=pose,
+                    message=(
+                        f"this line needs more than {MAX_PATH_SAMPLES} configurations to be judged at "
+                        f"{bound:.2f} mm a step; move it in shorter lines"
+                    ),
+                )
             seed = solved
 
-        judged = PathSamples(configs=tuple(configs), step_bound_mm=samples.step_bound_mm)
+        judged = PathSamples(configs=tuple(configs), step_bound_mm=bound)
         refused = self._refresh_before_the_path_gate(
             near_point_mm=[float(v) for v in self._pose_to_flange(pose).position_mm],
-            command=command, target_pose=pose,
+            command=command, target_pose=pose, goal_tcp_mm=self._tcp_of_pose(pose),
         )
         if refused is not None:
             return refused
@@ -1850,8 +2243,14 @@ class URRobotArm(RobotArm):
         the move, and this is a public Protocol-level surface that sim runners and
         operator code reach directly rather than only through :meth:`move_to_joints`. It
         judges exactly what that method judges, through the same helper, and raises what
-        it returns: the destination on an ik cell, the whole line on a cuRobo one.
+        it returns: the destination on an ik cell, the whole line on a cuRobo one. On cuRobo,
+        a move with neither a camera world nor a decline in scope is refused before the judge.
         """
+        refused = self._refused_for_camera_world(
+            self._move_camera_world(UNSET), MotionCommand.MOVE_JOINTS, target_joints=joints,
+        )
+        if refused is not None:
+            raise RobotMotionRejected(f"move_joint refused: {refused.message}", result=refused)
         rejected = self._judge_joint_move(joints, command=MotionCommand.MOVE_JOINTS)
         if rejected is not None:
             if rejected.status is MotionStatus.CONNECTION_ERROR:
@@ -1890,7 +2289,16 @@ class URRobotArm(RobotArm):
         velocity: float | None = None,
         acceleration: float | None = None,
     ) -> None:
-        """Cartesian move to ``pose`` in :attr:`Frame.BASE`."""
+        """Cartesian move to ``pose`` in :attr:`Frame.BASE`.
+
+        On cuRobo, a move with neither a camera world nor a decline in scope is refused before the
+        connection is read.
+        """
+        refused = self._refused_for_camera_world(
+            self._move_camera_world(UNSET), MotionCommand.MOVE_TO, target_pose=pose,
+        )
+        if refused is not None:
+            raise RobotMotionRejected(f"move_linear refused: {refused.message}", result=refused)
         if pose.frame is not Frame.BASE:
             raise FrameMismatchError(
                 f"move_linear() requires pose in Frame.BASE; got {pose.frame!r}."

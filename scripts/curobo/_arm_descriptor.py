@@ -9,8 +9,9 @@ descriptor guards no tool frame at all: cuRobo raises on a collision link with n
 spheres would count the hand twice. :func:`arm_only` takes the tool frame out of the collision links and the buffer
 table and keeps the ignore entries that name it, which then cost nothing. It also drops the template's
 ``camera_mount`` ignore key, which names no link of any UR description: a camera body of that name would inherit the
-table, and the body link composition refuses a name that is already a key. Isaac's Lula descriptions, where the arm
-spheres come from, name no tool0, so a build never has tool0 spheres to refuse.
+table, and the body link composition refuses a name that is already a key. The arm spheres come from the committed
+cover fit, whose bodies are the six arm links, and Isaac's Lula descriptions, the fallback for an arm with no fit, name
+no tool0, so a build never has tool0 spheres to refuse.
 """
 
 from __future__ import annotations

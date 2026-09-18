@@ -74,6 +74,7 @@ from src.willy_sim.run_sorting_demo import (
     _setup_cine,
     _write_mp4,
 )
+from src.robot.core.camera_world import CameraWorldDecline
 
 CINE_POS_M = (2.55, -2.4, 1.9)
 CINE_RES = (1280, 720)
@@ -232,7 +233,8 @@ def record_expose(out: str, *, headless: bool = True, prompt: str | None = None,
 
     cell = bootstrap_sim_cell(None, headless=headless, scene_kwargs={
         "objects_override": _specs(target), "bin_walls": src_walls + dst_walls, "appearance": appearance,
-    }, post_scene_hook=_hook)
+    }, post_scene_hook=_hook,
+        camera_world=CameraWorldDecline("run_expose_pick: this runner plans without a live camera world"))
     arm, gripper, handles, sim, cfg = cell.arm, cell.gripper, cell.handles, cell.sim, cell.cfg
     session = arm.session
     import omni.usd  # type: ignore[import-not-found]

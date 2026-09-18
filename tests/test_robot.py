@@ -265,6 +265,135 @@ class WithoutCameraWorldTests(unittest.TestCase):
         self.assertIs(after.camera_world.use, CameraWorldUse.MISSING)
 
 
+class _RigOwner:
+    """A camera owner as `Robot` takes it: the rig facts the plan reads, and the handle and calibration the world reads."""
+
+    def __init__(self, rig_id: str, *, wrist: bool = False, calibrated: bool = True) -> None:
+        from tests.test_camera_world_wiring import _Owner, _rig
+
+        self.rig_id = rig_id
+        self.rig = _rig(rig_id, wrist=wrist, calibrated=calibrated)
+        self._owner = _Owner(rig_id, wrist=wrist)
+
+    def handle(self):  # noqa: ANN201
+        return self._owner.handle()
+
+    def calibration(self):  # noqa: ANN201
+        return self._owner.calibration()
+
+
+def _world_cell(*, world: bool = True) -> RobotConfig:
+    """A UR cuRobo cell that asks for a live world from its cameras, and names its hand (the guard reads it)."""
+    from tests.test_camera_world_wiring import _cell
+
+    cfg = _cell(world=world)
+    return cfg.model_copy(update={"gripper": cfg.gripper.model_copy(update={"model": "robotiq_2f85"})})
+
+
+class ARobotTakesItsCamerasTests(unittest.TestCase):
+    """A robot handed its open cameras builds the live planner world from them and hands it to its arm.
+
+    The caller opens and releases the cameras (one owner per rig); `Robot` only reads them. Behaviour changes
+    only for a caller that passes `cameras`, and no caller in the repository does yet.
+    """
+
+    def test_a_robot_built_with_cameras_hands_its_arm_the_world(self) -> None:
+        arm = URRobotArm(_world_cell())
+        robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None, cameras=[_RigOwner("overhead")])
+        self.assertIsNotNone(arm._live_world)
+        assert robot.camera_world is not None
+        self.assertIs(robot.camera_world.world, arm._live_world)
+
+    def test_a_robot_built_without_cameras_hands_its_arm_nothing(self) -> None:
+        """The control: the same cell with no cameras chosen is the robot it was before."""
+        arm = URRobotArm(_world_cell())
+        robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None)
+        self.assertIsNone(arm._live_world)
+        self.assertIsNone(robot.camera_world)
+
+    def test_a_sim_arm_takes_the_world_through_its_own_setter(self) -> None:
+        from tests.test_camera_world_on_every_driver import _sim_unconnected
+
+        arm = _sim_unconnected()
+        robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None, cameras=[_RigOwner("overhead")],
+                                 robot_config=_world_cell())
+        assert robot.camera_world is not None
+        self.assertIsNotNone(robot.camera_world.world)
+        self.assertIs(arm.live_planner_world, robot.camera_world.world)
+
+    def test_a_wrist_camera_reads_the_robots_own_arm(self) -> None:
+        # A wrist camera on a cell that reads geometry declares its body, and the arm takes it.
+        from tests._wrist_body import WristOwner, wrist_cell
+        from tests.test_a_wrist_rig_needs_a_body import _BodyArm
+
+        arm = _BodyArm()
+        robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None, cameras=[WristOwner()],
+                                 robot_config=wrist_cell())
+        assert robot.camera_world is not None and robot.camera_world.world is not None
+        self.assertEqual(robot.camera_world.world.cameras[0].depth_source._tool_pose, arm.get_tcp_pose)
+
+    def test_cameras_without_a_tree_to_read_the_world_from_are_refused(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            Robot.from_parts(arm=DummyRobotArm(), gripper=None, lock_key=None, cameras=[_RigOwner("overhead")])
+        for part in ("arm.config", "robot_config"):
+            self.assertIn(part, str(caught.exception))
+
+    def test_cameras_none_is_refused_naming_unset(self) -> None:
+        with self.assertRaises(TypeError) as caught:
+            Robot.from_parts(arm=URRobotArm(_world_cell()), gripper=None, lock_key=None, cameras=None)
+        self.assertIn("UNSET", str(caught.exception))
+
+    def test_the_camera_world_line_says_what_the_robot_holds(self) -> None:
+        untouched = Robot.from_parts(arm=URRobotArm(_world_cell()), gripper=None, lock_key=None)
+        self.assertEqual(untouched.camera_world_line(),
+                         "camera world  not handed any camera: every planned motion needs a decline")
+        # By owner decision a calibrated camera on a cuRobo arm with the block off is refused, not built without a world.
+        from src.robot.execution.camera_world_wiring import CameraWorldRequired
+
+        with self.assertRaises(CameraWorldRequired) as caught:
+            Robot.from_parts(arm=URRobotArm(_world_cell(world=False)), gripper=None, lock_key=None,
+                             cameras=[_RigOwner("overhead")])
+        self.assertIn("safety.planning_world.enabled is false", str(caught.exception))
+        # An uncalibrated camera builds with no world, and every planned motion needs a decline.
+        none = Robot.from_parts(arm=URRobotArm(_world_cell()), gripper=None, lock_key=None,
+                                cameras=[_RigOwner("overhead", calibrated=False)])
+        self.assertTrue(none.camera_world_line().startswith("camera world  none: "), none.camera_world_line())
+        self.assertTrue(none.camera_world_line().endswith(": every planned motion needs a decline"))
+        wired = Robot.from_parts(arm=URRobotArm(_world_cell()), gripper=None, lock_key=None,
+                                 cameras=[_RigOwner("overhead")])
+        self.assertEqual(wired.camera_world_line(), "camera world  wired: 'overhead'")
+        # The control: a dummy arm needs no world, and neither refuses nor says it needs a decline.
+        dummy = Robot.from_parts(arm=DummyRobotArm(), gripper=None, lock_key=None,
+                                 cameras=[_RigOwner("overhead")], robot_config=_world_cell(world=False))
+        self.assertTrue(dummy.camera_world_line().startswith("camera world  none: "))
+        self.assertNotIn("needs a decline", dummy.camera_world_line())
+
+    def test_from_config_passes_its_cameras_and_its_tree_through(self) -> None:
+        """One builder: the YAML factory resolves the arm, then calls the Python factory with the tree it holds."""
+        with patch(_READY):
+            robot = Robot.from_config(RobotConfig.model_validate({
+                **_world_cell().model_dump(mode="json"), "vendor": "dummy"}), gripper=None,
+                cameras=[_RigOwner("overhead")])
+        assert robot.camera_world is not None
+        self.assertIsNotNone(robot.camera_world.world)
+
+
+_BUILD_WITH_A_CAMERA = "\n".join((
+    "from types import SimpleNamespace",
+    "from src.config.schema.robot import RobotConfig",
+    "from src.robot.execution.robot import Robot",
+    "rig = SimpleNamespace(rig_id='overhead', enabled=True, source='rgbd', extrinsics=None)",
+    "owner = SimpleNamespace(rig_id='overhead', rig=rig, handle=lambda: None, calibration=lambda: None)",
+    "robot = Robot.from_config(RobotConfig(vendor='dummy', gripper={'vendor': 'dummy'}), cameras=[owner])",
+    "assert robot.camera_world is not None and robot.camera_world.world is None",
+))
+
+
+class ARobotWithCamerasLoadsNoPickServiceTests(unittest.TestCase):
+    def test_a_robot_with_cameras_loads_no_pick_service(self) -> None:
+        self.assertEqual(_loaded_after(_BUILD_WITH_A_CAMERA, _ROBOT_MUST_NOT_LOAD), [])
+
+
 class TheNameTests(unittest.TestCase):
 
     def test_both_package_names_are_the_noun(self) -> None:
@@ -284,8 +413,10 @@ _BUILD_AND_CONNECT = "\n".join((
     "from src.config.schema.robot import RobotConfig",
     "from src.robot.execution.robot import Robot",
     "robot = Robot.from_config(RobotConfig(vendor='dummy', gripper={'vendor': 'dummy'}))",
+    "import src.robot.execution.handling",
     "with robot.connected() as live:",
     "    assert robot.arm.is_connected",
+    "    assert robot.grasp(40.0).ok",
     "assert live.teardown is not None and live.teardown.clean",
 ))
 

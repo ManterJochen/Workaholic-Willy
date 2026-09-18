@@ -214,6 +214,10 @@ class MotionStack:
     #: The hand the cell names, ``robot.gripper.model`` or ``--hand``. The planner adds it
     #: to the arm's descriptor as a body link.
     hand: "Maybe[str]" = UNSET
+    #: The whole cell this reading was taken from, where one was loaded: what the doctor looks a
+    #: retract row and an evidence file up for. Never on the wire; a report says what it found, not
+    #: the config.
+    cell: "Maybe[RobotConfig]" = UNSET
 
     @property
     def model_source(self) -> str:
@@ -232,7 +236,7 @@ class MotionStack:
     @classmethod
     def from_model(
         cls, *, model: str, source: ModelSource = ModelSource.CALLER, detail: str = "",
-        config_error: str = "", hand: "Maybe[str]" = UNSET,
+        config_error: str = "", hand: "Maybe[str]" = UNSET, cell: "Maybe[RobotConfig]" = UNSET,
     ) -> "MotionStack":
         """A named robot. The plain-Python door, and the only one that constructs.
 
@@ -240,7 +244,7 @@ class MotionStack:
         reading taken from config and a reading taken from an argument cannot be
         assembled differently.
         """
-        return cls(model=model, source=source, detail=detail, config_error=config_error, hand=hand)
+        return cls(model=model, source=source, detail=detail, config_error=config_error, hand=hand, cell=cell)
 
     @classmethod
     def from_robot_config(
@@ -261,18 +265,19 @@ class MotionStack:
             named = getattr(getattr(robot_config, "gripper", None), "model", None)
             hand = str(named) if named else UNSET
         if chosen(model):
-            return cls.from_model(model=model, hand=hand)
+            return cls.from_model(model=model, hand=hand, cell=robot_config)
         declared = getattr(getattr(robot_config.safety, "self_collision", None), "kinematics_model", None)
         if declared:
-            return cls.from_model(model=str(declared), source=ModelSource.SELF_COLLISION, hand=hand)
+            return cls.from_model(model=str(declared), source=ModelSource.SELF_COLLISION, hand=hand, cell=robot_config)
         vendor_model = getattr(getattr(robot_config, "ur", None), "model", None)
         if vendor_model:
-            return cls.from_model(model=str(vendor_model), source=ModelSource.VENDOR_BLOCK, hand=hand)
+            return cls.from_model(model=str(vendor_model), source=ModelSource.VENDOR_BLOCK, hand=hand, cell=robot_config)
         return cls.from_model(
             model=FALLBACK_MODEL,
             source=ModelSource.FALLBACK,
             detail="no model declared in this config",
             hand=hand,
+            cell=robot_config,
         )
 
     @classmethod

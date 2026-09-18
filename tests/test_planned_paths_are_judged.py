@@ -30,6 +30,11 @@ from src.geometry import Frame, Pose
 from src.robot.core import MotionResult, MotionStatus
 from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.safety._fcl_self_collision import mesh_backend_status
+from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
+
+#: Said where each arm is built: these doubles plan or check with cuRobo and carry no camera world, so every
+#: motion they command declines it, as a cuRobo cell must since the world became mandatory.
+_DECLINED = "unit double: this test exercises the planner and the guard on a cuRobo arm, and no camera world is wired to it"
 
 #: The folded configuration test_planning_world.py and test_joint_path_gate.py use: a finger in the
 #: forearm, which the exact mesh backend refuses with "forearm|lfinger: mesh distance 0.367 mm".
@@ -64,6 +69,11 @@ class _FakePlanner:
         self._trajectory = trajectory
         self.executed = False
 
+    @property
+    def goal_end(self) -> list[float]:
+        """Where the trajectory ends: the one goal a real planner would have handed it back for (Step 8f)."""
+        return list(self._trajectory[-1])
+
     def plan(self, pose: Pose) -> list[list[float]]:
         return self._trajectory
 
@@ -86,6 +96,9 @@ def _curobo_arm(trajectory: list[list[float]]) -> tuple[URRobotArm, _FakePlanner
         "ur": {"motion_planner": "curobo"},
         "safety": {"payload": {"enforce": False}},
         "gripper": {"model": "robotiq_2f85"},
+        # The configurations here were chosen for what the exact meshes say about them, and they put the flange
+        # outside the shipped box; the box is not what this file is about.
+        "workspace_limits": OPEN_WORKSPACE,
     })
     arm = URRobotArm(config)
     arm._conn = MagicMock()
@@ -104,7 +117,8 @@ class APlannedPathIsAlwaysJudgedTests(unittest.TestCase):
         if not _mesh_backend_available():
             pytest.skip("no exact mesh backend on this box")
         arm, planner = _curobo_arm([_NEAR_CLEAR, _FOLDED, _NEAR_CLEAR])
-        result = arm.move(_pose())
+        self.enterContext(arm.without_camera_world(_DECLINED))
+        result = arm.move(pose_where_it_ends(arm, planner.goal_end))
         self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, result.status)
         self.assertIn("sample", result.message or "")
         self.assertFalse(planner.executed, "a path judged unsafe was executed anyway")
@@ -121,6 +135,7 @@ class APlannedPathIsAlwaysJudgedTests(unittest.TestCase):
         from src.robot.core import JointPositions
 
         arm, planner = _curobo_arm([_NEAR_CLEAR, _LEG_END])
+        self.enterContext(arm.without_camera_world(_DECLINED))
         endpoints_only = arm.safety_preflight
         assert endpoints_only is not None
         # The control, and it is the whole test: BOTH waypoints pass the endpoint gate, so
@@ -131,7 +146,7 @@ class APlannedPathIsAlwaysJudgedTests(unittest.TestCase):
                     endpoints_only.gate_joint_target(JointPositions(tuple(waypoint)), arm=arm),
                     "this waypoint is not clear, so the test below proves nothing",
                 )
-        result = arm.move(_pose())
+        result = arm.move(pose_where_it_ends(arm, planner.goal_end))
         self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, result.status)
         self.assertFalse(planner.executed)
 
@@ -140,8 +155,9 @@ class APlannedPathIsAlwaysJudgedTests(unittest.TestCase):
         if not _mesh_backend_available():
             pytest.skip("no exact mesh backend on this box")
         arm, planner = _curobo_arm([_NEAR_CLEAR, _NEAR_CLEAR])
+        self.enterContext(arm.without_camera_world(_DECLINED))
         arm._gate_planned_config = lambda pose, joints: None  # type: ignore[assignment, misc]
-        result = arm.move(_pose())
+        result = arm.move(pose_where_it_ends(arm, planner.goal_end))
         self.assertTrue(result.ok, result.message)
         self.assertTrue(planner.executed)
 
@@ -163,7 +179,8 @@ class ALongPathIsJudgedRatherThanRefusedTests(unittest.TestCase):
         if not _mesh_backend_available():
             pytest.skip("no exact mesh backend on this box")
         arm, planner = _curobo_arm([_FAR, _FOLDED, _FAR])
-        result = arm.move(_pose())
+        self.enterContext(arm.without_camera_world(_DECLINED))
+        result = arm.move(pose_where_it_ends(arm, planner.goal_end))
         self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, result.status)
         self.assertIn("sample", result.message or "")
         self.assertNotIn("refused rather than thinned", result.message or "")
@@ -173,8 +190,9 @@ class ALongPathIsJudgedRatherThanRefusedTests(unittest.TestCase):
         """Without this the refusal above could be the configurations rather than the length."""
         if not _mesh_backend_available():
             pytest.skip("no exact mesh backend on this box")
-        arm, _ = _curobo_arm([_NEAR_CLEAR, _FOLDED])
-        self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, arm.move(_pose()).status)
+        arm, planner = _curobo_arm([_NEAR_CLEAR, _FOLDED])
+        self.enterContext(arm.without_camera_world(_DECLINED))
+        self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, arm.move(pose_where_it_ends(arm, planner.goal_end)).status)
 
     def test_the_backstop_still_exists_and_still_refuses(self) -> None:
         """It is a bound on waiting, not a policy, and a path that reaches it still gets a sentence."""

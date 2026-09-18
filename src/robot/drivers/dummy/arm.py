@@ -35,6 +35,7 @@ from ...core import (
     resolve_camera_world,
     stamp_result,
 )
+from ...core.arm_capabilities import LineMotion, LineReading
 from ...core.camera_world import without_camera_world as _without_camera_world
 
 __all__ = ["DUMMY_CAPABILITIES", "DummyRobotArm"]
@@ -305,6 +306,10 @@ class DummyRobotArm(RobotArm):
     ) -> bool:
         """A pure-Python sim has no motion in flight, so settling is instant."""
         return True
+
+    def line_motion(self) -> LineReading:
+        """No controller: a linear move sets the pose, and no line is drawn or judged."""
+        return LineReading(LineMotion.TELEPORT, "DummyRobotArm has no controller: the pose is set and no line is drawn")
 
     def move(
         self,

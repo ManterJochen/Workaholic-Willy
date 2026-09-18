@@ -165,8 +165,9 @@ def bundle_gripper_arrays(bundle: Path) -> dict[str, np.ndarray]:
     """
     if not bundle.is_file():
         raise SphereFitError(
-            f"no collision-mesh bundle at {bundle}. Bake one with "
-            "scripts/isaac/bake_ur_collision_meshes.py, or fit from a mesh file instead."
+            f"no collision-mesh bundle at {bundle}. Write the hand's body with "
+            "scripts/grippers/write_hand_from_dimensions.py, "
+            "scripts/grippers/write_hand_from_mesh.py or scripts/grippers/bake_gripper_variant.py --usd."
         )
     with np.load(bundle, allow_pickle=True) as data:
         missing = [name for name, _, _ in _BUNDLE_PARTS if name not in data]

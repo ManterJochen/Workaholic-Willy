@@ -54,6 +54,21 @@ class WritePickArtifactsTests(unittest.TestCase):
         self.assertEqual(recs[0].extra["best_score"], 0.85)  # telemetry preserved
         self.assertIn("safety_rejected", recs[0].extra)
 
+    def test_an_isaac_record_carries_the_camera_world(self) -> None:
+        """Isaac runners write through write_pick_artifacts, so the producer has to sit where it reaches them."""
+        from src.robot.core.camera_world import CameraWorldDecline, CameraWorldStamp
+
+        report = _report()
+        report.pick_report = SimpleNamespace(
+            camera_worlds=(CameraWorldStamp.declined(CameraWorldDecline("run_eih_pick: no camera world")),),
+            attempts=(), calculator_telemetry={}, executed_grasp=None)
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "pick_log.jsonl"
+            write_pick_artifacts(report, attempt_id="eih-0", record_log=log)
+            (rec,) = tuple(iter_jsonl(log))
+        self.assertEqual(("declined", "run_eih_pick: no camera world"),
+                         (rec.extra["camera_world"], rec.extra["camera_world_reason"]))
+
     def test_debug_png_dumped_under_attempt_id(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             frames = Path(td) / "grasp_debug"

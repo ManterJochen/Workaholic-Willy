@@ -2,8 +2,9 @@
 
 From a fresh clone to a pick you can watch, on a desk with no robot and no camera attached.
 
-Two example scripts carry the whole of it. `scripts/checks/cell_bringup.py` reports what your
-configuration claims the cell is and runs the desk-side preflight over it.
+One desk check and one example script carry the whole of it.
+`python -m src.robot.execution.real_cell --check` runs the desk-side preflight over what your
+configuration claims the cell is.
 `scripts/examples/api/01_first_cell/one_pick_end_to_end.py` builds a cell on a dummy arm and drives one pick through the real
 grasp stack. Neither needs hardware, and no example commands a motion unless you pass `--live`.
 
@@ -50,26 +51,39 @@ Everything below runs from the repository root.
 ## 2. Ask the configuration what your cell is
 
 ```bash
-python -m src.config                       # validate the YAML tree
-python scripts/checks/cell_bringup.py  # then read it back as a cell
+python -m src.config                               # validate the YAML tree
+python -m src.robot.execution.real_cell --check    # then read it back as a cell
 ```
 
-Against the shipped tree, the second command reports a UR cell and three blocking preflight items:
+Against the shipped tree, on a box with the `ext_deps` install, the second command reports a UR cell
+and seven blocking preflight items. Shown here are the blocking rows and the count; the report also
+prints the fix under each row, the rows that pass, the warnings and the bench items:
 
 ```
-  OK   load the config tree                   vendor ur, profile (default)
-  OK   what the config says this cell is      ip 192.168.1.100; tool frame from undeclared; payload 0.0 kg
-  OK   safety preflight over the config       10 check(s), 3 blocking
-  [BLOCK] tool frame       gripper.tool_frame.source is 'undeclared'
-  [BLOCK] payload          safety.payload has enforce: true but mass_kg: 0.0
-  [BLOCK] camera -> base   no CAMERA->BASE resolver in config
+=== 1. CONFIG === vendor=ur profile=<none>
+  [BLOCK] tool frame                 gripper.tool_frame.source is 'undeclared'; nobody has said where the grasp centre sits on the flange
+  [BLOCK] payload                    safety.payload has enforce: true but mass_kg: 0.0
+  [BLOCK] carried part               safety.planning_world.payload.length_mm is undeclared: the payload is modelled, and no length is implied, so every carry would be planned as if the hand were empty
+  [BLOCK] camera -> base             camera.cameras.rigs['webcam_main'].extrinsics is not declared, so the primary camera has no CAMERA->BASE transform
+  [BLOCK] camera world               this cell plans with cuRobo and its cameras give no live world: safety.planning_world.enabled is false, so this cell has no live planner world. The pick service declines nothing, so every pick motion would be refused before it moves
+  [BLOCK] planner margin             safety.self_collision.planner_margin_mm is undeclared, and a cuRobo cell refuses to start a planner without one: undeclared is not zero
+  [BLOCK] hand                       robot.gripper.model is unset, and this cell's self collision guard reads hand geometry: it checks exact meshes (safety.self_collision.backend fcl) on the ur5e arm, and which hand those meshes are is the hand's name.
+
+  7 blocking, 4 warnings, 2 deferred to the bench.
 ```
 
-That is the correct state of a freshly cloned tree, not a fault. Each of the three is a value only
-your bench can supply, and each is left unset because a plausible wrong value would fail open: a
-guessed tool frame drives the fingertips through the table and logs a success. The exit code is `1`
-while anything blocks. The same check is `python -m src.robot.execution.real_cell --check`, and the
-example calls it rather than reimplementing it.
+That is the correct state of a freshly cloned tree, not a fault. The tool frame, the payload and
+the camera to base transform are values only your bench can supply, and each is left unset because
+a plausible wrong value would fail open: a guessed tool frame drives the fingertips through the
+table and logs a success. The carried part is the same kind of value: the planner models the part a
+grasp carries, and no length is implied, so a cell declares how far its longest part hangs past the
+fingertips, or states `enabled: false` if it carries none. The camera world follows from the base
+tree planning with cuRobo: every cuRobo motion needs a live camera world or a decline, the pick
+service declines nothing, and the row clears once the calibrated primary RGB-D camera feeds
+`safety.planning_world`. The last two are declared by a cell for its own arm and hand: a
+planner starts only on a combination, margin included, that a committed evidence file measured, and
+the base tree names no hand so that no overlay inherits one. A box without the cuRobo environment or
+without Coal blocks on two more rows. The exit code is `1` while anything blocks.
 
 The run also prints warnings that never block, and two items marked as deferred to the bench,
 meaning nothing in software can decide them. [`real_cell`](../src/robot/execution/real_cell/README.md)
@@ -122,7 +136,7 @@ chain, applied left to right:
 | `eth2` | the fusion half of a cell with two fixed RGB-D cameras. Use it as `ur5e,eth2` |
 
 ```bash
-WILLY_PROFILE=ur5e python scripts/checks/cell_bringup.py
+python -m src.robot.execution.real_cell --check --profile ur5e
 python -m src.config --profile ur5e,eth2 --print
 ```
 

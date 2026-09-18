@@ -59,14 +59,45 @@ def _registry_hands(root: Path, config: Any) -> tuple[str, ...]:
     ``load_gripper`` gives. The hand is resolved with ``aliases=False``, the lookup behind
     ``robot.gripper.model``, so a short name is refused here too, naming its model. Refusing a cell
     that names no hand at all is the build's job, not the validator's.
+
+    The hand the cell names must then equal the repository's: a tree that describes it differently,
+    or describes a hand the repository does not, is refused naming both places, because the hand's
+    committed body, sphere map, retract rows and evidence were written from the repository's file.
+    A hand the cell does not name is not compared.
     """
-    from .grippers import available_grippers, load_gripper  # noqa: PLC0415
+    from .grippers import available_grippers, load_gripper, tree_hand_refusal  # noqa: PLC0415
+    from .loader import ConfigError  # noqa: PLC0415
 
     hands = tuple(available_grippers(root)) if (root / "grippers").is_dir() else ()
     model = getattr(getattr(getattr(config, "robot", None), "gripper", None), "model", None)
     if model:
         load_gripper(model, data_dir=root, aliases=False)
+        refusal = tree_hand_refusal(model, data_dir=root)
+        if refusal is not None:
+            raise ConfigError(refusal)
     return hands
+
+
+def _registry_cameras(root: Path, config: Any) -> None:
+    """Refuse an unreadable camera registry, or a rig's camera the repository does not hold alike.
+
+    The camera registry is read whenever the tree has a ``cameras/`` directory, so a broken camera file
+    refuses the tree it sits in, as a broken hand file does. Every camera a rig's ``body`` names,
+    enabled or not, is then looked up in the repository's registry, the one authority, and a tree copy
+    that describes it differently is refused naming both files. A tree whose rigs declare no body and
+    that holds no ``cameras/`` reads nothing.
+    """
+    from .cameras import available_cameras, load_camera, tree_camera_refusal  # noqa: PLC0415
+    from .loader import ConfigError  # noqa: PLC0415
+
+    if (root / "cameras").is_dir():
+        available_cameras(root)
+    rigs = getattr(getattr(getattr(config, "camera", None), "cameras", None), "rigs", None) or ()
+    for model in sorted({rig.body.model for rig in rigs if getattr(rig, "body", None) is not None}):
+        load_camera(model)
+        refusal = tree_camera_refusal(model, data_dir=root)
+        if refusal is not None:
+            raise ConfigError(refusal)
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +285,7 @@ class ConfigTree:
             _validated_chain(self.root, self.profile, source=self.profile_source)
             config = load_config(self.named_root, profile=self.profile)
             hands = _registry_hands(self.root, config)
+            _registry_cameras(self.root, config)
         except ConfigError as exc:
             return LoadedTree(tree=self, error=str(exc))
         return LoadedTree(tree=self, config=config, hands=hands)

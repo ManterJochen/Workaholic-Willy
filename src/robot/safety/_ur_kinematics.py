@@ -126,18 +126,17 @@ UR_DH_TABLES_M: dict[str, tuple[URDhRow, ...]] = {
 
 
 def ur_series_twin(model: str | None) -> str | None:
-    """The arm of the OTHER series with the same size, or None when this model has no twin.
+    """The arm of the other series with the same size, or None when this model has no twin.
 
     ``ur3 <-> ur3e``, ``ur5 <-> ur5e``, ``ur10 <-> ur10e``. ``ur16e`` has none, because no UR16
     CB-series row is bundled here.
 
-    ⛔ **WHY A TWIN IS WORTH NAMING.** These are the two robots a cell can confuse without any
+    A twin is worth naming because these are the two robots a cell can confuse without any
     check noticing. A controller dashboard reports the same string for both (URSim answers
-    ``UR3`` for a UR3e, measured 2026-08-19), so the size-class comparison in the UR driver is
-    blind to the difference by construction rather than by omission.
+    ``UR3`` for a UR3e, measured), so the size-class comparison in the UR driver is blind to
+    the difference by construction rather than by omission.
 
-    MEASURED over 20000 random joint vectors on 2026-09-09, the flange separation between a
-    twin pair::
+    Measured over 20000 random joint vectors, the flange separation between a twin pair::
 
         ur3  vs ur3e    min  8.50   median 21.26   max 28.90 mm
         ur5  vs ur5e    min 59.17   median 79.34   max 95.26 mm
@@ -191,7 +190,10 @@ def ur_link_origins_mm(model: str, joints_rad: np.ndarray) -> list[np.ndarray] |
 
 
 def ur_joint_radii_mm(model: str) -> tuple[float, ...] | None:
-    """Per joint, an upper bound in mm on the distance from that joint's axis to anything beyond it.
+    """Per joint, an upper bound in mm on how far any point of the arm beyond it is from its axis.
+
+    The arm here ends at the flange. What the flange carries is not in the bound:
+    ``SafetyPreflight.joint_radii_mm`` adds it.
 
     Rotating joint ``j`` by ``dq`` sweeps every point distal to it through an arc of at most
     ``dq * radius[j]``. The radius is the sum of every link length and joint offset from that joint

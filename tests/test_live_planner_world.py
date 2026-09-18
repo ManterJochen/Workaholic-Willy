@@ -25,6 +25,7 @@ from src.robot.safety.planning.live_world import (
 )
 from src.robot.safety.planning.perceived import (
     LinkCapsule,
+    PerceptionGeometryError,
     SelfEnvelope,
     WorldBuildLimits,
     WorldBuildTuning,
@@ -251,7 +252,7 @@ class SegmentationTests(unittest.TestCase):
         self.assertEqual(both.perceived_count, 2, both.render())
 
         world.offer_segmentation(
-            labelled_masks=(("red cube", far_mask),), exclude_masks=(mask,), timestamp=100.0
+            camera="overhead", labelled_masks=(("red cube", far_mask),), exclude_masks=(mask,), timestamp=100.0
         )
         one = world.world_for(self_envelope=_SELF, now=100.1)
         self.assertEqual(one.perceived_count, 1, one.render())
@@ -262,7 +263,7 @@ class SegmentationTests(unittest.TestCase):
         depth, mask = _scene_with_a_block()
         camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
         world = _world(camera)
-        world.offer_segmentation(exclude_masks=(mask,), timestamp=100.0)
+        world.offer_segmentation(camera="overhead", exclude_masks=(mask,), timestamp=100.0)
 
         self.assertEqual(world.world_for(self_envelope=_SELF, now=100.1).perceived_count, 0)
 
@@ -273,11 +274,195 @@ class SegmentationTests(unittest.TestCase):
         depth, mask = _scene_with_a_block()
         camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
         world = _world(camera)
-        world.offer_segmentation(exclude_masks=(mask,), timestamp=100.0)
+        world.offer_segmentation(camera="overhead", exclude_masks=(mask,), timestamp=100.0)
         self.assertEqual(world.world_for(self_envelope=_SELF, now=100.1).perceived_count, 0)
 
         world.forget_segmentation()
         self.assertEqual(world.world_for(self_envelope=_SELF, now=100.1).perceived_count, 1)
+
+
+def _block_top_points(at_mm: tuple[float, float] = (150.0, 0.0)) -> np.ndarray:
+    """The top face of the 60 mm block ``_scene_with_a_block`` draws, 80 mm up, as BASE points."""
+    xs, ys = np.meshgrid(np.arange(-30.0, 30.1, 5.0) + at_mm[0], np.arange(-30.0, 30.1, 5.0) + at_mm[1])
+    return np.column_stack([xs.ravel(), ys.ravel(), np.full(xs.size, 80.0)])
+
+
+def _two_camera_world(depth: np.ndarray, *, stamp: float = 100.0, **kwargs: object) -> LivePlannerWorld:
+    views = (
+        CameraView(name="overhead", depth_source=_Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS,
+                                                                        timestamp=stamp)),
+                   camera_to_base=_CAMERA_TO_BASE),
+        CameraView(name="side", depth_source=_Camera(DepthSnapshot(depth_mm=depth.copy(), intrinsics=_INTRINSICS,
+                                                                    timestamp=stamp)),
+                   camera_to_base=_CAMERA_TO_BASE),
+    )
+    return _world(_Camera(None), cameras=views, **kwargs)
+
+
+class KeepOutTests(unittest.TestCase):
+    """An offered target box leaves the target out of every view; masks stay with their own camera."""
+
+    def test_a_target_box_leaves_the_target_out_of_every_camera(self) -> None:
+        depth, _ = _scene_with_a_block()
+        world = _two_camera_world(depth)
+        self.assertEqual(1, world.world_for(self_envelope=_SELF, now=100.1).perceived_count)
+
+        world.offer_segmentation(camera="overhead", target_points_base_mm=_block_top_points(), timestamp=100.0)
+        snapshot = world.world_for(self_envelope=_SELF, now=100.1)
+
+        self.assertEqual(0, snapshot.perceived_count, snapshot.render())
+        assert snapshot.perceived is not None
+        self.assertGreater(snapshot.perceived.dropped_points.get("keep_out", 0), 0)
+
+    def test_a_wrist_view_loses_the_target_by_its_box_not_its_mask(self) -> None:
+        # The offer came from the frame taken at the first tool pose; the refresh reads a frame taken 40 mm further.
+        _, mask_then = _scene_with_a_block(at_mm=(150.0, 0.0))
+        depth_now, _ = _scene_with_a_block(at_mm=(110.0, 0.0))
+        tool_now = _CAMERA_TO_BASE.copy()
+        tool_now[0, 3] += 40.0
+        camera = _Camera(DepthSnapshot(depth_mm=depth_now, intrinsics=_INTRINSICS, timestamp=100.0,
+                                       tool_to_base_mm=tool_now))
+        world = _world(camera, cameras=(CameraView(name="wrist", depth_source=camera, camera_to_tool=np.eye(4)),))
+        world.offer_segmentation(camera="wrist", exclude_masks=(mask_then,),
+                                 target_points_base_mm=_block_top_points(), timestamp=100.0)
+
+        snapshot = world.world_for(self_envelope=_SELF, now=100.1)
+
+        self.assertEqual(0, snapshot.perceived_count, snapshot.render())
+        assert snapshot.perceived is not None
+        self.assertEqual(0, snapshot.perceived.dropped_points.get("excluded", 0),
+                         "a mask was applied to a camera that moved since it was taken")
+
+    def test_an_offer_for_one_camera_does_not_redate_another(self) -> None:
+        depth, mask = _scene_with_a_block()
+        world = _two_camera_world(depth, stamp=102.0)
+        world.offer_segmentation(camera="overhead", exclude_masks=(mask,), timestamp=100.0)
+        world.offer_segmentation(camera="side", exclude_masks=(mask,), timestamp=102.0)
+
+        snapshot = world.world_for(self_envelope=_SELF, now=102.1)
+
+        self.assertEqual(1, snapshot.perceived_count,
+                         "the overhead masks are two seconds old and the side offer made them fresh again")
+
+    def test_a_held_offer_outlives_the_age_limit_and_forget_ends_it(self) -> None:
+        depth, _ = _scene_with_a_block()
+        camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=105.0))
+        world = _world(camera)
+        world.offer_segmentation(camera="overhead", target_points_base_mm=_block_top_points(), timestamp=100.0,
+                                 hold=True)
+        self.assertEqual(0, world.world_for(self_envelope=_SELF, now=105.1).perceived_count)
+
+        world.forget_segmentation()
+        self.assertEqual(1, world.world_for(self_envelope=_SELF, now=105.1).perceived_count)
+
+    def test_an_unheld_box_ages_like_its_frame(self) -> None:
+        depth, _ = _scene_with_a_block()
+        camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=105.0))
+        world = _world(camera)
+        world.offer_segmentation(camera="overhead", target_points_base_mm=_block_top_points(), timestamp=100.0)
+        self.assertEqual(1, world.world_for(self_envelope=_SELF, now=105.1).perceived_count)
+
+    def test_forgetting_a_pick_drops_the_frames_taken_while_its_target_was_held(self) -> None:
+        """A pick that ends has changed the cell: the frame cached while its target was held shows the part in the hand.
+
+        Measured on the box on 2026-09-17: after a lift the M2 runner opens the jaw and parks without moving the arm
+        first, the world served the frame from the lift, and the released cube between the fingers refused every park.
+        """
+        depth, _ = _scene_with_a_block()
+        camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
+        world = _world(camera)
+        world.offer_segmentation(camera="overhead", target_points_base_mm=_block_top_points(), timestamp=100.0,
+                                 hold=True)
+        world.world_for(self_envelope=_SELF, now=100.1)
+        self.assertEqual(1, camera.grabs)
+
+        world.forget_segmentation()
+        world.world_for(self_envelope=_SELF, now=100.2)
+
+        self.assertEqual(2, camera.grabs, "the first motion after the pick planned against a frame taken during it")
+
+    def test_a_neighbour_outside_the_grown_box_stays(self) -> None:
+        depth, _ = _scene_with_a_block(at_mm=(150.0, 0.0))
+        far_depth, _ = _scene_with_a_block(at_mm=(-150.0, 0.0))
+        camera = _Camera(DepthSnapshot(depth_mm=np.minimum(depth, far_depth), intrinsics=_INTRINSICS, timestamp=100.0))
+        world = _world(camera)
+        world.offer_segmentation(camera="overhead", target_points_base_mm=_block_top_points(), timestamp=100.0)
+
+        snapshot = world.world_for(self_envelope=_SELF, now=100.1)
+
+        self.assertEqual(1, snapshot.perceived_count, snapshot.render())
+        assert snapshot.perceived is not None
+        self.assertLess(snapshot.perceived.boxes[0].center_mm[0], 0.0, "the neighbour at x -150 stayed")
+
+    def test_a_target_box_leaves_the_target_out_of_the_live_scene_field(self) -> None:
+        depth, _ = _scene_with_a_block()
+        camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
+        world = _world(camera, tuning=WorldBuildTuning(max_boxes=4, voxel_field_mm=30.0))
+        before = world.world_for(self_envelope=_SELF, now=100.1)
+        assert before.perceived is not None and before.perceived.voxels is not None
+        self.assertGreater(before.perceived.voxels.occupied, 0)
+
+        world.offer_segmentation(camera="overhead", target_points_base_mm=_block_top_points(), timestamp=100.0)
+        after = world.world_for(self_envelope=_SELF, now=100.1)
+
+        assert after.perceived is not None and after.perceived.voxels is not None
+        self.assertEqual(0, after.perceived.voxels.occupied)
+
+    def test_a_refresh_that_keeps_everything_out_still_replaces_the_field(self) -> None:
+        """The planner keeps the last field until another replaces it: sending none would keep the target in it."""
+        depth, _ = _scene_with_a_block()
+        camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
+        world = _world(camera, tuning=WorldBuildTuning(max_boxes=4, voxel_field_mm=30.0))
+        planner = _ScenePlanner()
+        refresh_planner_world(source=world, client=planner, self_envelope=_SELF, now=100.1)
+
+        world.offer_segmentation(camera="overhead", target_points_base_mm=_block_top_points(), timestamp=100.0)
+        refresh = refresh_planner_world(source=world, client=planner, self_envelope=_SELF, now=100.1)
+
+        self.assertTrue(refresh.ok, refresh.render())
+        self.assertEqual(2, len(planner.scene_calls), "the second refresh sent no field")
+        values = np.load(planner.scene_calls[-1]["voxels"]["path"])
+        self.assertGreater(float(values.min()), 0.0, "a field with nothing in it reads free everywhere")
+
+
+class TwoCamerasThroughThePickLoopTests(unittest.TestCase):
+    def test_a_two_camera_world_leaves_the_target_out_of_both_views_through_the_pick_loop(self) -> None:
+        from types import SimpleNamespace
+
+        from src.geometry import Frame, Transform
+        from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator
+        from src.robot.grasping.types.perception import PerceptionFrame
+
+        depth, mask = _scene_with_a_block()
+        world = _two_camera_world(depth)
+        orchestrator = BinPickingOrchestrator(
+            arm=SimpleNamespace(live_planner_world=world),  # type: ignore[arg-type]
+            calculator=None,  # type: ignore[arg-type]
+            perception=SimpleNamespace(streamer=SimpleNamespace(rig_id="overhead")),  # type: ignore[arg-type]
+        )
+        orchestrator._pending_camera_to_base = Transform.from_matrix(  # noqa: SLF001
+            _CAMERA_TO_BASE, from_frame=Frame.CAMERA, to_frame=Frame.BASE)
+        frame = PerceptionFrame(depth_map=depth, intrinsics=_INTRINSICS,
+                                segmentations=(SimpleNamespace(label="red cube", mask=mask),), timestamp=100.0)
+        orchestrator._offer_masks_to_planner_world(frame, 0)  # noqa: SLF001
+        try:
+            snapshot = world.world_for(self_envelope=_SELF, now=100.1)
+        finally:
+            orchestrator._keep_out.close()  # noqa: SLF001
+
+        self.assertEqual(0, snapshot.perceived_count, snapshot.render())
+        self.assertEqual(1, world.world_for(self_envelope=_SELF, now=100.1).perceived_count,
+                         "closing the scope did not put the target back")
+
+    def test_masks_without_a_camera_are_refused_and_a_box_alone_is_not(self) -> None:
+        depth, mask = _scene_with_a_block()
+        world = _two_camera_world(depth)
+        with self.assertRaises(PerceptionGeometryError) as caught:
+            world.offer_segmentation(exclude_masks=(mask,), timestamp=100.0)
+        self.assertIn("names the camera", str(caught.exception))
+
+        world.offer_segmentation(target_points_base_mm=_block_top_points(), timestamp=100.0)
+        self.assertEqual(0, world.world_for(self_envelope=_SELF, now=100.1).perceived_count)
 
 
 class _Planner:
@@ -885,19 +1070,9 @@ class LoopHandsOverItsMasksTests(unittest.TestCase):
     """The pick loop is the only thing that knows what the attempt is reaching for.
 
     Without this the object being grasped is registered as an obstacle like everything else, and the
-    planner refuses the one approach the attempt exists for: the goal sits inside a solid.
+    planner refuses the one approach the attempt exists for: the goal sits inside a solid. The offer is
+    built by ``segmentation_offer_from_frame`` and held by ``keeping_out`` for the pick.
     """
-
-    class _World:
-        def __init__(self) -> None:
-            self.offers: list[dict] = []
-
-        def offer_segmentation(self, **kwargs: object) -> None:
-            self.offers.append(dict(kwargs))
-
-    class _Arm:
-        def __init__(self, world: object) -> None:
-            self.live_planner_world = world
 
     @staticmethod
     def _frame(labels: "tuple[str, ...]") -> object:
@@ -908,56 +1083,57 @@ class LoopHandsOverItsMasksTests(unittest.TestCase):
                 SimpleNamespace(label=label, mask=np.full((4, 4), index, dtype=np.uint8))
                 for index, label in enumerate(labels)
             ),
+            depth_map=np.full((4, 4), 500.0), surface_depth_map=None, intrinsics=np.eye(3),
             timestamp=100.0,
         )
 
-    def _offer(self, arm: object, frame: object, target: "int | None") -> None:
-        from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator
-        from types import SimpleNamespace
+    @staticmethod
+    def _offer(frame: object, target: "int | None"):  # noqa: ANN205
+        from src.robot.grasping.loop.pick_loop import segmentation_offer_from_frame
 
-        BinPickingOrchestrator._offer_masks_to_planner_world(  # noqa: SLF001
-            SimpleNamespace(arm=arm), frame, target
-        )
+        return segmentation_offer_from_frame(frame, target, camera="overhead", camera_to_base_mm=None)
 
     def test_the_target_is_left_out_and_the_others_are_named(self) -> None:
-        world = self._World()
-        self._offer(self._Arm(world), self._frame(("red cube", "blue box")), 1)
+        offer = self._offer(self._frame(("red cube", "blue box")), 1)
 
-        (offer,) = world.offers
-        self.assertEqual([name for name, _ in offer["labelled_masks"]], ["red cube", "blue box"])
-        self.assertEqual(len(offer["exclude_masks"]), 1)
-        np.testing.assert_array_equal(
-            offer["exclude_masks"][0], np.full((4, 4), 1, dtype=np.uint8)
-        )
-        self.assertEqual(offer["timestamp"], 100.0, "masks age with the frame, not with this call")
+        assert offer is not None
+        self.assertEqual("overhead", offer.camera)
+        self.assertEqual([name for name, _ in offer.labelled_masks], ["red cube", "blue box"])
+        self.assertEqual(len(offer.exclude_masks), 1)
+        np.testing.assert_array_equal(offer.exclude_masks[0], np.full((4, 4), True))
+        self.assertEqual(offer.captured_at_s, 100.0, "masks age with the frame, not with this call")
 
     def test_no_winner_excludes_nothing_and_still_names_what_was_seen(self) -> None:
-        world = self._World()
-        self._offer(self._Arm(world), self._frame(("red cube",)), None)
+        offer = self._offer(self._frame(("red cube",)), None)
 
-        (offer,) = world.offers
-        self.assertEqual(offer["exclude_masks"], [])
-        self.assertEqual(len(offer["labelled_masks"]), 1)
+        assert offer is not None
+        self.assertEqual(offer.exclude_masks, ())
+        self.assertEqual(len(offer.labelled_masks), 1)
 
     def test_an_unnamed_segmentation_still_gets_a_name(self) -> None:
         """A refusal that says `object_2` beats one that says nothing at all."""
         from types import SimpleNamespace
 
-        world = self._World()
         frame = SimpleNamespace(
             segmentations=(SimpleNamespace(label="", mask=np.zeros((4, 4), dtype=np.uint8)),),
-            timestamp=100.0,
+            depth_map=np.full((4, 4), 500.0), surface_depth_map=None, intrinsics=np.eye(3), timestamp=100.0,
         )
-        self._offer(self._Arm(world), frame, 0)
+        offer = self._offer(frame, 0)
 
-        self.assertEqual(world.offers[0]["labelled_masks"][0][0], "object_0")
+        assert offer is not None
+        self.assertEqual(offer.labelled_masks[0][0], "object_0")
 
     def test_an_arm_with_no_live_world_costs_one_lookup(self) -> None:
         """The byte-identical path, which is every cell that did not ask for a live world."""
         from types import SimpleNamespace
 
-        self._offer(SimpleNamespace(live_planner_world=None), self._frame(("x",)), 0)
-        self._offer(SimpleNamespace(), self._frame(("x",)), 0)
+        from src.robot.core.keep_out import keeping_out
+
+        offer = self._offer(self._frame(("x",)), 0)
+        assert offer is not None
+        for arm in (SimpleNamespace(live_planner_world=None), SimpleNamespace()):
+            with keeping_out(arm, offer) as scope:
+                self.assertFalse(scope.world_wired)
 
 
 #: A camera bolted to the tool and looking along its approach: the fixed camera's rotation, carried by the tool.

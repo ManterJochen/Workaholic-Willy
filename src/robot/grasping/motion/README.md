@@ -27,13 +27,17 @@ package root, which re-exports the public names.
 ### The choreography, and its five endings
 
 Pre-grasp standoff along the negated approach, linear descent, `gripper.set_width_mm`, then the close
-verification, then the lift.
+verification, then the lift. The policy first reads what the arm keeps of a straight line
+(`KeepsLines`). An arm that says it keeps one gets a planned move to the standoff, one line to the
+grasp and line lifts; an arm that keeps none is refused before the jaws open, as `MOTION_FAILED` with
+status `unsupported` and the arm's reason; an arm that does not say drives the interpolated
+waypoints. `PolicyReport.line_motion` carries the reading.
 
 | `PolicyOutcome` | Means | Moved |
 | --- | --- | --- |
 | `EXECUTED` | approach, close and retreat completed; the object is held or trusted to be | yes |
 | `OBJECT_NOT_DETECTED` | the close succeeded mechanically and the gripper reports an empty jaw | yes |
-| `MOTION_FAILED` | `RobotArm.move_to` raised; the exception is carried in the report | partly |
+| `MOTION_FAILED` | `RobotArm.move_to` raised; the exception is carried in the report. Also an arm that keeps no straight line, refused before anything moves | partly |
 | `CAMERA_FRAME_REJECTED` | a camera-frame grasp with `require_base_frame_grasp` on and no resolver wired | no |
 | `APPROACH_PATH_BLOCKED` | every ranked candidate's approach and retreat sweep hit the scene cloud | no |
 
@@ -44,12 +48,14 @@ honest default rather than a lax one, because inventing a signal a gripper canno
 report a held object on every empty close.
 
 Advertising the capability is not the same as having a sensor, and that is the second half of the
-same honesty. Four shipped grippers implement it. The OnRobot driver reads the grip-detected bit out
-of the status word, which is a real measurement. The digital-I/O jaw prefers a part-present input,
+same honesty. Five shipped grippers implement it. The Robotiq driver reads gOBJ and the OnRobot
+driver reads the grip-detected bit out of the status word, both real measurements. The digital-I/O jaw prefers a part-present input,
 falls back to inferring from a reed pair, and with neither reports the commanded state. The vacuum
 driver reads the vacuum switch when `vacuum_ok_input_pin` names one, and otherwise reports the
 commanded state as well. A cell that wires no feedback pin still gets a `True` after every close, so
-check the pin before trusting `OBJECT_NOT_DETECTED` to mean anything.
+check the pin before trusting `OBJECT_NOT_DETECTED` to mean anything. `hold_evidence()`
+(`ReportsHoldEvidence`) says which answers are measurements, and the robot's hand verbs read that
+instead.
 
 ### The frame resolver
 

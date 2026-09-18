@@ -43,6 +43,7 @@ from src.willy_sim.config import require_robot
 from src.willy_sim.constants import PILE_BASELINE_LOG_FILE, WILLY_SIM_LOG_DIR
 from src.willy_sim.harness.randomizer import DomainRandomizer, RandomizationConfig
 from src.willy_sim.run_dense_pick import build_service
+from src.robot.core.camera_world import CameraWorldDecline
 
 #: This runner's number is a floor that later levers are quoted against, so the conditions behind it
 #: are part of the result: perception mode, pile density, and which opt-in blocks were on. The report
@@ -134,6 +135,7 @@ def run_baseline(
         # close_width, centre-referenced depth. Each varied-object accommodation is enabled one at a
         # time, so its effect on the floor stays separable.
         adaptive_close=adaptive_close,
+        camera_world=CameraWorldDecline("run_pile_baseline: this runner plans without a live camera world"),
     )
 
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]

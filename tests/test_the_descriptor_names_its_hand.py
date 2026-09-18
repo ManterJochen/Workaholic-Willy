@@ -38,7 +38,7 @@ def _hand(model: str = "robotiq_2f85", plates: "list[float] | None" = None) -> A
 
     gripper: dict[str, Any] = {"model": model}
     if plates is not None:
-        gripper["coupling_plates_mm"] = plates
+        gripper["coupling_plates"] = [{"name": f"plate_{i}", "thickness_mm": float(mm)} for i, mm in enumerate(plates)]
     return planner_hand(RobotConfig.model_validate({"vendor": "ur", "gripper": gripper}))
 
 
@@ -196,10 +196,12 @@ class TheURPlannerChecksWhatItLoadedTests(unittest.TestCase):
     def test_a_move_on_a_per_hand_file_is_rejected_and_nothing_is_sent(self) -> None:
         client = _Client(_per_hand_file(hand="robotiq_hande"))
         planner = self._planner(client, _link("robotiq_hande", [20.0]))
-        with self.assertLogs("CuroboUrPlanner", level="ERROR") as logs:
-            result = planner.move(_pose())
-        self.assertIs(result.status, MotionStatus.CONTROLLER_REJECTED)
-        self.assertIn("build_ur_config.py", result.message)
+        from src.robot.safety.planning import CuroboUnavailableError
+
+        with self.assertLogs("CuroboUrPlanner", level="ERROR") as logs, \
+                self.assertRaises(CuroboUnavailableError) as refused:
+            planner.plan(_pose())
+        self.assertIn("build_ur_config.py", str(refused.exception))
         self.assertNotIn("plan", client.calls)
         self.assertEqual(planner._conn.moves, [])  # noqa: SLF001
         self.assertTrue(client.closed, "a client on the wrong descriptor is closed, not kept for the next move")
@@ -208,12 +210,13 @@ class TheURPlannerChecksWhatItLoadedTests(unittest.TestCase):
     def test_the_arm_descriptor_with_the_hand_plans(self) -> None:
         """The control."""
         client = _Client(arm_identity())
-        result = self._planner(client, _link()).move(_pose())
+        planner = self._planner(client, _link())
+        result = planner.execute(planner.plan(_pose()), _pose())
         self.assertIs(result.status, MotionStatus.EXECUTED, result.message)
         self.assertIn("plan", client.calls)
 
     def test_the_ur_arm_starts_its_planner_on_the_arm_descriptor_with_the_hand_link(self) -> None:
-        arm = _ur_arm({"model": "robotiq_hande", "coupling_plates_mm": [20.0]})
+        arm = _ur_arm({"model": "robotiq_hande", "coupling_plates": [{"name": "plate", "thickness_mm": 20.0}]})
         with mock.patch("src.robot.drivers.ur.arm.CuroboPlanClient") as client_class:
             arm._default_curobo_client_factory()()  # noqa: SLF001
         kwargs = client_class.call_args.kwargs
@@ -222,12 +225,12 @@ class TheURPlannerChecksWhatItLoadedTests(unittest.TestCase):
         self.assertEqual(kwargs["body_links"][0]["fixed_transform"], [0.0, 0.02, 0.0, 1.0, 0.0, 0.0, 0.0])
 
     def test_the_ur_arm_checks_what_the_sidecar_loaded(self) -> None:
-        arm = _ur_arm({"model": "robotiq_hande", "coupling_plates_mm": [20.0]})
+        arm = _ur_arm({"model": "robotiq_hande", "coupling_plates": [{"name": "plate", "thickness_mm": 20.0}]})
         arm._curobo_client_factory = lambda: _Client(arm_identity())  # noqa: SLF001
         check = arm._curobo_ur_planner()._descriptor_check  # noqa: SLF001
         self.assertIsNotNone(check)
         self.assertIsNotNone(check(_per_hand_file(hand="robotiq_hande")))
-        self.assertIsNone(check(arm_identity()))
+        self.assertIsNone(check(arm_identity(hand="robotiq_hande", coupling_mm=20.0)))
 
     def test_a_cell_with_no_hand_builds_no_client(self) -> None:
         """The control: nothing is started for a hand nobody named.

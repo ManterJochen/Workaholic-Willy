@@ -2,8 +2,9 @@
 
 :class:`~src.robot.core.RobotArm` stays a small, strictly vendor-neutral Protocol
 with a contract-locked member set. The extras a controller can offer (digital and
-analog I/O, live force and torque, live robot and safety status) are declared here as
-separate ``runtime_checkable`` Protocols, mirroring
+analog I/O, live force and torque, live robot and safety status, what a straight line
+keeps, a model of the carried part) are declared here as separate
+``runtime_checkable`` Protocols, mirroring
 :class:`~src.robot.core.gripper.ObjectDetectingGripper`.
 
 A driver opts in by implementing one. A caller feature-checks with
@@ -27,7 +28,12 @@ from typing import Protocol, runtime_checkable
 from src.geometry import Frame
 
 __all__ = [
+    "CarriesPayload",
     "DigitalIOPort",
+    "KeepsLines",
+    "LineMotion",
+    "LineReading",
+    "PayloadModel",
     "RobotMode",
     "RobotStatus",
     "SafetyMode",
@@ -35,6 +41,7 @@ __all__ = [
     "SupportsForceTorque",
     "SupportsRobotStatus",
     "Wrench",
+    "line_motion_of",
 ]
 
 
@@ -217,3 +224,79 @@ class SupportsRobotStatus(Protocol):
     def recover_from_protective_stop(self) -> bool:
         """Try to clear an active protective stop. ``True`` if the controller acknowledged."""
         ...
+
+
+class PayloadModel(StrEnum):
+    """What models the part the gripper carries now."""
+
+    #: The planner carries the part and the self filter takes it out of what the cameras see.
+    PLANNER_AND_FILTER = "planner_and_filter"
+    #: The self filter takes the part out and the planner declined to carry it, so it routes as if
+    #: the gripper were empty.
+    FILTER_ONLY = "filter_only"
+    #: Nothing models a part.
+    NONE = "none"
+
+
+@runtime_checkable
+class CarriesPayload(Protocol):
+    """Capability extension: the arm models a part in its gripper, and says why when it cannot.
+
+    ``payload_declined_reason`` is the static answer, read off the arm's configuration and hand
+    before any attach and without starting a planner. ``payload_model`` is what the last attach
+    left in force.
+    """
+
+    def attach_payload(self, grip_width_mm: float) -> bool:
+        """Model a part roughly ``grip_width_mm`` across. ``True`` when the planner carries it."""
+        ...
+
+    def detach_payload(self) -> bool:
+        """Forget the carried part."""
+        ...
+
+    def payload_declined_reason(self) -> str | None:
+        """Why this arm models no carried part, naming the key or the hand; ``None`` where it can."""
+        ...
+
+    def payload_model(self) -> PayloadModel:
+        """What models the part the gripper carries now."""
+        ...
+
+
+class LineMotion(StrEnum):
+    """What a ``move(pose, linear=True)`` on an arm keeps of the line it was asked for."""
+
+    #: Every sample of the line is judged before any of it moves, and the arm drives it.
+    CHECKED = "checked"
+    #: The controller draws the line, and only its end is judged.
+    CONTROLLER_LINE = "controller_line"
+    #: No controller: the pose is set.
+    TELEPORT = "teleport"
+    #: The line is not kept, because the flag is dropped or the path cannot be judged. The
+    #: reading says which.
+    NOT_KEPT = "not_kept"
+
+
+@dataclass(frozen=True, slots=True)
+class LineReading:
+    """A line motion and the sentence that says why."""
+
+    motion: LineMotion
+    reason: str
+
+
+@runtime_checkable
+class KeepsLines(Protocol):
+    """Capability extension: the arm says, before it moves, what it keeps of a straight line."""
+
+    def line_motion(self) -> LineReading:
+        """What a ``move(pose, linear=True)`` on this arm keeps of the line, and why."""
+        ...
+
+
+def line_motion_of(arm: object) -> LineReading | None:
+    """What ``arm`` keeps of a straight line, or ``None`` for an arm that does not say."""
+    if isinstance(arm, KeepsLines):
+        return arm.line_motion()
+    return None

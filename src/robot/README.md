@@ -83,8 +83,9 @@ Registries: `create_arm(vendor, **kwargs)`, `register_arm_driver` and `available
 `drivers/`; `create_gripper(vendor, **kwargs)` and `register_gripper_driver` from `grippers/`.
 
 Facades from `execution/`: `Robot`, built by `from_config(robot_config, gripper=UNSET)` or
-`from_parts(arm=, gripper=, lock_key=)`, with `connected()` returning a `ConnectedRobot` and
-`safety()` a `SafetyAttestation`, and no pick service; `RuntimePickService` returning a
+`from_parts(arm=, gripper=, lock_key=)`, with `connected()` returning a `ConnectedRobot`,
+`safety()` a `SafetyAttestation`, the hand verbs `grasp`, `release` and `is_holding`, and `pick` and
+`place` returning a `HandlingReport`, and no pick service; `RuntimePickService` returning a
 `PickSessionReport`; and `AutonomousGraspService` with a typed `GraspMode` (`easy`, `auto`,
 `closed_loop`, `dense_clutter`, `dense_autonomous`), built by `from_robot_config(...)` or
 `from_components(...)`, whose `pick()`
@@ -127,7 +128,10 @@ from src.robot.drivers import create_arm
 cfg = load_config()
 with create_arm(RobotVendor.from_string(cfg.robot.vendor), config=cfg.robot) as bot:
     pose = bot.get_tcp_pose()        # Pose in Frame.BASE, millimetres and XYZW
-    bot.move_linear(target_pose)     # raises on an IK or frame fault
+    # The shipped tree plans with cuRobo, and a cuRobo UR arm refuses a motion with neither a
+    # live camera world nor a decline, so a bench move states why it needs none.
+    with bot.without_camera_world("bench move: no camera watches the cell"):
+        bot.move_linear(target_pose)  # raises on an IK or frame fault, or a refused motion
 ```
 
 This package is a library. The command-line entry points live under `execution/`, `grasping/`,

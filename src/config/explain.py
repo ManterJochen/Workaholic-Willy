@@ -20,11 +20,12 @@ defined-by in one command), and ``ansible-config dump --only-changed``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from .edit import MISSING, read_key
+from .hand_numbers import hand_source
 from ._provenance import comment_above, index_chains, nearest_keys, read_value
 from ._tiers import TIERS, gate_state, tier_for
 from ._schema_index import (
@@ -121,11 +122,15 @@ class KeyExplanation:
     layers: tuple[Layer, ...] = ()
     #: The YAML comment above the winning line, where this project keeps the measured evidence.
     comment: str = ""
+    #: The registry file and field of the hand ``robot.gripper.model`` names, where no layer writes
+    #: the key and that hand supplies it. Empty otherwise.
+    derived_from: str = ""
 
     @property
     def set_in(self) -> str:
-        """The file:line in force, or the empty string when the schema default is."""
-        return self.layers[-1].location if self.layers else ""
+        """The file:line in force, the registry file and field of a number the named hand supplies,
+        or the empty string when the schema default is."""
+        return self.layers[-1].location if self.layers else self.derived_from
 
     def render(self) -> str:
         """The CLI text. The only renderer. See the class docstring."""
@@ -150,6 +155,9 @@ class KeyExplanation:
                 out.append(f"{_INDENT}          {line.strip()}")
 
         out.append("")
+        if not self.layers and self.derived_from:
+            out.append(f"{_INDENT}set in    {self.derived_from} (no YAML sets this: the named hand supplies it)")
+            return "\n".join(out)
         if not self.layers:
             # Not written anywhere, so the schema default is in force. Saying so is the answer,
             # and it is how the 107 never-written fields become discoverable at all.
@@ -233,7 +241,12 @@ def explain_in(cfg: Any, path: str, root: Path, layers: tuple[str, ...]) -> KeyE
     """
     value = read_key(cfg, path)
     found = value is not MISSING
-    return explain(path, root, layers, None if not found else value, has_value=found)
+    explanation = explain(path, root, layers, None if not found else value, has_value=found)
+    if explanation.known and not explanation.layers:
+        derived = hand_source(cfg, path)
+        if derived:
+            return replace(explanation, derived_from=derived)
+    return explanation
 
 
 def explain_key(
@@ -331,7 +344,8 @@ def decisions(
         if same_value(value, field_default(path, field.default)):
             continue
         chain = chains.get(_yaml_path(path), [])
-        where = chain[-1].location(root) if chain else "(not in any YAML: set by a validator or code)"
+        where = (chain[-1].location(root) if chain
+                 else hand_source(cfg, path) or "(not in any YAML: set by a validator or code)")
         # `decided=True` by construction: everything reaching here differs from its default. The
         # gate state uses the loaded values, so a sim cell's own fields are not called "advanced"
         # merely because the block defaults to disabled.

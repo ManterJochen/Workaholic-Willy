@@ -327,7 +327,7 @@ class TheIsaacOnlyCodeNamesNoMountKeyTests(unittest.TestCase):
         self.assertIn("hand: \"str | None\" = None", text)
         # From the command line to the bootstrap: the flag, the gate's pass to build_service, build_service's to the cell.
         self.assertIn("hand=args.hand", text)
-        self.assertIn("planner_owns_approach=planner_owns_approach, hand=hand,", text)
+        self.assertIn("motion_planner=motion_planner, hand=hand,", text)
         self.assertIn("data_dir, headless=headless, hand=hand,", text)
 
 

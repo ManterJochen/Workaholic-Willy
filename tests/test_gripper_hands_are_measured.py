@@ -4,7 +4,8 @@ Owner, lane (i) Q-A: the hand numbers no file held (the Hand-E's reach behind it
 number) are measured off the committed collision bundles by ``scripts/grippers/measure_jaw_from_bundle.py``, and
 this file recomputes them with that one implementation. The measurement is trusted only because it first
 reproduces, to 0.05 mm, the Hand-E numbers the tree already carried from its own measurement session
-(``robot.hande.yaml``). A measurement that cannot reproduce a known hand measures nothing new.
+(``robot.hande.yaml`` until customer chain lane C4d moved them to the registry file). A measurement that cannot
+reproduce a known hand measures nothing new.
 
 Two findings of that measurement were decided by the owner (``.commits/robot/51-the-world-and-the-hand.md``):
 
@@ -51,8 +52,12 @@ def _widths(profile) -> list[float]:  # noqa: ANN001
 
 
 class TheHandEFileTests(unittest.TestCase):
-    def test_the_hande_file_is_the_hande_layer(self) -> None:
-        """The actuation widths and the envelope the `hande` profile writes, number for number."""
+    def test_the_hande_profile_runs_the_hande_file(self) -> None:
+        """The actuation widths and the envelope the `hande` profile runs, number for number.
+
+        Since customer chain lane C4d the layer states none of them and the loader takes them from this file, so this
+        holds the wiring, not the numbers: the numbers are held by the measurement below.
+        """
         jaw = load_gripper("robotiq_hande", aliases=False).jaw
         robot = load_config(profile="hande").robot
         actuation, envelope = robot.gripper, robot.grasping.gripper_geometry.parallel_jaw
@@ -91,6 +96,14 @@ class TheEgu50FileTests(unittest.TestCase):
         self.assertEqual(jaw.aperture_mm, max(_widths(SCHUNK_EGU50_PROFILE)))
         self.assertEqual(jaw.closed_width_mm, min(_widths(SCHUNK_EGU50_PROFILE)))
 
+    def test_the_egu50_housing_reaches_past_its_open_fingers_by_the_recorded_corner(self) -> None:
+        """palm_thickness_mm is new; its half against the fingers' outer face is the 2.25 mm corner the file recorded
+        before the field existed, so the new measurement is tied to an old one."""
+        jaw = load_gripper("schunk_egu50", aliases=False).jaw
+        assert jaw.palm_thickness_mm is not None
+        self.assertAlmostEqual(jaw.palm_thickness_mm / 2.0 - (jaw.aperture_mm / 2.0 + jaw.finger_thickness_mm), 2.25,
+                               delta=0.05)
+
     def test_what_the_egu50_file_measured_and_what_it_did_not(self) -> None:
         spec = load_gripper("schunk_egu50", aliases=False)
         self.assertEqual(spec.aliases, ())
@@ -100,7 +113,7 @@ class TheEgu50FileTests(unittest.TestCase):
 
 class TheNumbersAreTheBundlesTests(unittest.TestCase):
     _MEASURED = ("aperture_mm", "finger_ahead_mm", "finger_behind_mm", "finger_thickness_mm",
-                 "finger_width_mm", "palm_depth_mm", "palm_width_mm")
+                 "finger_width_mm", "palm_depth_mm", "palm_width_mm", "palm_thickness_mm")
 
     def test_the_measurement_reproduces_the_committed_hande_numbers(self) -> None:
         """The control: every number the Hand-E layer already carried, at the centre it already declared."""
@@ -151,8 +164,26 @@ class TheMountGraspsAtItsFaceTests(unittest.TestCase):
 
 
 class TheShippedHandsTests(unittest.TestCase):
-    def test_the_shipped_hands_are_exactly_these(self) -> None:
-        self.assertEqual(available_grippers(), ["robotiq_2f85", "robotiq_hande", "schunk_egu50"])
+    """The hands this repository ships are in the registry, and every registry hand has a body.
+
+    It pinned exactly three names until customer chain lane C1d, so a customer's fourth hand turned the suite red
+    whether or not that hand had a body. What has to hold is that the shipped ones are there and that no registry
+    hand is a name the guard cannot compose; tests/test_a_hand_writer_records_its_row.py holds both halves on a
+    scratch registry with a fourth hand.
+    """
+
+    def test_the_hands_this_repository_ships_are_in_the_registry(self) -> None:
+        self.assertLessEqual({"robotiq_2f85", "robotiq_hande", "schunk_egu50"}, set(available_grippers()))
+
+    def test_every_registry_hand_has_a_body(self) -> None:
+        for hand in available_grippers():
+            with self.subTest(hand=hand):
+                self.assertTrue(
+                    hand_mesh_bundle(hand).is_file(),
+                    f"{hand} is in the registry and has no {hand_mesh_bundle(hand).name}: write one with "
+                    f"scripts/grippers/write_hand_from_dimensions.py, scripts/grippers/write_hand_from_mesh.py or "
+                    f"scripts/grippers/bake_gripper_variant.py (docs/runbooks/your_own_gripper.md)",
+                )
 
 
 if __name__ == "__main__":

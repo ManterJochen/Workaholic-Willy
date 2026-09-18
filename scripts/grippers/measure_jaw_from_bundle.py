@@ -72,6 +72,8 @@ class JawMeasurement:
     pad_behind_mm: float
     palm_depth_mm: float
     palm_width_mm: float
+    #: The housing along the closing axis: twice its furthest reach from the grasp axis.
+    palm_thickness_mm: float
 
     def render(self) -> str:
         """One line per number, for a person. ASCII, no trailing newline."""
@@ -170,6 +172,7 @@ def measure_parallel_jaw(bundle: "str | Path", *, centre_mm: float | None = None
         pad_behind_mm=centre - face_bottom,
         palm_depth_mm=(centre - finger_behind) - back,
         palm_width_mm=float(np.ptp(housing[:, 2])),
+        palm_thickness_mm=2.0 * float(np.abs(housing[:, 0]).max()),
     )
 
 

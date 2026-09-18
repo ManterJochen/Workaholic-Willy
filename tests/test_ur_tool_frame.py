@@ -29,6 +29,11 @@ from src.robot.drivers.ur.tool_frame import (
     tool_frame_matrix,
 )
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm
+from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
+
+#: Said where each arm is built: these doubles plan or check with cuRobo and carry no camera world, so every
+#: motion they command declines it, as a cuRobo cell must since the world became mandatory.
+_DECLINED = "unit double: this test exercises the planner and the guard on a cuRobo arm, and no camera world is wired to it"
 
 #: The 2F-85 on a UR flange, as the Isaac driver hardcodes it (sim/arm.py): 132 mm along flange +Y plus
 #: a -90 deg rotation about flange X, mapping the TCP +Z (approach) onto flange +Y.
@@ -304,6 +309,9 @@ class PlannerAndGuardConsumeTheTruthTests(unittest.TestCase):
         cfg = RobotConfig.model_validate({
             "vendor": "ur",
             "ur": {"motion_planner": "curobo"},
+            # A goal is where the stand-in's plan ends (Step 8f), and that is outside the shipped box; the box is not
+            # what this class is about.
+            "workspace_limits": OPEN_WORKSPACE,
             "safety": {"payload": {"enforce": False}},
             "gripper": {"model": "robotiq_2f85", "tool_frame": {
                 "source": source, "offset_mm": _2F85_OFFSET, "rotation_quat_xyzw": _2F85_QUAT,
@@ -328,7 +336,8 @@ class PlannerAndGuardConsumeTheTruthTests(unittest.TestCase):
             with self.subTest(source=source):
                 arm, planner = self._curobo_arm(source)
                 tcp = self._tcp()
-                arm.move(tcp)
+                with arm.without_camera_world(_DECLINED):
+                    arm.move(tcp)
                 planned = planner.plan.call_args[0][0]
                 offset = float(np.linalg.norm(planned.position_mm - tcp.position_mm))
                 self.assertAlmostEqual(offset, 132.0, places=3,
@@ -338,7 +347,9 @@ class PlannerAndGuardConsumeTheTruthTests(unittest.TestCase):
         """The frame conversion is an internal detail. The caller asked for a TCP pose; the executed
         result must say so, and their Pose object must come back untouched."""
         arm, planner = self._curobo_arm("willy")
-        tcp = self._tcp()
+        self.enterContext(arm.without_camera_world(_DECLINED))
+        # The goal is where the plan ends: the UR driver refuses a plan off its goal before execution (Step 8f).
+        tcp = pose_where_it_ends(arm, _Q)
         before = np.array(tcp.position_mm, copy=True)
         arm.move(tcp)
         np.testing.assert_allclose(tcp.position_mm, before, atol=0.0)
@@ -349,11 +360,12 @@ class PlannerAndGuardConsumeTheTruthTests(unittest.TestCase):
         """Joint-based, so the Coal path is immune to the frame question -- it checks the configuration
         the arm will actually be in, not a pose someone might have mis-framed."""
         arm, planner = self._curobo_arm("willy")
+        self.enterContext(arm.without_camera_world(_DECLINED))
         final = [0.2, -1.1, 1.0, -0.5, 1.4, 0.3]
         planner.plan.return_value = [list(_Q), final]
         seen = {}
         arm._gate_planned_config = lambda pose, joints: seen.setdefault("q", list(joints.values)) and None
-        arm.move(self._tcp())
+        arm.move(pose_where_it_ends(arm, final))
         np.testing.assert_allclose(seen["q"], final, atol=1e-9)
 
     def test_an_undeclared_tool_frame_leaves_curobo_untouched(self):

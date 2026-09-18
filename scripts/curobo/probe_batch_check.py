@@ -5,8 +5,8 @@ Run from the repository root with the cuRobo environment's interpreter, once per
     PYTHONIOENCODING=utf-8 ext_deps/curobo_env/python.exe scripts/curobo/probe_batch_check.py ur5e
     PYTHONIOENCODING=utf-8 ext_deps/curobo_env/python.exe scripts/curobo/probe_batch_check.py ur3e
 
-The self-collision margin defaults to the figure the cell config carries for the model (ur5e 10.0 mm
-in robot.sim.yaml, ur3e 4.0 mm in robot.ur3e.yaml) and can be overridden with ``--margin-mm``.
+The self-collision margin defaults to the figure the cell config carries for the model (4.0 mm for both,
+robot.sim.yaml and robot.ur3e.yaml) and can be overridden with ``--margin-mm``.
 
 Why it exists. The sidecar cannot be imported in CI, so its branches are pinned by source scans, and a
 scan can only pin a method name somebody has actually called. A name that did not exist (``plan_js`` on
@@ -52,9 +52,10 @@ PLANNING_DIR = REPO / "src" / "robot" / "safety" / "planning"
 # it by path. Putting the same directory first makes the same composition run here.
 sys.path.insert(0, str(PLANNING_DIR))
 
-#: The guard margin each model's cell config carries (robot.sim.yaml, robot.ur3e.yaml).
-CONFIG_MARGIN_MM = {"ur5e": 10.0, "ur3e": 4.0}
-#: robot.yaml payload.sphere_slots, the value a payload-enabled cell hands the sidecar.
+#: The planner margin each model's cell config carries (robot.sim.yaml and robot.ur3e.yaml, planner_margin_mm),
+#: the same 4.0 for the whole family on the refitted sphere map.
+CONFIG_MARGIN_MM = {"ur5e": 4.0, "ur3e": 4.0}
+#: robot.yaml payload.sphere_slots, the value a cell that declares a carried part length hands the sidecar.
 PAYLOAD_SPHERE_SLOTS = 16
 #: Mirrors of the sidecar's module constants in curobo_planner_server.py.
 PLAN_MAX_ATTEMPTS = int(os.environ.get("WILLY_CUROBO_MAX_ATTEMPTS", "16"))

@@ -191,8 +191,11 @@ class VendorWiringTests(unittest.TestCase):
         # ⚠ FROM THE `create_gripper` CALL, NOT FROM THE ENUM NAME. A window measured from the enum
         # was 900 characters of explanatory comment and never reached the code, so the assertion
         # failed on prose rather than on wiring -- a guard that measures the wrong span.
-        marker = source.index("create_gripper(\n            GripperVendor.ONROBOT")
-        branch = source[marker:marker + 600]
+        import re
+
+        found = re.search(r"create_gripper\(\s*GripperVendor\.ONROBOT", source)
+        assert found is not None, "build_gripper builds no OnRobot driver"
+        branch = source[found.start():found.start() + 600]
         self.assertIn("rg.host", branch)
         self.assertNotIn("robot_cfg.ur.ip", branch)
 

@@ -21,8 +21,8 @@ Any of:
 - a cell is being built on a UR that is not the UR5e the base tree describes;
 - an existing cell is being swapped between arms, including between a CB-series arm and its
   e-series namesake, which is the swap nothing upstream can see;
-- `python -m src.robot.safety.planning --doctor` reports `no_bundle` or
-  `variant_model_mismatch`;
+- `python -m src.robot.safety.planning --doctor` reports `no_bundle`, or a cuRobo cell refuses to
+  start its planner because no evidence file measured its arm, hand, plate, placement and margin;
 - cuRobo refuses to start, or raises `Link tool0 not found in parent map` at the first plan.
 
 ## Diagnose
@@ -131,14 +131,18 @@ The order matters, because each step is gated on the one before it.
    writing if that drifts past 0.15 mm; measured 0.000653 mm. An arm whose asset carries no collision
    mesh cannot be read this way at all, which is what the vendor path above is for.
 
-3. **Bake the hand** (no simulator, no GPU), only for a hand nothing has baked yet:
+3. **Bake the hand** (no simulator, no GPU), only for a hand nothing has baked yet. A hand the
+   catalogue does not hold, from its numbers, vendor mesh files or a USD, follows
+   [your_own_gripper.md](your_own_gripper.md):
    ```bash
    python scripts/grippers/bake_gripper_variant.py robotiq_hande --write
    ```
    Same shape of gate: it reads the standalone 2F-85 and diffs it against the committed `ur5e` bundle
    before it writes anything (measured 0.05 mm against a 1.00 mm limit). A hand bundle is a hand and
-   nothing else, composed onto whichever arm the cell has when the guard loads, and it records the
-   arms it was proven on; an arm outside that record still drops the cell to capsules.
+   nothing else, composed onto whichever arm the cell has when the guard loads, and it carries no
+   list of arms: a planner starts on an arm and hand only with a committed evidence file for the
+   combination (`scripts/curobo/matrix_gate.py`), and an ik cell is decided by the exact-mesh guard
+   alone.
 
 4. **Build the cuRobo descriptor** (cuRobo sidecar interpreter), one per arm, with no hand in it:
    ```bash

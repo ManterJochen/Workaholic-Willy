@@ -1,0 +1,19 @@
+# The Intel RealSense D435i housing, as the smallest box around the drawing's maximum extents, written in the
+# colour camera's optical frame (x to the right in the image, y down, z out of the lens), in millimetres.
+# The eye in hand calibration places this frame on the flange, so nothing else places the housing.
+#
+# The D435i is the D435 housing with an inertial measurement unit inside: Table 3-52 and Table 4-19 name
+# both, Table 4-16 gives both 4.2 mm, and the D435i xacro builds the D435 body. Every number is the D435's
+# (realsense_d435.yaml says why).
+camera:
+  model: realsense_d435i
+  source: >-
+    Intel RealSense D400 Series Datasheet, document 337029-017, revision 019, October 2024: Table 3-52 (mechanical
+    dimensions), Table 4-16 (depth start point), Table 4-19 (depth origin X-Y); with realsense-ros
+    realsense2_description/urdf/_d435i.urdf.xacro, which builds the _d435.urdf.xacro body, at commit
+    97c15bdb1abd3ae2e833518ce502de960748cdd6 (Apache 2.0) for the colour camera's offset from the depth origin and the
+    cover glass inset
+  optical_frame: color
+  housing:
+    size_mm: [90.15, 25.15, 25.15]
+    centre_mm: [32.5, 0.0, -8.275]

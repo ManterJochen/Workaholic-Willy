@@ -63,7 +63,7 @@ def _hand(model: str, frame: dict, plates: "list[float] | None" = None):
 
     gripper: dict = {"model": model, "tool_frame": frame}
     if plates is not None:
-        gripper["coupling_plates_mm"] = plates
+        gripper["coupling_plates"] = [{"name": f"plate_{i}", "thickness_mm": float(mm)} for i, mm in enumerate(plates)]
     return planner_hand(RobotConfig.model_validate({"vendor": "ur", "gripper": gripper}))
 
 

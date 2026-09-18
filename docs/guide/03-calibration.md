@@ -254,8 +254,16 @@ the mechanical drawing to a few millimetres.
 Eye-to-hand persists an `Extrinsics` (schema `willy.calibration.extrinsics/1`) carrying the transform
 plus `rmse_mm`, `max_error_mm`, `num_samples`, `captured_at`, `rig_id` and `quality`. Eye-in-hand
 persists a bare frame-tagged `Transform` (schema `willy.calibration.cam_to_tool/1`) carrying the
-transform and `rig_id` only: no residual, no sample count. Both check frames on write and on read,
-and both write to a temporary file and then `Path.replace()`, so a save is atomic. Both live in
+transform and `rig_id` only: no residual, no sample count. The real-cell `calibrate` command on a UR
+arm writes `willy.calibration.cam_to_tool/2` instead, which adds `flange_to_tcp`: the tool frame the
+solve was made against, because `get_tcp_pose` is the flange times that frame and `CAMERA -> TOOL` is
+only true while the cell holds it. On a `willy` cell the record is the declared frame; on a
+`polyscope` cell it is the frame the driver derived from the controller at connect. A `/1` artifact
+still loads, with no record, and a rig that declares a camera body refuses it: calibrate that rig
+again. Once a body is placed from the record, a tool frame that moved since refuses the rig, exactly
+on `willy` and beyond the rig's `extrinsics.record_tolerance_mm` and `record_tolerance_deg` on
+`polyscope`, because the body and the pick frame are both stale. Both check frames on write and on
+read, and both write to a temporary file and then `Path.replace()`, so a save is atomic. Both live in
 [`serialization.py`](../../src/calibration/serialization.py), where the schema check on load is
 strict and raises. That is deliberate: an artifact of unknown vintage should force a re-measure
 rather than be trusted, so do not hand-edit a stale schema string to get past it.
@@ -271,7 +279,7 @@ and load through that one loader.
 
 | Key | Shape | Read by |
 |---|---|---|
-| `camera.cameras.rigs[<id>].extrinsics` | per rig: `mounting_mode`, `artifact_path`, and on an `eye_in_hand` rig `shutter_motion_tolerance_mm` and `shutter_motion_tolerance_deg`, required there with no default and refused on `eye_to_hand` | `build_config_frame_resolver` (singular, the primary rig) and `build_config_frame_resolvers` (plural) |
+| `camera.cameras.rigs[<id>].extrinsics` | per rig: `mounting_mode`, `artifact_path`, and on an `eye_in_hand` rig `shutter_motion_tolerance_mm` and `shutter_motion_tolerance_deg`, required there with no default and refused on `eye_to_hand`; `record_tolerance_mm` and `record_tolerance_deg`, required on a rig that declares a `body` and refused on `eye_to_hand` | `build_config_frame_resolver` (singular, the primary rig) and `build_config_frame_resolvers` (plural) |
 | `robot.grasping.fusion.cameras.<id>` | which rigs are fused, keyed by rig id: `enabled` only | `build_config_frame_resolvers` (plural) |
 
 The mounting picks the resolver: `eye_to_hand` gives a `StaticCameraToBaseResolver` holding the
@@ -324,6 +332,7 @@ success model all ship `enabled: false` in
 | `ValueError: no CAMERA->BASE frame resolver for a '<vendor>' cell` | `from_robot_config` on a real cell with nothing wired. Declare the primary camera's calibration on its rig, `camera.cameras.rigs[<primary rig id>].extrinsics`, and hand the root the camera section, or pass `frame_resolver=`. |
 | `RuntimeError: camera.cameras.rigs['x'].extrinsics names <path> (<mode>), which does not load: ...` | a declared artifact is missing, stale or invalid, on the primary rig or on an enabled fused camera. The cell is refused at construction rather than run with a camera it cannot place. |
 | `RuntimeError: grasping.fusion.cameras names 'x' and camera.cameras.rigs['x'].extrinsics is not declared ...` | an enabled fused camera whose rig declares no calibration. An incomplete resolver map must not run silently as a smaller rig than was asked for, and `build_real_cell` refuses the same camera earlier, before a device is opened. |
+| `CellBuildRefused: this cell plans with cuRobo and calibrates '<rig>', and no live camera world comes of it: ...` | a cuRobo cell that declares a rig's calibration and gets no live camera world from it. Once a rig is calibrated its world is mandatory: enable `safety.planning_world` with a `support_plane` and `perceived.enabled`, with the primary rig among the calibrated ones, or remove the rig's `extrinsics` while it is not used. `build_real_cell` refuses before a camera opens, and `real_cell --check` blocks on its `camera world` row. See [04](04-robot-and-safety.md). |
 | `PickOutcome.CAMERA_FRAME_REJECTED` at pick time | a valid candidate existed but was in the camera frame while `require_base_frame_grasp` was on. The calibration is not reaching the pick path. See [05](05-pick-loop.md). |
 
 And the one that is **not** fail-closed: `fusion.enabled: false` with second cameras named in
@@ -393,8 +402,10 @@ That command builds its arm through `Robot.from_config(robot_config, gripper=Non
 arm-vendor readiness gate runs and no gripper is built. The sweep takes the cell lock before the arm
 connects, connects no gripper, and exits 1 where another process holds the cell or the connect is
 refused. Every move the routine commands runs inside a camera-world decline named for the mounting,
-so on a cuRobo cell a move's result says `DECLINED` with that reason instead of `MISSING`. All of
-that is exercised off-box by the mock suite, and none of it has met a physical controller.
+so on a cuRobo cell a move's result says `DECLINED` with that reason, where an undeclined move would
+be refused with `MISSING`. The command prints the robot's camera world line, ending
+`this sweep declines for itself`. All of that is exercised off-box by the mock suite, and none of it
+has met a physical controller.
 
 ---
 

@@ -32,6 +32,7 @@
             "fps_tolerance": 3.0
           },
           "extrinsics": null,
+          "body": null,
           "frame_size": [
             1280,
             720
@@ -66,6 +67,7 @@
             "fps_tolerance": 3.0
           },
           "extrinsics": null,
+          "body": null,
           "device_index": 0,
           "device_frame_size": [
             2560,
@@ -109,6 +111,7 @@
             "fps_tolerance": 3.0
           },
           "extrinsics": null,
+          "body": null,
           "device_index": 3,
           "device_frame_size": [
             2560,
@@ -152,6 +155,7 @@
             "fps_tolerance": 3.0
           },
           "extrinsics": null,
+          "body": null,
           "device_index": 0,
           "serial_number": null,
           "color_resolution": [
@@ -471,7 +475,7 @@
     "gripper": {
       "vendor": "robotiq",
       "model": null,
-      "coupling_plates_mm": null,
+      "coupling_plates": null,
       "max_width_mm": 85.0,
       "min_width_mm": 5.0,
       "closed_width_mm": 0.0,
@@ -603,9 +607,9 @@
         "enabled": false,
         "support_plane": null,
         "payload": {
-          "enabled": false,
+          "enabled": true,
           "sphere_slots": 16,
-          "length_mm": 120.0,
+          "length_mm": null,
           "lateral_margin_mm": 10.0
         },
         "include_fixtures": true,

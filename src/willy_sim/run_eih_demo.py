@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from src.willy_sim.run_eih_pick import build_service
+from src.robot.core.camera_world import CameraWorldDecline
 
 DEFAULT_OUT = "logs/demo/eih_pick_demo.mp4"
 # Cinematic camera (metres): an elevated front-right 3/4 view of the cell, aimed at the workspace.
@@ -36,6 +37,7 @@ def record_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, fps: int 
     # build_service starts the SimulationApp; the isaacsim.* namespaces only exist after that.
     service, arm, gripper, handles, cfg, view_pose, _cell = build_service(
         headless=headless, continuous_guard=True,  # continuous guard (closed-form path; natural_aim N/A)
+        camera_world=CameraWorldDecline("run_eih_demo: this runner plans without a live camera world"),
     )
     session = arm.session
     app = getattr(session, "app", None)

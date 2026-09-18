@@ -57,14 +57,39 @@ class PreflightTests(unittest.TestCase):
         Since Step 4f the hand is one of them: the base tree names none, on purpose, and its guard
         reads hand geometry, so the arm refuses to build. The camera section is the shipped one, whose
         primary rig declares no calibration, so the camera row blocks for that and not for a missing
-        argument."""
+        argument. Since UM lane S22 the planner margin is one too: the base tree plans with cuRobo and
+        declares no margin, which the planner refused at start since B1 S17 and the desk now says before
+        anybody is at the arm."""
         from src.config import load_config
 
         report = run_config_preflight(RobotConfig(vendor="ur"), camera=load_config().camera,
                                       curobo_available=True, collision_engine="coal")
         blocking = {c.name for c in report.blocking}
-        self.assertEqual(blocking, {"tool frame", "payload", "camera -> base", "hand"})
+        # Step 8e: the carried part is modelled by default and the base tree declares no length for it.
+        self.assertEqual(blocking, {"tool frame", "payload", "camera -> base", "camera world", "hand", "planner margin",
+                                    "carried part"})
         self.assertFalse(report.ok)
+
+    def test_the_checklist_blocks_a_real_curobo_ur_with_no_carried_length(self) -> None:
+        """Step 8e: a cuRobo UR models the part it carries, and a cell that declares no length is stopped at the desk,
+        naming the key, rather than planning every carry as if the hand were empty."""
+        def row(payload: dict, planner: str = "curobo"):  # noqa: ANN202
+            report = run_config_preflight(
+                RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": planner},
+                                            "safety": {"planning_world": {"payload": payload}}}),
+                curobo_available=True, collision_engine="coal",
+            )
+            return _named(report, "carried part")
+
+        blocked = row({})
+        self.assertIs(CheckStatus.BLOCK, blocked.status)
+        self.assertIn("safety.planning_world.payload.length_mm", blocked.detail + blocked.fix)
+        declared = row({"length_mm": 60.0})
+        self.assertIs(CheckStatus.OK, declared.status)
+        self.assertIn("60", declared.detail)
+        self.assertIn("16", declared.detail)
+        self.assertIs(CheckStatus.WARN, row({"enabled": False}).status)
+        self.assertIs(CheckStatus.WARN, row({}, planner="ik").status)
 
     def test_a_curobo_cell_without_the_environment_blocks(self) -> None:
         """A cuRobo cell refuses every motion without the sidecar, which looks like a broken robot.
@@ -80,7 +105,8 @@ class PreflightTests(unittest.TestCase):
         )
         blocking = {c.name for c in report.blocking}
         self.assertEqual(
-            blocking, {"tool frame", "payload", "camera -> base", "cuRobo environment", "hand"}
+            blocking, {"tool frame", "payload", "camera -> base", "camera world", "cuRobo environment", "hand",
+                       "planner margin", "wrist camera body", "carried part"}
         )
         fix = _named(report, "cuRobo environment").fix
         # The doctor lives on the planning CLI. `execution.real_cell --doctor` was named here for months and that
@@ -199,7 +225,18 @@ class PreflightTests(unittest.TestCase):
             "ur": {"model": "ur3e"},
             "gripper": {"model": "robotiq_2f85", "tool_frame": _GOOD_TOOL},
             "safety": {"payload": {"enforce": True, "mass_kg": 1.1, "cog_mm": (0.0, 0.0, 55.0)},
-                       "self_collision": {"kinematics_model": "ur3e"}},
+                       # Every cuRobo cell declares its planner margin (B1 S17), and a fully configured one
+                       # has a committed evidence file for its combination (S22): ur3e, 2F-85, +Y+X, 4 mm.
+                       "self_collision": {"kinematics_model": "ur3e", "planner_margin_mm": 4.0},
+                       # A calibrated cuRobo cell feeds its planner a live world, by owner decision.
+                       "planning_world": {
+                           "enabled": True,
+                           "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
+                           # A cell states whether it carries a part (Step 8e). This one says it carries none: the
+                           # committed evidence for its combination was measured with no attach slots, and a cell
+                           # that declares a length needs the `_a16` file measured first (matrix_gate.py --attach).
+                           "payload": {"enabled": False},
+                       }},
         })
         # The primary camera's calibration is declared on its rig, in the camera section of the same tree.
         # States the engine instead of asking this box: a checklist test must not turn red because a machine
@@ -207,6 +244,37 @@ class PreflightTests(unittest.TestCase):
         report = run_config_preflight(cfg, camera=_calibrated_camera("logs/eth.json"), curobo_available=True,
                                       collision_engine="coal")
         self.assertTrue(report.ok, report.render())
+
+    def test_the_checklist_blocks_a_curobo_cell_whose_cameras_give_no_world(self) -> None:
+        """The pick service declines nothing, so a cuRobo cell with no world refuses every pick (an owner decision).
+
+        The desk says so before anybody is at the arm, with the same plan the build reads, and opens no device.
+        """
+        from src.config import load_config
+
+        world = {"enabled": True,
+                 "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0}}
+        wired = RobotConfig.model_validate({"vendor": "ur", "safety": {"planning_world": world}})
+        rows = (
+            ("the base tree and the shipped camera", RobotConfig(vendor="ur"), load_config().camera,
+             CheckStatus.BLOCK, "planning_world.enabled is false"),
+            ("a block, a plane and a calibrated primary", wired, _calibrated_camera("logs/eth.json"),
+             CheckStatus.OK, "camera world from"),
+            ("an ik cell", RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "ik"}}),
+             load_config().camera, CheckStatus.WARN, "no planner reads a camera world"),
+            ("no camera section", RobotConfig(vendor="ur"), None, CheckStatus.BLOCK, "not handed the camera section"),
+        )
+        for label, cfg, camera, status, says in rows:
+            with self.subTest(label):
+                kwargs = {} if camera is None else {"camera": camera}
+                row = _named(run_config_preflight(cfg, curobo_available=True, collision_engine="coal", **kwargs),
+                             "camera world")
+                self.assertIs(status, row.status, row.detail)
+                self.assertIn(says, row.detail)
+        for vendor in ("sim", "dummy"):
+            with self.subTest(vendor=vendor):
+                names = {c.name for c in run_config_preflight(RobotConfig(vendor=vendor), curobo_available=True).checks}
+                self.assertNotIn("camera world", names)
 
     def test_sim_and_dummy_are_never_blocked(self) -> None:
         """A rehearsal must not be gated on facts that only a physical cell has."""
@@ -647,3 +715,54 @@ class CuroboProbeHonestyTests(unittest.TestCase):
         text = _P("docs/runbooks/real_cell_first_pick.md").read_text(encoding="utf-8")
         self.assertIn("get_content_root", text)
         self.assertIn("build_ur_config.py", text)
+
+    # Customer chain lane C1i: the runbook's blocking table is the checklist's.
+
+    @staticmethod
+    def _table_rows(text: str) -> set:
+        """The first backticked token of every row under the runbook's ``| Blocking |`` header, arrows normalised."""
+        import re
+
+        lines = text.splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("| Blocking |"))
+        names = set()
+        for line in lines[start + 2:]:
+            if not line.startswith("|"):
+                break
+            found = re.search(r"`([^`]+)`", line)
+            if found:
+                names.add(found.group(1).replace("→", "->"))
+        return names
+
+    @staticmethod
+    def _shipped_blocking(*, curobo: bool, engine: "str | None") -> set:
+        from src.config.loader import load_config, load_robot_config
+        from src.robot.execution.real_cell.preflight import run_config_preflight
+
+        report = run_config_preflight(load_robot_config(profile=None), camera=load_config(profile=None).camera,
+                                      curobo_available=curobo, collision_engine=engine)
+        return {check.name for check in report.blocking}
+
+    def test_the_runbooks_blocking_table_is_what_the_checklist_blocks(self) -> None:
+        from pathlib import Path as _P
+
+        text = _P("docs/runbooks/real_cell_first_pick.md").read_text(encoding="utf-8")
+        self.assertEqual(self._table_rows(text), self._shipped_blocking(curobo=True, engine="coal"))
+
+    def test_the_table_parser_sees_a_missing_row(self) -> None:
+        """⭐ THE CONTROL: the same comparison over the runbook with one row deleted fails."""
+        from pathlib import Path as _P
+
+        text = _P("docs/runbooks/real_cell_first_pick.md").read_text(encoding="utf-8")
+        cut = "\n".join(line for line in text.splitlines() if not line.startswith("| `payload`"))
+        self.assertNotEqual(self._table_rows(cut), self._shipped_blocking(curobo=True, engine="coal"))
+
+    def test_the_box_rows_the_runbook_names_block_on_a_bare_box(self) -> None:
+        from pathlib import Path as _P
+
+        bare = self._shipped_blocking(curobo=False, engine=None)
+        text = _P("docs/runbooks/real_cell_first_pick.md").read_text(encoding="utf-8")
+        for row in ("cuRobo environment", "exact mesh engine"):
+            with self.subTest(row=row):
+                self.assertIn(row, bare)
+                self.assertTrue(f"`{row}`" in text, f"the runbook does not name the `{row}` row")

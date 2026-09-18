@@ -32,6 +32,11 @@ from src.robot.core import (
 from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.safety import SafetyDecision, SafetyReason
 from src.robot.safety.planning import CuroboUnavailableError
+from tests._plan_end import pose_where_it_ends
+
+#: Said where each arm is built: these doubles plan or check with cuRobo and carry no camera world, so every
+#: motion they command declines it, as a cuRobo cell must since the world became mandatory.
+_DECLINED = "unit double: this test exercises the planner and the guard on a cuRobo arm, and no camera world is wired to it"
 
 _JOINTS = JointPositions([0.0, -1.5, 1.5, 0.0, 1.5, 0.0])
 
@@ -179,12 +184,12 @@ class _FakePlanner:
     def __init__(self, *, plan_result: object, execute_result: MotionResult | None = None) -> None:
         self._plan_result, self._execute_result = plan_result, execute_result
 
-    def plan(self, pose: Pose) -> object:
+    def plan(self, pose: Pose, *, goal_keep_out: object = None) -> object:
         if isinstance(self._plan_result, Exception):
             raise self._plan_result
         return self._plan_result
 
-    def refresh_world(self, *, near_point_mm: object = None) -> None:
+    def refresh_world(self, *, near_point_mm: object = None, goal_keep_out: object = None) -> None:
         """Asked before a judged joint move or line on a live camera world. The double has no world."""
         return None
 
@@ -200,15 +205,19 @@ class CuroboBranchTests(unittest.TestCase):
         return arm
 
     def test_disconnected_is_connection_error(self) -> None:
-        self.assertIs(self._arm(None, connected=False).move(_pose()).status, MotionStatus.CONNECTION_ERROR)
+        arm = self._arm(None, connected=False)
+        self.enterContext(arm.without_camera_world(_DECLINED))
+        self.assertIs(arm.move(_pose()).status, MotionStatus.CONNECTION_ERROR)
 
     def test_curobo_unavailable_is_controller_rejected(self) -> None:
         arm = self._arm(_FakePlanner(plan_result=CuroboUnavailableError("no GPU env")))
+        self.enterContext(arm.without_camera_world(_DECLINED))
         self.assertIs(arm.move(_pose()).status, MotionStatus.CONTROLLER_REJECTED)
 
     def test_no_plan_is_timeout(self) -> None:
         # Empty trajectory -> no collision-free plan -> fail safe, no blind motion.
         arm = self._arm(_FakePlanner(plan_result=[]))
+        self.enterContext(arm.without_camera_world(_DECLINED))
         self.assertIs(arm.move(_pose()).status, MotionStatus.TIMEOUT)
 
     def test_planned_config_gated_before_execute(self) -> None:
@@ -216,16 +225,20 @@ class CuroboBranchTests(unittest.TestCase):
         # execute() is never reached.
         planner = _FakePlanner(plan_result=[[0.0, -1.5, 1.5, 0.0, 1.5, 0.0]])
         arm = self._arm(planner)
-        veto = MotionResult.failed(MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO, target_pose=_pose())
+        self.enterContext(arm.without_camera_world(_DECLINED))
+        # The goal is where the plan ends: the UR driver refuses a plan off its goal before any gate (Step 8f).
+        goal = pose_where_it_ends(arm, [0.0, -1.5, 1.5, 0.0, 1.5, 0.0])
+        veto = MotionResult.failed(MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO, target_pose=goal)
         arm._gate_planned_config = lambda pose, joints: veto  # type: ignore[assignment, misc]
-        self.assertIs(arm.move(_pose()).status, MotionStatus.SELF_COLLISION_REJECTED)
+        self.assertIs(arm.move(goal).status, MotionStatus.SELF_COLLISION_REJECTED)
 
     def test_planned_config_accepted_executes(self) -> None:
         ok = MotionResult.from_bool(True, MotionCommand.MOVE_TO, target_pose=_pose())
         planner = _FakePlanner(plan_result=[[0.0, -1.5, 1.5, 0.0, 1.5, 0.0]], execute_result=ok)
         arm = self._arm(planner)
+        self.enterContext(arm.without_camera_world(_DECLINED))
         arm._gate_planned_config = lambda pose, joints: None  # type: ignore[assignment, misc]
-        self.assertTrue(arm.move(_pose()).ok)
+        self.assertTrue(arm.move(pose_where_it_ends(arm, [0.0, -1.5, 1.5, 0.0, 1.5, 0.0])).ok)
 
 
 if __name__ == "__main__":

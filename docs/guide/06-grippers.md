@@ -40,10 +40,24 @@ are arm rows whose SDK is missing, and the two reserved gripper slots.
 
 **`robot.gripper.vendor` picks the driver; `robot.gripper.model` names the hand.** The hand's geometry
 lives in the gripper registry, one file per hand under [`config/grippers/`](../../config/grippers/),
-read by [`src/config/grippers.py`](../../src/config/grippers.py). Only the 2F-85 has a file. Nothing
-reads `robot.gripper.model`, so setting it changes nothing: the labeller, the network conditioning and
-the planner descriptor carry their own copies of the hand, and a registry file that does not validate
-still passes `python -m src.config`.
+read by [`src/config/grippers.py`](../../src/config/grippers.py). It holds `robotiq_2f85`,
+`robotiq_hande` and `schunk_egu50`. `robot.gripper.model` is the one name the exact-mesh guard and
+the planner take the hand from: the planner's descriptor is per arm with no hand, and the hand is
+added as a body link when it starts. The loader fills the hand's widths and collision envelope from
+its file, and `python -m src.config` refuses a registry file that does not validate.
+
+The two names meet at the desk. `--check` states the driver the build constructs in a
+`gripper driver` row and blocks exactly where the build would put a `NullGripper` on the flange,
+from the one function both read (`robot_parts.gripper_driver_verdict`). A registry file may list
+the drivers that can actuate its hand, `drivers: [robotiq]` for both Robotiq hands, and a real UR
+profile naming that hand with another `gripper.vendor` is refused at load; `none` and `dummy`
+always pass. A file that lists nothing, like the EGU-50's, refuses no driver.
+
+The repository ships `robotiq_2f85`, `robotiq_hande` and `schunk_egu50`. A parallel jaw it never
+shipped joins them through [your_own_gripper.md](../runbooks/your_own_gripper.md): a registry file,
+a body from its numbers, from vendor STL or OBJ files or from a USD, a sphere map, a retract, an
+evidence file and a cell layer, each written by one script. None of it has run on a physical
+controller: the chain is exercised in a copy of the tree on the box, up to a planner that starts.
 
 > **`jaw_io` is the one most people need and the one nobody looks for.** It is deliberately not named
 > after a manufacturer: a pneumatic or electric two-finger gripper on a UR is one or two output pins
@@ -258,11 +272,53 @@ from src.robot.execution.robot import Robot
 
 robot = Robot.from_config(load_robot_section())
 with robot.connected() as live:          # lock, arm, then gripper
-    live.gripper.set_width_mm(40.0)
+    report = robot.grasp(40.0)           # close to 40 mm, read what was measured
+    print(report.render())
+    robot.release()                      # open to the hand's width
 ```
 
 A gripper that had to be substituted is refused at `connected()` rather than connected, as the cell
 refuses it. `Robot.from_config(..., gripper=None)` builds the arm alone.
+
+`grasp` and `release` say what was measured rather than what was commanded. `report.hold` is `HELD` or
+`EMPTY` where the gripper measured it (the Robotiq's gOBJ, the OnRobot status word, a vacuum switch, a
+part sensor or reed switches) and `UNMEASURED` where nothing could, and `report.width_measured` says
+whether the width was read back from a position sensor. A held or unmeasured grasp is modelled as a
+carried part on an arm that models one (`report.payload`: `ATTACHED` on a cuRobo UR that declares
+`safety.planning_world.payload.length_mm`, `FILTER_ONLY` when the planner declined it, `NOT_MODELLED`
+with the reason otherwise); a measured empty close attaches nothing. A release that still measures a
+part reads `RELEASE_NOT_CONFIRMED` and keeps the model. No force is commanded. A gripper that raises is
+stopped once and reported as `GRIPPER_FAULT`, and `robot.is_holding()` reads the hold without
+commanding anything.
+
+A pick and a place are one call each, for a part whose pose you already know in BASE:
+
+```python
+from src.robot.core.camera_world import CameraWorldDecline
+
+bench = CameraWorldDecline("bench check, no cameras mounted")
+with robot.connected():
+    picked = robot.pick(grasp_pose, 40.0, camera_world=bench)   # standoff, a line in, grasp, a line out
+    print(picked.render())
+    if picked.ok:
+        print(robot.place(place_pose, camera_world=bench).render())
+```
+
+The pose's own +Z is the approach. `pick` opens the jaws to the hand's width, moves to a standoff
+`standoff_mm` (80) back along the approach with a planned move, drives a straight line to the pose,
+closes to `width_mm` less `squeeze_mm` (1), and drives the line back out. `place` does the same with a
+release. Before any command both refuse a robot with no usable gripper, a closed link, a pose not in
+BASE, a camera world the arm would refuse the motion for, and an arm that keeps no straight line: on a
+cuRobo UR or sim arm every sample of the line is judged before it runs, on an ik UR the controller draws
+it and only its end is judged, a sim on ik or RMPflow drops it and is refused, and the dummy sets the
+pose. A refused motion ends the verb with nothing commanded after it, a close that measures nothing
+opens and backs out, and a release the gripper does not confirm leaves the arm where it stands.
+
+On a cell whose cameras are handed to `Robot.from_config(..., cameras=[...])`, leave `camera_world`
+unset: every motion plans against the live world, and a declined motion is refused there. Pass the
+target's `SegmentationOffer` as `keep_out=` (a `Locator` result's `keep_out(i)` gives one) and the part
+is held out of the planner world through every motion of the pick. The report carries the camera-world
+stamp of each motion, the line reading taken before the first one, and the hand report.
 
 The bench is a noun too, and its interlock is not optional:
 

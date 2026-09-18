@@ -235,9 +235,20 @@ class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
 
     def test_the_two_cases_that_were_already_right_still_are(self) -> None:
         """⭐ THE CONTROL. Closing the hole must not turn every variant into `no_bundle`: a model
-        with its own bundle can still be compared, and both answers have to survive."""
+        with its own bundle can still be compared, and both answers have to survive.
+
+        Until UM lane S22 the second answer was the guard refusing the EGU-50 on a ur3e by an inherited list.
+        Admission is measured now, so the guard composes both and the EVIDENCE is what tells them apart: the
+        matrix measured the EGU-50 on the ur3e, and could measure nothing for it on the ur5, which has no pose.
+        """
+        from src.robot.safety.planning.evidence import evidence_path
+
         self.assertEqual(self._status("ur5e", "schunk_egu50"), "ok")
-        self.assertEqual(self._status("ur3e", "schunk_egu50"), "variant_model_mismatch")
+        self.assertEqual(self._status("ur3e", "schunk_egu50"), "ok")
+        common = {"hand": "schunk_egu50", "coupling_mm": 0.0, "approach": "+Y", "closing": "+X",
+                  "planner_margin_mm": 4.0, "attach_spheres": 0}
+        self.assertTrue(evidence_path(arm="ur3e", **common).is_file())  # type: ignore[arg-type]
+        self.assertFalse(evidence_path(arm="ur5", **common).is_file())  # type: ignore[arg-type]
 
     def test_every_arm_with_a_bundle_carries_the_cell_gripper(self) -> None:
         """⭐ THE EDGE A NEW ARM NEEDS. The Hand-E is the gripper for this cell, so an arm that can
@@ -257,6 +268,6 @@ class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
             with self.subTest(model=model):
                 self.assertEqual(
                     self._status(model, "robotiq_hande"), "ok",
-                    f"{model} has exact arm geometry and the Hand-E is not proven on it: "
-                    f"robotiq_hande_hand_meshes.npz does not list {model} in hand__admitted_arms",
+                    f"{model} has exact arm geometry and the guard cannot compose the Hand-E onto it, "
+                    f"which would drop a cell carrying it to the capsule proxy",
                 )

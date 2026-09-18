@@ -1,112 +1,119 @@
-"""Bake a hand's own collision-mesh bundle, for a cell running a gripper other than the Robotiq 2F-85
-the arms carry.
+"""Bake a hand's own collision-mesh bundle out of one standalone hand USD.
 
     python scripts/grippers/bake_gripper_variant.py --list
-    python scripts/grippers/bake_gripper_variant.py robotiq_hande --check
-    python scripts/grippers/bake_gripper_variant.py robotiq_hande --write
+    python scripts/grippers/bake_gripper_variant.py --check
+    python scripts/grippers/bake_gripper_variant.py robotiq_hande --out <scratch>/robotiq_hande_hand_meshes.npz --write
+    python scripts/grippers/bake_gripper_variant.py --usd vendor/acme.usd --hand acme_2f --bodies housing,left,right \\
+        --closing +Z --approach +Y --binormal -X --mount-face-mm -86.10 --origin mounting_face --write
 
-A hand bundle is a hand and nothing else. This writes ``{hand}_hand_meshes.npz``, which the guard
-composes onto whichever arm the cell has at load, so one file serves every arm. A freshly baked hand
-records no arm as proven, and the guard refuses to compose it onto one until evidence admits the
-pairing, answering ``variant_model_mismatch`` until then.
+Any vendor USD bakes from the command line. The caller states the file, the three bodies (the housing, the left
+finger and the right finger, as prim names or absolute prim paths), which vendor axis the hand closes along,
+approaches along and has as its binormal (each one of ``+X -X +Y -Y +Z -Z``), where its mounting face sits along the
+approach, and whether its numbers then start at the ``flange`` or at its own ``mounting_face``. The catalogue below
+holds presets that resolve to exactly those arguments, and ``--list`` prints each as its command line.
 
-No Isaac and no GPU. The only thing this computes is the hand, read out of a vendor USD.
-``scripts/isaac/bake_ur_collision_meshes.py`` needs Isaac because it reads a composed articulation;
-opening a stage needs neither.
+A hand bundle is a hand and nothing else. This writes ``{hand}_hand_meshes.npz``, which the guard composes onto
+whichever arm the cell has at load, and records its row in ``bundles.json`` beside it. A freshly baked hand carries no
+list of arms: a planner starts on an arm and hand only with a committed evidence file for the combination
+(``scripts/curobo/matrix_gate.py``), and an ik cell runs no planner, so there the exact mesh guard alone decides.
 
-It proves itself before it is trusted. ``--check`` reads the standalone 2F-85 asset, places it
-by the same reasoning, and diffs it against the committed ``ur5e_collision_meshes.npz``. Only trust a
-newly baked hand if that reproduces, because a wrong frame here silently corrupts a safety guard and
-a mirrored gripper has identical extents. That is the gate ``bake_ur_collision_meshes.py`` sets for
-arms, applied to hands.
+No Isaac and no GPU, because opening a stage needs neither. ``pxr`` comes from ``pip install usd-core`` (pinned in
+``requirements.txt``) or from Isaac's own interpreter.
 
-The frame, read out of the committed bundle rather than assumed::
+It proves itself before it is trusted. Before every bake it reads Isaac's standalone 2F-85 asset, places it by the
+same reasoning, and diffs it against the committed bundle, and a failure writes nothing. A box without Isaac's assets
+can skip that control only by saying why (``--skip-control REASON``), and the reason lands in the bundle's recipe,
+because a wrong frame here silently corrupts a safety guard and a mirrored gripper has identical extents.
 
-    approach   +Y     palm y [-3.36, 90.00], fingers y [91.45, 148.47]
-    closing     X     finger centroids 114.96 mm apart along x, nothing along y or z
-    binormal    Z     finger z size 27.00, which is `finger_width_mm: 27.0` exactly
-
-Units are millimetres in the bundle and metres in every vendor USD measured so far, so the scale is
-demanded from the stage rather than assumed: metres read as millimetres is a hand a thousand times
-too small that plans happily through everything it should have hit.
-
-``pxr`` comes from ``pip install usd-core`` (pinned in ``requirements/dev.txt``) or from Isaac's own
-interpreter. Neither a simulator nor a GPU is involved either way.
+The frame change and the write are ``src/robot/safety/planning/robot/hand_from_mesh.py``, the one every hand route
+shares. Units are demanded from the stage: a stage in anything but metres is baked only when ``--scale-to-mm``
+states the same scale the stage declares.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+_REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO))
 
 from src.robot.safety.planning.robot.gripper_spheres import (  # noqa: E402
     FLANGE,
     MOUNTING_FACE,
-    _ORIGIN_KEY,
 )
 
-_REPO = Path(__file__).resolve().parents[2]
 _DATA = _REPO / "src" / "robot" / "safety" / "data"
 
-#: The three arrays that describe the end effector. Everything else in a bundle is the arm.
+#: The three arrays that describe the end effector, housing first.
 _HAND_KEYS = ("gripper", "lfinger", "rfinger")
+
+
+def _mesh_lib() -> Any:
+    name = "willy_hand_from_mesh"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, _REPO / "src/robot/safety/planning/robot/hand_from_mesh.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
 
 
 @dataclass(frozen=True, slots=True)
 class GripperAsset:
-    """Where a vendor gripper lives and how its own frame relates to the bundle's.
-
-    ``rotation`` maps the asset's axes onto the bundle's, as ``new = old @ rotation.T``. It is a
-    matrix rather than an axis permutation because a permutation can be a reflection: swapping two
-    axes has determinant -1 and mirrors the hand, and a mirrored symmetric gripper has identical
-    extents, so no assertion about sizes would catch it. The determinant check in
-    :func:`_read_gripper` is the only thing that does.
-    """
+    """A preset: where a vendor gripper lives and how its own frame relates to the bundle's, as the words a CLI takes."""
 
     key: str
+    #: Relative to Isaac's robot asset root.
     usd: str
-    #: The rigid bodies to read, in the bundle's order: the body first, then the two fingers.
+    #: The bodies to read, in the bundle's order: the housing first, then the left and the right finger.
     bodies: tuple[str, str, str]
     #: Asset-frame coordinate of the mounting face along the asset's approach axis, millimetres.
-    #: Subtracted before the rotation, so the bundle's y = 0 is the flange.
     mount_face_mm: float
-    #: Which asset axis carries the approach, as an index into (x, y, z). Used only to apply
-    #: ``mount_face_mm``, and named so the two cannot silently disagree.
-    approach_axis: int
-    rotation: tuple[tuple[float, float, float], ...]
-    #: Where the placed arrays start, once the mounting face has been moved to zero. Two hands,
-    #: two answers: a bundle read out of a composed arm asset was already placed by the arm, so
-    #: its origin is the flange, while a standalone vendor asset has no idea what it will be
-    #: bolted to and its origin is the mounting face. The difference is one coupling plate, it is
-    #: a bench measurement, and a sphere set one plate too close to the flange looks reasonable.
+    closing: str
+    approach: str
+    binormal: str
+    #: Where the placed arrays start once the mounting face is at zero. A hand read out of a composed arm asset was
+    #: already placed by the arm, so its origin is the flange; a standalone vendor asset's is its mounting face. The
+    #: difference is one coupling plate, and a sphere set one plate too close to the flange looks reasonable.
     origin: str
     note: str
 
+    @property
+    def rotation(self) -> tuple[tuple[float, float, float], ...]:
+        return _mesh_lib().VendorAxes.from_words(closing=self.closing, approach=self.approach, binormal=self.binormal).rotation
 
-#: Every gripper this repository can bake a bundle for.
-#:
-#: The two entries do not share a frame, and that is a fact about the assets rather than an oversight:
-#: Isaac authors the 2F-85 with the approach on +Z and the closing on Y, and the Hand-E with the
-#: approach on +Y and the closing on Z. A single "Robotiq convention" does not exist, which is why
-#: each entry states its own and why the 2F-85 is baked here at all: it is the control.
+    @property
+    def approach_axis(self) -> int:
+        return "XYZ".index(self.approach[1])
+
+    def cli_line(self) -> str:
+        return (f"--usd <Isaac Robots>/{self.usd} --hand {self.key} --bodies {','.join(self.bodies)} "
+                f"--closing {self.closing} --approach {self.approach} --binormal {self.binormal} "
+                f"--mount-face-mm {self.mount_face_mm:g} --origin {self.origin}")
+
+
+#: The presets. The two do not share a frame, and that is a fact about the assets rather than an oversight: Isaac
+#: authors the 2F-85 with the approach on +Z and the closing on Y, and the Hand-E with the approach on +Y and the
+#: closing on Z. The 2F-85 is here because it is the control.
 CATALOGUE: tuple[GripperAsset, ...] = (
     GripperAsset(
         key="robotiq_2f85",
         usd="Robotiq/2F-85/Robotiq_2F_85_edit.usd",
         bodies=("base_link", "left_inner_finger", "right_inner_finger"),
+        # Reading this asset in its own root frame reproduces the committed bundle to 0.00 mm on all six corners of
+        # the palm, so this asset root is the UR flange. Its body starts 3.36 mm behind that root, which is the
+        # mounting boss sitting inside the flange.
         mount_face_mm=0.0,
-        approach_axis=2,
-        # (x, y, z)_asset -> (y, z, x)_bundle. A cyclic permutation, determinant +1.
-        rotation=((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
-        # Reading this asset in its own root frame reproduces the committed bundle to 0.00 mm on all
-        # six corners of the palm, so this asset root is the UR flange. Its body starts 3.36 mm
-        # behind that root, which is the mounting boss sitting inside the flange.
+        closing="+Y", approach="+Z", binormal="+X",
         origin=FLANGE,
         note="the control: this must reproduce the committed ur5e bundle",
     ),
@@ -114,17 +121,12 @@ CATALOGUE: tuple[GripperAsset, ...] = (
         key="robotiq_hande",
         usd="Robotiq/Hand-E/Robotiq_Hand_E_edit.usd",
         bodies=("base_link", "left_gripper", "right_gripper"),
-        # Group1 is the housing and spans y [-86.10, 0.00]; the coupling bolts reach 4.90 mm further
-        # back and are kept, because they are real geometry and a collision model that drops real
-        # geometry is optimistic in the one direction that matters.
+        # The housing spans y [-86.10, 0.00]; the coupling bolts reach 4.90 mm further back and are kept, because they
+        # are real geometry and a collision model that drops real geometry is optimistic in the one direction that
+        # matters. The binormal's sign puts `left_gripper` at negative x, where the committed 2F-85 puts `lfinger__v`.
+        # The asset holds no coupling part at all, so these numbers start at the gripper's own mounting face.
         mount_face_mm=-86.10,
-        approach_axis=1,
-        # (x, y, z)_asset -> (z, y, -x)_bundle. Determinant +1. The sign puts the body the asset calls
-        # `left_gripper` at negative x, which is where the committed 2F-85 puts `lfinger__v`.
-        rotation=((0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0)),
-        # The housing spans 99.20 mm, which is the published body length, and the asset holds no
-        # coupling part at all. So these numbers start at the gripper's own mounting face and the
-        # plate between it and the flange is not in them.
+        closing="+Z", approach="+Y", binormal="-X",
         origin=MOUNTING_FACE,
         note="Robotiq Hand-E, 50 mm stroke, two prismatic fingers of 25 mm each",
     ),
@@ -132,8 +134,8 @@ CATALOGUE: tuple[GripperAsset, ...] = (
 
 _BY_KEY = {a.key: a for a in CATALOGUE}
 
-#: Isaac's asset root. The one path this repository cannot relocate, so it is read from the
-#: environment first and only then guessed, exactly as `scripts/curobo/build_ur_config.py` does.
+#: Isaac's asset root. The one path this repository cannot relocate, so it is read from the environment first and
+#: only then guessed, as `scripts/curobo/build_ur_config.py` does.
 _ASSET_HINTS = (
     "D:/isaacsim_assets/Assets/Isaac/5.1/Isaac/Robots",
     "C:/isaacsim_assets/Assets/Isaac/5.1/Isaac/Robots",
@@ -150,70 +152,70 @@ def _asset_root() -> Path:
         if path.is_dir():
             return path
     raise SystemExit(
-        "could not locate the Isaac robot assets.\n"
+        "could not locate the Isaac robot assets, which the 2F-85 control reads before any bake.\n"
         f"  searched: {', '.join(str(c) for c in candidates)}\n"
-        "  set WILLY_ISAAC_ASSETS=<...>/Assets/Isaac/<version>/Isaac/Robots"
+        "  set WILLY_ISAAC_ASSETS=<...>/Assets/Isaac/<version>/Isaac/Robots, or pass --skip-control with the reason "
+        "this box cannot run it"
     )
 
 
-def _read_gripper(asset: GripperAsset) -> dict[str, np.ndarray]:
-    """The three hand arrays in the bundle frame, millimetres.
+def _read_usd_parts(
+    usd: Path, bodies: tuple[str, str, str], *, scale_to_mm: float | None,
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """The three bodies of ``usd`` in the stage's own axes, in millimetres, relative to the default prim.
 
-    Vertices only, and faces beside them: the Coal backend builds a BVH from both and the sphere fit
-    reads the vertices, so a bundle without faces is half a bundle.
+    A body is a prim name or an absolute prim path, and a name that two prims carry is refused naming both. The
+    stage's unit is demanded: anything but metres is read only when ``scale_to_mm`` states the same millimetres per
+    unit. Each body comes with its faces, because the Coal backend builds a BVH from both and the sphere fit reads the
+    vertices.
     """
     try:
         from pxr import Usd, UsdGeom
-    except ImportError:  # pragma: no cover (the message is the point)
+    except ImportError as exc:  # pragma: no cover (the message is the point)
         raise SystemExit(
-            "pxr is not importable. Either `pip install usd-core` in the project venv, or run this "
-            "with Isaac's own interpreter. No simulator is needed either way."
+            f"pxr will not load ({exc}). Either `pip install usd-core` in the project venv, or run this with Isaac's "
+            "own interpreter. No simulator is needed either way."
         ) from None
 
-    rotation = np.array(asset.rotation, dtype=np.float64)
-    determinant = float(np.linalg.det(rotation))
-    if abs(determinant - 1.0) > 1e-9:
-        raise SystemExit(
-            f"{asset.key}: the frame change has determinant {determinant:+.6f}, so it is a reflection "
-            "rather than a rotation and would mirror the gripper. A mirrored symmetric hand has "
-            "identical extents, so nothing downstream would notice."
-        )
-
-    path = _asset_root() / asset.usd
-    if not path.is_file():
-        raise SystemExit(f"{asset.key}: no asset at {path}")
-    stage = Usd.Stage.Open(str(path), Usd.Stage.LoadAll)
+    if not usd.is_file():
+        raise SystemExit(f"no USD at {usd}")
+    stage = Usd.Stage.Open(str(usd), Usd.Stage.LoadAll)
     if stage is None:
-        raise SystemExit(f"{asset.key}: could not open {path}")
-
-    metres_per_unit = UsdGeom.GetStageMetersPerUnit(stage)
-    scale = metres_per_unit * 1000.0
+        raise SystemExit(f"could not open {usd}")
+    metres_per_unit = float(UsdGeom.GetStageMetersPerUnit(stage))
+    declared = metres_per_unit * 1000.0
     if not 0.999 < metres_per_unit < 1.001:
-        raise SystemExit(
-            f"{asset.key}: the stage declares metersPerUnit={metres_per_unit}, which is not the "
-            "metres every vendor asset measured so far uses. Check it by hand before trusting a "
-            "bundle from it: a scale error here is a hand a thousand times the wrong size."
-        )
+        if scale_to_mm is None or abs(float(scale_to_mm) - declared) > 1e-6 * declared:
+            raise SystemExit(
+                f"{usd.name} declares metersPerUnit={metres_per_unit}, which is {declared:g} mm per unit and not the metres "
+                f"every vendor asset measured so far uses. Bake it with --scale-to-mm {declared:g} if that is right: a "
+                f"scale error here is a hand a thousand times the wrong size."
+            )
+    elif scale_to_mm is not None and abs(float(scale_to_mm) - 1000.0) > 1e-6:
+        raise SystemExit(f"{usd.name} is in metres, and --scale-to-mm {scale_to_mm:g} says otherwise")
 
     root = stage.GetDefaultPrim()
     cache = UsdGeom.XformCache(Usd.TimeCode.Default())
-    bodies = {}
+    by_name: dict[str, list[Any]] = {}
     for prim in stage.TraverseAll():
-        bodies[prim.GetName()] = prim
+        by_name.setdefault(prim.GetName(), []).append(prim)
 
-    out: dict[str, np.ndarray] = {}
+    out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     reference = None
-    for key, body_name in zip(_HAND_KEYS, asset.bodies, strict=True):
-        prim = bodies.get(body_name)
-        if prim is None or not prim.IsValid():
-            raise SystemExit(
-                f"{asset.key}: no prim named {body_name!r} in {path.name}. The bodies are "
-                f"{sorted(n for n in bodies if n)}"
-            )
+    for key, selector in zip(_HAND_KEYS, bodies, strict=True):
+        if selector.startswith("/"):
+            prim = stage.GetPrimAtPath(selector)
+            found = [prim] if prim and prim.IsValid() else []
+        else:
+            found = by_name.get(selector, [])
+        if len(found) != 1:
+            if not found:
+                raise SystemExit(f"no prim {selector!r} in {usd.name}; it holds {sorted(n for n in by_name if n)[:40]}")
+            raise SystemExit(f"{selector!r} names {len(found)} prims in {usd.name}: "
+                             f"{', '.join(str(p.GetPath()) for p in found)}. Name the body by its absolute path")
+        prim = found[0]
         if reference is None:
-            reference = cache.GetLocalToWorldTransform(
-                root if root and root.IsValid() else prim
-            ).GetInverse()
+            reference = cache.GetLocalToWorldTransform(root if root and root.IsValid() else prim).GetInverse()
 
         verts: list[np.ndarray] = []
         faces: list[list[int]] = []
@@ -225,11 +227,9 @@ def _read_gripper(asset: GripperAsset) -> dict[str, np.ndarray]:
             points = mesh.GetPointsAttr().Get()
             if not points:
                 continue
-            to_root = np.array(
-                cache.GetLocalToWorldTransform(child) * reference, dtype=np.float64
-            )
+            to_root = np.array(cache.GetLocalToWorldTransform(child) * reference, dtype=np.float64)
             raw = np.array([[p[0], p[1], p[2]] for p in points], dtype=np.float64)
-            local = (np.hstack([raw, np.ones((len(raw), 1))]) @ to_root)[:, :3] * scale
+            local = (np.hstack([raw, np.ones((len(raw), 1))]) @ to_root)[:, :3] * declared
             counts = mesh.GetFaceVertexCountsAttr().Get() or []
             indices = list(mesh.GetFaceVertexIndicesAttr().Get() or [])
             cursor = 0
@@ -241,151 +241,168 @@ def _read_gripper(asset: GripperAsset) -> dict[str, np.ndarray]:
             base += len(local)
             verts.append(local)
         if not verts:
-            raise SystemExit(f"{asset.key}: {body_name!r} carries no mesh points")
-
-        stacked = np.vstack(verts)
-        stacked[:, asset.approach_axis] -= asset.mount_face_mm
-        out[f"{key}__v"] = stacked @ rotation.T
-        out[f"{key}__f"] = np.array(faces, dtype=np.int32)
+            raise SystemExit(f"{selector!r} in {usd.name} carries no mesh points")
+        out[key] = (np.vstack(verts), np.array(faces, dtype=np.int32))
     return out
 
 
-def _check_against_2f85(hand: dict[str, np.ndarray]) -> int:
-    """Diff a freshly read 2F-85 against the committed bundle. Returns an exit code."""
+def _bundle(asset: GripperAsset, usd: Path, *, scale_to_mm: float | None) -> Any:
+    lib = _mesh_lib()
+    return lib.HandBundle.from_parts(
+        parts=_read_usd_parts(usd, asset.bodies, scale_to_mm=scale_to_mm),
+        axes=lib.VendorAxes.from_words(closing=asset.closing, approach=asset.approach, binormal=asset.binormal),
+        scale_to_mm=1.0, mount_face_mm=asset.mount_face_mm, origin=asset.origin,
+    )
+
+
+def _check_against_2f85() -> tuple[int, float]:
+    """Read Isaac's standalone 2F-85 and diff it against the committed bundle: (exit code, worst corner deviation)."""
+    preset = _BY_KEY["robotiq_2f85"]
+    hand = _bundle(preset, _asset_root() / preset.usd, scale_to_mm=None).arrays()
     committed = _DATA / "ur5e_collision_meshes.npz"
     if not committed.is_file():
         print(f"no committed bundle at {committed}", file=sys.stderr)
-        return 1
+        return 1, float("inf")
+    worst = 0.0
     with np.load(committed) as reference:
-        worst = 0.0
         for key in _HAND_KEYS:
             got, want = hand[f"{key}__v"], reference[f"{key}__v"]
             lo_got, hi_got = got.min(axis=0), got.max(axis=0)
             lo_want, hi_want = want.min(axis=0), want.max(axis=0)
             deviation = float(max(np.abs(lo_got - lo_want).max(), np.abs(hi_got - hi_want).max()))
             worst = max(worst, deviation)
-            print(f"  {key:<9} read {len(got):>6} verts, committed {len(want):>6}")
-            print(f"    read      x [{lo_got[0]:8.2f},{hi_got[0]:8.2f}]"
-                  f"  y [{lo_got[1]:8.2f},{hi_got[1]:8.2f}]  z [{lo_got[2]:8.2f},{hi_got[2]:8.2f}]")
-            print(f"    committed x [{lo_want[0]:8.2f},{hi_want[0]:8.2f}]"
-                  f"  y [{lo_want[1]:8.2f},{hi_want[1]:8.2f}]  z [{lo_want[2]:8.2f},{hi_want[2]:8.2f}]")
-            print(f"    worst corner deviation {deviation:.2f} mm")
-    # The committed 2F-85 comes from the UR5e asset's baked Gripper variant, which is a simplified
-    # three-body model, while the standalone asset is the nine-body articulated one at its own
-    # aperture. The shapes have to agree; the vertex counts do not, and demanding they did would be
-    # comparing two different meshes of one gripper.
+            print(f"  {key:<9} read {len(got):>6} verts, committed {len(want):>6}, worst corner deviation {deviation:.2f} mm")
+    # The committed 2F-85 comes from the UR5e asset's baked Gripper variant, a simplified three-body model, while the
+    # standalone asset is the nine-body articulated one. The shapes have to agree; the vertex counts do not.
     limit = 1.0
-    print(f"\n  worst deviation over all three arrays: {worst:.2f} mm (limit {limit:.2f})")
+    print(f"  worst deviation over all three arrays: {worst:.2f} mm (limit {limit:.2f})")
     if worst > limit:
-        print("  FAILED: the reader does not reproduce the committed 2F-85, so no hand it reads "
-              "should be trusted. The difference above says which axis is wrong.", file=sys.stderr)
-        return 1
+        print("  FAILED: the reader does not reproduce the committed 2F-85, so no hand it reads should be trusted.",
+              file=sys.stderr)
+        return 1, worst
     print("  the reader reproduces the committed 2F-85. A hand it reads can be trusted this far.")
-    return 0
-
-
-def _still_admitted(out: Path, payload: dict[str, np.ndarray]) -> np.ndarray:
-    """The arms the committed bundle records, if and only if every array about to be written is the committed one."""
-    none = np.array([], dtype="<U8")
-    if not out.is_file():
-        return none
-    with np.load(out) as committed:
-        if "hand__admitted_arms" not in committed.files:
-            return none
-        for key, array in payload.items():
-            if key not in committed.files or committed[key].dtype != array.dtype or \
-                    not np.array_equal(committed[key], array):
-                return none
-        return np.asarray(committed["hand__admitted_arms"])
-
-
-def _write_variant(gripper: GripperAsset, hand: dict[str, np.ndarray]) -> int:
-    """Write the hand alone, ``{key}_hand_meshes.npz``; the guard composes it onto an arm at load.
-
-    It records no arm as proven. A newly baked hand is admitted to an arm by evidence, not by being
-    written, so composing it onto any arm answers ``variant_model_mismatch`` until then. A re-bake
-    that reproduces the committed arrays byte for byte keeps the arms already recorded, because
-    nothing they were proven on has changed.
-    """
-    out = _DATA / f"{gripper.key}_hand_meshes.npz"
-    payload: dict[str, np.ndarray] = {}
-    for key in _HAND_KEYS:
-        payload[f"{key}__v"] = hand[f"{key}__v"]
-        payload[f"{key}__f"] = hand[f"{key}__f"]
-        # `_fcl_self_collision` reads `{part}__frame` to decide which DH frame a mesh is placed from,
-        # and the hand sits at frame 6 on every UR flange whatever hand it is.
-        payload[f"{key}__frame"] = np.array([6], dtype=np.int64)
-    # The origin travels with the arrays, because it is the one fact about them a reader cannot
-    # recover by looking: a sphere set placed one coupling plate too close to the flange has
-    # entirely reasonable numbers.
-    payload[_ORIGIN_KEY] = np.array([gripper.origin])
-    admitted = _still_admitted(out, payload)
-    payload["hand__admitted_arms"] = admitted
-    np.savez_compressed(out, **payload)
-    print(f"wrote {out.name}")
-    print(f"  origin: {gripper.origin}")
-    if admitted.size:
-        print(f"  the arrays are the committed ones, so the arms they were proven on stay: {', '.join(admitted.tolist())}")
-    else:
-        print("  proven on no arm yet: the guard refuses to compose it onto one until evidence admits the pairing")
-    for key in _HAND_KEYS:
-        v = payload[f"{key}__v"]
-        lo, hi = v.min(axis=0), v.max(axis=0)
-        print(f"  {key:<9} {len(v):>6} verts  x [{lo[0]:8.2f},{hi[0]:8.2f}]"
-              f"  y [{lo[1]:8.2f},{hi[1]:8.2f}]  z [{lo[2]:8.2f},{hi[2]:8.2f}]")
-    print("\nnext, in the project venv:")
-    print(f"  python -m src.robot.safety.planning.robot.build_gripper_spheres --variant {gripper.key}")
-    return 0
+    return 0, worst
 
 
 def main(argv: list[str] | None = None) -> int:
+    lib = _mesh_lib()
     parser = argparse.ArgumentParser(
         prog="python scripts/grippers/bake_gripper_variant.py",
-        description="Bake a hand bundle, the hand alone, for a non-default gripper.",
+        description="Bake a hand bundle, the hand alone, out of one standalone hand USD.",
     )
-    parser.add_argument("gripper", nargs="?", help=f"one of: {', '.join(_BY_KEY)}")
-    parser.add_argument("--list", action="store_true", help="print the catalogue and exit")
-    parser.add_argument(
-        "--check", action="store_true",
-        help="read the 2F-85 and diff it against the committed bundle, then exit",
-    )
+    parser.add_argument("preset", nargs="?", help=f"a preset, one of: {', '.join(_BY_KEY)}")
+    parser.add_argument("--list", action="store_true", help="print every preset as its command line and exit")
+    parser.add_argument("--check", action="store_true", help="read the 2F-85 and diff it against the committed bundle")
+    parser.add_argument("--usd", default=None, help="the vendor USD to bake")
+    parser.add_argument("--hand", default=None, help="the registry name the hand will have")
+    parser.add_argument("--bodies", default=None, help="housing,left finger,right finger: prim names or absolute paths")
+    for word in ("closing", "approach", "binormal"):
+        parser.add_argument(f"--{word}", default=None, choices=lib.AXIS_WORDS, help=f"the vendor axis of the {word}")
+    parser.add_argument("--mount-face-mm", type=float, default=None, help="the mounting face along the approach, mm")
+    parser.add_argument("--origin", default=None, choices=(FLANGE, MOUNTING_FACE))
+    parser.add_argument("--scale-to-mm", type=float, default=None,
+                        help="millimetres per stage unit, required for a stage that is not in metres")
+    parser.add_argument("--out", default=None, help="where to write; the committed bundle path by default")
+    parser.add_argument("--skip-control", default=None, metavar="REASON",
+                        help="skip the 2F-85 control, saying why; the reason is recorded in the bundle")
     parser.add_argument("--write", action="store_true", help="write the hand bundle, {hand}_hand_meshes.npz")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(lib.joined_axis_words(list(sys.argv[1:] if argv is None else argv)))
 
-    if args.list or (not args.gripper and not args.check):
-        print(f"{'key':<16} {'arm bodies':<52} note")
+    if args.list or not (args.preset or args.check or args.usd):
         for asset in CATALOGUE:
-            print(f"{asset.key:<16} {', '.join(asset.bodies):<52} {asset.note}")
-        print(f"\narm bundles present: "
-              f"{', '.join(sorted(p.name.split('_collision')[0] for p in _DATA.glob('*_collision_meshes.npz')))}")
+            print(f"{asset.key}: {asset.cli_line()}")
+            print(f"    {asset.note}")
         return 0
 
     if args.check:
         print("checking the reader against the committed Robotiq 2F-85")
-        return _check_against_2f85(_read_gripper(_BY_KEY["robotiq_2f85"]))
+        return _check_against_2f85()[0]
 
-    gripper = _BY_KEY.get(args.gripper or "")
-    if gripper is None:
-        print(f"unknown gripper {args.gripper!r}; one of: {', '.join(_BY_KEY)}", file=sys.stderr)
-        return 2
+    if args.preset:
+        preset = _BY_KEY.get(args.preset)
+        if preset is None:
+            print(f"unknown preset {args.preset!r}; one of: {', '.join(_BY_KEY)}", file=sys.stderr)
+            return 2
+        asset = preset
+        usd = Path(args.usd) if args.usd else _asset_root() / preset.usd
+    else:
+        missing = [flag for flag, value in (("--hand", args.hand), ("--bodies", args.bodies), ("--closing", args.closing),
+                                            ("--approach", args.approach), ("--binormal", args.binormal),
+                                            ("--mount-face-mm", args.mount_face_mm), ("--origin", args.origin))
+                   if value is None]
+        if missing:
+            print(f"a bake from --usd states every number that places the hand; missing {', '.join(missing)}",
+                  file=sys.stderr)
+            return 2
+        bodies = tuple(body.strip() for body in args.bodies.split(","))
+        if len(bodies) != 3 or not all(bodies):
+            print(f"--bodies names exactly three bodies, the housing and the two fingers; got {args.bodies!r}",
+                  file=sys.stderr)
+            return 2
+        asset = GripperAsset(key=args.hand, usd=str(args.usd), bodies=bodies, mount_face_mm=float(args.mount_face_mm),
+                             closing=args.closing, approach=args.approach, binormal=args.binormal, origin=args.origin,
+                             note="baked from the command line")
+        usd = Path(args.usd)
 
-    # The control runs first, every time, and a failure stops the write. A bundle nobody checked is
-    # exactly the artifact this script exists to stop being produced by hand.
-    print("checking the reader against the committed Robotiq 2F-85 first")
-    if _check_against_2f85(_read_gripper(_BY_KEY["robotiq_2f85"])):
-        return 1
+    # The control runs first unless a reason is given, and a failure stops the write.
+    if args.skip_control is not None:
+        if not args.skip_control.strip():
+            print("--skip-control needs a reason, and a blank one is not a reason: the control is what makes a baked "
+                  "hand trustworthy", file=sys.stderr)
+            return 2
+        print(f"the 2F-85 control is SKIPPED: {args.skip_control.strip()}")
+        control: dict[str, Any] = {"skipped": args.skip_control.strip()}
+    else:
+        print("checking the reader against the committed Robotiq 2F-85 first")
+        code, worst = _check_against_2f85()
+        if code:
+            return 1
+        control = {"worst_corner_deviation_mm": worst}
 
-    print(f"\nreading {gripper.key}")
-    hand = _read_gripper(gripper)
+    print(f"\nreading {asset.key} from {usd.name}")
+    try:
+        bundle = _bundle(asset, usd, scale_to_mm=args.scale_to_mm)
+        arrays = bundle.arrays()
+    except ValueError as exc:
+        raise SystemExit(f"{asset.key}: {exc}") from None
+    refusal = lib.hand_bundle_rules().hand_bundle_refusal(arrays, name=f"{asset.key}_hand_meshes.npz")
+    if refusal is not None:
+        raise SystemExit(f"{asset.key}: {refusal}")
+    for key in _HAND_KEYS:
+        v = arrays[f"{key}__v"]
+        lo, hi = v.min(axis=0), v.max(axis=0)
+        print(f"  {key:<9} {len(v):>6} verts  x [{lo[0]:8.2f},{hi[0]:8.2f}]"
+              f"  y [{lo[1]:8.2f},{hi[1]:8.2f}]  z [{lo[2]:8.2f},{hi[2]:8.2f}]")
     if not args.write:
-        for key in _HAND_KEYS:
-            v = hand[f"{key}__v"]
-            lo, hi = v.min(axis=0), v.max(axis=0)
-            print(f"  {key:<9} {len(v):>6} verts  x [{lo[0]:8.2f},{hi[0]:8.2f}]"
-                  f"  y [{lo[1]:8.2f},{hi[1]:8.2f}]  z [{lo[2]:8.2f},{hi[2]:8.2f}]")
         print("\nnothing written; pass --write")
         return 0
-    return _write_variant(gripper, hand)
+
+    out = Path(args.out) if args.out else _DATA / f"{asset.key}_hand_meshes.npz"
+    recipe = {"writer": "scripts/grippers/bake_gripper_variant.py", "usd": usd.name, "bodies": list(asset.bodies),
+              "closing": asset.closing, "approach": asset.approach, "binormal": asset.binormal,
+              "mount_face_mm": asset.mount_face_mm, "origin": asset.origin, "control": control}
+    try:
+        report = bundle.write(out, records={"hand__recipe": json.dumps(recipe, sort_keys=True)})
+    except ValueError as exc:
+        raise SystemExit(f"{asset.key}: {exc}") from None
+    print(report.render())
+
+    from src.robot.safety.planning.bundle_index import INDEX_NAME, record_hand_bundle
+
+    if (out.parent / INDEX_NAME).is_file():
+        row = record_hand_bundle(
+            out, source="standalone_usd",
+            note=(f"the standalone USD {usd.name}, bodies {', '.join(asset.bodies)}, closing {asset.closing}, approach "
+                  f"{asset.approach}, binormal {asset.binormal}, mounting face {asset.mount_face_mm:g} mm, starting at "
+                  f"the {asset.origin}"),
+        )
+        print(f"  {row.render()}")
+    else:
+        print(f"  no {INDEX_NAME} beside {out.name}, so no row was recorded")
+    print("\nnext, in the project venv:")
+    print(f"  python scripts/grippers/measure_jaw_from_bundle.py {asset.key}")
+    print(f"  python scripts/curobo/fit_cover_spheres.py --hand {asset.key} --write")
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover

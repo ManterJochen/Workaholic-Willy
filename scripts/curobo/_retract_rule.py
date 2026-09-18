@@ -1,13 +1,15 @@
-"""Which pose an arm retracts to, chosen by a rule on the exact meshes with every hand. Standard library plus PyYAML.
+"""Which pose an arm retracts to with one hand, chosen by a rule on the exact meshes and the spheres. Stdlib and PyYAML.
 
 A retract is not a neutral label: cuRobo biases its graph search and its IK regularisation towards it and warms up from
 it. Isaac's Lula ``default_q`` is not safe to take as one unchecked: on ur5 that pose keeps 9.5 mm to the Hand-E and
 6.9 mm to the EGU-50, inside the guard's 10 mm margin, so the arm would start where its own guard refuses to be.
 
 The rule: start at the Lula pose (the anchor), walk outwards in fixed steps on the five joints that move the hand, and
-take the first candidate where every hand the registry holds clears the guard margin plus a reserve, the arm stands
-clear of the table, and every joint lies inside the planner's envelope. Deterministic: one order, no random draw, first
-pass wins, so another box with the same engine reproduces the committed table.
+take the first candidate where the hand being judged clears the guard margin plus a reserve on the exact meshes, the
+planner's sphere model admits it, the arm stands clear of the table, and every joint lies inside the planner's envelope.
+There is one row per arm, hand, plate, planner margin and placement, because a pose that clears one hand can be a self
+collision with another. Deterministic: one order, no random draw, first pass wins, so another box with the same engine
+reproduces the committed table.
 
 The pan is fixed because turning about the base moves no self distance and no height. The judging itself lives in the
 interpreter that holds Coal and the bundles (``choose_ur_retract.py``); this module is the order, the rule and the
@@ -219,12 +221,6 @@ def choose(
         f"{arm}: no pose within {max_steps} steps of {step_rad:g} rad clears every hand by {needed:g} mm and stands "
         f"{table_clearance_mm:g} mm above the table. The best candidate {reason} {worst[1]} at {worst[2]}. Widen the "
         "search on purpose, or refit the geometry."
-    )
-
-
-def _generate(arm: str) -> str:
-    return (
-        f"Generate it in the project venv with Coal: .venv/Scripts/python.exe scripts/curobo/choose_ur_retract.py {arm}"
     )
 
 

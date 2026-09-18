@@ -19,7 +19,17 @@ gripper:
     length, and the 38.0 mm contact patch that runs 14.39 mm behind and 23.61 mm in front of the grasp
     centre, as datagen/grasps/verdict.py JawModel and GraspingParallelJawGeometryConfig record them. The
     palm is not measured and the friction is a default.
+  # The robot.gripper.vendor drivers that can actuate this hand: the Robotiq driver over the socket the
+  # URCap opens. A real UR profile naming this hand with another driver is refused at load; none and dummy
+  # are always admitted.
+  drivers: [robotiq]
   jaw:
+    # Where the grasp centre sits along the approach, from this hand's own bundle origin. Every other
+    # number here is relative to it, so without it these numbers are a shape with no place on an arm:
+    # the midpoint of the pad face, measured off robotiq_2f85_hand_meshes.npz. This hand's two jaw faces
+    # do not agree at the baked pose, so the pad face is the one read; its palm numbers are an estimate
+    # as well (palm_measured below), which is why no envelope is written from these numbers.
+    grasp_centre_mm: 146.5
     aperture_mm: 85.0
     min_width_mm: 5.0
     closed_width_mm: 0.0

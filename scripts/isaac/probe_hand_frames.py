@@ -169,9 +169,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", type=str, default="logs/step4/probe_4g0_hand_frames.json")
     args = parser.parse_args(argv)
 
+    from src.robot.core.camera_world import CameraWorldDecline
     from src.willy_sim.harness.bootstrap import bootstrap_sim_cell
 
-    cell = bootstrap_sim_cell(None, headless=True, safety=False)
+    cell = bootstrap_sim_cell(None, headless=True, safety=False,
+                              camera_world=CameraWorldDecline(
+                                  "probe_hand_frames: a diagnostic of the hand frames, no camera world"))
 
     import omni.usd  # type: ignore[import-not-found]
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]

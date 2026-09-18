@@ -58,6 +58,9 @@ from src.willy_sim.scene import (
     mount_wrist_camera,
 )
 from src.geometry import Frame, Pose
+from src.robot.core.camera_world import CameraWorldDecline
+from src.willy_sim.harness.camera_world import SimCameraWorld
+from src.contracts import UNSET, Maybe
 
 # Down-looking pose to seed the empirical CAMERA->TOOL oracle; the camera must see the table here.
 # Only reached on the ground-truth-oracle fallback (no calibrated artifact); a loaded calibration
@@ -180,6 +183,7 @@ def coarse_centroid_base(frame, t_cam_to_base, seg_index: int = 0):
 
 def build_service(
     *,
+    camera_world: "Maybe[CameraWorldDecline | SimCameraWorld]" = UNSET,
     headless: bool = True,
     data_dir: str | None = None,
     mode: str = "easy",              # "easy" | "auto" | "closed_loop" (see harness/modes.py)
@@ -292,6 +296,7 @@ def build_service(
         data_dir, headless=headless, scene_kwargs=scene_kwargs,
         post_scene_hook=post_scene_hook,  # type: ignore[arg-type]
         **(cell_kwargs or {}),
+        camera_world=camera_world,
     )
     arm, gripper, handles, cfg, sim = cell.arm, cell.gripper, cell.handles, cell.cfg, cell.sim
     _dwell = cell.dwell  # steady-state dwell gate
@@ -698,6 +703,7 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
     service, arm, gripper, handles, cfg, view_pose, cell = build_service(
         headless=headless, data_dir=data_dir, mode=mode, marker=marker, cell_kwargs=cell_kwargs,
         ground_truth_depth=ground_truth_depth,
+        camera_world=CameraWorldDecline("run_eih_pick: this runner plans without a live camera world"),
     )
     identity = cell_identity(cell)
     if debug_frames:  # render the grasp-point overlay per pick (eye-in-hand ground-truth perception

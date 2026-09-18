@@ -60,7 +60,11 @@ class TheValidatorReadsTheRegistryTests(unittest.TestCase):
     def test_the_shipped_tree_validates_and_names_its_hands(self) -> None:
         code, printed = self._validate()
         self.assertEqual(code, 0, printed)
-        self.assertIn("hands: robotiq_2f85, robotiq_hande, schunk_egu50", printed)
+        from src.config.grippers import available_grippers
+
+        # Every hand the tree holds, whatever a customer added, and the three this repository ships among them (C1d).
+        self.assertIn(f"hands: {', '.join(available_grippers(self.root))}", printed)
+        self.assertLessEqual({"robotiq_2f85", "robotiq_hande", "schunk_egu50"}, set(available_grippers(self.root)))
 
     def test_a_malformed_hand_file_fails_validation_and_names_the_file(self) -> None:
         (self.root / "grippers" / "robotiq_2f85.yaml").write_text("gripper: [never closed\n", encoding="utf-8")
@@ -95,6 +99,37 @@ class TheValidatorReadsTheRegistryTests(unittest.TestCase):
         """The control, green before and after: every generated data_example tree has no grippers/ directory."""
         shutil.rmtree(self.root / "grippers")
         code, printed = self._validate()
+        self.assertEqual(code, 0, printed)
+
+    def test_a_hand_only_this_tree_describes_fails_validation_naming_the_repository_registry(self) -> None:
+        """Customer chain lane C1f. The body, sphere map, retract rows and evidence are written from the repository's."""
+        source = self.root / "grippers" / "schunk_egu50.yaml"
+        (self.root / "grippers" / "acme_2f.yaml").write_text(
+            source.read_text(encoding="utf-8").replace("model: schunk_egu50", "model: acme_2f"), encoding="utf-8",
+        )
+        source.unlink()
+        code, printed = self._name_the_hand("acme_2f")
+        self.assertEqual(code, 1, printed)
+        for part in ("acme_2f", "config/grippers"):
+            self.assertIn(part, printed)
+
+    def test_a_hand_this_tree_describes_differently_fails_validation_naming_both_files(self) -> None:
+        path = self.root / "grippers" / "robotiq_hande.yaml"
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("aperture_mm: 49.99", text)
+        path.write_text(text.replace("aperture_mm: 49.99", "aperture_mm: 50.99"), encoding="utf-8")
+        code, printed = self._name_the_hand("robotiq_hande")
+        self.assertEqual(code, 1, printed)
+        for part in (str(path.resolve()), "config/grippers/robotiq_hande.yaml", "aperture_mm", "50.99",
+                     "49.99"):
+            self.assertIn(part, printed)
+
+    def test_a_shipped_hand_moved_in_a_tree_the_cell_does_not_name_still_validates(self) -> None:
+        """⭐ THE CONTROL: the rule is about the hand a cell names, not about every file in the tree."""
+        path = self.root / "grippers" / "robotiq_hande.yaml"
+        path.write_text(path.read_text(encoding="utf-8").replace("aperture_mm: 49.99", "aperture_mm: 50.99"),
+                        encoding="utf-8")
+        code, printed = self._name_the_hand("schunk_egu50")
         self.assertEqual(code, 0, printed)
 
     def test_a_tree_without_a_registry_that_names_a_hand_fails_validation(self) -> None:

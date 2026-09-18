@@ -170,13 +170,15 @@ orientation simply fails at the retreat instead of at the approach.
 
 **5. Tell the planner what the guard will demand, with a measured, per-robot value.**
 `safety.self_collision.planner_margin_mm`. Do not derive it from `min_distance_mm`. How much margin
-a planner can absorb depends on how tightly its sphere model fits that arm: a UR5e plans at the
-10 mm `min_distance_mm` the base configuration sets and ships `planner_margin_mm: 0.0`, while a
-UR3e's thinner links read as permanently self-colliding once every sphere is inflated by half the
-margin, and it finds no plan at all above roughly 6 mm. `robot.ur3e.yaml` therefore ships
-`planner_margin_mm: 4.0`, a clear gap under that ceiling. Deriving the value from the guard's
-distance looks obviously right and takes the UR3e cell to zero picks. Sweep the real planner for any
-new robot before choosing.
+a planner can absorb depends on how tightly its sphere model fits that arm: in a planner sweep a UR5e
+planned at the 10 mm `min_distance_mm` the base configuration sets, while a UR3e's thinner links
+read as permanently self-colliding once every sphere is inflated by half the margin, and it found no
+plan at all above roughly 6 mm. `robot.ur3e.yaml` therefore ships `planner_margin_mm: 4.0`, a clear
+gap under that ceiling. Deriving the value from the guard's distance looks obviously right and takes
+the UR3e cell to zero picks. Sweep the real planner for any new robot before choosing. That sweep
+predates the refitted sphere map: against the refitted map every UR runs 4.0, `robot.sim.yaml`
+carries the measurement, and a cuRobo cell starts its planner only with a committed evidence file
+measured at its margin.
 
 **6. Keep the two robots' telemetry apart.** Records carry `robot_model`, `gripper_mount` and
 `degraded_engines` through `cell_identity()`. Confirm a new cell's JSONL carries them before
@@ -228,11 +230,12 @@ The bring-up is additive and every step is reversible without touching the UR5e 
 1. **Drop the robot layer.** Omit `--robot-model`, or set `WILLY_PROFILE=sim`, and the cell is the
    UR5e one, byte-identical. `config/robot/robot.ur3e.yaml` can stay on disk; an unreferenced
    layer is inert.
-2. **Drop a behaviour flag.** `--radial-closing` is default off, and `planner_margin_mm: 0.0`
-   returns the planner's own configuration untouched. Both revert to the previously validated
-   behaviour with no code change.
+2. **Drop a behaviour flag.** `--radial-closing` is default off. The planner margin has no neutral
+   value: a cuRobo cell starts its planner only with a committed evidence file measured at its
+   margin, and every committed file is at 4.0 mm, so the planner's rollback is
+   `robot.ur.motion_planner: ik`. Neither needs a code change.
 3. **Restore a mesh bundle.** The bundles are committed, so check the previous
-   `{model}_collision_meshes.npz` back out. A cuRobo `{model}_{hand}.yml` lives in the external cuRobo
+   `{model}_collision_meshes.npz` back out. A cuRobo `willy_{model}.yml` lives in the external cuRobo
    install; re-run the builder rather than hand-editing it.
 4. **Restore calibration.** Copy back the artifacts saved in Mitigate 7, then re-verify.
 5. **If the motion stack is the problem, do not work around it.** Removing the fail-closed check

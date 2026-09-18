@@ -33,6 +33,7 @@ import numpy as np
 
 from src.willy_sim.run_dense_demo import _draw_perception_panel
 from src.willy_sim.run_dense_pick import build_service
+from src.robot.core.camera_world import CameraWorldDecline
 
 # The recorder's output directory. It is repo-relative, so a default run writes inside the working
 # tree and `stitch()` reads back exactly what `record_segment` wrote.
@@ -113,6 +114,7 @@ def record_segment(segment: str, *, out_path: str | None = None, headless: bool 
         # Natural aim (the clean IK branch) for the free-pick segments; off for the blocking ones, whose
         # refusal and recovery scenarios drive their own approach. The continuous guard is always on.
         natural_aim=not is_blocking, continuous_guard=True,
+        camera_world=CameraWorldDecline("run_dense_demo_endgame: this runner plans without a live camera world"),
     )
     service, arm, gripper, handles, cfg, target_idx, target_label = svc
     session = arm.session

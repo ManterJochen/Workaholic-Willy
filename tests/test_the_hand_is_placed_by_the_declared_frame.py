@@ -168,8 +168,9 @@ class WhatStillRefusesTests(unittest.TestCase):
 
 
 class TheResolvedHandCarriesItsPlacementTests(unittest.TestCase):
-    """S04: ``planner_hand`` resolves the placement once, so no consumer derives its own. The Step 4g refusal is
-    unchanged in this step; only what the hand carries grows."""
+    """S04: ``planner_hand`` resolves the placement once, so no consumer derives its own. The Step 4g refusal stayed
+    in S04 and was narrowed in S23 to the placements this derivation refuses (tests/test_the_declared_frame_agrees_
+    with_the_hand.py)."""
 
     _UR_FRAME = {"source": "polyscope", "offset_mm": [0.0, 0.0, 155.75], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
 
@@ -179,7 +180,7 @@ class TheResolvedHandCarriesItsPlacementTests(unittest.TestCase):
 
         gripper: dict = {"model": model, "tool_frame": frame}
         if model == "robotiq_hande":
-            gripper["coupling_plates_mm"] = [20.0]
+            gripper["coupling_plates"] = [{"name": "plate", "thickness_mm": 20.0}]
         return planner_hand(RobotConfig.model_validate({"vendor": "ur", "gripper": gripper}))
 
     def test_a_ur_convention_frame_places_the_hand_along_z(self) -> None:

@@ -38,8 +38,10 @@ from typing import Any, Protocol, Sequence
 
 import numpy as np
 
+from src.contracts import UNSET, Maybe, chosen
 from src.robot.core.camera_world import CameraWorldStamp
 from src.robot.core.errors import CameraWorldUnavailable
+from src.robot.core.keep_out import GoalKeepOut, KeepOutBox, KeepOutSummary
 from src.robot.safety._capsule import AxisAlignedBox
 from src.robot.safety.planning.perceived import (
     DepthView,
@@ -51,6 +53,7 @@ from src.robot.safety.planning.perceived import (
     WorldBuildLimits,
     WorldBuildTuning,
     build_perceived_boxes,
+    target_keep_out_box,
 )
 from src.robot.safety.planning.world import merge_planner_worlds, planner_cuboid
 
@@ -191,6 +194,9 @@ class PlannerWorldSnapshot:
     #: otherwise. A fused world is exactly as current as its stalest image, so this is the one
     #: moment it can name.
     captured_at_s: float | None = None
+    #: What a `FRESH` world left out: the goal region or why there was none, and the held boxes;
+    #: `None` when no goal was asked about and no box was held.
+    keep_out: KeepOutSummary | None = None
 
     @property
     def usable(self) -> bool:
@@ -270,7 +276,13 @@ class LivePlannerWorld:
     _exclude: dict[str, tuple[np.ndarray, ...]] = field(
         default_factory=dict, init=False, repr=False
     )
-    _labels_stamped: float | None = field(default=None, init=False, repr=False)
+    #: When each offer's frame was taken, by the key the offer was stored under. Each offer ages on
+    #: its own stamp.
+    _offer_stamps: dict[str, float] = field(default_factory=dict, init=False, repr=False)
+    #: Offers held until forgotten, whatever their age: a pick's target while the pick runs.
+    _held: set[str] = field(default_factory=set, init=False, repr=False)
+    #: The target box each offer's points were fitted to, by the same key.
+    _targets: dict[str, KeepOutBox] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.tuning.voxel_field_mm > 0.0:
@@ -278,7 +290,7 @@ class LivePlannerWorld:
             # second costs nothing. Measured against the real planner: the first field a cell ever
             # built took 126 ms and every one after it 6 ms, and the whole difference was this
             # import landing on the first motion instead of here.
-            import scipy.ndimage  # noqa: F401, PLC0415 - imported for its cost, not for its names
+            import scipy.ndimage  # noqa: F401, PLC0415 (imported for its cost, not for its names)
 
         if not self.cameras:
             raise PerceptionGeometryError(
@@ -299,10 +311,13 @@ class LivePlannerWorld:
     def offer_segmentation(
         self,
         *,
-        camera: str | None = None,
+        camera: Maybe[str] = UNSET,
         labelled_masks: Sequence[tuple[str, np.ndarray]] = (),
         exclude_masks: Sequence[np.ndarray] = (),
         timestamp: float | None = None,
+        target_points_base_mm: np.ndarray | None = None,
+        target_label: str = "",
+        hold: bool = False,
     ) -> None:
         """Hand over the masks from a perception frame, for as long as they stay fresh.
 
@@ -312,23 +327,56 @@ class LivePlannerWorld:
         an obstacle has no plan by construction.
 
         Masks belong to the camera that produced them, because a pixel means nothing in another
-        camera image. `camera` names it, and defaults to the first, which is the only one a
-        single-camera cell has.
+        camera image, so an offer with masks or labels names its camera and one that does not is
+        refused. An offer with only target points may leave `camera` unset: a box in BASE belongs
+        to no camera, and it is kept under a key of its own.
+
+        Masks only ever leave a fixed camera's view. A camera on the wrist has moved with the arm
+        since its frame, so its pixels no longer mark the target; ``target_points_base_mm`` does,
+        in BASE. The world fits the box it would fit around those points
+        (``target_keep_out_box``) once, here, and leaves its inside out of every view, fixed or on
+        the wrist, and out of the voxel field.
+
+        Each offer ages on its own ``timestamp``, so an offer for one camera does not make another's
+        masks fresh again. ``hold`` keeps the offer, masks and box, whatever its age until
+        :meth:`forget_segmentation`: a pick's target stays out of the world for every motion of the
+        pick.
 
         A cell that never calls this still gets a world. It gets unnamed boxes, and during a pick it
         gets one box where the target is, which is why the pick loop calls it.
         """
-        name = self.cameras[0].name if camera is None else str(camera)
-        if name not in {view.name for view in self.cameras}:
-            raise PerceptionGeometryError(
-                f"no camera named {name!r} in this cell: "
-                f"{[view.name for view in self.cameras]}"
+        if not chosen(camera) or camera is None:
+            if len(labelled_masks) or len(exclude_masks):
+                raise PerceptionGeometryError(
+                    "a segmentation offer with masks names the camera that took them, one of "
+                    f"{[view.name for view in self.cameras]}: a pixel means nothing in another camera's image"
+                )
+            if target_points_base_mm is None:
+                return
+            name = f"{_BOX_ONLY_KEY}{target_label or 'target'}"
+        else:
+            name = str(camera)
+            if name not in {view.name for view in self.cameras}:
+                raise PerceptionGeometryError(
+                    f"no camera named {name!r} in this cell: "
+                    f"{[view.name for view in self.cameras]}"
+                )
+            self._labels[name] = tuple(
+                (str(label), np.asarray(mask).astype(bool)) for label, mask in labelled_masks
             )
-        self._labels[name] = tuple(
-            (str(label), np.asarray(mask).astype(bool)) for label, mask in labelled_masks
-        )
-        self._exclude[name] = tuple(np.asarray(mask).astype(bool) for mask in exclude_masks)
-        self._labels_stamped = time.time() if timestamp is None else float(timestamp)
+            self._exclude[name] = tuple(np.asarray(mask).astype(bool) for mask in exclude_masks)
+        self._offer_stamps[name] = time.time() if timestamp is None else float(timestamp)
+        if hold:
+            self._held.add(name)
+        else:
+            self._held.discard(name)
+        self._targets.pop(name, None)
+        if target_points_base_mm is not None:
+            box = target_keep_out_box(
+                target_points_base_mm, name=f"target_{target_label or name}", limits=self.limits, tuning=self.tuning,
+            )
+            if box is not None:
+                self._targets[name] = box
 
     def drop_cached_frames(self) -> None:
         """Forget the cached readings, so the next question reaches the cameras.
@@ -346,10 +394,19 @@ class LivePlannerWorld:
         self._frame_bodies.pop(str(camera), None)
 
     def forget_segmentation(self) -> None:
-        """Drop the masks. Called when a pick ends, so the next motion excludes nothing."""
+        """Drop every offer and every cached frame. Called when a pick ends.
+
+        The next motion then excludes nothing. The frames go too, because a pick that ends has
+        changed the cell: a part was taken, released or placed, and a frame cached while its target
+        was held out shows the part where the hand held it. The cache keys on the arm alone, and a
+        jaw that opens without the arm moving would otherwise hand the next motion that frame.
+        """
         self._labels.clear()
         self._exclude.clear()
-        self._labels_stamped = None
+        self._offer_stamps.clear()
+        self._held.clear()
+        self._targets.clear()
+        self.drop_cached_frames()
 
     # -----------------------------------------------------------------------------------------
     # The one question
@@ -361,6 +418,7 @@ class LivePlannerWorld:
         self_envelope: SelfEnvelope | None = None,
         near_point_mm: Sequence[float] | None = None,
         now: float | None = None,
+        goal_keep_out: Maybe[GoalKeepOut] = UNSET,
     ) -> PlannerWorldSnapshot:
         """The cell as it is, declared and perceived together, ready to register.
 
@@ -377,6 +435,10 @@ class LivePlannerWorld:
             the ones near the path are the ones that matter.
         now
             The clock, injectable so a test can age a frame without sleeping.
+        goal_keep_out
+            The space between the jaws at the motion's goal (``self_envelope.goal_keep_out``), left
+            out of every view and the voxel field beside the held boxes, or the reason there is
+            none, which the snapshot keeps.
         """
         clock = time.time() if now is None else float(now)
         declared = tuple(dict(box) for box in self.declared)
@@ -433,19 +495,24 @@ class LivePlannerWorld:
                 meshes=meshes, declared_count=len(declared),
             )
 
-        fresh_masks = self._labels_fresh(clock)
+        live = {key for key in self._offer_stamps if self._labels_fresh(key, clock)}
         views = [
             DepthView(
                 surface_depth_mm=frames[camera.name].depth_mm,
                 intrinsics=frames[camera.name].intrinsics,
                 camera_to_base=placed[camera.name],
-                exclude_masks=self._exclude.get(camera.name, ()) if fresh_masks else (),
-                labelled_masks=self._labels.get(camera.name, ()) if fresh_masks else (),
+                exclude_masks=self._masks_for(camera, live, self._exclude),
+                labelled_masks=self._masks_for(camera, live, self._labels),
                 name=camera.name,
                 timestamp=frames[camera.name].timestamp,
             )
             for camera in self.cameras
         ]
+        held_keys = [key for key in sorted(live) if key in self._targets]
+        keep_out = tuple(self._targets[key] for key in held_keys)
+        region = goal_keep_out.region if chosen(goal_keep_out) else None
+        if region is not None:
+            keep_out = keep_out + (region,)
 
         try:
             perceived = build_perceived_boxes(
@@ -457,6 +524,7 @@ class LivePlannerWorld:
                     padding_mm=float(self.tuning.margin_mm),
                 ),
                 near_point_mm=near_point_mm,
+                keep_out=keep_out,
             )
         except PerceptionGeometryError as exc:
             return PlannerWorldSnapshot(
@@ -468,6 +536,18 @@ class LivePlannerWorld:
             planner_cuboid(box.name, box.center_mm, box.dims_mm, yaw_rad=box.yaw_rad)
             for box in perceived.boxes
         ]
+        summary = None
+        if chosen(goal_keep_out) or held_keys:
+            counts = perceived.keep_out_points
+            summary = KeepOutSummary(
+                goal_points=None if region is None else int(counts.get(region.name, 0)),
+                goal_reason="" if region is not None or not chosen(goal_keep_out) else goal_keep_out.reason,
+                held=tuple(
+                    ("box only" if key.startswith(_BOX_ONLY_KEY) else key, float(self._offer_stamps[key]),
+                     int(counts.get(self._targets[key].name, 0)))
+                    for key in held_keys
+                ),
+            )
         return PlannerWorldSnapshot(
             verdict=WorldVerdict.FRESH,
             cuboids=tuple(merge_planner_worlds(declared, perceived_boxes)),
@@ -476,6 +556,7 @@ class LivePlannerWorld:
             meshes=meshes, declared_count=len(declared),
             cameras=tuple(camera.name for camera in self.cameras),
             captured_at_s=self._oldest_capture_s(frames),
+            keep_out=summary,
         )
 
     # -----------------------------------------------------------------------------------------
@@ -583,16 +664,35 @@ class LivePlannerWorld:
             return None
         return min(float(stamp) for stamp in stamps if stamp is not None)
 
-    def _labels_fresh(self, clock: float) -> bool:
-        """Masks age exactly like the frame they came from.
+    def _labels_fresh(self, key: str, clock: float) -> bool:
+        """Whether the offer stored under ``key`` still applies: held, or no older than a frame may be.
 
-        An excluded target from half a second ago is a hole in the world where the object no longer
-        is, and the object may well be somewhere else in it now.
+        An offer ages exactly like the frame it came from, on its own stamp. An excluded target from
+        half a second ago is a hole in the world where the object no longer is, and the object may
+        well be somewhere else in it now. A held offer is the exception a pick asks for, and it ends
+        when the pick forgets it.
         """
-        if self._labels_stamped is None:
+        if key in self._held:
+            return True
+        stamp = self._offer_stamps.get(key)
+        if stamp is None:
             return False
-        return (clock - self._labels_stamped) * 1000.0 <= self.max_age_ms
+        return (clock - stamp) * 1000.0 <= self.max_age_ms
 
+    @staticmethod
+    def _masks_for(camera: CameraView, live: set[str], store: dict[str, tuple[Any, ...]]) -> tuple[Any, ...]:
+        """The live masks stored for ``camera``, and none for a camera on the wrist.
+
+        A wrist camera's pixels moved with the arm since its frame.
+        """
+        if camera.camera_to_tool is not None or camera.name not in live:
+            return ()
+        return store.get(camera.name, ())
+
+
+#: The key a box-only offer is kept under, followed by its target label. No camera view carries
+#: masks under it.
+_BOX_ONLY_KEY = "box only: "
 
 #: How far the robot's body may move, at any capsule end, before a cached frame of it is taken
 #: again, millimetres. Well above joint encoder noise at arm's length, well below the padding the
@@ -663,6 +763,9 @@ class WorldRefresh:
     cameras: tuple[str, ...] = ()
     #: When the oldest image in it was captured, `time.time()` seconds, or `None`.
     captured_at_s: float | None = None
+    #: What the world left out for this motion: its goal region or why there was none, and the
+    #: held boxes.
+    keep_out: KeepOutSummary | None = None
 
     @property
     def ok(self) -> bool:
@@ -682,7 +785,9 @@ class WorldRefresh:
         """
         if not self.ok or not self.cameras or self.captured_at_s is None:
             return None
-        return CameraWorldStamp.planned(cameras=self.cameras, captured_at_s=self.captured_at_s)
+        # The summary only when something was kept out: a stamp says what stood behind the motion.
+        kept = self.keep_out if self.keep_out is not None and self.keep_out.in_force else None
+        return CameraWorldStamp.planned(cameras=self.cameras, captured_at_s=self.captured_at_s, keep_out=kept)
 
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""
@@ -699,6 +804,8 @@ class WorldRefresh:
             line += (
                 f"; {self.dropped_obstacles} obstacle(s) had no slot and are NOT in the world"
             )
+        if self.keep_out is not None:
+            line += f"; kept out: {self.keep_out.render()}"
         return line
 
     def to_dict(self) -> dict[str, Any]:
@@ -717,6 +824,7 @@ class WorldRefresh:
             "cameras": list(self.cameras),
             "captured_at_s": self.captured_at_s,
             "reason": self.reason,
+            "keep_out": None if self.keep_out is None else self.keep_out.to_dict(),
         }
 
 
@@ -728,6 +836,7 @@ def refresh_planner_world(
     near_point_mm: Sequence[float] | None = None,
     require_registration: bool = True,
     now: float | None = None,
+    goal_keep_out: Maybe[GoalKeepOut] = UNSET,
 ) -> WorldRefresh:
     """Build the current world and hand it to the planner, or say why the caller must not plan.
 
@@ -750,13 +859,13 @@ def refresh_planner_world(
     # asked again: an arm that cannot place its links, or geometry that cannot be built, gives the
     # same answer however often it is asked.
     snapshot = source.world_for(
-        self_envelope=self_envelope, near_point_mm=near_point_mm, now=now
+        self_envelope=self_envelope, near_point_mm=near_point_mm, now=now, goal_keep_out=goal_keep_out
     )
     readings = 1
     while snapshot.verdict in _CAMERA_FAILURES and readings <= max(0, int(source.fresh_frame_attempts)):
         source.drop_cached_frame(snapshot.camera)
         snapshot = source.world_for(
-            self_envelope=self_envelope, near_point_mm=near_point_mm, now=now
+            self_envelope=self_envelope, near_point_mm=near_point_mm, now=now, goal_keep_out=goal_keep_out
         )
         readings += 1
     build_ms = (time.perf_counter() - started) * 1000.0
@@ -830,6 +939,7 @@ def refresh_planner_world(
         guard_boxes=() if reason else _guard_boxes(snapshot.perceived),
         voxels_registered=voxels,
         cameras=snapshot.cameras, captured_at_s=snapshot.captured_at_s,
+        keep_out=snapshot.keep_out,
     )
 
 

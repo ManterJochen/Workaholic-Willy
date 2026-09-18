@@ -308,6 +308,10 @@ class TheLimitFlagMustActuallyLimitTest(unittest.TestCase):
         from datagen.eval.ladder import CONFIGURATIONS, evaluate_dataset
 
         rung = tuple(c for c in CONFIGURATIONS if c.name == "neighbours")
+        if not (DATASET / "scenes").is_dir():
+            # A checkout without the proof dataset (CI, a trial copy): logs/ is ignored, and the siblings above skip
+            # on the same condition. MEASURED 2026-09-17: this one raised FileNotFoundError there instead.
+            self.skipTest(f"no proof dataset at {DATASET / 'scenes'}")
         scenes = sorted(d for d in (DATASET / "scenes").iterdir() if (d / "scene.json").exists())
         if len(scenes) < 2:
             self.skipTest("needs at least two scenes to tell a limit from no limit")

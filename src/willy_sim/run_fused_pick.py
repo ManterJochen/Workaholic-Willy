@@ -36,6 +36,7 @@ from src.willy_sim.run_eih_pick import (
     topdown_view_pose,
 )
 from src.willy_sim.scene import OBJECT_PRIM
+from src.robot.core.camera_world import CameraWorldDecline
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.grasping.types.perception import PerceptionSource
@@ -78,6 +79,7 @@ def run_fused_gate(runs: int = 10, *, headless: bool = True, data_dir: str | Non
     service, arm, gripper, handles, cfg, _view_pose, _cell = build_service(
         headless=headless, data_dir=data_dir, marker=marker,
         continuous_guard=True,  # eye-in-hand closed-form path; natural_aim does not apply here
+        camera_world=CameraWorldDecline("run_fused_pick: this runner plans without a live camera world"),
     )
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]
 
@@ -221,6 +223,7 @@ def run_clutter_gate(runs: int = 10, *, headless: bool = True, data_dir: str | N
         headless=headless, data_dir=data_dir, marker=marker,
         objects_override=objects, wrist_target_prim=chosen_prim,
         continuous_guard=True,  # eye-in-hand closed-form path; natural_aim does not apply here
+        camera_world=CameraWorldDecline("run_fused_pick: this runner plans without a live camera world"),
     )
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]
 
@@ -412,6 +415,7 @@ def run_vision_probe(*, headless: bool = True, data_dir: str | None = None,
     service, arm, gripper, handles, cfg, _vp, _cell = build_service(  # noqa: F841
         headless=headless, data_dir=data_dir, objects_override=objects,
         continuous_guard=True,  # eye-in-hand closed-form path; natural_aim does not apply here
+        camera_world=CameraWorldDecline("run_fused_pick: this runner plans without a live camera world"),
     )
     from src.models.detection.zero_shot.detector import GroundingDinoObjectDetector
 

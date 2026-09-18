@@ -29,7 +29,8 @@ other.
 
 | File | Role |
 | --- | --- |
-| [`realsense_source.py`](realsense_source.py) | `RealSenseVisionPerceptionSource`: grab one RGB-D frame, ground and segment it, emit a `PerceptionFrame`. It carries the top-referenced depth rule and the mask-completion lever. |
+| [`locator.py`](locator.py) | `Locator.from_parts(camera=, backend=, tool_pose=, attempts=, tool_frame=)` and `Locator.from_config(robot_cfg, models_cfg, camera=)`, with one verb, `locate(prompt) -> Located`. It runs the pick frame's RealSense source over an open camera the caller owns and places every grounded object in BASE (`LocatedObject`: label, score, box, mask, points, per-axis median centre, and an orientation marked unmeasured), stamped at the shutter. `Located.keep_out(i)` is the `SegmentationOffer` a `keeping_out` block holds while user code reaches for object i. It refuses a rig with no depth, a rig with no calibration (naming its key), and a wrist rig with no TCP reader or whose calibration was not solved against the cell's flange to TCP, and it raises `PerceptionFrameMoved` when a wrist camera cannot take a still frame. An empty result says that it reads the same as a failed detector. It imports no driver, pick loop, camera package, models or torch. |
+| [`realsense_source.py`](realsense_source.py) | `RealSenseVisionPerceptionSource`: grab one RGB-D frame, ground and segment it, emit a `PerceptionFrame` whose depth is the depth the sensor measured and whose `timestamp` is the shutter time (the camera owner's `captured_at_s`, else a clock read just before the grab). It carries the mask-completion lever, whose default is `none`. `stamp_tool_pose_with(reader, *, motion_tolerance, attempts)` binds a wrist camera: the TCP is read before and after the grab, a frame taken while the tool moved beyond the rig's shutter tolerance is grabbed again without the warm-ups, and after its attempts the acquire raises `PerceptionFrameMoved`. `build_real_cell` binds the primary and every fused wrist source, and refuses a rig whose calibration was not solved against the declared flange to TCP. |
 | [`viewfinder.py`](viewfinder.py) | The peek capability: `ColourPeekable`, `peek_color_of`, `colour_source_kind`, `COLOUR_SOURCE_KINDS`. One colour image, with no models, no simulation and no pipeline state. |
 | [`mask_completion.py`](mask_completion.py) | The three mask-fill policies, the shared threshold, and the reasoning behind the default. |
 | [`__main__.py`](__main__.py) | The bench exerciser: open a real RGB-D rig, grab, detect, and print intrinsics and per-mask depth-hole statistics. No robot. |
@@ -78,10 +79,9 @@ cell.
 | Mask completion | The default is `none`, so the segmenter's silhouette reaches the calculator exactly as segmented. | See below. |
 | Label canonicalisation | Optional. Pass `object_labels` to map free-form detector phrases onto your known object names. | So an exact `seg.label == target` match works downstream. |
 
-A trap worth stating plainly: `acquire()` overwrites the depth inside every mask with the grasp
-plane, so `PerceptionFrame.depth_map` is not a sensor reading there. The bench exerciser counts its
-depth-hole fraction on the depth the adapter consumed, not on `frame.depth_map`, because the same
-count taken on the output can only ever come out at 0 or 100 percent.
+`acquire()` publishes the depth the sensor measured, under a mask as everywhere else. The bench
+exerciser counts its depth-hole fraction on the depth the adapter consumed, tapped at the streamer,
+rather than on `frame.depth_map`.
 
 ## Why filling a mask to its box is not the default
 

@@ -28,6 +28,8 @@ import numpy as np
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.safety.planning.hand import planner_hand
 from src.robot.safety.planning.world import planner_cuboid
+from src.robot.core.camera_world import CameraWorldDecline
+from src.willy_sim.harness.camera_world import SimCameraWorld
 
 if TYPE_CHECKING:
     from src.robot.safety.planning.hand import PlannerHand
@@ -550,6 +552,7 @@ def wire_safety_guards(
 
 def build_service(
     *,
+    camera_world: "Maybe[CameraWorldDecline | SimCameraWorld]" = UNSET,
     prompt: str = "the red cube",
     headless: bool = True,
     data_dir: str | None = None,
@@ -629,12 +632,6 @@ def build_service(
     adaptive_close_squeeze_mm: float = 11.0,  # squeeze margin for the clutter adaptive close, as for YCB
     grasp_lift_mm: float = 12.0,
     standoff_mm: float = 150.0,
-    planner_owns_approach: bool = False,        # opt-in: drive only the grasp goal so cuRobo plans the full
-    #                                             descent from park to grasp, rather than the standoff plus
-    #                                             interpolated waypoints. Off by default, because the standoff
-    #                                             keeps a clean vertical final approach where cuRobo's free
-    #                                             path can brush a side obstacle; useful only where the
-    #                                             vertical approach itself is blocked.
     motion_planner: "str | None" = None,        # None takes the SimRobotConfig default, currently "curobo";
     #                                             an explicit value such as "ik" overrides it per runner.
     #                                             The effective planner is resolved below from the config
@@ -762,6 +759,7 @@ def build_service(
             "enable_self_collisions": self_collisions_phys,  # opt-in PhysX arm-versus-self collision
             "real_klt_bin": real_klt_bin,  # the real small_KLT visual mesh over the fixture physics
         },
+        camera_world=camera_world,
     )
     arm, gripper, handles, cfg, sim = cell.arm, cell.gripper, cell.handles, cell.cfg, cell.sim
     # The planner this run uses: the explicit parameter, else the config default. A "curobo" run on a
@@ -1046,10 +1044,8 @@ def build_service(
         # dropped there: in a tight bin it would rotate the corridor-clear close back into the +X blocker.
         # Keyed on the effective planner, so a build degraded to ik keeps the base-X align on.
         align_closing_to_base_x=(_effective_planner != "curobo"),
-        # Opt-in, default off: when set, cuRobo owns the full descent from park to grasp as a single goal.
-        # The default keeps the standoff and interpolated waypoints, so the final approach is a clean
-        # vertical descent that does not brush a side obstacle.
-        planner_owns_approach=planner_owns_approach,
+        # The approach is the policy's own: a planned standoff and one checked line to the grasp on an
+        # arm that keeps lines. No option hands cuRobo the whole descent.
     )
     grasp_mode = resolve_demo_mode(mode)
     service = AutonomousGraspService.from_components(
@@ -1365,7 +1361,7 @@ def run_gate(runs: int = 10, *, prompt: str = "the red cube", headless: bool = T
              redistribute_depth_mm: float = 0.0, redistribute_offset_mm: float = 0.0,
              depth_source: str = "gt", grasp_depth_reference: str = "centre",
              depth_band_mm: float = 0.0,
-             motion_planner: "str | None" = None, planner_owns_approach: bool = False,
+             motion_planner: "str | None" = None,
              mask_completion: "str | None" = None, hand: "str | None" = None) -> GateResult:
     """Run ``runs`` native dense picks.
 
@@ -1389,7 +1385,8 @@ def run_gate(runs: int = 10, *, prompt: str = "the red cube", headless: bool = T
         recovery=recovery,
         depth_source=depth_source, grasp_depth_reference=grasp_depth_reference,
         depth_band_mm=depth_band_mm,
-        motion_planner=motion_planner, planner_owns_approach=planner_owns_approach, hand=hand,
+        motion_planner=motion_planner, hand=hand,
+        camera_world=CameraWorldDecline("run_dense_pick: this runner plans without a live camera world"),
     )
     env = RunnerEnv.from_env(vision=vision, view_height_mm=0.0)  # the WILLY_* knobs, parsed once
     calc = service.runtime.orchestrator.calculator  # read the corridor telemetry after each pick
@@ -1682,6 +1679,9 @@ def run_gate(runs: int = 10, *, prompt: str = "the red cube", headless: bool = T
             msg += (f" | G6 agitated={feat.get('agitated')} executed={rec_agitate_ok} "
                     f"outcomes={rec_outcomes} terminal={rec_terminal} blocker_disp={feat.get('blocker_disp_mm')}")
         print(msg, flush=True)
+        from src.willy_sim.harness.gate import last_line_motion
+
+        print(f"RUN {i}: line_motion={last_line_motion(service)}", flush=True)
         # Leakage and stratification fields for build-dataset, which make the leakage audits non-vacuous
         # and the splits stratified. A unique scene_id per episode keeps any train and test split
         # leakage-safe; object_set, camera_pose_hash, timestamp and attempt_index feed the audits in
@@ -1779,6 +1779,7 @@ def run_build_stack(
 
     service, arm, gripper, handles, cfg, _ti, _tl = build_service(
         headless=headless, data_dir=data_dir, clutter_sizes=sizes,
+        camera_world=CameraWorldDecline("run_dense_pick: this runner plans without a live camera world"),
     )
     from isaacsim.core.prims import SingleRigidPrim  # type: ignore[import-not-found]  # after SimulationApp boots
 
@@ -2062,9 +2063,6 @@ def main() -> None:
                          "= the SimRobotConfig default (currently 'ik', byte-identical). 'curobo' drives the "
                          "process-isolated cuRobo planner (auto-falls-back to 'ik' if the cuRobo env is absent) and "
                          "runs the Fix-C Coal-mesh preflight on cuRobo's PLANNED final config.")
-    ap.add_argument("--planner-owns-approach", action="store_true",
-                    help="with --motion-planner curobo: drive ONLY the grasp goal so cuRobo plans the full "
-                         "collision-aware approach (no blind straight-line pre-grasp). Default-off.")
     ap.add_argument("--hand", type=str, default=None, metavar="NAME",
                     help="run this hand, a registry name (e.g. schunk_egu50), instead of the sim profile's "
                          "robot.gripper.model; the mount, the tool frame and the guard's meshes follow from it. "
@@ -2101,7 +2099,7 @@ def main() -> None:
                       redistribute_offset_mm=args.redistribute_offset_mm,
                       depth_source=args.depth_source, grasp_depth_reference=args.grasp_depth_reference,
                       depth_band_mm=args.depth_band_mm,
-                      motion_planner=args.motion_planner, planner_owns_approach=args.planner_owns_approach,
+                      motion_planner=args.motion_planner,
                       hand=args.hand)
     write_run_result(args.result_json, result.to_dict(), scene="dense", mode=args.mode, prompt=args.prompt)
 

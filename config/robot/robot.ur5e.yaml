@@ -146,11 +146,15 @@ robot:
 # ============================================================================
 # The four bench measurements, deliberately not set.
 #
-# The first three below are refused by the shipped code until they are filled in. Nothing
-# refuses the disabled camera rig in item 4. That is the design:
-# `python -m src.robot.execution.real_cell --check` reports three blocking items on this
-# layer, and `URRobotArm.connect` refuses the first two before it opens a socket. Copy the
-# block, measure the values on your own cell, and paste it into this file.
+# The first three below are refused by the shipped code until they are filled in, and so is
+# the camera in item 4: this layer enables `safety.planning_world` on a cuRobo cell, where every
+# pick motion needs a live camera world, so the checklist's `camera world` row blocks until an
+# enabled, calibrated RGB-D primary camera feeds it. That is the design:
+# `python -m src.robot.execution.real_cell --check` reports six blocking items on this
+# layer: these three, the camera world, `safety.self_collision.planner_margin_mm` and
+# `robot.gripper.model`, which a cell declares in its own profile for its arm and its hand.
+# `URRobotArm.connect` refuses the first two before it opens a socket. Copy the block,
+# measure the values on your own cell, and paste it into this file.
 #
 # 1. The tool frame. Where the grasp centre sits on the flange. Every pose this stack
 #    commands is the grasp centre, so an undeclared or guessed tool frame means a top-down
@@ -203,5 +207,8 @@ robot:
 #
 # 4. The camera itself. The base `camera/cam.yaml` ships its RealSense rig with
 #    `enabled: false` and no serial. One camera works with the shipped rig once it is
-#    enabled; a two-camera cell is the `eth2` layer, which replaces the rig list.
+#    enabled and `cameras.primary_rig_id` names it. The base names `webcam_main`, a webcam
+#    pair with no depth, and both the camera to base row and the live camera world read the
+#    primary: with a calibrated RealSense behind a webcam primary the world is refused, and
+#    so is the build. A two-camera cell is the `eth2` layer, which replaces the rig list.
 # ============================================================================

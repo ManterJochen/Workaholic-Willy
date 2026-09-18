@@ -2,7 +2,14 @@
 
 One YAML file per hand, ``<config tree>/grippers/<model>.yaml``, with a top-level ``gripper:`` key that
 validates against :class:`~src.config.schema.grippers.GripperSpec`. ``robot.gripper.model`` names the
-hand a cell carries. Nothing on the pick path reads the registry.
+hand a cell carries. The loader fills a named hand's widths and collision envelope from it
+(``hand_numbers.py``), and the self collision guard, the planner, the deep calculator and the sim's
+mount take the hand from it.
+
+The repository's registry, ``config/grippers``, is the one authority: a hand's body, sphere map,
+retract rows and evidence are committed beside the code and written from it. A deployment tree may
+carry its own ``grippers/``, and for the hand its cell names that copy may repeat the repository's
+file and nothing else; :func:`tree_hand_refusal` says why a tree cannot.
 
 Every refusal is a ``ConfigError`` that names what is known. A hand that resolves to a default is the
 drift the registry exists to prevent, so an unknown name, a file named after a different hand and an
@@ -18,10 +25,11 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from ._registry import flat, registry_files, shown
 from .loader import _DEFAULT_DATA_DIR, ConfigError, _load_yaml
 from .schema.grippers import MODEL_NAME_PATTERN, GripperSpec
 
-__all__ = ["available_grippers", "load_gripper"]
+__all__ = ["available_grippers", "load_gripper", "tree_hand_refusal"]
 
 _TOP_KEY = "gripper"
 
@@ -32,25 +40,8 @@ def _registry_dir(data_dir: str | Path | None) -> Path:
 
 
 def _hand_files(directory: Path) -> list[Path]:
-    """The files that are hands, found the same way on every platform.
-
-    A glob for ``*.yaml`` ignores ``.yml`` everywhere, matches ``.YAML`` only where the filesystem is
-    case-insensitive, and reads ``robotiq_2f85.sim.yaml`` as a hand named after a stem no model can
-    match. So every file that looks like YAML must be named ``<model>.yaml`` exactly, and any other one
-    is refused by name. A file that is not YAML at all, a README for instance, is not a hand.
-    """
-    hands: list[Path] = []
-    for path in sorted(directory.iterdir()):
-        if not path.is_file() or path.suffix.lower() not in (".yaml", ".yml"):
-            continue
-        if path.suffix != ".yaml" or not re.fullmatch(MODEL_NAME_PATTERN, path.stem):
-            raise ConfigError(
-                f"{path.name} in {directory} is not a hand the registry can read: a hand is one file "
-                f"named <model>.yaml, with the suffix in lower case, a registry name "
-                f"({MODEL_NAME_PATTERN}) as its stem, and no profile layer"
-            )
-        hands.append(path)
-    return hands
+    """The files that are hands, found the same way on every platform (:func:`._registry.registry_files`)."""
+    return registry_files(directory, noun="hand")
 
 
 def _read(path: Path) -> GripperSpec:
@@ -124,3 +115,56 @@ def load_gripper(
     raise ConfigError(
         f"no gripper {name!r} in {directory}. Known hands: {', '.join(sorted(specs)) or 'none'}"
     )
+
+
+def tree_hand_refusal(name: str, *, data_dir: str | Path | None) -> str | None:
+    """Why the registry of the tree at ``data_dir`` cannot stand for the repository's for the hand ``name``, or ``None``.
+
+    A hand's body, sphere map, retract rows and evidence are committed beside the code and written from
+    the repository's registry file, so for the hand a cell names a deployment tree may repeat that file
+    and nothing else. ``None`` when ``data_dir`` is not given or is the repository's own tree, and when
+    the tree's description equals the repository's, aliases included. Otherwise one sentence naming both
+    places, what differs or which side holds no such hand, why, and the fix. A registry that cannot be
+    read answers with its own refusal.
+    """
+    if data_dir is None:
+        return None
+    repository_dir = _registry_dir(None)
+    tree_dir = _registry_dir(data_dir)
+    if tree_dir.resolve() == repository_dir.resolve():
+        return None
+    why = ("A hand's body, sphere map, retract rows and evidence are committed beside the code and written from the "
+           "repository's registry file, so a tree may repeat that file for the hand its cell names and nothing else")
+    repository_file = f"{shown(repository_dir)}/{name}.yaml"
+    try:
+        _, repository_specs = _registry(None)
+    except ConfigError as exc:
+        return str(exc)
+    if not tree_dir.is_dir():
+        tree_spec = None
+    else:
+        try:
+            _, tree_specs = _registry(data_dir)
+        except ConfigError as exc:
+            return str(exc)
+        tree_spec = tree_specs.get(name)
+    ours = repository_specs.get(name)
+    if ours is None:
+        held = (f"{tree_dir / (name + '.yaml')} describes the hand {name}" if tree_spec is not None
+                else f"the cell names the hand {name}")
+        return (f"{held}, and the repository registry {shown(repository_dir)} does not. {why}: describe the hand in "
+                f"{repository_file} with the scripts under scripts/grippers/, which write its body beside the code "
+                f"(docs/runbooks/your_own_gripper.md), and run the chain from the repository")
+    if tree_spec is None:
+        where = tree_dir if tree_dir.is_dir() else tree_dir.parent
+        holds = "holds no hand" if tree_dir.is_dir() else "holds no gripper registry, so no hand"
+        return (f"{where} {holds} {name}, and the cell names it. {why}: copy {repository_file} into {tree_dir}")
+    theirs, mine = flat(tree_spec.model_dump(mode="json")), flat(ours.model_dump(mode="json"))
+    differing = [f"{key} {theirs.get(key)!r} there and {mine.get(key)!r} in the repository"
+                 for key in sorted(set(theirs) | set(mine)) if theirs.get(key) != mine.get(key)]
+    if not differing:
+        return None
+    return (f"{tree_dir / (name + '.yaml')} describes the hand {name} differently from the repository registry "
+            f"{repository_file}: {'; '.join(differing)}. {why}: copy {repository_file} over the tree's file, or "
+            f"measure again, correct {repository_file} and rewrite the hand's committed artefacts from it with the "
+            f"scripts under scripts/grippers/ and scripts/curobo/")

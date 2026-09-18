@@ -1,11 +1,13 @@
-"""The camera-world stamp reaches what a person reads, and stops short of the record.
+"""The camera-world stamp reaches what a person reads, and its weakest use reaches the record.
 
 A stamp that stays on a motion result nobody prints is not visible. The owner chose where it goes:
 ``PolicyReport`` and ``PickSessionReport`` carry one stamp per typed motion and read the weakest one
 first; the attempt and the progress event carry that weakest stamp's use and reason whenever it says
 something; the console speaks only MISSING and DECLINED, at the event's own severity, because a dummy
 or ik cell would otherwise repeat UNPLANNED on every event; and the pick report prints a ``camera`` line
-on every attempt. ``GraspAttemptRecord`` does not carry the stamp in this step.
+on every attempt. ``GraspAttemptRecord`` carries the weakest stamp's use and reason as
+``extra.camera_world`` and ``extra.camera_world_reason``, as the owner decided, and nothing for a pick
+with no stamp or only UNSTATED ones.
 """
 
 from __future__ import annotations
@@ -346,8 +348,10 @@ class ThePickReportTests(unittest.TestCase):
         with redirect_stdout(out):
             code = main(["--rehearse", "--runs", "1", "--profile", "console_dummy"])
         self.assertEqual(code, 0)
+        # Three motions: the dummy keeps lines (TELEPORT), so a pick is a planned standoff, one line in and one
+        # lift, not the five of an interpolated approach.
         self.assertIn(
-            "  camera     0 of 5 motion(s) vouched; camera world  UNPLANNED  DummyRobotArm has no "
+            "  camera     0 of 3 motion(s) vouched; camera world  UNPLANNED  DummyRobotArm has no "
             "planner",
             out.getvalue().splitlines(),
         )
@@ -358,23 +362,26 @@ class ThePickReportTests(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------------
 
 
-class TheRecordDoesNotCarryTheStampTests(unittest.TestCase):
-    """Q4: no record change until the service first declines. A control, green before and after."""
+class TheRecordCarriesTheWeakestStampTests(unittest.TestCase):
+    """The stamped pick writes its weakest use and reason, and an unstamped pick writes what it wrote."""
 
-    def test_a_pick_with_stamps_writes_the_record_a_pick_without_them_writes(self) -> None:
+    def test_a_stamped_pick_writes_the_weakest_use_and_an_unstamped_one_writes_what_it_wrote(self) -> None:
         common = dict(calculator_telemetry={}, executed_grasp=None, attempts=(),
                       motion_status_chain=(), motion_message="")
         stamped = SimpleNamespace(camera_worlds=(_MISSING, _DECLINED), camera_world=_MISSING, **common)
+        unstated = SimpleNamespace(camera_worlds=(CameraWorldStamp.unstated(),), **common)
         plain = SimpleNamespace(**common)
         records = [to_attempt_record(_report(pick), attempt_id="a", timestamp=0.0).to_dict()
-                   for pick in (stamped, plain)]
-        self.assertEqual(records[0], records[1])
+                   for pick in (stamped, unstated, plain)]
+        self.assertEqual(("missing", _MISSING.reason),
+                         (records[0]["extra"]["camera_world"], records[0]["extra"]["camera_world_reason"]))
+        self.assertEqual(records[1], records[2], "an UNSTATED stamp changed the record")
+        self.assertNotIn("camera_world", json.dumps(records[2]))
         self.assertEqual(list(records[0]), [
             "schema_version", "timestamp", "attempt_id", "mode", "final_outcome", "profile", "frame",
             "target", "initial_grasp", "initial_telemetry", "refined_grasp", "refinement",
             "selected_grasp", "execution", "verification", "recovery_actions", "extra",
         ])
-        self.assertNotIn("camera_world", json.dumps(records[0]))
 
 
 if __name__ == "__main__":  # pragma: no cover

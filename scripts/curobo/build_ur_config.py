@@ -9,11 +9,11 @@ Ingredients, and where each comes from:
     the default; ``_urdf_source.py`` names the alternative and what it promises). Written into the cuRobo content
     with relative mesh paths. Read from an Isaac install instead, a customer box cannot build a descriptor at all,
     and for ur10 that asset is a different frame family from the vendor's, up to 65 mm out.
-  * arm collision spheres: this repository's own cover fit for the arm, and where there is none, Isaac's Lula
-    ``{model}_robot_description.yaml`` refined with surface spheres fitted to the committed collision bundle. That
-    fallback is the last thing on this path that needs a simulator. A map that does not describe the arm the bundle
-    holds is refused rather than filtered (``VENDOR_SPHERE_LIMIT_MM``), which is what ur16e and a ur10 built from
-    UR's description both run into.
+  * arm collision spheres: the committed cover fit ``{model}_arm_spheres.yml``, which covers every surface sample
+    of every link by construction and needs no simulator. Only an arm with no fit falls back to Isaac's Lula
+    ``{model}_robot_description.yaml``, refined with surface spheres fitted to the committed collision bundle, and
+    there a map that does not describe the arm the bundle holds is refused rather than filtered
+    (``VENDOR_SPHERE_LIMIT_MM``). Every arm this repository knows has a fit.
   * default_q: the retract the rule judged on the exact meshes with every registry hand
     (``src/robot/safety/planning/robot/ur_retract.yaml``). No fallback: an arm with no row stops the build rather
     than inheriting a pose nobody measured.
@@ -22,17 +22,16 @@ Ingredients, and where each comes from:
 
 No hand. A descriptor used to carry the hand's sphere map on ``tool0``, one ``{model}_{gripper}.yml`` per pairing,
 chosen by ``--gripper`` and ``--coupling-mm``. The hand is a body link the planner sidecar adds when it starts, from
-the hand the cell names (``robot.gripper.model``, ``coupling_plates_mm``) and where its declared tool frame puts it
+the hand the cell names (``robot.gripper.model``, ``coupling_plates``) and where its declared tool frame puts it
 (``src/robot/safety/planning/_curobo_body_links.py``, ``body_link.py``). ``_arm_descriptor.arm_only`` takes tool0 out
 of the template's collision links, and both flags are refused by name. The per hand files an earlier build wrote stay
 in the content directory, and this script never writes one again.
 
-Arm link surface augmentation runs for every model that has a baked bundle and no cover fit of its own. Each Lula arm
-link is augmented with cuRobo surface spheres fitted to ``{model}_collision_meshes.npz`` and placed through that
-model's own DH chain, and both halves are per model, so the only thing that ever limits it is which bundles exist.
-Worth having: a measured false clear of 8.4% against 5.3% on the ur5e. A model with no bundle keeps its own
-model-tuned Lula spheres, which are correct for its link lengths and coarser, and ``ur10`` is permanently in that
-state because its Isaac asset collides the whole arm with primitives and has no mesh to fit.
+Arm link surface augmentation runs only on the Lula fallback, for a model that has a baked bundle and no cover fit of
+its own. Each Lula arm link is augmented with cuRobo surface spheres fitted to ``{model}_collision_meshes.npz`` and
+placed through that model's own DH chain. Worth having over the Lula map alone: a measured false clear of 8.4% against
+5.3% on the ur5e. The cover fit replaces both for every arm, ``ur10`` included, whose Isaac asset collides with
+primitives and which is baked from UR's own STLs.
 
 Usage, on the box that owns the cell::
 
@@ -80,7 +79,7 @@ for _arg in sys.argv[2:]:
         raise SystemExit(
             f"{_arg} is refused: this script writes one descriptor per arm, willy_{MODEL}.yml, with no hand in it. The "
             "planner adds the hand a cell names when it starts, from robot.gripper.model and "
-            f"robot.gripper.coupling_plates_mm, so build the arm alone: build_ur_config.py {MODEL}"
+            f"robot.gripper.coupling_plates, so build the arm alone: build_ur_config.py {MODEL}"
         )
 
 # How the arm spheres are fitted to the committed bundle, and how far a kept vendor sphere may reach past its link's
@@ -197,8 +196,8 @@ def _isaac_model_dir():
     """Isaac's folder for this model, or None where this box has no simulator.
 
     Resolved lazily, because with --urdf-from ur the description comes from the vendor's own config and
-    nothing here needs Isaac until the Lula sphere map is read. A box without a simulator gets a sentence
-    naming what is missing rather than a failure at import.
+    nothing here needs Isaac unless an arm has no committed cover fit and the Lula sphere map is read as the
+    fallback. A box without a simulator gets a sentence naming what is missing rather than a failure at import.
     """
     global _ISAAC_DIR
     if _ISAAC_DIR is _UNRESOLVED:
@@ -636,8 +635,8 @@ else:
 # limits this is which bundles exist; a gate on a model name says the bundle and the DH placement belong
 # to one arm, and it has no edge to the next bake.
 #
-# A model with no bundle (ur10, whose asset collides with primitives) keeps its own Lula arm spheres,
-# which are model-tuned and correct, just coarser.
+# On the fallback, a model with no bundle keeps its own Lula arm spheres, which are model-tuned and coarser.
+# Every arm this repository knows has a bundle and a cover fit, so no build takes this branch.
 _ARM_NPZ = REPO / f"src/robot/safety/data/{MODEL}_collision_meshes.npz"
 #: Whether the arm spheres were fitted to the bundle, and cuRobo's own metrics per link for a MorphIt fit. Both
 #: reach `_provenance`, so a descriptor says what its arm spheres are rather than what its model's name suggests.
