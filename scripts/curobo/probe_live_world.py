@@ -225,10 +225,14 @@ def _probe_cell(voxel_mm: float) -> RobotConfig:
 
 def _probe_hand_link(voxel_mm: float) -> dict[str, Any]:
     """The hand body this probe's planner starts with, derived from the probe cell's own gripper declaration."""
+    from src.contracts import chosen
     from src.robot.safety.planning.body_link import HandLink
     from src.robot.safety.planning.hand import planner_hand
 
-    return HandLink.from_hand(planner_hand(_probe_cell(voxel_mm))).to_dict()
+    hand = planner_hand(_probe_cell(voxel_mm))
+    if not chosen(hand):
+        raise ValueError("the probe cell names no hand, so its planner has no hand body to start with")
+    return HandLink.from_hand(hand).to_dict()
 
 
 class _Camera:

@@ -390,6 +390,8 @@ def render_urdf_from(description: Description) -> str:
         if limit.effort is None:
             raise DescriptionError(f"{model} {name} declares no effort limit, which a URDF limit requires")
         if limit.has_position_limits:
+            if limit.lower_rad is None or limit.upper_rad is None:
+                raise DescriptionError(f"{model} {name} declares position limits without both of their ends")
             joint_type = "revolute"
             limit_line = (f'    <limit lower="{_n(limit.lower_rad)}" upper="{_n(limit.upper_rad)}" '
                           f'effort="{_n(limit.effort)}" velocity="{_n(limit.velocity_rad_s)}"/>')

@@ -523,11 +523,17 @@ def build_recovery_artifact_json(
 
 
 def _hash_pack_paths(paths: Sequence[str | Path]) -> str:
+    """One hash over the packs: each file's name, then its bytes, in name order.
+
+    The name and not the path, because the artifact names its packs by file name too, and a path would
+    make the hash say where the checkout lies. MEASURED 2026-09-19: the committed hash reproduced only
+    under D:/dev on Windows; Linux, with the same bytes in every pack, produced another.
+    """
     h = hashlib.sha256()
-    for p in sorted(str(x) for x in paths):
-        h.update(p.encode("utf-8"))
+    for name, p in sorted((Path(x).name, Path(x)) for x in paths):
+        h.update(name.encode("utf-8"))
         h.update(b"\x00")
-        with Path(p).open("rb") as f:
+        with p.open("rb") as f:
             for chunk in iter(cast("Callable[[], bytes]", lambda f=f: f.read(65536)), b""):
                 h.update(chunk)
     return h.hexdigest()

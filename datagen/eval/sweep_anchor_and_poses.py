@@ -13,7 +13,6 @@ a number to put in a config, not a curve to admire.
 """
 from __future__ import annotations
 
-import concurrent.futures as futures
 import dataclasses
 import json
 import logging
@@ -23,6 +22,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
+
+from datagen.pool import process_pool
 
 
 #: The defaults `main()` falls back to when the caller names nothing.
@@ -99,7 +100,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     for index, (label, fractions, poses) in enumerate(ARMS):
         started = time.perf_counter()
         tasks = [(r["source"], r["file"], index) for r in picks]
-        with futures.ProcessPoolExecutor(max_workers=jobs) as pool:
+        with process_pool(jobs) as pool:
             found = list(pool.map(_one, tasks))
         seconds = time.perf_counter() - started
         rescued = sum(1 for v in found if v > 0)

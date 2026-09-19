@@ -114,8 +114,12 @@ class EverySourceIsOursTests(unittest.TestCase):
 
         self.assertFalse(Path(_DEFAULT_GSO_DIR).is_absolute(),
                          "the GSO default is an absolute path again")
-        self.assertTrue((_ROOT / _DEFAULT_GSO_DIR).is_dir(),
-                        f"{_DEFAULT_GSO_DIR} does not exist in this repo")
+        # Where the mesh library fetches GSO to, which holds whether or not a fetch has run here: a fresh
+        # checkout has no assets/meshes at all (MEASURED 2026-09-19 on Linux).
+        from datagen.constants import MESH_LIBRARY_DIR
+
+        self.assertEqual(Path(_DEFAULT_GSO_DIR), MESH_LIBRARY_DIR / "gso",
+                         "the GSO default is not the folder the mesh library fetches GSO into")
 
 
 class TheDeletedPackageIsGoneTests(unittest.TestCase):

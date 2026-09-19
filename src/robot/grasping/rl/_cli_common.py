@@ -32,8 +32,10 @@ def _resolve_repo_root(arg: str | None) -> Path:
 
 
 def _relpath(path: Path, root: Path) -> str:
+    # POSIX spelling, so a report names its dataset the same way on every system. MEASURED 2026-09-19: the
+    # committed OPE report carried Windows separators in `dataset_paths`, and Linux regenerated forward slashes.
     try:
-        return str(path.resolve().relative_to(root.resolve()))
+        return path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
         return str(path)
 

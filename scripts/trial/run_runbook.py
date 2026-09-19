@@ -142,7 +142,9 @@ def _sha256(path: Path) -> str:
 
 
 def _kill_tree(process: subprocess.Popen) -> None:
-    if os.name == "nt":
+    # sys.platform and not os.name: the same answer on every box, and the test mypy reads, so each platform types
+    # the branch it can run. os.killpg, os.getpgid and signal.SIGKILL exist only on POSIX.
+    if sys.platform == "win32":
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True, check=False)
     else:  # pragma: no cover (the box is Windows)
         try:
@@ -304,7 +306,10 @@ class Runner:
         expect = step.get("expect") or {}
         entry: dict[str, Any] = {"phase": phase.get("name"), "id": step_id}
         if "hide" in step or "restore" in step:
-            relative = substitute(step.get("hide") or step.get("restore"), bound)
+            named = step.get("hide") or step.get("restore")
+            if not isinstance(named, str):
+                raise Malformed(f"phase {phase.get('name')!r} step {step_id!r} names no path to hide or restore")
+            relative = substitute(named, bound)
             if "hide" in step:
                 source = self.root / relative
                 if not source.is_file():
@@ -345,7 +350,7 @@ class Runner:
         timeout = float(step.get("timeout_s", 1800))
         with out_path.open("wb") as out, err_path.open("wb") as err:
             process = subprocess.Popen(shlex.split(command, posix=True), cwd=str(cwd), env=env, stdout=out, stderr=err,
-                                       **({"start_new_session": True} if os.name != "nt" else {}))
+                                       start_new_session=sys.platform != "win32")
             try:
                 code: "int | None" = process.wait(timeout=timeout)
                 timed_out = False

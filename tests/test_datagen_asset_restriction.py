@@ -84,6 +84,10 @@ class TheBankHonoursItTests(unittest.TestCase):
     def test_a_subset_that_matches_nothing_yields_an_empty_bank_and_SAYS_SO(self) -> None:
         """An empty bank with no explanation is indistinguishable from a missing library. The count
         is what makes "your subset excluded everything" readable."""
+        from datagen.assets.library import MeshLibrary
+
+        if not MeshLibrary().available("gso"):
+            self.skipTest("no gso meshes on this box, so there is nothing for the subset to exclude")
         bank = _mesh_bank(_config(mesh_asset_ids=("gso_definitely_not_a_real_mesh",)))
         self.assertEqual(bank.load("gso"), [])
         self.assertGreater(bank.restricted.get("gso", 0), 0,

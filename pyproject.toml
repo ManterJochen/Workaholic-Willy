@@ -62,6 +62,10 @@ follow_imports = "normal"
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The tests import their helpers as `tests._x`, and `tests/` is no package, so the root must be on the
+# path. `python -m pytest` puts it there and bare `pytest`, as CI calls it, does not: MEASURED
+# 2026-09-19 on Linux, conftest.py stopped at "No module named 'tests'" before one test ran.
+pythonpath = ["."]
 # `-rs` prints why each skip happened. MEASURED 2026-09-10: without it the byte-identity family
 # reported "3 skipped" and nothing else, which reads the same as three claims nobody wrote a test
 # for, and for years it WAS that: an allow-list waiting on an environment variable nothing set.

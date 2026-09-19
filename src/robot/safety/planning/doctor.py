@@ -37,7 +37,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from src.contracts import UNSET, chosen
@@ -131,7 +131,9 @@ def looks_policy_blocked(text: str, *, blocks: tuple[str, ...] = ()) -> bool:
     low = text.lower()
     if any(marker in low for marker in _BLOCK_MARKERS):
         return True
-    return any(Path(blocked).name.lower() in low for blocked in blocks)
+    # An event-log entry is a Windows device path on every host, so it is read as one: a POSIX `Path`
+    # would take the whole backslashed string for the file name and match nothing.
+    return any(PureWindowsPath(blocked).name.lower() in low for blocked in blocks)
 
 
 class ProbeStatus(StrEnum):

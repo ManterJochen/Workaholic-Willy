@@ -1,5 +1,5 @@
 {
-  "code_commit": "4623570a9e8fbc19e9ce65a8f4e6fce08321e86a",
+  "code_commit": "044e9c83f5d7572beeb2aba10c7867fd3f9da652",
   "config_hash": "5f37b30e0e140f258ff3611a624bc1605a9025f35d2db42f71fb9ca3a61e19b5",
   "dataset_hash": "7989e21dc600dff1945bc38da7c35546625a72f1dbc5772c66f19e73caf929b5",
   "dataset_id": "v7_promotion_canonical",
@@ -74,7 +74,7 @@
     "num_triples": 418
   },
   "generated_at_iso": "1970-01-01T00:00:00+00:00",
-  "policy_artifact_sha256": "8ae243fb1d438175b201c5972532caf939862c596a87f5b8316c7dd6d3495701",
+  "policy_artifact_sha256": "35f079d81212cbe4d918f8401814bf8a3b2f7608e32c1c5021cb201ca2d904e6",
   "policy_family": "v6_recovery",
   "policy_id": "v6_recovery_baseline_v1@1",
   "policy_version": 1,

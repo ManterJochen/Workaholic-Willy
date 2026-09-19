@@ -90,7 +90,10 @@ def _urdf_frames(text: str):
         m = np.eye(4)
         m[:3, :3] = _axis_angle((0, 0, 1), rpy[2]) @ _axis_angle((0, 1, 0), rpy[1]) @ _axis_angle((1, 0, 0), rpy[0])
         m[:3, 3] = xyz
-        kids[joint.find("child").attrib["link"]] = (joint.find("parent").attrib["link"], m)
+        child_tag, parent_tag = joint.find("child"), joint.find("parent")
+        if child_tag is None or parent_tag is None:
+            raise ValueError(f"joint {joint.attrib.get('name', '?')!r} names no child or no parent link")
+        kids[child_tag.attrib["link"]] = (parent_tag.attrib["link"], m)
     base = next(iter({parent for parent, _ in kids.values()} - set(kids)))
 
     def frame(link: str) -> np.ndarray:

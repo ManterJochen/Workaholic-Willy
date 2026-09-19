@@ -54,7 +54,7 @@ def _screen(verdicts: list[int], want: int | None, out: Path) -> list[dict]:
                 "jaw": jaw, "suction": 0, "box_screen_jaw_ok": True}
         sources = {**prepare.SUPPORTED_SOURCES, "test": "obj"}
         with mock.patch.object(prepare, "SUPPORTED_SOURCES", sources), \
-             mock.patch.object(prepare.futures, "ProcessPoolExecutor", _FakePool):
+             mock.patch.object(prepare, "process_pool", _FakePool):
             return prepare.screen_meshes(["test"], library=Path(library), out=out,
                                          density="grid", want_graspable=want,
                                          report=lambda _line: None)

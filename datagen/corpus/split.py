@@ -148,9 +148,10 @@ def _remove_view(view: Path, dataset: Path) -> None:
     The marker is the whole safety of this. `_p0` is a plausible suffix for a hand-made dataset, and
     a cleanup that trusted the name could delete a real render.
 
-    Scene entries are removed with `rmdir`, which unlinks a junction and leaves its target alone but
-    refuses a real non-empty directory. That refusal is the point: if a view holds real scene data,
-    something built it wrong and the right move is to stop, not to recurse.
+    Scene entries are removed with `rmdir`, which unlinks a Windows junction and leaves its target alone
+    but refuses a real non-empty directory. That refusal is the point: if a view holds real scene data,
+    something built it wrong and the right move is to stop, not to recurse. A POSIX view holds symlinks,
+    which `rmdir` refuses as not a directory, so a symlink is unlinked, which also leaves its target alone.
     """
     marker = view / MARKER
     if not marker.is_file():
@@ -160,7 +161,10 @@ def _remove_view(view: Path, dataset: Path) -> None:
     scenes = view / "scenes"
     if scenes.is_dir():
         for scene in scenes.iterdir():
-            scene.rmdir()
+            if scene.is_symlink():
+                scene.unlink()
+            else:
+                scene.rmdir()
     shutil.rmtree(view)
 
 

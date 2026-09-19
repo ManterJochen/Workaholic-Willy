@@ -215,12 +215,12 @@ if chosen is None:
         lp = link_prims.get(link)
         if lp is None:
             continue
-        shapes = cylinders(lp, _diag(link, lp))
+        link_cylinders = cylinders(lp, _diag(link, lp))
         lc = np.asarray([sp["center"] for sp in lula_spheres[link]], dtype=np.float64)
         report.append(f"    {link:16s} lula x[{lc[:,0].min():7.3f},{lc[:,0].max():7.3f}] "
                       f"y[{lc[:,1].min():7.3f},{lc[:,1].max():7.3f}] "
                       f"z[{lc[:,2].min():7.3f},{lc[:,2].max():7.3f}] m")
-        for centre, direction, half, radius in shapes:
+        for centre, direction, half, radius in link_cylinders:
             report.append(f"    {'':16s} cyl  centre {np.round(centre, 3).tolist()} "
                           f"axis {np.round(direction, 2).tolist()} half {half:.3f} r {radius:.3f}")
     report.append(f"[control] FAILED: no candidate frame chain puts the Lula spheres inside the "

@@ -443,7 +443,7 @@ if _needs_tool0 or _needs_inertia:
         _worst = min(_worst, _d)
         if _d <= 1e-6 and _donor is None:
             _donor, _donor_text = _cand_donor, _text
-    if _donor is None:
+    if _donor is None or _donor_text is None:
         raise SystemExit(
             f"{MODEL} wrist_3_link is not the frame any available donor uses (closest differs by "
             f"{_worst:.6f}), so the fixed wrist_3 -> flange -> tool0 chain cannot be transcribed onto "
@@ -548,6 +548,8 @@ import importlib.util as _importlib_util  # noqa: E402
 
 _table_module_path = REPO / "src/robot/safety/planning/robot/retract_table.py"
 _table_spec = _importlib_util.spec_from_file_location("willy_retract_table", _table_module_path)
+if _table_spec is None or _table_spec.loader is None:
+    raise ImportError(f"no loader for the retract table reader at {_table_module_path}")
 _retract_table = _importlib_util.module_from_spec(_table_spec)
 sys.modules["willy_retract_table"] = _retract_table
 _table_spec.loader.exec_module(_retract_table)
@@ -577,15 +579,17 @@ except _retract_table.RetractMissing as exc:
     # reader is: stdlib plus PyYAML, and three interpreters that cannot import one another.
     _rule_spec = _importlib_util.spec_from_file_location(
         "willy_retract_rule", Path(__file__).resolve().parent / "_retract_rule.py")
+    if _rule_spec is None or _rule_spec.loader is None:
+        raise ImportError("no loader for the retract rule at scripts/curobo/_retract_rule.py")
     _rule = _importlib_util.module_from_spec(_rule_spec)
     sys.modules["willy_retract_rule"] = _rule  # dataclasses resolves annotations through sys.modules
     _rule_spec.loader.exec_module(_rule)
     _anchor = _rule.ANCHORS.get(MODEL)
-    default_q = list(_anchor) if _anchor else None
-    if default_q is None:
+    if not _anchor:
         raise SystemExit(
             f"{MODEL} has no judged retract AND no anchor to seed from, so there is no pose to write at all."
         ) from None
+    default_q = list(_anchor)
     print(f"!! retract: not judged. This is a seed build: default_q is {MODEL}'s anchor {default_q}, written "
           f"so scripts/curobo/choose_ur_retract.py {MODEL} can ask this arm's planner. A cell reads its "
           f"pair's row from the table and refuses before a sidecar starts, so this pose never reaches one.")
@@ -906,9 +910,9 @@ elif _ARM_NPZ.is_file():
             if _out_mm > VENDOR_SPHERE_LIMIT_MM:
                 _far[_L] = _out_mm
         if _far:
-            _worst = ", ".join(f"{_k} {_v:.1f} mm" for _k, _v in sorted(_far.items()))
+            _far_links = ", ".join(f"{_k} {_v:.1f} mm" for _k, _v in sorted(_far.items()))
             raise SystemExit(
-                f"the vendor sphere map for {MODEL} does not describe this arm: {_worst} outside the "
+                f"the vendor sphere map for {MODEL} does not describe this arm: {_far_links} outside the "
                 f"mesh baked for the same link, against a limit of {VENDOR_SPHERE_LIMIT_MM:g} mm. "
                 f"A descriptor built from it would guard bodies where the bodies are not, and would "
                 f"load and plan perfectly while doing it. Refit this arm's spheres to its own baked "

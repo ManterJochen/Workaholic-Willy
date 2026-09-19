@@ -341,9 +341,8 @@ class MeshPreparation:
         places, not the whole library and not a different sample of it. That is why it takes a
         config rather than `self.sources`.
         """
-        from concurrent.futures import ProcessPoolExecutor  # noqa: PLC0415
-
         from datagen.build import build_manifest  # noqa: PLC0415
+        from datagen.pool import process_pool  # noqa: PLC0415
         from datagen.render.convex_decomposition import (  # noqa: PLC0415
             CACHE_DIR, decomposition_refusal, warm_asset,
         )
@@ -358,7 +357,7 @@ class MeshPreparation:
         records = [r for r in build_manifest(config, scenes) if getattr(r, "mesh_path", "")]
         computed = skipped = parts = 0
         if records:
-            with ProcessPoolExecutor(max_workers=jobs) as pool:
+            with process_pool(jobs) as pool:
                 for _asset_id, asset_parts, seconds in pool.map(warm_asset, records):
                     parts += asset_parts
                     # A cache hit returns in microseconds; the threshold separates "read" from "ran".

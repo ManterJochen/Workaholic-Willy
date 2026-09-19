@@ -138,6 +138,7 @@ class PlannerJudge:
     """
 
     def __init__(self, arm: str, hand: str, plate_mm: float, rotation_xyzw: Any, margin_mm: float) -> None:
+        from src.contracts import chosen
         from src.robot.safety.planning.body_link import HandLink
         from src.robot.safety.planning.curobo_client import CuroboPlanClient
         from src.robot.safety.planning.hand import planner_hand
@@ -150,8 +151,11 @@ class PlannerJudge:
         # Always stated and never left out. A hand whose map starts at its own mounting face refuses a cell that
         # does not say what sits between that face and the flange, and an empty list is the way to say "nothing does".
         gripper["coupling_plates"] = ([{"name": "plate", "thickness_mm": float(plate_mm)}] if plate_mm else [])
-        link = HandLink.from_hand(planner_hand(RobotConfig.model_validate(
-            {"vendor": "ur", "gripper": gripper})))
+        resolved = planner_hand(RobotConfig.model_validate({"vendor": "ur", "gripper": gripper}))
+        if not chosen(resolved):
+            raise ValueError(f"a cell declaring robot.gripper.model {hand!r} resolved to no hand, so there is "
+                             f"no hand body to ask the planner about")
+        link = HandLink.from_hand(resolved)
         self.client = CuroboPlanClient(
             robot_config=f"willy_{arm}.yml", self_collision_margin_mm=float(margin_mm),
             body_links=[link.to_dict()], measure_only=True,
@@ -172,7 +176,11 @@ class PlannerJudge:
 
     def depth_at(self, pose: list) -> tuple:
         """What the sphere model says about one pose: depth in mm and the pair, or (None, None)."""
+        from src.contracts import chosen
+
         explained = self.client.explain_joints([list(pose)])
+        if not chosen(explained.depths_mm) or not chosen(explained.pairs):
+            raise RuntimeError("the sidecar was asked to name the pair at one pose and answered without the names")
         return explained.depths_mm[0], explained.pairs[0]
 
     def close(self) -> None:
@@ -207,8 +215,8 @@ def _row(arm: str, hands: "list[Hand]", chosen: Any) -> dict:
         })
     bundles = {"arm": _sha256(collision_mesh_bundle(arm))}
     # Sorted, because a set iterates in a different order per run and the committed file has to be reproducible.
-    for hand in sorted({h.hand for h in hands}):
-        bundles[hand] = _sha256(_hand_bundle(arm, hand))
+    for name in sorted({h.hand for h in hands}):
+        bundles[name] = _sha256(_hand_bundle(arm, name))
     return {
         "anchor": [round(float(v), 6) for v in chosen.anchor],
         "anchor_source": ANCHOR_SOURCE.format(arm=arm),

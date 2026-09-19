@@ -26,7 +26,6 @@ objects the corpus can label, which makes the asset list worse than no screen at
 
 from __future__ import annotations
 
-import concurrent.futures as futures
 import json
 import logging
 from pathlib import Path
@@ -37,6 +36,7 @@ import numpy as np
 from src.utility.log_cfg import create_logger
 from datagen.assets.library import CUSTOM_SUFFIXES, MESH_LIBRARY_DIR, SUPPORTED_SOURCES
 from datagen.constants import DATAGEN_LOG_DIR
+from datagen.pool import process_pool
 
 #: What counts as a mesh file anywhere in this module.
 #: Derived from `CUSTOM_SUFFIXES`, never restated. A second list drifts from the library's: a suffix
@@ -248,7 +248,7 @@ def normalise_meshes(source: str, *, library: Path | None = None, faces: int = 2
     # every face of the original mesh, so a worker on a multi-million-face scan is heavy and enough
     # of them will take a machine down. A killed run leaves meshes half-transformed with a log
     # naming fewer of them than were written, because `pool.map` reports in submission order.
-    with futures.ProcessPoolExecutor(max_workers=max(1, jobs)) as pool:
+    with process_pool(max(1, jobs)) as pool:
         tasks = [(str(p), factor, faces) for p in meshes]
         for line in pool.map(_normalise_one, tasks):
             changed += int("->" in line or "assigned" in line)
@@ -369,7 +369,7 @@ def screen_meshes(sources: list[str] | None = None, *, library: Path | None = No
            f"at density {density}, {jobs} job(s){target}")
     rows: list[dict[str, Any]] = []
     jaw = 0
-    pool = futures.ProcessPoolExecutor(max_workers=max(1, jobs))
+    pool = process_pool(max(1, jobs))
     try:
         # `map` yields in submission order, so a stop here is reproducible: the same library and the
         # same target screen the same prefix. A completion-ordered stream would give a different

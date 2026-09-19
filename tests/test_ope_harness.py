@@ -520,7 +520,9 @@ COMMITTED_OPE_REPORT_SHA256 = (
     # committed report. Two `coverage_warning` strings still carried a `U0 ` prefix the source
     # no longer emits, and `reward_interpretation` still carried a dash the source no longer
     # writes. The estimator values are unchanged.
-    "efbb0ac8fc877f6f69a5748dc334ec7b8517a12c4e2432d44ef393e85ccc2158"
+    # Re-blessed 2026-09-19 with `rl ope` itself: `dataset_paths` is now spelled with forward slashes on
+    # every system, so Windows and Linux write the same bytes; no number moved.
+    "29dbc9a6e3fb2afaa561f05c3afea810c1f5d128798186cf43cacf06b08996ac"
 )
 
 

@@ -202,7 +202,10 @@ def link_frames(urdf_text: str, dh_rows: Sequence[tuple[float, float, float]]):
         M = np.eye(4)
         M[:3, :3] = axis_angle((0, 0, 1), rpy[2]) @ axis_angle((0, 1, 0), rpy[1]) @ axis_angle((1, 0, 0), rpy[0])
         M[:3, 3] = xyz
-        kids[joint.find("child").attrib["link"]] = (joint.find("parent").attrib["link"], M)
+        child_tag, parent_tag = joint.find("child"), joint.find("parent")
+        if child_tag is None or parent_tag is None:
+            raise ValueError(f"joint {joint.attrib.get('name', '?')!r} names no child or no parent link")
+        kids[child_tag.attrib["link"]] = (parent_tag.attrib["link"], M)
     if not kids:
         raise ValueError("this URDF declares no joints, so no link has a frame")
     base_link = next(iter({parent for parent, _ in kids.values()} - set(kids)))

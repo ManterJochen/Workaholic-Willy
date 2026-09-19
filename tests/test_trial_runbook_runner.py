@@ -12,7 +12,7 @@ import shlex
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 _REPO = Path(__file__).resolve().parents[1]
 _PY = shlex.quote(Path(sys.executable).as_posix())
@@ -146,8 +146,11 @@ class WindowsPathTests(_Case):
         """MEASURED 2026-09-17: ROOT bound as ``D:\\willy_trial\\customer_hand`` lost its backslashes to the posix split,
         and the copy landed in the original tree as ``D:willy_trialcustomer_hand``, a path relative to the drive's
         current directory."""
+        # The paths a Windows host holds, read as Windows paths on any host: a POSIX `Path` would keep the
+        # backslashes inside one name, and `_bindings` only ever asks a path for `as_posix()`.
         runner = self.tool.Runner(runbook_path="runbook.md", steps=[], plan={"phases": []},
-                                  root=Path("D:\\willy_trial\\customer_hand"), logs=Path("D:\\logs\\trial"))
+                                  root=PureWindowsPath("D:\\willy_trial\\customer_hand"),
+                                  logs=PureWindowsPath("D:\\logs\\trial"))
         bound = runner._bindings({})
         words = shlex.split(self.tool.substitute("copy --copy $ROOT --out $LOGS/x.json", bound), posix=True)
         self.assertEqual(words[2:], ["D:/willy_trial/customer_hand", "--out", "D:/logs/trial/x.json"])

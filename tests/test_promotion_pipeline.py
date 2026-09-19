@@ -124,7 +124,9 @@ COMMITTED_PROMOTION_ARTIFACT_SHA256 = (
     # blob has always held.
     # This report also carried a `config_hash` from when the recovery action space was smaller
     # than today's, and its WIS estimates moved in the last few ULPs with the pack bytes.
-    "ecada334eebd2f8da96b79cfc32108ee0406a9f4bf941a0c07a9732fb1d0a0c5"
+    # Re-blessed 2026-09-19 with its own regenerator, after the recovery artifact's portable dataset
+    # hash moved `policy_artifact_sha256`.
+    "505b3de2cce3ddf6403124b9ce263c423e1dfadff6b0785fa17c15cf3705c7a4"
 )
 
 

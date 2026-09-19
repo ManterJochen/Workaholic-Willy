@@ -124,9 +124,14 @@ class _CapturedWarnings:
         self._original = logging.Logger.handle
 
     def __enter__(self) -> "_CapturedWarnings":
-        def handle(logger: logging.Logger, record: logging.LogRecord) -> None:
+        seen = self.seen
+
+        # The replacement's first parameter is named `self` because it takes the place of
+        # `Logger.handle(self, record)`, and mypy compares parameter names when a method is
+        # replaced. The list is bound above so that the name is free for the logger.
+        def handle(self: logging.Logger, record: logging.LogRecord) -> None:
             if record.levelno >= logging.WARNING:
-                self.seen.append(record.getMessage())
+                seen.append(record.getMessage())
 
         logging.Logger.handle = handle  # type: ignore[method-assign]
         return self

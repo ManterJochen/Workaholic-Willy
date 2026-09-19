@@ -232,6 +232,8 @@ import importlib.util as _importlib_util  # noqa: E402
 
 _TABLE_MODULE = Path(__file__).resolve().parents[2] / "src/robot/safety/planning/robot/retract_table.py"
 _spec = _importlib_util.spec_from_file_location("willy_retract_table", _TABLE_MODULE)
+if _spec is None or _spec.loader is None:
+    raise ImportError(f"no loader for the retract table reader at {_TABLE_MODULE}")
 _table = _importlib_util.module_from_spec(_spec)
 sys.modules["willy_retract_table"] = _table
 _spec.loader.exec_module(_table)

@@ -189,6 +189,8 @@ def planner(args: argparse.Namespace) -> int:
                                       wrist_body_links=[body.link()], default_q=retract, measure_only=True) as client:
                     identity = client.identity
                     explained = client.explain_joints(poses, name_pairs=True)
+                if not chosen(explained.pairs):
+                    raise SystemExit(f"{arm} with {hand}: the sidecar was asked to name the pairs and named none")
                 retract_hit = bool(explained.self_collides[0])
                 pair = explained.pairs[0] if retract_hit else ""
                 same = expected is not None and identity.composed_sha256 == expected

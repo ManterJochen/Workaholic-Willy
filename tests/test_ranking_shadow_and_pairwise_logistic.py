@@ -28,6 +28,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from tests._determinism import ensure_rl_dataset
+
 from src.robot.grasping.rl.candidate_policy import (
     CANDIDATE_FEATURE_KEYS,
     CandidateSelection,
@@ -305,6 +307,12 @@ def _assert_same_numbers(
 
 
 class CommittedArtifactSha256Tests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Both regenerations read logs/rl/datasets/v1_bootstrap, which nothing commits. Build it here rather
+        # than rely on an earlier test having left it behind, an order a fresh checkout need not keep.
+        ensure_rl_dataset("v1_bootstrap")
+
     EXPECTED_SHA = (
         # ⚠ Re-blessed 2026-09-10 on this box, with `train-ranking-policy` itself. The committed
         # file could not be produced by its own generator: two prose fields (`performance_note`,

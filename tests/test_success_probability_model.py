@@ -372,10 +372,8 @@ class TrainerByteDeterminismTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             files = self._train_to(Path(td))
             fresh_model_bytes = Path(files["model_json"]).read_bytes()
-            fresh_manifest = json.loads(Path(files["manifest_json"]).read_text(encoding="utf-8"))
 
         committed_model_bytes = (ARTIFACT_DIR / "model.json").read_bytes()
-        committed_manifest = json.loads((ARTIFACT_DIR / "manifest.json").read_text(encoding="utf-8"))
 
         self.assertEqual(
             hashlib.sha256(fresh_model_bytes).hexdigest(),
@@ -387,9 +385,28 @@ class TrainerByteDeterminismTests(unittest.TestCase):
                 "success_model_calibration train` to refresh."
             ),
         )
-        # Manifest deep-equality on the version + dataset hash (environment
-        # block intentionally not pinned so re-runs on a slightly different
-        # platform still pass — sklearn/numpy/python versions float).
+
+    def test_the_committed_model_holds_the_numbers_a_fresh_train_gives(self) -> None:
+        """The substance of the byte test above, on every box: the same fields, the same values, and a float
+        allowed only the re-spelling a different libm gives it (see tests/_determinism.py)."""
+        import tempfile
+
+        from tests._determinism import _drift_between_lines
+
+        with tempfile.TemporaryDirectory() as td:
+            fresh = Path(self._train_to(Path(td))["model_json"]).read_text(encoding="utf-8")
+        committed = (ARTIFACT_DIR / "model.json").read_text(encoding="utf-8")
+        self.assertIn(_drift_between_lines(committed, fresh), {"identical", "float_only"})
+
+    def test_the_committed_manifest_names_this_train(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            files = self._train_to(Path(td))
+            fresh_manifest = json.loads(Path(files["manifest_json"]).read_text(encoding="utf-8"))
+        committed_manifest = json.loads((ARTIFACT_DIR / "manifest.json").read_text(encoding="utf-8"))
+        # The version and the dataset hash; the environment block is not pinned, because it records
+        # the platform and the library versions a train ran on.
         self.assertEqual(
             fresh_manifest["artifact_version"],
             committed_manifest["artifact_version"],

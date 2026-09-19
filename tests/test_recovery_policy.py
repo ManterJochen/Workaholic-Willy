@@ -83,7 +83,9 @@ COMMITTED_ARTIFACT_SHA256 = (
     # being checked out with CRLF (.gitattributes now pins tests/data/replay/** -text). Every
     # provenance hash over those packs moved from a CRLF reading to the LF bytes the committed
     # blob has always held.
-    "8ae243fb1d438175b201c5972532caf939862c596a87f5b8316c7dd6d3495701"
+    # Re-blessed 2026-09-19: `dataset_hash` keys each pack by its file name, so it no longer depends on
+    # where the checkout lies (it had differed between D:/dev trees and on Linux); no number moved.
+    "35f079d81212cbe4d918f8401814bf8a3b2f7608e32c1c5021cb201ca2d904e6"
 )
 
 

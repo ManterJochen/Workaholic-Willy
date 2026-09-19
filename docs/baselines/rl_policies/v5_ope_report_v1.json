@@ -8,8 +8,8 @@
   "dataset_hash": "534c0bf594bf3cb5c935879fd2b77673104dc7afec615275753d45a0916b285b",
   "dataset_id": "v5_ope_canonical",
   "dataset_paths": [
-    "tests\\data\\replay\\replay_easy_canonical_v1.jsonl",
-    "tests\\data\\replay\\replay_dense_canonical_v1.jsonl"
+    "tests/data/replay/replay_easy_canonical_v1.jsonl",
+    "tests/data/replay/replay_dense_canonical_v1.jsonl"
   ],
   "dataset_provenance": {
     "dataset_hash": "534c0bf594bf3cb5c935879fd2b77673104dc7afec615275753d45a0916b285b",

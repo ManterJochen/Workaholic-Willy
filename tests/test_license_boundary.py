@@ -278,9 +278,16 @@ class DownloadedWeightsAreNotOursToPoliceTests(unittest.TestCase):
         """The control on scope. The decision was to exempt downloaded weights specifically, so a
         file elsewhere under ``assets/`` must still be scanned. If the prefix were widened to
         ``assets/``, this is what says so."""
+        # Its own file, planted as the test above plants its pair: a fresh checkout tracks nothing under
+        # assets/ that this scan reads (MEASURED 2026-09-19 on Linux, where the only tracked files there
+        # are model artefacts), so a test that waited for one found none.
+        planted = REPO / "assets" / "_scope_control_note.md"
+        planted.parent.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(planted.unlink, True)
+        planted.write_text("scope control" + chr(10), encoding="utf-8")
         scanned = {_rel(p) for p in _repo_files((".md", ".txt", ".py"))}
-        self.assertTrue(
-            any(r.startswith("assets/") for r in scanned),
+        self.assertIn(
+            _rel(planted), scanned,
             "nothing under assets/ is scanned any more, so the exemption grew past weights",
         )
         self.assertFalse(

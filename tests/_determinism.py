@@ -59,6 +59,11 @@ PLATFORM_FLOAT_LOCKED_NODEIDS: dict[str, str] = {
     # `test_cli_regenerates_the_same_numbers`, which runs everywhere.
     "tests/test_ranking_shadow_and_pairwise_logistic.py::CommittedArtifactSha256Tests"
     "::test_cli_regenerates_byte_identical_artifact": "ranking_artifact",
+    # 71 of 190 leaves of the success model's logistic fit, the largest 1.5e-14 absolute (2026-09-19,
+    # Linux against Windows). `test_the_committed_model_holds_the_numbers_a_fresh_train_gives` keeps
+    # the substance on every box.
+    "tests/test_success_probability_model.py::TrainerByteDeterminismTests"
+    "::test_committed_artifact_matches_fresh_train": "success_model",
 }
 
 #: Paths whose FILE BYTES are hashed by a committed golden, so a CRLF checkout breaks them.
@@ -262,6 +267,26 @@ def goldens_rewritten_during_session() -> list[str]:
     return changed
 
 
+def ensure_rl_dataset(dataset_id: str) -> None:
+    """Build an RL dataset under ``logs/`` when it is not there yet; a failed build is left to the caller's CLI.
+
+    ``train-ranking-policy`` reads ``logs/rl/datasets/<id>/splits``, which nothing commits. MEASURED 2026-09-19
+    in a fresh Linux checkout: the ranking probe ran at collection, before any test had built the dataset,
+    reported "structural", and the byte test then ran into a 5e-14 re-spelling instead of standing down.
+    """
+
+    import subprocess
+    import sys
+
+    root = repo_root()
+    if (root / "logs" / "rl" / "datasets" / dataset_id / "splits" / "train.jsonl").is_file():
+        return
+    subprocess.run(
+        [sys.executable, "-m", "src.robot.grasping.rl", "build-dataset", f"--dataset-id={dataset_id}"],
+        cwd=str(root), capture_output=True, text=True, check=False,
+    )
+
+
 @lru_cache(maxsize=1)
 def classify_ranking_artifact_drift() -> PackDriftVerdict:
     """Retrain the ranking policy through its own CLI and classify the drift against the committed file.
@@ -275,6 +300,7 @@ def classify_ranking_artifact_drift() -> PackDriftVerdict:
     import sys
     import tempfile
 
+    ensure_rl_dataset("v1_bootstrap")
     root = repo_root()
     committed_path = root / "docs/baselines/rl_policies/v3_ranking_baseline_v1.json"
     subject = "the committed ranking artifact"
@@ -326,8 +352,42 @@ def classify_ranking_artifact_drift() -> PackDriftVerdict:
     )
 
 
+@lru_cache(maxsize=1)
+def classify_success_model_drift() -> PackDriftVerdict:
+    """Retrain the success model and classify its drift against the committed ``model.json``.
+
+    Its own probe: a logistic fit through an iterative solver, whose last digits follow the platform's libm.
+    MEASURED 2026-09-19 on Linux against the file committed on Windows: 71 of 190 leaves differ, the largest
+    by 1.3e-12 relative on a coefficient of 0.011, which is 1.5e-14 absolute.
+    """
+
+    import tempfile
+
+    from src.robot.grasping.calibration.success_model_calibration import (
+        DEFAULT_ARTIFACT_DIR, DatasetSpec, TrainConfig, train_and_export,
+    )
+
+    committed_path = repo_root() / DEFAULT_ARTIFACT_DIR / "model.json"
+    subject = "the committed success model"
+    if not committed_path.exists():
+        return PackDriftVerdict("structural", 0, 0, f"missing artifact {committed_path.name}", subject)
+    with tempfile.TemporaryDirectory() as tmp:
+        report = train_and_export(
+            artifact_dir=Path(tmp), dataset_spec=DatasetSpec(), train_config=TrainConfig(),
+        )
+        fresh_bytes = Path(report["files"]["model_json"]).read_bytes()
+    committed_bytes = committed_path.read_bytes()
+    if committed_bytes == fresh_bytes:
+        return PackDriftVerdict("identical", 0, 1, "", subject)
+    kind = _drift_between_lines(committed_bytes.decode("utf-8"), fresh_bytes.decode("utf-8"))
+    if kind == "identical":
+        kind = "structural"
+    return PackDriftVerdict(kind, 1, 1, f"model.json regenerates with {kind} drift", subject)
+
+
 #: Probe name -> the measurement that has to say "float_only" before its tests stand down.
 DRIFT_PROBES: dict[str, "Callable[[], PackDriftVerdict]"] = {
     "canonical_packs": classify_canonical_pack_drift,
     "ranking_artifact": classify_ranking_artifact_drift,
+    "success_model": classify_success_model_drift,
 }

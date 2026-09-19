@@ -1213,15 +1213,16 @@ def evaluate_dataset(
             # included. BLAS threading is pinned to 1 in the children: at this width the work already
             # saturates the cores, and letting each worker spawn its own thread pool turns a 32-core
             # box into 32 workers fighting over 32 threads each.
-            import concurrent.futures as _futures  # noqa: PLC0415
             import os  # noqa: PLC0415
+
+            from datagen.pool import process_pool  # noqa: PLC0415
 
             for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
                         "NUMEXPR_NUM_THREADS"):
                 os.environ.setdefault(var, "1")
             print(f"  parallel: {jobs} workers over {len(tasks)} scenes", flush=True)
-            with _futures.ProcessPoolExecutor(
-                max_workers=jobs, initializer=_pool_init,
+            with process_pool(
+                jobs, initializer=_pool_init,
                 initargs=(str(root), mask_source, model, configs, support_cfg,
                           with_jaw, with_suction, suction_every, mask_completion),
             ) as pool:

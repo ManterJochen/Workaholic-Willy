@@ -398,10 +398,10 @@
       0.0
     ]
   },
-  "dataset_hash": "141422f448b26cd9ebaf6c5d47b78408c06f2a7125a1caa4e241cae892cb8f90",
+  "dataset_hash": "6c25356acb73478299069301bdb253dd026517557dcde3f7a1f0e9d5e99ffd2e",
   "dataset_id": "v6_recovery_canonical",
   "dataset_provenance": {
-    "dataset_hash": "141422f448b26cd9ebaf6c5d47b78408c06f2a7125a1caa4e241cae892cb8f90",
+    "dataset_hash": "6c25356acb73478299069301bdb253dd026517557dcde3f7a1f0e9d5e99ffd2e",
     "dataset_id": "v6_recovery_canonical",
     "fit_for": "recovery-action selection in SHADOW (off-policy)",
     "input_source": "synthetic_deterministic",

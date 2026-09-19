@@ -159,9 +159,12 @@ def read_urdf_text(text: str, *, name: str = "<rendered>"):
     root = ET.fromstring(fixed)
     joints = {}
     for jt in root.findall("joint"):
+        parent, child = jt.find("parent"), jt.find("child")
+        if parent is None or child is None:
+            raise ValueError(f"{name}: joint {jt.attrib.get('name')!r} names no parent or no child link")
         joints[jt.attrib["name"]] = {
-            "parent": jt.find("parent").attrib["link"],
-            "child": jt.find("child").attrib["link"],
+            "parent": parent.attrib["link"],
+            "child": child.attrib["link"],
             "M": _origin(jt.find("origin")),
         }
     visual = {}
@@ -248,8 +251,11 @@ def bake(model: str) -> dict:
                 f"python scripts/curobo/fetch_ur_meshes.py"
             )
         mesh = trimesh.load(str(path), process=False, force="mesh")
-        if not isinstance(mesh, trimesh.Trimesh):
+        if isinstance(mesh, trimesh.Scene):
             mesh = trimesh.util.concatenate(list(mesh.geometry.values()))
+        if not isinstance(mesh, trimesh.Trimesh):
+            raise SystemExit(f"{path} loads as a {type(mesh).__name__}, not a triangle mesh: nothing to bake "
+                             f"for {model}/{key}")
 
         v, f, frame = to_dh_frame(np.asarray(mesh.vertices, dtype=np.float64), mesh.faces, model, key,
                                   src["urdf_text"])

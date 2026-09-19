@@ -59,7 +59,7 @@ FOLDED = (0.0, -1.57, 3.1, 0.0, 0.0, 0.0)
 
 
 def _parts(
-    path: Path, names: tuple[str, ...], plate_mm: float, placement: "object | None" = None,
+    path: Path, names: tuple[str, ...], plate_mm: float, placement: "HandPlacement | None" = None,
 ) -> dict[str, tuple[np.ndarray, np.ndarray, int]]:
     """The meshes of ``names``, with hand parts placed exactly as the guard places them (``place_hand_vertices``)."""
     data = np.load(path)

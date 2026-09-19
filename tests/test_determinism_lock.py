@@ -98,7 +98,7 @@ class SkipListHonestyTests(unittest.TestCase):
     """
 
     def test_the_lock_is_narrow(self) -> None:
-        """Three entries, each measured unable to hold off-origin. Growth here needs evidence."""
+        """Four entries, each measured unable to hold off-origin. Growth here needs evidence."""
 
         self.assertLessEqual(
             len(PLATFORM_FLOAT_LOCKED_NODEIDS),

@@ -139,7 +139,9 @@ def measure(
     # The plates a cell declares, summed as its own planner_hand sums them: the one number every half below reads.
     coupling_mm = float(resolved.coupling_mm)
     link = HandLink.from_hand(resolved)
-    placement = resolved.placement
+    # The link's own placement, which is the resolved hand's: from_hand refuses a hand its declared tool frame
+    # places nowhere, so the one it built on is always chosen.
+    placement = link.placement
 
     where = f"{placement.approach}{placement.closing}"
     retract = read_retract(arm, hand, float(coupling_mm), float(planner_margin_mm), placement=where)
@@ -174,7 +176,8 @@ def measure(
         identity = client.identity
         explained = client.explain_joints(poses, name_pairs=True)
 
-    if not explained.pairs_named:
+    # What ``pairs_named`` asks, asked of both rows, so that what follows reads them as chosen.
+    if not chosen(explained.pairs) or not chosen(explained.depths_mm):
         raise SystemExit(
             f"{arm} with {hand}: the sidecar names no pair for any pose, so its descriptor carries no sphere "
             f"ownership. Every collision would read as an attribution disagreement, which is a number about the "

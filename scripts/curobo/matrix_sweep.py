@@ -48,7 +48,9 @@ def main(argv: "list[str] | None" = None) -> int:
     rows = combinations(Path(args.table))
     print(f"[sweep] {len(rows)} combinations from {Path(args.table).name}")
     gate = REPO / "scripts" / "curobo" / "matrix_gate.py"
-    passed, below, broken = [], [], []
+    passed: list[str] = []
+    below: list[str] = []
+    broken: list[tuple[str, list[str]]] = []
 
     for index, (arm, hand, plate, margin, rotation) in enumerate(rows, start=1):
         command = [sys.executable, str(gate), "--arm", arm, "--hand", hand,
