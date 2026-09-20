@@ -14,7 +14,7 @@ hand-landmark model is downloaded (models.handdetect.model_path):
 import threading
 import time
 
-from willy import (Camera, Confirmation, Locator, Pose, PushToTalkSource, Robot, TalkButton,
+from willy import (Camera, Confirmation, Locator, Pose, PushToTalkSource, RGBDFrame, Robot, TalkButton,
                    TerminalConfirmer, load_speech_section, load_tree, shared_speech)
 from src.models.handdetection import build_palm_detector
 
@@ -84,6 +84,8 @@ with Camera.from_tree(tree) as camera:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             frame = camera.grab()
+            if not isinstance(frame, RGBDFrame):
+                raise SystemExit(f"rig {camera.rig_id!r} produced a stereo pair, not RGB-D: no colour to detect a hand in")
             hands = hand_detector.detect(frame.color)
             if len(hands) >= hand_present_threshold:
                 break

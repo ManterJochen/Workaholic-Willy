@@ -59,7 +59,7 @@ with Camera.from_tree(tree, rig_id=rig_id) as camera:
     )
     routine = CalibrationRoutine(
         arm=robot.arm, marker_source=marker_source,
-        workspace_limits=tree.robot.workspace_limits, eth_settings=tree.robot.calibration,
+        workspace_limits=tree.robot.workspace_limits, eth_settings=tree.app_config.camera.hand_eye.eye_to_hand,
         rig_id=rig_id, marker_id=0, settle_time_s=tree.robot.calibration.settle_time_s,
         calibration_mode="eye_to_hand",
     )
