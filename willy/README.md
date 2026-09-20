@@ -46,7 +46,7 @@ name that no example imports.
 | `LoadedTree` | A validated tree: `ok`, `.robot`, `explain(key)`, `decisions()`, `with_values({...})` | `real_robot/01_load_your_cell.py` |
 | `ConfigTree` | Where the YAML lives and which layers apply; `ConfigTree.from_directory(...).load()` | what `load_tree` calls |
 | `ConfigError` | The refusal of a tree that did not load, raised when something asks it for a robot | any `from_tree` |
-| `load_speech_section` | `models.stt` alone, so speech loads without a camera, a robot or a detector | `real_robot/12_speak_a_command.py` |
+| `load_speech_section` | `models.stt` alone, so speech loads without a camera, a robot or a detector | `real_robot/15_speak_a_command.py` |
 
 ### Poses and frames, in millimetres
 
@@ -75,12 +75,12 @@ name that no example imports.
 
 | Name | What it is | Shown in |
 |---|---|---|
-| `Cell` | Cameras, perception, the grasp stack, the arm and the hand: `preflight()`, `build()`, `connected()` | `real_robot/10_pick_campaign.py` |
-| `PickRun` | N picks against one cell under one connect: `PickRun.from_cell(cell, runs=...).execute()` | `real_robot/10_pick_campaign.py` |
-| `PickRunReport` | What a campaign did, whether it passed its rule, and how the cell came down; `exit_code` | `real_robot/10_pick_campaign.py` |
-| `PassRule` | When a campaign passes: a `fraction` of attempts, and `confirm=` for a check of your own | `real_robot/10_pick_campaign.py` |
-| `Recording` | Where a campaign appends one attempt record per line: `Recording.to_file(path)` or `Recording.off()` | `real_robot/10_pick_campaign.py` |
-| `GraspMotion` | What a caller may choose about how a pick moves; a field left unset keeps the service's own | `real_robot/11_your_own_pick_motion.py` |
+| `Cell` | Cameras, perception, the grasp stack, the arm and the hand: `preflight()`, `build()`, `connected()` | `real_robot/13_pick_campaign.py` |
+| `PickRun` | N picks against one cell under one connect: `PickRun.from_cell(cell, runs=...).execute()` | `real_robot/13_pick_campaign.py` |
+| `PickRunReport` | What a campaign did, whether it passed its rule, and how the cell came down; `exit_code` | `real_robot/13_pick_campaign.py` |
+| `PassRule` | When a campaign passes: a `fraction` of attempts, and `confirm=` for a check of your own | `real_robot/13_pick_campaign.py` |
+| `Recording` | Where a campaign appends one attempt record per line: `Recording.to_file(path)` or `Recording.off()` | `real_robot/13_pick_campaign.py` |
+| `GraspMotion` | What a caller may choose about how a pick moves; a field left unset keeps the service's own | `real_robot/14_your_own_pick_motion.py` |
 | `PlannerStart` | One cell's planner, started and stopped at a desk with no controller | `cell.start_planner()` in `real_robot/02_check_the_cell_at_a_desk.py` |
 
 ### What a build or a connect refuses with
@@ -103,9 +103,9 @@ name that no example imports.
 | `CameraRefused` | Raised when the camera section cannot give a rig: not configured, switched off, or no depth | `Camera.from_tree(tree)` |
 | `RigNotCalibrated` | Raised when a rig is asked for its calibration and declares none | `camera.calibration()` |
 | `HandEyeCalibration` | One camera calibrated against its robot: `check()` at a desk, `run()` at the cell | `real_robot/07_calibrate_a_fixed_camera.py` |
-| `SweepOptions` | What a caller may choose about one calibration sweep; unset takes the tree's value | `real_robot/08_calibrate_a_wrist_camera.py` |
-| `Locator` | An open camera and a perception backend that place what they see in the robot's base frame | `real_robot/09_locate_and_pick.py` |
-| `Located` | What one frame located: `objects`, `scene(i, robot)` for grasps, `keep_out(i)` for the planner | `real_robot/09_locate_and_pick.py` |
+| `SweepOptions` | What a caller may choose about one calibration sweep; unset takes the tree's value | `real_robot/09_calibrate_a_wrist_camera.py` |
+| `Locator` | An open camera and a perception backend that place what they see in the robot's base frame | `real_robot/11_locate_and_pick.py` |
+| `Located` | What one frame located: `objects`, `scene(i, robot)` for grasps, `keep_out(i)` for the planner | `real_robot/11_locate_and_pick.py` |
 | `LocatorRefused` | Raised when a locator cannot place what its camera sees, before it grabs or on a frame | `Locator.from_tree(...)`, `locate()` |
 
 ### Grasps, and the stacks a desk can evaluate without a robot
@@ -124,11 +124,11 @@ name that no example imports.
 
 | Name | What it is | Shown in |
 |---|---|---|
-| `shared_speech` | The process's one speech holder, which every caller shares | `real_robot/12_speak_a_command.py` |
-| `TalkButton` | A talk switch pressed and released in software | `real_robot/12_speak_a_command.py` |
-| `PushToTalkSource` | The microphone, serving audio only while the talk switch is held | `real_robot/12_speak_a_command.py` |
-| `TerminalConfirmer` | Asks the person at the terminal whether the heard words become the prompt | `real_robot/12_speak_a_command.py` |
-| `Confirmation` | Whether a person let proposed words become a prompt, and which words | `real_robot/12_speak_a_command.py` |
+| `shared_speech` | The process's one speech holder, which every caller shares | `real_robot/15_speak_a_command.py` |
+| `TalkButton` | A talk switch pressed and released in software | `real_robot/15_speak_a_command.py` |
+| `PushToTalkSource` | The microphone, serving audio only while the talk switch is held | `real_robot/15_speak_a_command.py` |
+| `TerminalConfirmer` | Asks the person at the terminal whether the heard words become the prompt | `real_robot/15_speak_a_command.py` |
+| `Confirmation` | Whether a person let proposed words become a prompt, and which words | `real_robot/15_speak_a_command.py` |
 | `Listener` | A voice stream cut into utterances; `listen()` | [`src/models/speech/`](../src/models/speech/README.md) |
 
 ### Isaac Sim, under Isaac's own interpreter

@@ -12,6 +12,7 @@ camera or robot.**
 <br>
 </div>
 <!-- ────────────────────────────────────────────────────────────────────────── -->
+
 ## Install
 
 ```bash
@@ -68,9 +69,10 @@ the simulation and offline examples name the tree they read in the file.
    calibration are values only your bench can give, so the shipped tree leaves them unset: a
    plausible guess would fail open.
 3. **Run [`examples/real_robot/`](examples/README.md) in order.** 01 loads your tree and 02 is the desk
-   check; neither moves anything. 03 connects and moves, 04 and 05 use the hand, 06 to 08 open and
-   calibrate the cameras, 09 and 10 locate and pick, 11 tunes the pick motion and 12 takes a spoken
-   command.
+   check; neither moves anything. 03 connects and moves, 04 and 05 use the hand, 06 opens the camera,
+   07 to 10 calibrate a fixed and a wrist camera by an automatic sweep or your own fixed poses, 11 and
+   12 locate and pick or place with the camera world, 13 runs a campaign, 14 tunes the pick motion, 15
+   takes a spoken command, and 16 and 17 hand the picked part to a person, by force or by sight.
 4. **Follow the runbooks at the bench.** [cell_bringup.md](docs/runbooks/cell_bringup.md) takes any
    robot from its profile to a connected arm, with URSim for a UR.
    [your_own_gripper.md](docs/runbooks/your_own_gripper.md) fits a hand the repository never shipped,

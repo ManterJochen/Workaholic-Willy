@@ -33,7 +33,7 @@ world, so each motion says why it needs none: `without_camera_world(reason)` for
 on one verb. The command line over `Cell` and `PickRun` is `python -m src.robot.execution.real_cell`
 ([real_cell/](real_cell/README.md)). The examples bring a cell up in order, from
 [03_connect_and_move.py](../../../examples/real_robot/03_connect_and_move.py) to
-[10_pick_campaign.py](../../../examples/real_robot/10_pick_campaign.py), and
+[13_pick_campaign.py](../../../examples/real_robot/13_pick_campaign.py), and
 [01_rehearse_a_pick.py](../../../examples/simulation/01_rehearse_a_pick.py) runs a campaign at a
 desk on a dummy arm.
 

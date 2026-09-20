@@ -128,7 +128,7 @@ The legend is the root README's [Status and honest scope](../../README.md#status
   rig as it validated: `python -m src.config explain camera.cameras.rigs`.
 - Calibrating a camera: [`docs/calibration-setup.md`](../../docs/calibration-setup.md), and the examples
   [`07_calibrate_a_fixed_camera.py`](../../examples/real_robot/07_calibrate_a_fixed_camera.py) and
-  [`08_calibrate_a_wrist_camera.py`](../../examples/real_robot/08_calibrate_a_wrist_camera.py).
+  [`09_calibrate_a_wrist_camera.py`](../../examples/real_robot/09_calibrate_a_wrist_camera.py).
 - The adapter that turns a frame into what a pick perceives: [`src/robot/perception/`](../robot/perception/README.md).
 - Every command: [`docs/cli.md`](../../docs/cli.md). The first cell:
   [`docs/runbooks/real_cell_first_pick.md`](../../docs/runbooks/real_cell_first_pick.md).

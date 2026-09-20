@@ -18,8 +18,11 @@ print(calibration.check())  # the config alone: rig, marker, poses, artifact pat
 `calibration.run()` sweeps the arm. The whole flow is
 [`examples/real_robot/07_calibrate_a_fixed_camera.py`](../../examples/real_robot/07_calibrate_a_fixed_camera.py)
 for a fixed camera and
-[`examples/real_robot/08_calibrate_a_wrist_camera.py`](../../examples/real_robot/08_calibrate_a_wrist_camera.py)
-for a wrist camera. The command line is `python -m src.robot.execution.real_cell.calibrate`
+[`examples/real_robot/09_calibrate_a_wrist_camera.py`](../../examples/real_robot/09_calibrate_a_wrist_camera.py)
+for a wrist camera. Fixed poses of your own, instead of the automatic sweep, are
+[`08_calibrate_a_fixed_camera_with_fixed_poses.py`](../../examples/real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py)
+and
+[`10_calibrate_a_wrist_camera_with_fixed_poses.py`](../../examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py). The command line is `python -m src.robot.execution.real_cell.calibrate`
 ([docs/cli.md](../cli.md)); in simulation it is `run_eth_calibrate` and `run_eih_calibrate`. The bench
 session (print the board, run the sweep, wire the artifact in) is
 [docs/calibration-setup.md](../calibration-setup.md). The package references are
@@ -470,7 +473,7 @@ prints the robot's camera world line, ending `this sweep declines for itself`.
 | The bench session: print the board, run the sweep, wire the artifact in | [docs/calibration-setup.md](../calibration-setup.md) |
 | The calibration commands and their exit codes | [docs/cli.md](../cli.md) |
 | One camera against a real robot, and the flags | [`src/robot/execution/real_cell/README.md`](../../src/robot/execution/real_cell/README.md) |
-| Both modes driven from Python | [`07_calibrate_a_fixed_camera.py`](../../examples/real_robot/07_calibrate_a_fixed_camera.py), [`08_calibrate_a_wrist_camera.py`](../../examples/real_robot/08_calibrate_a_wrist_camera.py) |
+| Both modes driven from Python | [`07_calibrate_a_fixed_camera.py`](../../examples/real_robot/07_calibrate_a_fixed_camera.py), [`09_calibrate_a_wrist_camera.py`](../../examples/real_robot/09_calibrate_a_wrist_camera.py) |
 | Config layering, `explain` and `where` | [01](01-configuration.md) |
 | Camera intrinsics, and building an arm | [02](02-models.md) . [04](04-robot-and-safety.md) |
 | The pick that consumes the transform | [05](05-pick-loop.md) |

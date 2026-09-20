@@ -333,7 +333,7 @@ On a cell whose cameras are handed in, `Robot.from_tree(tree, cameras=[camera])`
 every motion plans against the live world, and a declined motion is refused there. Pass the target's
 `SegmentationOffer` as `keep_out=` (a `Locator` result's `keep_out(i)` gives one), and the part is held out
 of the planner world through every motion of the pick
-([`examples/real_robot/09_locate_and_pick.py`](../../examples/real_robot/09_locate_and_pick.py)). The report
+([`examples/real_robot/11_locate_and_pick.py`](../../examples/real_robot/11_locate_and_pick.py)). The report
 carries the camera-world stamp of each motion, the line reading taken before the first one, and the hand
 report.
 

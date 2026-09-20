@@ -137,7 +137,7 @@ The legend is the root README's [Status and honest scope](../../../README.md#sta
 - Why it is AX = XB, and what the residual measures: [guide 03](../../../docs/guide/03-calibration.md).
 - The sweep at a real cell: [`docs/calibration-setup.md`](../../../docs/calibration-setup.md), and the
   examples [`07`](../../../examples/real_robot/07_calibrate_a_fixed_camera.py) and
-  [`08`](../../../examples/real_robot/08_calibrate_a_wrist_camera.py).
+  [`09`](../../../examples/real_robot/09_calibrate_a_wrist_camera.py).
 - Tests: [`test_eye_hand_workflows.py`](../../../tests/test_eye_hand_workflows.py),
   [`test_multi_camera_calibration.py`](../../../tests/test_multi_camera_calibration.py),
   [`test_calibration_lives_on_the_rig.py`](../../../tests/test_calibration_lives_on_the_rig.py).

@@ -2,7 +2,7 @@
 pick service puts around the motion.
 
 Run it at the cell, under the cell's profile:
-    WILLY_PROFILE=<your cell> python examples/real_robot/11_your_own_pick_motion.py
+    WILLY_PROFILE=<your cell> python examples/real_robot/14_your_own_pick_motion.py
 """
 
 from willy import Cell, GraspMotion, PickRun, Recording, load_tree

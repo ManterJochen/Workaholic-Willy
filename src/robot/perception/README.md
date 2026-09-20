@@ -23,7 +23,7 @@ with Camera.from_tree(tree) as camera:                   # the cell's primary ca
 
 A fixed camera ignores `tool_pose`; a wrist camera needs it, because its frame is placed by where the
 tool stood at the shutter. The same program at a cell is
-[`examples/real_robot/09_locate_and_pick.py`](../../../examples/real_robot/09_locate_and_pick.py). Prove
+[`examples/real_robot/11_locate_and_pick.py`](../../../examples/real_robot/11_locate_and_pick.py). Prove
 the camera and the models at a desk before a robot is involved:
 
 ```bash

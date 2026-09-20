@@ -15,7 +15,7 @@ with Camera.from_tree(load_tree()) as camera:
     frame = camera.grab()
     lens = camera.get_intrinsics()  # the device's own pinhole matrix, or None where it reports none
 
-    # A rig declares its calibration, an artifact on disk, under its `extrinsics` key once 07 or 08
+    # A rig declares its calibration, an artifact on disk, under its `extrinsics` key once 07-10
     # has calibrated it. Until then no motion can plan against what this camera sees.
     print(camera.calibration() if camera.calibrated else f"{camera.rig_id}: not calibrated")
 

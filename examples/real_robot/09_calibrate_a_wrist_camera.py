@@ -2,7 +2,7 @@
 
 Fix a printed ArUco board flat on the table within reach, then run it at the cell, under the
 cell's profile:
-    WILLY_PROFILE=<your cell> python examples/real_robot/08_calibrate_a_wrist_camera.py
+    WILLY_PROFILE=<your cell> python examples/real_robot/09_calibrate_a_wrist_camera.py
 """
 
 from willy import HandEyeCalibration, SweepOptions, load_tree

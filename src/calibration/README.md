@@ -24,7 +24,7 @@ print(calibration.run(dry_run=True))     # builds the arm and opens the camera, 
 `run()` writes `eth_<rig>.json` or `eih_<rig>.json` and ends its report with the block to paste under the
 rig in `camera.cameras.rigs`. The whole programs are
 [`07_calibrate_a_fixed_camera.py`](../../examples/real_robot/07_calibrate_a_fixed_camera.py) and
-[`08_calibrate_a_wrist_camera.py`](../../examples/real_robot/08_calibrate_a_wrist_camera.py); the
+[`09_calibrate_a_wrist_camera.py`](../../examples/real_robot/09_calibrate_a_wrist_camera.py); the
 procedure at the cell is [`docs/calibration-setup.md`](../../docs/calibration-setup.md). From a shell:
 
 ```bash

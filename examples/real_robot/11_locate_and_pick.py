@@ -1,8 +1,8 @@
 """See a part and pick it: the camera places it in the robot's base frame, and the arm plans
 around what the camera sees.
 
-Run it at the cell, under the cell's profile, once its camera is calibrated (07 or 08):
-    WILLY_PROFILE=<your cell> python examples/real_robot/09_locate_and_pick.py
+Run it at the cell, under the cell's profile, once its camera is calibrated (07-10):
+    WILLY_PROFILE=<your cell> python examples/real_robot/11_locate_and_pick.py
 """
 
 from willy import Camera, Locator, Robot, load_tree

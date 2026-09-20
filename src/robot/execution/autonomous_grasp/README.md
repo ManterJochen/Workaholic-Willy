@@ -17,7 +17,7 @@ print(report)                                              # outcome, candidates
 
 At a real cell `Cell.from_tree(load_tree(), prompt="a red cube")` builds the same service with the
 cell's cameras, models and planner, and
-[10_pick_campaign.py](../../../../examples/real_robot/10_pick_campaign.py) runs a campaign of them.
+[13_pick_campaign.py](../../../../examples/real_robot/13_pick_campaign.py) runs a campaign of them.
 
 ## The nouns
 

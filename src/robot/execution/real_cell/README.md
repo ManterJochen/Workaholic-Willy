@@ -20,7 +20,7 @@ connected and the campaign did not pass its rule; `3` a fault of the cell stoppe
 
 The same steps from Python are
 [02_check_the_cell_at_a_desk.py](../../../../examples/real_robot/02_check_the_cell_at_a_desk.py) and
-[10_pick_campaign.py](../../../../examples/real_robot/10_pick_campaign.py):
+[13_pick_campaign.py](../../../../examples/real_robot/13_pick_campaign.py):
 
 ```python
 from willy import Cell, load_tree

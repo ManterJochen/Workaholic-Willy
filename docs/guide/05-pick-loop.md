@@ -16,7 +16,7 @@ print(run)                                                 # what happened, and 
 That runs on a laptop with no GPU, camera or robot, and it is
 [`examples/simulation/01_rehearse_a_pick.py`](../../examples/simulation/01_rehearse_a_pick.py). At a real
 cell the same campaign starts from `Cell.from_tree(load_tree())`
-([`examples/real_robot/10_pick_campaign.py`](../../examples/real_robot/10_pick_campaign.py)).
+([`examples/real_robot/13_pick_campaign.py`](../../examples/real_robot/13_pick_campaign.py)).
 
 This page traces the default pick stage by stage, says what each stage may refuse and where the telemetry
 record comes from, and lists which advanced layers exist, which are off, and what turns each one on. The
