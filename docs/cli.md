@@ -173,6 +173,8 @@ examples under [offline/grasping/](../examples/README.md) do both from Python.
 
 | command | what it does | runbook |
 |---|---|---|
+| `python -m datagen.assets.fetch --list` | every public mesh collection, its size, its licence, and whether that was checked per model | [train_your_own_generator](runbooks/train_your_own_generator.md) |
+| `python -m datagen.assets.fetch gso --limit 20` | downloads a collection into the gitignored mesh library; an already-present mesh is skipped, so it resumes | [train_your_own_generator](runbooks/train_your_own_generator.md) |
 | `python -m datagen.assets --check` | what the mesh library holds per source, and whether it is enough to render from | [train_your_own_generator](runbooks/train_your_own_generator.md) |
 | `python -m datagen.assets --attribution` | the attribution text a CC-BY collection obliges you to ship with a dataset built from it | |
 | `python -m datagen.assets --fetch --from <dir> --source custom --license own --attribution-text "<you>"` | imports your own parts; the licence is required, never defaulted | [train_your_own_generator](runbooks/train_your_own_generator.md) |
@@ -197,7 +199,7 @@ examples under [offline/grasping/](../examples/README.md) do both from Python.
 | `python -m src.robot.grasping.deep train-set --tier smoke --recipe v1 --run-folds 1 --clouds <dir> --out <dir>` | fits the generator; the smoke tier is minutes, `--tier full` hours on a GPU | [train_your_own_generator](runbooks/train_your_own_generator.md) |
 | `python -m src.robot.grasping.deep report --run <dir>` | the four numbers, the lift among them and the verdict; `--run` is the trainer's output directory, `--curve <file>.png` places the curve | [train_your_own_generator](runbooks/train_your_own_generator.md) |
 | `python -m datagen cost --scenes 2000 --engine none --epochs 36 --train-folds 1 --no-refit` | prices the whole chain with training; `--no-refit` prices the single pass a tier alone buys | |
-| `python -m src.robot.grasping.deep import-foreign --out <dir> --limit 4 --jobs 8` | imports a public 6-DoF grasp corpus as the scene files the local generator writes; needs the network, and the first run caches the archive index | |
+| `python -m src.robot.grasping.deep import-foreign --out <dir> --limit 4 --jobs 8` | imports a public 6-DoF grasp corpus as the scene files the local generator writes; needs the network, and the first run caches the archive index | [train_your_own_generator](runbooks/train_your_own_generator.md) |
 | `python -m src.robot.grasping.deep train-set --help` | the recipe and tier vocabulary, on the command that takes them | |
 
 ## Checks

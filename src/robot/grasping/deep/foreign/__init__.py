@@ -6,6 +6,7 @@ simulator can still train, and a user with their own cell can still generate.
 
     contract    the nine arrays a sample must carry, and what each one means
     convention  which axis is the approach, which is the closing axis, what the translation refers to
+    service     `PublicCorpus`, the noun a program fetches and trains through
 
 Start at `convention`. A published pose matrix does not say how to read itself, and reading it wrong
 produces a corpus that trains confidently to a wrong answer. Nothing in this package assumes a
@@ -16,6 +17,9 @@ from src.robot.grasping.deep.foreign.contract import (
     SAMPLE_KEYS, SampleProblem, describe_sample, validate_sample)
 from src.robot.grasping.deep.foreign.convention import (
     Convention, ConventionProof, ConventionScore, agree, prove_convention)
+from src.robot.grasping.deep.foreign.service import (
+    ImportReport, PublicCorpus, public_sources)
 
 __all__ = ["SAMPLE_KEYS", "SampleProblem", "validate_sample", "describe_sample",
-           "Convention", "ConventionScore", "ConventionProof", "prove_convention", "agree"]
+           "Convention", "ConventionScore", "ConventionProof", "prove_convention", "agree",
+           "ImportReport", "PublicCorpus", "public_sources"]

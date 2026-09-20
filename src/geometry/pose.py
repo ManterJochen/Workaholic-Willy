@@ -15,6 +15,7 @@ mutate a pose it was handed.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -25,6 +26,7 @@ from .matrix import matrix_to_position_quaternion, position_quaternion_to_matrix
 from .quaternion import (
     IDENTITY_QUAT_XYZW,
     angle_between,
+    from_rotation_matrix,
     to_axis_angle,
 )
 from .validation import (
@@ -33,6 +35,19 @@ from .validation import (
 )
 
 __all__ = ["Pose"]
+
+#: Below this the tool and its target are the same point, which names no direction to aim along.
+_AIM_MIN_DISTANCE_MM = 1e-6
+
+#: How far from parallel the up hint has to be before the roll it fixes means anything. Below it the
+#: cross product is numerical noise and the roll would swing with the last digit of the aim.
+_AIM_MIN_UP_CROSS = 1e-6
+
+#: Where the roll comes from when the up hint runs along the aim, most importantly for the default
+#: hint and an aim straight down, which is the commonest pose in a cell. The first entry is what
+#: makes `aimed_at(x, y, z, target_mm=(x, y, z - d))` equal `tool_down(x, y, z)` exactly, and
+#: `tests/test_geometry_precision.py` holds that equality rather than leaving it to be rediscovered.
+_AIM_UP_FALLBACKS: tuple[tuple[float, float, float], ...] = ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0))
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +108,77 @@ class Pose:
             quaternion_xyzw=np.array(
                 [math.cos(half), math.sin(half), 0.0, 0.0], dtype=np.float64
             ),
+            frame=frame,
+            label=label,
+        )
+
+    @classmethod
+    def aimed_at(
+        cls,
+        x_mm: float,
+        y_mm: float,
+        z_mm: float,
+        *,
+        target_mm: Sequence[float] | np.ndarray,
+        roll_deg: float = 0.0,
+        up_hint: Sequence[float] = (0.0, 0.0, 1.0),
+        frame: Frame = Frame.BASE,
+        label: str | None = None,
+    ) -> Pose:
+        """The tool at (``x_mm``, ``y_mm``, ``z_mm``) with its +Z pointing AT ``target_mm``.
+
+        :meth:`tool_down` answers one question: where is the tool, pointing straight down. A great
+        deal of a cell is that pose, and two things are not. A wrist camera looking at a board on
+        the table sees nothing of it from anywhere but overhead, and a marker board bolted to the
+        flange shows a fixed camera nothing but its edge once the arm is off to one side. Both need
+        the same thing: an orientation chosen so that one thing faces another, which no yaw about
+        the vertical can produce.
+
+        Aiming is all this does. It is not a claim that the target is reachable, in the workspace,
+        or even in view: the planner and the cell's guards decide the first two, and the marker
+        source reports the third. What it removes is the arithmetic a caller would otherwise write
+        with an axis convention of its own.
+
+        ``up_hint`` is which way is up in the WORLD, not in the image; it fixes the roll and does
+        not change where the tool points. Where the aim runs along it -- looking straight down with
+        the default ``+Z`` -- the hint says nothing, and a fallback settles the roll so that the
+        result is exactly ``tool_down`` at the same position. ``roll_deg`` turns the tool about its
+        own +Z, the axis it is pointing along. Aimed straight down that axis points at the floor,
+        so a positive roll turns the closing axis the opposite way round the vertical from
+        :meth:`tool_down`'s ``yaw_deg``; the two agree at zero.
+
+        Raises ``ValueError`` when the tool would stand on its target, which names no direction.
+        """
+        eye = np.array([float(x_mm), float(y_mm), float(z_mm)], dtype=np.float64)
+        forward = np.asarray(target_mm, dtype=np.float64).reshape(3) - eye
+        distance = float(np.linalg.norm(forward))
+        if distance < _AIM_MIN_DISTANCE_MM:
+            raise ValueError(
+                f"Pose.aimed_at: the tool at {eye.tolist()} is {distance:.3f} mm from its target "
+                f"{np.asarray(target_mm, dtype=np.float64).reshape(3).tolist()}, which names no "
+                "direction to point along. Stand the tool off from what it looks at.")
+        forward /= distance
+
+        for candidate in (tuple(up_hint), *_AIM_UP_FALLBACKS):
+            up = np.asarray(candidate, dtype=np.float64).reshape(3)
+            right = np.cross(up, forward)
+            if float(np.linalg.norm(right)) > _AIM_MIN_UP_CROSS:
+                break
+        else:  # pragma: no cover (two fallbacks perpendicular to each other cannot both fail)
+            raise ValueError("Pose.aimed_at: no usable up axis for this aim")
+        right /= np.linalg.norm(right)
+        down = np.cross(forward, right)
+
+        roll = math.radians(float(roll_deg))
+        cos_roll, sin_roll = math.cos(roll), math.sin(roll)
+        rotation = np.column_stack([
+            right * cos_roll + down * sin_roll,
+            down * cos_roll - right * sin_roll,
+            forward,
+        ])
+        return cls(
+            position_mm=eye,
+            quaternion_xyzw=from_rotation_matrix(rotation),
             frame=frame,
             label=label,
         )

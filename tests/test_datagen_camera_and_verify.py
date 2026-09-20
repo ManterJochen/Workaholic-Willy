@@ -252,7 +252,8 @@ class ADepthOnlyDatasetIsVerifiedWithoutItsPictureTests(unittest.TestCase):
     provenance stamp, and an unstamped dataset keeps the strict treatment.
     """
 
-    def _dataset(self, root: Path, *, depth_only: bool | None, rgb: str) -> Path:
+    def _dataset(self, root: Path, *, depth_only: bool | None, rgb: str,
+                 engine: str | None = None) -> Path:
         import cv2  # noqa: PLC0415
 
         scene = root / "scenes" / "scene_000000"
@@ -261,9 +262,14 @@ class ADepthOnlyDatasetIsVerifiedWithoutItsPictureTests(unittest.TestCase):
         if rgb != "absent":
             frame = _lit_frame() if rgb == "lit" else np.zeros((*_RESOLUTION[::-1], 3), np.uint8)
             cv2.imwrite(str(scene / "oblique_left_rgb.png"), frame)
+        render: dict[str, object] = {}
         if depth_only is not None:
+            render["depth_only"] = depth_only
+        if engine is not None:
+            render["engine"] = engine
+        if render:
             (root / "provenance.json").write_text(
-                json.dumps({"config": {"render": {"depth_only": depth_only}}}), encoding="utf-8")
+                json.dumps({"config": {"render": render}}), encoding="utf-8")
         return scene
 
     def test_a_stamped_depth_only_dataset_with_no_picture_passes(self) -> None:
@@ -305,6 +311,71 @@ class ADepthOnlyDatasetIsVerifiedWithoutItsPictureTests(unittest.TestCase):
             report = verify_dataset(root)
             self.assertFalse(report.ok, report.summary())
             self.assertGreater(report.projection_failed, 0)
+
+
+class AnEngineThatRendersNoColourIsVerifiedWithoutAPictureTests(unittest.TestCase):
+    """⚠ MEASURED 2026-09-20: `verify` refused every dataset the two cheaper engines produce.
+
+    `depth_only` is an operator asking Isaac to skip its beauty pass. It is not the only way to end up
+    with no picture: `mujoco` and `none` write `rgb=None` from every view by construction, which is
+    stated in `SceneEngine`'s own contract ("everything else is colour, and `rgb` may stay `None`
+    throughout") and in the engine table. Check 4 read only the `depth_only` flag, so a `none` build --
+    the one the README tells a new user to run first, and the one CI runs -- came back with one
+    "claims an image it never wrote" per view and `ok=False`. The dataset was correct and the gate
+    said otherwise, which is the failure mode that teaches people to ignore a gate.
+
+    The fix may not be to look for the file: "there is no colour image" and "the colour image is black"
+    are the same thing on disk, and telling them apart from the stamp is the whole point of check 4.
+    """
+
+    def _dataset(self, root: Path, *, engine: str) -> None:
+        scene = root / "scenes" / "scene_000000"
+        scene.mkdir(parents=True)
+        (scene / "scene.json").write_text(json.dumps(_scene_payload()), encoding="utf-8")
+        (root / "provenance.json").write_text(
+            json.dumps({"config": {"render": {"engine": engine, "depth_only": False}}}),
+            encoding="utf-8")
+
+    def test_a_dataset_from_an_engine_that_renders_no_colour_passes(self) -> None:
+        for engine in ("none", "mujoco"):
+            with self.subTest(engine=engine), TemporaryDirectory() as tmp:
+                self._dataset(Path(tmp), engine=engine)
+                report = verify_dataset(Path(tmp))
+                self.assertTrue(report.ok, report.summary())
+                self.assertEqual(0, report.images_checked)
+
+    def test_the_SAME_dataset_stamped_isaac_is_REFUSED(self) -> None:
+        """The engine excuses the picture; nothing else changed."""
+        with TemporaryDirectory() as tmp:
+            self._dataset(Path(tmp), engine="isaac")
+            report = verify_dataset(Path(tmp))
+            self.assertFalse(report.ok)
+            self.assertTrue(any("never wrote" in p for p in report.problems), report.problems)
+
+    def test_an_engine_name_this_build_does_not_know_keeps_the_check_ON(self) -> None:
+        """Fail-closed: an unrecognised engine gets the stricter treatment, not the weaker one."""
+        with TemporaryDirectory() as tmp:
+            self._dataset(Path(tmp), engine="a_renderer_from_the_future")
+            self.assertFalse(verify_dataset(Path(tmp)).ok)
+
+    def test_a_colourless_engine_does_not_stop_the_OTHER_checks(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scene = root / "scenes" / "scene_000000"
+            scene.mkdir(parents=True)
+            (scene / "scene.json").write_text(json.dumps(_scene_payload(swap=True)), encoding="utf-8")
+            (root / "provenance.json").write_text(
+                json.dumps({"config": {"render": {"engine": "none"}}}), encoding="utf-8")
+            report = verify_dataset(root)
+            self.assertFalse(report.ok, report.summary())
+            self.assertGreater(report.projection_failed, 0)
+
+    def test_every_engine_the_build_knows_is_classified(self) -> None:
+        """A fourth engine must decide whether it writes colour, rather than inherit an answer."""
+        from datagen.render.engine import ENGINES, ENGINES_WITH_COLOUR
+
+        self.assertLessEqual(ENGINES_WITH_COLOUR, set(ENGINES))
+        self.assertEqual({"isaac"}, set(ENGINES_WITH_COLOUR))
 
 
 class ImageContentTests(unittest.TestCase):

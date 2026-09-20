@@ -224,5 +224,48 @@ class ItPricesEVERYTrainingPassTests(unittest.TestCase):
         self.assertFalse(any("full passes" in w for w in result.warnings))
 
 
+class OneImplementationForTheCommandAndTheCodeTests(unittest.TestCase):
+    """`datagen cost` and `DatasetBuild.cost()` answer the same question, so they call one function.
+
+    Two copies of a cost model is two answers waiting to disagree, and this is the one tool whose
+    whole value is that its number can be trusted before a night is spent on it. The command is a
+    formatter over `estimate_for_config`, and so is the verb.
+    """
+
+    def _build(self, **kwargs: object) -> object:
+        from datagen.api import DatasetBuild
+
+        return DatasetBuild.from_file(name="priced", **kwargs)          # type: ignore[arg-type]
+
+    def test_the_verb_prices_the_builds_own_scene_count_and_engine(self) -> None:
+        build = self._build(scenes=500, engine="none")
+        result = build.cost()                                           # type: ignore[attr-defined]
+        self.assertEqual(500, result.usable_scenes)
+        self.assertEqual("none", result.engine)
+
+    def test_a_what_if_overrides_both(self) -> None:
+        build = self._build(scenes=500, engine="none")
+        result = build.cost(scenes=40, engine="isaac")                  # type: ignore[attr-defined]
+        self.assertEqual(40, result.usable_scenes)
+        self.assertEqual("isaac", result.engine)
+
+    def test_the_verb_and_the_command_produce_the_same_report(self) -> None:
+        import contextlib
+        import io
+
+        from datagen.__main__ import main
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(main(["cost", "--scenes", "500", "--engine", "none", "--jobs", "4"]), 0)
+        verb = self._build(scenes=500, engine="none").cost(jobs=4)      # type: ignore[attr-defined]
+        self.assertIn(format_estimate(verb), out.getvalue())
+
+    def test_printing_an_estimate_is_its_report(self) -> None:
+        """`print(build.cost())` is the documented call; a repr there would be a different tool."""
+        result = estimate(500, engine="none")
+        self.assertEqual(format_estimate(result), str(result))
+
+
 if __name__ == "__main__":                                           # pragma: no cover
     unittest.main()

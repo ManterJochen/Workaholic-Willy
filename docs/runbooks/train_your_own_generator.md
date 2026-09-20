@@ -333,6 +333,46 @@ different experiment and should not wear the old run's card. A checkpoint that d
 architecture is refused rather than loaded partly, and the report records where the weights came
 from.
 
+## Without your own parts: a published corpus
+
+Every step above assumes you have parts and a machine that can render them. With neither, a public
+corpus is read into the same scene files and the training below is unchanged:
+
+```python
+from willy import GeneratorTraining, PublicCorpus
+
+corpus = PublicCorpus.from_source(out_dir="logs/dl/clouds/public")
+print(corpus.describe())                      # the source, its licence, what is already on disk
+print(corpus.fetch(limit=2000, report=print))  # by range request, about 200 KB per scene
+run = GeneratorTraining.from_recipe(corpus=corpus.out_dir, recipe="v1", tier="full",
+                                    out_dir="logs/dl/models/public")
+```
+
+What it costs you in evidence, stated rather than discovered later: the source publishes no asset
+identity, so folds are scene-disjoint rather than asset-disjoint and a held-out number there is
+about scenes rather than about objects; it ships no normals, so they are estimated by local PCA and
+the scene stamps that; and the licence is the source's own, which travels with any model trained on
+it. `python -m src.robot.grasping.deep import-foreign --out <dir> --limit 2000` is the same import
+from a shell, and
+[04_train_on_a_public_corpus.py](../../examples/offline/training/04_train_on_a_public_corpus.py)
+runs the whole route at the smoke tier.
+
+## Before you spend the night: the floor and the ceiling
+
+A hit rate cannot be read without both ends of its scale, and both are properties of the corpus and
+the plan rather than of a model, so both can be measured with no weights in minutes on a CPU:
+
+```python
+print(GeneratorTraining.from_recipe(corpus="logs/dl/clouds/mine", recipe="v1", tier="full").probe())
+```
+
+`top_down` is the arm to beat, not `random`: every slot straight down at the seed is the grasp a
+cell with no model at all would try, and a learned generator that does not clear it has bought
+nothing. Where the floor and the ceiling nearly meet, this corpus has nothing to teach and a longer
+run will not change that.
+[05_floor_and_ceiling_before_you_train.py](../../examples/offline/training/05_floor_and_ceiling_before_you_train.py)
+is that call over a corpus it builds first.
+
 ## Training from Python
 
 The command line is a formatter over an API that reaches strictly more of the stack, and there is no
@@ -362,3 +402,4 @@ print(report.render())
   sharding rules a long build needs.
 - [`datagen/`](../../datagen/README.md), the scene generator, its engines and its asset sources.
 - `examples/offline/datagen/05_bring_your_own_parts.py` and `examples/offline/training/02_train_on_your_own_meshes.py`, both steps as runnable files.
+- `examples/offline/datagen/06_fetch_public_parts.py`, the public mesh collections and what downloading them obliges you to.

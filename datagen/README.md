@@ -35,18 +35,21 @@ CAD files to a trained generator.
 
 | Noun | Built by | Verbs | Returns |
 |---|---|---|---|
-| `DatasetBuild` | `from_file(path, name=..., scenes=..., engine=..., overrides=...)`, `from_config(config, name=...)` | `describe`, `render`, `label`, `clouds`, `run` | a `StageResult` per step; `run` a `DatasetReport` |
+| `DatasetBuild` | `from_file(path, name=..., scenes=..., engine=..., overrides=...)`, `from_config(config, name=...)` | `describe`, `cost`, `render`, `label`, `clouds`, `run`, `verify` | a `StageResult` per step; `run` a `DatasetReport`, `cost` an `Estimate`, `verify` a `VerifyReport` |
 | `MeshPreparation` | `from_sources(["gso"])`; every public collection when none is named | `fetch`, `normalise`, `screen`, `decompose`, `why_no_jaw` | one report per verb |
 | `PhysicsSampling` | `from_dataset(root, engine="mujoco")` | `sample`, `compare` | `PhysicsReport`: held of shaken, per stratum |
 | `GraspEvaluation` | `from_dataset(root)`, in `datagen.eval.service` | `evaluate`, `gate`, `approach_tilt` | the ladder, the regression gate, coverage by tilt |
 | `RankerCorpus`, `RankerFit`, `CorpusCheck` | `from_dataset`, `from_corpus`, in `datagen.corpus.service` | `build`, `fit`, `assess` | see [corpus/](corpus/README.md) |
 | `RecordCollection` | `from_dataset(root)`, in `datagen.rl.service` | `measure_occupancy`, `collect`, `prove` | RL training records from the real grasping stack |
 
-Three functions go with them. `layout_scene(config, index)` returns one scene's `SceneSpec` without rendering
-it, `engine_is_available(name)` returns `(ok, why not)`, and `import_from_directory("custom", folder,
-license="own")` adds your parts to the mesh library. `willy` exports the first three nouns and the three
-functions; the others import from the module the table names. `DatasetReport` and `PhysicsReport` print as
-themselves, and the other reports have `render()` for a person and `as_dict()` for a program.
+Six functions go with them. `layout_scene(config, index)` returns one scene's `SceneSpec` without rendering
+it, `engine_is_available(name)` returns `(ok, why not)`, `available_sources()` lists the public mesh
+collections, `import_from_directory("custom", folder, license="own")` adds your parts to the mesh library,
+`verify_dataset(root)` checks a written dataset against itself, and `held_out_assets(corpus)` says which
+placeable assets a corpus never trained on. `willy` exports the first three nouns and all six functions; the
+others import from the module the table names. `DatasetReport`, `PhysicsReport`, `Estimate`, `VerifyReport`
+and `HeldOutReport` print as themselves, and the other reports have `render()` for a person and `as_dict()`
+for a program.
 
 A scene is reproducible from the seed, the scene index, the code version and the physics version. Every random
 draw happens at layout time, never in the renderer, and layout is numpy only. Units are millimetres and XYZW
@@ -93,6 +96,29 @@ Grading a grasp in physics is a separate choice: `physics-sample` and `physics-c
 `--physics-engine isaac|mujoco`, and `python -m datagen.rl.collect` takes `--engine isaac|mujoco`. MuJoCo
 needs no NVIDIA install. [grasps/](grasps/README.md) says what the referee measures.
 
+## Getting the parts
+
+A fresh checkout has no meshes: `assets/meshes/` is gitignored, and the collections below are
+gigabytes under somebody else's licence. A build still runs without them, on generated shapes, and a
+grasp number over those is a number about convex primitives. Downloading is one call:
+
+```python
+from willy import MeshPreparation, available_sources
+
+for source in available_sources():          # what exists, its size, its licence, opens no connection
+    print(source)
+print(MeshPreparation.from_sources(["gso"]).fetch(limit=20, report=print))   # a trial slice, ~70 MB
+```
+
+An already-present mesh is skipped, so an interrupted fetch resumes, and a mesh whose licence is not
+CC0 or CC-BY is refused before it is downloaded rather than after. The same from a shell is
+`python -m datagen.assets.fetch --list` and `python -m datagen.assets.fetch gso --limit 20`;
+[06_fetch_public_parts.py](../examples/offline/datagen/06_fetch_public_parts.py) is the whole step,
+including what to set so a build draws from the meshes instead of from generated shapes.
+
+**Normalise a fetched collection before you raise its weight.** Every mesh is read as metres, and a
+collection exported in millimetres arrives a thousand times too large.
+
 ## Your own parts
 
 ```bash
@@ -123,9 +149,9 @@ dataset from the result.
 | `custom` | your own parts | analytic on the closed surface |
 
 The weights are relative: `procedural 1.0, composite 2.0` draws twice as many composites.
-`python -m datagen.assets.fetch --list` prints each public collection's size and licence, and whether that
-licence was verified per model or taken from the collection's terms. `python -m datagen.assets --check` says
-what this machine holds. Normalise a fetched collection before you raise its weight.
+`available_sources()` and `python -m datagen.assets.fetch --list` print each public collection's size and
+licence, and whether that licence was verified per model or taken from the collection's terms.
+`python -m datagen.assets --check` says what this machine holds.
 
 ## Looking at a dataset
 

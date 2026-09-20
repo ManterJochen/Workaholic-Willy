@@ -21,8 +21,10 @@ not that the tests pass, but that the bytes an operator reads did not move.
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from src.config import load_robot_config
+from src.config.tree import load_tree
 from src.contracts import Rendered
 from src.robot.execution.cell import Cell, CellNotBuilt
 from src.robot.execution.lifecycle import ConnectedCell, NoRealGripper
@@ -156,6 +158,62 @@ class TheWholeSequenceTests(unittest.TestCase):
                          "the default pick is open-loop and the report says so")
         assert live.teardown is not None
         self.assertTrue(live.teardown.clean)
+
+
+class TheGraspModeIsChosenAtTheBuildTests(unittest.TestCase):
+    """⚠ THE TWO DENSE MODES HAD NO DOOR THROUGH `Cell`, AND THEY ARE WHAT A BIN NEEDS.
+
+    `AutonomousGraspService.from_robot_config` takes `mode=`, and `build_real_cell` forwards
+    anything it is given, but `Cell.build()` passed neither, so every cell built through the
+    operator-facing noun was `auto`. `pick(mode=...)` is not the same lever: it narrows the
+    behaviour of ONE attempt and never the sampler the service was built with, so asking a service
+    built in `auto` for `dense_clutter` comes back `MODE_NOT_AVAILABLE` -- correctly, and with no
+    way to get what was asked for. Reaching `dense_clutter` meant bypassing `Cell` and calling
+    `build_real_cell` by hand, which also gives up the preflight, the lock and the teardown.
+    """
+
+    def _mode_reaching(self, **kwargs: object) -> object:
+        """What `Cell.build()` hands the rehearsal builder, without building anything."""
+        cell = Cell.rehearsal(load_tree("console_dummy").robot, **kwargs)  # type: ignore[arg-type]
+        with mock.patch("src.robot.execution.autonomous_grasp.build_rehearsal_cell") as build:
+            cell.build()
+        return build.call_args.kwargs.get("mode", "NOT FORWARDED")
+
+    def test_a_chosen_mode_reaches_the_builder(self) -> None:
+        self.assertEqual("dense_clutter", self._mode_reaching(mode="dense_clutter"))
+
+    def test_no_mode_forwards_nothing_so_the_callee_keeps_its_own_default(self) -> None:
+        """A default copied into a wrapper is a second declaration of it, agreeing until it does not."""
+        self.assertEqual("NOT FORWARDED", self._mode_reaching())
+
+    def test_every_factory_carries_it(self) -> None:
+        robot = load_tree("console_dummy").robot
+        for cell in (Cell.rehearsal(robot, mode="easy"),
+                     Cell.from_robot_config(robot, mode="easy"),
+                     Cell.from_tree(load_tree("console_dummy"), mode="easy")):
+            with self.subTest(cell):
+                self.assertEqual("easy", cell.mode)
+
+    def test_the_service_is_really_built_in_it(self) -> None:
+        """The end of the chain: a cell built in one mode runs that mode, and reports it."""
+        from willy import GraspMode
+
+        for mode in (GraspMode.EASY, GraspMode.DENSE_CLUTTER):
+            with self.subTest(mode=mode):
+                cell = Cell.rehearsal(load_tree("console_dummy").robot, mode=mode)
+                service = cell.build()
+                with cell.connected():
+                    report = service.pick()
+                self.assertIs(mode, report.mode)
+                self.assertEqual("succeeded", report.outcome.value, report.render())
+
+    def test_a_mode_the_service_was_not_built_for_still_refuses_by_name(self) -> None:
+        """The build-time lever does not weaken the per-attempt one: no silent re-sampling."""
+        cell = Cell.rehearsal(load_tree("console_dummy").robot, mode="easy")
+        service = cell.build()
+        with cell.connected():
+            report = service.pick(mode="dense_clutter")
+        self.assertEqual("mode_not_available", report.outcome.value)
 
 
 if __name__ == "__main__":  # pragma: no cover

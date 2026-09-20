@@ -42,6 +42,7 @@ change.
 | `ThumbGestureRecognizer` | `build_gesture_recognizer(models.gesturedetect)` | `observe(frame_bgr)` | a `HandObservation` per hand: palm and gesture |
 | `PalmDetector` | `build_palm_detector(models.handdetect)` | `observe(frame_bgr)` | a `HandObservation` per hand, landmarks only |
 | `HandFinder` | `build_hand_finder(models.handdetect, provider=..., transforms=...)` | `find_hand()` | a `LocatedHand` in the base frame and an annotated image |
+| the same, over one open camera | `build_hand_finder_on_camera(models.handdetect, camera)` | `find_hand()` | the same, reading that camera's own calibration and lens |
 
 `build_hand_finder` takes the open frame provider, a 4x4 CAMERA to BASE matrix per rig, a 3x3 camera
 matrix per RGB-D rig, a `StereoCam3D` for stereo rigs, and optionally the recognizer as `observer=` so
@@ -49,6 +50,16 @@ the located hand carries its gesture. `HandPosition3D.position_base` and `positi
 The transforms are not read from config on purpose: CAMERA to BASE is a calibration artefact with its
 own loader, and a second spelling of it would be a second source of truth for the most safety-relevant
 number here.
+
+`build_hand_finder_on_camera` is the same search over one `Camera` a program already holds open, and
+it is what a pick loop uses: `FrameProvider.open()` claims every configured streamer, so asking where
+a hand is through a second catalogue takes the cell's other cameras away from it, and one device
+opened twice is what the camera owner exists to prevent. It composes no transform either. A fixed
+rig's CAMERA to BASE is `RigCalibration.camera_to_base()`, one method with one answer; a WRIST rig is
+refused by name, because turning its CAMERA to TOOL into a base position needs the pose the arm stood
+at when the shutter opened, and that composition belongs to `Locator`.
+[`examples/real_robot/17`](../../../examples/real_robot/17_speak_pick_and_hand_handover.py) brings a
+picked part to the hand it finds.
 
 ## What it refuses
 
@@ -58,6 +69,8 @@ number here.
 | `FileNotFoundError` when a detector is built | a `.task` bundle is missing; it names the key, the absolute path and the download | `python scripts/model_weights/fetch.py --mediapipe` |
 | `ValueError` from `find_hand` | an RGB-D rig with no camera matrix, or a stereo rig with no `StereoCam3D` | supply the rig's intrinsics; nothing is invented |
 | a skipped rig | a rig with no transform, or more than one hand in view | calibrate the rig; one hand at a time |
+| `RigCalibrationError` from `build_hand_finder_on_camera` | the camera is a wrist rig, so it has no fixed CAMERA to BASE | search from a fixed camera, or compose the transform yourself and use `build_hand_finder` |
+| `ValueError` from `build_hand_finder_on_camera` | an RGB-D camera whose device reports no intrinsics | give the rig a camera matrix; nothing is invented |
 | exit `2` from `--rig` | an id not in `camera.cameras.rigs`, or a disabled rig; it lists the rigs there are | name a configured, enabled rig |
 
 Two hands in a workspace is a reason to stop, not to choose one, because the position decides where a
@@ -103,7 +116,7 @@ bundles are absent.
 | [`types.py`](types.py) | `PalmDetection`, `GestureReading`, `HandObservation`, `HandPosition3D`, `LocatedHand`; frozen |
 | [`model_files.py`](model_files.py) | the `mediapipe` guard and the fail-closed `.task` resolver |
 | [`palm_detector.py`](palm_detector.py), [`gestures.py`](gestures.py) | the landmark detector, and the gesture classifier with its palm centre |
-| [`hand_finder.py`](hand_finder.py) | pixels plus depth plus calibration to millimetres in the base frame |
+| [`hand_finder.py`](hand_finder.py) | pixels plus depth plus calibration to millimetres in the base frame; `RigFrames` and `OneCamera`, where the frames come from |
 | [`factory.py`](factory.py), [`constants.py`](constants.py) | the config readers, and the download URLs quoted in errors |
 | [`__main__.py`](__main__.py) | the `--check`, `--frame` and `--rig` command |
 

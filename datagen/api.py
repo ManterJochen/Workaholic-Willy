@@ -43,6 +43,9 @@ from datagen.config import DatagenConfig
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from collections.abc import Callable
 
+    from datagen.cost import Estimate
+    from datagen.verify import VerifyReport
+
 __all__ = ["DatasetBuild", "DatasetReport", "Stage", "StageResult", "merged_settings"]
 
 
@@ -252,6 +255,23 @@ class DatasetBuild:
                          f"{self.config.render.arm.wrist_camera_mount.source}")
         return NEWLINE.join(lines)
 
+    def cost(self, *, scenes: int | None = None, engine: str | None = None, jobs: int = 1,
+             label: bool = True, corpus: bool = True, epochs: int = 0, folds: int = 1,
+             refit: bool = True, dense: bool = False) -> "Estimate":
+        """Hours, gigabytes and the request a yield needs, for the dataset this build describes.
+
+        The question before `run()`, and the only verb here that reads nothing and writes nothing.
+        `scenes` and `engine` are the what-if; left out, the build's own config answers, so this
+        prices the corpus that would actually be produced rather than a neighbouring one.
+
+        `print(build.cost())` is the report `datagen cost` prints, from the same function.
+        """
+        from datagen.cost import estimate_for_config  # noqa: PLC0415 (a leaf, only for this verb)
+
+        return estimate_for_config(self.config, scenes=scenes, engine=engine, jobs=jobs,
+                                   label=label, corpus=corpus, epochs=epochs, folds=folds,
+                                   refit=refit, dense=dense)
+
     # ------------------------------------------------------------------ the verbs
     def render(self, *, headless: Any = UNSET, preview: Any = UNSET,
                limit: Any = UNSET) -> StageResult:
@@ -338,6 +358,20 @@ class DatasetBuild:
         if stages[-1].ok and corpus_out is not None:
             stages.append(self.clouds(corpus_out))
         return DatasetReport(root=self.root, stages=tuple(stages))
+
+    def verify(self) -> "VerifyReport":
+        """Check what was written against itself: labels, masks, poses and pictures agreeing.
+
+        After a run rather than inside it, and it opens no engine: everything it reads is on disk,
+        so it also answers for a dataset built months ago. `verify_dataset(root)` is the same check
+        pointed at a path, for a dataset no `DatasetBuild` in this process produced.
+
+        A failed check is returned, never raised. A caller that ignores `ok` leaves no other trace
+        that the labels disagreed with the pixels.
+        """
+        from datagen.verify import verify_dataset  # noqa: PLC0415 (a leaf, only for this verb)
+
+        return verify_dataset(self.root)
 
     def _record(self, result: StageResult) -> StageResult:
         if self._on_stage is not None:

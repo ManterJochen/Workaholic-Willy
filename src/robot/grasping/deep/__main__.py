@@ -871,28 +871,26 @@ def _cmd_import_foreign(args: argparse.Namespace) -> int:
     The fetch is by range request. The source is 229 GB and its clouds are a Zip64 split across
     five parts, so a full download is not the price of looking at it: about 200 KB per scene.
     """
-    from src.robot.grasping.deep.foreign.grasp_anything import (  # noqa: PLC0415
-        DEFAULT_GRIPPER, SOURCE, import_scenes)
-    from src.robot.grasping.deep.net.gripper import JAW_GEOMETRY  # noqa: PLC0415
+    from src.robot.grasping.deep.foreign.service import PublicCorpus  # noqa: PLC0415
 
-    if args.gripper not in JAW_GEOMETRY:
-        print(f"unknown gripper {args.gripper!r}; choose from {', '.join(sorted(JAW_GEOMETRY))}",
-              file=sys.stderr)
-        return _EXIT_USAGE
-    print(f"  source     {SOURCE.title}")
-    print(f"  licence    {SOURCE.licence}  ({SOURCE.url})")
-    print(f"  gripper    {args.gripper} (default {DEFAULT_GRIPPER})")
+    # The same noun `willy` exports, so this command and `PublicCorpus.fetch(...)` cannot drift:
+    # the gripper is validated here, before a byte is fetched, and the licence is printed either way.
     try:
-        provenance = import_scenes(args.out, limit=args.limit, gripper=args.gripper,
-                                   centre_offset_m=args.centre_offset, cache_dir=args.cache_dir,
-                                   validate=args.validate, jobs=args.jobs,
-                                   report=lambda line: print(line, flush=True))
+        corpus = PublicCorpus.from_source(out_dir=args.out, gripper=args.gripper)
+    except ValueError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return _EXIT_USAGE
+    print(corpus.describe())
+    try:
+        report = corpus.fetch(limit=args.limit, centre_offset_m=args.centre_offset,
+                              cache_dir=args.cache_dir, validate=args.validate, jobs=args.jobs,
+                              report=lambda line: print(line, flush=True))
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return _EXIT_PROBLEM
-    for key in sorted(provenance):
-        print(f"  {key:20s} {provenance[key]}")
-    if not provenance["written"] and not provenance["skipped_present"]:
+    for key in sorted(report.provenance):
+        print(f"  {key:20s} {report.provenance[key]}")
+    if not report.scenes:
         print("nothing was imported", file=sys.stderr)
         return _EXIT_PROBLEM
     print("")

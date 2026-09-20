@@ -497,36 +497,22 @@ def _cmd_cost(args: argparse.Namespace, config: DatagenConfig) -> int:
     The first question an operator asks. Every coefficient is measured rather than assumed, and
     carries its evidence into the output: see `datagen/cost.py` for what each was measured over.
     """
-    from datagen.cost import ENGINE_COSTS, estimate, format_estimate
+    from datagen.cost import ENGINE_COSTS, estimate_for_config
 
-    # The config's own scene count. `cost` exists to price a corpus before somebody spends the night
-    # on it, so reading a scene count the config did not ask for prints a confident total for a
-    # different corpus, with nothing anywhere saying so. `--scenes` still wins, because a what-if is
-    # the other half of what this command is for.
-    scenes = int(args.scenes) if args.scenes else int(config.scenes)
-    # The engine comes from the config like everything else, so `--config x.json` answers for the
-    # dataset that config would actually build. `--engine` overrides it for a what-if.
+    # The config's own scene count and engine, so `--config x.json` answers for the dataset that
+    # config would actually build; `--scenes` and `--engine` are the what-if. `DatasetBuild.cost()`
+    # is the same call from code: one implementation, so the two answers cannot drift.
     engine = args.engine or config.render.engine
-    # How many distinct scanned meshes this config would decompose. Counted from the id restriction
-    # when there is one, which is a JSON read, rather than by loading the bank, which is two minutes
-    # of mesh parsing and would make the cheap command the slow one. Zero when nothing restricts the
-    # draw, because then the honest answer is "as many as the bank holds" and this tool does not
-    # guess at a number it would then print as a cost.
-    meshes = 0
-    if engine == "mujoco":
-        from datagen.scenes.layout import resolve_mesh_asset_ids  # noqa: PLC0415
-
-        restricted = resolve_mesh_asset_ids(config)
-        meshes = len(restricted) if restricted else 0
     try:
-        result = estimate(scenes, engine=engine, jobs=max(1, int(args.jobs)),
-                          epochs=int(args.epochs), folds=max(1, int(args.train_folds)),
-                          refit=not args.no_refit, dense=(args.density == "dense"),
-                          meshes=meshes)
+        result = estimate_for_config(
+            config, scenes=int(args.scenes) if args.scenes else None, engine=args.engine or None,
+            jobs=max(1, int(args.jobs)), epochs=int(args.epochs),
+            folds=max(1, int(args.train_folds)), refit=not args.no_refit,
+            dense=(args.density == "dense"))
     except ValueError as exc:
         print(f"cost: {exc}", file=sys.stderr)
         return _EXIT_USAGE
-    print(format_estimate(result))
+    print(result)
     if not args.engine:
         others = [name for name in sorted(ENGINE_COSTS) if name != engine]
         print(f"\n  compare: --engine {' | --engine '.join(others)}")

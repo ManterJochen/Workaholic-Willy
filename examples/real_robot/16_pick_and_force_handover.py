@@ -12,7 +12,6 @@ Run it at the cell, under the cell's profile:
 import time
 
 from willy import Pose, Robot, load_tree
-from src.robot.core import SupportsForceTorque
 
 robot = Robot.from_tree(load_tree())
 
@@ -39,7 +38,7 @@ with robot.connected():
 
     print(robot.move(handover))
 
-    if not isinstance(robot.arm, SupportsForceTorque):
+    if not hasattr(robot.arm, "get_tcp_wrench"):
         raise SystemExit(
             f"{type(robot.arm).__name__} reports no TCP wrench: this driver has no hand-over signal, "
             "so the part stays held. Release it another way (a button, a timeout) instead."

@@ -80,6 +80,18 @@ class NoVerbHidesAParameterTests(unittest.TestCase):
         self._check("DatasetBuild.label", DatasetBuild, "label", label_dataset)
         self._check("DatasetBuild.clouds", DatasetBuild, "clouds", build_cloud_corpus)
 
+    def test_the_cost_verb(self) -> None:
+        from datagen.api import DatasetBuild
+        from datagen.cost import estimate_for_config
+
+        self._check("DatasetBuild.cost", DatasetBuild, "cost", estimate_for_config)
+
+    def test_the_public_corpus_verbs(self) -> None:
+        from src.robot.grasping.deep.foreign.grasp_anything import import_scenes
+        from src.robot.grasping.deep.foreign.service import PublicCorpus
+
+        self._check("PublicCorpus.fetch", PublicCorpus, "fetch", import_scenes)
+
     def test_the_evaluation_verbs(self) -> None:
         from datagen.eval.ladder import evaluate_dataset, run_gate
         from datagen.eval.service import GraspEvaluation

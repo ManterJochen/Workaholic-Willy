@@ -9,8 +9,7 @@ tested on nothing.
 import tempfile
 from pathlib import Path
 
-from willy import DatasetBuild
-from datagen.heldout import format_report, held_out_assets
+from willy import DatasetBuild, held_out_assets
 
 with tempfile.TemporaryDirectory() as work:
     corpus = Path(work) / "clouds"
@@ -20,10 +19,10 @@ with tempfile.TemporaryDirectory() as work:
     print(dataset.run(corpus))
 
     report = held_out_assets(corpus)
-    print(format_report(report))
+    print(report)
 
-    # The warning this module exists to raise: a held-out set of zero is not evidence of anything,
-    # and a report that looked healthy otherwise would hide exactly that.
+    # The warning this exists to raise: a held-out set of zero is not evidence of anything, and a
+    # report that looked healthy otherwise would hide exactly that.
     if report.total_unseen == 0:
         print("\nno unseen assets on this machine: fetch gso or ycb meshes before claiming a "
-              "held-out number (python -m datagen.assets.fetch --list)")
+              "held-out number (see datagen/01_fetch_public_parts.py)")

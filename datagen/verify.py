@@ -15,7 +15,9 @@ The checks are ordered by how quietly they fail:
    nearest notices the swap.
 4. The colour image is an image. Checks 1 to 3 are all about geometry and labels, and every one of
    them passes on a scene whose RGB is entirely black: blank frames alongside correct depth, correct
-   masks and correct boxes are written as ``ok`` unless the picture itself is checked.
+   masks and correct boxes are written as ``ok`` unless the picture itself is checked. It applies
+   only where a picture was promised: a depth-only run, and any engine but ``isaac``, render no
+   colour at all, and the provenance stamp is what says which (``_dataset_has_colour``).
 
 Check 3 asks for the nearest box, not for containment, and that is a correction rather than a
 weakening. A static occluder and the frame edge both move a centroid out of its own box without any
@@ -36,6 +38,7 @@ from src.utility.log_cfg import create_logger
 
 from datagen.constants import DATAGEN_LOG_DIR, VERIFY_LOG_FILE
 from datagen.render.camera import intrinsics_matrix, look_at_camera_to_base, project_to_pixels
+from datagen.render.engine import ENGINES, ENGINES_WITH_COLOUR
 from datagen.render.labels import pixel_id
 from datagen.render.quality import describe_rgb
 
@@ -88,6 +91,9 @@ class VerifyReport:
         if self.ok:
             return f"OK: {head}"
         return f"FAILED: {head}\n  " + "\n  ".join(self.problems[:40])
+
+    def __str__(self) -> str:
+        return self.summary()
 
 
 def _read_png(path: Path) -> np.ndarray | None:
@@ -257,15 +263,26 @@ def verify_scene(scene_dir: Path, *, expect_rgb: bool = True) -> VerifyReport:
 def _dataset_has_colour(root: Path) -> bool:
     """Did this dataset render colour at all? From its provenance stamp, not from the files.
 
+    Two ways to have none, and the stamp states both. ``render.depth_only`` is the operator asking
+    Isaac to skip its beauty pass. ``render.engine`` is the structural one: only ``isaac`` writes a
+    colour image at all, so a dataset from ``mujoco`` or ``none`` has none to check, and asking for
+    one refuses every dataset either engine has ever produced. ``ENGINES_WITH_COLOUR`` is where that
+    is declared, and an engine not in it is one that returns ``rgb=None`` from every view.
+
     A missing or unreadable stamp returns ``True``, which keeps the check on. Fail-closed in the
     direction that matters: an unstamped dataset gets the stricter treatment, never the weaker one.
+    An unknown engine name is treated as one that writes colour, for the same reason.
     """
     stamp_path = root / "provenance.json"
     if not stamp_path.is_file():
         return True
     try:
         stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
-        return not bool(stamp.get("config", {}).get("render", {}).get("depth_only", False))
+        render = stamp.get("config", {}).get("render", {})
+        if bool(render.get("depth_only", False)):
+            return False
+        engine = str(render.get("engine", ""))
+        return engine not in ENGINES or engine in ENGINES_WITH_COLOUR
     except (OSError, ValueError):
         logger.warning("could not read %s; keeping the colour-image check on", stamp_path)
         return True
@@ -281,9 +298,11 @@ def verify_dataset(root: Path) -> VerifyReport:
     problems: list[str] = []
     expect_rgb = _dataset_has_colour(Path(root))
     if not expect_rgb:
-        # Said, not silently skipped. A depth-only dataset legitimately has no picture; a dataset
-        # that lost its pictures looks identical from here, and the difference is only in the stamp.
-        logger.info("%s was rendered depth-only; the colour-image check does not apply", root)
+        # Said, not silently skipped. A dataset with no colour pass legitimately has no picture; a
+        # dataset that lost its pictures looks identical from here, and the difference is only in
+        # the stamp.
+        logger.info("%s wrote no colour pass (depth_only, or an engine that renders none); "
+                    "the colour-image check does not apply", root)
     for scene_dir in sorted(scenes_dir.iterdir()):
         if not (scene_dir / "scene.json").exists():
             continue

@@ -37,6 +37,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.tree import LoadedTree
     from src.robot.execution.planner_start import PlannerStartReport
     from src.robot.execution.robot import Robot
+    from src.robot.execution.autonomous_grasp.config import GraspMode
     from src.robot.grasping.motion.grasp_motion import GraspMotion
 
 __all__ = ["Cell", "CellNotBuilt"]
@@ -99,6 +100,15 @@ class Cell:
     #: How the pick moves (standoff, squeeze, retreat), built by the pick service into the one policy it
     #: drives, on the arm and hand it resolves and with every guard. ``UNSET`` keeps the service's own.
     motion: "Maybe[GraspMotion]" = UNSET
+    #: Which `GraspMode` the service is BUILT in: `easy`, `auto`, `dense_clutter`, `closed_loop` or
+    #: `dense_autonomous`. ``UNSET`` keeps the service's own default, which is `auto`.
+    #:
+    #: Build-time, not per pick, and that is the whole reason it is here. `pick(mode=...)` changes
+    #: the behaviour profile of one attempt and never the sampler the service was built with, so a
+    #: service built in `auto` refuses `dense_clutter` with `MODE_NOT_AVAILABLE` rather than
+    #: quietly sampling the other way. Without this field the only door to the two dense modes --
+    #: the ones a bin needs -- was to bypass `Cell` and call `build_real_cell` by hand.
+    mode: "Maybe[GraspMode | str]" = UNSET
     _service: Any = field(default=None, repr=False)
 
     # --- factories ---------------------------------------------------------------------------
@@ -106,6 +116,7 @@ class Cell:
     @classmethod
     def from_tree(
         cls, tree: "LoadedTree", *, prompt: "Maybe[str]" = UNSET, motion: "Maybe[GraspMotion]" = UNSET,
+        mode: "Maybe[GraspMode | str]" = UNSET,
     ) -> "Cell":
         """The cell a loaded tree describes: both halves, and the directory, from one load.
 
@@ -127,13 +138,13 @@ class Cell:
         if not tree.ok:
             raise ConfigError(f"the tree did not load, so it describes no cell:\n{tree.error}")
         return cls.from_robot_config(tree.robot, prompt=prompt, app_config=tree.app_config, data_dir=tree.root,
-                                     motion=motion)
+                                     motion=motion, mode=mode)
 
     @classmethod
     def from_robot_config(
         cls, robot_config: "RobotConfig", *, prompt: "Maybe[str]" = UNSET,
         app_config: "Maybe[AppConfig]" = UNSET, data_dir: "str | Path | None" = None,
-        motion: "Maybe[GraspMotion]" = UNSET,
+        motion: "Maybe[GraspMotion]" = UNSET, mode: "Maybe[GraspMode | str]" = UNSET,
     ) -> "Cell":
         """The cell the configuration describes, as configured.
 
@@ -143,12 +154,13 @@ class Cell:
         ``app_config`` is the tree ``robot_config`` came from, and a caller who resolved one should
         pass it: see the field for what happened while it could not be said.
         """
-        return cls(robot_config=robot_config, prompt=prompt, app_config=app_config, data_dir=data_dir, motion=motion)
+        return cls(robot_config=robot_config, prompt=prompt, app_config=app_config, data_dir=data_dir,
+                   motion=motion, mode=mode)
 
     @classmethod
     def rehearsal(
         cls, robot_config: "RobotConfig", *, data_dir: "str | Path | None" = None,
-        motion: "Maybe[GraspMotion]" = UNSET,
+        motion: "Maybe[GraspMotion]" = UNSET, mode: "Maybe[GraspMode | str]" = UNSET,
     ) -> "Cell":
         """The same path with a dummy arm and a synthetic scene.
 
@@ -164,6 +176,7 @@ class Cell:
             is_rehearsal=True,
             data_dir=data_dir,
             motion=motion,
+            mode=mode,
         )
 
     # --- the four steps ----------------------------------------------------------------------
@@ -212,6 +225,8 @@ class Cell:
             # knows there are two ways to build the service behind it.
             # The motion is forwarded only when chosen, as the prompt is: unset keeps the service's own.
             motion: dict[str, Any] = {"motion": self.motion} if chosen(self.motion) else {}
+            if chosen(self.mode):
+                motion["mode"] = self.mode
             if self.is_rehearsal:
                 self._service = build_rehearsal_cell(self.robot_config, data_dir=self.data_dir, **motion)
             else:

@@ -24,9 +24,13 @@ The three traps this module exists to keep an operator out of:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-__all__ = ["ENGINE_COSTS", "EngineCost", "Estimate", "StageCost", "estimate"]
+if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from datagen.config import DatagenConfig
+
+__all__ = ["ENGINE_COSTS", "EngineCost", "Estimate", "StageCost", "estimate",
+           "estimate_for_config", "format_estimate"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +191,9 @@ class Estimate:
     def gigabytes(self) -> float:
         return sum(stage.gigabytes for stage in self.stages)
 
+    def __str__(self) -> str:
+        return format_estimate(self)
+
 
 def _render_seconds(cost: EngineCost, scenes: int, jobs: int) -> tuple[float, list[str]]:
     """Render seconds for `scenes` at `jobs` processes, and every caveat that entails."""
@@ -329,3 +336,49 @@ def format_estimate(result: Estimate) -> str:
             lines.append(f"  ! {warning}")
     lines.append(f"\n  evidence: {ENGINE_COSTS[result.engine].evidence}")
     return "\n".join(lines)
+
+
+def estimate_for_config(
+    config: "DatagenConfig",
+    *,
+    scenes: int | None = None,
+    engine: str | None = None,
+    jobs: int = 1,
+    label: bool = True,
+    corpus: bool = True,
+    epochs: int = 0,
+    folds: int = 1,
+    refit: bool = True,
+    dense: bool = False,
+) -> Estimate:
+    """What the dataset THIS config describes will cost. `estimate` for a caller holding a config.
+
+    The config's own scene count and engine are the answer, and `scenes=` / `engine=` are the
+    what-if. Reading a scene count the config did not ask for prints a confident total for a
+    different corpus with nothing anywhere saying so, which is the mistake this whole module exists
+    to prevent.
+
+    The count is read as USABLE scenes, as `datagen cost --scenes` has always read it: the request
+    that reaches them is computed backwards from the engine's yield and both numbers are reported.
+    On an engine that refuses a family, `scenes=500` therefore prices a run that asks for more than
+    500, and `Estimate.requested_scenes` is the number to put in the config.
+
+    `meshes` is not a parameter here, it is counted: on `mujoco` every distinct scanned mesh is
+    convex-decomposed once, and the count comes from the config's own id restriction. Zero when
+    nothing restricts the draw, because then the honest answer is "as many as the bank holds" and
+    this does not guess at a number it would go on to price. Counting from the restriction is a
+    JSON read; loading the bank is two minutes of mesh parsing, which would make the cheap answer
+    the slow one.
+    """
+    chosen_engine = engine if engine is not None else str(config.render.engine)
+    meshes = 0
+    if chosen_engine == "mujoco":
+        from datagen.scenes.layout import resolve_mesh_asset_ids  # noqa: PLC0415 (a heavy leaf)
+
+        restricted = resolve_mesh_asset_ids(config)
+        meshes = len(restricted) if restricted else 0
+    return estimate(
+        int(scenes) if scenes is not None else int(config.scenes),
+        engine=chosen_engine, jobs=jobs, label=label, corpus=corpus, epochs=epochs, folds=folds,
+        refit=refit, dense=dense, meshes=meshes,
+    )

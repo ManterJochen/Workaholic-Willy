@@ -42,10 +42,61 @@ from src.robot.grasping.deep.train.report import TrainingRunReport
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.grasping.deep.train.trainer import SetTrainingPlan
 
-__all__ = ["GeneratorTraining", "TrainingContext"]
+__all__ = ["CorpusProbe", "GeneratorTraining", "TrainingContext"]
 
 #: The line separator for the rendered text, built without a backslash escape.
 NEWLINE = chr(10)
+
+
+@dataclass(frozen=True, slots=True)
+class CorpusProbe:
+    """What a number measured on this corpus can possibly mean, before anything is trained.
+
+    Three instruments, none of which touches a trained weight, so all three answer in minutes on a
+    CPU and answer about the DATA rather than about a model:
+
+        ceiling   what a perfect head scores here. Below 1.0, because a seed that admits several
+                  grasps caps what any single answer can score, and K caps how many it can answer.
+        floor     what four heads that learned nothing score. A hit rate cannot be read without
+                  knowing what zero effort achieves, and `top_down` in particular is the grasp a
+                  cell with no model at all would try.
+        headroom  how many degrees of approach signal exist above a single constant direction, at
+                  four granularities. It separates "the model cannot reach the signal" from "the
+                  signal is not there at this granularity".
+
+    A trained number between the floor and the ceiling is the only kind that means anything, and
+    the gap between them is how much there was to learn. Where floor and ceiling nearly meet, the
+    corpus has nothing to teach and a better model will not change that.
+    """
+
+    units: int
+    ceiling: Mapping[str, float]
+    floor: Mapping[str, Mapping[str, float]]
+    headroom: Mapping[str, Mapping[str, float]]
+
+    def render(self) -> str:
+        keys = ("top1_hit", "coverage", "approach_error_deg", "offset_error_mm")
+        lines = [f"  probed over {self.units} training unit(s), no weights involved",
+                 "  " + f"{'arm':14}" + "".join(f"{key:>20}" for key in keys)]
+        rows: list[tuple[str, Mapping[str, float]]] = [*sorted(self.floor.items()),
+                                                       ("ORACLE ceiling", self.ceiling)]
+        for name, values in rows:
+            lines.append("  " + f"{name:14}"
+                         + "".join(f"{float(values.get(key, 0.0)):20.3f}" for key in keys))
+        for label, block in sorted(self.headroom.items()):
+            lines.append(f"  approach signal, {label}: "
+                         + ", ".join(f"{key} {float(block[key]):.2f} deg"
+                                     for key in ("straight_down", "global", "per_object",
+                                                 "per_seed") if key in block))
+        return NEWLINE.join(lines)
+
+    def __str__(self) -> str:
+        return self.render()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"units": self.units, "ceiling": dict(self.ceiling),
+                "floor": {k: dict(v) for k, v in self.floor.items()},
+                "headroom": {k: dict(v) for k, v in self.headroom.items()}}
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +250,36 @@ class GeneratorTraining:
             lines.append("  ** SMOKE TIER: proves the chain closes on your corpus and your box. "
                          "It says NOTHING about grasp quality and is not a model to deploy.")
         return NEWLINE.join(lines)
+
+    # ------------------------------------------------------------------ before it costs anything
+    def probe(self, *, units: int = 256, seed: int = 0) -> CorpusProbe:
+        """The floor, the ceiling and the approach headroom of this corpus. Trains nothing.
+
+        The question to ask before a six-hour run and before quoting any number out of one: a hit
+        rate is unreadable without both ends of its scale, and both ends are properties of the
+        corpus and the plan rather than of a model. `train()` runs the same probes per fold; this
+        runs them on the whole corpus with no weights, on a CPU, in minutes.
+
+        `units` is how many training units each instrument draws. Raising it costs time linearly
+        and narrows nothing else; the same `seed` draws the same units, so two corpora compared at
+        one seed are compared on the same draw.
+
+        Raises `ValueError` where the corpus yields no supervised seed at all, which is the honest
+        answer to "what can be learned here" for a corpus that carries no reachable label.
+        """
+        from src.robot.grasping.deep.eval.probes import (  # noqa: PLC0415 (torch, only for this)
+            approach_headroom, baseline_floor, oracle_ceiling,
+        )
+        from src.robot.grasping.deep.train.trainer import corpus_index  # noqa: PLC0415
+
+        index = corpus_index(self.context.corpus, self.context.hands)
+        return CorpusProbe(
+            units=units,
+            ceiling=oracle_ceiling(index, self.plan, units=units, seed=seed,
+                                   device=self.context.device or "cpu"),
+            floor=baseline_floor(index, self.plan, units=units, seed=seed),
+            headroom=approach_headroom(index, self.plan, units=units, seed=seed),
+        )
 
     # ------------------------------------------------------------------ the one verb
     def train(self) -> TrainingRunReport:

@@ -18,13 +18,13 @@ supports.
 
 from __future__ import annotations
 
-from typing import Mapping, Optional, Protocol, Sequence
+from typing import Any, Mapping, Optional, Protocol, Sequence
 
 import numpy as np
 
 from src.calibration.stereo.manager import StereoCam3D
-from src.camera.orchestration.frame_provider import FrameProvider
 from src.camera.setup.image_taking.frames import AnyFrame, RGBDFrame, StereoFrame
+from src.config.schema.camera import RGBDDeviceRigConfig
 from src.models.handdetection.constants import HAND_FINDER_LOG_FILE, MODELS_LOG_DIR
 from src.models.handdetection.landmarks import draw_hand_landmarks
 from src.models.handdetection.types import (
@@ -36,7 +36,7 @@ from src.models.handdetection.types import (
 )
 from src.utility.log_cfg import create_logger
 
-__all__ = ["HandFinder", "HandObserver"]
+__all__ = ["HandFinder", "HandObserver", "OneCamera", "RigFrames"]
 
 
 class HandObserver(Protocol):
@@ -50,6 +50,76 @@ class HandObserver(Protocol):
     def observe(self, frame_bgr: np.ndarray) -> list[HandObservation]: ...
 
 
+class RigFrames(Protocol):
+    """Where `HandFinder` reads frames from: three methods, and `FrameProvider` is one of them.
+
+    Structural rather than the concrete catalogue, because of who owns the devices. A cell-wide
+    search over several rigs is what `FrameProvider` is for. A program that has already opened one
+    `Camera` -- a pick loop, or anything holding the camera that builds the arm's live world --
+    cannot build a second catalogue to ask where a hand is: `FrameProvider.open()` claims every
+    configured streamer, so the question would take the cell's other cameras away from it, and one
+    device opened twice is what the camera owner exists to prevent. `OneCamera` below serves this
+    surface over a camera that is already open, and claims nothing.
+    """
+
+    @property
+    def rig_ids(self) -> list[str]: ...
+
+    def is_rgbd(self, rig_id: str) -> bool: ...
+
+    def grab(self, rig_id: str) -> AnyFrame: ...
+
+    def get_stereo_rig_index(self, rig_id: str) -> int: ...
+
+
+class OneCamera:
+    """One already-open `Camera`, shaped as the `RigFrames` surface above.
+
+    It owns nothing: whoever opened the camera closes it, and a grab here goes through that owner's
+    lock like every other grab. `rig_ids` is that one rig, so a search over it can reach no other.
+    """
+
+    __slots__ = ("camera",)
+
+    def __init__(self, camera: Any) -> None:
+        self.camera = camera
+
+    @property
+    def rig_ids(self) -> list[str]:
+        return [str(self.camera.rig_id)]
+
+    def is_rgbd(self, rig_id: str) -> bool:
+        """The rig's own declaration, the same test `FrameProvider.is_rgbd` makes."""
+        self._require(rig_id)
+        return isinstance(self.camera.rig, RGBDDeviceRigConfig)
+
+    def grab(self, rig_id: str) -> AnyFrame:
+        self._require(rig_id)
+        frame: AnyFrame = self.camera.grab()
+        return frame
+
+    def get_stereo_rig_index(self, rig_id: str) -> int:
+        """Refused: the index is a position in a stereo calibration a single camera does not hold.
+
+        Unreachable on the stereo path in practice, because that path refuses first when no
+        `StereoCam3D` was supplied and this door supplies none. It refuses by name rather than
+        returning 0, which would triangulate against whatever calibration sat first in the file.
+        """
+        self._require(rig_id)
+        raise ValueError(
+            f"rig {rig_id!r} is stereo, and a search over one open camera carries no stereo "
+            "calibration index. Build the search with a FrameProvider and a StereoCam3D.")
+
+    def _require(self, rig_id: str) -> None:
+        if rig_id != str(self.camera.rig_id):
+            raise KeyError(
+                f"this hand search holds camera {self.camera.rig_id!r} and was asked for "
+                f"{rig_id!r}. One camera reaches one rig; search the cell with a FrameProvider.")
+
+    def __repr__(self) -> str:  # pragma: no cover (debugging aid)
+        return f"OneCamera({self.camera.rig_id!r})"
+
+
 class HandFinder:
     """Search one or more camera rigs for exactly one hand and locate it in the base frame.
 
@@ -58,8 +128,8 @@ class HandFinder:
     observer:
         The 2-D model. See `HandObserver`.
     provider:
-        An already-opened `FrameProvider`. Neither opened nor released here: whoever opened the
-        cameras closes them.
+        Where the frames come from: an already-opened `FrameProvider`, or `OneCamera` over a single
+        open `Camera`. Neither opened nor released here: whoever opened the cameras closes them.
     transforms:
         `{rig_id: 4x4 CAMERA->BASE}`. A rig missing from this map cannot be expressed in base
         coordinates and is skipped.
@@ -80,7 +150,7 @@ class HandFinder:
         self,
         observer: HandObserver,
         *,
-        provider: FrameProvider,
+        provider: RigFrames,
         transforms: Mapping[str, np.ndarray],
         stereo: Optional[StereoCam3D] = None,
         camera_matrices: Optional[Mapping[str, np.ndarray]] = None,

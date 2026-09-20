@@ -24,12 +24,19 @@ cell's cameras, models and planner, and
 | Noun | Built by | Verb | Returns |
 | --- | --- | --- | --- |
 | `AutonomousGraspService` | `Cell.build()`, `build_real_cell(robot_cfg, prompt=)`, `from_robot_config`, `from_components` | `pick(mode=None)` | `AutonomousGraspReport` |
-| `GraspMode` | `resolve_grasp_mode(value)` | | `easy`, `auto`, `dense_clutter`, `closed_loop`, `dense_autonomous` |
+| `GraspMode` | `resolve_grasp_mode(value)`, or `Cell(..., mode=)` at the build | | `easy`, `auto`, `dense_clutter`, `closed_loop`, `dense_autonomous` |
 | `PickPrompt` | `PickPrompt.from_text(text)` | `service.set_prompt(text)` | the prompt it replaced |
 
 `resolve_grasp_mode` also takes the aliases `single`, `single_object`, `dense`, `closedloop` and
 `autonomous`, and `None` is `auto`. `mode=` on `pick()` changes the behaviour profile of one attempt,
-never the sampler the service was built with.
+never the sampler the service was built with -- so the mode a cell RUNS IN is chosen at the build,
+`Cell.from_tree(tree, mode="dense_clutter")`, and asking a service built in one sampler for another
+comes back `MODE_NOT_AVAILABLE`.
+[`simulation/06`](../../../../examples/simulation/06_grasp_modes_and_what_each_needs.py) prints
+every mode, what each one locks and which of them this cell can run; `willy` exports the service,
+the report, the outcome, `GraspMode` and `PickPrompt`, and
+[`real_robot/18`](../../../../examples/real_robot/18_clear_a_bin_with_recovery.py) drives the
+service directly to clear a bin.
 
 `set_prompt` changes what the next picks look for (the phrase every camera grounds, the labels the
 detector's words map onto, and the label filter) with no camera reopened and no model reloaded:

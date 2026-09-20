@@ -95,8 +95,11 @@ the simulation and offline examples name the tree they read in the file.
 | rank grasps for an object's point cloud | `python examples/offline/grasping/grasps_for_a_cloud.py` | nothing |
 | check that every guard of my cell refuses its own violation | `python scripts/checks/safety_guards.py` | my cell's profile |
 | drive my cell from Python | [`examples/real_robot/`](examples/README.md), in order | the cell |
+| see which grasp mode my cell can actually run, and what each one switches on | `python examples/simulation/06_grasp_modes_and_what_each_needs.py` | nothing |
 | run a pick rate in Isaac Sim | [`docs/isaac-ready.md`](docs/isaac-ready.md), then `examples/simulation/03_isaac_pick_rate.py` | Isaac Sim, an NVIDIA GPU |
 | generate grasp data and train a generator on my own parts | [`examples/offline/`](examples/README.md), [train_your_own_generator.md](docs/runbooks/train_your_own_generator.md) | nothing to plan; a GPU to train |
+| download the public meshes a dataset draws from | `python examples/offline/datagen/06_fetch_public_parts.py` | the network, for the download itself |
+| train a generator with no simulator and no parts of my own | `python examples/offline/training/04_train_on_a_public_corpus.py` | the network, and a GPU to train |
 | run the operator console | `python -m api --profile console_dummy`, [`api/`](api/README.md) | the [frontend](frontend/README.md) built, for the page |
 | roll up KPIs from a pick log | `python -m src.robot.grasping.replay --records <file>` | a record log: a campaign with `Recording.to_file("picks.jsonl")` writes one |
 | find the command line for any of these | [`docs/cli.md`](docs/cli.md) | |

@@ -45,6 +45,28 @@ mask ([`src/robot/perception/`](../robot/perception/README.md)).
 [`rig_calibration.py`](../calibration/rig_calibration.py). `Camera`, `CameraRefused`, `RGBDFrame` and
 `RigNotCalibrated` come from `willy`; the other names on this page import from `src.camera`.
 
+### Which rigs feed the planner world
+
+A cell with several cameras does not plan against all of them. A rig feeds the live planner world
+only if it is enabled, is RGB-D and declares its calibration, and `CameraWorldPlan` says which rigs
+do and, one line each, why the others do not. It reads config and opens nothing, which makes it the
+first call when a cell refuses to build:
+
+```python
+from willy import CameraWorldPlan, load_tree
+
+cameras = load_tree().app_config.camera.cameras
+plan = CameraWorldPlan.from_config(load_tree().robot, list(cameras.rigs),
+                                   primary_rig_id=cameras.primary_rig_id)
+print(plan)                 # the rigs the world takes, and why each other one is left out
+print(plan.refusal())       # why a cuRobo cell may not build on it, or None
+```
+
+Once a rig declares its calibration on a cuRobo cell, its world is mandatory: a build that produced
+none is refused (`CameraWorldRequired`) rather than planning blind.
+[`examples/real_robot/19`](../../examples/real_robot/19_a_cell_with_several_cameras.py) reads the
+plan and then opens one `Camera` per world rig.
+
 ### Many rigs, one catalogue
 
 `FrameProvider` knows every rig it is given and opens only what it is asked to: building one touches no

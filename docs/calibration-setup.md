@@ -180,6 +180,28 @@ wrong on the bench and the calibration converges cleanly onto the wrong answer: 
 healthy because it is internally consistent, and nothing downstream can tell. Verify the offset on
 the controller before the first pose, not after a bad result.
 
+### When the generated sweep sees nothing
+
+The generated poses are tool down, varying yaw and a small orientation spread about it, which is
+the right shape for a camera looking down on a board that lies flat. It is the wrong shape twice.
+A WRIST camera carried over a board on the table photographs the table beside it from anywhere but
+straight overhead, and a board bolted to the FLANGE shows a fixed camera an edge once the arm is
+off to one side. Yaw cannot fix either, because yaw about the vertical never tips anything toward
+anything. The sweep then collects too few samples and the failure looks like a solver problem.
+
+Aim the poses instead of tilting them. `Pose.aimed_at(x, y, z, target_mm=...)` points the tool's +Z
+at a point you name, so a ring of stations around a board all see it, and
+`SweepOptions(fixed_poses=[...])` runs exactly those poses in order through the same check, dry run
+and sweep. [`examples/real_robot/10`](../examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py)
+builds that ring for a wrist camera and
+[`examples/real_robot/08`](../examples/real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py)
+turns the flange board to face a fixed camera. For the fixed case you have to say roughly where the
+camera hangs, which is what the sweep is about to measure: a tape measure is accurate enough,
+because the aim only has to bring the board into frame.
+
+The aim is not a reachability claim. The arm's guards still judge every pose, and the run reports
+per pose whether the marker was actually decoded; a station that saw nothing is a station to move.
+
 Plan well above `min_samples`. The runner writes `eth_<rig_id>.json` (or `eih_<rig_id>.json`) plus
 the sample dataset under `calibration/real` unless `--out` says otherwise, and prints the rig block
 that declares it in the camera section.

@@ -380,5 +380,62 @@ class EpochRowKeepsTheRawColumnsTests(unittest.TestCase):
         self.assertNotEqual(row.held_top1_hit, row.held_top1_hit)     # NaN != NaN
 
 
+class TheProbeIsAskedOfTheCorpusNotOfAModelTests(unittest.TestCase):
+    """⚠ WITHOUT THIS VERB, both ends of every scale were reachable only from inside a training run.
+
+    `eval/probes.py` computes what a perfect head scores on a corpus and what four heads that learned
+    nothing score on it, and the README's "What to measure" section is built on both. Every caller was
+    inside `train/trainer.py`, so the only way to find out whether a corpus had anything to teach was
+    to spend the run finding out. All three instruments need no weights and no GPU.
+    """
+
+    def _probing(self) -> GeneratorTraining:
+        run = GeneratorTraining.from_recipe(corpus=_scene_dir(2), recipe="v1", tier="smoke")
+        return run
+
+    def test_it_asks_the_three_instruments_and_carries_all_three_back(self) -> None:
+        run = self._probing()
+        with mock.patch("src.robot.grasping.deep.train.trainer.corpus_index") as index,              mock.patch("src.robot.grasping.deep.eval.probes.oracle_ceiling") as ceiling,              mock.patch("src.robot.grasping.deep.eval.probes.baseline_floor") as floor,              mock.patch("src.robot.grasping.deep.eval.probes.approach_headroom") as headroom:
+            ceiling.return_value = {"top1_hit": 1.0, "coverage": 0.36}
+            floor.return_value = {"top_down": {"top1_hit": 0.18, "coverage": 0.04}}
+            headroom.return_value = {"unaugmented": {"global": 53.2, "per_seed": 34.4}}
+            probe = run.probe(units=17, seed=3)
+
+        index.assert_called_once_with(run.context.corpus, run.context.hands)
+        for call in (ceiling, floor, headroom):
+            self.assertEqual(17, call.call_args.kwargs["units"])
+            self.assertEqual(3, call.call_args.kwargs["seed"])
+            self.assertIs(run.plan, call.call_args.args[1],
+                          "the ceiling belongs to the plan's K and thresholds, not to the data alone")
+        self.assertEqual(17, probe.units)
+        self.assertEqual(1.0, probe.ceiling["top1_hit"])
+        self.assertEqual(0.18, probe.floor["top_down"]["top1_hit"])
+
+    def test_the_rendered_table_shows_both_ends_and_stays_ascii(self) -> None:
+        from src.robot.grasping.deep.train.api import CorpusProbe
+
+        probe = CorpusProbe(
+            units=8, ceiling={"top1_hit": 1.0, "coverage": 0.36},
+            floor={"top_down": {"top1_hit": 0.18}, "random": {"top1_hit": 0.04}},
+            headroom={"unaugmented": {"global": 53.2, "per_seed": 34.4}})
+        text = probe.render()
+        text.encode("ascii")
+        self.assertEqual(text, str(probe))
+        for expected in ("top_down", "random", "ORACLE ceiling", "no weights involved"):
+            self.assertIn(expected, text)
+
+    def test_as_dict_is_json_safe(self) -> None:
+        from src.robot.grasping.deep.train.api import CorpusProbe
+
+        json.dumps(CorpusProbe(units=1, ceiling={"a": 1.0}, floor={"b": {"a": 0.0}},
+                               headroom={"c": {"global": 1.0}}).as_dict())
+
+    def test_a_partial_block_renders_rather_than_raising(self) -> None:
+        """A report function that raises destroys the information it was called to convey."""
+        from src.robot.grasping.deep.train.api import CorpusProbe
+
+        CorpusProbe(units=1, ceiling={}, floor={"top_down": {}}, headroom={"x": {}}).render()
+
+
 if __name__ == "__main__":
     unittest.main()

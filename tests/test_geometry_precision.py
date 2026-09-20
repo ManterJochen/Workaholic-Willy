@@ -149,5 +149,80 @@ class GeometryPrecisionTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
+class AimingAPoseAtSomethingTests(unittest.TestCase):
+    """`Pose.aimed_at`: the orientation no yaw about the vertical can produce.
+
+    ⚠ WHAT IT IS FOR, MEASURED THE HARD WAY ON A CALIBRATION SWEEP. A wrist camera carried over a
+    board on the table sees nothing of it from anywhere but overhead, and a marker board bolted to
+    the flange shows a fixed camera its edge once the arm is off to one side. `tool_down` cannot
+    express either: it varies yaw only, and yaw about the vertical never tips the tool toward
+    anything. Before this, the two calibration examples said "build that pose directly with
+    `Pose(position_mm=..., quaternion_xyzw=...)`", which is a quaternion an operator has to derive.
+    """
+
+    def test_it_points_the_tools_z_at_the_target(self) -> None:
+        pose = Pose.aimed_at(300.0, 200.0, 400.0, target_mm=(500.0, 0.0, 50.0))
+        expected = np.array([200.0, -200.0, -350.0])
+        expected /= np.linalg.norm(expected)
+        np.testing.assert_allclose(pose.to_matrix()[:3, 2], expected, atol=1e-12)
+
+    def test_the_rotation_is_a_rotation(self) -> None:
+        for target in ((0.0, 0.0, 0.0), (900.0, -400.0, 700.0), (-100.0, 0.0, 250.0)):
+            with self.subTest(target=target):
+                rotation = Pose.aimed_at(400.0, 0.0, 500.0, target_mm=target).to_matrix()[:3, :3]
+                np.testing.assert_allclose(rotation @ rotation.T, np.eye(3), atol=1e-12)
+                self.assertAlmostEqual(1.0, float(np.linalg.det(rotation)), places=12)
+
+    def test_aimed_straight_down_it_IS_tool_down(self) -> None:
+        """The two constructors must agree where they overlap, or a cell has two spellings of one
+        pose and a reader cannot tell which one a file meant."""
+        aimed = Pose.aimed_at(400.0, 100.0, 500.0, target_mm=(400.0, 100.0, 0.0))
+        np.testing.assert_allclose(
+            Pose.tool_down(400.0, 100.0, 500.0).quaternion_xyzw, aimed.quaternion_xyzw, atol=1e-12)
+
+    def test_the_roll_turns_about_the_aim_which_downward_is_the_mirror_of_yaw(self) -> None:
+        """Documented rather than tidied away: aimed down, the tool's own +Z points at the floor,
+        so turning about it goes the other way round the vertical from `tool_down`'s yaw."""
+        for angle in (15.0, -45.0, 90.0, 180.0):
+            with self.subTest(angle=angle):
+                aimed = Pose.aimed_at(0.0, 0.0, 300.0, target_mm=(0.0, 0.0, 0.0), roll_deg=-angle)
+                down = Pose.tool_down(0.0, 0.0, 300.0, yaw_deg=angle)
+                np.testing.assert_allclose(
+                    down.to_matrix()[:3, :3], aimed.to_matrix()[:3, :3], atol=1e-12)
+
+    def test_the_up_hint_fixes_the_roll_and_never_the_aim(self) -> None:
+        aim = dict(target_mm=(600.0, 0.0, 0.0))
+        default = Pose.aimed_at(300.0, 0.0, 400.0, **aim)
+        tilted = Pose.aimed_at(300.0, 0.0, 400.0, up_hint=(0.0, 1.0, 0.2), **aim)
+        np.testing.assert_allclose(
+            default.to_matrix()[:3, 2], tilted.to_matrix()[:3, 2], atol=1e-12)
+        self.assertGreater(default.angle_to(tilted), 0.1, "the hint changed nothing at all")
+
+    def test_a_target_under_the_tool_is_refused_rather_than_answered(self) -> None:
+        """Zero length names no direction; normalising it would return a silent nonsense pose."""
+        with self.assertRaises(ValueError) as caught:
+            Pose.aimed_at(400.0, 0.0, 500.0, target_mm=(400.0, 0.0, 500.0))
+        self.assertIn("no direction", str(caught.exception))
+
+    def test_it_carries_its_frame_and_label_like_every_other_constructor(self) -> None:
+        pose = Pose.aimed_at(1.0, 2.0, 3.0, target_mm=(0.0, 0.0, 0.0),
+                             frame=Frame.WORLD, label="look_0")
+        self.assertIs(Frame.WORLD, pose.frame)
+        self.assertEqual("look_0", pose.label)
+        np.testing.assert_allclose([1.0, 2.0, 3.0], pose.position_mm)
+
+    def test_a_ring_of_poses_around_a_board_all_point_at_it(self) -> None:
+        """The sweep the calibration examples build: every viewpoint sees the same board."""
+        board = np.array([500.0, 0.0, 0.0])
+        for index in range(8):
+            angle = index * np.pi / 4.0
+            eye = board + np.array([120.0 * np.cos(angle), 120.0 * np.sin(angle), 350.0])
+            with self.subTest(index=index):
+                pose = Pose.aimed_at(*eye, target_mm=board)
+                to_board = board - eye
+                to_board /= np.linalg.norm(to_board)
+                np.testing.assert_allclose(pose.to_matrix()[:3, 2], to_board, atol=1e-12)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -41,13 +41,20 @@ _HOME: dict[str, str] = {
     "create_arm": "src.robot.drivers",
     # The whole cell and its pick service.
     "Cell": "src.robot.execution.cell",
+    "AutonomousGraspOutcome": "src.robot.execution.autonomous_grasp.report",
+    "AutonomousGraspReport": "src.robot.execution.autonomous_grasp.report",
+    "AutonomousGraspService": "src.robot.execution.autonomous_grasp.service",
+    "GraspMode": "src.robot.execution.autonomous_grasp.config",
     "GraspMotion": "src.robot.grasping.motion.grasp_motion",
+    "PickPrompt": "src.robot.execution.autonomous_grasp.prompt",
     "PassRule": "src.robot.execution.pick_run",
     "PickRun": "src.robot.execution.pick_run",
     "PickRunReport": "src.robot.execution.pick_run",
     "PlannerStart": "src.robot.execution.planner_start",
+    "RecordLog": "src.robot.grasping.replay.runs",
     "Recording": "src.robot.execution.pick_run",
     # What a build or a connect refuses with.
+    "CameraWorldPlan": "src.robot.execution.camera_world_wiring",
     "CameraWorldRequired": "src.robot.execution.camera_world_wiring",
     "CellBusy": "src.robot.execution.cell_lock",
     "CellNotBuilt": "src.robot.execution.cell",
@@ -64,6 +71,11 @@ _HOME: dict[str, str] = {
     "RGBDFrame": "src.camera",
     "RigNotCalibrated": "src.camera",
     "SweepOptions": "src.robot.execution.hand_eye",
+    # Hands seen by a camera: MediaPipe, optional and standalone.
+    "HandGesture": "src.models.handdetection",
+    "build_palm_detector": "src.models.handdetection",
+    "build_gesture_recognizer": "src.models.handdetection",
+    "build_hand_finder_on_camera": "src.models.handdetection",
     # Grasps, and the stacks a desk can evaluate without a robot.
     "MotionStack": "src.robot.safety.planning.stack",
     "PerceptionSpec": "src.models.perception_spec",
@@ -87,10 +99,14 @@ _HOME: dict[str, str] = {
     "GeneratorTraining": "src.robot.grasping.deep.train.api",
     "MeshPreparation": "datagen.assets.service",
     "PhysicsSampling": "datagen.grasps.service",
+    "PublicCorpus": "src.robot.grasping.deep.foreign.service",
     "PlanOverrides": "src.robot.grasping.deep.train.plan",
+    "available_sources": "datagen.assets.service",
     "engine_is_available": "datagen.render.engine",
+    "held_out_assets": "datagen.heldout",
     "import_from_directory": "datagen.assets.library",
     "layout_scene": "datagen.scenes",
+    "verify_dataset": "datagen.verify",
 }
 
 __all__ = sorted(_HOME)
@@ -118,6 +134,8 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.config.tree import ConfigTree, LoadedTree, load_tree
     from src.camera import Camera, CameraRefused, RGBDFrame, RigNotCalibrated
     from src.geometry import Frame, Pose
+    from src.models.handdetection import (
+        HandGesture, build_gesture_recognizer, build_hand_finder_on_camera, build_palm_detector)
     from src.models.perception_spec import PerceptionSpec
     from src.models.routing import RuleBasedRouter
     from src.models.speech.confirm import Confirmation, TerminalConfirmer
@@ -127,7 +145,12 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.robot.core import JointPositions
     from src.robot.core.gripper import HoldEvidence
     from src.robot.drivers import create_arm
-    from src.robot.execution.camera_world_wiring import CameraWorldRequired
+    from src.robot.execution.autonomous_grasp.config import GraspMode
+    from src.robot.execution.autonomous_grasp.prompt import PickPrompt
+    from src.robot.execution.autonomous_grasp.report import (
+        AutonomousGraspOutcome, AutonomousGraspReport)
+    from src.robot.execution.autonomous_grasp.service import AutonomousGraspService
+    from src.robot.execution.camera_world_wiring import CameraWorldPlan, CameraWorldRequired
     from src.robot.execution.cell import Cell, CellNotBuilt
     from src.robot.execution.cell_lock import CellBusy
     from src.robot.execution.hand_eye import HandEyeCalibration, SweepOptions
@@ -139,9 +162,11 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.robot.execution.robot import LockKeyRequired, Robot
     from src.robot.execution.wrist_bodies import WristBodyRequired
     from src.robot.grasping.calculator_factory import build_calculator, preflight_calculator
+    from src.robot.grasping.deep.foreign.service import PublicCorpus
     from src.robot.grasping.deep.train.api import GeneratorTraining
     from src.robot.grasping.deep.train.plan import PlanOverrides
     from src.robot.grasping.motion.grasp_motion import GraspMotion
+    from src.robot.grasping.replay.runs import RecordLog
     from src.robot.grasping.scene import Scene
     from src.robot.grasping.suction import synthesize_suction_grasps
     from src.robot.perception.locator import Located, Locator, LocatorRefused
@@ -151,7 +176,9 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.willy_sim.run_m1_pick import run_gate
     from datagen.api import DatasetBuild
     from datagen.assets.library import import_from_directory
-    from datagen.assets.service import MeshPreparation
+    from datagen.assets.service import MeshPreparation, available_sources
     from datagen.grasps.service import PhysicsSampling
+    from datagen.heldout import held_out_assets
     from datagen.render.engine import engine_is_available
     from datagen.scenes import layout_scene
+    from datagen.verify import verify_dataset

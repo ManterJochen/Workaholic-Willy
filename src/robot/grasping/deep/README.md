@@ -37,8 +37,11 @@ The corpus comes from [datagen/](../../../../datagen/README.md), and the whole r
 to a model a cell selects is the runbook
 [train_your_own_generator.md](../../../../docs/runbooks/train_your_own_generator.md).
 [02_train_on_your_own_meshes.py](../../../../examples/offline/training/02_train_on_your_own_meshes.py)
-runs it at the smoke tier. The same run from a shell, which exits 0 when done, 2 on bad arguments and
-3 on a problem:
+runs it at the smoke tier. With no simulator and no cell, `PublicCorpus` fetches a published corpus
+into the same scene files and the run above is unchanged:
+[04_train_on_a_public_corpus.py](../../../../examples/offline/training/04_train_on_a_public_corpus.py).
+
+The same run from a shell, which exits 0 when done, 2 on bad arguments and 3 on a problem:
 
 ```bash
 python -m src.robot.grasping.deep train-set \
@@ -55,11 +58,106 @@ to `GeneratorTraining.from_plan` is as supported as a recipe.
 
 | Noun | Built by | Verb | Returns |
 | --- | --- | --- | --- |
-| `GeneratorTraining` | `from_recipe(corpus=..., recipe=..., tier=...)`, `from_plan(corpus=..., plan=...)` | `train()` | `TrainingRunReport` |
+| `GeneratorTraining` | `from_recipe(corpus=..., recipe=..., tier=...)`, `from_plan(corpus=..., plan=...)` | `probe()`, `train()` | `CorpusProbe`, `TrainingRunReport` |
+| `PublicCorpus` | `from_source(out_dir=...)`, in [`foreign/service.py`](foreign/service.py) | `describe()`, `fetch()` | `ImportReport`, and scene files to train on |
 | the runtime generator | `build_calculator(tree.robot, data_dir=tree.root, ...)` with `calculator: deep` | `compute(...)` | ranked `GraspPoint`s, as the analytic one |
 
-`describe()` says what a run will do, `attach_progress_listener(fn)` calls `fn` once per finished
-epoch, and `write_report(report)` writes `report.json` beside the weights.
+`describe()` says what a run will do, `probe()` measures the floor and the ceiling of the corpus with
+no weights at all (see [What to measure](#what-to-measure)), `attach_progress_listener(fn)` calls `fn`
+once per finished epoch, and `write_report(report)` writes `report.json` beside the weights.
+
+## How it learns
+
+One scene file in, one optimiser step out. Every box names the module that holds it.
+
+```text
+  A CORPUS OF SCENES                                      two producers, one file format
+  ------------------------------------------------------------------------------------------
+    datagen/     scenes rendered and labelled here     -->  <scene>.npz
+    foreign/     a corpus somebody else published      -->  <scene>.npz
+                                  |
+    corpus/discovery.scene_files  |  walked recursively: a scene id counts within one shard,
+                                  |  so a flat listing silently overwrites the collisions
+    corpus/index.training_units   |  one TRAINING UNIT per object, not per scene
+                                  v
+  ONE SAMPLE                    corpus/sample.build_sample(scene, rng, SampleSpec)
+  ------------------------------------------------------------------------------------------
+    points_m   (N,3)  the cloud in METRES, in its own frame: xy mean removed, support height
+                      subtracted from z, so the net never sees where the table was
+    features   (N,F)  per-point channels; 0..2 are the unit surface normal
+    supervise  (N,)   which points carry a label and may therefore be scored
+    the labels (G,)   grasp centre, approach (signed), closing axis (antipodal), width
+                                  |
+                                  v
+  THE NET                       net/set_generator.SetGenerator
+  ------------------------------------------------------------------------------------------
+    net/serialized_backbone   order the cloud along space-filling curves and attend inside
+          |                   fixed windows of that order: width 384, depth 12, 6 heads
+          |
+          |   net/set_targets.sample_seeds    draw S seeds from the supervised points
+          v
+    net/local_crop            the neighbourhood of each seed, radius 40 to 120 mm
+          |
+          |   net/gripper.gripper_vector      the HAND, as 14 numbers, as an INPUT
+          v
+    net/slot_head             K = 4 slots per seed; each slot is one GraspSetPrediction:
+                              approach, closing-axis parameters, offset, width, confidence
+                                  |
+                                  v
+  THE LEARNING SIGNAL           train/step.set_training_step
+  ------------------------------------------------------------------------------------------
+    net/set_targets.gather_set_targets   the labels of THAT seed, in the sample's frame
+    net/set_loss.grasp_set_cost          a K x L cost: angle, offset, width
+    net/assignment.optimal_one_to_one    Hungarian match, one slot to at most one label
+    net/set_loss.grasp_set_loss          the matched pairs, plus a confidence target that
+                                  |      teaches an unmatched slot to say "no grasp here"
+                                  v
+                            one optimiser step
+```
+
+The run around that step, and how the weights reach a cell:
+
+```text
+  A RUN                         train/trainer.train_set_generator, via GeneratorTraining
+  ------------------------------------------------------------------------------------------
+    train/plan.build_plan(recipe, tier, overrides) --> SetTrainingPlan, frozen, and stamped
+          |                                            into the artifact that comes out
+          |   corpus/index.grouped_folds over ASSET GROUPS
+          v
+    for each fold:  train on the rest, measure on the held-out one, run the probes
+          |
+          v
+    refit on every unit (optional)  -->  set_artifact.py: the weights plus a model card that
+          |                              says recipe, tier, hands and which pass wrote them
+          v
+    eval/run_report --> report.json --> `deep report`;  eval/probes for the floor and ceiling
+          |
+          v
+    calculator_factory.build_calculator(tree.robot)  under `calculator: deep`
+          --> calculator.py, the runtime generator
+          --> compute(cloud) --> ranked GraspPoints, the seam the analytic generator also fills
+```
+
+Four things the picture exists to make visible, each of which is a decision rather than a detail:
+
+1. **The loss is over a set, so a slot index means nothing.** Nothing forces slot 0 to be any
+   particular grasp. `optimal_one_to_one` decides which slot is compared with which label, per seed
+   and per step, and that is what lets K slots learn K genuinely different answers instead of K
+   copies of the average one. A regression head with fixed outputs cannot: it averages the grasps a
+   seed admits, and the average of two good grasps is usually not one.
+2. **The hand is an input, not a constant.** One net serves several hands, trained with `hands=`,
+   and [eval/gripper_differential.py](eval/gripper_differential.py) measures whether the proposals
+   actually move when the hand changes. Whether they move *correctly* is a separate question.
+3. **Folds are cut over asset groups, not over scenes or samples.** Every variant of one object
+   lands in one fold, so a held-out number is about objects the net never saw rather than about
+   other views of objects it did. `memorisation_probe` is the check on that.
+4. **A corpus this repository generated and a corpus somebody else published arrive in the same
+   file format.** The loop cannot tell them apart, so no metric ever has to ask which path a sample
+   came through. [04_train_on_a_public_corpus.py](../../../../examples/offline/training/04_train_on_a_public_corpus.py)
+   is that route end to end.
+
+[The model](#the-model) below says what is inside the backbone and the head; this says how a label
+becomes a gradient.
 
 ## Recipes and tiers
 
@@ -98,6 +196,11 @@ Read the instruments, not a headline number. [eval/probes.py](eval/probes.py) sh
 - `memorisation_probe` compares the trained model on matched seen and unseen samples against the same
   gap on an untrained net. The fold key is `asset_group`, so the variants of one object stay in one
   fold. No pass threshold is built in.
+
+`GeneratorTraining.probe()` runs all three before a run costs anything and prints them as one table;
+[05_floor_and_ceiling_before_you_train.py](../../../../examples/offline/training/05_floor_and_ceiling_before_you_train.py)
+is that call. `top_down` is the arm to beat, not `random`: every slot straight down at the seed is the
+grasp a cell with no model at all would try.
 
 A hit is a top-1 slot within 15 degrees (`hit_angle_deg`) and 20 mm (`hit_offset_mm`) of a real label,
 with 30 mm and 40 mm reported beside it. `held_top1_hit` is not comparable between runs with different
@@ -138,6 +241,7 @@ the hand. That a net's grasps are good for each hand is a separate question it d
 | Capability | Evidence |
 | --- | --- |
 | From a simulated corpus to trained weights a cell loads through `build_calculator` | measured in simulation |
+| From a published corpus to the same weights, through `PublicCorpus` | measured: the import writes the format the loop reads, and a smoke run closes on it. Its folds are scene-disjoint, not asset-disjoint, because the source publishes no asset identity |
 | Grasp quality of a trained generator | measured in simulation, on your corpus, with the probes above |
 | The learned generator on a physical cell | never touched hardware |
 
@@ -156,7 +260,7 @@ The score a slot carries is not a calibrated probability of a hold. The generato
 | `train/` | the loop and `SetTrainingPlan`, one batch, plan assembly, `api` for training from code, recipes |
 | `eval/` | the probes, `propose`, charts, run reports and the other measuring instruments |
 | `ranker/` | a separate product: a gradient-boosted tree that ranks analytic candidates (`grasp_gbt_ranker`) |
-| `foreign/` | a public corpus read into the `.npz` scene format this loop expects |
+| `foreign/` | a public corpus read into the `.npz` scene format this loop expects; `PublicCorpus` is its door |
 
 `net/`, `corpus/`, `train/` and `ranker/` re-export nothing, so an import of one module does not load
 its siblings; import the submodule you mean. `eval/` and `foreign/` re-export their `__all__`.

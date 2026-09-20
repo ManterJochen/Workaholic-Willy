@@ -348,5 +348,35 @@ class TheDatasetRootIsComputedOnceTests(unittest.TestCase):
         self.assertEqual(Path(config.output.root) / "run_01", build.root)
 
 
+class TheTwoVerbsThatReadRatherThanWriteTests(unittest.TestCase):
+    """`cost()` before a build and `verify()` after one. Neither opens an engine.
+
+    Both existed only as `python -m datagen` subcommands, so a program that described a build with
+    `DatasetBuild` had to reach past it into `datagen.cost` and `datagen.verify` to ask the two
+    questions that bracket a run: what will this cost, and did what came out agree with itself.
+    """
+
+    def test_cost_reads_nothing_from_disk(self) -> None:
+        """It prices a build that has never run, which is the only time the answer is useful."""
+        build = DatasetBuild.from_file(name="never_run", scenes=64, engine="none",
+                                       out_root="/no/such/place")
+        self.assertEqual(64, build.cost().usable_scenes)
+
+    def test_verify_points_at_the_builds_own_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            build = DatasetBuild.from_file(name="checked", scenes=2, engine="none", out_root=tmp)
+            with mock.patch("datagen.verify.verify_dataset") as verify:
+                build.verify()
+            verify.assert_called_once_with(build.root)
+
+    def test_verify_returns_a_verdict_for_a_directory_that_was_never_written(self) -> None:
+        """A failed check is returned, never raised: a caller that ignores `ok` leaves no trace."""
+        with tempfile.TemporaryDirectory() as tmp:
+            report = DatasetBuild.from_file(name="absent", scenes=2, engine="none",
+                                            out_root=tmp).verify()
+            self.assertFalse(report.ok)
+            self.assertEqual(str(report), report.summary())
+
+
 if __name__ == "__main__":
     unittest.main()

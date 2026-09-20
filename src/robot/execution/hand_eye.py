@@ -55,9 +55,12 @@ from src.calibration.eye_hand import MountingMode
 from src.contracts import UNSET, Maybe, chosen, resolve
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from collections.abc import Sequence
+
     from src.config.tree import LoadedTree
     from src.calibration.serialization import FlangeToTcp
     from src.camera.orchestration.camera import Camera
+    from src.geometry import Pose
     from src.robot.core.camera_world import CameraWorldStamp
     from src.robot.events import RobotCalibrationEventListener
     from src.robot.execution.lifecycle import ConnectStage, TeardownReport
@@ -159,6 +162,10 @@ class SweepOptions:
     every sample uniformly: the solve converges and is uniformly wrong, so measure the printed board.
     ``unmodelled_wrist_body`` is the reason an eye in hand sweep may run while its camera's body cannot be placed
     yet; it is printed and logged, and the sweep then runs with no body in the planner and the guard.
+
+    ``fixed_poses`` replaces the automatic sweep with a caller-chosen one: a list of ``Pose`` (BASE) the caller
+    already planned, or a path to a JSON file of them (URPose-shaped or ``Pose``-shaped records). Set, ``poses``
+    (the auto-generated count) is not read: nothing is generated when the caller supplies its own poses.
     """
 
     poses: Maybe[int] = UNSET
@@ -167,6 +174,7 @@ class SweepOptions:
     dict_name: Maybe[str] = UNSET
     out_dir: "Maybe[str | Path]" = UNSET
     unmodelled_wrist_body: Maybe[str] = UNSET
+    fixed_poses: "Maybe[Sequence[Pose] | str | Path]" = UNSET
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,7 +211,7 @@ class CalibrationCheck:
             f"  mode       {self.mode.value}",
             f"  arm        {self.vendor}",
             f"  marker     {self.marker_length_mm:.1f} mm, id {self.marker_id}, {self.dict_name}",
-            f"  poses      {self.poses}",
+            f"  poses      {'custom, from a JSON file' if self.poses < 0 else self.poses}",
             f"  artifact   {self.artifact_path}",
         ))
 
@@ -471,7 +479,10 @@ class HandEyeCalibration:
     out_dir: str
     sections: _Sections = field(repr=False)
     unmodelled_wrist_body: str | None = None
-    #: The config tree the sections came from. ``None`` is the repository's tree.
+    #: A caller's own poses, replacing the automatic sweep: a list of Pose (BASE), or a path to a JSON file of
+    #: them. None runs the automatic sweep, as every mode did before this existed.
+    fixed_poses: "Sequence[Pose] | str | Path | None" = field(default=None, repr=False)
+    #: The config tree the sections came from. None is the repository's tree.
     data_dir: "str | Path | None" = None
     #: A robot built by the caller. ``UNSET``: the arm alone is built at ``run()`` from the robot section.
     robot: "Maybe[Robot]" = field(default=UNSET, repr=False)
@@ -580,6 +591,11 @@ class HandEyeCalibration:
             out_dir=str(resolve("out_dir", chosen_options.out_dir, DEFAULT_OUT_DIR)),
             sections=_Sections(robot=tree, camera=camera_config),
             unmodelled_wrist_body=reason if chosen(reason) else None,
+            # `resolve` rather than `chosen`, because the field is a union: `Maybe[_T]` solved
+            # against `Sequence[Pose] | str | Path | _Unset` leaves `_T` ambiguous, and the guard
+            # then narrows to a type that still admits `UNSET`. Resolving against `None` states the
+            # default once and types cleanly.
+            fixed_poses=resolve("fixed_poses", chosen_options.fixed_poses, None),
             data_dir=data_dir,
             robot=robot,
             camera=camera,
@@ -640,10 +656,14 @@ class HandEyeCalibration:
         if refusal is not None:
             return _Staged(CalibrationCheck(rig_id=self.rig_id, mode=self.mode, refusal=refusal))
         prefix = "eth" if self.mode is MountingMode.EYE_TO_HAND else "eih"
+        # A caller's own poses report their count; a JSON path is not read here (check() opens nothing), so -1
+        # says "not a generated count" without pretending to know how many the file holds.
+        poses = (len(self.fixed_poses) if isinstance(self.fixed_poses, (list, tuple))
+                 else -1 if self.fixed_poses is not None else self.poses)
         return _Staged(CalibrationCheck(
             rig_id=str(rig.rig_id), mode=self.mode, rig_source=str(rig.source), vendor=f"{self.sections.robot.vendor}",
             marker_length_mm=self.marker_length_mm, marker_id=self.marker_id, dict_name=self.dict_name,
-            poses=self.poses, artifact_path=f"{self.out_dir}/{prefix}_{rig.rig_id}.json",
+            poses=poses, artifact_path=f"{self.out_dir}/{prefix}_{rig.rig_id}.json",
         ), rig=rig, wrist=wrist)
 
     def _robot_refusal(self) -> str | None:
@@ -740,15 +760,24 @@ class HandEyeCalibration:
             with parts.robot.connected(announce=self.announce) as live:
                 try:
                     Path(self.out_dir).mkdir(parents=True, exist_ok=True)
-                    result = parts.routine.run_auto(
-                        self.poses,
-                        # Tool down, so a board lying face up on the table faces a fixed camera.
-                        base_orientation=[float(np.pi), 0.0, 0.0],
-                        orientation_spread_deg=max(_MIN_SPREAD_DEG, float(calibration.orientation_spread_deg)),
-                        max_attempts_per_pose=calibration.max_attempts_per_pose,
-                        seed=0,
-                        dataset_save_path=f"{self.out_dir}/{self.mode.value}_{check.rig_id}_dataset.json",
-                    )
+                    dataset_path = f"{self.out_dir}/{self.mode.value}_{check.rig_id}_dataset.json"
+                    if self.fixed_poses is not None:
+                        # The caller's own poses: a path is a JSON file of them, anything else a list of Pose.
+                        if isinstance(self.fixed_poses, (str, Path)):
+                            result = parts.routine.run_from_json(self.fixed_poses, dataset_save_path=dataset_path)
+                        else:
+                            result = parts.routine.run_with_poses(
+                                list(self.fixed_poses), dataset_save_path=dataset_path)
+                    else:
+                        result = parts.routine.run_auto(
+                            self.poses,
+                            # Tool down, so a board lying face up on the table faces a fixed camera.
+                            base_orientation=[float(np.pi), 0.0, 0.0],
+                            orientation_spread_deg=max(_MIN_SPREAD_DEG, float(calibration.orientation_spread_deg)),
+                            max_attempts_per_pose=calibration.max_attempts_per_pose,
+                            seed=0,
+                            dataset_save_path=dataset_path,
+                        )
                     # While the arm is still connected: on a polyscope cell the frame is known only then.
                     record = _flange_to_tcp_record(self.sections.robot, parts.robot.arm)
                 except Exception as exc:  # noqa: BLE001 (reported once the arm is down)

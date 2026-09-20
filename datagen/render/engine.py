@@ -35,7 +35,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from datagen.config import DatagenConfig
     from datagen.render.result import SceneRenderResult
 
-__all__ = ["ENGINES", "SceneEngine", "build_engine", "engine_is_available"]
+__all__ = ["ENGINES", "ENGINES_WITH_COLOUR", "SceneEngine", "build_engine", "engine_is_available"]
 
 #: Every engine this build knows, and what each one costs an operator to install. The value is the
 #: honest one-line answer to "can I run this here", because that is the question the key exists for.
@@ -48,6 +48,17 @@ ENGINES: dict[str, str] = {
              "numpy z-buffer. Nothing to install beyond this repo's own requirements, and it REFUSES "
              "the `pile` family by name rather than faking a settle"),
 }
+
+
+#: Which engines write a colour image at all. One name, because only Isaac path-traces: the other two
+#: return `rgb=None` from every view by construction (`SceneEngine` above: "everything else is colour, and
+#: `rgb` may stay `None` throughout").
+#:
+#: Declared here rather than inferred downstream, because the consequence is a check rather than a
+#: cosmetic difference. `datagen.verify` refuses a view that claims an image it never wrote, which is the
+#: gate that catches a run whose colour frames came back black; without this set it also refuses every
+#: dataset the two cheaper engines produce, and the tempting fix is to weaken the gate for everyone.
+ENGINES_WITH_COLOUR: frozenset[str] = frozenset({"isaac"})
 
 
 @runtime_checkable

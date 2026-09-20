@@ -12,13 +12,15 @@ Layout
 `model_files`    the optional-extra guard and the fail-closed `.task` resolver.
 `palm_detector`  MediaPipe hand landmarker -> palm centres, in pixels.
 `gestures`       MediaPipe canned classifier -> thumbs-up / thumbs-down, with the palm centre.
-`hand_finder`    pixels + depth + calibration -> millimetres in the robot base frame.
+`hand_finder`    pixels + depth + calibration -> millimetres in the robot base frame,
+                 over a rig catalogue or over one camera a caller already holds open.
 `factory`        the config readers: `models.handdetect` / `models.gesturedetect`.
 """
 
 from src.models.handdetection.factory import (
     build_gesture_recognizer,
     build_hand_finder,
+    build_hand_finder_on_camera,
     build_palm_detector,
 )
 from src.models.handdetection.gestures import (
@@ -26,7 +28,12 @@ from src.models.handdetection.gestures import (
     normalise_gesture_label,
     to_hand_gesture,
 )
-from src.models.handdetection.hand_finder import HandFinder, HandObserver
+from src.models.handdetection.hand_finder import (
+    HandFinder,
+    HandObserver,
+    OneCamera,
+    RigFrames,
+)
 from src.models.handdetection.landmarks import (
     PALM_LANDMARKS,
     HandLandmark,
@@ -61,11 +68,14 @@ __all__ = [
     "HandPosition3D",
     "Handedness",
     "LocatedHand",
+    "OneCamera",
     "PalmDetection",
     "PalmDetector",
+    "RigFrames",
     "ThumbGestureRecognizer",
     "build_gesture_recognizer",
     "build_hand_finder",
+    "build_hand_finder_on_camera",
     "build_palm_detector",
     "calculate_palm_center",
     "draw_hand_landmarks",

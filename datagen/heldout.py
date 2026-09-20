@@ -47,6 +47,9 @@ class HeldOutReport:
     def total_unseen(self) -> int:
         return sum(len(ids) for ids in self.unseen.values())
 
+    def __str__(self) -> str:
+        return format_report(self)
+
 
 def trained_groups(corpus_root: Path | str) -> set[str]:
     """Every fold group a corpus's scenes placed, via the trainer's own grouping function.

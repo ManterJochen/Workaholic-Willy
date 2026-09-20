@@ -41,16 +41,19 @@ moves the arm either hands the robot its cameras or declines the camera world an
 | [`05_pick_and_place_a_known_part.py`](real_robot/05_pick_and_place_a_known_part.py) | pick at a pose you know, place at another | the arm and the hand |
 | [`06_open_a_camera.py`](real_robot/06_open_a_camera.py) | open the cell's camera: one frame, its lens matrix, its declared calibration | nothing |
 | [`07_calibrate_a_fixed_camera.py`](real_robot/07_calibrate_a_fixed_camera.py) | where a fixed camera sits in the robot's frame, from an automatic sweep: check, dry run, sweep | the arm, in the sweep |
-| [`08_calibrate_a_fixed_camera_with_fixed_poses.py`](real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py) | the same fixed-camera solve, from poses you choose yourself, as a list or a JSON file | the arm, in the sweep |
+| [`08_calibrate_a_fixed_camera_with_fixed_poses.py`](real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py) | the same fixed-camera solve from poses you choose, each turning the board to FACE the camera rather than tool down | the arm, in the sweep |
 | [`09_calibrate_a_wrist_camera.py`](real_robot/09_calibrate_a_wrist_camera.py) | the same automatic sweep for a camera on the flange | the arm, in the sweep |
-| [`10_calibrate_a_wrist_camera_with_fixed_poses.py`](real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py) | the wrist-camera solve from fixed look-at poses around a stationary board | the arm, in the sweep |
+| [`10_calibrate_a_wrist_camera_with_fixed_poses.py`](real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py) | the wrist-camera solve from a ring of poses each AIMED at a stationary board, which tool down cannot express | the arm, in the sweep |
 | [`11_locate_and_pick.py`](real_robot/11_locate_and_pick.py) | find a prompted object with the camera and pick it (weights: `dino-tiny sam2`) | the arm and the hand |
 | [`12_place_with_a_camera_world.py`](real_robot/12_place_with_a_camera_world.py) | a camera-checked move and place, with no pick: a part already in the hand | the arm and the hand |
 | [`13_pick_campaign.py`](real_robot/13_pick_campaign.py) | a campaign of picks with a verdict, a JSONL record and a saved overlay image per attempt (weights: `dino-tiny sam2`) | the arm and the hand |
 | [`14_your_own_pick_motion.py`](real_robot/14_your_own_pick_motion.py) | tune the approach, the close and the lift, and keep every guard (weights: `dino-tiny sam2`) | the arm and the hand |
 | [`15_speak_a_command.py`](real_robot/15_speak_a_command.py) | a spoken command, confirmed by a person, becomes the pick prompt (weights: `whisper-turbo silero-vad`, and those of 11) | the arm and the hand |
 | [`16_pick_and_force_handover.py`](real_robot/16_pick_and_force_handover.py) | pick a known part and hand it to a person, released on the TCP wrench's hand-over signal | the arm and the hand |
-| [`17_speak_pick_and_hand_handover.py`](real_robot/17_speak_pick_and_hand_handover.py) | speech (15) + camera pick (11) + a MediaPipe hand detector instead of force (16) as the hand-over signal | the arm and the hand |
+| [`17_speak_pick_and_hand_handover.py`](real_robot/17_speak_pick_and_hand_handover.py) | speech (15) + camera pick (11), then the arm brings the part to where the camera sees the person's hand, instead of a written pose (16) | the arm and the hand |
+| [`18_clear_a_bin_with_recovery.py`](real_robot/18_clear_a_bin_with_recovery.py) | the pick service driven directly in a dense mode: pick until the bin is empty, switch target, read which layers ran | the arm and the hand |
+| [`19_a_cell_with_several_cameras.py`](real_robot/19_a_cell_with_several_cameras.py) | which rigs feed the live planner world and why the others do not, then one owner per device handed to the arm | the arm, and two or more cameras |
+| [`20_a_thumbs_up_before_it_moves.py`](real_robot/20_a_thumbs_up_before_it_moves.py) | a person at the cell approves the grasp with a gesture; nothing but a thumbs-up moves the arm (weights: `mediapipe`, and those of 11) | the arm and the hand |
 
 ## simulation: no cell
 
@@ -66,6 +69,8 @@ in any other interpreter they say so and exit.
 | [`02_a_robot_at_the_desk.py`](simulation/02_a_robot_at_the_desk.py) | the real_robot calls on the dummy arm: connect, move, the hand, pick and place | nothing |
 | [`03_isaac_pick_rate.py`](simulation/03_isaac_pick_rate.py) | a pick rate, scored against the scene's ground truth | Isaac Sim |
 | [`04_isaac_record_a_pick.py`](simulation/04_isaac_record_a_pick.py) | one pick, filmed as an MP4 | Isaac Sim |
+| [`05_measure_a_campaign.py`](simulation/05_measure_a_campaign.py) | a campaign's record log rolled up into KPIs, and what those numbers rest on | nothing |
+| [`06_grasp_modes_and_what_each_needs.py`](simulation/06_grasp_modes_and_what_each_needs.py) | the five grasp modes, what each switches on, and how one that is not wired refuses by name | nothing |
 
 ## offline: data, training and models at a desk
 
@@ -90,11 +95,14 @@ network, an optional engine) checks for it, names what is missing in one sentenc
 | [`datagen/03_label_and_shake.py`](offline/datagen/03_label_and_shake.py) | grasp labels from geometry, and the physics screen that grades them |
 | [`datagen/04_extract_a_corpus.py`](offline/datagen/04_extract_a_corpus.py) | the point cloud corpus a generator trains on |
 | [`datagen/05_bring_your_own_parts.py`](offline/datagen/05_bring_your_own_parts.py) | your own parts in the mesh library, under the licence you declare |
-| [`datagen/06_estimate_the_cost.py`](offline/datagen/06_estimate_the_cost.py) | hours, gigabytes and refused scenes, per engine, before anybody starts a build |
-| [`datagen/07_verify_a_dataset.py`](offline/datagen/07_verify_a_dataset.py) | a written dataset checked against itself: labels, masks and pictures agreeing |
+| [`datagen/06_fetch_public_parts.py`](offline/datagen/06_fetch_public_parts.py) | the public mesh collections, what they cost to download and what they oblige you to |
+| [`datagen/07_estimate_the_cost.py`](offline/datagen/07_estimate_the_cost.py) | hours, gigabytes and refused scenes, per engine, before anybody starts a build |
+| [`datagen/08_verify_a_dataset.py`](offline/datagen/08_verify_a_dataset.py) | a written dataset checked against itself: labels, masks and pictures agreeing |
 | [`training/01_recipe_and_tier.py`](offline/training/01_recipe_and_tier.py) | what a recipe and a tier resolve to before anything trains |
 | [`training/02_train_on_your_own_meshes.py`](offline/training/02_train_on_your_own_meshes.py) | train a grasp generator on your own parts, and read what the run produced |
 | [`training/03_prove_it_never_saw_the_test_parts.py`](offline/training/03_prove_it_never_saw_the_test_parts.py) | which placeable assets a corpus never trained on, the denominator a held-out claim needs |
+| [`training/04_train_on_a_public_corpus.py`](offline/training/04_train_on_a_public_corpus.py) | train on a published grasp corpus, for a user with no simulator and no cell |
+| [`training/05_floor_and_ceiling_before_you_train.py`](offline/training/05_floor_and_ceiling_before_you_train.py) | what a number on your corpus could possibly mean, measured with no weights at all |
 
 ## How they are kept working
 

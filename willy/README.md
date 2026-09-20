@@ -53,6 +53,7 @@ name that no example imports.
 | Name | What it is | Shown in |
 |---|---|---|
 | `Pose` | A 6-DoF pose tagged with its frame, in millimetres with an XYZW quaternion; `Pose.tool_down(x, y, z)` | `real_robot/03_connect_and_move.py` |
+| `Pose.aimed_at` | The same, pointing the tool's +Z AT a point instead of straight down: a camera or a board turned to face something | `real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py` |
 | `Frame` | The frames a pose can be in: `BASE`, `CAMERA`, `TCP`, `TOOL`, `OBJECT`, `GRASP`, `WORLD`, `MARKER` | `Pose.frame` |
 
 ### The robot: an arm and its hand
@@ -75,11 +76,17 @@ name that no example imports.
 
 | Name | What it is | Shown in |
 |---|---|---|
-| `Cell` | Cameras, perception, the grasp stack, the arm and the hand: `preflight()`, `build()`, `connected()` | `real_robot/13_pick_campaign.py` |
+| `Cell` | Cameras, perception, the grasp stack, the arm and the hand: `preflight()`, `build()`, `connected()`; `mode=` picks the grasp mode | `real_robot/13_pick_campaign.py` |
+| `AutonomousGraspService` | What `Cell.build()` returns: one attempt per `pick()`, `set_prompt()`, `enable_record_logging()` | `real_robot/18_clear_a_bin_with_recovery.py` |
+| `AutonomousGraspReport` | What one pick did: outcome, mode, the profile in effect, and the layers that actually ran | `simulation/06_grasp_modes_and_what_each_needs.py` |
+| `AutonomousGraspOutcome` | How a pick ended: `SUCCEEDED`, `NO_TARGET`, `NO_VALID_GRASP`, `MODE_NOT_AVAILABLE`, ... | `real_robot/18_clear_a_bin_with_recovery.py` |
+| `GraspMode` | `easy`, `auto`, `dense_clutter`, `closed_loop`, `dense_autonomous`; chosen when the service is built | `simulation/06_grasp_modes_and_what_each_needs.py` |
+| `PickPrompt` | What every camera grounds, the labels it maps onto and the filter; `service.set_prompt(text)` | `real_robot/18_clear_a_bin_with_recovery.py` |
 | `PickRun` | N picks against one cell under one connect: `PickRun.from_cell(cell, runs=...).execute()` | `real_robot/13_pick_campaign.py` |
 | `PickRunReport` | What a campaign did, whether it passed its rule, and how the cell came down; `exit_code` | `real_robot/13_pick_campaign.py` |
 | `PassRule` | When a campaign passes: a `fraction` of attempts, and `confirm=` for a check of your own | `real_robot/13_pick_campaign.py` |
 | `Recording` | Where a campaign appends one attempt record per line: `Recording.to_file(path)` or `Recording.off()` | `real_robot/13_pick_campaign.py` |
+| `RecordLog` | A record log read back into KPIs, with the audit that says whether they rest on anything | `simulation/05_measure_a_campaign.py` |
 | `GraspMotion` | What a caller may choose about how a pick moves; a field left unset keeps the service's own | `real_robot/14_your_own_pick_motion.py` |
 | `PlannerStart` | One cell's planner, started and stopped at a desk with no controller | `cell.start_planner()` in `real_robot/02_check_the_cell_at_a_desk.py` |
 
@@ -98,7 +105,8 @@ name that no example imports.
 
 | Name | What it is | Shown in |
 |---|---|---|
-| `Camera` | The owner of one rig's device, used as `with Camera.from_tree(tree) as camera:`; `grab()` | `real_robot/06_open_a_camera.py` |
+| `Camera` | The owner of one rig's device, used as `with Camera.from_tree(tree) as camera:`; `grab()`; `rig_id=` names another | `real_robot/06_open_a_camera.py` |
+| `CameraWorldPlan` | Which rigs feed the live planner world and, one line each, why the others do not; opens nothing | `real_robot/19_a_cell_with_several_cameras.py` |
 | `RGBDFrame` | Colour (BGR uint8) and depth (uint16 millimetres) from one grab | `real_robot/06_open_a_camera.py` |
 | `CameraRefused` | Raised when the camera section cannot give a rig: not configured, switched off, or no depth | `Camera.from_tree(tree)` |
 | `RigNotCalibrated` | Raised when a rig is asked for its calibration and declares none | `camera.calibration()` |
@@ -107,6 +115,20 @@ name that no example imports.
 | `Locator` | An open camera and a perception backend that place what they see in the robot's base frame | `real_robot/11_locate_and_pick.py` |
 | `Located` | What one frame located: `objects`, `scene(i, robot)` for grasps, `keep_out(i)` for the planner | `real_robot/11_locate_and_pick.py` |
 | `LocatorRefused` | Raised when a locator cannot place what its camera sees, before it grabs or on a frame | `Locator.from_tree(...)`, `locate()` |
+
+### Hands seen by a camera
+
+MediaPipe, optional and standalone: nothing in the grasp pipeline imports it, and each builder needs
+its own `.task` file, named by `models.handdetect.model_path` and fetched separately. The finder
+answers in the robot's base frame, so a pose built from it is a pose the arm's guards can check;
+it needs a FIXED camera, and refuses a wrist rig rather than composing a transform of its own.
+
+| Name | What it is | Shown in |
+|---|---|---|
+| `build_hand_finder_on_camera` | Where a hand is in MILLIMETRES in the base frame, over a camera you already hold open; `find_hand()` | `real_robot/17_speak_pick_and_hand_handover.py` |
+| `build_gesture_recognizer` | Thumbs up or down, with the palm centre from the same pass; `observe(frame_bgr)` | `real_robot/20_a_thumbs_up_before_it_moves.py` |
+| `HandGesture` | What a reading may be: `THUMB_UP`, `THUMB_DOWN`, `OTHER`, `NONE`; the last two are not the same | `real_robot/20_a_thumbs_up_before_it_moves.py` |
+| `build_palm_detector` | Where hands are in a colour frame, in pixels, with no gesture; `observe(frame_bgr)` | [`src/models/handdetection/`](../src/models/handdetection/README.md) |
 
 ### Grasps, and the stacks a desk can evaluate without a robot
 
@@ -147,9 +169,13 @@ name that no example imports.
 | `engine_is_available` | Whether an engine can run in this interpreter, and why not | `offline/datagen/02_choose_an_engine.py` |
 | `PhysicsSampling` | A labelled dataset and the simulator that grades its grasps | `offline/datagen/03_label_and_shake.py` |
 | `import_from_directory` | Copies your own meshes into the library under the licence you declare | `offline/datagen/05_bring_your_own_parts.py` |
-| `MeshPreparation` | Your mesh collections, normalised, screened, decomposed and diagnosed | `offline/training/02_train_on_your_own_meshes.py` |
-| `GeneratorTraining` | Fits a grasp generator from a recipe or a plan; `train()`, then `write_report()` | `offline/training/02_train_on_your_own_meshes.py` |
+| `MeshPreparation` | Your mesh collections, fetched, normalised, screened, decomposed and diagnosed | `offline/datagen/06_fetch_public_parts.py` |
+| `available_sources` | Every public mesh collection, its size, its licence and whether that was checked per model | `offline/datagen/06_fetch_public_parts.py` |
+| `verify_dataset` | Checks a written dataset against itself, by path; `DatasetBuild.verify()` is the same check | `offline/datagen/08_verify_a_dataset.py` |
+| `held_out_assets` | Which placeable assets a corpus never trained on, the denominator a held-out claim needs | `offline/training/03_prove_it_never_saw_the_test_parts.py` |
+| `GeneratorTraining` | Fits a grasp generator from a recipe or a plan; `probe()`, `train()`, then `write_report()` | `offline/training/02_train_on_your_own_meshes.py` |
 | `PlanOverrides` | The training settings you choose explicitly; they outrank the recipe and the tier | `offline/training/01_recipe_and_tier.py` |
+| `PublicCorpus` | A published grasp corpus, read into the scene files this training loop already eats | `offline/training/04_train_on_a_public_corpus.py` |
 
 ## How it is kept honest
 

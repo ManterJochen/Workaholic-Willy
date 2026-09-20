@@ -78,10 +78,15 @@ _RENDERED = {
     "src.robot.safety.attestation": ["SafetyAttestation"],
     "src.calibration.rig_calibration": ["RigCalibration"],
     "src.models.perception_spec": ["PerceptionResolution"],
+    "src.robot.grasping.deep.foreign.service": ["ImportReport"],
+    "src.robot.grasping.deep.train.api": ["CorpusProbe"],
     "src.robot.grasping.deep.train.report": ["TrainingRunReport"],
     "src.robot.safety.planning.stack": ["MotionStackReport"],
     "datagen.api": ["DatasetReport"],
+    "datagen.cost": ["Estimate"],
     "datagen.grasps.service": ["PhysicsReport"],
+    "datagen.heldout": ["HeldOutReport"],
+    "datagen.verify": ["VerifyReport"],
 }
 
 
