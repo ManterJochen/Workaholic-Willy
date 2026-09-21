@@ -140,6 +140,19 @@ near-frontally has an IPPE flip ambiguity that wrecks the AX=XB rotation.
 inside that box and the workspace guard gates every pose. Shrink the box to a region that is safe and
 where the marker stays visible before you run a sweep.
 
+**Until the sweep has run, the rig has no `extrinsics` block at all.** Not a block with an empty
+`artifact_path`, which the tree refuses to load, and so every program with it, the sweep included; and
+not a block naming the file the sweep will write, which loads but makes `camera.calibration()` and every
+camera world refuse until that file exists. Without the block the rig is simply uncalibrated: the camera
+opens ([`examples/real_robot/06`](../examples/real_robot/06_open_a_camera.py) says so), the sweep runs,
+and the sweep prints the block to paste in (section 5). One exception to "the sweep runs": a wrist
+camera on a cell that reads geometry (a cuRobo planner, or the exact-mesh self-collision guard) must
+declare its `body` first, and with no calibration yet to place that body from, its first sweep also
+takes `--unmodelled-wrist-body "<reason>"`
+([`examples/real_robot/09`](../examples/real_robot/09_calibrate_a_wrist_camera.py) does). The sweep's
+`--check` names whichever is missing before the arm moves. A wrist block that already holds measured tolerances is
+commented out rather than deleted, and after the sweep only its `artifact_path` changes.
+
 ## 5. Rehearse, then run the sweep
 
 ```bash

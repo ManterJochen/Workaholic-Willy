@@ -238,7 +238,13 @@ class Camera:
 
     @property
     def calibrated(self) -> bool:
-        """Whether the rig declares its calibration, `camera.cameras.rigs[<id>].extrinsics`."""
+        """Whether the rig DECLARES its calibration, `camera.cameras.rigs[<id>].extrinsics`.
+
+        Declared, not loadable: a block written before the sweep that writes its artifact had run is
+        declared and names a file that is not there. `calibration()` is what loads it, and it raises
+        `RigCalibrationError` saying which of the two it is; a caller that wants either answer without
+        a branch calls that and catches the one exception.
+        """
         return getattr(self._rig, "extrinsics", None) is not None
 
     def calibration(self) -> RigCalibration:

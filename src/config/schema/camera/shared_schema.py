@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from .._base import StrictModel, validate_aruco_dict_name
 from ..cameras import OpticalBox
@@ -142,6 +142,43 @@ class RigExtrinsicsConfig(StrictModel):
     record_tolerance_mm: float | None = Field(default=None, gt=0.0)
     #: The same bound on rotation, in degrees.
     record_tolerance_deg: float | None = Field(default=None, gt=0.0)
+
+    @field_validator("artifact_path", mode="before")
+    @classmethod
+    def _a_block_names_an_artifact(cls, value: Any, info: ValidationInfo) -> Any:
+        """An empty path is not "not calibrated yet"; it is refused, with what to write instead.
+
+        ⚠ MEASURED 2026-09-21 ON A REAL CELL. An operator with a camera to calibrate left the block in
+        place and the path empty, which is the natural way to write "not yet", and the tree refused to
+        load: every program, the calibration included, stopped on "String should have at least 1
+        character". The way to say it is to write no block at all. That rule stands; what changes is
+        that the refusal now says so, and says what puts the block back.
+
+        On the field and not on the block, which a review measured: at block level it also caught a
+        misspelled key (``artifact_pth:``) and told the operator to delete a real calibration. Here a
+        missing key stays pydantic's own "Field required", beside the refusal of the misspelling, and
+        the error stays on the line that wrote the empty value.
+        """
+        if value is not None and not (isinstance(value, str) and not value.strip()):
+            return value
+        # Set artifact_path, not paste the sweep's block back: a wrist block holds tolerances measured on the
+        # cell, which the printed block carries only as comments. The wrist sweep's --unmodelled-wrist-body is
+        # left to the sweep, which names it in its config check, before the arm moves, on the cells that need it.
+        mode = info.data.get("mounting_mode")
+        command = "python -m src.robot.execution.real_cell.calibrate --rig <rig id>"
+        if mode == "eye_in_hand":
+            how = f"{command} --mode eye_in_hand, or examples/real_robot/09 or 10"
+            out = "comment it out, keeping the tolerances it holds"
+        elif mode == "eye_to_hand":
+            how = f"{command} --mode eye_to_hand, or examples/real_robot/07 or 08"
+            out = "leave it out"
+        else:
+            how = f"{command} --mode eye_to_hand or eye_in_hand, or examples/real_robot/07 to 10"
+            out = "leave it out"
+        raise ValueError(
+            "an extrinsics block names the artifact a calibration wrote, and this one names none. A camera that is "
+            f"not calibrated yet declares no extrinsics block at all: {out}, and the tree loads with the rig "
+            f"uncalibrated. Calibrate it ({how}) and set artifact_path to the file the sweep writes")
 
     @model_validator(mode="after")
     def _tolerances_follow_the_mounting(self) -> RigExtrinsicsConfig:

@@ -54,7 +54,7 @@ import copy
 import difflib
 import os
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final, TypeVar
@@ -446,8 +446,153 @@ def _value_segments(key: str) -> tuple[str | int, ...]:
 
 
 def _normal_key(key: str) -> str:
-    """``key`` as a validation error and the side-car index spell it: ``rigs[0]`` becomes ``rigs.0``."""
+    """``key`` as a validation error spells it once its union tags are gone: ``rigs[0]`` becomes ``rigs.0``.
+
+    Not as the side-car index spells it, which keeps the brackets (``rigs[0]``): :func:`_yaml_segments`
+    turns an error location into the one spelling both are compared in.
+    """
     return ".".join(str(segment) for segment in _value_segments(key))
+
+
+def _bracketed(segments: Sequence[str | int], origins: "Mapping[str, Any] | None" = None) -> str:
+    """``segments`` as the YAML files and the side-car index spell them: ``camera.cameras.rigs[0].fps``.
+
+    An ``int`` is a list position, written ``[0]``, unless the files write it as a map key: a YAML
+    ``0:`` under a mapping is indexed ``cameras.0.enabled``, and bracketing it would name a key no file
+    has.
+    """
+    out = ""
+    for segment in segments:
+        if isinstance(segment, int) and not (origins is not None and _written(f"{out}.{segment}", origins)):
+            out = f"{out}[{segment}]"
+        else:
+            out = f"{out}.{segment}" if out else str(segment)
+    return out
+
+
+def _yaml_segments(loc: Sequence[str | int], origins: Mapping[str, Any]) -> list[str | int]:
+    """A validation error's location with the tagged-union levels no YAML file has taken out.
+
+    ⚠ MEASURED 2026-09-21, AND IT IS WHAT AN OPERATOR WAS SHOWN. A camera rig is a tagged union,
+    and pydantic puts the tag in the error location as a level of its own:
+    ``camera.cameras.rigs.0.rgbd.extrinsics.artifact_path``. The file spells that key
+    ``rigs[0].extrinsics.artifact_path``, with no ``rgbd`` level, so the lookup missed and the message
+    said "not written in any YAML" about a key that was on line 13 of the operator's own layer. Every
+    error inside a camera rig was reported that way.
+
+    ⛔ THE TAG IS FOUND IN THE SCHEMA, NOT IN THE FILES. A first version guessed it from what the YAML
+    wrote beside it, and a review measured it dropping real blocks: `rgbd_backend: realsense` beside a
+    `realsense` block no file writes made `rigs[0].realsense.laser_power_mw` print as
+    `rigs[0].laser_power_mw`, and `pipeline.kind: zero_shot` did the same to `pipeline.zero_shot`. A
+    level is dropped here only where :func:`_tag_sites` says a tagged union sits, and only when it is
+    one of that union's own tags, so a field that merely shares a name with a value keeps its name.
+    One level per position: the part after a dropped tag is a field of the member, even one named
+    like a tag (``rigs.0.realsense.realsense`` keeps its second ``realsense``).
+    ``origins`` is not read; it stays in the signature so every caller spells the location one way.
+    """
+    del origins  # decided by position and allowed value alone; see the docstring
+    out: list[str | int] = []
+    dropped_at = -1
+    for part in loc:
+        if isinstance(part, str) and out and len(out) != dropped_at and _is_union_tag(out, part):
+            dropped_at = len(out)
+            continue
+        out.append(part)
+    return out
+
+
+def _is_union_tag(prefix: Sequence[str | int], part: str) -> bool:
+    for path, tags in _tag_sites():
+        if (len(path) == len(prefix) and part in tags
+                and all(step == "*" or step == str(given) for step, given in zip(path, prefix))):
+            return True
+    return False
+
+
+@lru_cache(maxsize=1)
+def _tag_sites() -> "tuple[tuple[tuple[str, ...], frozenset[str]], ...]":
+    """Every place in the tree a tagged union sits, and its tags. ``*`` in a path is a list position or map key.
+
+    Read off :class:`AppConfig` once, so a union added to the schema is covered the day it lands. Only a
+    union with a string discriminator adds a level to an error location; an optional field or a union
+    without one adds none, and is not listed.
+    """
+    sites: list[tuple[tuple[str, ...], frozenset[str]]] = []
+    _sites_in_model(AppConfig, (), sites, set())
+    return tuple(sites)
+
+
+def _sites_in_model(model: type, path: tuple[str, ...], sites: list[Any], seen: set[tuple[type, tuple[str, ...]]]) -> None:
+    if (model, path) in seen or len(path) > 16:
+        return
+    seen.add((model, path))
+    for name, field in getattr(model, "model_fields", {}).items():
+        _sites_in_type(field.annotation, getattr(field, "discriminator", None),
+                       (*path, field.alias or name), sites, seen)
+
+
+def _sites_in_type(annotation: Any, discriminator: Any, path: tuple[str, ...], sites: list[Any],
+                   seen: set[tuple[type, tuple[str, ...]]]) -> None:
+    import types
+    import typing
+
+    from pydantic.fields import FieldInfo
+
+    origin = typing.get_origin(annotation)
+    arguments = typing.get_args(annotation)
+    if origin is typing.Annotated:
+        for extra in arguments[1:]:
+            if isinstance(extra, FieldInfo) and isinstance(extra.discriminator, str):
+                discriminator = extra.discriminator
+        _sites_in_type(arguments[0], discriminator, path, sites, seen)
+    elif origin in (typing.Union, types.UnionType):
+        members = [member for member in arguments if isinstance(member, type) and issubclass(member, BaseModel)]
+        if isinstance(discriminator, str) and len(members) > 1:
+            tags = frozenset(tag for member in members for tag in _literal_values(member, discriminator))
+            sites.append((path, tags))
+        for member in arguments:
+            _sites_in_type(member, None, path, sites, seen)
+    elif origin in (list, tuple, set, frozenset):
+        for item in arguments:
+            if item is not Ellipsis:
+                _sites_in_type(item, discriminator, (*path, "*"), sites, seen)
+    elif origin is dict:
+        if len(arguments) == 2:
+            _sites_in_type(arguments[1], discriminator, (*path, "*"), sites, seen)
+    elif isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        _sites_in_model(annotation, path, sites, seen)
+
+
+def _literal_values(model: type, field_name: str) -> tuple[str, ...]:
+    import typing
+
+    field = getattr(model, "model_fields", {}).get(field_name)
+    annotation = getattr(field, "annotation", None)
+    while typing.get_origin(annotation) is typing.Annotated:
+        annotation = typing.get_args(annotation)[0]
+    if typing.get_origin(annotation) is typing.Literal:
+        return tuple(str(value) for value in typing.get_args(annotation))
+    return ()
+
+
+def _block_origin(segments: Sequence[str | int], origins: Mapping[str, Any]) -> Any:
+    """Where the block ``segments`` names begins, or ``None`` where no file writes it.
+
+    A block written as a key has its own line. An item of a list does not: the index records keys, and
+    ``rigs[0]`` is a position, so the item is found at the first line any of its own keys is written on.
+    """
+    if not segments:
+        return None
+    key = _bracketed(segments, origins)
+    if key in origins:
+        return origins[key]
+    inside = [origin for other, origin in origins.items() if other.startswith((f"{key}.", f"{key}["))]
+    return min(inside, key=lambda origin: (str(origin.file), origin.line)) if inside else None
+
+
+def _written(key: str, origins: Mapping[str, Any]) -> bool:
+    """Whether any file writes ``key`` or anything inside it."""
+    return key in origins or any(other.startswith((f"{key}.", f"{key}[")) for other in origins)
 
 
 def _in_memory_keys(values: Mapping[str, Any]) -> frozenset[str]:
@@ -588,13 +733,26 @@ def _describe_validation_error(
         return f"{header}:\n{exc}"
 
     for err in exc.errors():
-        dotted = ".".join(str(part) for part in (*prefix, *err["loc"]))
-        lines.append(f"\n  {dotted}")
-        origin = origins.get(dotted)
+        # One location, two spellings, and neither is pydantic's: `where` is the key as the file writes
+        # it and as the side-car index is keyed, `dotted` the same key with a list position as a plain
+        # segment, the spelling the in-memory keys and the removed-key table use.
+        segments = _yaml_segments((*prefix, *err["loc"]), origins)
+        where = _bracketed(segments, origins)
+        dotted = ".".join(str(segment) for segment in segments)
+        lines.append(f"\n  {where}")
+        origin = origins.get(where)
         if _within(dotted, in_memory) or (origin is None and _holds(dotted, in_memory)):
             lines.append(f"      at {_IN_MEMORY_ORIGIN}")
         elif origin is not None:
             lines.append(f"      at {origin.location(root)}")
+        elif err["type"] == "missing" and (block := _block_origin(segments[:-1], origins)) is not None:
+            # A required key nobody wrote, inside a block somebody did: the block is where to add it.
+            lines.append(f"      (required, and the block at {block.location(root)} does not write it)")
+        elif (block := _block_origin(segments, origins)) is not None:
+            # A rule over a whole block, a list item above all: a rig-level validator, or a tag no member
+            # of the union takes. An item has no line of its own in the index, and saying "not written"
+            # about a rig written in the operator's own layer sends them looking for a default.
+            lines.append(f"      (a rule over the block written at {block.location(root)})")
         else:
             # No origin means the key appears in no YAML: a schema default that failed a
             # cross-field rule, or a required field nobody wrote.
@@ -616,7 +774,7 @@ def _describe_validation_error(
             siblings = [
                 key.rsplit(".", 1)[-1]
                 for key in origins
-                if key.rsplit(".", 1)[0] == dotted.rsplit(".", 1)[0] and key != dotted
+                if key.rsplit(".", 1)[0] == where.rsplit(".", 1)[0] and key != where
             ]
             for suggestion in nearest_keys(str(err["loc"][-1]), siblings):
                 lines.append(f"      did you mean: {suggestion}?")

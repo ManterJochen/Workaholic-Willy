@@ -71,36 +71,87 @@ def section_sources(root: Path) -> list[tuple[Path, str, str]]:
 def index_origins(root: Path, layers: tuple[str, ...] = ()) -> dict[str, Origin]:
     """Map each dotted config key to the file/line/layer whose value wins.
 
-    Layers are applied in the loader's order (base first, then each profile layer left to right), so
-    a later write overwrites the earlier record and precedence needs no separate model. Files that do
-    not exist are skipped silently: an absent overlay is the normal case, not an error.
+    The last entry of each :func:`index_chains` chain. Files that do not exist are skipped silently:
+    an absent overlay is the normal case, not an error.
     """
-    origins: dict[str, Origin] = {}
+    return {key: chain[-1] for key, chain in index_chains(root, layers).items()}
+
+
+def index_chains(root: Path, layers: tuple[str, ...] = ()) -> dict[str, list[Origin]]:
+    """Every write of every key the merged tree holds, in loader order, not just the one that won.
+
+    The winner alone answers where a key is set; the chain also shows what a layer overrode and
+    whether it was reached at all. The files are merged as the loader merges them (see
+    :func:`_merge`), so a key the merge dropped has no chain, and the last entry is always the winner.
+    """
+    chains: dict[str, list[Origin]] = {}
     for base, top_key, prefix in section_sources(root):
-        for layer in ("", *layers):
-            path = base if not layer else base.with_name(f"{base.stem}.{layer}{base.suffix}")
-            _index_file(path, top_key, prefix, layer, origins)
-    # models/*.yaml contribute their top-level keys directly under `models`, and a profile may add a
-    # file with no base counterpart (the loader allows that), so the whole directory is walked.
+        tree = _merged_files(base, [(base.with_name(f"{base.stem}.{layer}{base.suffix}"), layer) for layer in layers])
+        section = tree.get(top_key) if isinstance(tree, dict) else None
+        if section is None:
+            continue
+        if not isinstance(section.value, dict):
+            # A layer that replaced the whole section (`stereomatcher: "__null__"`, `cameras: []`) wrote
+            # the one line that explains it: nothing is left inside it to name.
+            chains[prefix] = list(section.origins)
+        _flatten(section.value, prefix, chains)
+    # models/*.yaml contribute their top-level keys directly under `models`, each base file with its
+    # overlays, and a profile may add a file with no base counterpart (the loader allows that), which
+    # is folded across the layers by stem, as `loader._load_models_section` does.
     models_dir = root / "models"
     if models_dir.is_dir():
-        # Base files first, then each layer in chain order. Walking the directory alphabetically
-        # instead would let `object.yaml` overwrite `object.sim.yaml` (s < y) and report the base as
-        # the winner for a value the sim layer set.
-        for layer in ("", *layers):
-            for path in sorted(models_dir.glob("*.yaml")):
-                stem_parts = path.stem.split(".")
-                file_layer = stem_parts[-1] if len(stem_parts) > 1 else ""
-                if file_layer != layer:
-                    continue
-                _index_file(path, None, "models", layer, origins)
-    return origins
+        bases = sorted(path for path in models_dir.glob("*.yaml") if "." not in path.stem)
+        for base in bases:
+            overlays = [(base.with_name(f"{base.stem}.{layer}{base.suffix}"), layer) for layer in layers]
+            _flatten(_merged_files(base, overlays), "models", chains)
+        base_stems = {path.stem for path in bases}
+        profile_only: dict[str, list[tuple[Path, str]]] = {}
+        for layer in layers:
+            for path in sorted(models_dir.glob(f"*.{layer}.yaml")):
+                stem = path.stem[: -len(f".{layer}")]
+                if stem not in base_stems:
+                    profile_only.setdefault(stem, []).append((path, layer))
+        for files in profile_only.values():
+            _flatten(_merged_files(None, files), "models", chains)
+    return chains
 
 
-def _index_file(
-    path: Path, top_key: str | None, prefix: str, layer: str, out: dict[str, Origin]
-) -> None:
-    """Record a line mark for every leaf in ``path``. Unreadable or non-mapping files are skipped.
+@dataclass(slots=True)
+class _Key:
+    """One key of a parsed file: every line that wrote it, in merge order, and what it holds now.
+
+    ``value`` is a ``dict`` of ``_Key`` for a mapping, a ``list`` of values for a sequence, ``None``
+    for a YAML null, and :data:`_SCALAR` for any other scalar.
+    """
+
+    origins: list[Origin]
+    value: Any
+
+
+_SCALAR = "<scalar>"  # any non-null scalar: the index needs only that it replaces what was there
+
+
+def _merged_files(base: Path | None, overlays: list[tuple[Path, str]]) -> Any:
+    """``base`` with the ``(path, layer)`` overlays that exist, merged as ``loader._load_yaml_with_profile`` does.
+
+    The overlays are folded together first and the result is merged onto the base, not applied one
+    after the other: ``_deep_merge`` does not associate, and the two orders keep different keys when
+    one layer replaces a block that a later layer writes as a mapping again.
+    """
+    folded: Any = None
+    for path, layer in overlays:
+        if not path.exists():
+            continue
+        tree = _parsed(path, layer)
+        folded = tree if folded is None else _merge(folded, tree)
+    tree = _parsed(base, "") if base is not None else None
+    if tree is None:
+        return folded
+    return _merge(tree, folded)
+
+
+def _parsed(path: Path, layer: str) -> Any:
+    """``path`` as a tree of :class:`_Key`, or ``None`` for a file that is empty or does not parse.
 
     This runs while the loader is already reporting an error, so a failure here must not raise a
     second one.
@@ -108,67 +159,72 @@ def _index_file(
     try:
         node = yaml.compose(path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 (explaining must never become a second failure)
-        return
-    if node is None:
-        return
-    if top_key is not None:
-        node = _child(node, top_key)
-        if node is None:
-            return
-    _walk(node, prefix, path, layer, out)
-
-
-def _child(node: Any, key: str) -> Any:
-    if not isinstance(node, yaml.MappingNode):
         return None
-    for k, v in node.value:
-        if getattr(k, "value", None) == key:
-            return v
-    return None
+    return None if node is None else _value(node, path, layer)
 
 
-def _walk(node: Any, prefix: str, path: Path, layer: str, out: dict[str, Origin]) -> None:
+def _value(node: Any, path: Path, layer: str) -> Any:
     if isinstance(node, yaml.MappingNode):
+        out: dict[str, _Key] = {}
         for k, v in node.value:
             name = str(getattr(k, "value", ""))
-            dotted = f"{prefix}.{name}" if prefix else name
-            # Record the key line for containers too: an `extra_forbidden` on a nested block points
-            # at the block instead of vanishing because the block is not a leaf.
-            out[dotted] = Origin(path, int(k.start_mark.line) + 1, layer, name)
-            _walk(v, dotted, path, layer, out)
-    elif isinstance(node, yaml.SequenceNode):
-        for i, item in enumerate(node.value):
-            _walk(item, f"{prefix}[{i}]", path, layer, out)
+            # Container keys get a line too: an `extra_forbidden` on a nested block points at the block
+            # instead of vanishing because the block is not a leaf. A key written twice keeps the last
+            # write, as `yaml.safe_load` does.
+            out[name] = _Key([Origin(path, int(k.start_mark.line) + 1, layer, name)], _value(v, path, layer))
+        return out
+    if isinstance(node, yaml.SequenceNode):
+        return [_value(item, path, layer) for item in node.value]
+    return None if _is_null(node) else _SCALAR
 
 
-def index_chains(root: Path, layers: tuple[str, ...] = ()) -> dict[str, list[Origin]]:
-    """Every write of every key, in loader order, not just the one that won.
+def _merge(base: Any, overlay: Any) -> Any:
+    """``_merge._deep_merge`` over parsed trees, so the index holds the keys the loaded tree holds.
 
-    The winner alone answers where a key is set; the chain also shows what a layer overrode and
-    whether it was reached at all. Same walk as :func:`index_origins`, appending instead of
-    overwriting, so the last entry is always the winner.
+    The index answers "which line wrote the value the tree holds", so it has to merge the way the
+    loader merges, or it answers for a value the tree does not hold. Each rule was measured by a
+    review on 2026-09-21 against a tree where the index got it wrong:
+
+    * A null under a key the merge already holds keeps the earlier value, and the null's line is not
+      a write of it. `robot.gripper.max_width_mm:` with nothing after it in a layer left 70.0 from
+      robot.yaml in the tree while the index named the empty line. Under a key the merge does not
+      hold yet, the null is the value (`robot.sim.assets_root: null` in robot.sim.yaml), and so is
+      every null inside a block that replaced what was there.
+    * Anything but a mapping over a mapping, and anything over a list or a scalar, replaces it whole
+      (a list, a scalar, the `__null__` reset), so every key written inside the earlier value is gone.
+      A layer that restated `camera.cameras.rigs` with one RealSense left the base webcam rig's keys
+      indexed, and a key the layer's rig lacked could be traced to a rig that no longer exists.
+    * A mapping over a mapping merges key by key.
     """
-    chains: dict[str, list[Origin]] = {}
-    single: dict[str, Origin] = {}
-    for base, top_key, prefix in section_sources(root):
-        for layer in ("", *layers):
-            path = base if not layer else base.with_name(f"{base.stem}.{layer}{base.suffix}")
-            single.clear()
-            _index_file(path, top_key, prefix, layer, single)
-            for key, origin in single.items():
-                chains.setdefault(key, []).append(origin)
-    models_dir = root / "models"
-    if models_dir.is_dir():
-        for layer in ("", *layers):
-            for path in sorted(models_dir.glob("*.yaml")):
-                stem_parts = path.stem.split(".")
-                if (stem_parts[-1] if len(stem_parts) > 1 else "") != layer:
-                    continue
-                single.clear()
-                _index_file(path, None, "models", layer, single)
-                for key, origin in single.items():
-                    chains.setdefault(key, []).append(origin)
-    return chains
+    if overlay is None:
+        return base
+    if isinstance(base, dict) and isinstance(overlay, dict):
+        out = dict(base)
+        for name, key in overlay.items():
+            earlier = out.get(name)
+            if earlier is None:
+                out[name] = key
+            elif key.value is not None:
+                out[name] = _Key(earlier.origins + key.origins, _merge(earlier.value, key.value))
+        return out
+    return overlay
+
+
+def _flatten(value: Any, prefix: str, chains: dict[str, list[Origin]]) -> None:
+    """Every key inside ``value`` under its dotted path; a list item is ``prefix[i]``, as the files count it."""
+    if isinstance(value, dict):
+        for name, key in value.items():
+            dotted = f"{prefix}.{name}" if prefix else name
+            chains[dotted] = list(key.origins)
+            _flatten(key.value, dotted, chains)
+    elif isinstance(value, list):
+        for i, item in enumerate(value):
+            _flatten(item, f"{prefix}[{i}]", chains)
+
+
+def _is_null(node: Any) -> bool:
+    """A YAML null (``key:``, ``key: null``, ``key: ~``). The ``__null__`` reset is a string, and replaces."""
+    return isinstance(node, yaml.ScalarNode) and node.tag == "tag:yaml.org,2002:null"
 
 
 def comment_above(origin: Origin) -> str:

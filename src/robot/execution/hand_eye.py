@@ -944,6 +944,7 @@ def _wrist_body_for_sweep(robot_cfg: Any, rig: Any, *, data_dir: Any, reason: "s
     whatever the reason. A body that cannot be placed yet is refused unless ``reason`` says why the sweep may run
     without it, and the sweep then runs with no wrist body. On any other cell nothing is read.
     """
+    from src.calibration.rig_calibration import RigArtifactMissing
     from src.config.cameras import load_camera, tree_camera_refusal
     from src.config.loader import ConfigError
     from src.robot.execution.wrist_bodies import WristBodies, WristBodyRequired
@@ -970,5 +971,11 @@ def _wrist_body_for_sweep(robot_cfg: Any, rig: Any, *, data_dir: Any, reason: "s
     except WristBodyRequired as exc:
         if reason and reason.strip():
             return None, None
-        return None, (f"{exc}. To sweep this camera before its body can be placed, say why: "
+        # The observation alone when the artifact is missing: its remedy is to run this sweep, which is what
+        # the operator reading this refusal just did.
+        cause = exc.__cause__
+        said = (f"{key}.body cannot be placed: {cause.observation}" if isinstance(cause, RigArtifactMissing)
+                else str(exc))
+        # rstrip: the refusal it wraps may end on a full stop of its own, and ".." reads as a typo.
+        return None, (f"{said.rstrip('.')}. To sweep this camera before its body can be placed, say why: "
                       '--unmodelled-wrist-body "<reason>"')

@@ -751,7 +751,7 @@ def run_multiview_gate(
     # the byte-identical ground-truth path keyed by --mode.
     resolvers: dict[str, Any] = {}
     if calibrated:
-        from src.calibration.rig_calibration import RigCalibrationError
+        from src.calibration.rig_calibration import RigArtifactMissing, RigCalibrationError
 
         # --calibrated keeps --mode's camera-set semantics and only swaps the extrinsics source, so
         # `active` still comes from --mode and a calibrated subset such as eth1, eth2 or sides is
@@ -761,8 +761,11 @@ def run_multiview_gate(
         try:
             resolvers = calibrated_camera_resolvers(wanted, robot_model=sim.robot_model)
         except RigCalibrationError as exc:
+            # The observation alone for a missing file: the real cell's remedy names a rig block and a
+            # calibrate command, and these cameras are declared in code and calibrated by run_eth_calibrate.
+            said = exc.observation if isinstance(exc, RigArtifactMissing) else str(exc)
             raise SystemExit(
-                f"--calibrated --mode {mode} needs each of {list(wanted)} calibrated eye_to_hand: {exc} "
+                f"--calibrated --mode {mode} needs each of {list(wanted)} calibrated eye_to_hand: {said.rstrip('.')}. "
                 "Calibrate it (run_eth_calibrate --camera <id>), or pick a --mode whose cameras are all "
                 "calibrated.") from exc
         active = list(wanted)

@@ -15,13 +15,14 @@ because a wrist camera's pick frame and its body are both placed against the fra
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from src.calibration.serialization import FlangeToTcp, load_cam_to_tool_artifact, load_extrinsics
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Transform
 
-__all__ = ["RigCalibration", "RigCalibrationError", "RigNotCalibrated"]
+__all__ = ["RigArtifactMissing", "RigCalibration", "RigCalibrationError", "RigNotCalibrated"]
 
 MountingMode = Literal["eye_to_hand", "eye_in_hand"]
 
@@ -35,8 +36,51 @@ class RigNotCalibrated(RigCalibrationError):
     """A rig was asked for its calibration and declares none."""
 
 
+class RigArtifactMissing(RigCalibrationError):
+    """A rig's extrinsics block names an artifact that is not there, as a block written before its sweep does.
+
+    The message is the observation and then the real cell's remedy, and each is kept on its own, because
+    not every caller is on a real cell: the wrist sweep is the remedy and must not be told to run itself,
+    and the sim runner declares its cameras in code, with no block to edit and its own calibrate command.
+    Those callers say :attr:`observation` and add their own remedy.
+    """
+
+    def __init__(self, observation: str, remedy: str) -> None:
+        super().__init__(f"{observation}. {remedy}")
+        self.observation = observation
+        self.remedy = remedy
+
+
 def _key(rig_id: str) -> str:
     return f"camera.cameras.rigs[{rig_id!r}].extrinsics"
+
+
+def _no_file_at(path: str) -> str:
+    """What was looked for and where: a relative path names the working directory it was read against."""
+    if Path(path).anchor:  # absolute, or rooted at a drive or its root (`\\x.json`): not read against the cwd
+        return "there is no file at that path"
+    try:
+        cwd = str(Path.cwd())
+    except OSError:  # on POSIX the working directory can be removed under the program
+        return "there is no file at that path, read against a working directory that no longer exists"
+    return f"there is no file at that path relative to the working directory, {cwd}"
+
+
+def _sweep_remedy(rig_id: str, mode: str) -> str:
+    """The real cell's fix for a block whose artifact is not there: sweep, or leave the block out until then.
+
+    It says to set ``artifact_path`` and not to paste the sweep's block over this one: a wrist block holds
+    tolerances measured on the cell, which the printed block carries only as comments.
+    """
+    command = f"python -m src.robot.execution.real_cell.calibrate --rig {rig_id} --mode {mode}"
+    if mode == "eye_in_hand":
+        run = f"{command}, or examples/real_robot/09 or 10) and set artifact_path to the file it writes, keeping the "
+        run += "tolerances the block holds; until then, comment the block out"
+    else:
+        run = f"{command}, or examples/real_robot/07 or 08) and set artifact_path to the file it writes; until "
+        run += "then, leave the block out"
+    return (f"If its sweep has not run yet, run it ({run}, and the rig loads as not calibrated. If it has run, "
+            "compare this path with the one the sweep printed.")
 
 
 @dataclass(frozen=True)
@@ -62,10 +106,12 @@ class RigCalibration:
     def from_config(cls, rig_id: str, extrinsics_cfg: Any) -> RigCalibration:
         """The calibration ``extrinsics_cfg`` declares for ``rig_id``, with its artifact loaded now."""
         if extrinsics_cfg is None:
+            # --mode named: the command defaults to eye_to_hand, and a wrist camera swept that way writes a
+            # CAMERA to BASE file for a camera that moves.
             raise RigNotCalibrated(
                 f"rig {rig_id!r} declares no calibration. Calibrate it (python -m "
-                f"src.robot.execution.real_cell.calibrate --rig {rig_id}) and set {_key(rig_id)} to "
-                "the artifact that writes.")
+                f"src.robot.execution.real_cell.calibrate --rig {rig_id} --mode eye_to_hand for a fixed camera, "
+                f"--mode eye_in_hand for one the arm carries) and set {_key(rig_id)} to the artifact that writes.")
         mode = extrinsics_cfg.mounting_mode
         path = str(extrinsics_cfg.artifact_path)
         record: Maybe[FlangeToTcp] = UNSET
@@ -74,6 +120,15 @@ class RigCalibration:
                 transform = load_extrinsics(path).transform
             else:
                 transform, record = load_cam_to_tool_artifact(path)
+        except FileNotFoundError as exc:
+            # A different fix from a file that exists and does not parse, so a sentence of its own. It
+            # states what was observed and not why: a relative path is read from the working directory,
+            # so a sweep that did run can look like one that never did. The usual cause, the block
+            # written before its sweep, comes second and conditionally.
+            raise RigArtifactMissing(
+                f"{_key(rig_id)} names {path} ({mode}), which does not load: {_no_file_at(path)}",
+                _sweep_remedy(rig_id, mode),
+            ) from exc
         except Exception as exc:  # noqa: BLE001 (refused where the fix goes, whatever the file did)
             raise RigCalibrationError(
                 # The path as written, not its repr: on Windows a repr doubles every backslash, and

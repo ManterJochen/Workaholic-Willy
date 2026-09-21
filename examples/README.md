@@ -39,7 +39,7 @@ moves the arm either hands the robot its cameras or declines the camera world an
 | [`03_connect_and_move.py`](real_robot/03_connect_and_move.py) | connect, go home, a move, a straight line, a joint move | the arm |
 | [`04_open_and_close_the_hand.py`](real_robot/04_open_and_close_the_hand.py) | open the hand, close it on a part you place, read what the hand measured | the hand |
 | [`05_pick_and_place_a_known_part.py`](real_robot/05_pick_and_place_a_known_part.py) | pick at a pose you know, place at another | the arm and the hand |
-| [`06_open_a_camera.py`](real_robot/06_open_a_camera.py) | open the cell's camera: one frame, its lens matrix, its declared calibration | nothing |
+| [`06_open_a_camera.py`](real_robot/06_open_a_camera.py) | open the cell's camera: one frame, its lens matrix, its declared calibration; runs before the camera is calibrated | nothing |
 | [`07_calibrate_a_fixed_camera.py`](real_robot/07_calibrate_a_fixed_camera.py) | where a fixed camera sits in the robot's frame, from an automatic sweep: check, dry run, sweep | the arm, in the sweep |
 | [`08_calibrate_a_fixed_camera_with_fixed_poses.py`](real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py) | the same fixed-camera solve from poses you choose, each turning the board to FACE the camera rather than tool down | the arm, in the sweep |
 | [`09_calibrate_a_wrist_camera.py`](real_robot/09_calibrate_a_wrist_camera.py) | the same automatic sweep for a camera on the flange | the arm, in the sweep |

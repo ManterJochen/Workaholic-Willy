@@ -109,6 +109,7 @@ name that no example imports.
 | `CameraWorldPlan` | Which rigs feed the live planner world and, one line each, why the others do not; opens nothing | `real_robot/19_a_cell_with_several_cameras.py` |
 | `RGBDFrame` | Colour (BGR uint8) and depth (uint16 millimetres) from one grab | `real_robot/06_open_a_camera.py` |
 | `CameraRefused` | Raised when the camera section cannot give a rig: not configured, switched off, or no depth | `Camera.from_tree(tree)` |
+| `RigCalibrationError` | Raised by `camera.calibration()` when the declared calibration does not load, such as a block written before the sweep that writes its artifact; `RigNotCalibrated` is one of these | `real_robot/06_open_a_camera.py` |
 | `RigNotCalibrated` | Raised when a rig is asked for its calibration and declares none | `camera.calibration()` |
 | `HandEyeCalibration` | One camera calibrated against its robot: `check()` at a desk, `run()` at the cell | `real_robot/07_calibrate_a_fixed_camera.py` |
 | `SweepOptions` | What a caller may choose about one calibration sweep; unset takes the tree's value | `real_robot/09_calibrate_a_wrist_camera.py` |

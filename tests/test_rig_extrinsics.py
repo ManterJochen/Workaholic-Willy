@@ -13,13 +13,14 @@ import datetime as dt
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 from pydantic import ValidationError
 
 from src.config.schema.camera import RGBDDeviceRigConfig
 from src.calibration.extrinsics import Extrinsics
-from src.calibration.rig_calibration import RigCalibration, RigCalibrationError, RigNotCalibrated
+from src.calibration.rig_calibration import RigArtifactMissing, RigCalibration, RigCalibrationError, RigNotCalibrated
 from src.calibration.serialization import save_cam_to_tool, save_extrinsics
 from src.geometry import Frame, Transform
 from tests.test_camera_boundaries import _rgbd_rig, _single_rig, _webcam_rig
@@ -49,6 +50,23 @@ class TheKeyTests(unittest.TestCase):
 
     def test_a_rig_that_declares_nothing_is_not_calibrated(self) -> None:
         self.assertIsNone(_rgbd_rig("overhead").extrinsics)
+
+    def test_a_block_that_names_no_artifact_is_refused_saying_to_leave_it_out(self) -> None:
+        """An empty path is not "not calibrated yet"; no block is, and the refusal says so."""
+        for block in ({**_FIXED, "artifact_path": ""}, {**_FIXED, "artifact_path": "   "},
+                      {**_FIXED, "artifact_path": None}):
+            with self.subTest(block=block), self.assertRaises(ValidationError) as caught:
+                _rgbd(block)
+            self.assertIn("declares no extrinsics block at all: leave it out", str(caught.exception))
+            self.assertIn("--mode eye_to_hand", str(caught.exception))
+
+    def test_a_missing_path_key_stays_pydantics_own_refusal(self) -> None:
+        """The refusal is on the field's VALUE: a key left out, or misspelled, is reported as what it is,
+        and nobody is told to delete a block that holds a real calibration under a typo."""
+        with self.assertRaises(ValidationError) as caught:
+            _rgbd({"mounting_mode": "eye_to_hand"})
+        self.assertIn("Field required", str(caught.exception))
+        self.assertNotIn("declares no extrinsics block at all", str(caught.exception))
 
     def test_the_mounting_mode_has_no_default(self) -> None:
         with self.assertRaises(ValidationError) as caught:
@@ -135,6 +153,110 @@ class TheLoaderTests(unittest.TestCase):
         with self.assertRaises(RigNotCalibrated) as caught:
             RigCalibration.from_config("overhead", None)
         self.assertIn("camera.cameras.rigs['overhead'].extrinsics", str(caught.exception))
+        # The command defaults to eye_to_hand, and a wrist camera swept that way writes a CAMERA to BASE
+        # file for a camera that moves: the refusal names both modes.
+        self.assertIn("--mode eye_to_hand for a fixed camera", str(caught.exception))
+        self.assertIn("--mode eye_in_hand for one the arm carries", str(caught.exception))
+
+    def test_a_block_written_before_its_sweep_says_to_run_it_or_leave_the_block_out(self) -> None:
+        """⚠ MEASURED 2026-09-21 ON A REAL CELL: the block was written first, the natural order.
+
+        A file that is not there and a file that does not parse need different fixes, and the refusal
+        used to give both the same `FileNotFoundError` sentence, which says nothing about a sweep.
+        """
+        missing = str(self.root / "never_written.json")
+        with self.assertRaises(RigArtifactMissing) as caught:
+            RigCalibration.from_config("overhead", _rgbd({**_FIXED, "artifact_path": missing}).extrinsics)
+        text = str(caught.exception)
+        # The observation, not a guess at its cause: a sweep that ran can still look missing from the
+        # wrong directory, so the sentence says what was looked for, as written, and where.
+        self.assertIn(f"names {missing} (eye_to_hand), which does not load: there is no file at that path", text)
+        self.assertIn("If its sweep has not run yet", text)
+        self.assertIn("real_cell.calibrate --rig overhead --mode eye_to_hand", text)
+        self.assertIn("set artifact_path to the file it writes; until then, leave the block out", text)
+        self.assertNotIn("writes it there", text, "the sweep writes its own artifact, not the one a block names")
+        self.assertTrue(text.endswith("."), "a caller that adds a sentence of its own starts it after a full stop")
+
+    def test_the_observation_stands_without_the_real_cells_remedy(self) -> None:
+        """The wrist sweep is the remedy and the sim runner has no block to edit: each says the observation."""
+        missing = str(self.root / "never_written.json")
+        with self.assertRaises(RigArtifactMissing) as caught:
+            RigCalibration.from_config("overhead", _rgbd({**_FIXED, "artifact_path": missing}).extrinsics)
+        self.assertIn("there is no file at that path", caught.exception.observation)
+        self.assertNotIn("sweep", caught.exception.observation)
+        self.assertEqual(str(caught.exception), f"{caught.exception.observation}. {caught.exception.remedy}")
+
+    def test_a_relative_path_names_the_working_directory_once(self) -> None:
+        with self.assertRaises(RigCalibrationError) as caught:
+            RigCalibration.from_config("overhead", _rgbd({**_FIXED, "artifact_path": "nowhere/eth.json"}).extrinsics)
+        self.assertIn("names nowhere/eth.json (eye_to_hand)", str(caught.exception), "the path as written")
+        self.assertEqual(str(caught.exception).count(str(Path.cwd())), 1)
+
+    def test_an_absolute_path_names_no_working_directory(self) -> None:
+        with self.assertRaises(RigCalibrationError) as caught:
+            RigCalibration.from_config("overhead", _rgbd({**_FIXED, "artifact_path": str(self.root / "x.json")}).extrinsics)
+        self.assertNotIn("working directory", str(caught.exception))
+
+    def test_a_working_directory_removed_under_the_program_is_still_the_calibrations_refusal(self) -> None:
+        """⛔ Measured by review: on POSIX `Path.cwd()` raises once the directory is gone, which is exactly
+        when a relative artifact goes missing, and the callers catch only `RigCalibrationError`."""
+        with mock.patch.object(Path, "cwd", side_effect=FileNotFoundError("gone")), \
+                self.assertRaises(RigArtifactMissing) as caught:
+            RigCalibration.from_config("overhead", _rgbd({**_FIXED, "artifact_path": "nowhere/eth.json"}).extrinsics)
+        self.assertIn("a working directory that no longer exists", str(caught.exception))
+
+    def test_a_wrist_block_keeps_its_measured_tolerances(self) -> None:
+        """⛔ Measured by review: pasting the sweep's block over a wrist block, or deleting it, threw away
+        tolerances measured on the cell, which the printed block carries only as comments."""
+        wrist = {"mounting_mode": "eye_in_hand", "artifact_path": str(self.root / "never_written.json"),
+                 "shutter_motion_tolerance_mm": 2.0, "shutter_motion_tolerance_deg": 1.0}
+        with self.assertRaises(RigCalibrationError) as caught:
+            RigCalibration.from_config("wrist", _rgbd(wrist).extrinsics)
+        self.assertIn("--mode eye_in_hand, or examples/real_robot/09 or 10", str(caught.exception))
+        self.assertIn("keeping the tolerances the block holds; until then, comment the block out", str(caught.exception))
+        self.assertNotIn("leave the block out", str(caught.exception))
+        self.assertNotIn("paste", str(caught.exception))
+
+    def test_a_file_that_is_there_and_does_not_parse_keeps_its_own_sentence(self) -> None:
+        """The control: the new sentence is for a file that is not there, not for every failed load."""
+        broken = self.root / "broken.json"
+        broken.write_text("{ not json", encoding="utf-8")
+        with self.assertRaises(RigCalibrationError) as caught:
+            RigCalibration.from_config("overhead", _rgbd({**_FIXED, "artifact_path": str(broken)}).extrinsics)
+        self.assertIn("which does not load", str(caught.exception))
+        self.assertNotIn("there is no file at", str(caught.exception))
+        self.assertNotIsInstance(caught.exception, RigArtifactMissing)
+
+
+class TheCellBuildSaysItInWholeSentencesTests(unittest.TestCase):
+    """The pick cell's build embeds the refusal and adds a sentence of its own."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+
+    def _refusal(self, path: str) -> str:
+        from src.robot.execution.autonomous_grasp.builders import _resolver_for_rig
+
+        with self.assertRaises(RuntimeError) as caught:
+            _resolver_for_rig("overhead", _rgbd({**_FIXED, "artifact_path": path}).extrinsics)
+        return str(caught.exception)
+
+    def test_a_missing_artifact_is_one_sentence_after_another_and_its_fix_is_said_once(self) -> None:
+        """⛔ Measured by review: "...the directory the program was started in The cell is refused ...",
+        followed by a second copy of the leave-the-block-out advice."""
+        text = self._refusal(str(self.root / "never_written.json"))
+        self.assertIn("If it has run, compare this path with the one the sweep printed. The cell is refused", text)
+        self.assertNotIn("fix the artifact", text)
+        self.assertEqual(text.count("extrinsics block"), 0)
+        self.assertEqual(text.count("leave the block out"), 1)
+
+    def test_a_file_that_does_not_parse_keeps_the_builds_fix(self) -> None:
+        broken = self.root / "broken.json"
+        broken.write_text("{ not json", encoding="utf-8")
+        text = self._refusal(str(broken))
+        self.assertIn("does not load", text)
+        self.assertIn(". The cell is refused at construction", text)
+        self.assertTrue(text.endswith("remove the rig's extrinsics block until the camera is calibrated."))
 
 
 class TheOwnerLoadsThroughTheLoaderTests(unittest.TestCase):

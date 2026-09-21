@@ -853,7 +853,7 @@ def _resolver_for_rig(rig_id: str, extrinsics: Any) -> "FrameResolver":
 
     A calibration that does not load is refused with a ``RuntimeError`` naming the rig key.
     """
-    from src.calibration.rig_calibration import RigCalibration, RigCalibrationError
+    from src.calibration.rig_calibration import RigArtifactMissing, RigCalibration, RigCalibrationError
     from src.robot.grasping.motion.frame_resolver import (
         EyeInHandFrameResolver,
         StaticCameraToBaseResolver,
@@ -862,9 +862,13 @@ def _resolver_for_rig(rig_id: str, extrinsics: Any) -> "FrameResolver":
     try:
         calibration = RigCalibration.from_config(rig_id, extrinsics)
     except RigCalibrationError as exc:
+        # A missing artifact's refusal already says to sweep or leave the block out; any other says only
+        # what the file did.
+        fix = "" if isinstance(exc, RigArtifactMissing) else (
+            ": fix the artifact, or remove the rig's extrinsics block until the camera is calibrated")
         raise RuntimeError(
-            f"{exc} The cell is refused at construction rather than run with a camera it cannot place: fix the "
-            "artifact, or remove the rig's extrinsics block until the camera is calibrated."
+            f"{str(exc).rstrip('.')}. The cell is refused at construction rather than run with a camera it cannot "
+            f"place{fix}."
         ) from exc
     if calibration.mounting_mode == "eye_in_hand":
         return EyeInHandFrameResolver(t_cam_to_tool=calibration.camera_to_tool())

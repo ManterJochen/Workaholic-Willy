@@ -207,6 +207,16 @@ class TheCalibrationSweepTests(unittest.TestCase):
         _, blank = self._sweep(wrist_rig(calibrated=False), reason="  ")
         self.assertIsNotNone(blank)
 
+    def test_a_block_whose_artifact_is_missing_asks_for_the_reason_and_not_for_this_sweep(self) -> None:
+        """⛔ Measured by review: the refusal embedded the real cell's remedy, telling the operator running the
+        sweep to run it, to delete the block (which does not unblock it), and naming the flag twice."""
+        _, refusal = self._sweep(wrist_rig())  # its block names eih_wrist.json, which is not there
+        self.assertIn("names eih_wrist.json (eye_in_hand), which does not load: there is no file at that path", refusal)
+        self.assertEqual(refusal.count("--unmodelled-wrist-body"), 1)
+        self.assertNotIn("If its sweep has not run yet", refusal)
+        self.assertNotIn("comment the block out", refusal)
+        self.assertEqual(self._sweep(wrist_rig(), reason="first calibration of a new bracket"), (None, None))
+
     def test_a_reason_does_not_excuse_a_camera_the_registry_does_not_stand_for(self) -> None:
         _, refusal = self._sweep(wrist_rig(calibrated=False, model="acme_cam"), reason="new bracket")
         self.assertIn("acme_cam", refusal)

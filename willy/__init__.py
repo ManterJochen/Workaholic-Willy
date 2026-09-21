@@ -69,6 +69,7 @@ _HOME: dict[str, str] = {
     "Locator": "src.robot.perception.locator",
     "LocatorRefused": "src.robot.perception.locator",
     "RGBDFrame": "src.camera",
+    "RigCalibrationError": "src.camera",
     "RigNotCalibrated": "src.camera",
     "SweepOptions": "src.robot.execution.hand_eye",
     # Hands seen by a camera: MediaPipe, optional and standalone.
@@ -132,7 +133,7 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     # mypy reads every name reached that way as Any, so no call through them would be checked.
     from src.config.loader import ConfigError, load_speech_section
     from src.config.tree import ConfigTree, LoadedTree, load_tree
-    from src.camera import Camera, CameraRefused, RGBDFrame, RigNotCalibrated
+    from src.camera import Camera, CameraRefused, RGBDFrame, RigCalibrationError, RigNotCalibrated
     from src.geometry import Frame, Pose
     from src.models.handdetection import (
         HandGesture, build_gesture_recognizer, build_hand_finder_on_camera, build_palm_detector)
