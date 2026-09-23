@@ -102,6 +102,13 @@ def _arm(
     arm._conn.fk.return_value = [0.3, 0.0, 0.3, 0.0, 3.14159, 0.0]
     arm._conn.moveL.return_value = True
     arm._conn.move_to.return_value = True
+    # A controller that can move: RUNNING, NORMAL safety, no stop. The grasp policy and the hand verbs ask it before
+    # any gripper command (2026-09-23), and a bare MagicMock reads as a controller in an unknown mode.
+    arm._conn.get_robot_mode.return_value = 7
+    arm._conn.get_safety_mode.return_value = 1
+    arm._conn.is_protective_stopped.return_value = False
+    arm._conn.is_emergency_stopped.return_value = False
+    arm._conn.dashboard_safety_status.return_value = ""
 
     solutions = list(ik_solutions) if ik_solutions is not None else None
     arm.ik_calls: list[tuple[Pose, JointPositions | None]] = []  # type: ignore[attr-defined]

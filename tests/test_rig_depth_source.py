@@ -21,7 +21,7 @@ from src.geometry import Frame, Pose
 from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.drivers.sim.arm import IsaacRobotArm
 from src.robot.drivers.sim.config import SimRobotConfig
-from src.robot.safety.planning.depth_source import RigDepthSource
+from src.robot.safety.planning.depth_source import WRIST_WARMUP_GRABS, RigDepthSource
 
 _MODULE = "src.robot.safety.planning.depth_source"
 _ROOT = Path(__file__).resolve().parents[1]
@@ -146,7 +146,8 @@ class AWristRigTests(unittest.TestCase):
                 handle = _depth_handle()
                 source = RigDepthSource(handle, tool_pose=_Reader(handle, before, after), motion_tolerance=(1.0, 0.5))
                 self.assertIsNone(source.grab_surface_depth())
-                self.assertEqual(handle.events, ["pose", "grab", "pose"])
+                # The pose, the warm-ups thrown away, the frame kept, the pose again.
+                self.assertEqual(handle.events, ["pose", *["grab"] * (WRIST_WARMUP_GRABS + 1), "pose"])
 
     def test_a_resting_arm_stamps_its_pose(self) -> None:
         """Inside both tolerances, the frame carries the pose read before the grab, the one nearest the shutter."""

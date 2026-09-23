@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .common import SampleRejection
 from .dataset import EYE_HAND_DATASET_SCHEMA, EyeHandDataset, EyeHandSample
 from .eye_in_hand import EyeInHandCalibrator
 from .eye_to_hand import EyeToHandCalibrator
@@ -16,4 +17,5 @@ __all__ = [
     "EyeInHandCalibrator",
     "EyeToHandCalibrator",
     "MountingMode",
+    "SampleRejection",
 ]

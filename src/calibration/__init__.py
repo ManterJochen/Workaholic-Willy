@@ -2,7 +2,9 @@
 
 Domain logic only: camera device I/O, robot vendor drivers, FastAPI routes and
 application pipelines stay outside this boundary. OpenCV stays inside the
-stereo subpackage; the hand-eye solvers and the typed persistence use NumPy and
+stereo subpackage and the sweep's target estimators (``targets.py``, and
+``rgbd_marker_source.py`` through them), none of which this package imports;
+the hand-eye solvers and the typed persistence use NumPy and
 :mod:`src.geometry` alone.
 """
 

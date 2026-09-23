@@ -35,10 +35,12 @@ gripper:
     behind it (the carriage inside the housing belongs to the palm), 10.80 mm thick and 29.24 mm wide, and the
     housing 104.12 mm deep from the finger box to its coupling bolts and 75.00 mm across. The contact patch and
     the 2.0 mm envelope overlap are the committed values. The friction is a default.
-  # The robot.gripper.vendor drivers that can actuate this hand: the Robotiq driver over the socket the
-  # URCap opens. A real UR profile naming this hand with another driver is refused at load; none and dummy
-  # are always admitted.
-  drivers: [robotiq]
+  # The robot.gripper.vendor drivers that can actuate this hand. robotiq: over the socket the Robotiq URCap
+  # opens. jaw_io: through the Robotiq I/O Coupling, which sits between the flange and the Hand-E and turns it
+  # into a digital-I/O hand on the tool connector, one tool output selecting open or closed, with nothing on
+  # the URCap socket (a cell driving it so, 2026-09-23: UR10 CB3, actuation single_toggle on tool DO0). A real
+  # UR profile naming this hand with another driver is refused at load; none and dummy are always admitted.
+  drivers: [robotiq, jaw_io]
   jaw:
     # Where the grasp centre sits along the approach, from this hand's own bundle origin. Every other
     # number here is relative to it, so without it these numbers are a shape with no place on an arm:

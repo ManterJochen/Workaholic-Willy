@@ -9,9 +9,23 @@ Capability-aware close verification
 -----------------------------------
 The policy queries :meth:`ObjectDetectingGripper.is_object_detected` if
 and only if the configured gripper advertises the
-:class:`ObjectDetectingGripper` capability. A gripper without that
-capability is trusted after the close command and the policy returns
-:attr:`PolicyOutcome.EXECUTED`.
+:class:`ObjectDetectingGripper` capability, and a ``False`` ends the pick
+as :attr:`PolicyOutcome.OBJECT_NOT_DETECTED`. A ``True`` is only a
+measurement where the gripper's :class:`ReportsHoldEvidence` does not say
+UNMEASURED: a jaw with no feedback wired answers ``is_object_detected``
+with its own command, so :attr:`PolicyReport.object_detected` is then
+``None``, not ``True``. A gripper without either capability is trusted
+after the close command and the policy returns :attr:`PolicyOutcome.EXECUTED`
+with ``object_detected`` ``None``.
+
+The controller is asked before anything is commanded
+----------------------------------------------------
+On an arm that reports its controller (:class:`SupportsRobotStatus`, the UR
+driver), a policy with a gripper reads the controller before the detach and
+the pre-open and again before the close. A controller that cannot move ends
+the pick as :attr:`PolicyOutcome.MOTION_FAILED` with
+:attr:`MotionStatus.CONTROLLER_REJECTED` and nothing commanded, the jaws
+included.
 
 Numerics
 --------
@@ -41,10 +55,18 @@ from src.robot.core import (
     MotionStatus,
     ObjectDetectingGripper,
     RobotArm,
+    SupportsRobotStatus,
 )
 from src.robot.core.arm_capabilities import LineMotion, line_motion_of
 from src.robot.core.camera_world import weakest_camera_world
 from src.robot.core.errors import CameraWorldUnavailable
+from src.robot.core.gripper import (
+    HoldEvidence,
+    OpensAndCloses,
+    ReportsHoldEvidence,
+    hold_evidence_of,
+    width_is_measured_of,
+)
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 
 __all__ = [
@@ -93,8 +115,11 @@ class PolicyReport:
     waypoints
         Ordered tuple of :class:`Pose` instances the policy commanded.
     object_detected
-        :data:`None` when the gripper has no detection capability or no
-        gripper was configured; otherwise the reported boolean.
+        :data:`None` when no gripper was configured, when the gripper has
+        no detection capability, or when it says it measured nothing about
+        the hold (``hold_evidence()`` UNMEASURED: a jaw with no feedback
+        wired, whose ``is_object_detected`` is its own command). Otherwise
+        what the gripper measured: ``True`` held, ``False`` empty.
     error
         Optional :class:`Exception` instance for :attr:`PolicyOutcome.MOTION_FAILED`.
     motion_status
@@ -261,6 +286,21 @@ class GraspExecutionPolicy:
                 motion_message=f"this arm keeps no straight line for the final descent: {reading.reason}",
                 line_motion=line_motion,
             )
+        # Where the jaws will be told anything, a controller that cannot move is asked about before anything is
+        # commanded, the planner's part included. After a protective stop mid-pick, the next attempt of a
+        # campaign used to detach and pulse a toggle hand open before its first motion asked the controller
+        # anything, so the part dropped from wherever the arm had stopped (owner-cell audit, reproduced with
+        # fakes, 2026-09-23). A policy with no gripper commands no I/O, and its first motion meets the
+        # controller as before.
+        refused = _controller_refusal(self.arm) if self.gripper is not None else ""
+        if refused:
+            return PolicyReport(
+                outcome=PolicyOutcome.MOTION_FAILED,
+                waypoints=(),
+                motion_status=MotionStatus.CONTROLLER_REJECTED,
+                motion_message=refused,
+                line_motion=line_motion,
+            )
         # Forget any part from a previous pick. Detaching here rather than on release means a
         # stale attachment cannot survive a failed pick, a recovery, or a runner that never released:
         # the planner is only ever told about a part between a confirmed close and the next attempt.
@@ -272,11 +312,15 @@ class GraspExecutionPolicy:
         # Pre-open the gripper before driving the approach so the jaws
         # are clear at the grasp point.
         if self.gripper is not None and self.pre_open_width_mm is not None:
-            self.gripper.set_width_mm(
-                float(self.pre_open_width_mm),
-                speed=self.close_speed,
-                force=None,
-            )
+            if isinstance(self.gripper, OpensAndCloses):
+                # A two-state gripper told what it means: a pre-open is an open whatever its width reads as.
+                self.gripper.set_closed(False)
+            else:
+                self.gripper.set_width_mm(
+                    float(self.pre_open_width_mm),
+                    speed=self.close_speed,
+                    force=None,
+                )
 
         commanded: list[Pose] = []
         last_status: MotionStatus | None = None
@@ -325,24 +369,45 @@ class GraspExecutionPolicy:
         # Close the gripper at the grasp point.
         object_detected: bool | None = None
         if self.gripper is not None:
+            # Asked again at the part: a stop that fell between the line's end and the close leaves an arm that
+            # cannot lift what the jaws would take.
+            refused = _controller_refusal(self.arm)
+            if refused:
+                return PolicyReport(
+                    outcome=PolicyOutcome.MOTION_FAILED,
+                    waypoints=tuple(commanded),
+                    motion_status=MotionStatus.CONTROLLER_REJECTED,
+                    motion_message=refused,
+                    camera_worlds=tuple(stamps),
+                    line_motion=line_motion,
+                )
             target_width = self._resolve_close_width(grasp)
-            self.gripper.set_width_mm(
-                target_width,
-                speed=self.close_speed,
-                force=self.close_force_n,
-            )
-            if isinstance(self.gripper, ObjectDetectingGripper):
-                object_detected = bool(self.gripper.is_object_detected())
-                if not object_detected:
-                    return PolicyReport(
-                        outcome=PolicyOutcome.OBJECT_NOT_DETECTED,
-                        waypoints=tuple(commanded),
-                        object_detected=False,
-                        motion_status=last_status,
-                        motion_message=last_message,
-                        camera_worlds=tuple(stamps),
-                        line_motion=line_motion,
-                    )
+            if isinstance(self.gripper, OpensAndCloses):
+                # The grasp width read against closed_below_mm opens a two-state gripper when the part is wider than
+                # the threshold, and the loop then reported object_not_detected on jaws it never closed (URSim, the
+                # owner's toggle cell, 2026-09-23). A grasp is a close.
+                self.gripper.set_closed(True)
+            else:
+                self.gripper.set_width_mm(
+                    target_width,
+                    speed=self.close_speed,
+                    force=self.close_force_n,
+                )
+            # What the gripper measured, not what it echoes: a jaw with no feedback wired answers
+            # is_object_detected with its own close, and the pick service recorded that as a detected part
+            # on every close (owner-cell audit, 2026-09-23). Unmeasured is None, and the pick goes on as the
+            # trusted close it always was.
+            object_detected = _hold_after_close(self.gripper)
+            if object_detected is False:
+                return PolicyReport(
+                    outcome=PolicyOutcome.OBJECT_NOT_DETECTED,
+                    waypoints=tuple(commanded),
+                    object_detected=False,
+                    motion_status=last_status,
+                    motion_message=last_message,
+                    camera_worlds=tuple(stamps),
+                    line_motion=line_motion,
+                )
 
         # The planner learns what it is carrying, before the first motion that carries it. A lift,
         # transit or place planned as if the hand were empty ignores the part, and on a cell lifting a
@@ -452,9 +517,15 @@ class GraspExecutionPolicy:
         mid-cell, must still attach something or the planner goes back to lifting the part as if the
         hand were empty. A commanded width is a worse number than a measured one and a much better
         number than none.
+
+        The jaws are read only where the gripper says its width is measured (``MeasuresWidth``), as
+        the robot's grasp verb does. A jaw driven over digital I/O reports the band it was commanded
+        to, its closed band 5 mm on the owner's Hand-E, and the carried part was attached 5 mm wide
+        for a 40 mm grasp, so the planner lifted it out of a bin about 34 mm too narrow across the
+        jaws (owner-cell audit, reproduced 2026-09-23).
         """
         read = getattr(self.gripper, "get_width_mm", None)
-        if callable(read):
+        if callable(read) and width_is_measured_of(self.gripper):
             try:
                 measured = float(read())
             except Exception:  # noqa: BLE001 (a failed read is not a failed pick)
@@ -511,6 +582,47 @@ class GraspExecutionPolicy:
                 )
             )
         return tuple(poses)
+
+
+def _controller_refusal(arm: object) -> str:
+    """Why ``arm``'s controller cannot act now, or ``""`` where it can, or where the arm does not say.
+
+    Only an arm that implements ``SupportsRobotStatus`` (the UR driver) is asked; every other arm passes, as it
+    passes the pick loop's diagnosis. The criterion is ``not is_operational``, the one the pick loop names a failed
+    motion ``CONTROLLER_NOT_OPERATIONAL`` with, so a refusal here and that diagnosis describe one state: a controller
+    in REDUCED safety mode is refused too. A read that raises is not caught: a controller that cannot be asked is a
+    fault of the cell, and the pick leaves on it with nothing commanded.
+    """
+    if not isinstance(arm, SupportsRobotStatus):
+        return ""
+    status = arm.get_robot_status()
+    if status.is_operational:
+        return ""
+    detail = f": {status.message}" if status.message else ""
+    return (
+        f"the controller cannot move (robot_mode={status.robot_mode.value}, safety_mode={status.safety_mode.value}, "
+        f"protective_stop={status.protective_stopped}, emergency_stop={status.emergency_stopped}{detail}), so "
+        "nothing was commanded, the jaws included; clear the stop where the arm is visible, then run again"
+    )
+
+
+def _hold_after_close(gripper: object) -> bool | None:
+    """What ``gripper`` measured about a hold after a close: ``True`` held, ``False`` empty, ``None`` unmeasured.
+
+    ``is_object_detected`` is asked first where the gripper has it, and a ``False`` stays final as it always was. Its
+    ``True`` counts only where ``hold_evidence()`` does not say otherwise: EMPTY is ``False``, UNMEASURED ``None``,
+    because a jaw with no feedback wired, or a vacuum with no switch, answers ``is_object_detected`` with its
+    command. A gripper with neither capability measured nothing, ``None``.
+    """
+    detecting = isinstance(gripper, ObjectDetectingGripper)
+    if isinstance(gripper, ObjectDetectingGripper) and not bool(gripper.is_object_detected()):
+        return False
+    if isinstance(gripper, ReportsHoldEvidence):
+        hold = hold_evidence_of(gripper)
+        if hold is HoldEvidence.EMPTY:
+            return False
+        return True if hold is HoldEvidence.HELD else None
+    return True if detecting else None
 
 
 def _quaternion_from_axes(closing: np.ndarray, approach: np.ndarray) -> np.ndarray:

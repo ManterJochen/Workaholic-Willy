@@ -90,9 +90,11 @@ class Robot:
 
     ``gripper`` is ``None`` for an arm-only robot. ``lock_key`` names the controller the cross-process
     lock is taken on, and is ``None`` for a robot that takes no lock. ``camera_world`` is what the
-    cameras handed in built, ``None`` for a robot handed no camera. ``robot_config`` is the tree a
-    factory was handed and ``tree`` the loaded tree ``from_tree`` read; both are ``None`` where the
-    robot was built around handles alone.
+    cameras handed in built, ``None`` for a robot handed no camera. ``wrist_bodies`` are the camera
+    bodies the arm carries: every one its tree declares for a robot ``from_tree`` built, camera open or
+    not, and those of the cameras handed in otherwise. ``robot_config`` is the tree a factory was handed
+    and ``tree`` the loaded tree ``from_tree`` read; both are ``None`` where the robot was built around
+    handles alone.
     """
 
     arm: RobotArm
@@ -100,7 +102,8 @@ class Robot:
     lock_key: str | None
     #: The live planner world the robot's cameras built and its arm was handed, or why there is none.
     camera_world: "CameraWorldWiring | None" = None
-    #: The wrist cameras among those cameras that the arm carries, handed to it before the world.
+    #: The wrist cameras the arm carries, handed to it before the world: every body the tree declares for a
+    #: robot ``from_tree`` built, the bodies of the cameras handed in otherwise, ``None`` when neither was read.
     wrist_bodies: "WristBodies | None" = None
     #: The robot section this robot was built from, where a factory was handed one.
     robot_config: "RobotConfig | None" = field(default=None, repr=False, compare=False)
@@ -110,15 +113,23 @@ class Robot:
     @classmethod
     def from_tree(
         cls, tree: "LoadedTree", *, gripper: "Maybe[None]" = UNSET, cameras: "Maybe[Sequence[Any]]" = UNSET,
+        unmodelled_wrist_body: "Maybe[str]" = UNSET,
     ) -> "Robot":
         """The robot a loaded tree describes, built from its robot section. Connects nothing.
 
             robot = Robot.from_tree(ConfigTree.from_directory(profile="console_dummy").load())
 
-        The robot section goes through :meth:`from_config`, the one builder, and the robot keeps the
-        tree, so :meth:`preflight` reads the camera half and the root from the same load. A tree that
-        did not load is refused with its own refusal (``ConfigError``); anything but a ``LoadedTree``
-        is a ``TypeError``.
+        The robot section is built as :meth:`from_config` builds it, and the robot keeps the tree, so
+        :meth:`preflight` reads the camera half and the root from the same load. A tree that did not load
+        is refused with its own refusal (``ConfigError``); anything but a ``LoadedTree`` is a ``TypeError``.
+
+        Every wrist camera body the tree's camera section declares is handed to the arm, whether or not
+        its camera is handed in or even enabled: a camera that is not open still hangs on the arm, and the
+        planner, the exact guard and the self filter carry its housing (``execution.wrist_bodies``). A body
+        that cannot be placed yet, because its camera is not calibrated, is refused with
+        :class:`~src.robot.execution.wrist_bodies.WristBodyUnplaced`, unless ``unmodelled_wrist_body`` says
+        why this robot may move without it; the robot then names the camera it moves without. The reason
+        is read only for such a body.
         """
         from src.config.loader import ConfigError
         from src.config.tree import LoadedTree
@@ -129,7 +140,13 @@ class Robot:
                 f"ConfigTree.from_directory(...).load()")
         if not tree.ok:
             raise ConfigError(f"the tree did not load, so it describes no robot:\n{tree.error}")
-        return replace(cls.from_config(tree.robot, gripper=gripper, cameras=cameras), tree=tree)
+        robot_config = tree.robot
+        arm = resolve_arm(robot_config, arm=None)
+        wrist = _tree_wrist_bodies(tree, robot_config, cameras, unmodelled_wrist_body)
+        hand = None if chosen(gripper) else build_gripper(robot_config, arm=arm)
+        robot = cls._assemble(arm=arm, gripper=hand, lock_key=cell_lock_key(robot_config), cameras=cameras,
+                              robot_config=robot_config, wrist=wrist)
+        return replace(robot, tree=tree)
 
     @classmethod
     def from_config(
@@ -143,6 +160,10 @@ class Robot:
         substituted is refused at connect. ``gripper=None`` builds the arm alone: no activation
         sweep, and a gripper that could not be built does not stand in the way. ``cameras`` are passed
         through to :meth:`from_parts` with this tree, which the world's planning block is read from.
+
+        A robot section holds no camera section, so the arm carries only the bodies of the cameras handed
+        in. A robot that moves beside a wrist camera it was not handed is built with :meth:`from_tree`,
+        which reads them all; the calibration sweep builds its arm here and hands it the body itself.
         """
         arm = resolve_arm(robot_config, arm=None)
         hand = None if chosen(gripper) else build_gripper(robot_config, arm=arm)
@@ -174,12 +195,26 @@ class Robot:
         :class:`~src.robot.execution.camera_world_wiring.CameraWorldRequired`, before the wrist bodies
         are handed over and again after the wiring.
         """
+        return cls._assemble(arm=arm, gripper=gripper, lock_key=lock_key, cameras=cameras,
+                             robot_config=robot_config, wrist=UNSET)
+
+    @classmethod
+    def _assemble(
+        cls, *, arm: RobotArm, gripper: Gripper | None, lock_key: "Maybe[str | None]",
+        cameras: "Maybe[Sequence[Any]]", robot_config: "Maybe[RobotConfig]", wrist: "Maybe[WristBodies]",
+    ) -> "Robot":
+        """:meth:`from_parts` with the wrist bodies already resolved and handed over, or resolved from ``cameras``."""
         _refuse_a_calibrated_robot_without_a_world(arm, cameras, robot_config)
-        wrist = _wrist_bodies(arm, cameras, robot_config)
+        if chosen(wrist):
+            # Before the world, because the world's self filter reads the bodies the arm holds.
+            wrist.hand_to(arm)
+            held: "WristBodies | None" = wrist
+        else:
+            held = _wrist_bodies(arm, cameras, robot_config)
         wiring = _camera_world(arm, cameras, robot_config)
         kept = robot_config if chosen(robot_config) else None
         if chosen(lock_key):
-            return cls(arm=arm, gripper=gripper, lock_key=lock_key, camera_world=wiring, wrist_bodies=wrist,
+            return cls(arm=arm, gripper=gripper, lock_key=lock_key, camera_world=wiring, wrist_bodies=held,
                        robot_config=kept)
         derived = cell_lock_key(getattr(arm, "config", None))
         if derived is None:
@@ -193,7 +228,7 @@ class Robot:
                     f"State lock_key as the controller it drives (for a UR, 'ur@<ip>'), or pass "
                     f"lock_key=None to take no lock on purpose."
                 )
-        return cls(arm=arm, gripper=gripper, lock_key=derived, camera_world=wiring, wrist_bodies=wrist,
+        return cls(arm=arm, gripper=gripper, lock_key=derived, camera_world=wiring, wrist_bodies=held,
                    robot_config=kept)
 
     def connected(
@@ -355,9 +390,11 @@ class Robot:
         return _motion.move_joints(self.arm, target, decline=_motion.decline_of(decline))
 
     def home(self, *, decline: "Maybe[str]" = UNSET) -> "_motion.MotionReport":
-        """Move the arm to its configured home through its own gated ``move_home``, refused as :meth:`move` is.
+        """Move the arm to its configured home through its own gated home verb, refused as :meth:`move` is.
 
-        The arm's ``move_home`` answers with a bool, so a home it refuses reads UNKNOWN and its log names the gate.
+        An arm that goes home as a typed verb (the UR driver's ``move_to_home``) reports the status and the sentence of
+        the gate that refused it. Any other arm answers ``move_home`` with a bool, so a home it refuses reads UNKNOWN
+        and its log names the gate.
         """
         return _motion.home(self.arm, decline=_motion.decline_of(decline))
 
@@ -451,6 +488,34 @@ def _refuse_a_calibrated_robot_without_a_world(
     refusal = plan.refusal()
     if refusal is not None:
         raise CameraWorldRequired(refusal)
+
+
+def _tree_wrist_bodies(
+    tree: "LoadedTree", robot_config: "RobotConfig", cameras: "Maybe[Sequence[Any]]", reason: "Maybe[str]",
+) -> "WristBodies":
+    """Every wrist body ``tree`` declares, and those of handed cameras whose rig it does not hold, not yet handed over.
+
+    Resolved from the camera section, so a body is carried whether its camera is open or not. A body that cannot be
+    placed yet is refused naming ``unmodelled_wrist_body``, unless ``reason`` says why the arm may move without it.
+    """
+    from src.robot.execution.wrist_bodies import WristBodies, WristBodyUnplaced
+
+    camera = getattr(tree.app_config, "camera", None)
+    try:
+        wrist = WristBodies.from_config(robot_config, camera, data_dir=tree.root, unmodelled_reason=reason)
+    except WristBodyUnplaced as exc:
+        raise WristBodyUnplaced(
+            f"{str(exc).rstrip('.')}. To build this robot before the body can be placed, say why it may move "
+            'without it: Robot.from_tree(tree, unmodelled_wrist_body="<reason>"); it then moves with no camera '
+            "body in the planner, the exact guard or the self filter") from exc
+    if not chosen(cameras) or cameras is None:
+        return wrist
+    declared = {str(rig.rig_id) for rig in getattr(getattr(camera, "cameras", None), "rigs", None) or ()}
+    others = [owner for owner in cameras if str(owner.rig_id) not in declared]
+    if not others:
+        return wrist
+    handed = WristBodies.from_owners(robot_config, others)
+    return replace(wrist, bodies=wrist.bodies + handed.bodies)
 
 
 def _wrist_bodies(

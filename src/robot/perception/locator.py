@@ -28,6 +28,7 @@ import numpy as np
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Pose
 from src.robot.core.keep_out import SegmentationOffer
+from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
 from src.robot.grasping.multiview.scene_geometry import to_base_mm
 from src.robot.grasping.scene import Scene
 from src.robot.perception.realsense_source import RealSenseVisionPerceptionSource
@@ -60,6 +61,8 @@ class LocatedObject:
     box_px: "tuple[float, float, float, float] | None"
     mask: np.ndarray
     #: The measured surface under the mask, ``(N, 3)`` BASE millimetres; empty when the mask selects no valid depth.
+    #: Mask pixels that measure the background behind a depth step at the object's edge are not in it (see
+    #: ``grasping.generation.depth_steps``): on a tilted view they are the table 40 mm behind the part.
     points_base_mm: np.ndarray
     #: The per-axis median of the surface, or ``None`` when there is no surface.
     centre_mm: "tuple[float, float, float] | None"
@@ -132,8 +135,11 @@ class Located:
                 robot.pick(best.pose(), best.grip_width_mm, keep_out=located.keep_out(0))
 
         The camera sees one side of a part, so the scene extrudes the seen footprint down to the support. The
-        generator is the geometric one whatever ``grasping.calculator`` says, and ``SceneGrasps.generator``
-        says so on every result. An object with no surface under its mask gives a scene with no grasps.
+        support is the declared one, raised to the object's own lowest point when its surface reaches down to what
+        it stands on, and the jaw is the hand ``grasping.gripper_geometry`` describes, both as the cell's pick path
+        takes them. The generator is the geometric one whatever ``grasping.calculator`` says, and
+        ``SceneGrasps.generator`` says so on every result. An object with no surface under its mask gives a scene
+        with no grasps.
         """
         if not 0 <= int(target) < len(self.objects):
             raise IndexError(f"object {target} of {len(self.objects)} located by camera {self.camera!r}")
@@ -299,7 +305,10 @@ class Locator:
         objects: list[LocatedObject] = []
         for seg in frame.segmentations:
             mask = np.asarray(getattr(seg, "mask")).astype(bool)
-            points = to_base_mm(mask, depth, frame.intrinsics, camera_to_base)
+            # The surface is the mask less the pixels behind a depth step; the mask itself stays as segmented,
+            # because ``keep_out`` holds the whole of it out of the planner world.
+            surface = mask & ~pixels_behind_depth_steps(mask, depth)
+            points = to_base_mm(surface, depth, frame.intrinsics, camera_to_base)
             centre = None if points.shape[0] == 0 else tuple(float(v) for v in np.median(points, axis=0))
             score = getattr(seg, "score", None)
             box = getattr(seg, "bbox_xyxy", None)

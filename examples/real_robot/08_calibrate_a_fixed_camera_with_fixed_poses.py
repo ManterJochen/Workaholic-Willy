@@ -16,7 +16,7 @@ Bolt a printed ArUco board to the tool flange, then run it at the cell, under th
     WILLY_PROFILE=<your cell> python examples/real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py
 """
 
-from willy import HandEyeCalibration, Pose, SweepOptions, load_tree
+from willy import HandEyeCalibration, Pose, SweepOptions, load_tree, print_sweep_progress
 
 # Roughly where the camera hangs, in BASE millimetres, off a tape measure. This is the chicken and
 # egg of a first calibration: you are running this to find out exactly where the camera is, and
@@ -37,9 +37,12 @@ fixed_poses = [
     Pose.tool_down(400.0, -100.0, 450.0, yaw_deg=60.0, label="down_1"),
 ]
 # Or read them from disk instead of writing them here:
-#     SweepOptions(marker_length_mm=40.0, fixed_poses="examples/real_robot/eth_fixed_poses.json")
-options = SweepOptions(marker_length_mm=40.0, fixed_poses=fixed_poses)
-calibration = HandEyeCalibration.from_tree(load_tree(), rig_id="overhead", mode="eye_to_hand", options=options)
+#     SweepOptions(fixed_poses="examples/real_robot/eth_fixed_poses.json")
+# The board itself is camera.hand_eye.eye_to_hand's; SweepOptions(marker_length_mm=...) overrides it.
+# preview="auto" shows the camera and each judged frame in a window, where one can show.
+options = SweepOptions(fixed_poses=fixed_poses, preview="auto")
+calibration = HandEyeCalibration.from_tree(load_tree(), rig_id="overhead", mode="eye_to_hand",
+                                           options=options, on_event=print_sweep_progress)
 
 # The config alone: the rig, the marker, and this run's poses. Opens nothing.
 print(calibration.check())
@@ -51,8 +54,8 @@ print(rehearsed)
 if not rehearsed.ok:
     raise SystemExit(rehearsed.exit_code)
 
-# The poses above, in order, not a generated sweep pattern. The report says how many of them the
-# camera actually decoded the marker in: a pose it saw nothing from is a pose to move.
+# The poses above, in order, not a generated sweep pattern. Each prints as it runs, and the report
+# lists every pose: counted, or why not. A pose the camera saw nothing from is a pose to move.
 report = calibration.run()  # this moves the robot
 print(report)  # ends with the rig block to paste under camera.cameras.rigs
 raise SystemExit(report.exit_code)

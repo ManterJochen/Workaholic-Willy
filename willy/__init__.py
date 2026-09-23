@@ -72,6 +72,11 @@ _HOME: dict[str, str] = {
     "RigCalibrationError": "src.camera",
     "RigNotCalibrated": "src.camera",
     "SweepOptions": "src.robot.execution.hand_eye",
+    "print_sweep_progress": "src.robot.execution.hand_eye",
+    "MarkerAim": "src.robot.execution.camera_aim",
+    "nominal_camera_in_tool": "src.robot.execution.camera_aim",
+    "ViewingPose": "src.robot.execution.camera_aim",
+    "viewing_pose": "src.robot.execution.camera_aim",
     # Hands seen by a camera: MediaPipe, optional and standalone.
     "HandGesture": "src.models.handdetection",
     "build_palm_detector": "src.models.handdetection",
@@ -151,10 +156,11 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.robot.execution.autonomous_grasp.report import (
         AutonomousGraspOutcome, AutonomousGraspReport)
     from src.robot.execution.autonomous_grasp.service import AutonomousGraspService
+    from src.robot.execution.camera_aim import MarkerAim, ViewingPose, nominal_camera_in_tool, viewing_pose
     from src.robot.execution.camera_world_wiring import CameraWorldPlan, CameraWorldRequired
     from src.robot.execution.cell import Cell, CellNotBuilt
     from src.robot.execution.cell_lock import CellBusy
-    from src.robot.execution.hand_eye import HandEyeCalibration, SweepOptions
+    from src.robot.execution.hand_eye import HandEyeCalibration, SweepOptions, print_sweep_progress
     from src.robot.execution.handling import HandlingOutcome, HandlingReport, HandOutcome, HandReport
     from src.robot.execution.lifecycle import NoRealGripper
     from src.robot.execution.motion import MotionOutcome, MotionReport

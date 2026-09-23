@@ -8,7 +8,12 @@ things around it.
    own ``SUCCEEDED`` as sufficient evidence: it additionally requires a lift measured from the
    physics to clear `sim_schema.py` `lift_threshold_mm`, which defaults to 50.0. A cell with a
    `NullGripper` reports SUCCEEDED on every run, so the rule is an explicit argument here rather
-   than a constant.
+   than a constant. A success the gripper did not measure (a jaw with no feedback wired) is counted
+   as a success and said to be unmeasured, on its run line and under the result.
+
+   A pick that ended on a controller that cannot move (a protective or emergency stop) stops the
+   campaign as a fault of the cell does: the next run would otherwise start on an arm a person has
+   to walk up to.
 
 2. The connect belongs outside the loop. Connecting is motion: Robotiq activation is a calibration
    sweep of the full finger travel, the cross-process `CellLock` is taken and released once, and on
@@ -63,7 +68,8 @@ class PickOutcome(StrEnum):
     #: Ran and did not succeed. The service's own outcome is on the report beside it.
     FAILED = "failed"
     #: A fault of the cell ended the pick: `pick()` reported one (a camera that could not vouch, a
-    #: controller link that dropped) or an exception escaped it. The campaign stops; the cell still
+    #: controller link that dropped), the pick ended on a controller that cannot move (a protective
+    #: or emergency stop, a power-off), or an exception escaped it. The campaign stops; the cell still
     #: comes down.
     RAISED = "raised"
     #: The campaign was asked to stop before this attempt started.
@@ -149,10 +155,19 @@ class PickAttempt:
     reported: str = ""
     #: The service's own one-line reason for a failure. Empty otherwise.
     detail: str = ""
+    #: For a success with a gripper, whether the gripper measured the hold (the service report's
+    #: `hold_measured`). `False` is a success that rests on the close command alone; `None` where
+    #: the attempt did not succeed or the service does not say.
+    hold_measured: bool | None = None
 
     @property
     def passed(self) -> bool:
         return self.outcome is PickOutcome.SUCCEEDED
+
+    @property
+    def unmeasured(self) -> bool:
+        """A success whose hold the gripper did not measure."""
+        return self.passed and self.hold_measured is False
 
     def __str__(self) -> str:
         """What ``print()`` shows: the text :meth:`render` returns."""
@@ -161,7 +176,7 @@ class PickAttempt:
     def render(self) -> str:
         return f"  run {self.index}: {self.reported or self.outcome.value}" + (
             f"  {self.detail}" if self.detail else ""
-        )
+        ) + ("  hold not measured" if self.unmeasured else "")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -169,6 +184,7 @@ class PickAttempt:
             "outcome": self.outcome.value,
             "reported": self.reported,
             "detail": self.detail,
+            "hold_measured": self.hold_measured,
         }
 
 
@@ -191,6 +207,15 @@ class PickRunReport:
     @property
     def succeeded(self) -> int:
         return sum(1 for a in self.attempts if a.passed)
+
+    @property
+    def unmeasured(self) -> int:
+        """Successes whose hold the gripper did not measure: each is the close command's word.
+
+        On a jaw with no feedback wired, the owner's toggle Hand-E (2026-09-23), that is every success, and a
+        count of successes alone would read as parts held.
+        """
+        return sum(1 for a in self.attempts if a.unmeasured)
 
     @property
     def attempted(self) -> int:
@@ -253,6 +278,13 @@ class PickRunReport:
         its own staged banners between the picks and the teardown and needs only this tail.
         """
         lines = [f"RESULT: {self.succeeded}/{self.requested} succeeded"]
+        # What the count rests on, where the gripper measured nothing: a success count that reads as
+        # parts held when no hold was ever measured is the report this line exists to prevent.
+        if self.unmeasured:
+            judged = ("confirm= judged each one" if self.rule.confirm is not None
+                      else "each is the close command's word; confirm= is where a check of your own goes")
+            lines.append(f"  {self.unmeasured} of {self.succeeded} success(es) with no hold measured by the "
+                         f"gripper: {judged}")
         # The rule is printed so an operator reading the verdict can see which rule produced it:
         # unanimity and 80 % answer differently on the same nine successes out of ten.
         lines.append(f"  rule: {self.rule.render()}  ->  {'PASS' if self.passed else 'FAIL'}")
@@ -271,6 +303,7 @@ class PickRunReport:
             "requested": self.requested,
             "attempted": self.attempted,
             "succeeded": self.succeeded,
+            "unmeasured": self.unmeasured,
             "cancelled": self.cancelled,
             "passed": self.passed,
             "exit_code": self.exit_code,
@@ -480,6 +513,17 @@ class PickRun:
                     # the same words.
                     fault = getattr(report_i, "fault", None)
                     stopped_by = "" if fault is None else f"{type(fault).__name__}: {fault}"
+                    # So does a controller that cannot move. The pick ends through its own path on it,
+                    # CANCELLED with no fault, and the campaign went on: after a protective stop mid-pick
+                    # the next run perceived and pulsed the jaws of an arm a person had to walk up to
+                    # (owner-cell audit, reproduced with fakes, 2026-09-23). `is True`, so a double that
+                    # answers every attribute is not read as a stop.
+                    if not stopped_by and getattr(report_i, "controller_stopped", False) is True:
+                        stopped_by = (
+                            "the controller cannot move (a protective or emergency stop, or a power-off), "
+                            "so the campaign stops; a person clears the stop where the arm is visible: "
+                            + str(report_i.failure_summary())
+                        )
                 if stopped_by:
                     attempts.append(
                         PickAttempt(index=index, outcome=PickOutcome.RAISED, detail=stopped_by)
@@ -498,12 +542,16 @@ class PickRun:
                     # measures the lift independently; the real cell path supplies none. A
                     # `NullGripper` cell reports SUCCEEDED on every run.
                     ok = bool(self.rule.confirm(report_i))
+                # Whether the gripper measured the hold, as the service says it: only a bool counts,
+                # so a service that does not say leaves it None.
+                hold = getattr(report_i, "hold_measured", None)
                 attempts.append(
                     PickAttempt(
                         index=index,
                         outcome=PickOutcome.SUCCEEDED if ok else PickOutcome.FAILED,
                         reported=reported,
                         detail="" if ok else str(report_i.failure_summary()),
+                        hold_measured=hold if ok and isinstance(hold, bool) else None,
                     )
                 )
                 self._announce(attempts[-1])

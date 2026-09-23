@@ -35,6 +35,17 @@ class JointLimitSafetyConfig(StrictModel):
 
     ``margin_deg`` is the buffer in degrees the guard keeps between each commanded
     joint angle and the axis limit itself.
+
+    ``within_half_turn_of_home`` narrows every axis whose range is a full turn or more to
+    half a turn either side of the arm's own home configuration (``robot.home_joint_positions``,
+    or the driver's default where that is unset), before the margin comes off. A cable run along
+    the arm is then never wound more than half a turn from where it was at home, and no joint
+    range has to be typed. It costs no reach: a UR joint is 2*pi-periodic, so every angle has a
+    twin inside any full-turn window, and what the window refuses is a move across the seam
+    behind home, which is the long way round. The margin does cost a band of ``2 * margin_deg``
+    at that seam. A UR's elbow is left as the table has it: Universal Robots plans it within
+    +-180 degrees, so it never turns the full turn that winds a cable, and it has no twin to fall
+    back on. It is off by default, so a cell that does not ask keeps its envelope.
     """
 
     enforce: bool = Field(default=True)
@@ -43,6 +54,7 @@ class JointLimitSafetyConfig(StrictModel):
     # as long as the arm's DoF, with ``min_deg[i] < max_deg[i]`` on every axis i.
     min_deg: list[float] | None = Field(default=None)
     max_deg: list[float] | None = Field(default=None)
+    within_half_turn_of_home: bool = Field(default=False)
 
     @model_validator(mode="after")
     def _check_axis_ordering(self) -> JointLimitSafetyConfig:

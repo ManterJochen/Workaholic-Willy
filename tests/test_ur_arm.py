@@ -193,6 +193,12 @@ class _FakePlanner:
         """Asked before a judged joint move or line on a live camera world. The double has no world."""
         return None
 
+    def check_joint_path(self, samples: object, *, refresh: bool = True) -> object:
+        """Asked about the legs a plan will run, after the local gate. The double's world holds nothing to refuse."""
+        from src.robot.safety.planning import JointCheckVerdict
+
+        return JointCheckVerdict(valid=True, first_invalid=None, checked=len(list(samples)), reason="the double accepts")
+
     def execute(self, traj: object, pose: Pose, *, vel: object = None, acc: object = None) -> MotionResult:
         assert self._execute_result is not None
         return self._execute_result

@@ -60,6 +60,9 @@ check needs the dashboard: a dashboard that does not answer is logged, not refus
 |---|---|---|
 | `CONTROLLER_REJECTED` | `robot.ur.motion_planner: curobo` and the planner is not available | `python -m src.robot.safety.planning --doctor`; nothing falls back to blind IK |
 | `TIMEOUT` | cuRobo found no collision-free plan | Move the goal or clear the cell |
+| `SELF_COLLISION_REJECTED` or `JOINT_LIMIT_REJECTED`, the start | the planner will not start from where the arm stands | Jog the arm out of that configuration; the message names what the planner found |
+| `SELF_COLLISION_REJECTED` or `JOINT_LIMIT_REJECTED`, a leg | the path gate or the planner refuses a leg of the plan that would run | Read the message; nothing has moved |
+| `INVALID_TARGET`, a waypoint | `ur_rtde` refused a speed or acceleration before sending that waypoint's `moveJ` | The message says which waypoint and what ran before it |
 | `UNSUPPORTED`, camera world MISSING | on `curobo`, a motion with neither a live camera world nor a stated decline | Hand the robot its cameras, or `without_camera_world(reason)` |
 | `CONTROLLER_REJECTED`, plan off its goal | a plan ending more than 5 mm or 6 degrees from its goal on the DH chain | Read the message; nothing has moved |
 | a refused straight line | `linear=True` and a joint turns over 0.35 rad between samples, or the flange leaves the line by 1 mm | Plan the move in legs, or drop `linear` |
@@ -68,6 +71,23 @@ check needs the dashboard: a dashboard that does not answer is logged, not refus
 returns `False`. The `Robot` verbs return a report instead. `ik` as the planner is the controller's
 calibrated IK and a straight `moveJ` or `moveL`, which knows nothing about the cell and drives through
 anything in it.
+
+## How a planned move runs
+
+On `curobo`, `move(pose)` chooses the goal configuration before it plans: every closed-form inverse
+kinematics solution of the flange goal, each joint on its full turn nearest the arm inside the planner's
+and the joint-limit guard's window, quickest first. The planner and the endpoint gate screen each, up
+to three are planned to in joint space, and a plan is taken only where it ends on the configuration
+asked for. Otherwise cuRobo chooses its own, as before, and `ur_arm.log` says which happened and why.
+A goal that no configuration plans to costs up to three failed joint plans first, 7 to 9 s each
+measured on the UR10 descriptor.
+
+The plan then meets the plan-end check and the endpoint gate, is shortened to the fewest of its own
+waypoints whose legs stay within the path gate's step, and runs as one `moveJ` per kept waypoint once
+the path gate and the planner have both passed those legs. Where either refuses, the plan as cuRobo
+returned it is judged by both and runs instead. Every move logs how many waypoints were planned and
+run and how far the joints turn, and warns when a joint turns more than half a turn past what its end
+needs.
 
 ## Traps
 
@@ -141,7 +161,7 @@ first pick is [real_cell_first_pick.md](../../../../docs/runbooks/real_cell_firs
 | `arm.py` | `URRobotArm`, `UR_CAPABILITIES`, `ur_capabilities(model)`: `move()`, the connect refusals, the planner switch |
 | `connection.py` | `URConnection`, the RTDE boundary |
 | `motion.py` | `MotionController`: clamped, workspace-checked point-to-point moves for `move_to` |
-| `curobo_motion.py` | `CuroboUrPlanner`: a collision-free plan executed waypoint by waypoint over `moveJ` |
+| `curobo_motion.py` | `CuroboUrPlanner`: a collision-free plan to a pose or a joint goal, run as one `moveJ` per waypoint of the list the arm judged |
 | `planner_frame.py` | `PlannerFrameClient`: the planner's base is the controller's turned half a turn about Z |
 | `tool_frame.py` | the derived tool frame and its comparison with the declared one |
 | `pose.py`, `pose_adapter.py` | `URPose` in millimetres and axis-angle, and its bridge to `Pose` |

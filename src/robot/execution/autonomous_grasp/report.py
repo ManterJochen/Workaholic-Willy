@@ -254,6 +254,42 @@ class AutonomousGraspReport:
 
         return self.outcome is AutonomousGraspOutcome.SUCCEEDED
 
+    @property
+    def controller_stopped(self) -> bool:
+        """Whether this pick ended on a controller that cannot move: a protective or emergency stop, a power-off.
+
+        The pick loop names it ``CONTROLLER_NOT_OPERATIONAL`` after a motion failed, and the service reports it as
+        :attr:`AutonomousGraspOutcome.CANCELLED`, with the pick loop's outcome kept in ``pick_report`` and in
+        ``telemetry['low_level_outcome']`` (the two-scan path writes only the telemetry). Read from both. It is not a
+        :attr:`fault`, because the pick ended through its own path, and a campaign stops on it all the same: after a
+        protective stop mid-pick the next attempt would otherwise perceive and plan against an arm a person has to
+        walk up to (owner-cell audit, 2026-09-23).
+        """
+        stopped = PickOutcome.CONTROLLER_NOT_OPERATIONAL
+        if getattr(self.pick_report, "outcome", None) is stopped:
+            return True
+        return str(self.telemetry.get("low_level_outcome", "")) in (str(stopped), stopped.value)
+
+    @property
+    def hold_measured(self) -> Optional[bool]:
+        """For a pick that succeeded with a gripper, whether the gripper measured the hold; :data:`None` otherwise.
+
+        :data:`False` means the success rests on the close command alone: the gripper has no detection capability,
+        or it says it measured nothing (a jaw with no feedback wired, a vacuum with no switch), so
+        ``object_detected`` came back :data:`None` rather than an echo of the close (owner-cell audit, 2026-09-23).
+        Read from ``pick_report.object_detected``, or on the two-scan path from ``telemetry['object_detected']``.
+        """
+        if not self.succeeded:
+            return None
+        pick = self.pick_report
+        if pick is not None:
+            if not bool(getattr(pick, "gripper_present", False)):
+                return None
+            return getattr(pick, "object_detected", None) is True
+        if not bool(self.telemetry.get("gripper_present", False)):
+            return None
+        return self.telemetry.get("object_detected") is True
+
     def failure_summary(self) -> str:
         """Why this attempt did not succeed, in one operator-readable line.
 
@@ -341,7 +377,9 @@ class AutonomousGraspReport:
         oversight.
 
         The failure line is :meth:`failure_summary`, not a second lookup, so the CLI and the
-        console give one answer.
+        console give one answer. A pick that ended on a stopped controller (:attr:`controller_stopped`)
+        and a success the gripper did not measure (:attr:`hold_measured` :data:`False`) each add a line
+        saying so.
 
         The camera line is printed on every attempt for the same reason as the layers line: how many
         typed motions a current camera world vouched for, and the weakest stamp, read through
@@ -353,6 +391,12 @@ class AutonomousGraspReport:
         lines = [head]
         if not self.succeeded:
             lines.append(f"             {self.failure_summary()}")
+        if self.controller_stopped:
+            lines.append("  controller cannot move: a person clears the stop where the arm is visible, then runs again")
+        if self.hold_measured is False:
+            # A success the gripper did not measure reads here as one, not as a confirmed hold.
+            lines.append("  hold       not measured: the gripper reports no hold, so this success is the close "
+                         "command's word")
         if pick is not None:
             where = "simulated" if getattr(pick, "is_simulated", False) else "real"
             lines.append(
@@ -396,6 +440,8 @@ class AutonomousGraspReport:
             "outcome": str(self.outcome),
             "mode": str(self.mode),
             "succeeded": self.succeeded,
+            "hold_measured": self.hold_measured,
+            "controller_stopped": self.controller_stopped,
             "failure_summary": self.failure_summary(),
             "layers_that_ran": list(self.layers_that_ran()),
             "robot_vendor": getattr(pick, "robot_vendor", None),

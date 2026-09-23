@@ -53,7 +53,7 @@ name that no example imports.
 | Name | What it is | Shown in |
 |---|---|---|
 | `Pose` | A 6-DoF pose tagged with its frame, in millimetres with an XYZW quaternion; `Pose.tool_down(x, y, z)` | `real_robot/03_connect_and_move.py` |
-| `Pose.aimed_at` | The same, pointing the tool's +Z AT a point instead of straight down: a camera or a board turned to face something | `real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py` |
+| `Pose.aimed_at` | The same, pointing the tool's +Z AT a point instead of straight down: a camera or a board turned to face something | `real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py` |
 | `Frame` | The frames a pose can be in: `BASE`, `CAMERA`, `TCP`, `TOOL`, `OBJECT`, `GRASP`, `WORLD`, `MARKER` | `Pose.frame` |
 
 ### The robot: an arm and its hand
@@ -113,6 +113,11 @@ name that no example imports.
 | `RigNotCalibrated` | Raised when a rig is asked for its calibration and declares none | `camera.calibration()` |
 | `HandEyeCalibration` | One camera calibrated against its robot: `check()` at a desk, `run()` at the cell | `real_robot/07_calibrate_a_fixed_camera.py` |
 | `SweepOptions` | What a caller may choose about one calibration sweep; unset takes the tree's value | `real_robot/09_calibrate_a_wrist_camera.py` |
+| `print_sweep_progress` | A sweep's `on_event`: one line per pose as it happens, where the arm goes, what the camera saw, and whether the pose counted or why not | `real_robot/07_calibrate_a_fixed_camera.py` |
+| `MarkerAim` | A wrist-camera sweep aimed at one marker lying flat at a known place: `SweepOptions(aim=MarkerAim(marker_mm=...))` looks once, estimates where the camera sits on the tool, and visits views round the marker, re-aimed as it sees it | `real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py` |
+| `nominal_camera_in_tool` | A camera mount stated by hand, a tilt toward a named tool axis: what `MarkerAim(mount_if_unseen=...)` aims from when the first look sees no marker | `real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py` |
+| `viewing_pose` | Where a calibrated wrist camera looks at the work from before a locate: the tool pose that puts the camera a set distance from a work point, the tool's heading kept, screened against the arm's box, reach and joint window; a fixed camera needs none | `real_robot/11_locate_and_pick.py` |
+| `ViewingPose` | What `viewing_pose` found: `pose` to hand to `robot.move`, `None` for a fixed camera, and `ok` False with the reason for a wrist camera that has none | `real_robot/13_pick_campaign.py` |
 | `Locator` | An open camera and a perception backend that place what they see in the robot's base frame | `real_robot/11_locate_and_pick.py` |
 | `Located` | What one frame located: `objects`, `scene(i, robot)` for grasps, `keep_out(i)` for the planner | `real_robot/11_locate_and_pick.py` |
 | `LocatorRefused` | Raised when a locator cannot place what its camera sees, before it grabs or on a frame | `Locator.from_tree(...)`, `locate()` |

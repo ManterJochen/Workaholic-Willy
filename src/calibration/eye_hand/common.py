@@ -6,6 +6,7 @@ Sample acceptance, the readiness checks a solve needs and the AX=XB call.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +22,7 @@ from src.utility.log_cfg import create_logger
 from .dataset import EyeHandDataset, EyeHandSample
 from .types import EyeHandCalibrationSettings
 
-__all__ = ["BaseEyeHandCalibrator"]
+__all__ = ["BaseEyeHandCalibrator", "SampleRejection"]
 
 logger = create_logger(
     "EyeHandCalibrator", EYE_HAND_CALIBRATOR_LOG_FILE, log_dir=CALIBRATION_LOG_DIR
@@ -44,6 +45,47 @@ def _poses_are_diverse(
     distance = float(np.linalg.norm(T_first[:3, 3] - T_second[:3, 3]))
     angle = _rotation_angle_deg(T_first, T_second)
     return distance > min_distance_mm or angle > min_angle_deg
+
+
+@dataclass(frozen=True, slots=True)
+class SampleRejection:
+    """Why :meth:`BaseEyeHandCalibrator.add_sample` returned ``False``, with the numbers it decided on.
+
+    ``reason`` is ``"no_marker"`` or ``"not_diverse"``. For ``"not_diverse"`` the nearest stored sample
+    among those the new pose is too close to is named by its 1-based position in the dataset, with its
+    distance in millimetres and its rotation in degrees, beside the two thresholds a new pose must beat
+    one of. Those fields are ``None`` for ``"no_marker"``.
+    """
+
+    reason: str
+    stored: int = 0
+    nearest_sample: int | None = None
+    nearest_mm: float | None = None
+    nearest_deg: float | None = None
+    min_distance_mm: float | None = None
+    min_angle_deg: float | None = None
+
+    def render(self) -> str:
+        """One sentence, ASCII."""
+        if self.reason != "not_diverse":
+            return "no marker pose was detected"
+        return (
+            f"pose not diverse: stored sample {self.nearest_sample} is {self.nearest_mm:.1f} mm and "
+            f"{self.nearest_deg:.1f} deg away, and a new pose needs > {self.min_distance_mm:.1f} mm or "
+            f"> {self.min_angle_deg:.1f} deg from every one of the {self.stored} stored"
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        """Plain data, ``json.dumps`` safe."""
+        return {
+            "reason": self.reason,
+            "stored": self.stored,
+            "nearest_sample": self.nearest_sample,
+            "nearest_mm": self.nearest_mm,
+            "nearest_deg": self.nearest_deg,
+            "min_distance_mm": self.min_distance_mm,
+            "min_angle_deg": self.min_angle_deg,
+        }
 
 
 def _rotation_axis_from_relative(relative_transform: np.ndarray) -> np.ndarray | None:
@@ -73,6 +115,10 @@ class BaseEyeHandCalibrator:
     the solved transform with its frames.
     """
 
+    #: Why the last :meth:`add_sample` returned ``False``; ``None`` after one that stored its sample. A class
+    #: default, so a calibrator built without ``__init__`` reads ``None`` too.
+    last_rejection: SampleRejection | None = None
+
     def __init__(
         self,
         *,
@@ -101,37 +147,27 @@ class BaseEyeHandCalibrator:
 
         A sample is refused when no marker pose was detected, or when the robot
         pose is not more than ``min_distance_mm`` or ``min_angle_deg`` away from
-        every pose already stored. Both refusals are logged.
+        every pose already stored. Both refusals are logged, and
+        :attr:`last_rejection` says which, with the nearest stored sample's
+        distance and angle for a pose that was not diverse.
         """
         if T_cam_to_marker is None:
-            # The caller only gets `False` back, so this line is the one record
-            # of why the sample was dropped.
+            # The caller only gets `False` back, so this line and `last_rejection` are the
+            # record of why the sample was dropped.
             logger.info("Sample skipped: no marker pose (marker_id=%d).", marker_id)
+            self.last_rejection = SampleRejection(reason="no_marker", stored=len(self.dataset))
             return False
         sample = EyeHandSample(
             T_base_to_tool=T_base_to_tool,
             T_cam_to_marker=T_cam_to_marker,
             marker_id=marker_id,
         )
-        if len(self.dataset) > 0:
-            has_diverse_pose = all(
-                _poses_are_diverse(
-                    existing.T_base_to_tool,
-                    sample.T_base_to_tool,
-                    min_distance_mm=self.settings.min_distance_mm,
-                    min_angle_deg=self.settings.min_angle_deg,
-                )
-                for existing in self.dataset.iter_samples()
-            )
-            if not has_diverse_pose:
-                logger.info(
-                    "Sample rejected: pose not diverse (needs > %.1f mm or > %.1f deg from "
-                    "every one of the %d stored poses).",
-                    self.settings.min_distance_mm,
-                    self.settings.min_angle_deg,
-                    len(self.dataset),
-                )
-                return False
+        rejection = self._diversity_rejection(sample.T_base_to_tool)
+        if rejection is not None:
+            logger.info("Sample rejected: %s.", rejection.render())
+            self.last_rejection = rejection
+            return False
+        self.last_rejection = None
         self.dataset.add_sample(sample)
         logger.debug(
             "Sample accepted (marker_id=%d, dataset now %d samples).",
@@ -139,6 +175,30 @@ class BaseEyeHandCalibrator:
             len(self.dataset),
         )
         return True
+
+    def _diversity_rejection(self, T_base_to_tool: np.ndarray) -> SampleRejection | None:
+        """``None`` when the pose beats a threshold against every stored sample, else the nearest blocking one.
+
+        A stored sample blocks the new pose when it is within ``min_distance_mm`` and within
+        ``min_angle_deg`` of it. Of the blocking samples, the one nearest in translation is reported.
+        """
+        min_mm = float(self.settings.min_distance_mm)
+        min_deg = float(self.settings.min_angle_deg)
+        nearest: tuple[float, float, int] | None = None
+        for index, existing in enumerate(self.dataset.iter_samples(), start=1):
+            if _poses_are_diverse(existing.T_base_to_tool, T_base_to_tool,
+                                  min_distance_mm=min_mm, min_angle_deg=min_deg):
+                continue
+            distance = float(np.linalg.norm(existing.T_base_to_tool[:3, 3] - T_base_to_tool[:3, 3]))
+            angle = _rotation_angle_deg(existing.T_base_to_tool, T_base_to_tool)
+            if nearest is None or distance < nearest[0]:
+                nearest = (distance, angle, index)
+        if nearest is None:
+            return None
+        return SampleRejection(
+            reason="not_diverse", stored=len(self.dataset), nearest_sample=nearest[2],
+            nearest_mm=nearest[0], nearest_deg=nearest[1], min_distance_mm=min_mm, min_angle_deg=min_deg,
+        )
 
     def save_dataset(self, path: str | Path) -> Path:
         return self.dataset.save(path)

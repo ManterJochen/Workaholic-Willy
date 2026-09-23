@@ -103,6 +103,68 @@ class MarkerSourceTests(unittest.TestCase):
         self.assertIsNotNone(src())
 
 
+class WhatTheJudgedFrameShowedTests(unittest.TestCase):
+    """Issue 4: the source kept only a 4x4 and threw away the frame, the markers and why a pose was not found."""
+
+    def test_the_last_observation_says_why_there_was_no_pose(self) -> None:
+        src = RGBDArucoMarkerSource(streamer=_FakeStreamer(_marker_bgr(marker_id=7)), target_id=0, warmup_grabs=0)
+        self.assertIsNone(src.last_observation)
+        self.assertIsNone(src())
+        assert src.last_observation is not None
+        self.assertEqual(src.last_observation.why_not, "marker 0 not in view; DICT_5X5_100 ids in view: [7]")
+        self.assertEqual(src.last_observation.marker_ids, (7,))
+
+    def test_an_estimator_given_is_the_one_that_poses(self) -> None:
+        from src.calibration.targets import estimator_for
+
+        estimator = estimator_for({"kind": "aruco", "marker_id": 7, "marker_length_mm": 50.0,
+                                   "aruco_dict_name": "DICT_5X5_100"})
+        src = RGBDArucoMarkerSource(streamer=_FakeStreamer(_marker_bgr(marker_id=7)), estimator=estimator,
+                                    target_id=0, warmup_grabs=0)
+        self.assertIs(src.estimator, estimator)
+        self.assertIsNotNone(src(), "target_id is not read when an estimator is given")
+        assert src.last_observation is not None
+        self.assertTrue(src.last_observation.found)
+
+    def test_the_pose_is_the_one_estimate_gives(self) -> None:
+        from src.calibration.stereo.sub_modules.aruco_esti import ArucoPoseEstimator
+
+        bgr = _marker_bgr()
+        T = RGBDArucoMarkerSource(streamer=_FakeStreamer(bgr), warmup_grabs=0)()
+        np.testing.assert_array_equal(T, ArucoPoseEstimator(50.0, "DICT_5X5_100").estimate(bgr, _K, np.zeros(5), 0))
+
+    def test_the_hook_gets_the_frame_that_was_judged(self) -> None:
+        seen: list[tuple] = []
+        bgr = _marker_bgr()
+        src = RGBDArucoMarkerSource(streamer=_FakeStreamer(bgr), warmup_grabs=2,
+                                    on_observation=lambda *args: seen.append(args))
+        T = src()
+        self.assertEqual(len(seen), 1)
+        frame, observation, K, dist = seen[0]
+        np.testing.assert_array_equal(frame, bgr)
+        self.assertIs(observation, src.last_observation)
+        np.testing.assert_array_equal(observation.T_cam_to_target, T)
+        np.testing.assert_array_equal(K, _K)
+        np.testing.assert_array_equal(dist, np.zeros(5))
+
+    def test_a_hook_that_raises_changes_neither_the_pose_nor_the_sweep(self) -> None:
+        def broken(*_args: object) -> None:
+            raise TypeError("a preview bug")
+
+        quiet = RGBDArucoMarkerSource(streamer=_FakeStreamer(_marker_bgr()), warmup_grabs=0)()
+        with self.assertLogs("src.calibration.rgbd_marker_source", level="WARNING") as logs:
+            T = RGBDArucoMarkerSource(streamer=_FakeStreamer(_marker_bgr()), warmup_grabs=0, on_observation=broken)()
+        np.testing.assert_array_equal(T, quiet)
+        self.assertIn("a preview bug", "\n".join(logs.output))
+
+    def test_a_frame_the_estimator_refuses_is_this_poses_error_not_the_sweeps(self) -> None:
+        """A CalibrationError escaped the routine's per-pose catch and ended the sweep; it is a RuntimeError now."""
+        src = RGBDArucoMarkerSource(streamer=_FakeStreamer(np.zeros((480, 640, 4), dtype=np.uint8)), warmup_grabs=0)
+        with self.assertRaisesRegex(RuntimeError, "the target estimator refused this frame"):
+            src()
+        self.assertIsNone(src.last_observation)
+
+
 class LoadIntrinsicsTests(unittest.TestCase):
     def _write(self, tmp: str, payload: dict) -> Path:
         p = Path(tmp) / "intrinsics.json"

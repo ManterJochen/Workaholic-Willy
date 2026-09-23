@@ -54,3 +54,14 @@ robot:
       kinematics_model: "ur10"
     payload:
       max_mass_kg: 10.0      # UR10 datasheet
+    # Every joint that turns a full turn stays within half a turn of home_joint_positions (the default if unset),
+    # less margin_deg, so a cable run along the arm is never wound more than half a turn from where it lay at
+    # home, and nobody types a joint range. It costs no reach: each UR joint is 2*pi-periodic, so every angle
+    # has one twin inside the window; what it refuses is the move across the seam behind home, and the margin a
+    # band of 2 * margin_deg at that seam. The elbow is left alone: it is planned within +-180 deg and never turns
+    # a full turn. A Cartesian goal is chosen inside the window before cuRobo plans. Set home_joint_positions to
+    # this cell's own home, facing the work: the seam lies half a turn from it, and belongs behind the cell.
+    # The desk check (python -m src.robot.execution.real_cell --check) prints the PolyScope Joint Limits that
+    # match it: set them on the pendant, and the controller holds the window even against this software.
+    joint_limits:
+      within_half_turn_of_home: true

@@ -121,6 +121,7 @@ The legend is the root README's [Status and honest scope](../../README.md#status
 | `HandEyeCalibration` and the `calibrate` command at a real cell | never touched hardware; `--check` and `--dry-run` command no motion |
 | The solvers, the frame checks and the file round trips | measured in simulation within the sweep; also pinned by [`test_calibration_core.py`](../../tests/test_calibration_core.py) |
 | `RGBDArucoMarkerSource`, the marker source of an RGB-D cell | never touched hardware; posed only a rendered marker ([`test_rgbd_marker_source.py`](../../tests/test_rgbd_marker_source.py)) |
+| `CharucoPoseEstimator`, a ChArUco board as the sweep's target | never touched hardware; posed a board rendered with a known camera and pose to within 1 mm at 520 mm, 0.30 px ([`test_calibration_targets.py`](../../tests/test_calibration_targets.py)) |
 
 ## Files
 
@@ -131,7 +132,8 @@ The legend is the root README's [Status and honest scope](../../README.md#status
 | [`stereo/`](stereo/) | `StereoCam3D`, `StereoRigConfig`, `CalibrationResult` and the ArUco pose estimator |
 | [`extrinsics.py`](extrinsics.py) | `Extrinsics` |
 | [`rig_calibration.py`](rig_calibration.py) | `RigCalibration`, `RigNotCalibrated`, `RigCalibrationError`: the one loader of a rig's calibration |
-| [`rgbd_marker_source.py`](rgbd_marker_source.py) | `RGBDArucoMarkerSource`, the marker poses of an RGB-D camera for the sweep |
+| [`rgbd_marker_source.py`](rgbd_marker_source.py) | `RGBDArucoMarkerSource`, the target poses of an RGB-D camera for the sweep, and what each judged frame showed |
+| [`targets.py`](targets.py) | `Observation`, `CharucoPoseEstimator`, `estimator_for`, `parse_board_spec`: what a sweep looks at, one marker or a ChArUco board |
 | [`serialization.py`](serialization.py) | the save and load functions above |
 | [`quality.py`](quality.py) | `classify_rmse`, `QualityBandsMm`, `QualityBandsPx` |
 | [`helpers.py`](helpers.py), [`exceptions.py`](exceptions.py) | `unit_scaling`, `proj_to_K`; `CalibrationError` and its subclasses |

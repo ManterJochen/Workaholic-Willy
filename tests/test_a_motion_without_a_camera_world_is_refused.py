@@ -52,6 +52,7 @@ def _refused_ur() -> "tuple[object, _Recorder, MagicMock]":
     arm._conn = conn
     recorder = _Recorder()
     arm._home_is_admissible = recorder("_home_is_admissible")  # type: ignore[method-assign]
+    arm._home_refusal = recorder("_home_refusal")  # type: ignore[method-assign]
     arm._judge_joint_move = recorder("_judge_joint_move")  # type: ignore[method-assign]
     arm._judge_linear_move = recorder("_judge_linear_move")  # type: ignore[method-assign]
     return arm, recorder, planner
@@ -72,6 +73,10 @@ class EveryUrVerbRefusesTests(unittest.TestCase):
 
         self.assertFalse(arm.move_to(_pose()))
         self.assertFalse(arm.move_home())
+        home = arm.move_to_home()
+        self.assertIs(home.status, MotionStatus.UNSUPPORTED)
+        self.assertIs(home.camera_world.use, CameraWorldUse.MISSING)
+        self.assertEqual(home.message, NO_CAMERA_WORLD_MESSAGE)
         self.assertFalse(asyncio.run(arm.amove_to(_pose())))
         self.assertFalse(asyncio.run(arm.amove_home()))
 
@@ -121,7 +126,7 @@ class EveryUrVerbRefusesTests(unittest.TestCase):
         arm._conn = MagicMock()
         arm._conn.is_connected = True
         arm._conn.moveJ.return_value = True
-        arm._home_is_admissible = lambda verb: True  # type: ignore[method-assign]
+        arm._home_refusal = lambda joints: None  # type: ignore[method-assign]
         arm._judge_joint_move = lambda joints, command: None  # type: ignore[method-assign]
         arm._judge_linear_move = lambda pose, command: None  # type: ignore[method-assign]
         arm._motion.move_to = lambda *a, **k: True  # type: ignore[method-assign]
@@ -131,6 +136,7 @@ class EveryUrVerbRefusesTests(unittest.TestCase):
                           CameraWorldUse.DECLINED)
             self.assertTrue(arm.move_to(_pose()))
             self.assertTrue(arm.move_home())
+            self.assertIs(arm.move_to_home().camera_world.use, CameraWorldUse.DECLINED)
             self.assertTrue(asyncio.run(arm.amove_to(_pose())))
             self.assertTrue(asyncio.run(arm.amove_home()))
             arm.move_joint(JointPositions(_JOINTS.tolist()))

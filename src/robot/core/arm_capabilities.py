@@ -3,8 +3,8 @@
 :class:`~src.robot.core.RobotArm` stays a small, strictly vendor-neutral Protocol
 with a contract-locked member set. The extras a controller can offer (digital and
 analog I/O, live force and torque, live robot and safety status, what a straight line
-keeps, a model of the carried part) are declared here as separate
-``runtime_checkable`` Protocols, mirroring
+keeps, a model of the carried part, a move home that says why it was refused) are
+declared here as separate ``runtime_checkable`` Protocols, mirroring
 :class:`~src.robot.core.gripper.ObjectDetectingGripper`.
 
 A driver opts in by implementing one. A caller feature-checks with
@@ -23,13 +23,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from src.geometry import Frame
+
+if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from .motion_result import MotionResult
 
 __all__ = [
     "CarriesPayload",
     "DigitalIOPort",
+    "HomesTyped",
     "KeepsLines",
     "LineMotion",
     "LineReading",
@@ -292,6 +296,26 @@ class KeepsLines(Protocol):
 
     def line_motion(self) -> LineReading:
         """What a ``move(pose, linear=True)`` on this arm keeps of the line, and why."""
+        ...
+
+
+@runtime_checkable
+class HomesTyped(Protocol):
+    """Capability extension: the arm goes home as a typed verb, and says which gate refused it.
+
+    ``move_home`` answers with a bool on every driver, so every refusal it can meet reads the same
+    ``False``. An arm that implements this answers the same move with the
+    :class:`~src.robot.core.motion_result.MotionResult` its gates produced: the status, the sentence
+    and the home configuration. Its ``move_home`` is this verb's ``ok``.
+
+    It is not a member of :class:`~src.robot.core.RobotArm` on purpose. The drivers subclass that
+    Protocol explicitly, and a class that does inherits every member it does not define as a stub
+    that returns ``None``, so a new member there would answer ``None`` on every driver that does not
+    implement it.
+    """
+
+    def move_to_home(self) -> "MotionResult":
+        """Move to the configured home, gated, and return the typed result of that one move."""
         ...
 
 

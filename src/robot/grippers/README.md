@@ -31,7 +31,7 @@ python -m src.robot.drivers.ur --measure 4=1 --watch 0 --yes   # drive a pin and
 |---|---|---|---|
 | `robotiq` | `GripperController` | ASCII on TCP port 63352, opened by the URCap on the UR controller | a UR arm with the Robotiq URCap |
 | `onrobot` | `OnRobotGripper` | Modbus TCP to the Compute Box, port 502 by default | the box on your network; RG2 or RG6 only |
-| `jaw_io` | `JawIOGripper` | one or two output pins, optional reed switches or a part sensor | an arm with digital I/O: the UR driver |
+| `jaw_io` | `JawIOGripper` | one or two output pins (one for a toggle, where every pulse flips the jaws), optional reed switches or a part sensor | an arm with digital I/O: the UR driver |
 | `vacuum` | `VacuumGripper` | an ejector pin, an optional blow-off pin and vacuum switch | an arm with digital I/O: the UR driver |
 | `dummy` | `DummyGripper` | nothing: a width in memory, clamped to range | nothing |
 | `none` | `NullGripper` | nothing | nothing |
@@ -93,8 +93,21 @@ The hand verbs read these two, never the command echoed back.
 Connecting differs on purpose. `vacuum` switches suction off at connect, because releasing a cup left
 latched is cheap. A `jaw_io` hand left closed may hold a rigid part, so it opens only when feedback says
 it is empty, holds and warns when feedback says a part is there, and does not move at all with no
-feedback wired, unless `open_on_connect_without_feedback` is set. Both touch the controller's I/O at
-connect, so the arm connects first; `Robot` does that for you.
+feedback wired, unless `open_on_connect_without_feedback` is set. A `single_toggle` cannot assert a
+state at all and never pulses at connect. With no open switch it counts its own pulses and keeps the
+count on disk between programs ([`jaw_toggle_state.py`](jaw_toggle_state.py), `logs/robot/state`), so
+the next program starts where the last one left the jaws; measured on a CB3 URSim, a program that
+ended closed used to invert the next one, which then closed at the pre-open and opened at the part. A
+pulse nobody counted (the pendant's I/O tab, a bench `--pulse`, a power cut mid stroke) still inverts
+it, so after one a person looks and says where the jaws stand:
+`python -m src.robot.drivers.ur --profile <cell> --jaws-stand open --yes`. A pulse the record saw start
+and not finish makes the driver refuse to pulse until then. `--jaws open|closed` drives the jaws
+through the driver and its count. With an open switch that does not read open, its connect is refused.
+
+The hand verbs (`pick`, `place`, `grasp`, `release`) and the pick loop tell `jaw_io` open or close by
+intent (`OpensAndCloses.set_closed`), so `closed_below_mm` cannot turn a verb round; it only reads the
+widths a caller sends through `set_width_mm` itself. Both touch the controller's I/O at connect, so the arm connects first; `Robot` does that for
+you.
 
 ## The simulated grippers
 

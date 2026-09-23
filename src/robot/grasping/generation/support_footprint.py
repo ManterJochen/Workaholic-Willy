@@ -41,7 +41,7 @@ Pure and deterministic: numpy only. BASE millimetres throughout, Z up along the 
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Any, Final
 
 from dataclasses import dataclass
 
@@ -52,6 +52,7 @@ from src.robot.grasping.collision import ParallelJawGripperModel
 from src.robot.grasping.geometry.grasp_frame import pose_from_grasp_axes
 
 __all__ = [
+    "DEFAULT_FLOOR_MARGIN_MM",
     "SupportFootprintCandidate",
     "SupportFootprintJaw",
     "SupportPrism",
@@ -60,6 +61,21 @@ __all__ = [
 ]
 
 _EPS = 1e-9
+
+#: How far above the support a point still counts as the support, millimetres, when the caller does
+#: not say. The number the D5 reference measurements above were taken with, in a simulator whose
+#: calibration is exact. A real cell's table reads as high as its hand-eye and depth error, and a cell
+#: says how high that is in ``safety.planning_world.perceived.plane_clearance_mm``; the config door of
+#: ``Scene`` passes the larger of the two.
+DEFAULT_FLOOR_MARGIN_MM: Final[float] = 2.0
+
+#: How close two footprint points have to lie to count as one surface, millimetres, for the fragment
+#: trim in :func:`reconstruct_support_prism`. It is the side of a grid cell and two points in touching
+#: cells are joined, so points closer than 6 mm are always one surface and pieces more than
+#: 6 * 2 * sqrt(2) = 17 mm apart are always two. The 3 mm voxel grid the cloud is thinned to leaves
+#: neighbouring samples of one surface at most about 7 mm apart, and the table seen past a 40 mm part's
+#: far edge at 45 degrees lies 40 to 46 mm behind it.
+_FRAGMENT_LINK_MM: Final[float] = 6.0
 
 #: Approach tilts away from straight-down, in preference order: the first that yields a candidate for
 #: an (axis, anchor) wins, so within one anchor a reachable vertical grasp is never traded for a
@@ -72,7 +88,8 @@ _FRACS = (0.0, -0.35, 0.35)
 
 @dataclass(frozen=True, slots=True)
 class SupportFootprintJaw:
-    """The gripper, as SFE needs to reason about it. Build it with :meth:`from_model`.
+    """The gripper, as SFE needs to reason about it. Build it with :meth:`from_robot_config` from a
+    loaded tree, or with :meth:`from_model` from an envelope and a stroke.
 
     ``finger_ahead_mm`` is the reach past the grasp centre toward the support: the single number
     that decides a table verdict. ``pad_ahead_mm`` and ``pad_behind_mm`` describe the contact patch,
@@ -139,6 +156,50 @@ class SupportFootprintJaw:
             width_safety_mm=float(width_safety_mm),
             palm_width_mm=float(m.palm_width_mm),
             palm_depth_mm=float(m.palm_depth_mm),
+        )
+
+    @classmethod
+    def from_robot_config(cls, robot_config: Any) -> "SupportFootprintJaw":
+        """The jaw a loaded tree describes, built from the numbers the cell's pick path builds it from.
+
+        The fingers come from ``grasping.gripper_geometry.parallel_jaw`` through the same collision
+        envelope ``build_gripper_geometry`` hands the calculator, field for field. The stroke comes from
+        ``robot.gripper``, which the cell hands the calculator as its grip widths, and the table
+        clearance from ``grasping.support.min_clearance_mm``, which the pick loop hands it per call.
+
+        Until 2026-09-23 ``Scene.from_robot_config`` built its jaw from the stroke alone, so every
+        finger number fell back to ``ParallelJawGripperModel()``, which is a 2F-85. MEASURED on the
+        ``hande`` profile: a vertical approach then needs the anchor 62.4 mm above the support instead
+        of 25.9 mm, so a 40 mm cube got only 90-degree side approaches 36 mm up, where the 75 mm Hand-E
+        housing reaches below the table, and a 30 mm part got no grasp at all.
+
+        A suction hand is refused: this stage plans a parallel jaw, and planning a suction cup's cell as
+        a 2F-85 is the substitution this method exists to end.
+        """
+        geometry = robot_config.grasping.gripper_geometry
+        if str(geometry.kind) != "parallel_jaw":
+            raise ValueError(
+                f"grasping.gripper_geometry.kind is {geometry.kind!r}, and support-footprint grasps are "
+                "planned for a parallel jaw: planning this hand as a jaw would put a gripper it does not "
+                "have into every candidate")
+        j = geometry.parallel_jaw
+        model = ParallelJawGripperModel(
+            finger_length_mm=j.finger_length_mm,
+            finger_thickness_mm=j.finger_thickness_mm,
+            finger_width_mm=j.finger_width_mm,
+            finger_pad_overlap_mm=j.finger_pad_overlap_mm,
+            fingertip_depth_mm=j.fingertip_depth_mm,
+            pad_length_mm=j.pad_length_mm,
+            pad_ahead_mm=j.pad_ahead_mm,
+            palm_depth_mm=j.palm_depth_mm,
+            palm_width_mm=j.palm_width_mm,
+            outer_margin_mm=geometry.outer_margin_mm,
+        )
+        return cls.from_model(
+            model,
+            aperture_mm=float(robot_config.gripper.max_width_mm),
+            min_width_mm=float(robot_config.gripper.min_width_mm),
+            table_clearance_mm=float(robot_config.grasping.support.min_clearance_mm),
         )
 
     @property
@@ -254,10 +315,13 @@ class SupportPrism:
     """
 
     __slots__ = ("hull", "normals", "offsets", "z0", "z1", "centre", "u", "v",
-                 "ext_u", "ext_v", "roundness", "inflate")
+                 "ext_u", "ext_v", "roundness", "inflate", "trimmed")
 
     def __init__(self, hull2d: np.ndarray, z0: float, z1: float) -> None:
         self.hull = hull2d
+        #: Points the floor let through that the footprint left out as low fragments, ``(N, 3)`` BASE
+        #: millimetres. Not forgotten: the generator keeps the fingers off them as declared obstacles.
+        self.trimmed = np.zeros((0, 3), dtype=np.float64)
         n = hull2d.shape[0]
         nx, ny, d = [], [], []
         for i in range(n):
@@ -346,13 +410,59 @@ class SupportPrism:
 _SCORE_WEIGHTS: Final[tuple[float, float, float, float, float]] = (0.35, 0.20, 0.20, 0.15, 0.10)
 
 
+def _trim_low_fragments(points: np.ndarray, support_height_mm: float) -> tuple[np.ndarray, np.ndarray]:
+    """Split a floor-filtered cloud into the footprint and the low fragments lying apart from it.
+
+    The pieces are joined in the XY plane at ``_FRAGMENT_LINK_MM``. The body is the piece with the
+    most points. Another piece is a low fragment when it never rises to half the body's height above
+    the support: the table seen past an edge, a neighbour's foot bled into the mask. A piece that does
+    rise that far is kept in the footprint and taken for the same top face split by a depth hole:
+    leaving it out would let a finger into the hole, which is the inside of the part. Returns
+    ``(kept, trimmed)``; with one piece nothing is trimmed.
+    """
+    cells = np.floor(points[:, :2] / _FRAGMENT_LINK_MM).astype(np.int64)
+    unique_cells, inverse = np.unique(cells, axis=0, return_inverse=True)
+    inverse = np.asarray(inverse).reshape(-1)
+    count = int(unique_cells.shape[0])
+    if count < 2:
+        return points, points[:0]
+    index = {cell: i for i, cell in enumerate(map(tuple, unique_cells.tolist()))}
+    parent = list(range(count))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i, (cx, cy) in enumerate(unique_cells.tolist()):
+        for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
+            j = index.get((cx + dx, cy + dy))
+            if j is not None:
+                a, b = root(i), root(j)
+                if a != b:
+                    parent[max(a, b)] = min(a, b)
+    labels = np.asarray([root(i) for i in range(count)], dtype=np.int64)[inverse]
+    sizes = np.bincount(labels, minlength=count)
+    body = int(np.argmax(sizes))
+    if int(sizes[body]) == points.shape[0]:
+        return points, points[:0]
+    body_top = float(np.percentile(points[labels == body, 2], 98.0))
+    low_line = support_height_mm + 0.5 * (body_top - support_height_mm)
+    tops = np.full(count, -np.inf)
+    np.maximum.at(tops, labels, points[:, 2])
+    low = (np.arange(count) != body) & (tops < low_line)
+    trim = low[labels]
+    return points[~trim], points[trim]
+
+
 def reconstruct_support_prism(
     cloud_base_mm: np.ndarray,
     support_height_mm: float,
     *,
     voxel_mm: float = 3.0,
     top_percentile: float = 98.0,
-    floor_margin_mm: float = 2.0,
+    floor_margin_mm: float = DEFAULT_FLOOR_MARGIN_MM,
     inflate_mm: float = 0.0,
 ) -> SupportPrism | None:
     """The support-extruded prism from a masked target cloud in BASE. The whole perception step.
@@ -361,6 +471,17 @@ def reconstruct_support_prism(
     surface, so the measured footprint is systematically smaller than the object and every
     consequence of that error is one-sided (an under-estimated span, a finger that clips a flank on
     the way in). Inflating biases the estimate in the safe direction instead of leaving it unbiased.
+
+    ``floor_margin_mm`` is how far above the support a point still counts as the support.
+
+    The footprint is the convex hull of what survives the floor, and a convex hull has no outlier
+    rejection: a band of points anywhere pulls a face out to it. MEASURED 2026-09-23 on a ray-cast of
+    a 40 mm cube seen at 45 degrees with its far edge misregistered by 1 px and the table read 3 mm
+    high: 63 table points, 0.8 % of the cloud and 2.0 to 3.7 mm above the support, lay up to 45.6 mm
+    behind the part and carried the hull's far face out to 65.6 mm from the part centre, against a
+    half-size of 20. So low fragments that lie apart from the body are left out of the hull first (see
+    :func:`_trim_low_fragments`) and kept on the prism as ``trimmed``. On that scene with a 2 px
+    misregistration the far face then sits 23.9 to 24.7 mm from the centre in 5 of 5 noise seeds.
     """
     p = np.asarray(cloud_base_mm, dtype=np.float64).reshape(-1, 3)
     p = p[np.isfinite(p).all(axis=1)]
@@ -371,6 +492,9 @@ def reconstruct_support_prism(
     p = p[np.sort(idx)]
     if p.shape[0] < 12:
         return None
+    p, trimmed = _trim_low_fragments(p, support_height_mm)
+    if p.shape[0] < 12:
+        return None
     top_z = float(np.percentile(p[:, 2], top_percentile))
     if top_z <= support_height_mm + 3.0:
         return None
@@ -378,6 +502,7 @@ def reconstruct_support_prism(
     if hull.shape[0] < 3:
         return None
     prism = SupportPrism(hull, support_height_mm, top_z)
+    prism.trimmed = trimmed
     if inflate_mm:
         prism.offsets = prism.offsets + float(inflate_mm)
         prism.inflate = float(inflate_mm)
@@ -633,6 +758,7 @@ def generate_support_footprint_grasps(
     inflate_mm: float = 0.0,
     palm_aware: bool = False,
     score_weights: tuple[float, float, float, float, float] | None = None,
+    floor_margin_mm: float = DEFAULT_FLOOR_MARGIN_MM,
 ) -> list[SupportFootprintCandidate]:
     """Ranked candidates in BASE, from a masked target cloud and the rest of the scene as obstacles.
 
@@ -641,17 +767,29 @@ def generate_support_footprint_grasps(
     the container walls, and is not: it is already exact, and dilating it would forbid a band of the
     bin that a gripper can legally reach. See :class:`_ObstacleSet`.
 
+    ``floor_margin_mm`` is how far above the support a target point still counts as the support; see
+    ``DEFAULT_FLOOR_MARGIN_MM``. Low fragments the reconstruction leaves out of the footprint join the
+    undilated obstacles, so a finger is still kept off everything the camera saw above the floor.
+    Undilated, because they were sampled at the target's own density rather than being the sparse view
+    of a neighbour whose gaps the dilation covers; on the 45-degree ray-cast behind
+    :func:`reconstruct_support_prism` either grid gave the same candidates, 2026-09-23.
+
     Returns an empty list when the cloud is too sparse to reconstruct or admits no legal grasp,
     which is a real answer and not a failure. Refusing beats proposing a grasp that goes under the
     support surface.
     """
     jaw = jaw or SupportFootprintJaw.from_model()
-    prism = reconstruct_support_prism(cloud_base_mm, support_height_mm, inflate_mm=inflate_mm)
+    prism = reconstruct_support_prism(cloud_base_mm, support_height_mm, inflate_mm=inflate_mm,
+                                      floor_margin_mm=floor_margin_mm)
     if prism is None:
         return []
+    rigid = rigid_obstacle_points_base_mm
+    if prism.trimmed.shape[0]:
+        rigid = (prism.trimmed if rigid is None or np.size(rigid) == 0
+                 else np.vstack([np.asarray(rigid, dtype=np.float64).reshape(-1, 3), prism.trimmed]))
     obstacles = _ObstacleSet(
         _Obstacles(obstacle_points_base_mm),
-        _Obstacles(rigid_obstacle_points_base_mm, cell_mm=4.0, margin_mm=0.0),
+        _Obstacles(rigid, cell_mm=4.0, margin_mm=0.0),
     )
     found: list[SupportFootprintCandidate] = []
 

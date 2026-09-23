@@ -13,6 +13,7 @@ These are config assertions, not hardware measurements.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -442,13 +443,27 @@ def _end_effector_wiring_row(robot_cfg: "RobotConfig") -> PreflightCheck:
         )
     if vendor == "jaw_io":
         jaw = gripper.jaw_io
-        opens = (f"open output {jaw.open_output_pin}" if jaw.open_output_pin is not None
-                 else f"open by dropping close output {jaw.close_output_pin}")
+        fix = "confirm physically, pin by pin; a swapped pair opens the jaws on a grip command"
+        if jaw.open_output_pin is not None:
+            opens = f"open output {jaw.open_output_pin}"
+        elif jaw.actuation == "single_toggle":
+            opens = f"open by a second pulse on close output {jaw.close_output_pin}"
+            if jaw.open_confirm_input_pin is None:
+                # No open switch: the driver counts its own pulses and starts from its record of them.
+                fix = ("confirm physically: each pulse flips the jaws, and with no open_confirm_input_pin the "
+                       "driver starts from its own count of them (logs/robot/state); after moving them any other "
+                       "way, say where they stand: python -m src.robot.drivers.ur --jaws-stand open --yes")
+            else:
+                fix = ("confirm physically, pin by pin; the one output flips the jaws on every pulse, the "
+                       "open switch is what the driver decides each pulse by, and a connect it does not read open "
+                       "for is refused")
+        else:
+            opens = f"open by dropping close output {jaw.close_output_pin}"
         return PreflightCheck(
             "end-effector wiring", CheckStatus.BENCH,
             f"the jaw solenoid ({jaw.actuation}) on {jaw.io_port} close output {jaw.close_output_pin}, {opens}, "
             f"and its 24 V supply",
-            "confirm physically, pin by pin; a swapped pair opens the jaws on a grip command",
+            fix,
         )
     if vendor == "onrobot":
         rg = gripper.onrobot
@@ -461,6 +476,38 @@ def _end_effector_wiring_row(robot_cfg: "RobotConfig") -> PreflightCheck:
         "end-effector wiring", CheckStatus.BENCH,
         f"robot.gripper.vendor is {vendor!r}, so no end-effector is actuated through this cell",
         "confirm nothing on the flange needs actuating, or name its driver (the gripper driver row says which build)",
+    )
+
+
+def _jaw_travel_time_row(robot_cfg: "RobotConfig") -> PreflightCheck | None:
+    """Whether a jaw_io hand's travel time was measured where it is the only wait the driver has; None for other hands.
+
+    With no feedback a close waits ``close_settle_s`` and nothing else, and with no open switch so does an open, which
+    a place backs out on a line right after. A toggle with an open switch still only waits on a close. The schema
+    default, 0.3 s, is a small cylinder's stroke: a Hand-E on its I/O coupling takes up to about 2 s, so a default
+    left standing lifts before the jaws have met the part and drags the part a place has just set down.
+    """
+    gripper = robot_cfg.gripper
+    if str(getattr(gripper.vendor, "value", gripper.vendor)).lower() != "jaw_io":
+        return None
+    jaw = gripper.jaw_io
+    settle = float(jaw.close_settle_s)
+    name = "jaw travel time"
+    if jaw.open_confirm_input_pin is None:
+        ways = "both ways: a close and an open each wait it and nothing else"
+    elif jaw.actuation == "single_toggle":
+        ways = "on a close: a grasp waits it and nothing else before the arm lifts"
+    else:
+        return PreflightCheck(name, CheckStatus.OK, (
+            f"close_settle_s {settle:.1f} s; the open switch says when the jaws stand open"))
+    if settle != type(jaw).model_fields["close_settle_s"].default:
+        return PreflightCheck(name, CheckStatus.OK, f"close_settle_s {settle:.1f} s, the only wait {ways}")
+    return PreflightCheck(
+        name, CheckStatus.WARN,
+        f"robot.gripper.jaw_io.close_settle_s is the schema default {settle:.1f} s, and the settle time is the only "
+        f"wait {ways}. The arm moves on that long after the edge, whether the jaws have arrived or not",
+        "time the full stroke, open and closed, at the coupling's preset, by stopwatch or video (a Hand-E can take "
+        "about 2 s), and set close_settle_s to the longer with a margin; it must cover the stroke",
     )
 
 
@@ -497,6 +544,85 @@ def _carried_part_row(robot_cfg: "RobotConfig", *, is_real: bool) -> PreflightCh
     return PreflightCheck(name, CheckStatus.OK, (
         f"a part {float(payload.length_mm):g} mm past the fingertips, {float(payload.lateral_margin_mm):g} mm lateral "
         f"margin, {slots} attach slot(s) the planner reserves and its evidence names"))
+
+
+#: PolyScope's names for a UR's six joints, base to wrist 3, as its Joint Limits screen lists them.
+_POLYSCOPE_JOINTS = ("Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3")
+
+
+def _joint_window_row(robot_cfg: "RobotConfig") -> "PreflightCheck | None":
+    """The controller's own joint limits that hold the half-turn window about home, or ``None`` where it is off.
+
+    Read off the config, as the arm builds its guard: the table with no margin off, narrowed to half a turn either
+    side of ``robot.home_joint_positions`` (the UR driver's default where that is unset). Those are the numbers for the
+    pendant; the guard keeps ``margin_deg`` inside them, so a move this software commands never reaches them, and
+    the controller then holds the window against anything else. BENCH, because only the pendant can say they are set.
+    """
+    from src.robot.constants import HOME_JOINTS_DEFAULT
+    from src.robot.safety.joint_limits import half_turn_about_home_deg, half_turn_axes, resolve_joint_limits_deg
+
+    jl = robot_cfg.safety.joint_limits
+    if not bool(getattr(jl, "within_half_turn_of_home", False)) or not jl.enforce:
+        return None
+    vendor = _vendor(robot_cfg)
+    model = str(robot_cfg.ur.model) if vendor == "ur" else None
+    declared = robot_cfg.home_joint_positions
+    home = tuple(float(v) for v in (declared if declared is not None else HOME_JOINTS_DEFAULT))
+    source = ("robot.home_joint_positions" if declared is not None
+              else "the driver's default home, robot.home_joint_positions being unset")
+    table = resolve_joint_limits_deg(jl, vendor=vendor, model=model)
+    if table is None or len(table[0]) != len(home):
+        return PreflightCheck(
+            "joint window", CheckStatus.BLOCK,
+            "safety.joint_limits.within_half_turn_of_home is set and "
+            + ("no joint-limit table resolves for this arm" if table is None
+               else f"the home has {len(home)} joints where the joint-limit table has {len(table[0])}"),
+            "the arm refuses to build like this; give the table (min_deg, max_deg) or a home of one entry per axis",
+        )
+    lower, upper = half_turn_about_home_deg(table[0], table[1], home, vendor=vendor)
+    narrowed = half_turn_axes(table[0], table[1], vendor=vendor)
+    margin = float(jl.margin_deg)
+    names = _POLYSCOPE_JOINTS if vendor == "ur" and len(lower) == len(_POLYSCOPE_JOINTS) else tuple(
+        f"axis {i}" for i in range(len(lower)))
+    empty = [name for name, low, high, narrow in zip(names, lower, upper, narrowed)
+             if narrow and low + margin >= high - margin]
+    if empty:
+        return PreflightCheck(
+            "joint window", CheckStatus.BLOCK,
+            f"half a turn either side of {source} leaves {', '.join(empty)} no range inside the joint-limit table",
+            "robot.home_joint_positions is read in radians; a home written in degrees reads this way, and the arm "
+            "refuses to build on it",
+        )
+    ranges = "; ".join(f"{name} {low:.1f} to {high:.1f}" if narrow else f"{name} as it is"
+                       for name, low, high, narrow in zip(names, lower, upper, narrowed))
+    where = ("PolyScope Installation > Safety > Joint Limits > Position Range (degrees): " if vendor == "ur"
+             else "the controller's own joint limits (degrees): ")
+    detail = (f"every joint that turns a full turn is kept within half a turn of home ({source}), the guard "
+              f"{margin:g} deg inside these limits. {where}{ranges}")
+    if vendor == "ur" and not all(narrowed):
+        detail += (". The elbow is left as it is: Universal Robots plans it within +-180 deg, so it never turns the "
+                   "full turn that winds a cable")
+    fix = ("set these on the controller, so it holds the window against anything that is not this software; the "
+           "guard keeps the margin inside them, so a move it admits never trips them")
+    cut = [f"{name} ({math.degrees(h):.1f} deg at home)" for name, low, high, narrow, h
+           in zip(names, lower, upper, narrowed, home)
+           if narrow and high - low < 360.0 - 1e-9]
+    if cut:
+        return PreflightCheck(
+            "joint window", CheckStatus.WARN,
+            f"{detail}. On {', '.join(cut)} the table cuts the window short of a full turn, so angles near the seam "
+            "have no twin inside it and a pose that needs one is refused",
+            "a home one full turn nearer zero on those joints is the same pose and keeps the whole turn; " + fix,
+        )
+    if declared is None:
+        # The seam sits half a turn from home on every joint, and the default home was measured on no cell: with it
+        # the base's seam lies wherever 180 degrees happens to point, which may be the middle of this cell.
+        return PreflightCheck(
+            "joint window", CheckStatus.WARN, detail,
+            "set robot.home_joint_positions (radians) to this cell's own home first: the window is centred on it, "
+            "and its seam, half a turn away, belongs behind the cell, where nothing is picked; then " + fix,
+        )
+    return PreflightCheck("joint window", CheckStatus.BENCH, detail, fix)
 
 
 def _vendor(robot_cfg: "RobotConfig") -> str:
@@ -705,6 +831,13 @@ def run_config_preflight(
             f"kinematics_model={sc.kinematics_model!r}, backend={getattr(sc, 'backend', '?')!r}",
         ))
 
+    # ---- the joint window about home -----------------------------------------------------------
+    # With safety.joint_limits.within_half_turn_of_home the guard keeps every full-turn joint within half a turn
+    # of home. The controller can hold the same window as a hard limit, and this row prints the numbers for it.
+    window_row = _joint_window_row(robot_cfg)
+    if window_row is not None:
+        checks.append(window_row)
+
     # ---- the hand ------------------------------------------------------------------------------
     # The one name the guard takes its hand from. A cell whose guard reads hand geometry refuses to
     # build without it, so this row is that refusal met at a desk, with the same sentence. And where
@@ -862,5 +995,8 @@ def run_config_preflight(
             "takes the robot. Confirm on the pendant; no API reports this",
         ))
         checks.append(_end_effector_wiring_row(robot_cfg))
+        travel = _jaw_travel_time_row(robot_cfg)
+        if travel is not None:
+            checks.append(travel)
 
     return PreflightReport(tuple(checks))

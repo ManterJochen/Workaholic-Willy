@@ -312,6 +312,22 @@ class Camera:
             frame = self._streamer.grab()
         return _stamped(frame, captured_at_s)
 
+    def camera_moved(self) -> None:
+        """Say that the camera moved since its last grab, so its next frame holds only depth seen from where it is now.
+
+        A RealSense's temporal filter averages each depth pixel over the frames it was handed and fills a hole with a
+        depth it saw in them; on a camera the arm carries, those frames were taken at the pose before the move. This
+        drops that history. A caller that moved the camera calls it before the next grab: the planning world after
+        every move of the arm. Taken under the rig's lock, so it never lands inside a grab, and a no-op on a device
+        that keeps no history and on an owner that is not open.
+        """
+        with self._lock:
+            if not self._open:
+                return
+            moved = getattr(self._streamer, "camera_moved", None)
+            if callable(moved):
+                moved()
+
     def get_intrinsics(self) -> np.ndarray | None:
         """The camera matrix the device reports, or None where the rig has no single pinhole matrix."""
         with self._lock:

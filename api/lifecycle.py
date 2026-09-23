@@ -183,7 +183,21 @@ def motion_warnings(robot_config: "RobotConfig", gripper: object) -> tuple[Motio
         # warning that is false half the time is one an operator learns to skip.
         has_feedback = bool(getattr(gripper, "has_feedback", False))
         opts_in = bool(getattr(gripper, "_open_on_connect_without_feedback", False))
-        if has_feedback:
+        # A toggle with no open switch is the one jaw cell whose connect depends on a PERSON: the driver takes
+        # the jaws to stand open, and a closed start inverts every later command.
+        blind_toggle = (getattr(gripper, "_actuation", None) == "single_toggle"
+                        and getattr(gripper, "_open_confirm_pin", None) is None)
+        if blind_toggle:
+            warnings.append(MotionWarning(
+                subject="gripper",
+                what="Connecting moves NOTHING, and the driver takes the jaws to stand OPEN. They are a "
+                     "toggle on one output with no open switch wired, so every later pulse flips them "
+                     "from wherever they really stand.",
+                precaution="Stand the jaws open with a pulse before every connect, never by hand: a device "
+                           "that keeps its own flip state is not moved by a hand. If they stand closed, every "
+                           "open and close from here is inverted until they are reset.",
+            ))
+        elif has_feedback:
             warnings.append(MotionWarning(
                 subject="gripper",
                 what="Connecting the jaws reads the end-stop switches first. If they report EMPTY the "

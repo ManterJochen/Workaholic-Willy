@@ -35,13 +35,19 @@ _COUNT_EVERYTHING = 1_000_000
 
 
 def planner_world_limits(robot_cfg: "RobotConfig") -> "WorldBuildLimits | None":
-    """Where a perceived obstacle may be, from the same declaration the workspace guard reads.
+    """The workspace box, the bench and its clearance a perceived world is built against.
 
-    The reach has one source, so a perceived box can never appear somewhere the arm is already
-    forbidden to go. The support plane comes from the planner block, because a bench registered as a
-    hundred small obstacles fills the planner slots and duplicates a box the operator already wrote
-    down. `None` when the cell declares no plane, which is also a cell that cannot have a perceived
-    world.
+    The box is the one the workspace guard reads, and it bounds the TCP alone. It sets the grid a
+    distance field is cut to, which the planner reserves when it starts. It is not where an obstacle
+    stops mattering: the links, the hand and a wrist camera swing past it, so the live world also
+    keeps what the robot's own body can reach (``SelfEnvelope.reach``), which it knows at every
+    refresh and this config does not. The support plane comes from the planner block, because a
+    bench registered as a hundred small obstacles fills the planner slots and duplicates a box the
+    operator already wrote down. The plane's height is the slab's top, so a slab sunk below the bench
+    needs ``perceived.plane_clearance_mm`` raised by the sink, or the whole bench comes back as an
+    obstacle. The raised clearance is the bench band's alone: a declared fixture keeps its own band
+    (``perceived.DECLARED_SURFACE_MM``). `None` when the cell declares no plane, which is also a cell
+    that cannot have a perceived world.
     """
     world_cfg = getattr(robot_cfg.safety, "planning_world", None)
     plane = getattr(world_cfg, "support_plane", None) if world_cfg is not None else None

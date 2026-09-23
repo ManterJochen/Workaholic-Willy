@@ -113,9 +113,11 @@ def create_robot_logger(name: str, sub_file: str, level: int = logging.INFO) -> 
 # ----------------------------------------------------------------------
 # Kinematics defaults
 # ----------------------------------------------------------------------
-#: Default home joint configuration for a 6-DOF UR arm, in radians. This is the looking-down
-#: pose of the URSim default scene and of most operator manuals: shoulder lift and wrist 2 at
-#: -pi/2, every other joint at zero.
+#: Default home joint configuration for a 6-DOF UR arm, in radians: the arm standing straight
+#: up, shoulder lift and wrist 1 at -pi/2 and every other joint at zero. It is not a looking-down
+#: pose. The flange faces sideways, along base -Y, and on a UR5e it sits at (0.0, -232.9, 1079.4) mm
+#: by the bundled DH table, above most cells' ``workspace_limits``, so ``move_home`` refuses it
+#: until the cell sets ``robot.home_joint_positions``.
 HOME_JOINTS_DEFAULT: Final[tuple[float, ...]] = (
     0.0,
     -1.5707963267948966,  # -pi/2

@@ -99,6 +99,8 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     from src.calibration.quality import classify_rmse
     from src.calibration.serialization import save_extrinsics
     from src.robot.execution import CalibrationRoutine
+    from src.robot.execution.hand_eye import print_sweep_progress
+    from src.willy_sim.run_eih_calibrate import sim_aruco_target
 
     # The shared boot prefix, with no fixed marker: the eye-to-hand marker rides the tool.
     cell = bootstrap_sim_cell(data_dir, headless=headless, **(cell_kwargs or {}),
@@ -111,6 +113,8 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
 
         save_dir = str(calibration_dir(sim.robot_model))
     he = cell.cfg.camera.hand_eye.eye_to_hand     # ETH marker length + dict + sample thresholds
+    # Read from the cell's own tree (its profile chain): the scene renders one ArUco marker, so a board is refused.
+    target = sim_aruco_target(he, "camera.hand_eye.eye_to_hand")
     cal = cell.robot.calibration
     gripper.open()
 
@@ -173,7 +177,7 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
         wrist_link = sim.cameras["wrist"].prim_path.rsplit("/", 1)[0]  # /World/UR5e/wrist_3_link
         mount_tool_aruco_marker(
             arm.session, parent_prim=wrist_link,
-            length_mm=he.marker_length_mm, dict_name=he.aruco_dict_name,
+            length_mm=target.marker_length_mm, dict_name=target.aruco_dict_name,
             marker_id=sim.scene_setup.marker.aruco_marker_id,
         )
         # (overhead near-clip 0.05 already set above for the oracle fit; the tool marker sits ~0.4 m away.)
@@ -181,7 +185,7 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
 
         src = ArucoMarkerPoseSource(
             marker_id=sim.scene_setup.marker.aruco_marker_id,
-            marker_length_mm=he.marker_length_mm, dict_name=he.aruco_dict_name,
+            marker_length_mm=target.marker_length_mm, dict_name=target.aruco_dict_name,
         )
 
         def marker_source():
@@ -245,7 +249,7 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
         marker_id=sim.scene_setup.marker.aruco_marker_id,
         settle_time_s=cal.settle_time_s,
         calibration_mode=MountingMode.EYE_TO_HAND,
-        on_event=lambda evt, data: print(f"  [{evt}] {data.get('reason', data.get('accepted', ''))}", flush=True),
+        on_event=print_sweep_progress,
     )
     # ArUco needs oblique views to break the planar-marker IPPE flip ambiguity that ruins the AX=XB
     # rotation when the overhead sees the up-facing marker near-frontally. The ground-truth source

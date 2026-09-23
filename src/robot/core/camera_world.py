@@ -27,6 +27,13 @@ the space between the jaws at the motion's goal, how many points it took out or 
 each held box. It is ``None`` when nothing was in force, and on every other use, and a stamp that
 carries ``None`` renders no kept-out clause.
 
+And it says what its world did not see. ``unseen`` is an :class:`UnseenSpace` when a camera's image held
+pixels with no depth, or when the motion's goal stood in no camera's view: both reach the planner as free
+space, because nothing was measured there, so a PLANNED stamp does not vouch for them. The live world
+refuses a frame that is mostly holes, and a goal that the cameras looking at it could not measure
+around, before any stamp is written; this is what stays below those limits. It is ``None`` when
+everything asked about was seen, and on every other use.
+
 A decline is a keyword on the verb or a block around several motions (:func:`without_camera_world`),
 with a reason either way. The block is bound to one arm, because two arms can run in one process, and
 it is held in a :class:`~contextvars.ContextVar`, so it does not follow into a thread started inside
@@ -66,6 +73,7 @@ __all__ = [
     "CameraWorldUse",
     "DeclinesCameraWorld",
     "ReadsCameraWorld",
+    "UnseenSpace",
     "active_decline",
     "camera_world_refusal",
     "resolve_camera_world",
@@ -143,6 +151,61 @@ class CameraWorldDecline:
 
 
 @dataclass(frozen=True, slots=True)
+class UnseenSpace:
+    """What the world behind a PLANNED motion did not see, so its stamp does not vouch for that space.
+
+    A camera world is as good as what its cameras measured. A pixel with no depth reaches the planner
+    as free space, and so does everything outside every camera's view: a camera on the wrist sees where
+    it points and nothing else. Neither is refused below the limits the live world keeps, and neither
+    may pass as seen. Built only when something was not seen: a stamp that saw everything carries
+    ``None`` instead.
+    """
+
+    #: The cameras whose image held pixels with no depth, each with the share of its image that held
+    #: none, above 0 and at most 1, in the order the world lists its cameras.
+    no_depth: tuple[tuple[str, float], ...] = ()
+    #: Whether the motion's goal stood in no camera's view.
+    goal_out_of_view: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.no_depth, tuple):
+            raise TypeError(f"no_depth is a tuple of (camera, share) pairs, not a {type(self.no_depth).__name__}")
+        cameras: list[str] = []
+        for entry in self.no_depth:
+            if not isinstance(entry, tuple) or len(entry) != 2:
+                raise TypeError(f"a no_depth entry is a (camera, share) pair, not {entry!r}")
+            name, share = entry
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"a no_depth entry names its camera, not {name!r}")
+            if isinstance(share, bool) or not isinstance(share, (int, float)):
+                raise TypeError(f"a no_depth share is a number, not {share!r}")
+            if not (math.isfinite(float(share)) and 0.0 < float(share) <= 1.0):
+                raise ValueError(f"a no_depth share is above 0 and at most 1, not {share!r}")
+            cameras.append(name)
+        if len(set(cameras)) != len(cameras):
+            raise ValueError(f"a camera is named twice in {cameras}")
+        if not isinstance(self.goal_out_of_view, bool):
+            raise TypeError(f"goal_out_of_view is a bool, not {self.goal_out_of_view!r}")
+        if not self.no_depth and not self.goal_out_of_view:
+            raise ValueError("an unseen space names something that was not seen; a world that saw everything carries None")
+        object.__setattr__(self, "no_depth", tuple((name, float(share)) for name, share in self.no_depth))
+
+    def render(self) -> str:
+        """One clause for a person. ASCII, no trailing newline."""
+        parts = [f"no depth on {100.0 * share:.0f}% of {_one_line_ascii(name)}" for name, share in self.no_depth]
+        if self.goal_out_of_view:
+            parts.append("the goal in no camera's view")
+        return ", ".join(parts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Plain data; survives ``json.dumps`` with no custom encoder."""
+        return {
+            "no_depth": {name: share for name, share in self.no_depth},
+            "goal_out_of_view": self.goal_out_of_view,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CameraWorldStamp:
     """The camera-world answer for one motion. Build it with a factory."""
 
@@ -154,6 +217,9 @@ class CameraWorldStamp:
     #: ``None`` when nothing was kept out. Every other use carries ``None``: nothing was planned
     #: against a world.
     keep_out: "KeepOutSummary | None" = None
+    #: What the world behind a PLANNED stamp did not see (pixels with no depth, a goal in no camera's
+    #: view), or ``None`` when it saw everything it was asked about. Every other use carries ``None``.
+    unseen: UnseenSpace | None = None
 
     def __post_init__(self) -> None:
         use = self.use
@@ -171,6 +237,11 @@ class CameraWorldStamp:
         # equals the one its factory builds, hashes, and survives to_dict().
         if self.keep_out is not None and use is not CameraWorldUse.PLANNED:
             raise ValueError(f"a {use.value} camera world keeps nothing out, because no world was planned against")
+        if self.unseen is not None:
+            if use is not CameraWorldUse.PLANNED:
+                raise ValueError(f"a {use.value} camera world saw nothing to leave unseen, because no world was planned against")
+            if not isinstance(self.unseen, UnseenSpace):
+                raise TypeError(f"unseen is an UnseenSpace or None, not {self.unseen!r}")
         if use is CameraWorldUse.UNSTATED:
             if self.reason != "" or self.cameras != () or self.captured_at_s is not None:
                 raise ValueError("an unstated camera world carries nothing, because nothing was said")
@@ -200,6 +271,7 @@ class CameraWorldStamp:
     @classmethod
     def planned(
         cls, *, cameras: Sequence[str], captured_at_s: float, keep_out: "KeepOutSummary | None" = None,
+        unseen: UnseenSpace | None = None,
     ) -> "CameraWorldStamp":
         if isinstance(cameras, str):
             raise TypeError(
@@ -207,7 +279,7 @@ class CameraWorldStamp:
                 f"({cameras!r},)"
             )
         return cls(use=CameraWorldUse.PLANNED, cameras=tuple(cameras), captured_at_s=captured_at_s,
-                   keep_out=keep_out)
+                   keep_out=keep_out, unseen=unseen)
 
     @classmethod
     def declined(cls, decline: CameraWorldDecline) -> "CameraWorldStamp":
@@ -234,7 +306,9 @@ class CameraWorldStamp:
         if self.use is CameraWorldUse.PLANNED:
             cameras = ", ".join(_one_line_ascii(name) for name in self.cameras)
             text = f"{head}  cameras {cameras}, image captured at {self.captured_at_s:.3f} s"
-            return text if self.keep_out is None else f"{text}; kept out: {self.keep_out.render()}"
+            if self.keep_out is not None:
+                text = f"{text}; kept out: {self.keep_out.render()}"
+            return text if self.unseen is None else f"{text}; not seen, planned as free: {self.unseen.render()}"
         if self.use is CameraWorldUse.UNSTATED:
             return f"{head}  nothing said whether the planner knew what the cameras saw"
         return f"{head}  {_one_line_ascii(self.reason)}"
@@ -248,6 +322,7 @@ class CameraWorldStamp:
             "cameras": list(self.cameras),
             "captured_at_s": self.captured_at_s,
             "keep_out": None if self.keep_out is None else self.keep_out.to_dict(),
+            "unseen": None if self.unseen is None else self.unseen.to_dict(),
         }
 
 

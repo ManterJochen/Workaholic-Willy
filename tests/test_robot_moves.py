@@ -67,9 +67,9 @@ def _desk(arm: DummyRobotArm | None = None) -> Robot:
 
 
 def _tripwires(arm: Any) -> dict[str, MagicMock]:
-    """The arm's three motion verbs, each failing the test if it is reached."""
+    """The arm's motion verbs, the typed home among them, each failing the test if it is reached."""
     wires = {name: MagicMock(side_effect=AssertionError(f"{name} was commanded"))
-             for name in ("move", "move_to_joints", "move_home")}
+             for name in ("move", "move_to_joints", "move_home", "move_to_home")}
     for name, wire in wires.items():
         setattr(arm, name, wire)
     return wires
@@ -329,17 +329,17 @@ class TheCameraWorldStandsBehindEveryMotionTests(unittest.TestCase):
         for wire in wires.values():
             wire.assert_not_called()
 
-    def test_home_declines_for_the_arm_while_its_move_home_runs(self) -> None:
-        """``move_home`` takes no keyword, so the decline reaches it as a block around the call, and ends with it."""
+    def test_home_declines_for_the_arm_while_its_typed_home_runs(self) -> None:
+        """``move_to_home`` takes no keyword, so the decline reaches it as a block around the call, and ends with it.
+
+        The arm's own verb runs, down to the drive, so the stamp is the one the verb put on its result.
+        """
         motion = _motion()
         arm = _ur_curobo()
         seen: list[Any] = []
-
-        def home() -> bool:
-            seen.append(active_decline(arm))
-            return True
-
-        arm.move_home = home  # type: ignore[method-assign]
+        # The home box reads the controller's FK, which this double does not answer; what is read here is the decline.
+        arm._home_refusal = lambda joints: None  # type: ignore[method-assign]
+        arm._drive_joints = lambda joints, **_: seen.append(active_decline(arm))  # type: ignore[method-assign]
         robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None)
 
         with _judged():
@@ -477,7 +477,11 @@ class ARefusalIsAReportTests(unittest.TestCase):
         self.assertIs(refusal, rejected.result, "the typed refusal the raise carried is the report's result")
 
     def test_a_home_the_arm_refuses_reads_unknown(self) -> None:
+        """The fallback: an arm with no typed home answers only with ``move_home``'s bool."""
+        from src.robot.core.arm_capabilities import HomesTyped
+
         motion = _motion()
+        self.assertNotIsInstance(_RefusesHome(), HomesTyped)
 
         report = _desk(_RefusesHome()).home()
 

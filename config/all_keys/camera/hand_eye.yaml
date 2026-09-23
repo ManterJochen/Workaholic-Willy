@@ -26,22 +26,54 @@ hand_eye:
     min_angle: 10.0
 
     # Physical edge length in mm of the ArUco square that rides on the tool for fixed-camera calibration
-    # (default 50.0; sim overlay 48.0).
+    # (default 50.0; sim overlay 48.0). Not read beside a board `target`.
     # [default: 50.0]
     marker_length_mm: 50.0
 
     # Which OpenCV ArUco dictionary the eye-to-hand marker was generated from (default DICT_5X5_100; sim
-    # overlay DICT_4X4_50).
+    # overlay DICT_4X4_50). A `target` that leaves its dictionary out takes this one.
     # [default: DICT_5X5_100] [gated by camera.hand_eye.eye_to_hand.enabled]
     aruco_dict_name: DICT_5X5_100
 
-    # ── Quality knobs ──────────────────────────────────────────────────
-    # "sgbm" = StereoSGBM (default, best quality but slowest)
-    # "sgbm_3way" = MODE_SGBM_3WAY: ~2× faster with similar quality at 720p.
+    # The id of the one marker the sweep poses. It must be an id the dictionary holds: the schema and
+    # the calibrate command's `--check` refuse any other, which would find no marker at any pose. Not read
+    # beside a board `target`. The sim renders the id robot.sim.scene_setup.marker.aruco_marker_id.
+    # [default: 0]
+    marker_id: 0
+
+    # The whole calibration target, when the three keys above do not describe it. Unset (null): the
+    # one marker they name. A key above that is written out must agree with a marker target, and
+    # aruco_dict_name with a board. `--board` / `--board-file` name a target for one run.
+    # [default: null]
+    target: null
+
+    # One marker, stated in full:
+    # target:
+    #   kind: aruco
+    #   marker_id: 0                  # an id the dictionary holds
+    #   marker_length_mm: 50.0        # the printed black square, measured
+    #   aruco_dict_name: DICT_5X5_100 # default: the block's aruco_dict_name
+    #
+    # A ChArUco board, posed from its interpolated chessboard corners. It has none of a single
+    # marker's flip ambiguity near a frontal view, and the sim runners refuse it (the Isaac scene
+    # renders one marker):
+    # target:
+    #   kind: charuco
+    #   squares_x: 7                  # squares along the board's x, at least 2
+    #   squares_y: 5                  # squares along its y, at least 2
+    #   square_length_mm: 30.0        # a chessboard square, measured on the print
+    #   marker_length_mm: 22.0        # the marker inside a white square; smaller than the square
+    #   aruco_dict_name: DICT_5X5_100 # default: the block's; it must hold squares_x*squares_y/2 ids
+    #   legacy_pattern: false         # true for the layout OpenCV generated before 4.6 [default: false]
+    #   min_corners: 6                # corners a pose needs, at least 4 [default: 6]
+
+    # The mounting this block describes. The schema pins it to `eye_to_hand`; the mounting is chosen by
+    # which block a caller passes, not by editing this value.
     # [default: eye_to_hand]
     mode: eye_to_hand
 
-  # Config for tool-mounted-camera calibration returning CAMERA -> TOOL.
+  # Config for tool-mounted-camera calibration returning CAMERA -> TOOL. Every key means what it means
+  # in the block above.
   eye_in_hand:
     enabled: false
     min_samples: 6
@@ -49,4 +81,6 @@ hand_eye:
     min_angle: 10.0
     marker_length_mm: 50.0
     aruco_dict_name: DICT_5X5_100
+    marker_id: 0
+    target: null
     mode: eye_in_hand

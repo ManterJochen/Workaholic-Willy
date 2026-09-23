@@ -68,6 +68,12 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Protocol, runtime_checkable
 
 from src.robot.core import Gripper, ObjectDetectingGripper
+from src.robot.core.gripper import (
+    HoldEvidence,
+    ReportsHoldEvidence,
+    hold_evidence_of,
+    width_is_measured_of,
+)
 from src.robot.grasping.types.grasp_point import GraspPoint
 from src.robot.grasping.closed_loop.refinement import (
     IoUCentroidTargetTracker,
@@ -290,13 +296,24 @@ class ObjectDetectingGripperVerifier:
 
     * Gripper missing, or not advertising the capability:
       :attr:`VerificationOutcome.INCONCLUSIVE`.
-    * Capability returns :data:`True`: :attr:`VerificationOutcome.PASSED`.
+    * Capability returns :data:`True`: :attr:`VerificationOutcome.PASSED`,
+      unless the gripper's :class:`ReportsHoldEvidence` says otherwise:
+      UNMEASURED is :attr:`VerificationOutcome.INCONCLUSIVE` (reason
+      ``hold_not_measured``), EMPTY is read as the :data:`False` below.
     * Capability returns :data:`False`:
       * with :attr:`GraspVerificationPolicy.require_object_detected`,
         :attr:`VerificationOutcome.FAILED`,
       * without it, :attr:`VerificationOutcome.INCONCLUSIVE` so the
         operator can pair this verifier with a vision check that has
         the final say.
+
+    The hold evidence is read because ``is_object_detected`` is not always a
+    measurement: a jaw driven over digital I/O with no feedback wired answers
+    it with its own close command, and a vacuum with no switch with its own
+    vacuum command. On the owner's toggle Hand-E this verifier passed every
+    close as ``gripper_object_detected``, held or not (owner-cell audit,
+    reproduced 2026-09-23). A ``False`` is never re-read: it stays the empty
+    verdict it always was.
     """
 
     def verify(
@@ -309,8 +326,11 @@ class ObjectDetectingGripperVerifier:
                 reason="no_object_detection_capability",
                 telemetry={"verifier": "object_detecting_gripper"},
             )
+        hold: Optional[HoldEvidence] = None
         try:
             detected = bool(gripper.is_object_detected())
+            if detected and isinstance(gripper, ReportsHoldEvidence):
+                hold = hold_evidence_of(gripper)
         except Exception as exc:  # noqa: BLE001 (keep verifier total)
             return GraspVerificationReport(
                 outcome=VerificationOutcome.INCONCLUSIVE,
@@ -320,6 +340,19 @@ class ObjectDetectingGripperVerifier:
                     "error": f"{type(exc).__name__}: {exc}",
                 },
             )
+        if hold is HoldEvidence.UNMEASURED:
+            return GraspVerificationReport(
+                outcome=VerificationOutcome.INCONCLUSIVE,
+                reason="hold_not_measured",
+                telemetry={
+                    "verifier": "object_detecting_gripper",
+                    # What the gripper answered, kept so a record shows the echo it did not believe.
+                    "object_detected_reported": True,
+                    "hold_evidence": str(hold),
+                },
+            )
+        if hold is HoldEvidence.EMPTY:
+            detected = False
         if detected:
             return GraspVerificationReport(
                 outcome=VerificationOutcome.PASSED,
@@ -413,6 +446,17 @@ class WidthDeltaGripperVerifier:
     gripper-less cell must not verify a grasp either. The reasons stay two strings because the two
     repairs are different, and a rehearsal that wants motion without a grasp verdict turns
     verification off rather than collecting a fabricated pass.
+
+    A gripper whose width is not measured has no jaw width to judge, and the verdict is
+    :attr:`VerificationOutcome.INCONCLUSIVE` with reason ``width_not_measured``, read after the two
+    refusals above and before any arithmetic. ``width_is_measured_of`` decides it, as the robot's
+    grasp verb decides what width to attach: ``True`` only where the gripper says ``get_width_mm``
+    reads a sensor, which every jaw with a position register does. A jaw driven over digital I/O
+    reports the band it was commanded to, and after a close that band is ``min_width_mm``, the very
+    number the collapse threshold is built on. On the owner's toggle Hand-E every close then read
+    5.0 mm against a 7.0 mm threshold and failed as ``jaws_collapsed_to_minimum``, held part or not
+    (owner-cell audit, reproduced 2026-09-23). An unmeasured width is unmeasured here, not
+    collapsed.
     """
 
     def verify(
@@ -456,6 +500,16 @@ class WidthDeltaGripperVerifier:
                 reason="no_end_effector_configured",
                 telemetry={
                     "verifier": "width_delta",
+                    "post_close_width_mm": context.post_close_width_mm,
+                },
+            )
+        if not width_is_measured_of(gripper):
+            return GraspVerificationReport(
+                outcome=VerificationOutcome.INCONCLUSIVE,
+                reason="width_not_measured",
+                telemetry={
+                    "verifier": "width_delta",
+                    # The band the gripper reported, kept so a record shows what was not judged.
                     "post_close_width_mm": context.post_close_width_mm,
                 },
             )

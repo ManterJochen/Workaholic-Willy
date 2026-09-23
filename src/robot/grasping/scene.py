@@ -16,9 +16,10 @@ So the answer is two doors and a stamped result:
 
     Scene.from_cloud(...)         no config exists, so no selector is being ignored. The result
                                   says ``generator="geometric"`` and cannot be mistaken.
-    Scene.from_robot_config(...)  a config exists and supplies the support height and the jaw. The
-                                  generator selector is not read here, so the result still says
-                                  ``generator="geometric"``.
+    Scene.from_robot_config(...)  a config exists and supplies the support, the jaw, the floor
+                                  and the inflation, each built as the cell's pick path builds it.
+                                  The generator selector is not read here, so the result still
+                                  says ``generator="geometric"``.
 
 The result names its generator either way, and that is what makes the first door safe: a silent
 substitution is only dangerous while it is silent, and `SceneGrasps.generator` is on every report
@@ -35,6 +36,7 @@ import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
 
+from src.robot.grasping.collision import resolve_support_plane
 from src.robot.grasping.generation.support_footprint import (
     SupportFootprintCandidate,
     SupportFootprintJaw,
@@ -44,12 +46,48 @@ from src.robot.grasping.generation.support_footprint import (
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import RobotConfig
 
-__all__ = ["Scene", "SceneGrasps"]
+__all__ = ["SUPPORT_READ_ERROR_MM", "Scene", "SceneGrasps"]
 
 #: What produced a set of candidates. Spelled the way the config key
 #: `robot.grasping.calculator` spells it, so a reader comparing a report against a YAML file is
 #: comparing like with like rather than translating.
 _GEOMETRIC = "geometric"
+
+#: How far a single view's target cloud has to reach along the support normal before its lowest point
+#: may raise the support, millimetres. The pick loop's ``_MIN_CLOUD_EXTENT_FOR_SUPPORT_MM``, restated
+#: rather than imported because importing the pick loop here would put it on the import path of every
+#: bare-cloud caller and of the locator; ``tests/test_a_scene_plans_the_trees_hand.py`` holds the two
+#: equal. Below it the cloud is one face seen head-on, its lowest point is that face, and the plane
+#: would land on top of the object.
+_MIN_CLOUD_EXTENT_FOR_SUPPORT_MM = 25.0
+
+#: How far above the support a target point still counts as the support on a real cell, millimetres:
+#: the floor :meth:`Scene.from_robot_config` plans with.
+#:
+#: A real table reads as high as the camera's hand-eye and depth error, and a table point counted as
+#: part widens the footprint the jaw has to span. Five, the figure the shipped
+#: ``safety.planning_world.perceived.plane_clearance_mm`` gives the bench for the same errors, and a
+#: choice rather than a measurement; above the stage's own ``DEFAULT_FLOOR_MARGIN_MM``, which was
+#: measured in a simulator whose calibration is exact. It is not that key: a cell that sinks its slab
+#: below the bench raises the key by the sink (robot.yaml), and read as a floor over the real table a
+#: sink of 50 mm left a 40 mm cube with no grasp (review of 2026-09-23). A cell path that builds its
+#: own calculator passes this number too.
+SUPPORT_READ_ERROR_MM = 5.0
+
+
+def _has_seen_the_support(target: np.ndarray, normal: Sequence[float]) -> bool:
+    """Whether a target cloud reaches far enough along the support normal to have seen what it stands on."""
+    if target.ndim != 2 or target.shape[1] != 3 or target.shape[0] == 0:
+        return False
+    unit = np.asarray(normal, dtype=np.float64).reshape(3)
+    length = float(np.linalg.norm(unit))
+    if length < 1e-12:
+        return False
+    finite = target[np.isfinite(target).all(axis=1)]
+    if finite.shape[0] == 0:
+        return False
+    along = finite @ (unit / length)
+    return float(along.max() - along.min()) >= _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +187,11 @@ class Scene:
     #: dilating it would forbid a band of the bin a gripper can legally reach.
     rigid_obstacle_points_base_mm: np.ndarray | None = None
     jaw: SupportFootprintJaw | None = None
+    #: How far above the support a target point still counts as the support, millimetres. Unset leaves
+    #: the primitive's own floor, ``DEFAULT_FLOOR_MARGIN_MM``.
+    floor_margin_mm: "Maybe[float]" = UNSET
+    #: How far every footprint face is pushed outward, millimetres. Unset leaves the primitive's own.
+    inflate_mm: "Maybe[float]" = UNSET
 
     @classmethod
     def from_cloud(
@@ -159,6 +202,8 @@ class Scene:
         obstacle_points_base_mm: "np.ndarray | Sequence[Sequence[float]] | None" = None,
         rigid_obstacle_points_base_mm: "np.ndarray | Sequence[Sequence[float]] | None" = None,
         jaw: SupportFootprintJaw | None = None,
+        floor_margin_mm: "Maybe[float]" = UNSET,
+        inflate_mm: "Maybe[float]" = UNSET,
     ) -> "Scene":
         """A cloud and a support height. No robot, no cell, no configuration.
 
@@ -177,6 +222,8 @@ class Scene:
                                            else np.asarray(rigid_obstacle_points_base_mm,
                                                            dtype=float)),
             jaw=jaw,
+            floor_margin_mm=(float(floor_margin_mm) if chosen(floor_margin_mm) else UNSET),
+            inflate_mm=(float(inflate_mm) if chosen(inflate_mm) else UNSET),
         )
 
     @classmethod
@@ -188,26 +235,50 @@ class Scene:
         obstacle_points_base_mm: "np.ndarray | Sequence[Sequence[float]] | None" = None,
         rigid_obstacle_points_base_mm: "np.ndarray | Sequence[Sequence[float]] | None" = None,
     ) -> "Scene":
-        """The same scene, with the support height and the jaw taken from a cell's configuration.
+        """The same scene, with the support, the jaw, the floor and the inflation taken from a cell's
+        configuration, each the way the cell's pick path takes it.
 
         The one-builder rule: this resolves config into arguments and calls :meth:`from_cloud`. It
         is not a second construction path, so the two doors cannot drift.
+
+        * The jaw is :meth:`SupportFootprintJaw.from_robot_config`: the fingers of
+          ``grasping.gripper_geometry``, the stroke of ``robot.gripper`` and the clearance of
+          ``grasping.support.min_clearance_mm``. Until 2026-09-23 only the stroke was read here, and a
+          Hand-E cell planned 2F-85 fingers; see that method.
+        * The support is ``resolve_support_plane`` over the declared height (or the container floor),
+          raised to the target's own lowest point when the cloud reaches 25 mm along the support
+          normal and ``refine_from_target`` is on. That is the pick loop's rule, so a part standing on
+          another part is planned on what it stands on. It never lowers the declared height.
+        * The floor is :data:`SUPPORT_READ_ERROR_MM` over the support, so a table that reads a few
+          millimetres high through hand-eye or depth error is the table here too, and not the start of
+          the part. Not ``safety.planning_world.perceived.plane_clearance_mm``: that is measured from
+          the planner's slab, which a cell may sink below the table, and raised by the sink.
+        * The inflation is ``grasping.geometry.inflate_mm``, which the cell hands its calculator.
 
         It does not yet select the generator. `grasping.calculator: deep` is honoured by
         `build_calculator`, which needs a camera matrix and an artifact and belongs to a cell rather
         than to a bare cloud. Until that is wired here, this door resolves geometry from config and
         the generator stays geometric, which `SceneGrasps.generator` states on every result.
+
+        A hand that is not a parallel jaw is refused with ``ValueError``.
         """
         support = robot_config.grasping.support
+        target = np.asarray(target_points_base_mm, dtype=float)
+        resolution = resolve_support_plane(
+            declared_height_mm=float(support.height_mm),
+            container_floor_mm=support.container.floor_height_mm,
+            normal=support.normal,
+            target_clouds_base_mm=([target] if _has_seen_the_support(target, support.normal) else None),
+            refine_from_target=bool(support.refine_from_target),
+        )
         return cls.from_cloud(
-            target_points_base_mm,
-            support_height_mm=float(support.height_mm),
+            target,
+            support_height_mm=resolution.height_mm,
             obstacle_points_base_mm=obstacle_points_base_mm,
             rigid_obstacle_points_base_mm=rigid_obstacle_points_base_mm,
-            jaw=SupportFootprintJaw.from_model(
-                aperture_mm=float(robot_config.gripper.max_width_mm),
-                min_width_mm=float(robot_config.gripper.min_width_mm),
-            ),
+            jaw=SupportFootprintJaw.from_robot_config(robot_config),
+            floor_margin_mm=SUPPORT_READ_ERROR_MM,
+            inflate_mm=float(robot_config.grasping.geometry.inflate_mm),
         )
 
     def grasps(
@@ -232,6 +303,10 @@ class Scene:
             chosen_options["max_candidates"] = max_candidates
         if chosen(palm_aware):
             chosen_options["palm_aware"] = palm_aware
+        if chosen(self.floor_margin_mm):
+            chosen_options["floor_margin_mm"] = self.floor_margin_mm
+        if chosen(self.inflate_mm):
+            chosen_options["inflate_mm"] = self.inflate_mm
         candidates = generate_support_footprint_grasps(
             self.target_points_base_mm,
             support_height_mm=self.support_height_mm,

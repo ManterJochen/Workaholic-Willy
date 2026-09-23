@@ -21,6 +21,10 @@ here is ever thinned to fit: thinning is exactly the silent gap this module exis
 too long for the backstop is refused with a sentence instead. The backstop is about how long a caller
 waits and not about the size of a checker's request, which is a separate number the client splits along.
 
+:func:`simplify_joint_path` is not thinning either. It drops a planner's waypoints, never samples, and what
+it returns is a shorter list of legs that a caller then samples and judges like any other: the chords it
+draws are new legs, and nothing about them has been looked at until that caller looks.
+
 Pure functions over numpy, no config, no logger, no planner: what a caller does with the samples is the
 caller's business, and the same samples serve the cuRobo batch check and the exact mesh gate.
 """
@@ -48,6 +52,7 @@ __all__ = [
     "PathSamples",
     "joint_path_samples",
     "line_samples",
+    "simplify_joint_path",
     "waypoint_path_samples",
 ]
 
@@ -296,3 +301,82 @@ def waypoint_path_samples(
                 f"path is for. Plan it in shorter legs, or raise the step the caller allows."
             )
     return PathSamples(configs=tuple(configs), step_bound_mm=bound_mm)
+
+
+def _off_the_chord_mm(
+    point: "tuple[float, ...]", start: "tuple[float, ...]", end: "tuple[float, ...]", radii: "tuple[float, ...]",
+) -> float:
+    """How far ``point`` is from the straight joint line ``start`` to ``end``, in the gate's own metric.
+
+    The metric is ``sum(|dq_j| * radius_j)``, the bound on how far any point of the arm moves between two
+    configurations. Along the line it is a convex function of the line parameter, linear between the places where
+    one joint's term turns round, so its minimum is at one of those places or at an end, and trying them all is
+    exact rather than a search.
+    """
+    delta = tuple(b - a for a, b in zip(start, end))
+    places = [0.0, 1.0]
+    for p, a, d in zip(point, start, delta):
+        if d != 0.0:
+            t = (p - a) / d
+            if 0.0 < t < 1.0:
+                places.append(t)
+    return min(
+        sum(abs(p - a - t * d) * r for p, a, d, r in zip(point, start, delta, radii))
+        for t in places
+    )
+
+
+def simplify_joint_path(
+    waypoints: "Sequence[Sequence[float]]",
+    *,
+    reach_mm: "float | Sequence[float]",
+    tolerance_mm: float,
+) -> tuple[tuple[float, ...], ...]:
+    """The fewest of a planner's own waypoints whose joint-space legs stay within ``tolerance_mm`` of the rest.
+
+    A real UR runs a planner's path as one ``moveJ`` per waypoint, and a ``moveJ`` starts from rest and stops at its
+    target. cuRobo samples its plans every 25 ms, 21 to 281 waypoints a move measured on a UR10, so the arm stopped
+    that often on its way to one goal. Most of those waypoints lie on a nearly straight joint line, and dropping them
+    is what lets the arm run the move in a few ``moveJ`` instead.
+
+    What comes back is a subset of ``waypoints``, in order, with the first and last always kept and every kept
+    configuration exactly the one the planner returned: nothing here invents a configuration or moves one. It is the
+    Douglas-Peucker reduction under ``sum(|dq_j| * reach_mm[j])``, the path gate's own metric, so every dropped
+    waypoint is within ``tolerance_mm`` of the chord that replaced it, in the same millimetres the gate samples in.
+
+    It says how far the shortened path strays from the planner's, and nothing about whether it is safe. The chords are
+    legs nobody has judged yet, so the caller judges the shortened list, with every authority, and executes only the
+    list that passed. ``tolerance_mm`` of 0 drops only waypoints that lie exactly on a chord, which changes no leg.
+    """
+    tolerance = float(tolerance_mm)
+    if not math.isfinite(tolerance) or tolerance < 0.0:
+        raise ValueError(f"tolerance_mm has to be a finite number of millimetres, at least 0, got {tolerance_mm!r}")
+    configs = [_finite_config(w, name=f"waypoint {index}") for index, w in enumerate(waypoints)]
+    if len(configs) <= 2:
+        return tuple(configs)
+    joints = len(configs[0])
+    for index, config in enumerate(configs):
+        if len(config) != joints:
+            raise ValueError(
+                f"waypoint {index} has {len(config)} joints and waypoint 0 has {joints}: a path between two arms is "
+                f"not a path"
+            )
+    radii = _radii(reach_mm, joints=joints)
+
+    keep = [False] * len(configs)
+    keep[0] = keep[-1] = True
+    spans = [(0, len(configs) - 1)]
+    while spans:
+        first, last = spans.pop()
+        if last - first < 2:
+            continue
+        worst_mm, worst_at = -1.0, first
+        for index in range(first + 1, last):
+            off_mm = _off_the_chord_mm(configs[index], configs[first], configs[last], radii)
+            if off_mm > worst_mm:
+                worst_mm, worst_at = off_mm, index
+        if worst_mm > tolerance:
+            keep[worst_at] = True
+            spans.append((first, worst_at))
+            spans.append((worst_at, last))
+    return tuple(config for config, kept in zip(configs, keep) if kept)

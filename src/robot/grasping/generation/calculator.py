@@ -33,6 +33,7 @@ from src.robot.grasping.collision import (
 from src.robot.grasping.generation._support_footprint_stage import (
     support_footprint_breakdowns,
 )
+from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
 from src.robot.grasping.generation.support_footprint import SupportFootprintJaw
 from src.robot.grasping.contacts import (
     ContactPair,
@@ -278,6 +279,13 @@ class GraspCalculator:
         # +3.14 pp, McNemar chi2 3.69 on 39 discordant; p ~ 0.055, suggestive and not significant, on
         # a denominator that is not the ladder's). None keeps the shipped blend, byte-identical.
         support_footprint_score_weights: "tuple[float, float, float, float, float] | None" = None,
+        # How far above the support a target point still counts as the support, for SFE. None keeps
+        # the stage's own ``DEFAULT_FLOOR_MARGIN_MM`` (2.0), which the D5 numbers above were measured
+        # with in a simulator whose calibration is exact, and is byte-identical. A real cell reads its
+        # table as high as its hand-eye and depth error, and states that error as
+        # ``safety.planning_world.perceived.plane_clearance_mm``; ``Scene.from_robot_config`` passes
+        # the larger of the two, and a construction site for a real cell should pass the same.
+        support_footprint_floor_margin_mm: float | None = None,
     ) -> None:
         validate_calculator_args(
             min_grip_width_mm=min_grip_width_mm,
@@ -428,6 +436,12 @@ class GraspCalculator:
         self._support_footprint_fallback = bool(support_footprint_fallback)
         self._support_footprint_full_resolution = bool(support_footprint_full_resolution)
         self._support_footprint_palm_aware = bool(support_footprint_palm_aware)
+        if support_footprint_floor_margin_mm is not None and not (
+                np.isfinite(support_footprint_floor_margin_mm) and support_footprint_floor_margin_mm >= 0.0):
+            raise ValueError("support_footprint_floor_margin_mm must be finite and >= 0, got "
+                             f"{support_footprint_floor_margin_mm!r}")
+        self._support_footprint_floor_margin_mm: float | None = (
+            None if support_footprint_floor_margin_mm is None else float(support_footprint_floor_margin_mm))
         # The float() sweep is what makes YAML's ints and numpy scalars behave; naming the five
         # elements keeps the shape the callee promises. Widening it to "some floats" would let a
         # four-weight config reach the scorer silently short.
@@ -567,6 +581,32 @@ class GraspCalculator:
         if banded.size == 0:  # defensive: a degenerate band leaves the reference unfiltered, no cap
             return valid_depth, None
         return banded, max_keep_mm
+
+    def _support_footprint_jaw(
+        self, gripper_model: GripperGeometryStrategy | None, min_table_clearance_mm: float,
+    ) -> SupportFootprintJaw:
+        """The jaw SFE plans with on this path: the per-call envelope, else this calculator's.
+
+        A method rather than an inline call so ``Scene.from_robot_config``, which builds its jaw from
+        the tree through ``SupportFootprintJaw.from_robot_config``, can be held to the same jaw on a
+        profile; ``tests/test_a_scene_plans_the_trees_hand.py`` does that on ``hande``.
+        """
+        return SupportFootprintJaw.from_model(
+            gripper_model if isinstance(gripper_model, ParallelJawGripperModel)
+            else (self._gripper_model
+                  if isinstance(self._gripper_model, ParallelJawGripperModel) else None),
+            # ⛔ THE STROKE, WHICH THIS CALL OMITTED UNTIL 2026-09-10. Without these two the jaw took
+            # `from_model`'s keyword defaults, 85.0 and 5.0, which are a 2F-85's numbers. MEASURED on
+            # the `hande` profile: the pick path planned a 49.99 mm hand as though it opened 85.0,
+            # proposed grasps up to 83 mm wide, and the driver then clamped the close to max_width_mm,
+            # which maps to count 0 = FULLY OPEN. The close command opened the hand at the grasp point.
+            # `scene.py` passed the configured aperture; this path did not, and every OTHER dimension
+            # of the jaw came out correct, which is what hid it. (`scene.py` had the mirror image: the
+            # stroke right and every finger dimension a 2F-85's, until 2026-09-23.)
+            aperture_mm=float(self.max_grip_mm),
+            min_width_mm=float(self.min_grip_mm),
+            table_clearance_mm=float(min_table_clearance_mm),
+        )
 
     def compute(
         self,
@@ -830,7 +870,20 @@ class GraspCalculator:
         )
         telemetry["candidates_silhouette"] = len(silhouette_poses)
         telemetry["closing_levelled"] = up_cam is not None
-        if not silhouette_poses:
+        # Whether the support-footprint stage will run: it needs a BASE support plane and a
+        # CAMERA->BASE transform. Decided here because it also decides whether an empty silhouette is
+        # the end of the attempt.
+        #
+        # It is not, when SFE runs. SFE replaces the silhouette candidates rather than adding to them
+        # (see the stage below), so the silhouette's answer was never the one taken, and an empty one
+        # vetoed a stage it does not feed. MEASURED 2026-09-23 on a ray-cast of the owner's cell, a
+        # D415 (fx 925, 1280x720) tilted 45 degrees, 500 mm from a 40 mm cube, Hand-E stroke 49.99:
+        # the silhouette spans the top face and the near side, measures 54.5 mm across, is refused as
+        # wider than the stroke, and every attempt returned no candidate before SFE was reached, in
+        # 5 of 5 noise seeds. With SFE reached, the same frames give a vertical 42 mm grasp on the part.
+        sfe_ready = (self._support_footprint_geometry and transform is not None
+                     and support_plane is not None and support_plane.frame is Frame.BASE)
+        if not silhouette_poses and not sfe_ready:
             return self._finalize_empty(
                 telemetry,
                 reasons=(
@@ -1063,9 +1116,7 @@ class GraspCalculator:
             telemetry["geometry_stage"] = "silhouette"
             # The BASE frame is not optional here: SFE reads ``offset_mm`` as a height above the
             # workspace. A CAMERA-frame plane's offset is a depth, and taking it for a height
-            # makes the table check inert.
-            sfe_ready = (transform is not None and support_plane is not None
-                         and support_plane.frame is Frame.BASE)
+            # makes the table check inert. (``sfe_ready`` is decided above, beside the silhouette.)
             telemetry["support_footprint_ready"] = bool(sfe_ready)
             if sfe_ready:
                 assert transform is not None and support_plane is not None  # narrowed by sfe_ready
@@ -1079,12 +1130,23 @@ class GraspCalculator:
                 # The pre-downsample is also redundant: ``reconstruct_support_prism`` voxelises at
                 # its own ``voxel_mm`` default of 3 mm, so this discards resolution SFE would thin
                 # more finely.
+                #
+                # And without the mask pixels that measure the background behind the part's edge.
+                # SFE's footprint is a convex hull of every point above the floor, so a band of table
+                # seen past the far edge through depth-to-colour misregistration pulls a face out to
+                # it; at a 45-degree view that is 40 mm behind a 40 mm part. See depth_steps.py. Only
+                # SFE's input is trimmed, and a mask with no step inside it gives the same cloud.
                 sfe_cloud = cloud
-                if self._support_footprint_full_resolution and not cloud.is_empty:
-                    sfe_cloud = masked_point_cloud(
-                        segmentation.mask, depth_arr, intrinsics, unit=unit, min_depth_mm=1.0,
-                        max_depth_mm=cloud_max_depth_mm, voxel_size_mm=None,
-                    )
+                if not cloud.is_empty:
+                    behind = pixels_behind_depth_steps(mask_bool, depth_arr * scale)
+                    telemetry["support_footprint_depth_step_pixels"] = int(np.count_nonzero(behind))
+                    if self._support_footprint_full_resolution or behind.any():
+                        sfe_cloud = masked_point_cloud(
+                            mask_bool & ~behind, depth_arr, intrinsics, unit=unit, min_depth_mm=1.0,
+                            max_depth_mm=cloud_max_depth_mm,
+                            voxel_size_mm=(None if self._support_footprint_full_resolution
+                                           else self.geometry_voxel_size_mm),
+                        )
                 target_base = (
                     np.asarray(geometry_points_base_mm, dtype=np.float64).reshape(-1, 3)
                     if geometry_points_base_mm is not None
@@ -1106,28 +1168,14 @@ class GraspCalculator:
                     target_base,
                     camera_to_base=transform,
                     support_height_mm=float(support_plane.offset_mm),
-                    jaw=SupportFootprintJaw.from_model(
-                        gripper_model if isinstance(gripper_model, ParallelJawGripperModel)
-                        else (self._gripper_model
-                              if isinstance(self._gripper_model, ParallelJawGripperModel) else None),
-                        # ⛔ THE STROKE, WHICH THIS CALL OMITTED UNTIL 2026-09-10. Without these two
-                        # the jaw took `from_model`'s keyword defaults, 85.0 and 5.0, which are a
-                        # 2F-85's numbers. MEASURED on the `hande` profile: the pick path planned a
-                        # 49.99 mm hand as though it opened 85.0, proposed grasps up to 83 mm wide,
-                        # and the driver then clamped the close to max_width_mm, which maps to count
-                        # 0 = FULLY OPEN. The close command opened the hand at the grasp point.
-                        # `scene.py` passed the configured aperture; this path did not, and every
-                        # OTHER dimension of the jaw came out correct, which is what hid it.
-                        aperture_mm=float(self.max_grip_mm),
-                        min_width_mm=float(self.min_grip_mm),
-                        table_clearance_mm=float(min_table_clearance_mm),
-                    ),
+                    jaw=self._support_footprint_jaw(gripper_model, min_table_clearance_mm),
                     obstacle_points_base_mm=obstacles_base,
                     rigid_obstacle_points_base_mm=rigid_base,
                     max_candidates=self.max_candidates,
                     inflate_mm=self._support_footprint_inflate_mm,
                     palm_aware=self._support_footprint_palm_aware,
                     score_weights=self._support_footprint_score_weights,
+                    floor_margin_mm=self._support_footprint_floor_margin_mm,
                 )
                 telemetry.update(sfe_telemetry)
                 telemetry["geometry_stage"] = "support_footprint"

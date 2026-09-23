@@ -338,14 +338,22 @@ cameras:
       serial_number: null
 
       # `[width, height]` in pixels for the colour stream. Not a free choice: it must be a mode
-      # the device actually supports (1280x720 is the shipped D435 value), and it sets the intrinsics, the
+      # the device actually supports (1280x720 on a D415 and a D435), and it sets the intrinsics, the
       # fx/fy/cx/cy read back from the device and written into `intrinsics.json` belong to THIS resolution.
       # [default: [1280, 720]]
       color_resolution: [1280, 720]
 
       # `[width, height]` in pixels for the depth stream. Only the RealSense backend acts on it
       # (`enable_stream(..., z16, fps)`); the OpenCV/OpenNI backend stores it and never uses it, the code
-      # comment says depth resolution is not verifiable through a single VideoCapture.
+      # comment says depth resolution is not verifiable through a single VideoCapture. The depth mode
+      # sets how near the camera measures (Min-Z), and a surface nearer than that reads as a hole. Intel
+      # gives a D415 about 450 mm at 1280x720 and about 310 mm at 848x480, and a D435 about 280 mm at
+      # 1280x720; Min-Z falls in proportion to the depth width (datasheet figures, not measured here). A
+      # D415 on the wrist, working at 0.3 to 0.6 m, sets [848, 480]: `color_resolution` stays
+      # [1280, 720] and with `align_depth_to_color` depth arrives on the colour grid, so every reader
+      # still gets 1280x720. The RealSense driver logs the camera, this mode and its Min-Z when it opens,
+      # and warns for a D415 at 1280x720. A request the camera cannot serve, a 1280x720 mode over a
+      # USB 2 link for one, is refused with the cameras the SDK sees and the USB link each is on.
       # [default: [1280, 720]]
       depth_resolution: [1280, 720]
 
@@ -376,15 +384,21 @@ cameras:
         laser_power_mw: null
 
         # Name of a D400 depth preset ('HighAccuracy', 'HighDensity', 'MediumDensity',
-        # 'Default'), matched case-insensitively against the `rs400_visual_preset` enum. It is the single
+        # 'Default'), matched against the `rs400_visual_preset` enum ignoring case and underscores, so
+        # 'HighAccuracy' and the SDK's own 'high_accuracy' name the same preset. It is the single
         # biggest depth-quality lever there is: HighAccuracy throws away every low-confidence pixel (sparse
         # but trustworthy. Good when a wrong depth would place a grasp inside an object), HighDensity keeps
-        # almost everything (fewer holes, more fliers). `null` leaves the device default.
+        # almost everything (fewer holes, more fliers). `null` leaves the device default. The preset is
+        # written first, and `enable_emitter`, `laser_power_mw` and `depth_units_m` are written over it,
+        # because a preset carries settings of its own ('Default' on a D415 resets the depth units).
         # [default: null]
         visual_preset: null
 
-        # Metres per raw depth unit the D435 default is 0.001 (1 mm), and 0.0001 gives finer
-        # quantisation at the cost of a much shorter max range (65535 units x the unit).
+        # Metres per raw depth unit. A D400's default is 0.001 (1 mm), and 0.0001 gives finer
+        # quantisation at the cost of a much shorter max range (65535 units x the unit). Written after the
+        # visual preset and read back when the stream opens: depth is always scaled by the device's own
+        # reading, and a device that does not offer the option or did not take the value refuses to open,
+        # naming both numbers. `null` keeps the device's units.
         # [default: null]
         depth_units_m: null
 
@@ -409,14 +423,23 @@ cameras:
           # Edge-preserving spatial smoothing of each depth frame, on by default at
           # librealsense's own default strength (this config exposes no sub-parameters). It removes per-
           # pixel depth noise within a surface, which is what makes a plane fit or a support-plane estimate
-          # stable, while trying not to round off depth discontinuities
+          # stable, while trying not to round off depth discontinuities. Spatial and temporal run on
+          # disparity, between librealsense's depth-to-disparity and disparity-to-depth transforms, and the
+          # whole chain runs before depth is aligned to colour, in librealsense's recommended order.
           # [default: true]
           spatial: true
 
           # Averages each depth pixel over recent frames, on by default. Excellent for a STATIC
           # bin it is the cheapest way to stabilise depth on a marginal surface and wrong for anything
           # moving: while the arm or an object is in motion it smears depth along the path and leaves ghost
-          # geometry behind the mover.
+          # geometry behind the mover. The driver feeds it only the frames it grabs and fills a hole with
+          # a depth it saw in them, so on a camera the arm carries the first frame after a move would hold
+          # the pose before's depth along the new rays (measured 2026-09-23 on librealsense 2.58.3: a hole
+          # at the new pose read the old 600 mm). The history is therefore dropped when the camera's owner
+          # is told it moved (`Camera.camera_moved()`, which the planning world calls after a move), and on
+          # a camera the arm carries (a rig with a `body`, or eye_in_hand extrinsics) also after a pause
+          # between two grabs longer than a burst of back-to-back grabs takes (0.25 s, or three frame
+          # periods on a slower mode). A burst, the warm-up grabs a pick frame takes, keeps it.
           # [default: true]
           temporal: true
 

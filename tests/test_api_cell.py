@@ -333,6 +333,34 @@ class MotionWarningTests(unittest.TestCase):
             "this cell's driver does not actuate on connect, so there is nothing to warn about",
         )
 
+    def test_a_toggle_with_no_open_switch_is_told_to_stand_the_jaws_open(self) -> None:
+        """The one jaw cell whose connect depends on a person (review, 2026-09-23): the driver takes the jaws to
+        stand open and never pulses, so a closed start inverts every later command, and the console said nothing."""
+        from api.lifecycle import motion_warnings
+        from src.config.schema.robot import RobotConfig
+
+        config = RobotConfig.model_validate({"vendor": "ur", "gripper": {"vendor": "jaw_io"}})
+
+        class _BlindToggle:
+            has_feedback = False
+            _open_on_connect_without_feedback = False
+            _actuation = "single_toggle"
+            _open_confirm_pin = None
+
+        class _SensedToggle(_BlindToggle):
+            has_feedback = True
+            _open_confirm_pin = 1
+
+        blind = motion_warnings(config, _BlindToggle())
+        self.assertEqual(len(blind), 1)
+        self.assertIn("OPEN", blind[0].what)
+        self.assertIn("with a pulse before every connect", blind[0].precaution)
+        self.assertNotRegex(blind[0].precaution, r"(?<!never )by hand")
+        # ⭐ THE CONTROL: with an open switch the switch decides, and the usual feedback sentence applies.
+        sensed = motion_warnings(config, _SensedToggle())
+        self.assertEqual(len(sensed), 1)
+        self.assertIn("EMPTY", sensed[0].what)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, Field, model_validator
@@ -132,14 +133,21 @@ class SingleDeviceRigConfig(BaseRigConfig):
 class RealSensePostProcessingConfig(StrictModel):
     """Depth post-processing filter chain for the RealSense backend.
 
-    Each depth frame passes the enabled filters in librealsense's recommended order: decimation,
-    spatial, temporal, hole-filling. A disabled filter is a no-op, so the defaults deliver raw
-    device depth apart from the spatial and temporal smoothing RealSense recommends.
+    Each depth frame passes the enabled filters in librealsense's recommended order, before it is
+    aligned to colour: decimation, depth to disparity, spatial, temporal, disparity to depth,
+    hole-filling. Spatial and temporal smooth disparity, which is what the sensor measures. A
+    disabled filter is a no-op, so the defaults deliver raw device depth apart from the spatial and
+    temporal smoothing RealSense recommends.
     """
 
     decimation: bool = False
     decimation_magnitude: int = Field(default=2, ge=2, le=8)
     spatial: bool = True
+    #: Averages each depth pixel over the frames the driver grabbed and fills a hole with a depth seen
+    #: in them. The driver drops that history when its owner is told the camera moved
+    #: (``Camera.camera_moved()``), and on a camera the arm carries also after a pause between two
+    #: grabs longer than a burst of back-to-back grabs takes, so a wrist camera's frame after a move
+    #: holds no depth from the pose before it.
     temporal: bool = True
     hole_filling: bool = False
     hole_filling_mode: int = Field(default=1, ge=0, le=2)
@@ -155,7 +163,12 @@ class RealSenseConfig(StrictModel):
 
     enable_emitter: bool = True
     laser_power_mw: float | None = Field(default=None, ge=0.0)
+    #: A D400 preset by name, ``HighAccuracy`` or the SDK's own ``high_accuracy``, matched ignoring
+    #: case and underscores. Written first, so the emitter, laser power and depth units written out
+    #: here are applied over it.
     visual_preset: str | None = None
+    #: Metres per raw depth unit. Written after the preset and read back: the driver scales depth by
+    #: the device's reading, and refuses to open when that reading is not this value.
     depth_units_m: float | None = Field(default=None, gt=0.0)
     export_intrinsics: bool = False
     post_processing: RealSensePostProcessingConfig = Field(
@@ -172,6 +185,11 @@ class RGBDDeviceRigConfig(BaseRigConfig):
     serial_number: str | None = None
 
     color_resolution: tuple[int, int] = (1280, 720)
+    #: The depth mode sets how near the camera measures. Intel gives a D415 a minimum depth of about
+    #: 450 mm at 1280 x 720 and about 310 mm at 848 x 480, and a D435 about 280 mm at 1280 x 720
+    #: (datasheet figures, not measured here); anything nearer reads as a hole. A D415 on the wrist
+    #: streams depth at (848, 480), with colour kept at (1280, 720) and depth aligned to it. The
+    #: RealSense driver logs the camera, this mode and its Min-Z when it opens.
     depth_resolution: tuple[int, int] = (1280, 720)
     align_depth_to_color: bool = True
 
@@ -348,11 +366,113 @@ class StereoMatcherConfig(StrictModel):
 
 
 # ---------------------------------------------------------------------------
+# Hand-eye calibration target
+# ---------------------------------------------------------------------------
+
+#: How many ids the predefined ArUco dictionaries whose name does not say it hold. An ``NxN_M`` name holds ``M``.
+#: Written out rather than read from ``cv2``, so loading a config imports no OpenCV;
+#: ``tests/test_calibration_targets.py`` holds every name against ``cv2.aruco``.
+_ARUCO_DICT_IDS = {
+    "DICT_ARUCO_ORIGINAL": 1024,
+    "DICT_APRILTAG_16h5": 30,
+    "DICT_APRILTAG_25h9": 35,
+    "DICT_APRILTAG_36h10": 2320,
+    "DICT_APRILTAG_36h11": 587,
+    "DICT_ARUCO_MIP_36h12": 250,
+}
+
+
+def ids_in_aruco_dictionary(name: str) -> int | None:
+    """How many marker ids a predefined dictionary holds (ids run from 0), ``None`` for a name this does not know."""
+    if name in _ARUCO_DICT_IDS:
+        return _ARUCO_DICT_IDS[name]
+    match = re.fullmatch(r"DICT_\dX\d_(\d+)", name)
+    return int(match.group(1)) if match else None
+
+
+def _refuse_id_outside(marker_id: int, dictionary: str, key: str = "marker_id") -> None:
+    size = ids_in_aruco_dictionary(dictionary)
+    if size is not None and marker_id >= size:
+        raise ValueError(f"{key} {marker_id} is not in {dictionary}, whose ids run from 0 to {size - 1}")
+
+
+class ArucoTargetConfig(StrictModel):
+    """One printed ArUco marker, posed from its four corners (``SOLVEPNP_IPPE_SQUARE``).
+
+    ``marker_length_mm`` is the edge of the black square, measured on the print. It sets the scale of every solved
+    translation, so a wrong value scales the whole calibration and no residual shows it.
+    """
+
+    kind: Literal["aruco"] = "aruco"
+    marker_id: int = Field(default=0, ge=0)
+    marker_length_mm: float = Field(gt=0.0)
+    aruco_dict_name: ArucoDictName = "DICT_5X5_100"
+
+    @model_validator(mode="after")
+    def _id_in_dictionary(self) -> ArucoTargetConfig:
+        _refuse_id_outside(self.marker_id, self.aruco_dict_name)
+        return self
+
+
+class CharucoTargetConfig(StrictModel):
+    """A ChArUco board, posed from its interpolated chessboard corners.
+
+    ``squares_x`` by ``squares_y`` chessboard squares of ``square_length_mm``, with ArUco markers of
+    ``marker_length_mm`` in the white ones. ``legacy_pattern`` is the layout OpenCV generated before 4.6, which
+    differs for an even ``squares_y``: a board read in the other layout shows its markers and no corners. A pose
+    needs ``min_corners`` corners. The board poses from many points at once, so it has none of a single marker's
+    flip ambiguity near a frontal view.
+    """
+
+    kind: Literal["charuco"] = "charuco"
+    squares_x: int = Field(ge=2)
+    squares_y: int = Field(ge=2)
+    square_length_mm: float = Field(gt=0.0)
+    marker_length_mm: float = Field(gt=0.0)
+    aruco_dict_name: ArucoDictName = "DICT_5X5_100"
+    legacy_pattern: bool = False
+    min_corners: int = Field(default=6, ge=4)
+
+    @model_validator(mode="after")
+    def _a_board_opencv_can_hold(self) -> CharucoTargetConfig:
+        if self.marker_length_mm >= self.square_length_mm:
+            raise ValueError(
+                f"marker_length_mm {self.marker_length_mm} must be smaller than square_length_mm "
+                f"{self.square_length_mm}: the marker sits inside a white square")
+        markers = (self.squares_x * self.squares_y) // 2
+        size = ids_in_aruco_dictionary(self.aruco_dict_name)
+        if size is not None and markers > size:
+            raise ValueError(
+                f"a {self.squares_x}x{self.squares_y} board carries {markers} markers and {self.aruco_dict_name} "
+                f"holds {size}")
+        corners = (self.squares_x - 1) * (self.squares_y - 1)
+        if self.min_corners > corners:
+            raise ValueError(
+                f"min_corners {self.min_corners} is more than the {corners} inner corners a "
+                f"{self.squares_x}x{self.squares_y} board has")
+        return self
+
+
+#: What a hand-eye sweep poses, told apart by ``kind``.
+CalibrationTargetConfig = Annotated[
+    ArucoTargetConfig | CharucoTargetConfig,
+    Field(discriminator="kind"),
+]
+
+
+# ---------------------------------------------------------------------------
 # Eye-hand calibration settings
 # ---------------------------------------------------------------------------
 
 class EyeHandRoutineConfig(StrictModel):
-    """Shared sample-collection tuning for a hand-eye calibration workflow."""
+    """Shared sample-collection tuning for a hand-eye calibration workflow.
+
+    The target is one ArUco marker described by ``marker_length_mm``, ``aruco_dict_name`` and ``marker_id``, unless
+    ``target`` names it in full (a marker, or a ChArUco board). ``target.aruco_dict_name`` left out is the block's.
+    Beside a marker ``target``, each of the three keys the block writes out must agree with it, so one marker is
+    described once. Beside a board, ``aruco_dict_name`` must agree, and ``marker_length_mm`` and ``marker_id``, which
+    describe one marker, are not read.
+    """
 
     enabled: bool = True
     min_samples: int = Field(default=6, ge=4)
@@ -364,10 +484,46 @@ class EyeHandRoutineConfig(StrictModel):
     )
     marker_length_mm: float = Field(default=50.0, gt=0.0)
     aruco_dict_name: ArucoDictName = "DICT_5X5_100"
+    marker_id: int = Field(default=0, ge=0)
+    target: CalibrationTargetConfig | None = None
 
     @property
     def min_angle_deg(self) -> float:
         return self.min_angle
+
+    @model_validator(mode="before")
+    @classmethod
+    def _the_target_dictionary_defaults_to_the_block(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        target = data.get("target")
+        if isinstance(target, dict) and "aruco_dict_name" not in target and "aruco_dict_name" in data:
+            data = {**data, "target": {**target, "aruco_dict_name": data["aruco_dict_name"]}}
+        return data
+
+    @model_validator(mode="after")
+    def _the_target_is_stated_once(self) -> EyeHandRoutineConfig:
+        target = self.target
+        if target is None:
+            _refuse_id_outside(self.marker_id, self.aruco_dict_name)
+            return self
+        stated = self.model_fields_set
+        keys = ("marker_length_mm", "aruco_dict_name", "marker_id") if isinstance(target, ArucoTargetConfig) else (
+            "aruco_dict_name",)
+        disagree = [f"{key} {getattr(self, key)!r} and target.{key} {getattr(target, key)!r}"
+                    for key in keys if key in stated and getattr(self, key) != getattr(target, key)]
+        if disagree:
+            raise ValueError(
+                "the block and its target disagree: " + "; ".join(disagree)
+                + ". State the target once: remove the block's key, or make it agree")
+        return self
+
+    def resolved_target(self) -> ArucoTargetConfig | CharucoTargetConfig:
+        """The target this block describes: ``target`` when it is set, else the one marker its own keys name."""
+        if self.target is not None:
+            return self.target
+        return ArucoTargetConfig(kind="aruco", marker_id=self.marker_id, marker_length_mm=self.marker_length_mm,
+                                 aruco_dict_name=self.aruco_dict_name)
 
 
 class EyeToHandWorkflowConfig(EyeHandRoutineConfig):

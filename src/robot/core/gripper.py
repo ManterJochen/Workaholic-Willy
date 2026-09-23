@@ -35,8 +35,10 @@ __all__ = [
     "HoldEvidence",
     "MeasuresWidth",
     "ObjectDetectingGripper",
+    "OpensAndCloses",
     "ReportsHoldEvidence",
     "StoppableGripper",
+    "TwoStateGripper",
     "hold_evidence_of",
     "width_is_measured_of",
 ]
@@ -142,6 +144,37 @@ class StoppableGripper(Protocol):
 
     def stop(self) -> None:
         """Halt the jaws where they are. Must not command a new width."""
+        ...
+
+
+@runtime_checkable
+class TwoStateGripper(Protocol):
+    """Capability extension: the gripper has two states, and reads a commanded width as the closed one at or below
+    ``closed_below_mm`` and as open above it.
+
+    ``jaw_io`` is one. The width-based Protocol hides it: a grasp above the threshold commands an OPEN and a release at
+    or below it a CLOSE, neither raises, and a gripper with no sensor then reports the verb done. Both were found
+    diagnosing the owner's toggle cell on 2026-09-23, so the hand verbs ask this before they command.
+    """
+
+    @property
+    def closed_below_mm(self) -> float:
+        """The commanded width at or below which the gripper closes."""
+        ...
+
+
+@runtime_checkable
+class OpensAndCloses(Protocol):
+    """Capability extension: the gripper takes open and close as what they are, not as a width.
+
+    A verb that knows what it means, a pick's pre-open, its grasp, a release, says it here, so no width read against
+    ``closed_below_mm`` can turn it round. On the owner's toggle cell (2026-09-23) a grasp at the part's width was an
+    open and a release at the hand's width could be a close, with nothing raised. ``jaw_io`` is one; a gripper that is
+    a :class:`TwoStateGripper` and not this one is still asked what a width means before it is commanded.
+    """
+
+    def set_closed(self, closed: bool) -> None:
+        """Close the jaws when ``closed``, open them otherwise, and return once they have got there."""
         ...
 
 

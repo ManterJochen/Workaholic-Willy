@@ -81,8 +81,12 @@ robot:
   # frame is rotated 180 degrees about Z from the Isaac stage frame; a home vector copied
   # from `robot.sim.yaml` lands mirrored to -X, where the bench is not.
   #
-  # `move_home` checks the pose the controller reports, which is the flange while
-  # `gripper.tool_frame.source` is `willy` and the TCP once a tool is set on the pendant.
+  # `move_home` boxes the grasp centre, not the flange: the controller's FK of the home with
+  # the declared tool frame added while `gripper.tool_frame.source` is `willy`, and the
+  # controller's own TCP once a tool is set on the pendant. At this home the flange's +Z
+  # points almost straight down (-0.985 in z), so a tool of length L along flange +Z puts the
+  # grasp centre about L below the flange: (504.2, 132.7, 191.2) mm for L = 200 mm, still
+  # inside the box.
   # Derived from the bundled DH table; never commanded on a physical UR5e.
   home_joint_positions: [3.14, -1.4, 1.6, -1.6, -1.57, 0.0]
 

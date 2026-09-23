@@ -49,6 +49,13 @@ The locator never opens or releases the camera the caller owns. `Locator`, `Loca
 come from `willy`, the rest from `src.robot.perception`. No orientation is estimated (`LocatedOrientation`
 says so), and an empty result reads the same as a failed detector, which `print(located)` says.
 
+An object's points leave out the mask pixels that measure more than 10 mm behind a pixel of the same
+mask within 3 px: depth-to-colour misregistration at a part's far edge puts the table behind the part
+inside the mask, and on a camera tilted 45 degrees that table lies 40 mm behind the part. The mask itself
+stays as segmented, and `keep_out(i)` holds all of it out of the planner world. `scene(i, robot_config)`
+plans with the hand `grasping.gripper_geometry` describes and on the support the pick loop would use,
+raised to the object's own lowest point when its surface reaches down to what it stands on.
+
 ### The source a pick perceives through
 
 A real cell hands this source to its pick service; build one to read a `PerceptionFrame` yourself:

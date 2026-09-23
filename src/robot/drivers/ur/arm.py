@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import math
 import re
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING
@@ -54,7 +55,12 @@ from src.robot.safety.path_samples import (
     MAX_PATH_SAMPLES,
     joint_path_samples,
 )
-from src.robot.safety.planning import CuroboPlanClient, CuroboUnavailableError
+from src.robot.safety.planning import (
+    CuroboPlanClient,
+    CuroboUnavailableError,
+    StateRefusalKind,
+    StateWhere,
+)
 from src.robot.safety.planning.hand import planner_hand
 from src.robot.safety.workspace import WorkspaceGuard
 
@@ -121,6 +127,26 @@ _UR_SAFETY_MODE: dict[int, SafetyMode] = {
 
 #: Why a cuRobo ``move`` says MISSING while no live camera world is wired to the arm.
 _UR_NO_LIVE_WORLD = "robot.ur.motion_planner is 'curobo' and no live camera world is wired to this arm"
+
+
+def _planner_refusal_status(refusal: object | None) -> MotionStatus:
+    """The status a cuRobo refusal reads as, by what the sidecar found.
+
+    A joint outside the planner's limits is JOINT_LIMIT_REJECTED. The robot touching itself and the
+    robot reaching into the planner's world are both SELF_COLLISION_REJECTED, the status whose
+    meaning covers the declared fixtures, because :class:`MotionStatus` has no status for the world.
+    A refusal the sidecar did not type keeps SELF_COLLISION_REJECTED, what every refusal read as
+    before the kind was read.
+    """
+    if refusal is not None and getattr(refusal, "kind", None) == StateRefusalKind.JOINT_LIMIT:
+        return MotionStatus.JOINT_LIMIT_REJECTED
+    return MotionStatus.SELF_COLLISION_REJECTED
+
+
+def _with_refusal(sentence: str, refusal: object | None) -> str:
+    """``sentence``, followed by the sidecar's own account of the refusal where it gave one."""
+    render = getattr(refusal, "render", None)
+    return f"{sentence}. {render()}" if callable(render) else sentence
 
 
 class URRobotArm(RobotArm):
@@ -223,6 +249,15 @@ class URRobotArm(RobotArm):
         driver registry cannot see, so the answer travels with the object.
         """
         return self._preflight
+
+    @property
+    def home_joint_positions(self) -> tuple[float, ...]:
+        """The joints :meth:`move_home` drives to, in radians: the constructor's, else the config's, else the default.
+
+        The joint-limit guard reads it where ``safety.joint_limits.within_half_turn_of_home`` is set,
+        and centres its window on it, so the window is about the home this arm actually goes to.
+        """
+        return tuple(float(v) for v in self._home_joints)
 
     @property
     def plans_paths(self) -> bool:
@@ -850,7 +885,15 @@ class URRobotArm(RobotArm):
         return self._pose_to_controller(pose)
 
     def move_home(self) -> bool:
-        """Move to the home joint configuration, gated. ``False`` means refused, with nothing moved.
+        """Move to the home joint configuration, gated. ``False`` means refused; :meth:`move_to_home` says why.
+
+        It is ``self.move_to_home().ok``, so every caller that reads a bool keeps its answer, and
+        the typed refusal is in the driver's log as ``move_home REFUSED by <status>: <sentence>``.
+        """
+        return self.move_to_home().ok
+
+    def move_to_home(self) -> MotionResult:
+        """Move to the home joint configuration, gated, and say what the gates found (``HomesTyped``).
 
         This is the natural first motion on a new cell.
         ``MotionController.move_home`` checks the workspace box, logs a warning and
@@ -867,67 +910,119 @@ class URRobotArm(RobotArm):
         point-to-point joint command, and here the box matters because the home pose is
         a place the arm will sit.
 
-        It returns ``bool`` so every existing caller keeps working, and the typed reason
-        is logged.
-
         On a cuRobo cell the whole line to the home configuration is judged as well, by
         :meth:`_judge_joint_move`, and the ``moveJ`` is sent here rather than through
         ``MotionController.move_home``: that method sends an unclamped command at the
         controller's own defaults, and a move that was judged has to be the move that runs.
-        With neither a camera world nor a decline in scope on a cuRobo cell it is refused
-        first, and logged.
+        One :class:`JointPositions` is built from the home and handed to every gate and then
+        to the drive, so the configuration judged is the configuration sent.
+
+        The result is the refusing gate's own: the destination guard's status relabelled
+        ``MOVE_HOME``, ``WORKSPACE_REJECTED`` for a home grasp centre outside the box,
+        ``CONTROLLER_REJECTED`` for a home the controller's FK could not place, the path
+        judge's status, and for the drive ``CONNECTION_ERROR``, ``INVALID_TARGET`` or
+        ``CONTROLLER_REJECTED``, whose message says whether ``moveJ`` had been sent. It is
+        stamped as :meth:`move_to_joints` stamps its result. With neither a camera world nor a
+        decline in scope on a cuRobo cell it is refused first. Every refusal is logged.
         """
-        refused = self._refused_for_camera_world(self._move_camera_world(UNSET), MotionCommand.MOVE_HOME)
+        stamp = self._move_camera_world(UNSET)
+        refused = self._refused_for_camera_world(stamp, MotionCommand.MOVE_HOME)
         if refused is not None:
             self.logger.error("move_home REFUSED by %s: %s", refused.status, refused.message)
-            return False
-        if not self._home_is_admissible("move_home"):
-            return False
+            return refused
         joints = JointPositions(np.asarray(self._home_joints, dtype=np.float64))
+        before = self._planner_refresh()
+        unstamped = self._move_to_home_unstamped(joints)
+        after = self._planner_refresh()
+        vouched = after.camera_world() if after is not None and after is not before else None
+        result = stamp_result(unstamped, self._move_camera_world(UNSET, planned=vouched))
+        if not result.ok:
+            self.logger.error("move_home REFUSED by %s: %s", result.status, result.message)
+        return result
+
+    def _move_to_home_unstamped(self, joints: JointPositions) -> MotionResult:
+        """The body of :meth:`move_to_home`. ``joints`` is the one home every step below reads."""
+        refused = self._home_refusal(joints)
+        if refused is not None:
+            return refused
         refused = self._judge_joint_move(joints, command=MotionCommand.MOVE_HOME)
         if refused is not None:
-            self.logger.error("move_home REFUSED by %s: %s", refused.status, refused.message)
-            return False
-        try:
-            self._drive_joints(joints)
-        except (RobotConnectionError, RobotMotionRejected) as exc:
-            self.logger.error("move_home REFUSED: %s", exc)
-            return False
-        return True
+            return refused
+        return self._drive_judged_joints(joints, command=MotionCommand.MOVE_HOME, done="move_home")
 
     def _home_is_admissible(self, verb: str) -> bool:
-        """The whole home gate, shared by :meth:`move_home` and :meth:`amove_home`.
+        """Whether the home passes :meth:`_home_refusal`, logged under ``verb`` when it does not."""
+        refused = self._home_refusal(JointPositions(np.asarray(self._home_joints, dtype=np.float64)))
+        if refused is not None:
+            self.logger.error("%s REFUSED by %s: %s", verb, refused.status, refused.message)
+        return refused is None
 
-        It returns ``False`` when the move is refused. The destination guards run first,
-        then the workspace box on the home pose. The box bounds the grasp centre, so the
-        controller FK is converted out of its TCP register first: in ``willy`` mode that
-        register is the bare flange, and boxing it would pass a home whose grasp centre
-        lies a tool length outside. An FK that cannot be read refuses, because an
-        unchecked home is what this gate stops.
+    def _home_refusal(self, joints: JointPositions) -> MotionResult | None:
+        """The home gate on ``joints``: the typed refusal, or ``None`` where the move may be judged as a path.
+
+        The destination guards run first, then the workspace box on the home pose. The box
+        bounds the grasp centre, so the controller FK is converted out of its TCP register
+        first: in ``willy`` mode that register is the bare flange, and boxing it would pass a
+        home whose grasp centre lies a tool length outside. An FK that cannot be read refuses,
+        because an unchecked home is what this gate stops. An arm that is not connected has no
+        FK to ask; the path judge and the drive refuse it after this.
         """
-        joints = JointPositions(np.asarray(self._home_joints, dtype=np.float64))
         if self._preflight is not None:
             rejected = self._preflight.gate_joint_target(joints, arm=self)
             if rejected is not None:
-                self.logger.error("%s REFUSED by %s: %s", verb, rejected.status, rejected.message)
-                return False
-        if not self._conn.is_connected:
-            return True
-        try:
-            reported = URPose.from_ur_list(self._conn.fk(list(self._home_joints)), label="home")
-            home_pose = self._coerce_urpose(self._pose_from_controller(reported, label="home"))
-            if not self._guard.is_inside_workspace(home_pose):
-                self.logger.error(
-                    "%s REFUSED: the home grasp centre (%.1f, %.1f, %.1f) is outside "
-                    "workspace_limits. Set robot.home_joint_positions to a configuration inside "
-                    "this cell's own box; the shipped default was authored for a UR5e.",
-                    verb, home_pose.x, home_pose.y, home_pose.z,
+                message = rejected.message
+                if float(np.max(np.abs(joints.values))) > 2.0 * np.pi:
+                    # Every UR joint stops at one full turn either way, so a value beyond 2*pi cannot be
+                    # reached in radians, and a home copied off the pendant in degrees is how one is written.
+                    message += (" robot.home_joint_positions holds a value beyond 2*pi, which reads as degrees; "
+                                "the key is in radians.")
+                return dataclasses.replace(
+                    rejected, command=MotionCommand.MOVE_HOME, target_joints=joints, message=message,
                 )
-                return False
+        if not self._conn.is_connected:
+            return None
+        try:
+            reported = URPose.from_ur_list(self._conn.fk(joints.tolist()), label="home")
+            home_pose = self._coerce_urpose(self._pose_from_controller(reported, label="home"))
+            inside = self._guard.is_inside_workspace(home_pose)
         except Exception as exc:  # noqa: BLE001 (FK unavailable must not silently wave the move through)
-            self.logger.error("%s REFUSED: could not check the home pose (%s)", verb, exc)
-            return False
-        return True
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_HOME, target_joints=joints,
+                message=(
+                    f"could not check the home pose: the controller's forward kinematics of the home "
+                    f"configuration could not be read ({type(exc).__name__}: {exc}), and a home the "
+                    f"workspace box never saw is not sent"
+                ),
+                exception=exc,
+            )
+        if inside:
+            return None
+        return MotionResult.failed(
+            MotionStatus.WORKSPACE_REJECTED, MotionCommand.MOVE_HOME, target_joints=joints,
+            message=self._home_outside_the_box(home_pose),
+        )
+
+    def _home_outside_the_box(self, home_pose: URPose) -> str:
+        """Why a home grasp centre outside ``workspace_limits`` is refused: the box, and what it bounds."""
+        box = self._guard.limits
+        boxed = {
+            "willy": ("The box bounds the grasp centre, the flange the controller's FK reports plus the declared "
+                      "tool frame, and not the flange itself."),
+            "polyscope": "The box bounds the grasp centre, the TCP the controller's FK reports with the pendant's tool.",
+        }.get(self.config.gripper.tool_frame.source,
+              "The box bounds the grasp centre, and with no tool frame declared that is the flange the FK reports.")
+        if tuple(float(v) for v in self._home_joints) == HOME_JOINTS_DEFAULT:
+            fix = ("No robot.home_joint_positions is set, so this is the shipped default, the arm standing "
+                   "straight up; set one whose grasp centre lies inside this cell's box.")
+        else:
+            fix = ("Set robot.home_joint_positions, in radians, to a configuration whose grasp centre lies "
+                   "inside this cell's box.")
+        return (
+            f"the home grasp centre ({home_pose.x:.1f}, {home_pose.y:.1f}, {home_pose.z:.1f}) mm is outside "
+            f"workspace_limits (x {box.x_min:.1f} to {box.x_max:.1f}, y {box.y_min:.1f} to {box.y_max:.1f}, "
+            f"z {box.z_min:.1f} to {box.z_max:.1f} mm). {boxed} {fix} Widening the box widens it for every "
+            f"move, not only for home."
+        )
 
     def stop(self) -> None:
         """Emergency stop."""
@@ -1137,12 +1232,29 @@ class URRobotArm(RobotArm):
         vel: float | None = None,
         acc: float | None = None,
     ) -> MotionResult:
-        """Plan from tool0 to ``pose`` with cuRobo, gate the planned final configuration, execute.
+        """Plan from tool0 to ``pose`` with cuRobo, judge the legs that will run, and run exactly those.
 
-        It is fail-closed. An unavailable cuRobo gives ``CONTROLLER_REJECTED``, no
-        collision-free plan gives ``TIMEOUT``, and a static safety-guard rejection of
-        the actual final configuration gives the matching status. There is no blind
-        motion.
+        In order, and nothing moves before the last of the judging has passed:
+
+        1. The goal configuration. Every closed-form inverse kinematics solution of the flange
+           goal is turned onto the full turns nearest the arm inside the planner's joint window
+           and the joint-limit guard's, and they are tried quickest first: the planner and the
+           endpoint gate screen each, and cuRobo plans to up to three in joint space. A plan is
+           taken only where it ends within 1e-4 rad of the configuration asked for. Where none is
+           taken, cuRobo chooses its own goal configuration as it always did, and the log says why.
+           This only chooses where to go; the trajectory is cuRobo's and is never altered.
+        2. The plan's end: on the goal by the controller's own kinematics, and past the endpoint
+           gate (box, joint limits, self-collision, payload).
+        3. The legs. The plan is shortened to the fewest of its own waypoints whose joint-space
+           legs stay within the path gate's step of it, and the local path gate and the planner
+           both judge those legs. Where either refuses, the plan as cuRobo returned it is judged
+           by both instead. Exactly the list that passed runs, one ``moveJ`` per waypoint, at the
+           speed clamped to ``motion_limits``.
+
+        It is fail-closed. An unavailable cuRobo gives ``CONTROLLER_REJECTED``; a planner that
+        will not start from where the arm stands gives the status of what it found there; no
+        other plan gives ``TIMEOUT``; a guard or the planner refusing the end or a leg gives the
+        matching status. There is no blind motion.
         """
         if not self._conn.is_connected:
             return MotionResult.failed(
@@ -1157,14 +1269,42 @@ class URRobotArm(RobotArm):
         # the gripper collision geometry a whole tool length past the target. The pose
         # reported back to the caller stays the TCP pose they asked for.
         goal = self._pose_to_flange(pose)
+        # Clamped once, here: the same speed ranks the goals and runs the moveJ.
+        vel, acc = self._motion._clamp(vel, acc)
+        # Ranking reads the speed, but a speed that is no speed is ur_rtde's to refuse at the moveJ, not a reason to
+        # plan differently: one speed for every joint orders the goals the same whatever it is.
+        ranked_at = (float(vel) if vel is not None and math.isfinite(float(vel)) and float(vel) > 0.0
+                     else float(self.config.motion_limits.max_velocity))
+        # Why cuRobo chose the goal configuration itself, or "" where the nearest goal was planned to.
+        fell_back = ""
         try:
-            traj_ur = planner.plan(goal, **self._goal_keep_out(self._tcp_of_pose(pose)))
+            traj_ur, chosen_by, refused = self._plan_to_the_nearest_goal(planner, goal, pose, velocity=ranked_at)
+            if refused is not None:
+                return refused
+            if traj_ur is None:
+                self.logger.info("cuRobo chooses the goal configuration of %s itself: %s",
+                                 pose.label or "<unlabeled>", chosen_by)
+                fell_back = chosen_by or "no reason was given"
+                traj_ur = planner.plan(goal, **self._goal_keep_out(self._tcp_of_pose(pose)))
+                chosen_by = "cuRobo's own choice (plan_pose)"
         except CuroboUnavailableError as exc:
             return MotionResult.failed(
                 MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
                 message=f"cuRobo planner unavailable: {exc}", exception=exc,
             )
         if not traj_ur:
+            # A planner that will not start from where the arm stands is not a goal it could not
+            # reach, and TIMEOUT with the no-plan sentence would send a recovery to look again at
+            # a scene that is not the problem. Every other empty plan keeps that sentence.
+            refusal = getattr(planner, "last_refusal", None)
+            if refusal is not None and getattr(refusal, "where", None) == StateWhere.START:
+                return MotionResult.failed(
+                    _planner_refusal_status(refusal), MotionCommand.MOVE_TO, target_pose=pose,
+                    message=_with_refusal(
+                        "the arm stands where the planner will not start from, so no plan exists from here "
+                        "and nothing was sent; bring the arm out of this configuration before it plans again",
+                        refusal),
+                )
             return MotionResult.failed(
                 MotionStatus.TIMEOUT, MotionCommand.MOVE_TO, target_pose=pose,
                 message=NO_PLAN_FAIL_SAFE_MESSAGE,
@@ -1200,19 +1340,273 @@ class URRobotArm(RobotArm):
         # passed, so the order is only about what a refused move pays.
         rejected = self._gate_planned_config(pose, JointPositions(traj_ur[-1]))
         if rejected is not None:
-            return rejected
+            return self._named_as_cuRobos_own_goal(rejected, fell_back, "ends")
         # And the whole path. The gate above judges where the move ends, and a plan that
         # grazes a fixture in the middle and lands clear is exactly what an endpoint check
-        # cannot see. The legs between the planner's waypoints are sampled, because the
-        # controller moveJ's from one to the next and the line between them is executed
-        # too. Judged before the first waypoint moves: a refusal partway leaves the arm
-        # standing on a path already judged unsafe.
-        rejected = self._preflight.gate_planned_path(
-            traj_ur, arm=self, command=MotionCommand.MOVE_TO,
-        )
+        # cannot see. What is judged is the list of waypoints that will run, leg by leg,
+        # because the controller moveJ's from one to the next and the line between them is
+        # executed too. Judged before the first waypoint moves: a refusal partway leaves the
+        # arm standing on a path already judged unsafe.
+        waypoints, rejected = self._judged_waypoints(planner, traj_ur, pose)
         if rejected is not None:
+            return self._named_as_cuRobos_own_goal(rejected, fell_back, "passes")
+        self._log_the_plan(pose, chosen_by, traj_ur, waypoints)
+        return planner.execute(waypoints, pose, vel=vel, acc=acc)
+
+    def _named_as_cuRobos_own_goal(self, rejected: MotionResult, fell_back: str, where: str) -> MotionResult:
+        """``rejected``, saying so where it is a plan to cuRobo's own goal that left the half-turn window about home.
+
+        With ``safety.joint_limits.within_half_turn_of_home`` set, the nearest goal is chosen inside the window,
+        and a plan cuRobo was left to choose the goal of may still end or pass outside it: the gates refuse that
+        like any configuration outside the joint limits, and the refusal says which way the goal was chosen, so
+        the fix is read as a station to move rather than a limit to widen. Every other refusal is returned as it is.
+        """
+        if not fell_back or rejected.status is not MotionStatus.JOINT_LIMIT_REJECTED:
             return rejected
-        return planner.execute(traj_ur, pose, vel=vel, acc=acc)
+        guard = next((g for g in (getattr(self._preflight, "guards", ()) or ()) if getattr(g, "name", None)
+                      == "joint_limit"), None)
+        if not bool(getattr(guard, "within_half_turn_of_home", False)):
+            return rejected
+        said = (f"cuRobo chose this goal's configuration itself (plan_pose), because {fell_back}; its plan {where} "
+                "outside the half turn either side of home that safety.joint_limits.within_half_turn_of_home keeps, "
+                "and nothing was sent: ")
+        return dataclasses.replace(rejected, message=said + (rejected.message or ""))
+
+    #: How many of the nearest goals are planned to before cuRobo is left to choose its own. A joint plan that fails
+    #: costs cuRobo all its attempts, about 7 to 9 s a goal measured on the UR10 descriptor on this project's RTX 5080
+    #: (2026-09-23), so the count is small: a move whose goal cannot be reached at all pays up to three of those
+    #: before the Cartesian plan says so.
+    _NEAREST_GOALS_PLANNED = 3
+    #: How close, on every joint, a joint plan has to end to the configuration it was asked for to be taken. cuRobo
+    #: ends a joint plan on its goal because its optimiser works locally (0.0 rad measured on the probed legs), and
+    #: its own documentation does not promise it, so it is read rather than assumed.
+    _NEAREST_GOAL_END_TOL_RAD = 1e-4
+
+    def _plan_to_the_nearest_goal(
+        self, planner: CuroboUrPlanner, goal: Pose, pose: Pose, *, velocity: float,
+    ) -> "tuple[list[list[float]] | None, str, MotionResult | None]":
+        """A joint-space plan to the configuration of ``goal`` nearest the arm, as ``(trajectory, how, None)``.
+
+        ``(None, why, None)`` leaves the goal configuration to cuRobo, and ``why`` is the sentence the log
+        gets. ``(None, "", refusal)`` refuses the move: the joints could not be read, or the world could not
+        be refreshed. Raises ``CuroboUnavailableError`` where the planner cannot be reached, as a Cartesian
+        plan does.
+
+        cuRobo, handed a pose, picks a configuration for it from random seeds over the whole joint range
+        and does not prefer the one nearest the arm: measured on a UR10, a wrist sweep took 8 of 22 legs the
+        long way, and the same leg planned twice took different ways. Here every closed-form solution of the
+        flange goal is turned onto the full turns nearest the joints the arm stands at, inside the window
+        both the planner and the joint-limit guard admit, and ordered by the least time a moveJ there takes.
+        Each is screened by the planner at that one configuration and by the endpoint gate the plan's end
+        will face, so a goal either would refuse is not planned to, and up to ``_NEAREST_GOALS_PLANNED`` are
+        planned to in joint space in the world refreshed once, here, as a Cartesian plan refreshes it.
+
+        Only the goal is chosen here. The trajectory is cuRobo's, taken only where it ends within
+        ``_NEAREST_GOAL_END_TOL_RAD`` of what was asked, and it meets every gate a Cartesian plan meets.
+        """
+        asks = getattr(planner, "plans_joint_goals", None)
+        if not callable(asks) or asks() is not True:
+            return None, "this planner plans no joint goals", None
+        try:
+            here = [float(v) for v in self._conn.get_joint_positions()]
+        except (RobotConnectionError, RuntimeError, OSError) as exc:
+            return None, "", MotionResult.failed(
+                MotionStatus.CONNECTION_ERROR, MotionCommand.MOVE_TO, target_pose=pose,
+                message=(f"a planned move starts at the current configuration, and the controller's joint "
+                         f"positions could not be read ({type(exc).__name__}: {exc}); nothing was sent"),
+                exception=exc,
+            )
+        if len(here) != self.capabilities.dof:
+            return None, f"the controller reported {len(here)} joints, so no goal is chosen from them", None
+        from src.robot.safety._ur_ik import nearest_goals, ur_flange_ik
+
+        model = str(self.config.ur.model)
+        solutions = ur_flange_ik(model, np.asarray(goal.to_matrix(), dtype=np.float64), q6_if_singular=here[-1])
+        if solutions is None:
+            return None, f"robot.ur.model {model!r} has no DH chain to solve the goal on", None
+        lower, upper = self._goal_joint_window()
+        goals = nearest_goals(solutions, current=here, lower=lower, upper=upper, velocity=velocity)
+        if not goals:
+            half_turn = any(bool(getattr(g, "within_half_turn_of_home", False))
+                            for g in (getattr(self._preflight, "guards", ()) or ()))
+            return None, (f"none of the {len(solutions)} inverse kinematics solution(s) of this goal turns inside "
+                          "the planner's and the joint-limit guard's joint window"
+                          + (", which keeps half a turn either side of home" if half_turn else "")), None
+        refused = self._refresh_before_the_path_gate(
+            near_point_mm=[float(v) for v in goal.position_mm], command=MotionCommand.MOVE_TO,
+            target_pose=pose, goal_tcp_mm=self._tcp_of_pose(pose),
+        )
+        if refused is not None:
+            return None, "", refused
+        tried: list[str] = []
+        planned = 0
+        for rank, candidate in enumerate(goals, start=1):
+            if planned >= self._NEAREST_GOALS_PLANNED:
+                break
+            name = (f"goal {rank} of {len(goals)} (branch {candidate.branch}, {candidate.largest_rad:.2f} rad at most, "
+                    f"{candidate.time_s:.1f} s at least)")
+            verdict = planner.check_joint_path([list(candidate.joints)], refresh=False)
+            if not verdict.valid:
+                tried.append(_with_refusal(f"{name} refused by the planner", getattr(verdict, "refusal", None)))
+                continue
+            refused_end = self._gate_planned_config(pose, JointPositions(candidate.joints))
+            if refused_end is not None:
+                tried.append(f"{name} refused by the endpoint gate: {refused_end.status.value}")
+                continue
+            planned += 1
+            trajectory = planner.plan_joint(list(candidate.joints), refresh=False)
+            if not trajectory:
+                refusal = getattr(planner, "last_refusal", None)
+                tried.append(_with_refusal(f"{name} did not plan", refusal))
+                if refusal is not None and getattr(refusal, "where", None) == StateWhere.START:
+                    break  # no goal plans from a start the planner refuses; its Cartesian plan says so, typed
+                continue
+            off_rad = max(abs(float(a) - b) for a, b in zip(trajectory[-1], candidate.joints))
+            if off_rad > self._NEAREST_GOAL_END_TOL_RAD:
+                tried.append(f"{name} planned to a configuration {off_rad:.2g} rad from it, so the plan is not taken")
+                continue
+            said = f"the nearest {name}"
+            return trajectory, said if not tried else f"{said}, after {'; '.join(tried)}", None
+        return None, "; ".join(tried) or "no goal was planned to", None
+
+    def _goal_joint_window(self) -> tuple[list[float], list[float]]:
+        """Where a chosen goal's joints may lie, in radians: the planner's window, narrowed to what the guard admits.
+
+        The joint-limit guard's table less its margin, the numbers it refuses outside of. Where the guard keeps
+        half a turn about home (``safety.joint_limits.within_half_turn_of_home``), that is the table narrowed to
+        the window about this arm's home, so no goal is chosen outside it. With no guard, or no table for this
+        arm, the planner's window alone; a goal outside what the guard would admit is then the endpoint gate's
+        to refuse, as for any plan.
+        """
+        from .curobo_motion import PLANNER_JOINT_ENVELOPE_RAD
+
+        lower, upper = list(PLANNER_JOINT_ENVELOPE_RAD[0]), list(PLANNER_JOINT_ENVELOPE_RAD[1])
+        guard = next((
+            candidate for candidate in (getattr(self._preflight, "guards", ()) or ())
+            if getattr(candidate, "name", None) == "joint_limit" and callable(getattr(candidate, "limits_for", None))
+        ), None)
+        if guard is None:
+            return lower, upper
+        for_arm = getattr(guard, "limits_for_arm", None)
+        limits = (for_arm(self) if callable(for_arm)
+                  else guard.limits_for(vendor=self.capabilities.vendor, model=self.capabilities.model))
+        if limits is None or len(limits[0]) != len(lower):
+            return lower, upper
+        margin = float(getattr(guard, "margin_deg", 0.0))
+        for axis, (low_deg, high_deg) in enumerate(zip(*limits)):
+            lower[axis] = max(lower[axis], math.radians(float(low_deg) + margin))
+            upper[axis] = min(upper[axis], math.radians(float(high_deg) - margin))
+        return lower, upper
+
+    def _judged_waypoints(
+        self, planner: CuroboUrPlanner, traj_ur: "list[list[float]]", pose: Pose,
+    ) -> "tuple[Sequence[Sequence[float]], MotionResult | None]":
+        """The waypoints to run, one ``moveJ`` each, with both authorities having judged their legs; or the refusal.
+
+        cuRobo samples a plan every 25 ms, and a ``moveJ`` starts from rest and stops at its target, so running
+        every sample stops the arm at every sample. The plan is shortened first to the fewest of its own
+        waypoints whose legs stay within the path gate's step of it, in the gate's own metric
+        (:func:`~src.robot.safety.path_samples.simplify_joint_path`); on 12 measured UR10 plans 8 became one
+        ``moveJ``. The chords it draws are legs nobody judged, so the shortened list is judged whole, by the local
+        path gate and by the planner, before it may run. Where either refuses, the plan as cuRobo returned it is
+        judged by both instead, and where that is refused too the move is.
+
+        What is returned is the very list that passed, and the caller hands it to ``execute`` unchanged: the
+        legs judged are the legs run. A cell whose preflight samples no path cannot shorten one, and its plan
+        meets ``gate_planned_path`` as it always did, which refuses it.
+        """
+        from src.robot.safety.path_samples import simplify_joint_path
+
+        step = self._preflight.path_step_mm if self._preflight is not None else None
+        reach = self._preflight.joint_radii_mm(self) if step is not None else None
+        if step is not None and reach is not None:
+            shortened: "tuple[tuple[float, ...], ...] | None"
+            try:
+                shortened = simplify_joint_path(traj_ur, reach_mm=reach, tolerance_mm=step)
+            except ValueError:  # a waypoint that cannot be read: the path gate below refuses it and says why
+                shortened = None
+            if shortened is not None and len(shortened) < len(traj_ur):
+                refused = self._judge_planned_legs(planner, shortened, pose)
+                if refused is None:
+                    return shortened, None
+                self.logger.info(
+                    "the plan shortened to %d of its %d waypoints was refused (%s: %s); the plan is judged as "
+                    "cuRobo returned it", len(shortened), len(traj_ur), refused.status.value, refused.message,
+                )
+        refused = self._judge_planned_legs(planner, traj_ur, pose)
+        if refused is not None:
+            return (), refused
+        return traj_ur, None
+
+    def _judge_planned_legs(
+        self, planner: CuroboUrPlanner, waypoints: "Sequence[Sequence[float]]", pose: Pose,
+    ) -> "MotionResult | None":
+        """Both authorities on the legs between neighbouring ``waypoints``; ``None`` means every leg passed.
+
+        The local path gate first, the exact meshes and the declared fixtures, then the planner on the same
+        samples against the world it holds, the camera's and the carried part's. It follows
+        :meth:`_planner_judges_joint_path`, a joint move's judge, step for step: the world was refreshed
+        before the plan, so the planner is asked with ``refresh=False`` and both judge the same cell, and where
+        no step or reach derives, ``gate_planned_path`` has already refused and the planner is not asked.
+        """
+        refused = self._preflight.gate_planned_path(waypoints, arm=self, command=MotionCommand.MOVE_TO)
+        if refused is not None:
+            return refused
+        step = self._preflight.path_step_mm if self._preflight is not None else None
+        if step is None:  # no self-collision guard: gate_planned_path already refused
+            return None
+        reach = self._preflight.joint_radii_mm(self)
+        if reach is None:
+            return None  # gate_planned_path refused this already; here it would be a second voice
+        from src.robot.safety.path_samples import waypoint_path_samples
+
+        samples = waypoint_path_samples(waypoints, reach_mm=reach, max_step_mm=step)
+        try:
+            verdict = planner.check_joint_path(samples.configs, refresh=False)
+        except CuroboUnavailableError as exc:
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+                message=f"cuRobo planner unavailable: {exc}", exception=exc,
+            )
+        if verdict.valid:
+            return None
+        refusal = getattr(verdict, "refusal", None)
+        return MotionResult.failed(
+            _planner_refusal_status(refusal), MotionCommand.MOVE_TO, target_pose=pose,
+            message=_with_refusal(f"the planner refused the legs this plan would run: {verdict.reason}", refusal),
+        )
+
+    def _log_the_plan(
+        self, pose: Pose, chosen_by: str, planned: "Sequence[Sequence[float]]", running: "Sequence[Sequence[float]]",
+    ) -> None:
+        """One line per planned move: where its goal came from, how many waypoints ran, and how far each joint turns.
+
+        A long way round shows here as a joint turning far more than its end needs: its travel against the
+        shortest turn to the same angle. Past half a turn more it is a warning, because an unwind the joint
+        limits force looks the same and a person should read which it was.
+        """
+        from .curobo_motion import UR_ARM_JOINT_NAMES
+
+        path = np.asarray([[float(v) for v in w] for w in planned], dtype=np.float64)
+        travel = np.abs(np.diff(path, axis=0)).sum(axis=0) if len(path) > 1 else np.zeros(path.shape[1])
+        shortest = np.abs((path[-1] - path[0] + np.pi) % (2.0 * np.pi) - np.pi)
+        most = int(np.argmax(travel))
+        names = UR_ARM_JOINT_NAMES if len(UR_ARM_JOINT_NAMES) == len(travel) else tuple(
+            f"joint {i}" for i in range(len(travel)))
+        self.logger.info(
+            "cuRobo move to %s: goal from %s; %d waypoint(s) planned, %d run as moveJ; the joints turn %.2f rad in "
+            "total, %.2f rad at most (%s)",
+            pose.label or "<unlabeled>", chosen_by, len(planned), len(running), float(travel.sum()),
+            float(travel[most]), names[most],
+        )
+        extra = travel - shortest
+        if float(extra.max()) > math.pi:
+            worst = int(np.argmax(extra))
+            self.logger.warning(
+                "cuRobo move to %s turns %s %.2f rad where %.2f rad reaches the same angle: the long way round, or an "
+                "unwind the joint limits force", pose.label or "<unlabeled>", names[worst], float(travel[worst]),
+                float(shortest[worst]),
+            )
 
     def _gate_planned_config(
         self, pose: Pose, final_joints: JointPositions
@@ -1342,7 +1736,12 @@ class URRobotArm(RobotArm):
             "runs"))
 
     def detach_payload(self) -> bool:
-        """Forget the carried part. Safe to call when nothing was ever attached."""
+        """Forget the carried part. Safe to call when nothing was ever attached.
+
+        The self filter forgets it here. The planner answers for its own model
+        (:meth:`CuroboUrPlanner.detach_payload`): ``True`` without asking its sidecar where no attach was
+        handed to it, as after a grasp that modelled nothing, and the sidecar's answer wherever one was.
+        """
         self._attached_payload = None
         self._payload_in_planner = False
         if self._curobo_ur is None:
@@ -1393,6 +1792,9 @@ class URRobotArm(RobotArm):
                 live_world=self._live_world,
                 self_envelope=self._self_envelope,
                 descriptor_check=self._descriptor_check(),
+                # After a sent moveJ fails the arm may have moved part of the way, and the controller's own
+                # state is what says whether a stop ended it.
+                controller_state=self._controller_state_text,
                 # The path guard lives on this arm rather than on the planner, and the two
                 # have to be looking at the same cell: a planner routing around a tote the
                 # guard cannot see gives a path that avoids it and a gate that would have
@@ -1649,7 +2051,7 @@ class URRobotArm(RobotArm):
         proceeding anyway where the home pose lies outside the workspace box, and
         command the move regardless with no joint-limit, self-collision or payload check
         at all, which would leave this path strictly weaker than the method it mirrors.
-        Both verbs share :meth:`_home_is_admissible`, which runs synchronously.
+        Both verbs run :meth:`move_to_home`, which runs synchronously.
 
         It runs the whole sync body in a worker thread rather than mirroring it: two bodies
         that have to stay the same is how this verb drifted apart from its twin in the
@@ -1758,18 +2160,45 @@ class URRobotArm(RobotArm):
         refused = self._judge_joint_move(joints, command=MotionCommand.MOVE_JOINTS)
         if refused is not None:
             return refused
-        # The ungated primitive, because the move was just judged. Calling the public
-        # `move_joint` here would run the same guards a second time for nothing.
+        return self._drive_judged_joints(
+            joints, command=MotionCommand.MOVE_JOINTS, done="move_to_joints",
+            velocity=velocity, acceleration=acceleration,
+        )
+
+    def _drive_judged_joints(
+        self,
+        joints: JointPositions,
+        *,
+        command: MotionCommand,
+        done: str,
+        velocity: float | None = None,
+        acceleration: float | None = None,
+    ) -> MotionResult:
+        """Send ``joints``, which were just judged, as one ``moveJ``, and type what the controller answered.
+
+        The ungated primitive, because the move was just judged. Calling the public
+        `move_joint` here would run the same guards a second time for nothing. A drive that
+        fails is a result and never a raise: :meth:`_drive_joints` carries the typed refusal on
+        its raise, whose message says whether ``moveJ`` had been sent, and a raise that carries
+        none still reads CONTROLLER_REJECTED rather than a status nobody could classify.
+        ``done`` is the message of a move that ran.
+        """
         try:
-            self._drive_joints(joints, velocity=velocity, acceleration=acceleration)
+            self._drive_joints(joints, velocity=velocity, acceleration=acceleration, command=command)
         except RobotConnectionError as exc:
             return MotionResult.failed(
-                MotionStatus.CONNECTION_ERROR, MotionCommand.MOVE_JOINTS,
+                MotionStatus.CONNECTION_ERROR, command,
                 target_joints=joints, message=str(exc), exception=exc,
             )
-        return MotionResult.executed(
-            MotionCommand.MOVE_JOINTS, target_joints=joints, message="move_to_joints",
-        )
+        except RobotMotionRejected as exc:
+            if isinstance(exc.result, MotionResult):
+                return exc.result
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, command, target_joints=joints,
+                message=f"the drive refused after the move was judged, and moveJ may have been sent: {exc}",
+                exception=exc,
+            )
+        return MotionResult.executed(command, target_joints=joints, message=done)
 
     def _judge_joint_move(
         self, joints: JointPositions, *, command: MotionCommand
@@ -1788,7 +2217,9 @@ class URRobotArm(RobotArm):
 
         The connection is read first, because a path starts at the current configuration and
         a disconnected arm has none to give. That is a change of order: gating the
-        destination first only finds out afterwards that it cannot move.
+        destination first only finds out afterwards that it cannot move. A read that fails is
+        CONNECTION_ERROR too: the transport raises ``RuntimeError`` or ``OSError`` rather than a
+        robot error, and it would otherwise leave the verb as a raw exception.
 
         With a live camera world, the world is refreshed next, before either authority judges. The
         local guard learns the perceived obstacles from that refresh, and a refresh inside the
@@ -1805,7 +2236,15 @@ class URRobotArm(RobotArm):
                 message="a judged joint move starts at the current configuration, which needs an "
                         "open connection.",
             )
-        here = [float(v) for v in self._conn.get_joint_positions()]
+        try:
+            here = [float(v) for v in self._conn.get_joint_positions()]
+        except (RobotConnectionError, RuntimeError, OSError) as exc:
+            return MotionResult.failed(
+                MotionStatus.CONNECTION_ERROR, command, target_joints=joints,
+                message=(f"a judged joint move starts at the current configuration, and the controller's "
+                         f"joint positions could not be read ({type(exc).__name__}: {exc}); nothing was sent"),
+                exception=exc,
+            )
         refused = self._refresh_before_the_path_gate(
             near_point_mm=self._flange_mm(joints), command=command, target_joints=joints,
             goal_tcp_mm=self._tcp_at_joints_mm(joints),
@@ -1841,9 +2280,10 @@ class URRobotArm(RobotArm):
             )
         if verdict.valid:
             return None
+        refusal = getattr(verdict, "refusal", None)
         return MotionResult.failed(
-            MotionStatus.SELF_COLLISION_REJECTED, command, target_joints=goal,
-            message=f"the planner refused this joint path: {verdict.reason}",
+            _planner_refusal_status(refusal), command, target_joints=goal,
+            message=_with_refusal(f"the planner refused this joint path: {verdict.reason}", refusal),
         )
 
     def _refresh_before_the_path_gate(
@@ -2197,9 +2637,10 @@ class URRobotArm(RobotArm):
             )
         if verdict.valid:
             return None
+        refusal = getattr(verdict, "refusal", None)
         return MotionResult.failed(
-            MotionStatus.SELF_COLLISION_REJECTED, command, target_pose=pose,
-            message=f"the planner refused this line: {verdict.reason}",
+            _planner_refusal_status(refusal), command, target_pose=pose,
+            message=_with_refusal(f"the planner refused this line: {verdict.reason}", refusal),
         )
 
     def _drive_checked_line(
@@ -2211,6 +2652,9 @@ class URRobotArm(RobotArm):
         sent, through the same `MotionController.move_to`, so its endpoint inverse kinematics
         and its singularity check still run below this. What is added is that the line it
         draws has been looked at.
+
+        A refusal below the judge carries the cause ``MotionController`` classified, as
+        :meth:`move` does, and a sentence that says whether ``moveL`` had been sent.
         """
         refused = self._judge_linear_move(pose, command=MotionCommand.MOVE_TO)
         if refused is not None:
@@ -2220,7 +2664,30 @@ class URRobotArm(RobotArm):
             urpose, linear=True, vel=vel, acc=acc, register=False,
             workspace_pose=self._coerce_urpose(pose),
         )
-        return MotionResult.from_bool(ok, MotionCommand.MOVE_TO, target_pose=pose)
+        if ok:
+            return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
+        status = self._motion.last_reject_status
+        before_movel = {
+            MotionStatus.CONNECTION_ERROR: "the arm is not connected",
+            MotionStatus.WORKSPACE_REJECTED: "its end is outside the controller's workspace box",
+            MotionStatus.IK_FAILED: "the controller found no inverse kinematics solution for its end",
+            MotionStatus.IK_QUALITY_REJECTED: "its end is near a singularity by the controller's own check",
+        }
+        if not isinstance(status, MotionStatus):
+            status = None
+        if status in before_movel:
+            message = f"the judged line was refused before moveL was sent: {before_movel[status]}"
+        elif status is MotionStatus.CONTROLLER_REJECTED:
+            message = ("the judged line was sent as moveL and the controller reported it failed or raised; "
+                       f"the arm may have moved part of the way.{self._controller_state_text()}")
+        elif status is not None:
+            message = f"MotionController.move_to refused the judged line as {status.value}; ur_motion.log has why"
+        else:
+            message = "MotionController.move_to refused the judged line and gave no cause; ur_motion.log has it"
+        return MotionResult.failed(
+            status if status is not None else MotionStatus.CONTROLLER_REJECTED,
+            MotionCommand.MOVE_TO, target_pose=pose, message=message,
+        )
 
     def _pose_from_flange(self, flange: Pose) -> Pose:
         """Flange (tool0) to TCP, the inverse of :meth:`_pose_to_flange`."""
@@ -2266,21 +2733,60 @@ class URRobotArm(RobotArm):
         *,
         velocity: float | None = None,
         acceleration: float | None = None,
+        command: MotionCommand = MotionCommand.MOVE_JOINTS,
     ) -> None:
-        """Command the joints with no safety gate. Callers must have gated the destination first."""
+        """Command the joints with no safety gate. Callers must have gated the destination first.
+
+        Each refusal raises with its typed result, labelled ``command``, so a typed verb returns
+        it instead of a status nobody could classify. The message says whether ``moveJ`` had
+        been sent. Once it was, a raise or a ``False`` does not mean the arm stayed where it
+        was: a controller that stops a motion midway, on a protective stop for instance, stops
+        it wherever it had got to. So those two messages also carry the controller's robot and
+        safety state, where it can be read.
+        """
         if not self._conn.is_connected:
-            raise RobotConnectionError("move_joint() requires an open connection.")
+            raise RobotConnectionError("move_joint() requires an open connection, and moveJ was not sent.")
         if joints.dof != self.capabilities.dof:
-            raise RobotMotionRejected(
-                f"move_joint() expected {self.capabilities.dof} DoF, got {joints.dof}."
-            )
+            message = f"move_joint() expected {self.capabilities.dof} DoF, got {joints.dof}, and moveJ was not sent."
+            raise RobotMotionRejected(message, result=MotionResult.failed(
+                MotionStatus.INVALID_TARGET, command, target_joints=joints, message=message,
+            ))
         vel, acc = self._motion._clamp(velocity, acceleration)
         try:
             ok = self._conn.moveJ(joints.tolist(), vel=vel, acc=acc)
         except (RuntimeError, OSError) as exc:
-            raise RobotMotionRejected(f"moveJ failed: {exc}") from exc
+            message = (f"moveJ failed: {exc}. moveJ was sent and raised, so the arm may have moved part of the "
+                       f"way.{self._controller_state_text()}")
+            raise RobotMotionRejected(message, result=MotionResult.failed(
+                MotionStatus.CONNECTION_ERROR, command, target_joints=joints, message=message, exception=exc,
+            )) from exc
         if not ok:
-            raise RobotMotionRejected("Driver reported moveJ() failure.")
+            message = ("Driver reported moveJ() failure. moveJ was sent and the controller did not complete it, "
+                       f"so the arm may have moved part of the way.{self._controller_state_text()}")
+            raise RobotMotionRejected(message, result=MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, command, target_joints=joints, message=message,
+            ))
+
+    def _controller_state_text(self) -> str:
+        """The controller's robot and safety state as a sentence for a refusal, or ``""`` where it cannot be read.
+
+        Best effort, and only ever read after a command failed: a state that cannot be read adds
+        nothing to the refusal, and must not replace it with a second fault.
+        """
+        try:
+            status = self.get_robot_status()
+            sentence = (f" The controller reports robot mode {RobotMode(status.robot_mode).value} and safety "
+                        f"mode {SafetyMode(status.safety_mode).value}")
+            stops = [name for name, on in (("a protective stop", status.protective_stopped),
+                                           ("an emergency stop", status.emergency_stopped)) if on is True]
+            text = status.message.strip() if isinstance(status.message, str) else ""
+        except Exception:  # noqa: BLE001 (best effort after a failure: no state is not a new fault)
+            return ""
+        if stops:
+            sentence += f", with {' and '.join(stops)} active"
+        if text:
+            sentence += f" ({text!r})"
+        return sentence + "."
 
     def move_linear(
         self,

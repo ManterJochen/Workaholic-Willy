@@ -18,7 +18,9 @@ robot:
     ip: "192.168.1.100"
     rtde_frequency: 0.0        # 0 = the controller picks its own rate, 125 Hz, not zero hertz
     # Approach-phase planner. "curobo" plans a collision-free trajectory in the isolated planner
-    # process (safety.planning) and executes it waypoint by waypoint. "ik" is the controller's
+    # process (safety.planning), to the goal configuration nearest the arm, and runs it as one moveJ
+    # per kept waypoint: the fewest of the plan's own waypoints whose legs stay within the path
+    # gate's step, judged leg by leg by the path gate and the planner. "ik" is the controller's
     # straight line, which knows nothing about the bench, the bin or anything else in the cell and
     # will drive through all of it. The "curobo" path is fail-closed: with no cuRobo environment
     # the move is refused with CONTROLLER_REJECTED and never degrades to blind IK, so confirm that
@@ -315,9 +317,17 @@ robot:
       # harmless where `workspace_limits` already forbids it and confusing to read.
       #
       # A trade worth knowing before setting it: a slab level with the bench surface makes the
-      # planner refuse low top-down reaches, so a cell that picks close to the surface sinks the
-      # slab's top below it, around -50 mm. Either way the number belongs here, where it is
-      # visible, rather than in runner code.
+      # planner refuse low top-down reaches, so a cell that picks close to the surface may sink the
+      # slab's top below it, around -50 mm. With `perceived` on, the camera world takes its floor
+      # from this same `height_mm`: it drops as bench only what lies within
+      # `perceived.plane_clearance_mm` of the slab's top. Sink the slab and raise that clearance by
+      # the same amount (-50 here and 5 + 50 = 55 there), or every bench pixel the camera sees
+      # comes back as one obstacle over the whole view and every low pick is refused. The raised
+      # clearance is the slab's alone: a declared fixture or mesh keeps its own 5 mm band
+      # (`perceived.DECLARED_SURFACE_MM`), so a part beside a declared tote stays an obstacle, and
+      # the grasp planner keeps its own 5 mm floor over `grasping.support`
+      # (`grasping.scene.SUPPORT_READ_ERROR_MM`), so a low part still gets a grasp. Either way the
+      # numbers belong here, where they are visible, rather than in runner code.
       support_plane: null
       include_fixtures: true
       # Geometry the planner routes around as the shape it is rather than as a box. The case that
@@ -356,6 +366,19 @@ robot:
         margin_mm: 15.0
         max_boxes: 8
         floor_to_plane: true
+        # How far above the support plane a point still counts as the bench, and so the height of
+        # the lowest thing the planner is told about. It has to hold what nothing declares: how
+        # well `height_mm` was measured, the depth error of the camera, and the error of its
+        # calibration. A wrist camera adds the tool motion it measured across its grab on top (at
+        # most its rig's shutter_motion_tolerance_mm and _deg, about nothing on a still arm), the
+        # angle times each point's range, at most 25 mm more. Too small and the bench comes back as
+        # one obstacle, which is also how a bumped or stale calibration shows itself; too large and
+        # a part lower than it is not an obstacle. Raise it by any sink of the slab, and by nothing
+        # else on account of the slab: it is the bench band only, not the band round a declared
+        # fixture and not the grasp planner's floor. A frame with no depth is refused as blind, and
+        # so is a fixed camera's frame less than half of whose pixels hold one; a wrist camera is
+        # carried inside its minimum range by every grasp, so its frame is judged where the motion
+        # goes. A goal the cameras look at but none can measure around is refused as unseen.
         plane_clearance_mm: 5.0
       # Refuse to plan when the declared world could not be registered with the planner. False
       # logs the failure and plans on against the planner's own boot world instead.

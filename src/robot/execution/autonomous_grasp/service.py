@@ -67,6 +67,7 @@ from src.robot.grasping.generation.calculator import GraspCalculator
 from src.robot.grasping.types.grasp_point import GraspPoint
 from src.robot.grasping.loop.pick_loop import (
     PerceptionSource,
+    PickOutcome,
     ViewpointPlanner,
 )
 from src.robot.grasping.closed_loop.refinement import (
@@ -2464,11 +2465,13 @@ class AutonomousGraspService:
                 )
             move_result = self._drive_arm_to(standoff_pose)
             if move_result is False:
+                stopped = _controller_stop_telemetry(orch)
                 return _report(
-                    AutonomousGraspOutcome.EXECUTION_FAILED,
+                    AutonomousGraspOutcome.CANCELLED if stopped else AutonomousGraspOutcome.EXECUTION_FAILED,
                     telemetry={
                         "stage": "standoff_move",
                         "error": "arm.move returned non-executed status",
+                        **stopped,
                     },
                 )
 
@@ -2575,6 +2578,19 @@ class AutonomousGraspService:
             "grip_width_delta_mm": refinement.grip_width_delta_mm,
             "match_iou": refinement.match_iou,
         }
+        if gripper is not None:
+            # What the gripper measured about the hold, as the open-loop path carries it on its pick report:
+            # None is a close nothing measured, not a detected part (AutonomousGraspReport.hold_measured). Written
+            # only where a gripper closed, so an attempt without one keeps the telemetry it had.
+            executed_telemetry["gripper_present"] = True
+            executed_telemetry["object_detected"] = policy_report.object_detected
+        if policy_report.outcome is not PolicyOutcome.EXECUTED:
+            # A failed execution on a stopped controller is the cell, not the grasp, as the pick loop
+            # says it on the open-loop path, and a campaign stops on it.
+            stopped = _controller_stop_telemetry(orch)
+            if stopped:
+                outcome = AutonomousGraspOutcome.CANCELLED
+                executed_telemetry.update(stopped)
 
         # Verification runs only when the execution policy executed the
         # grasp. Any earlier failure already carries its own outcome;
@@ -2790,6 +2806,27 @@ def _policy_outcome_to_autonomous(outcome: PolicyOutcome) -> AutonomousGraspOutc
     return _POLICY_TO_AUTONOMOUS.get(
         outcome, AutonomousGraspOutcome.EXECUTION_FAILED
     )
+
+
+def _controller_stop_telemetry(orchestrator: Any) -> dict[str, Any]:
+    """The telemetry of a two-scan attempt whose motion failed on a controller that cannot move; ``{}`` otherwise.
+
+    Asked of the pick loop's own diagnosis (``BinPickingOrchestrator._controller_cannot_move``), so the two-scan path
+    names a stopped cell in the words, and with the ``low_level_outcome``, the open-loop path does, and
+    :attr:`AutonomousGraspReport.controller_stopped` reads both alike. Asked only after a motion failed. An
+    orchestrator without the diagnosis, or one whose diagnosis raises, says nothing: a diagnosis must never replace
+    the failure it explains.
+    """
+    diagnose = getattr(orchestrator, "_controller_cannot_move", None)
+    if not callable(diagnose):
+        return {}
+    try:
+        reason = diagnose()
+    except Exception:  # noqa: BLE001 (the failure stands as it was)
+        return {}
+    if not isinstance(reason, str) or not reason:
+        return {}
+    return {"low_level_outcome": str(PickOutcome.CONTROLLER_NOT_OPERATIONAL), "controller": reason}
 
 
 # Gripper helpers

@@ -77,6 +77,12 @@ class _FakePlanner:
     def plan(self, pose: Pose) -> list[list[float]]:
         return self._trajectory
 
+    def check_joint_path(self, samples: object, *, refresh: bool = True) -> object:
+        """The planner's half of the path judge. This file is about the local half, so the double accepts."""
+        from src.robot.safety.planning import JointCheckVerdict
+
+        return JointCheckVerdict(valid=True, first_invalid=None, checked=len(list(samples)), reason="the double accepts")
+
     def execute(
         self, traj: object, pose: Pose, *, vel: object = None, acc: object = None
     ) -> MotionResult:

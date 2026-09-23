@@ -173,7 +173,8 @@ class ARobotDescribesItselfTests(unittest.TestCase):
         self.assertTrue(lines[4].startswith("planner  UNPLANNED: a desk arm"), lines[4])
         self.assertTrue(lines[4].endswith("(line TELEPORT)"), lines[4])
         self.assertEqual("camera world  not handed any camera", lines[5])
-        self.assertEqual("wrist cameras  not handed any camera", lines[6])
+        # The tree's camera section is read whether or not a camera is handed in, and a desk arm reads no geometry.
+        self.assertEqual("wrist cameras  not read: this cell's planner and guard read no geometry", lines[6])
         self.assertEqual(f"tree  console_dummy under {tree.root}", lines[7])
 
     def test_to_dict_carries_the_same_readings(self) -> None:
@@ -189,7 +190,8 @@ class ARobotDescribesItselfTests(unittest.TestCase):
         self.assertEqual("unplanned", data["route"]["route"])
         self.assertEqual("teleport", data["route"]["line"]["motion"])
         self.assertEqual({"needs_decline": False, "wiring": None}, data["camera_world"])
-        self.assertIsNone(data["wrist_bodies"])
+        self.assertEqual({"reader": None, "bodies": [], "unmodelled": [], "unmodelled_reason": ""},
+                         data["wrist_bodies"])
         self.assertEqual({"chain": "console_dummy", "root": str(tree.root)}, data["tree"])
 
     def test_a_ur_on_ik_says_its_route_is_refused(self) -> None:

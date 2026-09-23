@@ -86,6 +86,21 @@ class TheDriverRowTests(unittest.TestCase):
         self.assertIn("192.168.1.1", onrobot.detail)
         self.assertIn("URCap", _rows(_cfg("robotiq"))["end-effector wiring"].detail)
 
+    def test_a_toggle_opens_by_a_second_pulse_on_its_one_output(self) -> None:
+        # The owner's cell (2026-09-23): one tool output and nothing wired back, so the desk says how the jaws
+        # open, that the driver starts from its own count of its pulses, and how a person resets that count.
+        jaw = _rows(_cfg("jaw_io", jaw_io={"actuation": "single_toggle", "close_output_pin": 0}))["end-effector wiring"]
+        self.assertIn("open by a second pulse on close output 0", jaw.detail)
+        self.assertNotIn("dropping", jaw.detail)
+        self.assertIn("its own count", jaw.fix)
+        self.assertIn("--jaws-stand", jaw.fix)
+        # ⭐ THE CONTROL: with an open switch wired the switch decides, and the fix says so instead.
+        sensed = _rows(_cfg("jaw_io", jaw_io={"actuation": "single_toggle", "close_output_pin": 0,
+                                              "open_confirm_input_pin": 1}))["end-effector wiring"]
+        self.assertNotIn("--jaws-stand", sensed.fix)
+        self.assertIn("open switch", sensed.fix)
+        self.assertNotIn("swapped pair", sensed.fix)          # a toggle has one output, not a pair
+
 
 class _Tree:
     def __init__(self, case: unittest.TestCase, layer: str) -> None:
@@ -106,10 +121,12 @@ class TheHandListsItsDriversTests(unittest.TestCase):
     def test_a_real_ur_profile_whose_driver_the_hand_does_not_list_is_refused_at_load(self) -> None:
         from src.config.loader import ConfigError
 
-        tree = _Tree(self, "robot:\n  gripper:\n    model: robotiq_hande\n    vendor: jaw_io\n")
+        # The 2F-85 lists only the Robotiq driver. The Hand-E also lists jaw_io since 2026-09-23: the owner drives it
+        # through the Robotiq I/O Coupling (tests/test_a_hande_on_the_io_coupling_loads.py).
+        tree = _Tree(self, "robot:\n  gripper:\n    model: robotiq_2f85\n    vendor: jaw_io\n")
         with self.assertRaises(ConfigError) as caught:
             tree.load()
-        for part in ("robotiq_hande", "jaw_io", "robotiq", "config/grippers/robotiq_hande.yaml"):
+        for part in ("robotiq_2f85", "jaw_io", "robotiq", "config/grippers/robotiq_2f85.yaml"):
             self.assertIn(part, str(caught.exception))
 
     def test_no_gripper_and_a_dummy_are_always_admitted(self) -> None:
@@ -135,9 +152,9 @@ class TheHandListsItsDriversTests(unittest.TestCase):
     def test_the_robotiq_hands_list_the_robotiq_driver(self) -> None:
         from src.config.grippers import load_gripper
 
-        for model in ("robotiq_2f85", "robotiq_hande"):
+        for model, drivers in (("robotiq_2f85", ("robotiq",)), ("robotiq_hande", ("robotiq", "jaw_io"))):
             with self.subTest(model=model):
-                self.assertEqual(load_gripper(model, aliases=False).drivers, ("robotiq",))
+                self.assertEqual(load_gripper(model, aliases=False).drivers, drivers)
 
     def test_a_list_naming_no_driver_this_stack_knows_is_refused(self) -> None:
         from pydantic import ValidationError

@@ -280,6 +280,19 @@ class HoldEvidenceTests(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------------
 
 
+def running_normally(conn: object) -> None:
+    """Make a MagicMock UR connection read a controller that can move: RUNNING, NORMAL safety, no stop.
+
+    The hand verbs and the grasp policy ask the controller before any gripper command (2026-09-23), and a bare
+    MagicMock answers with mocks, which read as a controller in an unknown mode that cannot move.
+    """
+    conn.get_robot_mode.return_value = 7  # type: ignore[attr-defined]  # UR RUNNING
+    conn.get_safety_mode.return_value = 1  # type: ignore[attr-defined]  # UR NORMAL
+    conn.is_protective_stopped.return_value = False  # type: ignore[attr-defined]
+    conn.is_emergency_stopped.return_value = False  # type: ignore[attr-defined]
+    conn.dashboard_safety_status.return_value = ""  # type: ignore[attr-defined]
+
+
 def _payload_ur(*, enabled: bool = True, planner_answer: bool = True, planner_kind: str = "curobo") -> URRobotArm:
     """The UR of tests/test_self_filter_envelope.py that attaches a part, its planner a double answering ``planner_answer``."""
     from unittest.mock import MagicMock
@@ -303,6 +316,7 @@ def _payload_ur(*, enabled: bool = True, planner_answer: bool = True, planner_ki
     arm._conn = MagicMock()
     arm._conn.is_connected = True
     arm._conn.get_joint_positions.return_value = [0.0, -1.5, 1.5, 0.0, 1.5, 0.0]
+    running_normally(arm._conn)
     if enabled and planner_kind == "curobo":
         planner = MagicMock()
         planner.attach_payload.return_value = planner_answer

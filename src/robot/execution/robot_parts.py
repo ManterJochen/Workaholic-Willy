@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.robot.core import Gripper, RobotArm, RobotCapabilities, RobotVendor
@@ -255,6 +256,55 @@ def gripper_driver_verdict(
     )
 
 
+def jaw_toggle_record_path(robot_cfg: "RobotConfig") -> "Path":
+    """The file a single-toggle jaw_io keeps its count in: one per controller, bank and pin (``jaw_toggle_state``).
+
+    Keyed by the controller's address, so two cells on one machine, or a URSim and the real arm, never share a count.
+    """
+    from src.robot.grippers import jaw_toggle_state
+
+    vendor = str(robot_cfg.vendor)
+    address = {"ur": getattr(robot_cfg.ur, "ip", ""), "kuka": getattr(robot_cfg.kuka, "controller_ip", "")}.get(vendor, "")
+    jaw = robot_cfg.gripper.jaw_io
+    return jaw_toggle_state.state_path(f"{vendor}-{address or 'local'}", str(jaw.io_port), int(jaw.close_output_pin))
+
+
+def jaw_toggle_record(robot_cfg: "RobotConfig") -> "tuple[Path, str, int] | None":
+    """The record, bank and pin of the configured hand when it is a single toggle with no open switch, else None.
+
+    The UR bench reads and writes a toggle's record through here and not through the grippers package, which no
+    module under ``drivers/ur`` imports (``tests/test_ur_arm_builds_no_gripper.py``).
+    """
+    gripper = robot_cfg.gripper
+    if str(gripper.vendor) != "jaw_io" or gripper.jaw_io.actuation != "single_toggle":
+        return None
+    if gripper.jaw_io.open_confirm_input_pin is not None:
+        return None
+    return jaw_toggle_record_path(robot_cfg), str(gripper.jaw_io.io_port), int(gripper.jaw_io.close_output_pin)
+
+
+def describe_jaw_toggle_record(path: Path) -> str:
+    """What a toggle's record says, in a sentence, or that there is none."""
+    from src.robot.grippers import jaw_toggle_state
+
+    record = jaw_toggle_state.load(path)
+    return record.describe() if record is not None else "nothing"
+
+
+def declare_jaw_toggle_record(path: Path, *, closed: bool) -> None:
+    """A person looked at a toggle's jaws: its record says where they stand (``jaw_toggle_state.declare``)."""
+    from src.robot.grippers import jaw_toggle_state
+
+    jaw_toggle_state.declare(path, closed=closed)
+
+
+def mark_jaw_toggle_record_uncounted(path: Path, *, by: str) -> None:
+    """A pulse the driver did not count moved the jaws: the record says a pulse is in flight until someone declares."""
+    from src.robot.grippers import jaw_toggle_state
+
+    jaw_toggle_state.record_pulse_started(path, toward_closed=False, by=by)
+
+
 def build_gripper(robot_cfg: "RobotConfig", *, arm: RobotArm) -> Gripper:
     """The end-effector ``robot_cfg.gripper`` names, built for ``arm``.
 
@@ -352,6 +402,9 @@ def build_gripper(robot_cfg: "RobotConfig", *, arm: RobotArm) -> Gripper:
             open_on_connect_without_feedback=jaw.open_on_connect_without_feedback,
             min_width_mm=gripper_cfg.min_width_mm,
             max_width_mm=gripper_cfg.max_width_mm,
+            # A toggle counts its own pulses, and the count has to outlive the program or the next one starts
+            # inverted after any run that ended with the jaws closed (owner's cell, 2026-09-23).
+            state_file=(jaw_toggle_record_path(robot_cfg) if jaw.actuation == "single_toggle" else None),
         )
     # OnRobot, the one vendor left with a driver.
     #

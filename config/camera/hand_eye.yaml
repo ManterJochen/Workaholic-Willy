@@ -28,9 +28,26 @@ hand_eye:
     # OpenCV predefined dictionary the marker was generated from. Only names that
     # `cv2.aruco.getPredefinedDictionary` knows are accepted, and it must match the printed marker.
     aruco_dict_name: "DICT_5X5_100"
+    # The id of the one marker the sweep poses. It must be an id the dictionary holds (0 to 99 for
+    # DICT_5X5_100); `--check` refuses any other, which would otherwise find no marker at any pose.
+    marker_id: 0
+    # The three keys above describe one ArUco marker. A ChArUco board is named in full instead, and
+    # poses from many corners at once, with none of a single marker's flip ambiguity near a frontal
+    # view. Beside it `marker_length_mm` and `marker_id` are not read, and `aruco_dict_name`, when
+    # the target leaves it out, is the board's dictionary:
+    # target:
+    #   kind: charuco
+    #   squares_x: 7              # squares along the board's x
+    #   squares_y: 5
+    #   square_length_mm: 30.0    # measured on the print, like the marker edge
+    #   marker_length_mm: 22.0    # the marker inside a white square, not the square
+    #   legacy_pattern: false     # true for a board generated before OpenCV 4.6
+    # `python -m src.robot.execution.real_cell.calibrate --board charuco:7x5:30:22` names the same
+    # board for one run. Do not point a single-marker sweep at a ChArUco board: it poses one of the
+    # board's markers at `marker_length_mm` and scales every sample by square over marker edge.
 
-  # Tool-mounted-camera workflow: returns `Transform(CAMERA -> TOOL)`. The five collection settings
-  # carry the same meaning as in the block above.
+  # Tool-mounted-camera workflow: returns `Transform(CAMERA -> TOOL)`. The collection settings and
+  # the target carry the same meaning as in the block above.
   eye_in_hand:
     enabled: false
     mode: "eye_in_hand"
@@ -39,3 +56,4 @@ hand_eye:
     min_angle: 10.0
     marker_length_mm: 50.0
     aruco_dict_name: "DICT_5X5_100"
+    marker_id: 0

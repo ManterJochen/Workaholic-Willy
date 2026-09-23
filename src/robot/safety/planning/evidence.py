@@ -338,8 +338,8 @@ def _read(
     if not path.is_file():
         return None, (f"nothing has measured {arm} with {hand} at a {float(coupling_mm):g} mm plate, "
                       f"{approach}{closing}, a {float(planner_margin_mm):g} mm planner margin and "
-                      f"{int(attach_spheres)} attach slots: {path.name} is not there. Measure it and commit the file it "
-                      f"writes: {command}")
+                      f"{int(attach_spheres)} attach slots: {path.name} is not there.{_attach_note(path, int(attach_spheres))}"
+                      f" Measure it and commit the file it writes: {command}")
     try:
         evidence = CombinationEvidence.from_dict(json.loads(path.read_text(encoding="utf-8")))
     except Exception as unreadable:  # noqa: BLE001 (a file nobody can read admits nothing, whatever broke it)
@@ -349,6 +349,23 @@ def _read(
         return None, (f"{path.name} holds a record that names {evidence.path.name}, so it was copied rather than "
                       f"measured for this combination. Measure this one: {command}")
     return evidence, None
+
+
+def _attach_note(path: Path, attach_spheres: int) -> str:
+    """Where attach slots come from, said before the command of a refusal that names them; empty where there are none.
+
+    The slots are the one part of the combination a cell declares without meaning to measure anything: a carried
+    part's length reserves them, and a measured arm and hand at zero slots is a different file. It measures in about a
+    minute on a cell's GPU (2026-09-23, ur10 with the Hand-E: 65 s).
+    """
+    if attach_spheres <= 0:
+        return ""
+    without = path.with_name(path.name.replace(f"_a{attach_spheres}.json", "_a0.json"))
+    measured = (f" {without.name} measured this combination without them, and the planner starts on it only for a "
+                "cell that declares no carried part, which then plans every carry as an empty hand."
+                if without.is_file() else "")
+    return (f" The {attach_spheres} attach slots are reserved because safety.planning_world.payload declares a "
+            f"carried part's length_mm, so the planner can carry the part it holds.{measured}")
 
 
 def _file_refusal(

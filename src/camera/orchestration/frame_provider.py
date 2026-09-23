@@ -316,6 +316,13 @@ class RigHandle:
         """This rig's camera matrix, or ``None`` where the rig has no single pinhole matrix."""
         return self.camera.get_intrinsics()
 
+    def camera_moved(self) -> None:
+        """Say that this rig's camera moved since its last grab (see `Camera.camera_moved`).
+
+        The planning world holds a handle rather than the owner, so the notice is on the handle too.
+        """
+        self.camera.camera_moved()
+
     def get_distortion(self) -> "np.ndarray | None":
         """This rig's distortion coefficients, or ``None`` where the rig reports none.
 

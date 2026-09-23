@@ -3,10 +3,18 @@
 It is the real-hardware counterpart of the cuRobo path in the Isaac sim driver,
 :meth:`src.robot.drivers.sim.arm.IsaacRobotArm._drive_curobo`. It asks the
 process-isolated cuRobo planner, :class:`~src.robot.safety.planning.CuroboPlanClient`,
-for a global collision-free joint trajectory to a Cartesian goal, then executes that
-trajectory on the UR controller waypoint by waypoint through the ``ur_rtde`` ``moveJ``.
+for a global collision-free joint trajectory, to a Cartesian goal (:meth:`CuroboUrPlanner.plan`)
+or to a joint configuration (:meth:`CuroboUrPlanner.plan_joint`), then executes a list of
+joint waypoints on the UR controller as one blocking ``ur_rtde`` ``moveJ`` per waypoint.
 Every pose reaches the planner through :class:`.planner_frame.PlannerFrameClient`,
 because the planner is rooted half a turn about Z from the controller's base.
+
+Which list runs is the arm's decision, not this module's. cuRobo samples a plan every 25 ms
+(21 to 281 waypoints a move, measured on a UR10), and a ``moveJ`` starts from rest and stops at
+its target, so running every sample stopped the arm at every one. The arm shortens the plan to a
+subset of its own waypoints (:func:`~src.robot.safety.path_samples.simplify_joint_path`), has
+both authorities judge the legs of that list, and hands :meth:`CuroboUrPlanner.execute` exactly
+the list that passed, or the plan as cuRobo returned it where the shortened one was refused.
 
 It is fail-closed. Where the cuRobo environment or service is unavailable, or no
 collision-free plan exists, nothing falls back to blind IK: :meth:`CuroboUrPlanner.plan`
@@ -24,6 +32,7 @@ needs the vendor safety-rated stop.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
@@ -53,7 +62,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 
     from .connection import URConnection
 
-__all__ = ["CuroboUrPlanner", "UR_ARM_JOINT_NAMES"]
+__all__ = ["PLANNER_JOINT_ENVELOPE_RAD", "CuroboUrPlanner", "UR_ARM_JOINT_NAMES"]
 
 #: The UR arm joint order, base to wrist_3: the order ``ur_rtde`` reports from
 #: ``getActualQ`` and expects for ``moveJ``.
@@ -64,6 +73,16 @@ UR_ARM_JOINT_NAMES = (
     "wrist_1_joint",
     "wrist_2_joint",
     "wrist_3_joint",
+)
+
+#: The joint window cuRobo plans in, ``(lower, upper)`` in radians and UR order: +-(2 pi - 0.1) on every joint and
+#: +-(pi - 0.1) on the elbow. The descriptor builder declares it in ``scripts/curobo/_planner_limits.py``, which runs
+#: under the cuRobo interpreter and cannot be imported from here, so it is restated and a test holds the two equal.
+#: The arm turns a goal it chooses into this window, so the planner is never handed a goal it would refuse for its
+#: limits; a descriptor built narrower still refuses such a goal, which is the planner's answer and not a guess.
+PLANNER_JOINT_ENVELOPE_RAD: tuple[tuple[float, ...], tuple[float, ...]] = (
+    tuple(-(limit - 0.1) for limit in (2 * math.pi, 2 * math.pi, math.pi, 2 * math.pi, 2 * math.pi, 2 * math.pi)),
+    tuple(limit - 0.1 for limit in (2 * math.pi, 2 * math.pi, math.pi, 2 * math.pi, 2 * math.pi, 2 * math.pi)),
 )
 
 
@@ -79,6 +98,9 @@ class CuroboUrPlanner:
         Builds the :class:`CuroboPlanClient`. It is the injection seam for the planner.
     vel / acc
         The default joint speed and acceleration for each executed ``moveJ`` waypoint.
+    controller_state
+        Asked, best effort, after a ``moveJ`` was sent and failed, for a sentence naming the
+        controller's robot and safety state. The arm passes its own; ``None`` adds nothing.
     world_cuboids
         The static obstacles of the cell, from
         :func:`~src.robot.safety.planning.world.build_planner_cuboids`. They are
@@ -115,6 +137,7 @@ class CuroboUrPlanner:
         on_perceived_obstacles: "Callable[[Sequence[Any]], object] | None" = None,
         reservation: "PlannerReservation | None" = None,
         descriptor_check: "Callable[[SidecarIdentity], str | None] | None" = None,
+        controller_state: "Callable[[], str] | None" = None,
     ) -> None:
         self._conn = connection
         self._client_factory = client_factory
@@ -141,12 +164,17 @@ class CuroboUrPlanner:
         #: sidecar robot config is untouched and `attach_payload` refuses, which is the
         #: unchanged path.
         self._attach_spheres = 0
+        #: Whether this sidecar may hold a carried part: set as an attach is handed to it, whatever it answers,
+        #: and cleared by a detach it confirmed or by closing it. `detach_payload` asks nothing while it is clear.
+        self._payload_handed = False
         #: What the sidecar allocates when it starts, told to the client before `start`. None leaves
         #: the client as its factory built it.
         self._reservation = reservation
         #: Asked of the descriptor the sidecar reports once it is ready: a sentence refuses the
         #: planner. ``None`` asks nothing, which is what a caller that injects its own client gets.
         self._descriptor_check = descriptor_check
+        #: A sentence about the controller's state after a sent moveJ failed; `None` adds nothing.
+        self._controller_state = controller_state
         self.logger = create_robot_logger("CuroboUrPlanner", UR_CUROBO_LOG_FILE)
 
     def enable_payload(self, sphere_slots: int) -> None:
@@ -343,7 +371,11 @@ class CuroboUrPlanner:
         dims_m = [float(d) / 1000.0 for d in dims_mm]
         pose = [*(float(c) / 1000.0 for c in centre_mm), 1.0, 0.0, 0.0, 0.0]
         try:
-            return self._client_or_start().attach_payload(list(joints), dims_m, pose)
+            client = self._client_or_start()
+            # From here the sidecar may hold the part whatever it answers: a False is a refusal or a reply that
+            # never came, and the attach behind a timeout can still land.
+            self._payload_handed = True
+            return client.attach_payload(list(joints), dims_m, pose)
         except CuroboUnavailableError as exc:
             # The client logs that it is planning as if the gripper were empty when the
             # sidecar answers with a refusal. Where the sidecar is gone the exception
@@ -354,15 +386,27 @@ class CuroboUrPlanner:
             return False
 
     def detach_payload(self) -> bool:
-        """Take the carried box off the planner's model."""
-        if self._client is None:
+        """Take the carried box off the planner's model; ``True`` without asking where none was handed to it.
+
+        A sidecar that was never handed a part since it last confirmed a detach holds none, and it is not
+        asked: one started with no sphere budget has no attachment link, and cuRobo's detach raises on it
+        (measured 2026-09-23 on the UR10 descriptor and this project's GPU: ``ValueError: attached_object not
+        found in spheres``, answered as ``detached: false``). Asked anyway, a place after a grasp that modelled
+        nothing reported DETACH_FAILED. Wherever an attach was handed over, confirmed or not, the sidecar is
+        asked and its answer is the answer: a detach it does not confirm, or a sidecar that is gone, is
+        ``False``, and the next detach asks again.
+        """
+        if self._client is None or not self._payload_handed:
             return True
         try:
-            return self._client.detach_payload()
+            detached = bool(self._client.detach_payload())
         except CuroboUnavailableError as exc:
             self.logger.error("payload NOT detached (%s); the planner will keep routing around a part "
                          "the gripper no longer holds", exc)
             return False
+        if detached:
+            self._payload_handed = False
+        return detached
 
     def set_world(self, cuboids: list[dict]) -> int:
         """Register scene obstacles into the cuRobo collision world, or 0 where the planner is away.
@@ -398,10 +442,11 @@ class CuroboUrPlanner:
         return SidecarIdentity.from_client(self._client_or_start())
 
     def close(self) -> None:
-        """Shut down the planning server (idempotent)."""
+        """Shut down the planning server (idempotent). A closed server holds no part, and the next one starts empty."""
         if self._client is not None:
             self._client.close()
             self._client = None
+        self._payload_handed = False
 
     # ------------------------------------------------------------------
     # Planning + execution
@@ -437,6 +482,57 @@ class CuroboUrPlanner:
             refusal = self.last_refusal
             if refusal is not None:
                 self.logger.warning("cuRobo refused this move. %s", refusal.render())
+            return None
+        return [self._to_ur_order(list(wp), client.joint_names) for wp in traj]
+
+    def plans_joint_goals(self) -> bool:
+        """Whether the planner behind this glue plans to a joint configuration, starting it if need be.
+
+        Every :class:`CuroboPlanClient` does (``plan_js``). An injected client may not, and then the arm
+        asks :meth:`plan` for a Cartesian goal, as it always did. Raises what :meth:`plan` raises when
+        the planner cannot be brought up.
+        """
+        return callable(getattr(self._client_or_start(), "plan_joint", None))
+
+    def plan_joint(
+        self,
+        goal_ur: "Sequence[float]",
+        *,
+        refresh: bool = True,
+        near_point_mm: "Sequence[float] | None" = None,
+        goal_keep_out: "Maybe[GoalKeepOut]" = UNSET,
+    ) -> list[list[float]] | None:
+        """Plan from the joints the arm stands at to ``goal_ur`` in joint space, returning the trajectory in UR order.
+
+        The joint-goal twin of :meth:`plan`: the same start read off the controller, the same world
+        refresh before the plan, the same joint-order remap both ways. ``None`` where cuRobo found no
+        plan, with the typed reason on :attr:`last_refusal`. Joints are the same numbers in the
+        planner's base as in the controller's, so nothing is turned.
+
+        ``refresh=False`` skips the refresh, for a caller that refreshed the world itself before
+        judging the goal against it; ``near_point_mm`` and ``goal_keep_out`` are what that refresh
+        is handed otherwise, as :meth:`plan` hands them.
+
+        Raises
+        ------
+        CuroboUnavailableError
+            If the cuRobo environment or service cannot be brought up, and the caller then fails
+            closed.
+        """
+        goal = [float(v) for v in goal_ur]
+        current_ur = [float(v) for v in self._conn.get_joint_positions()]
+        client = self._client_or_start()
+        if refresh:
+            self._refresh_world(
+                near_point_mm=None if near_point_mm is None else [float(v) for v in near_point_mm],
+                goal_keep_out=goal_keep_out,
+            )
+        start = self._to_client_order(current_ur, client.joint_names)
+        traj = client.plan_joint(start, self._to_client_order(goal, client.joint_names))
+        if not traj:
+            refusal = self.last_refusal
+            if refusal is not None:
+                self.logger.warning("cuRobo refused this joint goal. %s", refusal.render())
             return None
         return [self._to_ur_order(list(wp), client.joint_names) for wp in traj]
 
@@ -491,35 +587,73 @@ class CuroboUrPlanner:
 
     def execute(
         self,
-        traj_ur: list[list[float]],
+        traj_ur: "Sequence[Sequence[float]]",
         pose: Pose,
         *,
         vel: float | None = None,
         acc: float | None = None,
     ) -> MotionResult:
-        """Execute a UR-order joint trajectory waypoint-by-waypoint via ``moveJ``."""
+        """Run a UR-order list of joint waypoints as one blocking ``moveJ`` per waypoint, in order.
+
+        Each ``moveJ`` runs the joint-space line from where the arm stands to the next waypoint, and
+        stops there. So the legs this runs are the legs between neighbouring entries of ``traj_ur``,
+        and the list the arm hands over is the list whose legs it had judged: nothing here drops,
+        adds or moves a waypoint. ``vel`` and ``acc`` arrive clamped by the arm; ``None`` takes the
+        defaults this planner was built with.
+
+        A failure says how far the list got. A waypoint ``ur_rtde`` refuses before sending it (a
+        speed or acceleration outside its range raises ``ValueError``) is INVALID_TARGET. A ``moveJ``
+        that was sent and raised is CONNECTION_ERROR, and one that was sent and returned ``False`` is
+        CONTROLLER_REJECTED; after either the arm may have moved part of the way, and the message
+        carries the controller's state where it can be read.
+        """
         v = vel if vel is not None else self._vel
         a = acc if acc is not None else self._acc
-        try:
-            for waypoint in traj_ur:
+        total = len(traj_ur)
+        for index, waypoint in enumerate(traj_ur):
+            try:
                 ok = self._conn.moveJ(list(waypoint), vel=v, acc=a)
-                if not ok:
-                    return MotionResult.failed(
-                        MotionStatus.CONTROLLER_REJECTED,
-                        MotionCommand.MOVE_TO,
-                        target_pose=pose,
-                        message="UR moveJ rejected a cuRobo trajectory waypoint.",
-                    )
-        except (RuntimeError, OSError) as exc:
-            return MotionResult.failed(
-                MotionStatus.CONNECTION_ERROR,
-                MotionCommand.MOVE_TO,
-                target_pose=pose,
-                message=f"UR moveJ raised executing the cuRobo trajectory: {exc}",
-                exception=exc,
-            )
-        self.logger.info("cuRobo trajectory executed on UR: %d waypoints", len(traj_ur))
+            except ValueError as exc:
+                done = f"the {index} before it ran" if index else "nothing had moved"
+                return MotionResult.failed(
+                    MotionStatus.INVALID_TARGET,
+                    MotionCommand.MOVE_TO,
+                    target_pose=pose,
+                    message=(f"ur_rtde refused waypoint {index + 1} of {total} of the cuRobo trajectory before "
+                             f"sending it ({exc}), so that moveJ was not sent and {done}"),
+                    exception=exc,
+                )
+            except (RuntimeError, OSError) as exc:
+                return MotionResult.failed(
+                    MotionStatus.CONNECTION_ERROR,
+                    MotionCommand.MOVE_TO,
+                    target_pose=pose,
+                    message=(f"UR moveJ raised executing waypoint {index + 1} of {total} of the cuRobo trajectory: "
+                             f"{exc}. moveJ was sent, so the arm may have moved part of the way."
+                             f"{self._state_text()}"),
+                    exception=exc,
+                )
+            if not ok:
+                return MotionResult.failed(
+                    MotionStatus.CONTROLLER_REJECTED,
+                    MotionCommand.MOVE_TO,
+                    target_pose=pose,
+                    message=(f"UR moveJ rejected waypoint {index + 1} of {total} of the cuRobo trajectory. moveJ "
+                             f"was sent and the controller did not complete it, so the arm may have moved part "
+                             f"of the way.{self._state_text()}"),
+                )
+        self.logger.info("cuRobo trajectory executed on UR: %d moveJ", total)
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose, message="curobo")
+
+    def _state_text(self) -> str:
+        """The controller's state as a sentence after a sent moveJ failed, or ``""``. Never a second fault."""
+        if self._controller_state is None:
+            return ""
+        try:
+            text = self._controller_state()
+        except Exception:  # noqa: BLE001 (best effort after a failure: no state is not a new fault)
+            return ""
+        return text if isinstance(text, str) else ""
 
     # ------------------------------------------------------------------
     # Joint-order remap between the planner and UR

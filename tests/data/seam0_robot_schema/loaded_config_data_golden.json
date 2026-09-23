@@ -218,6 +218,8 @@
         "min_angle": 10.0,
         "marker_length_mm": 50.0,
         "aruco_dict_name": "DICT_5X5_100",
+        "marker_id": 0,
+        "target": null,
         "mode": "eye_to_hand"
       },
       "eye_in_hand": {
@@ -227,6 +229,8 @@
         "min_angle": 10.0,
         "marker_length_mm": 50.0,
         "aruco_dict_name": "DICT_5X5_100",
+        "marker_id": 0,
+        "target": null,
         "mode": "eye_in_hand"
       }
     }
@@ -551,7 +555,8 @@
         "enforce": true,
         "margin_deg": 5.0,
         "min_deg": null,
-        "max_deg": null
+        "max_deg": null,
+        "within_half_turn_of_home": false
       },
       "ik_quality": {
         "enforce": true,

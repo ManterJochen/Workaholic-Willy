@@ -34,6 +34,11 @@ def _connection() -> conn_mod.URConnection:
     return conn_mod.URConnection(ip="192.168.0.100", vel=0.2, acc=0.5, frequency=500.0)
 
 
+#: What the measured URSim answers ``polyscopeVersion`` with. The local-mode question is asked only of a controller that
+#: says it runs PolyScope 5.6 or later (tests/test_ur_cb3_connect_diagnosis.py holds the CB3 half).
+_URSIM_VERSION = "URSoftware 5.26.0.0 (URSim)"
+
+
 class LocalModeDiagnosisTests(unittest.TestCase):
     """What connect() says when the control interface refuses."""
 
@@ -42,6 +47,8 @@ class LocalModeDiagnosisTests(unittest.TestCase):
         d = MagicMock()
         d.isInRemoteControl.return_value = remote
         d.safetystatus.return_value = safety
+        d.polyscopeVersion.return_value = _URSIM_VERSION
+        d.robotmode.return_value = "Robotmode: RUNNING"
         return d
 
     def _connect_failing(self, *, dashboard: MagicMock | None):
@@ -140,6 +147,7 @@ class RemoteControlQueryTests(unittest.TestCase):
     def test_it_reports_the_dashboard_answer(self) -> None:
         c = _connection()
         c._dashboard = MagicMock()
+        c._dashboard.polyscopeVersion.return_value = _URSIM_VERSION
         c._dashboard.isInRemoteControl.return_value = True
         self.assertIs(c.is_in_remote_control(), True)
         c._dashboard.isInRemoteControl.return_value = False
@@ -150,6 +158,7 @@ class RemoteControlQueryTests(unittest.TestCase):
         # ever stop a cell from running.
         c = _connection()
         c._dashboard = MagicMock()
+        c._dashboard.polyscopeVersion.return_value = _URSIM_VERSION
         c._dashboard.isInRemoteControl.side_effect = RuntimeError("boom")
         self.assertIsNone(c.is_in_remote_control())
 

@@ -16,6 +16,8 @@ WHAT THIS COVERS (bucket ②, measured against real librealsense 2.58):
     drift away from the code;
   * ``rs.align.process`` on a real frameset;
   * all four post-processing filters on a real depth frame, and what each one does to holes;
+  * the visual preset names the config documents, against the SDK's member names, and the ``camera_info``
+    fields the driver reports at open;
   * ``np.asanyarray(frame.get_data())`` — the shape/dtype the driver then reasons about;
   * the driver's own ``_to_millimetres`` and ``_match_color_size`` on that real output.
 
@@ -151,11 +153,49 @@ class SymbolContractTests(unittest.TestCase):
             ("stream", ("color", "depth")),
             ("format", ("bgr8", "z16")),
             ("rs400_visual_preset", ("high_accuracy", "high_density", "medium_density", "default")),
+            ("camera_info", ("name", "serial_number", "firmware_version", "usb_type_descriptor")),
         ):
             enum = getattr(rs, enum_name)
             for member in members:
                 with self.subTest(enum=enum_name, member=member):
                     self.assertTrue(hasattr(enum, member), f"rs.{enum_name}.{member} is gone")
+
+
+@unittest.skipUnless(_HAS_RS, _SKIP)
+class TheNamesTheConfigUsesTests(unittest.TestCase):
+    """What a config writes is what the SDK is asked for."""
+
+    def test_every_documented_preset_name_finds_its_sdk_member(self) -> None:
+        """The config documents ``HighAccuracy``; the SDK names the member ``high_accuracy``.
+
+        Measured 2026-09-23 on librealsense 2.58.3: the old case-insensitive match compared ``highaccuracy``
+        with ``high_accuracy``, so every documented name was logged as unknown and the device default kept.
+        """
+        from src.camera.setup.image_taking.rgbd import _preset_key
+
+        members = {_preset_key(name): name for name in rs.rs400_visual_preset.__members__}
+        for written, member in (("HighAccuracy", "high_accuracy"), ("HighDensity", "high_density"),
+                                ("MediumDensity", "medium_density"), ("Default", "default"),
+                                ("high_accuracy", "high_accuracy")):
+            with self.subTest(written=written):
+                self.assertEqual(members.get(_preset_key(written)), member)
+
+    def test_listing_the_connected_cameras_with_none_attached_is_an_empty_list(self) -> None:
+        """The refusal of a request that does not start lists what the SDK sees; with nothing attached, nothing."""
+        from src.camera.setup.image_taking.rgbd import _connected_cameras
+
+        self.assertEqual(_connected_cameras(rs), [])
+
+    def test_a_software_device_answers_the_camera_info_the_driver_reads(self) -> None:
+        from src.camera.setup.image_taking.rgbd import _camera_info, _depth_camera_model
+
+        dev = rs.software_device()
+        dev.register_info(rs.camera_info.name, "Intel RealSense D415")
+        dev.register_info(rs.camera_info.usb_type_descriptor, "2.1")
+        self.assertEqual(_camera_info(rs, dev, "name"), "Intel RealSense D415")
+        self.assertEqual(_camera_info(rs, dev, "usb_type_descriptor"), "2.1")
+        self.assertIsNone(_camera_info(rs, dev, "firmware_version"))
+        self.assertEqual(_depth_camera_model(_camera_info(rs, dev, "name")), "D415")
 
 
 @unittest.skipUnless(_HAS_RS, _SKIP)

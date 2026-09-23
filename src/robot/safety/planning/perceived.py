@@ -29,6 +29,32 @@ direction that hurts:
      duplicates the support plane the operator already declared. Points at or below the declared
      plane are dropped, by name, and the plane keeps its one clean box.
 
+Two more things it says out loud, because each one is space the planner receives as free:
+
+  * A pixel with no depth. A depth camera answers nothing closer than its minimum range, nothing
+    off a surface it cannot read, and nothing in its shadowed band, and the space along that ray
+    is unknown rather than empty. It reaches the planner as free space, so it is counted by name
+    (``DropReason.NO_DEPTH``) and each view's share of it is reported (``depth_coverage``). Whether
+    a world with that many holes may be planned against at all is the live world's call.
+  * The bench band. How far above the declared plane a point still counts as the bench is the
+    configured clearance plus the placement error the view's camera declares, grown with each
+    point's range, and capped (``bench_band_mm``). Anything lower than that band above the bench
+    is not an obstacle to the planner.
+
+And two things it leaves to the geometry somebody declared, because registering them again would
+make a hollow solid:
+
+  * Declared geometry. A camera that sees a declared fixture or a declared mesh returns its
+    surface, and that surface fitted as a perceived box is solid where the declared shape is
+    hollow: a tote's rim becomes a block over its inside. A point within a declared body's own band
+    of it, the view's placement error on :data:`DECLARED_SURFACE_MM`, is that body
+    (``DropReason.DECLARED``), as a point within the band above the bench is the bench. Not the
+    bench band itself, which a sunk slab raises by its sink.
+  * The space kept out. A keep-out box takes its points out of the world, and a cluster of
+    neighbours around it would still be fitted with one box over the hole. Such a cluster is cut
+    around the box before it is fitted, so no perceived box covers what a keep-out left out beyond
+    the margin every box is grown by (``keep_out_cuts``).
+
 Units and frames at this boundary: input depth is millimetres in the CAMERA frame, the transform is
 the usual 4x4 in millimetres, output is millimetres in BASE. The conversion to the planner's metres
 and WXYZ happens in `world.py`, which owns that wire format for both sources.
@@ -46,12 +72,16 @@ import numpy as np
 from src.robot.core.keep_out import KeepOutBox
 
 __all__ = [
+    "DECLARED_SURFACE_MM",
+    "MAX_DECLARED_BAND_MM",
+    "DeclaredBody",
     "DepthView",
     "DropReason",
     "LinkCapsule",
     "PerceivedBox",
     "PerceivedWorld",
     "PerceptionGeometryError",
+    "ReachSphere",
     "SelfBody",
     "SelfEnvelope",
     "VoxelField",
@@ -59,6 +89,7 @@ __all__ = [
     "WorldBuildTuning",
     "build_perceived_boxes",
     "build_voxel_field",
+    "has_depth",
     "target_keep_out_box",
     "voxel_grid_extent",
 ]
@@ -66,6 +97,28 @@ __all__ = [
 
 class PerceptionGeometryError(ValueError):
     """The frame cannot be turned into geometry, so no world can be built from it."""
+
+
+#: The most a view's declared placement error may add to the bench band, millimetres.
+#:
+#: A choice, not a measurement. Everything lower than the band above the bench is dropped as the
+#: bench, so a band that followed any declared error without limit would take a real part out of
+#: the world in silence. A camera declared to be off by more than this at some range stops growing
+#: its band there, and a bench that then comes back above the band comes back as an obstacle that a
+#: refusal names, which is the direction it is safe to be wrong in.
+MAX_DECLARED_BAND_MM = 25.0
+
+#: How far a surface a camera sees may lie from a declared fixture or mesh and still be that body,
+#: millimetres, before the view's own placement error is added.
+#:
+#: It holds what nothing declares about a body: how well it was measured, the depth error of the
+#: camera and the error of its calibration. Five, the figure the shipped ``plane_clearance_mm``
+#: gives the bench for the same three errors, and a choice rather than a measurement. It is its own
+#: number and not that key because a cell that sinks its slab below the bench raises the key by the
+#: sink (robot.yaml): reused as the band round a fixture, a sink of 50 mm took every part within
+#: about 60 mm of a declared tote out of the world (review of 2026-09-23). It never exceeds the
+#: bench band, so the slab, which is declared too, takes nothing the plane test did not.
+DECLARED_SURFACE_MM = 5.0
 
 
 class DropReason(StrEnum):
@@ -78,9 +131,13 @@ class DropReason(StrEnum):
 
     #: Inside a mask the caller asked to leave out, which is normally the object being grasped.
     EXCLUDED = "excluded"
-    #: At or below the declared support plane: the bench, which is already one clean box.
+    #: At or below the bench band over the declared support plane: the bench, which is already one
+    #: clean box.
     BELOW_PLANE = "below_plane"
-    #: Outside the cell's declared reach, so the arm cannot meet it.
+    #: Outside the workspace box and, where the robot's reach is given, outside that reach as well,
+    #: so no part of the robot can meet it. The workspace box alone bounds the TCP and not the links,
+    #: the hand or a wrist camera, which swing past it, so a world built for a robot keeps what its
+    #: body can reach.
     OUTSIDE_LIMITS = "outside_limits"
     #: Too few points to be anything but sensor noise.
     TOO_FEW_POINTS = "too_few_points"
@@ -91,15 +148,26 @@ class DropReason(StrEnum):
     #: Inside a keep-out box a caller handed over: the target of the motion, left out of every
     #: view.
     KEEP_OUT = "keep_out"
+    #: A pixel with no depth: zero, not a number, or behind the camera. Counted in pixels of the
+    #: full frame, like ``EXCLUDED``. Nothing was measured along that ray, closer than the sensor's
+    #: minimum range, off a surface it cannot read, or in its shadowed band, so the space there is
+    #: unknown, and the planner receives it as free.
+    NO_DEPTH = "no_depth"
+    #: Within a declared fixture's or mesh's own band of it (:class:`DeclaredBody`): the camera seeing
+    #: geometry the planner already holds as declared, which it would otherwise hold a second time
+    #: as a solid box.
+    DECLARED = "declared"
 
 
 @dataclass(frozen=True, slots=True)
 class WorldBuildLimits:
-    """Where in the cell a perceived obstacle is allowed to be.
+    """Where in the cell a perceived obstacle is allowed to be, and where the bench is.
 
-    These are not tuning. They are the declaration of which part of the room the planner is
-    responsible for, and they come from the same config the arm's workspace guard reads, so a box
-    can never appear somewhere the arm was already forbidden to go.
+    The box is the workspace box the arm's guard reads, and it bounds the TCP. It is not where the
+    robot's body can be: the links, the hand and a wrist camera swing past it. So a caller that knows
+    the robot's reach hands it to :func:`build_perceived_boxes` as well (:class:`ReachSphere`), and a
+    point is kept when either holds it. The box still sets the grid a distance field is cut to,
+    because the planner reserves that grid when it starts.
     """
 
     #: The workspace box in BASE millimetres, as the guard states it.
@@ -108,11 +176,22 @@ class WorldBuildLimits:
     z_mm: tuple[float, float]
     #: Top surface of the declared support plane, in BASE millimetres, or `None` for no plane.
     #:
-    #: Points within `plane_clearance_mm` above it are dropped with the bench. Without a plane every
+    #: Points within the bench band above it are dropped with the bench. Without a plane every
     #: table point becomes an obstacle, which is why registering a perceived world on a cell that
     #: declared no plane is refused rather than attempted.
     support_plane_top_mm: float | None
-    #: How far above the plane a point still counts as the plane.
+    #: How far above the plane a point still counts as the plane, millimetres: the floor of the
+    #: bench band.
+    #:
+    #: It has to hold what nothing declares: how well the bench height was measured, the depth
+    #: error of the sensor, and the error of the camera's own calibration. A view whose camera
+    #: declares a placement error (:attr:`DepthView.placement_error_mm`) adds that error on top,
+    #: grown with each point's range and capped at :data:`MAX_DECLARED_BAND_MM`. Anything lower
+    #: than the band above the bench is not an obstacle to the planner.
+    #:
+    #: It is the slab's alone. A slab sunk below the bench raises it by the sink, so the band round a
+    #: declared fixture takes :data:`DECLARED_SURFACE_MM` instead, and the grasp planner's floor over
+    #: the bench its own (``grasping.scene.SUPPORT_READ_ERROR_MM``).
     plane_clearance_mm: float = 5.0
 
     def __post_init__(self) -> None:
@@ -171,8 +250,9 @@ class WorldBuildTuning:
     #: either the object or somewhere the arm has no business being. It has one cost, and it is the
     #: cost worth knowing before switching this on. A container whose rim the camera sees becomes a
     #: solid block from the rim to the bench, and the cell can then never reach into it. A declared
-    #: fixture does not have this problem, because the bin walls are already boxes with a hollow
-    #: between them: this is about a container nobody declared.
+    #: container does not have this problem only because what the camera sees of it is dropped as
+    #: declared (``DropReason.DECLARED``) before anything is clustered: its walls are already boxes
+    #: or a mesh with a hollow between them. This is about a container nobody declared.
     floor_to_plane: bool = True
 
     def __post_init__(self) -> None:
@@ -219,6 +299,156 @@ class DepthView:
     name: str = ""
     #: Shutter time, on the same clock the caller ages frames against.
     timestamp: float | None = None
+    #: How far ``camera_to_base`` may be off in translation, as the camera declares it,
+    #: millimetres. Added to the bench band of every point of this view.
+    placement_error_mm: float = 0.0
+    #: How far ``camera_to_base`` may be turned, as the camera declares it, radians. A turn moves a
+    #: point by at most its range times the angle, so this times each point's range from the camera
+    #: is added to that point's bench band.
+    placement_error_rad: float = 0.0
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class DeclaredBody:
+    """A piece of the cell somebody declared, as a camera sees it again: a box, or points over a mesh's surface.
+
+    The planner already holds it as it was declared. What a camera returns of it is its surface, and a point within
+    its band of it, the view's placement error on :data:`DECLARED_SURFACE_MM`, is taken as it
+    (``DropReason.DECLARED``) rather than as an obstacle nobody declared. Build one with :meth:`box` or :meth:`mesh`.
+
+    The distance it answers errs long, never short: inside a box it is zero, and to a mesh it is the distance to the
+    nearest point sampled on its surface, which is never nearer than the surface itself. So a point is taken as
+    declared only where it truly lies within the band, and a sparse sampling keeps more points as obstacles rather
+    than dropping one that is not on the body.
+    """
+
+    #: The name the declared world gives it, which the report counts its points under.
+    name: str
+    #: A box: its own frame in BASE, a rigid 4x4 in millimetres, and its half extents along that frame's axes.
+    box_to_base_mm: "np.ndarray | None" = None
+    half_extents_mm: "tuple[float, float, float] | None" = None
+    #: A mesh: ``(N, 3)`` points on its surface in BASE millimetres, no surface point further than
+    #: ``spacing_mm`` from one of them.
+    surface_mm: "np.ndarray | None" = None
+    #: How far apart the surface points were laid, millimetres. Zero for a box.
+    spacing_mm: float = 0.0
+    _tree: Any = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise PerceptionGeometryError("a declared body needs the name the declared world gives it")
+        is_box = self.box_to_base_mm is not None
+        if is_box == (self.surface_mm is not None):
+            raise PerceptionGeometryError(f"declared body {self.name!r} is a box or a surface, and exactly one of them")
+        if is_box:
+            matrix = np.asarray(self.box_to_base_mm, dtype=np.float64)
+            half = np.asarray(self.half_extents_mm if self.half_extents_mm is not None else (), dtype=np.float64)
+            if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
+                raise PerceptionGeometryError(f"declared box {self.name!r}: its frame must be a finite 4x4")
+            if half.shape != (3,) or not np.all(np.isfinite(half)) or np.any(half < 0.0):
+                raise PerceptionGeometryError(f"declared box {self.name!r}: half extents are three finite numbers >= 0")
+            object.__setattr__(self, "box_to_base_mm", matrix)
+            object.__setattr__(self, "half_extents_mm", tuple(float(v) for v in half))
+            return
+        points = np.asarray(self.surface_mm, dtype=np.float64).reshape(-1, 3)
+        if points.shape[0] == 0 or not np.all(np.isfinite(points)):
+            raise PerceptionGeometryError(f"declared mesh {self.name!r}: its surface needs finite points")
+        from scipy.spatial import cKDTree  # noqa: PLC0415 (kept out of import time, only a mesh needs it)
+
+        object.__setattr__(self, "surface_mm", points)
+        object.__setattr__(self, "_tree", cKDTree(points))
+
+    @classmethod
+    def box(cls, name: str, box_to_base_mm: Any, half_extents_mm: Sequence[float]) -> "DeclaredBody":
+        """A declared box, placed by its own frame in BASE (millimetres) with its half extents."""
+        return cls(name=name, box_to_base_mm=np.asarray(box_to_base_mm, dtype=np.float64),
+                   half_extents_mm=tuple(float(v) for v in half_extents_mm))  # type: ignore[arg-type]
+
+    @classmethod
+    def mesh(
+        cls, name: str, vertices_mm: Any, faces: Any, *, spacing_mm: float = 2.0, max_points: int = 400_000,
+    ) -> "DeclaredBody":
+        """A declared mesh, its triangles in BASE millimetres, as points laid over its surface.
+
+        Each triangle is cut into a regular grid fine enough that no point of it is further than ``spacing_mm``
+        from a grid point, so the answer does not depend on how the file happened to be triangulated. A mesh whose
+        surface would take more than ``max_points`` at that spacing is laid coarser, which only keeps more points
+        as obstacles. Deterministic: the same mesh lays the same points.
+        """
+        vertices = np.asarray(vertices_mm, dtype=np.float64).reshape(-1, 3)
+        triangles = np.asarray(faces, dtype=np.int64).reshape(-1, 3)
+        if triangles.shape[0] == 0 or vertices.shape[0] == 0:
+            raise PerceptionGeometryError(f"declared mesh {name!r} has no triangle")
+        if not np.all(np.isfinite(vertices)) or triangles.min() < 0 or triangles.max() >= vertices.shape[0]:
+            raise PerceptionGeometryError(f"declared mesh {name!r}: its vertices or its faces cannot be read")
+        corners = vertices[triangles]
+        a, b, c = corners[:, 0], corners[:, 1], corners[:, 2]
+        area = 0.5 * float(np.linalg.norm(np.cross(b - a, c - a), axis=1).sum())
+        spacing = max(float(spacing_mm), math.sqrt(2.0 * area / max(int(max_points), 1)))
+        longest = np.max(np.stack((np.linalg.norm(b - a, axis=1), np.linalg.norm(c - b, axis=1),
+                                   np.linalg.norm(a - c, axis=1))), axis=0)
+        # A grid step of s along each edge leaves no point of the triangle further than s from a grid point. A long
+        # thin triangle lays far more points than its area asks for, so the spacing grows until the budget holds.
+        cuts = np.maximum(1, np.ceil(longest / spacing)).astype(np.int64)
+        for _ in range(32):
+            count = int(np.sum((cuts + 1) * (cuts + 2) // 2))
+            if count <= int(max_points):
+                break
+            spacing *= 1.01 * math.sqrt(count / float(max_points))
+            cuts = np.maximum(1, np.ceil(longest / spacing)).astype(np.int64)
+        laid: list[np.ndarray] = []
+        for n in np.unique(cuts):
+            rows = np.nonzero(cuts == n)[0]
+            i, j = np.meshgrid(np.arange(n + 1), np.arange(n + 1), indexing="ij")
+            keep = (i + j) <= n
+            u, v = (i[keep] / float(n)), (j[keep] / float(n))
+            base = a[rows][:, None, :]
+            laid.append((base + u[None, :, None] * (b[rows] - a[rows])[:, None, :]
+                         + v[None, :, None] * (c[rows] - a[rows])[:, None, :]).reshape(-1, 3))
+        points = np.unique(np.round(np.concatenate(laid), 6), axis=0)
+        return cls(name=name, surface_mm=points, spacing_mm=spacing)
+
+    def distance_mm(self, points_mm: Any) -> np.ndarray:
+        """How far each of ``(N, 3)`` BASE points lies from this body, millimetres, never short of the true distance."""
+        points = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)
+        if points.shape[0] == 0:
+            return np.zeros(0, dtype=np.float64)
+        if self.box_to_base_mm is not None:
+            matrix = self.box_to_base_mm
+            local = (points - matrix[:3, 3]) @ matrix[:3, :3]
+            outside = np.maximum(np.abs(local) - np.asarray(self.half_extents_mm), 0.0)
+            return np.linalg.norm(outside, axis=1)
+        distance, _ = self._tree.query(points)
+        return np.asarray(distance, dtype=np.float64)
+
+
+@dataclass(frozen=True, slots=True)
+class ReachSphere:
+    """Everywhere the robot's own body can be, in any configuration: a sphere about its base.
+
+    Built by :meth:`SelfEnvelope.reach`. A point outside it is somewhere no link, no hand, no wrist
+    camera and no carried part can ever meet, which is the one honest reason to leave an obstacle
+    out of the planner's world.
+    """
+
+    #: Centre in BASE millimetres: the origin of the chain's base frame.
+    center_mm: tuple[float, float, float]
+    #: Radius, millimetres.
+    radius_mm: float
+
+    def __post_init__(self) -> None:
+        centre = tuple(float(v) for v in self.center_mm)
+        if len(centre) != 3 or not all(math.isfinite(v) for v in centre):
+            raise PerceptionGeometryError(f"a reach sphere's centre is three finite numbers, got {self.center_mm!r}")
+        if not math.isfinite(float(self.radius_mm)) or float(self.radius_mm) <= 0.0:
+            raise PerceptionGeometryError(f"a reach sphere's radius is finite and above 0, got {self.radius_mm!r}")
+        object.__setattr__(self, "center_mm", centre)
+        object.__setattr__(self, "radius_mm", float(self.radius_mm))
+
+    def contains(self, points_mm: np.ndarray) -> np.ndarray:
+        """Which of ``points_mm`` lie inside the sphere. ``(N,)`` boolean."""
+        points = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)
+        return np.linalg.norm(points - np.asarray(self.center_mm), axis=1) <= self.radius_mm
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +477,53 @@ class SelfEnvelope:
     frames_mm: tuple[np.ndarray, ...]
     #: The capsules, each on the frame it names.
     capsules: tuple[LinkCapsule, ...]
+
+    def reach(self, *, padding_mm: float = 0.0) -> ReachSphere:
+        """The sphere about the base frame's origin that holds this body in every configuration.
+
+        The frames are a Denavit-Hartenberg chain, as every envelope in this repository is: joint
+        ``k`` turns frame ``k`` about an axis through the origin of frame ``k - 1``. So a point that
+        frame ``k`` carries keeps its distance from that origin whatever the joints do, and so does
+        each frame's origin from the one before it. A point of a capsule on frame ``k`` then lies,
+        in any configuration, at most the chain of origin distances up to frame ``k - 1``, plus the
+        distance of the capsule's farther end from that origin, plus its radius, from the base
+        origin. The largest of those over every capsule, grown by ``padding_mm``, is the radius.
+
+        It is a bound, not the reach itself, and it errs outward, which keeps an obstacle rather than
+        dropping one. The body is what the envelope carries now: every link, the hand, a wrist camera
+        and a part while it is held. Measured 2026-09-23 on the committed UR10 bundle with the Robotiq
+        Hand-E on a 20 mm plate (``tests/test_the_camera_world_sees_what_it_can.py``): a radius of
+        1793 mm, where the farthest point of the body over 300 random configurations stood 1558 mm
+        from the base origin.
+        """
+        if float(padding_mm) < 0.0:
+            raise PerceptionGeometryError(f"padding_mm cannot be negative, got {padding_mm}")
+        if not self.frames_mm:
+            raise PerceptionGeometryError("a self envelope needs at least its base frame")
+        frames = [np.asarray(frame, dtype=np.float64) for frame in self.frames_mm]
+        origins = [frame[:3, 3] for frame in frames]
+        chain = [0.0]
+        for before, after in zip(origins[:-1], origins[1:]):
+            chain.append(chain[-1] + float(np.linalg.norm(after - before)))
+        radius = chain[-1]
+        for capsule in self.capsules:
+            frame = int(capsule.frame)
+            if not 0 <= frame < len(frames):
+                raise PerceptionGeometryError(
+                    f"a capsule sits on frame {capsule.frame}, and the chain has {len(frames)} frames"
+                )
+            pivot = max(frame - 1, 0)
+            far_end = max(
+                float(np.linalg.norm(frames[frame][:3, :3] @ np.asarray(end, dtype=np.float64)
+                                     + origins[frame] - origins[pivot]))
+                for end in (capsule.start_mm, capsule.end_mm)
+            )
+            radius = max(radius, chain[pivot] + far_end + float(capsule.radius_mm))
+        centre = origins[0]
+        return ReachSphere(
+            center_mm=(float(centre[0]), float(centre[1]), float(centre[2])),
+            radius_mm=max(radius + float(padding_mm), 1e-9),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -497,6 +774,20 @@ class PerceivedWorld:
     voxels: "VoxelField | None" = None
     #: Points each keep-out box took out, by box name. Empty when no box was handed over.
     keep_out_points: dict[str, int] = field(default_factory=dict)
+    #: The share of each view's pixels that held a depth, by view name, of the pixels no mask left
+    #: out. The rest is ``DropReason.NO_DEPTH``: space the planner receives as free because nothing
+    #: was measured there.
+    depth_coverage: dict[str, float] = field(default_factory=dict)
+    #: The bench band each view's points were judged against, ``(lowest, highest)`` millimetres above
+    #: the declared plane, by view name. A view that declares no placement error has the configured
+    #: clearance at both ends; empty for a view with no point.
+    bench_band_mm: dict[str, tuple[float, float]] = field(default_factory=dict)
+    #: Points each declared body took as its own (``DropReason.DECLARED``), by its name. Empty when no
+    #: body was handed over or none was seen.
+    declared_points: dict[str, int] = field(default_factory=dict)
+    #: How many clusters were cut around each keep-out box so that no box covers it, by the box's name.
+    #: Empty when nothing had to be cut.
+    keep_out_cuts: dict[str, int] = field(default_factory=dict)
 
     @property
     def is_empty(self) -> bool:
@@ -528,6 +819,20 @@ class PerceivedWorld:
         for reason, count in sorted(self.dropped_clusters.items()):
             if reason != DropReason.NO_SLOT and count:
                 tail.append(f"  {count} cluster(s) dropped: {reason}")
+        for name, coverage in self.depth_coverage.items():
+            if coverage < 1.0:
+                tail.append(
+                    f"  {name}: {100.0 * (1.0 - coverage):.0f}% of the image held no depth, and that "
+                    "space reaches the planner as free"
+                )
+        for name, (low, high) in self.bench_band_mm.items():
+            band = f"{low:.1f} mm" if abs(high - low) < 0.05 else f"{low:.1f} to {high:.1f} mm"
+            tail.append(f"  {name}: anything up to {band} above the declared plane is taken as the bench")
+        for name, count in self.declared_points.items():
+            if count:
+                tail.append(f"  {count} point(s) on the declared {name!r}, left to what was declared")
+        for name, count in self.keep_out_cuts.items():
+            tail.append(f"  {count} cluster(s) cut around {name!r}, so no box covers it")
         return "\n".join([head, *rows, *tail])
 
     def to_dict(self) -> dict[str, Any]:
@@ -541,6 +846,10 @@ class PerceivedWorld:
             "source_timestamp": self.source_timestamp,
             "voxels": None if self.voxels is None else self.voxels.to_dict(),
             "keep_out_points": dict(self.keep_out_points),
+            "depth_coverage": {name: float(value) for name, value in self.depth_coverage.items()},
+            "bench_band_mm": {name: [float(low), float(high)] for name, (low, high) in self.bench_band_mm.items()},
+            "declared_points": dict(self.declared_points),
+            "keep_out_cuts": dict(self.keep_out_cuts),
         }
 
 
@@ -552,6 +861,9 @@ def build_perceived_boxes(
     self_body: "SelfBody | None" = None,
     near_point_mm: Sequence[float] | None = None,
     keep_out: Sequence[KeepOutBox] = (),
+    reach: "ReachSphere | None" = None,
+    declared: Sequence[DeclaredBody] = (),
+    cut_around: "Sequence[KeepOutBox] | None" = None,
 ) -> PerceivedWorld:
     """Turn what the cameras see into the obstacles a planner should route around.
 
@@ -568,8 +880,12 @@ def build_perceived_boxes(
         surface the camera measured, not the grasp-referenced map: see this module header for why
         that one produces sheets. A cell that cannot resolve a camera transform has no business
         registering that camera view, so a missing transform is a refusal for the caller to make.
+        A pixel with no depth is counted (``DropReason.NO_DEPTH``) and each view's share of depth
+        is reported (``depth_coverage``).
     limits
-        Where an obstacle may be, and where the bench is.
+        Where an obstacle may be, and where the bench is. A point counts as the bench up to the
+        configured clearance above the plane, plus the view's declared placement error grown with
+        the point's range, capped at :data:`MAX_DECLARED_BAND_MM` (``bench_band_mm``).
     self_body
         The robot own links, and the part it carries, as capsules in BASE millimetres. A camera
         watching a cell sees the arm, and an arm registered as an obstacle is an arm that cannot
@@ -581,7 +897,26 @@ def build_perceived_boxes(
         Boxes in BASE whose points are no obstacle for this motion, normally the target a pick is
         closing on (``target_keep_out_box``). Their points leave every view right after the self
         filter, so they reach neither a box nor the voxel field, and the count each box took is
-        reported by name.
+        reported by name. A cluster whose box would still reach into such a box, the neighbours
+        around a part in a pile or the floor of a tote around it, is cut around the box before it is
+        fitted: into what lies beyond each side of it, above it and below it, square with BASE, and
+        what lies beside a turned box again in its own turn. So a cut box reaches into the keep-out
+        by no more than ``margin_mm``, which is the margin a target's keep-out is grown by, and never
+        covers the target (``keep_out_cuts``).
+    cut_around
+        The keep-out boxes a cluster is cut around; ``None`` is every box in ``keep_out``. The live
+        world cuts around the targets it holds and not around the space between a jaw's pads at a
+        goal, which is not padded: a part wider than that space stays one box over it, and a bare
+        motion to a goal inside a part meets the part.
+    reach
+        Everywhere the robot's body can be (:meth:`SelfEnvelope.reach`). A point is kept when the
+        workspace box or this sphere holds it, because the box bounds the TCP and the links, the
+        hand and a wrist camera swing past it. ``None`` keeps the box alone.
+    declared
+        The declared fixtures and meshes (:class:`DeclaredBody`). A point above the bench band that
+        lies within :data:`DECLARED_SURFACE_MM` of one of them, grown by the view's placement error
+        as the bench band is and never wider than it, is that body, which the planner already holds,
+        and is dropped by name (``DropReason.DECLARED``), counted per body (``declared_points``).
 
     Raises
     ------
@@ -601,10 +936,14 @@ def build_perceived_boxes(
 
     dropped_points: dict[str, int] = {}
     keep_out_points: dict[str, int] = {}
+    depth_coverage: dict[str, float] = {}
+    bench_band_mm: dict[str, tuple[float, float]] = {}
     per_view_points: list[np.ndarray] = []
     per_view_pixels: list[np.ndarray] = []
     per_view_index: list[np.ndarray] = []
+    per_view_band: list[np.ndarray] = []
     lookups: list[list[tuple[str, np.ndarray]]] = []
+    clearance = float(limits.plane_clearance_mm)
 
     for index, view in enumerate(views):
         depth = np.asarray(view.surface_depth_mm, dtype=np.float64)
@@ -618,6 +957,12 @@ def build_perceived_boxes(
             raise PerceptionGeometryError(
                 f"{where}: camera_to_base must be a finite 4x4 in millimetres, got shape "
                 f"{transform.shape}"
+            )
+        error_mm, error_rad = float(view.placement_error_mm), float(view.placement_error_rad)
+        if not (math.isfinite(error_mm) and math.isfinite(error_rad)) or error_mm < 0.0 or error_rad < 0.0:
+            raise PerceptionGeometryError(
+                f"{where}: a placement error is finite and not negative, got {error_mm!r} mm and "
+                f"{error_rad!r} rad"
             )
 
         keep_mask = np.ones(depth.shape, dtype=bool)
@@ -635,14 +980,28 @@ def build_perceived_boxes(
                 dropped_points.get(DropReason.EXCLUDED, 0) + excluded_pixels
             )
 
-        points, pixels = _base_points(
+        # Holes are counted on the full frame, whatever the stride, so the count and the share
+        # describe the image the camera took rather than the pixels this pass happened to read.
+        asked = int(np.count_nonzero(keep_mask))
+        measured = int(np.count_nonzero(keep_mask & has_depth(depth)))
+        if asked - measured:
+            dropped_points[DropReason.NO_DEPTH] = (
+                dropped_points.get(DropReason.NO_DEPTH, 0) + asked - measured
+            )
+        depth_coverage[where] = measured / asked if asked else 0.0
+
+        points, pixels, ranges = _base_points(
             depth, view.intrinsics, transform, keep_mask, tuning.voxel_size_mm,
             stride=int(tuning.pixel_stride),
         )
+        band = clearance + np.minimum(error_mm + error_rad * ranges, MAX_DECLARED_BAND_MM)
+        if band.size:
+            bench_band_mm[where] = (float(band.min()), float(band.max()))
         lookups.append(_label_lookup(view.labelled_masks, depth.shape, where))
         per_view_points.append(points)
         per_view_pixels.append(pixels)
         per_view_index.append(np.full(points.shape[0], index, dtype=np.int64))
+        per_view_band.append(band)
 
     # The age of a fused world is the age of its oldest half. One unstamped view makes the whole
     # thing unstamped, because a world is only as current as the part of it nobody can date.
@@ -655,8 +1014,9 @@ def build_perceived_boxes(
     points_base = np.concatenate(per_view_points)
     pixels = np.concatenate(per_view_pixels)
     view_of = np.concatenate(per_view_index)
+    band_of = np.concatenate(per_view_band)
 
-    def _empty() -> PerceivedWorld:
+    def _empty(declared_points: "dict[str, int] | None" = None) -> PerceivedWorld:
         return PerceivedWorld(
             boxes=(), dropped_points=dropped_points, dropped_clusters={},
             considered_points=0, source_timestamp=oldest, keep_out_points=keep_out_points,
@@ -664,6 +1024,8 @@ def build_perceived_boxes(
                 build_voxel_field(np.empty((0, 3)), limits=limits, tuning=tuning)
                 if tuning.voxel_field_mm > 0.0 else None
             ),
+            depth_coverage=depth_coverage, bench_band_mm=bench_band_mm,
+            declared_points=dict(declared_points or {}),
         )
 
     if points_base.shape[0] == 0:
@@ -672,7 +1034,9 @@ def build_perceived_boxes(
     if self_body is not None:
         on_self = self_body.contains(points_base)
         dropped_points[DropReason.SELF] = int(np.count_nonzero(on_self))
-        points_base, pixels, view_of = points_base[~on_self], pixels[~on_self], view_of[~on_self]
+        points_base, pixels, view_of, band_of = (
+            points_base[~on_self], pixels[~on_self], view_of[~on_self], band_of[~on_self]
+        )
         if points_base.shape[0] == 0:
             return _empty()
 
@@ -683,25 +1047,45 @@ def build_perceived_boxes(
             keep_out_points[box.name] = keep_out_points.get(box.name, 0) + int(np.count_nonzero(inside_box))
             kept_out |= inside_box
         dropped_points[DropReason.KEEP_OUT] = int(np.count_nonzero(kept_out))
-        points_base, pixels, view_of = points_base[~kept_out], pixels[~kept_out], view_of[~kept_out]
+        points_base, pixels, view_of, band_of = (
+            points_base[~kept_out], pixels[~kept_out], view_of[~kept_out], band_of[~kept_out]
+        )
         if points_base.shape[0] == 0:
             return _empty()
 
-    floor = float(limits.support_plane_top_mm) + float(limits.plane_clearance_mm)
-    above = points_base[:, 2] > floor
+    above = points_base[:, 2] > float(limits.support_plane_top_mm) + band_of
     dropped_points[DropReason.BELOW_PLANE] = int(np.count_nonzero(~above))
+
+    # A declared body's band is the view's placement error on its own surface margin, never the slab's
+    # clearance: a sink of the slab raises that by 50 mm, and a part beside a declared tote is not the
+    # tote. After the plane, and never wider than the bench band, so the support slab, which is declared
+    # too, takes nothing the bench band did not: a point above the band is further than it from the slab.
+    declared_points: dict[str, int] = {}
+    if declared:
+        on_declared = np.zeros(points_base.shape[0], dtype=bool)
+        over_band = np.nonzero(above)[0]
+        body_band = band_of[over_band] - clearance + min(clearance, DECLARED_SURFACE_MM)
+        for body in declared:
+            near = body.distance_mm(points_base[over_band]) <= body_band
+            declared_points[body.name] = declared_points.get(body.name, 0) + int(
+                np.count_nonzero(near & ~on_declared[over_band]))
+            on_declared[over_band[near]] = True
+        dropped_points[DropReason.DECLARED] = int(np.count_nonzero(on_declared))
+        above &= ~on_declared
 
     inside = (
         (points_base[:, 0] >= limits.x_mm[0]) & (points_base[:, 0] <= limits.x_mm[1])
         & (points_base[:, 1] >= limits.y_mm[0]) & (points_base[:, 1] <= limits.y_mm[1])
         & (points_base[:, 2] >= limits.z_mm[0]) & (points_base[:, 2] <= limits.z_mm[1])
     )
+    if reach is not None:
+        inside |= reach.contains(points_base)
     dropped_points[DropReason.OUTSIDE_LIMITS] = int(np.count_nonzero(above & ~inside))
 
     keep = above & inside
     points, kept_pixels, kept_view = points_base[keep], pixels[keep], view_of[keep]
     if points.shape[0] == 0:
-        return _empty()
+        return _empty(declared_points)
 
     labels = _cluster(points, float(tuning.cluster_voxel_mm))
     reference = (
@@ -713,30 +1097,37 @@ def build_perceived_boxes(
 
     candidates: list[PerceivedBox] = []
     dropped_clusters: dict[str, int] = {}
+    cutters = _cutters(keep_out if cut_around is None else cut_around)
+    keep_out_cuts: dict[str, int] = {}
+    floor = float(limits.support_plane_top_mm) if tuning.floor_to_plane else None
     for cluster_id in np.unique(labels):
-        member = labels == cluster_id
-        count = int(np.count_nonzero(member))
-        if count < int(tuning.min_points):
+        member = np.nonzero(labels == cluster_id)[0]
+        if member.size < int(tuning.min_points):
             dropped_clusters[DropReason.TOO_FEW_POINTS] = (
                 dropped_clusters.get(DropReason.TOO_FEW_POINTS, 0) + 1
             )
             continue
-        centre, dims, yaw = _oriented_box(
-            points[member],
-            float(tuning.margin_mm),
-            floor_mm=float(limits.support_plane_top_mm) if tuning.floor_to_plane else None,
-        )
-        candidates.append(
-            PerceivedBox(
-                name="",  # named once the survivors are known, so the numbering has no holes
-                center_mm=centre,
-                dims_mm=dims,
-                yaw_rad=yaw,
-                points=count,
-                distance_mm=float(np.linalg.norm(np.asarray(centre) - reference)),
-                label=_dominant_label(lookups, kept_pixels[member], kept_view[member]),
+        # A cluster whose box would reach into a keep-out box is cut around it first; any other is one part.
+        cut: set[str] = set()
+        parts = _cut_around(points[member], cutters, floor, cut)
+        for name in cut:
+            keep_out_cuts[name] = keep_out_cuts.get(name, 0) + 1
+        for part, part_floor, part_yaw in parts:
+            chosen_points = member[part]
+            centre, dims, yaw = _oriented_box(
+                points[chosen_points], float(tuning.margin_mm), floor_mm=part_floor, yaw_rad=part_yaw,
             )
-        )
+            candidates.append(
+                PerceivedBox(
+                    name="",  # named once the survivors are known, so the numbering has no holes
+                    center_mm=centre,
+                    dims_mm=dims,
+                    yaw_rad=yaw,
+                    points=int(chosen_points.size),
+                    distance_mm=float(np.linalg.norm(np.asarray(centre) - reference)),
+                    label=_dominant_label(lookups, kept_pixels[chosen_points], kept_view[chosen_points]),
+                )
+            )
 
     candidates.sort(key=lambda box: box.distance_mm)
     survivors = candidates[: int(tuning.max_boxes)]
@@ -766,7 +1157,22 @@ def build_perceived_boxes(
             if tuning.voxel_field_mm > 0.0 else None
         ),
         keep_out_points=keep_out_points,
+        depth_coverage=depth_coverage,
+        bench_band_mm=bench_band_mm,
+        declared_points=declared_points,
+        keep_out_cuts=keep_out_cuts,
     )
+
+
+def has_depth(depth_mm: Any) -> np.ndarray:
+    """Which pixels hold a depth the converter uses: finite and in front of the camera. Boolean, same shape.
+
+    One test, used here for every pixel and by the live world to judge a frame, so a frame judged to
+    hold too little depth is exactly a frame whose points would have been too few.
+    """
+    depth = np.asarray(depth_mm, dtype=np.float64)
+    with np.errstate(invalid="ignore"):
+        return np.isfinite(depth) & (depth > 0.0)
 
 
 def target_keep_out_box(
@@ -783,6 +1189,11 @@ def target_keep_out_box(
     of bench that bled into a mask behind. The box is then the one ``_oriented_box`` fits, grown by
     ``margin_mm`` and carried down to the plane when ``floor_to_plane`` is on, so the target leaves
     exactly the space it would otherwise fill. ``None`` when no point survives.
+
+    Two filters differ from what an obstacle meets, because the points arrive in BASE with no view.
+    The plane clearance is the configured floor alone, without the band a view's declared error
+    adds, so a part as flat as that band still leaves its space. The limits are the workspace box
+    alone, without the robot's reach, which holds every target the TCP may be sent to.
     """
     tuning = tuning or WorldBuildTuning()
     points = np.asarray(points_base_mm, dtype=np.float64).reshape(-1, 3)
@@ -845,8 +1256,9 @@ def build_voxel_field(
     the target a pick has just taken out of the world.
 
     The grid spans the declared workspace and sits on the support plane, because that is the volume
-    the arm is allowed into and the volume the planner reserved storage for. A point outside it was
-    already dropped before this is called.
+    the TCP is allowed into and the volume the planner reserved storage for. A kept point outside
+    it, within the robot's reach but past the workspace box, is not in the field: the boxes carry
+    it, and they are registered beside the field.
 
     Two things happen to the occupancy before the distance transform, and both are the conservative
     reading of what a depth camera can know:
@@ -927,11 +1339,12 @@ def _base_points(
     voxel_size_mm: float,
     *,
     stride: int = 1,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Back-project the kept pixels, thin them, and carry them into BASE with their pixel coordinates.
 
     The pixels travel with the points because a cluster's label comes from which segmentation its
-    pixels fell in, and after a thinning there is no way back from a point to a pixel.
+    pixels fell in, and after a thinning there is no way back from a point to a pixel. Each point's
+    range from the camera, millimetres, travels too, because the bench band grows with it.
 
     The back-projection and the voxel thinning are written out here rather than taken from the
     grasping package's point-cloud helpers, which do the same two things. The dependency stack runs
@@ -952,10 +1365,10 @@ def _base_points(
     step = max(1, int(stride))
     sampled_depth = depth[::step, ::step]
     sampled_keep = keep_mask[::step, ::step]
-    valid = sampled_keep & np.isfinite(sampled_depth) & (sampled_depth > 0.0)
+    valid = sampled_keep & has_depth(sampled_depth)
     rows, cols = np.nonzero(valid)
     if rows.size == 0:
-        return np.empty((0, 3), dtype=np.float64), np.empty((0, 2), dtype=np.int32)
+        return np.empty((0, 3), dtype=np.float64), np.empty((0, 2), dtype=np.int32), np.empty((0,), dtype=np.float64)
 
     z = sampled_depth[rows, cols]
     rows, cols = rows * step, cols * step
@@ -983,7 +1396,7 @@ def _base_points(
 
     homogeneous = np.column_stack((camera, np.ones(camera.shape[0], dtype=np.float64)))
     base = (np.asarray(camera_to_base, dtype=np.float64) @ homogeneous.T).T[:, :3]
-    return base, pixels
+    return base, pixels, np.linalg.norm(camera, axis=1)
 
 
 def _cluster(points_mm: np.ndarray, cell_mm: float) -> np.ndarray:
@@ -1028,10 +1441,16 @@ def _cluster(points_mm: np.ndarray, cell_mm: float) -> np.ndarray:
     return labels
 
 
+#: The share of its larger variance in the bench plane that a cluster's smaller one must stay under for
+#: the cluster to have a direction to be turned by: 0.8 is a footprint whose short side is within about
+#: 10 % of its long one. A choice, not a measurement.
+_NO_DIRECTION = 0.8
+
+
 def _oriented_box(
-    points_mm: np.ndarray, margin_mm: float, *, floor_mm: float | None = None
+    points_mm: np.ndarray, margin_mm: float, *, floor_mm: float | None = None, yaw_rad: float | None = None,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float], float]:
-    """Fit an upright box turned about Z to sit closest around a cluster.
+    """Fit an upright box turned about Z to sit closest around a cluster, or turned by ``yaw_rad`` where given.
 
     The yaw comes from the principal direction of the points in the bench plane, which is the axis a
     long part lies along. Z is left alone: an obstacle in a cell stands on something, and a box that
@@ -1040,15 +1459,22 @@ def _oriented_box(
     A cluster of one point, or a cluster on a line, yields a zero-variance direction. That is not an
     error and is not worth a special case in the caller, so the fit falls back to no rotation, which
     for such a cluster is the same box.
+
+    A cluster that spreads about as far one way as the other in the bench plane, a square part or a
+    round one, has no principal direction: its smaller variance is at least :data:`_NO_DIRECTION` of
+    its larger one, and which way the fit would turn is decided by noise. It is fitted square with BASE. A box
+    turned by noise is no tighter for the planner, and the path guard, which holds every box as the
+    axis-aligned box enclosing it, holds a square part turned by 45 degrees as a box 1.4 times as wide.
     """
     centred_xy = points_mm[:, :2] - points_mm[:, :2].mean(axis=0)
-    yaw = 0.0
-    if points_mm.shape[0] >= 2:
+    yaw = 0.0 if yaw_rad is None else float(yaw_rad)
+    if yaw_rad is None and points_mm.shape[0] >= 2:
         covariance = np.cov(centred_xy, rowvar=False)
         if np.all(np.isfinite(covariance)) and float(np.abs(covariance).max()) > 0.0:
             values, vectors = np.linalg.eigh(covariance)
-            principal = vectors[:, int(np.argmax(values))]
-            yaw = float(math.atan2(float(principal[1]), float(principal[0])))
+            if float(values.min()) < _NO_DIRECTION * float(values.max()):
+                principal = vectors[:, int(np.argmax(values))]
+                yaw = float(math.atan2(float(principal[1]), float(principal[0])))
 
     cos_yaw, sin_yaw = math.cos(-yaw), math.sin(-yaw)
     rotation = np.array([[cos_yaw, -sin_yaw], [sin_yaw, cos_yaw]], dtype=np.float64)
@@ -1071,6 +1497,140 @@ def _oriented_box(
         float(hi_z - lo_z) + 2.0 * margin_mm,
     )
     return centre, dims, yaw
+
+
+@dataclass(frozen=True, slots=True)
+class _Upright:
+    """An upright box turned about Z that encloses a keep-out box, which a cluster is cut around.
+
+    Two of them stand for each keep-out (:func:`_cutters`): the one square with BASE, whose cut pieces are fitted
+    square with BASE, and the one turned with the keep-out. A cut square with BASE is the one the path guard reads
+    exactly, because it holds every perceived box as the axis-aligned box that encloses it. A keep-out turned against
+    BASE is a long part's, turned along its length, or the space between a jaw's pads at a turned grasp.
+    """
+
+    name: str
+    #: Centre in BASE millimetres.
+    centre: np.ndarray
+    #: Turn about BASE Z, radians.
+    yaw: float
+    #: Half extents along the turned X and Y and along BASE Z, millimetres.
+    half: np.ndarray
+
+    @classmethod
+    def enclosing(cls, box: KeepOutBox, *, yaw: float | None = None) -> "_Upright":
+        """The upright box that encloses ``box``, turned by ``yaw``, or by the yaw of its flattest axis."""
+        matrix = box.matrix()
+        rotation = matrix[:3, :3]
+        if yaw is None:
+            flattest = int(np.argmax(np.linalg.norm(rotation[:2, :], axis=0)))
+            yaw = float(math.atan2(rotation[1, flattest], rotation[0, flattest]))
+        signs = np.array([[x, y, z] for x in (-1.0, 1.0) for y in (-1.0, 1.0) for z in (-1.0, 1.0)])
+        corners = matrix[:3, 3] + (signs * np.asarray(box.half_extents_mm)) @ rotation.T
+        local = _turned(corners, yaw)
+        low, high = local.min(axis=0), local.max(axis=0)
+        mid = (low + high) / 2.0
+        back = np.array([[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]])
+        centre = np.array([*(back @ mid[:2]), mid[2]])
+        return cls(name=box.name, centre=centre, yaw=float(yaw), half=(high - low) / 2.0)
+
+    def local(self, points_mm: np.ndarray) -> np.ndarray:
+        """``(N, 3)`` BASE points in this box's own upright frame, its centre the origin."""
+        return _turned(np.asarray(points_mm, dtype=np.float64) - self.centre, self.yaw)
+
+
+def _cutters(keep_out: Sequence[KeepOutBox]) -> tuple[_Upright, ...]:
+    """What a cluster is cut around, in order: per keep-out box, its enclosure square with BASE, then its own turn.
+
+    The second is left out where the box is square with BASE already, a quarter turn included.
+    """
+    cutters: list[_Upright] = []
+    for box in keep_out:
+        square = _Upright.enclosing(box, yaw=0.0)
+        own = _Upright.enclosing(box)
+        cutters.append(square)
+        if abs(math.sin(2.0 * own.yaw)) > 1e-9:
+            cutters.append(own)
+    return tuple(cutters)
+
+
+def _turned(points_mm: np.ndarray, yaw: float) -> np.ndarray:
+    """Points with their X and Y turned by ``-yaw`` about the origin, Z as it was."""
+    cos_yaw, sin_yaw = math.cos(yaw), math.sin(yaw)
+    out = np.array(points_mm, dtype=np.float64, copy=True).reshape(-1, 3)
+    x, y = out[:, 0].copy(), out[:, 1].copy()
+    out[:, 0] = cos_yaw * x + sin_yaw * y
+    out[:, 1] = -sin_yaw * x + cos_yaw * y
+    return out
+
+
+def _overlap(
+    centre_a: np.ndarray, half_a: np.ndarray, yaw_a: float, centre_b: np.ndarray, half_b: np.ndarray, yaw_b: float,
+) -> bool:
+    """Whether two upright boxes turned about Z share an inside. Boxes that only touch do not.
+
+    Separating axes in the bench plane, the four sides' normals, and the one vertical interval.
+    """
+    if abs(float(centre_a[2]) - float(centre_b[2])) >= float(half_a[2]) + float(half_b[2]) - 1e-9:
+        return False
+    sides_a = ((math.cos(yaw_a), math.sin(yaw_a)), (-math.sin(yaw_a), math.cos(yaw_a)))
+    sides_b = ((math.cos(yaw_b), math.sin(yaw_b)), (-math.sin(yaw_b), math.cos(yaw_b)))
+    apart = (float(centre_b[0]) - float(centre_a[0]), float(centre_b[1]) - float(centre_a[1]))
+    for axis in (*sides_a, *sides_b):
+        reach_a = sum(abs(axis[0] * u[0] + axis[1] * u[1]) * float(h) for u, h in zip(sides_a, half_a[:2]))
+        reach_b = sum(abs(axis[0] * u[0] + axis[1] * u[1]) * float(h) for u, h in zip(sides_b, half_b[:2]))
+        if abs(axis[0] * apart[0] + axis[1] * apart[1]) >= reach_a + reach_b - 1e-9:
+            return False
+    return True
+
+
+def _cut_around(
+    points_mm: np.ndarray, cutters: Sequence[_Upright], floor_mm: float | None, cut: set[str],
+) -> list[tuple[np.ndarray, float | None, float | None]]:
+    """The parts of one cluster to fit a box each, as ``(indices, floor, yaw)``; the whole cluster when none is cut.
+
+    A part is cut around a keep-out box when the box it would be fitted with, before its margin and carried down
+    to its floor, shares an inside with the keep-out's enclosure: it wraps around the keep-out, bridges over it, or
+    reaches into it at a corner, and one box around it would cover space the keep-out left out. It is then cut into
+    what lies beyond each of the enclosure's four sides, what lies above it, which stands on the enclosure's top
+    rather than on the bench, what lies below it, and what lies beside it within its footprint, and each part is
+    fitted in the enclosure's turn. A part beyond one face is fitted wholly beyond it, so its box reaches back into
+    the keep-out by no more than its margin. What lies beside a keep-out turned against BASE is cut again around the
+    keep-out's own turn. A part is cut around each enclosure at most once, so the cut ends. ``cut`` collects the
+    names of the keep-out boxes this cluster was cut around.
+    """
+    work: list[tuple[np.ndarray, float | None, float | None, frozenset[int]]] = [
+        (np.arange(points_mm.shape[0]), floor_mm, None, frozenset())
+    ]
+    parts: list[tuple[np.ndarray, float | None, float | None]] = []
+    while work:
+        index, floor, yaw, done = work.pop()
+        centre, dims, fitted_yaw = _oriented_box(points_mm[index], 0.0, floor_mm=floor, yaw_rad=yaw)
+        for number, cutter in enumerate(cutters):
+            if number in done or not _overlap(np.asarray(centre), np.asarray(dims) / 2.0, fitted_yaw,
+                                              cutter.centre, cutter.half, cutter.yaw):
+                continue
+            cut.add(cutter.name)
+            local = cutter.local(points_mm[index])
+            half = cutter.half
+            x, y, z = local[:, 0], local[:, 1], local[:, 2]
+            left, right = x < -half[0], x > half[0]
+            across = ~(left | right)
+            front, back = across & (y < -half[1]), across & (y > half[1])
+            over = across & ~(front | back)
+            above, below = over & (z > half[2]), over & (z < -half[2])
+            beside = over & ~(above | below)
+            top = float(cutter.centre[2] + half[2])
+            raised = None if floor is None else max(floor, top)
+            for piece, piece_floor in ((left, floor), (right, floor), (front, floor), (back, floor),
+                                       (above, raised), (below, floor), (beside, floor)):
+                if bool(piece.any()):
+                    work.append((index[piece], piece_floor, cutter.yaw, done | {number}))
+            break
+        else:
+            parts.append((index, floor, yaw))
+    parts.sort(key=lambda part: int(part[0].min()))
+    return parts
 
 
 def _label_lookup(

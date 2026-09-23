@@ -105,8 +105,12 @@ class TheTwoDoorsTests(unittest.TestCase):
         from src.config.schema.robot import RobotConfig
 
         cfg = RobotConfig()
-        scene = Scene.from_robot_config(cfg, _block())
-        self.assertEqual(scene.support_height_mm, float(cfg.grasping.support.height_mm))
+        cloud = _block()
+        scene = Scene.from_robot_config(cfg, cloud)
+        # The declared height, raised to the block's own lowest point: the block reaches 40 mm along the
+        # support normal, so it has seen what it stands on, and the pick loop's rule applies.
+        self.assertEqual(scene.support_height_mm,
+                         max(float(cfg.grasping.support.height_mm), float(cloud[:, 2].min())))
         self.assertIsNotNone(scene.jaw, "the jaw comes from the gripper block")
 
     def test_both_doors_produce_the_same_shape_of_answer(self) -> None:
@@ -114,8 +118,8 @@ class TheTwoDoorsTests(unittest.TestCase):
 
         cloud = _block()
         cfg = RobotConfig()
-        bare = Scene.from_cloud(cloud, support_height_mm=float(cfg.grasping.support.height_mm))
         configured = Scene.from_robot_config(cfg, cloud)
+        bare = Scene.from_cloud(cloud, support_height_mm=configured.support_height_mm)
         self.assertEqual(bare.grasps().generator, configured.grasps().generator)
         self.assertEqual(bare.support_height_mm, configured.support_height_mm)
 

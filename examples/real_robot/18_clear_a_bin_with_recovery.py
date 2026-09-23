@@ -21,7 +21,7 @@ Run it at the cell, under the cell's profile, once its camera is calibrated (07-
 
 from pathlib import Path
 
-from willy import AutonomousGraspOutcome, Cell, load_tree
+from willy import AutonomousGraspOutcome, Camera, Cell, load_tree, viewing_pose
 
 attempts = 12
 # Outcomes that mean the bin is done rather than that this attempt went wrong. Anything else is
@@ -40,13 +40,18 @@ cell = Cell.from_tree(tree, prompt="a part in the bin", mode="dense_autonomous")
 print(cell.preflight())  # everything decidable at a desk, each finding with its fix
 service = cell.build()
 
-# One record per attempt, appended: positions, scores, the layers, the outcome. `RecordLog` reads
-# the file back into KPIs afterwards, as simulation/05 shows.
+# One record per attempt, appended: positions, scores, layers, outcome; `RecordLog` reads it back (simulation/05).
 Path("logs").mkdir(exist_ok=True)
 service.enable_record_logging("logs/bin_clearing.jsonl")
 
 with cell.connected():
+    # Every scan from the viewing pose over the bin (BASE mm), the hand emptied first, as in 13; a fixed camera: none.
+    view = viewing_pose(Camera.from_tree(tree), (-130.0, -700.0, 50.0), arm=cell.arm, closing_axis="-y")
+    print(view)
     for attempt in range(attempts):
+        if not view.ok or (view.pose is not None and not (cell.robot.release().ok and cell.robot.move(view.pose).ok)):
+            print("the camera is not at its viewing pose, so nothing more is picked")
+            break
         report = service.pick()
         # `layers` is read off the attempt, not off the config: a block switched on in YAML but
         # never reached does not appear. That is how you tell a wired layer from a configured one.
@@ -58,8 +63,8 @@ with cell.connected():
     else:
         print(f"{attempts} attempts and the bin still has something in it")
 
-    # The prompt is what every camera grounds, and changing it reopens no camera and reloads no
-    # model. This is how one connect clears a bin of one kind of part and then another.
+    # What every camera grounds; changing it reopens no camera and reloads no model: one connect, two kinds of part.
     previous = service.set_prompt("a lid")
     print(f"now looking for a lid instead of {previous}")
-    print(service.pick())
+    if view.ok and (view.pose is None or cell.robot.release().ok and cell.robot.move(view.pose).ok):
+        print(service.pick())

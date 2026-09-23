@@ -34,7 +34,7 @@ from .validation import (
     validate_position_mm,
 )
 
-__all__ = ["Pose"]
+__all__ = ["CLOSING_AXES", "Pose"]
 
 #: Below this the tool and its target are the same point, which names no direction to aim along.
 _AIM_MIN_DISTANCE_MM = 1e-6
@@ -48,6 +48,46 @@ _AIM_MIN_UP_CROSS = 1e-6
 #: makes `aimed_at(x, y, z, target_mm=(x, y, z - d))` equal `tool_down(x, y, z)` exactly, and
 #: `tests/test_geometry_precision.py` holds that equality rather than leaving it to be rediscovered.
 _AIM_UP_FALLBACKS: tuple[tuple[float, float, float], ...] = ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0))
+
+#: The horizontal axis a pose's closing axis, the tool's +X, can be lined up with. ``x`` and ``y`` are
+#: fixed in the frame, so a UR moving round its base has to turn wrist 3 by exactly as much as the base
+#: turns to keep them: measured on the UR3e and UR5e homes, a fixed yaw costs one degree of wrist 3 per
+#: degree of base, and moves that go round the base the same way add up. ``radial`` runs from the frame's
+#: origin through the point, and ``tangential`` a quarter turn clockwise from it, seen from above. Both
+#: follow the point round the base, so wrist 3 keeps its angle from move to move. A leading "-" takes
+#: the opposite direction (``-y`` is the frame's -Y, ``-radial`` points at the base), which a two-finger
+#: hand grips the same with and which puts wrist 3 half a turn round; a leading "+" changes nothing.
+CLOSING_AXES: tuple[str, ...] = (
+    "x", "-x", "y", "-y", "radial", "-radial", "tangential", "-tangential",
+)
+
+#: Below this a point sits on the frame's vertical axis, where "radial" names no direction.
+_RADIAL_MIN_MM = 1e-6
+
+
+def _closing_axis_deg(closing_axis: str, x_mm: float, y_mm: float) -> float:
+    """The heading of ``closing_axis`` about the frame's +Z at (``x_mm``, ``y_mm``), in degrees."""
+    axis = str(closing_axis)
+    turn = 0.0
+    if axis[:1] in ("+", "-"):
+        turn = 180.0 if axis[0] == "-" else 0.0
+        axis = axis[1:]
+    if axis == "x":
+        return turn
+    if axis == "y":
+        return 90.0 + turn
+    if axis in ("radial", "tangential"):
+        if math.hypot(float(x_mm), float(y_mm)) < _RADIAL_MIN_MM:
+            raise ValueError(
+                f"Pose: closing_axis {closing_axis!r} at ({float(x_mm)}, {float(y_mm)}) sits on the "
+                "frame's vertical axis, which names no radial direction. Use 'x' or 'y' there."
+            )
+        bearing = math.degrees(math.atan2(float(y_mm), float(x_mm)))
+        return (bearing if axis == "radial" else bearing - 90.0) + turn
+    raise ValueError(
+        f"Pose: unknown closing_axis {closing_axis!r}; expected one of {', '.join(CLOSING_AXES)}"
+        " (a leading '+' is allowed too)"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,17 +129,30 @@ class Pose:
         z_mm: float,
         *,
         yaw_deg: float = 0.0,
+        closing_axis: str = "x",
         frame: Frame = Frame.BASE,
         label: str | None = None,
     ) -> Pose:
         """The tool at (``x_mm``, ``y_mm``, ``z_mm``) with its +Z pointing straight down
-        and its +X turned ``yaw_deg`` about the frame's +Z.
+        and its +X along ``closing_axis``, turned a further ``yaw_deg`` about the frame's +Z.
 
         Half a turn about X puts the tool's +Z down and its +X along the frame's +X; the
         yaw then turns the closing axis about the vertical. This is the pose a bench
         move, a known part and a place most often need.
+
+        ``closing_axis`` says which axis the closing axis lines up with before the yaw is
+        added (:data:`CLOSING_AXES`). The default ``x`` is the frame's +X, as always. On a
+        cell that moves round its base, ``radial`` or ``tangential`` keeps wrist 3 where it
+        is instead of turning it by as much as the base turns. On the UR3e and UR5e homes,
+        ``tangential`` keeps wrist 3 near its home angle, about 16 to 26 degrees off it,
+        and ``radial`` about a quarter turn further. A two-finger hand grips the same with the
+        opposite sign, ``-tangential`` or ``-y`` for instance, which puts wrist 3 half a turn round.
         """
-        half = math.radians(float(yaw_deg)) / 2.0
+        if closing_axis == "x":
+            heading = float(yaw_deg)
+        else:
+            heading = _closing_axis_deg(closing_axis, x_mm, y_mm) + float(yaw_deg)
+        half = math.radians(heading) / 2.0
         # Rz(yaw) * Rx(pi), as (x, y, z, w).
         return cls(
             position_mm=np.array(
@@ -122,6 +175,7 @@ class Pose:
         target_mm: Sequence[float] | np.ndarray,
         roll_deg: float = 0.0,
         up_hint: Sequence[float] = (0.0, 0.0, 1.0),
+        closing_axis: str | None = None,
         frame: Frame = Frame.BASE,
         label: str | None = None,
     ) -> Pose:
@@ -147,7 +201,16 @@ class Pose:
         so a positive roll turns the closing axis the opposite way round the vertical from
         :meth:`tool_down`'s ``yaw_deg``; the two agree at zero.
 
-        Raises ``ValueError`` when the tool would stand on its target, which names no direction.
+        ``closing_axis`` fixes the roll a second way, instead of ``up_hint``: the tool's +X
+        goes as close as it can to that horizontal axis (:data:`CLOSING_AXES`) at the tool's
+        own position, tilted only as far as the aim needs. Aimed straight down it gives exactly
+        ``tool_down`` with the same ``closing_axis``. With ``up_hint``'s default, the roll
+        follows the eye's bearing round the target, which winds wrist 3 on a ring of views;
+        ``radial`` or ``tangential`` follows the base instead.
+
+        Raises ``ValueError`` when the tool would stand on its target, which names no
+        direction, and when the aim runs along the closing axis, where no roll can put +X
+        on it.
         """
         eye = np.array([float(x_mm), float(y_mm), float(z_mm)], dtype=np.float64)
         forward = np.asarray(target_mm, dtype=np.float64).reshape(3) - eye
@@ -159,13 +222,23 @@ class Pose:
                 "direction to point along. Stand the tool off from what it looks at.")
         forward /= distance
 
-        for candidate in (tuple(up_hint), *_AIM_UP_FALLBACKS):
-            up = np.asarray(candidate, dtype=np.float64).reshape(3)
-            right = np.cross(up, forward)
-            if float(np.linalg.norm(right)) > _AIM_MIN_UP_CROSS:
-                break
-        else:  # pragma: no cover (two fallbacks perpendicular to each other cannot both fail)
-            raise ValueError("Pose.aimed_at: no usable up axis for this aim")
+        if closing_axis is not None:
+            heading = math.radians(_closing_axis_deg(closing_axis, x_mm, y_mm))
+            wanted = np.array([math.cos(heading), math.sin(heading), 0.0])
+            right = wanted - float(np.dot(wanted, forward)) * forward
+            if float(np.linalg.norm(right)) < _AIM_MIN_UP_CROSS:
+                raise ValueError(
+                    f"Pose.aimed_at: the aim from {eye.tolist()} runs along closing_axis "
+                    f"{closing_axis!r}, so no roll puts the tool's +X on it. Choose another axis."
+                )
+        else:
+            for candidate in (tuple(up_hint), *_AIM_UP_FALLBACKS):
+                up = np.asarray(candidate, dtype=np.float64).reshape(3)
+                right = np.cross(up, forward)
+                if float(np.linalg.norm(right)) > _AIM_MIN_UP_CROSS:
+                    break
+            else:  # pragma: no cover (two fallbacks perpendicular to each other cannot both fail)
+                raise ValueError("Pose.aimed_at: no usable up axis for this aim")
         right /= np.linalg.norm(right)
         down = np.cross(forward, right)
 

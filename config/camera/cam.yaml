@@ -218,6 +218,12 @@ cameras:
       backend: 0
 
       color_resolution: [1280, 720]
+      # The depth mode sets how near the camera measures; a surface nearer than that reads as a
+      # hole. Intel gives a D435 about 280 mm at 1280x720, and a D415 about 450 mm at 1280x720 and
+      # about 310 mm at 848x480 (datasheet figures, not measured here). A D415 on the wrist, which
+      # works at 0.3 to 0.6 m, streams depth at [848, 480]: colour stays [1280, 720] and depth is
+      # aligned to it, so every reader still gets one 1280x720 grid. The driver logs the camera,
+      # this mode and its Min-Z when it opens, and warns for a D415 at 1280x720.
       depth_resolution: [1280, 720]
       # Map depth onto the colour frame, so a colour pixel and its depth pixel are the same pixel.
       # Everything that reads a depth inside a colour mask assumes this. Acted on by the
@@ -234,20 +240,28 @@ cameras:
         # surfaces.
         enable_emitter: true
         laser_power_mw: null
-        # Name of a device depth preset, matched case-insensitively. An unknown name is logged and
-        # the device default kept, so a misspelling never takes the stream down.
+        # Name of a device depth preset, HighAccuracy or the SDK's high_accuracy, matched ignoring
+        # case and underscores. An unknown name is logged and the device default kept, so a
+        # misspelling never takes the stream down. Written first: the keys above and below are
+        # applied over it.
         visual_preset: null
-        # Metres per raw depth unit, overriding what the device reports. A wrong value scales
-        # every depth, and with it every grasp distance, by a constant factor.
+        # Metres per raw depth unit, written to the device and read back when the stream opens.
+        # Depth is scaled by the device's reading, and a device that did not take this value
+        # refuses to open, because a wrong unit scales every depth, and with it every grasp
+        # distance, by a constant factor.
         depth_units_m: null
         # Write the colour intrinsics and distortion the device reports to
         # `calibration_paths.intrinsics_file` when the stream opens.
         export_intrinsics: false
-        # Depth filters, applied in this order by `RealSenseRGBDStreamer._build_filters`.
+        # Depth filters, run before depth is aligned to colour, in librealsense's order:
+        # decimation, then spatial and temporal on disparity, then hole filling.
         post_processing:
-          # Shrinks the depth map; the streamer then resizes it back onto the colour grid.
+          # Shrinks the depth map; aligned to colour it comes back on the colour grid.
           decimation: false
           spatial: true
+          # Averages each pixel over the frames grabbed. The history is dropped when the camera is
+          # told it moved (`Camera.camera_moved()`), and on a camera the arm carries also after a
+          # pause between grabs, so a wrist frame after a move holds no depth from the pose before.
           temporal: true
           # Fills depth holes by extrapolating from their neighbours. It invents surface, and a
           # grasp planned onto invented surface fails without a signal, so a hole is left honest.

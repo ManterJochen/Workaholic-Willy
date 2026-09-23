@@ -50,6 +50,20 @@ DEFAULT_SAVE_DIR = "logs/calibration"
 _LOG = create_logger("SimEihCalibrate", log_file=CALIBRATION_RUNS_LOG_FILE, log_dir=WILLY_SIM_LOG_DIR)
 
 
+def sim_aruco_target(block, key: str):
+    """The one ArUco marker ``block`` (a ``camera.hand_eye`` mode block) describes, which the scene renders and the
+    sim detects; ``SystemExit`` with one sentence for a target the scene cannot render.
+
+    ``key`` names the block in that sentence, such as ``camera.hand_eye.eye_in_hand``. The marker's id is the
+    scene's own (``robot.sim.scene_setup.marker.aruco_marker_id``), because the scene renders it.
+    """
+    target = block.resolved_target()
+    if target.kind != "aruco":
+        raise SystemExit(f"{key}.target is a {target.kind} board, and the Isaac scene renders one ArUco marker: "
+                         "a sim sweep calibrates an aruco target only, so run this board at the real cell")
+    return target
+
+
 def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id: str = "wrist",
               data_dir: str | None = None, save_dir: str = DEFAULT_SAVE_DIR,
               cell_kwargs: dict | None = None):
@@ -57,15 +71,17 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     from src.calibration.eye_hand.types import MountingMode
     from src.calibration.quality import classify_rmse
     from src.robot.execution import CalibrationRoutine
+    from src.robot.execution.hand_eye import print_sweep_progress
 
     cfg = load_sim_config(data_dir)
     he = cfg.camera.hand_eye.eye_in_hand          # marker length + dict + sample thresholds
+    target = sim_aruco_target(he, "camera.hand_eye.eye_in_hand")   # refused before Isaac boots
     marker_kind = "aruco" if marker == "aruco" else "flat"
     # The shared boot prefix authors the scene with the hand-eye marker (kind + ArUco params).
     cell = bootstrap_sim_cell(
         data_dir, headless=headless, **(cell_kwargs or {}), scene_kwargs={
-            "marker_kind": marker_kind, "aruco_length_mm": he.marker_length_mm,
-            "aruco_dict_name": he.aruco_dict_name,
+            "marker_kind": marker_kind, "aruco_length_mm": target.marker_length_mm,
+            "aruco_dict_name": target.aruco_dict_name,
         },
         camera_world=CameraWorldDecline(
             "run_eih_calibrate: eye-in-hand calibration sweep, before CAMERA to TOOL exists"),
@@ -150,7 +166,7 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     elif marker == "aruco":
         src = ArucoMarkerPoseSource(
             marker_id=scene.marker.aruco_marker_id,
-            marker_length_mm=he.marker_length_mm, dict_name=he.aruco_dict_name,
+            marker_length_mm=target.marker_length_mm, dict_name=target.aruco_dict_name,
         )
     else:
         raise SystemExit(f"unknown marker source {marker!r}")
@@ -173,7 +189,7 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
         marker_id=scene.marker.aruco_marker_id,
         settle_time_s=cell.robot.calibration.settle_time_s,
         calibration_mode=MountingMode.EYE_IN_HAND,
-        on_event=lambda evt, data: print(f"  [{evt}] {data.get('reason', data.get('accepted', ''))}", flush=True),
+        on_event=print_sweep_progress,
     )
     Path(save_dir).mkdir(parents=True, exist_ok=True)
     result = routine.run_with_poses(

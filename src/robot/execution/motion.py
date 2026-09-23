@@ -14,15 +14,16 @@ motions reach it (:func:`route_of`):
 Before any command a verb also refuses a link that is not open, a pose not in BASE, and a camera world the arm's own
 motion would be refused for (``ReadsCameraWorld``), in that order and before the route. It then waits for the arm's
 own steady gate where its tree asks for one (``safety.dwell``). A decline reaches ``move`` and ``move_joints`` as the
-arm's own keyword, and ``home`` as a block around the arm's ``move_home``, which takes no keyword.
+arm's own keyword, and ``home`` as a block around the arm's home verb, which takes no keyword.
 
 Every verb returns a frozen :class:`MotionReport`. A camera that could not vouch for the cell
 (``CameraWorldUnavailable``) and a driver fault (``RobotError``) end the verb as an outcome rather than a raise. A
 programmer's error still raises: a decline that is not a :class:`~src.robot.core.camera_world.CameraWorldDecline`, and
 an arm whose typed verb hands back something that is not a ``MotionResult``.
 
-``move_home`` answers with a bool on every driver, so a home the arm refuses reads UNKNOWN here, and the driver's log
-holds the gate that refused it.
+``home`` asks an arm that goes home as a typed verb (``HomesTyped``, the UR driver) for that verb's result, so a home
+it refuses reads the status and the sentence of the gate that refused it. Any other arm answers ``move_home`` with a
+bool, so a home it refuses reads UNKNOWN here, and that driver's log holds the gate.
 
 The module imports nothing above ``robot.core`` and connects nothing: the verbs run inside ``Robot.connected()``.
 """
@@ -37,7 +38,7 @@ from typing import Any
 
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
-from src.robot.core.arm_capabilities import LineMotion, LineReading, line_motion_of
+from src.robot.core.arm_capabilities import HomesTyped, LineMotion, LineReading, line_motion_of
 from src.robot.core.camera_world import (
     CameraWorldDecline,
     CameraWorldStamp,
@@ -306,18 +307,24 @@ def move_joints(arm: Any, joints: JointPositions, *, decline: Maybe[CameraWorldD
 
 
 def home(arm: Any, *, decline: Maybe[CameraWorldDecline] = UNSET) -> MotionReport:
-    """Move ``arm`` to its configured home through its own gated ``move_home``, inside the decline when one is given."""
+    """Move ``arm`` to its configured home through its own gated verb, inside the decline when one is given.
 
-    def command() -> bool:
+    An arm that goes home as a typed verb (``HomesTyped``) is asked ``move_to_home`` and its result is the report's. Any
+    other arm is asked ``move_home``, whose bool says only whether it moved.
+    """
+
+    def command() -> MotionResult | bool:
         scope: AbstractContextManager[Any] = (
             without_camera_world(arm, decline.reason) if chosen(decline) else nullcontext())
         with scope:
+            if isinstance(arm, HomesTyped):
+                return arm.move_to_home()
             return bool(arm.move_home())
 
     return _Motion(arm, MotionVerb.HOME, decline).run(command)
 
 
-#: What a home the arm refused says: ``move_home`` answers with a bool on every driver.
+#: What a home the arm refused says when its only answer is ``move_home``'s bool.
 _HOME_REFUSED = ("the arm refused the move home, and its move_home answers only with False: the driver's log names "
                  "the gate that refused it")
 

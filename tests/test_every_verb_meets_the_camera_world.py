@@ -92,9 +92,17 @@ class _Camera:
         )
 
 
+#: A camera a metre above the base looking straight down, so the bench a metre below it is the bench at z 0.
+#: It stood at the base looking up until the world kept what the arm's body can reach: the "bench" was then a
+#: ceiling at z 1000, dropped only because it lay above the TCP box, and the arm's reach holds it.
+_LOOKING_DOWN = np.array(
+    [[1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 1000.0], [0.0, 0.0, 0.0, 1.0]], dtype=np.float64,
+)
+
+
 def _world(camera: _Camera) -> LivePlannerWorld:
     return LivePlannerWorld(
-        cameras=(CameraView(name="overhead", depth_source=camera, camera_to_base=np.eye(4)),),
+        cameras=(CameraView(name="overhead", depth_source=camera, camera_to_base=_LOOKING_DOWN),),
         declared=_BENCH,
         limits=_LIMITS,
         fresh_frame_attempts=1,

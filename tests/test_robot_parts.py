@@ -142,7 +142,8 @@ _TABLE: tuple[_Case, ...] = (
     ),
     _Case(
         name="jaw_io on a dummy arm",
-        tree={"vendor": "dummy", "gripper": {"vendor": "jaw_io", **_WIDTHS}},
+        # A threshold inside the widths: the schema refuses one a pick's grasp could never close with.
+        tree={"vendor": "dummy", "gripper": {"vendor": "jaw_io", **_WIDTHS, "jaw_io": {"closed_below_mm": 60.0}}},
         handle=None, gated=False,
         arm="DummyRobotArm", gripper="NullGripper",
         attributes=dict(_WIDTHS),

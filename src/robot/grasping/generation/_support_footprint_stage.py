@@ -29,6 +29,7 @@ from src.robot.grasping.planning import GraspPose
 from src.robot.grasping.scoring import GraspScoreBreakdown
 
 from .support_footprint import (
+    DEFAULT_FLOOR_MARGIN_MM,
     SupportFootprintCandidate,
     SupportFootprintJaw,
     generate_support_footprint_grasps,
@@ -74,11 +75,15 @@ def support_footprint_breakdowns(
     inflate_mm: float = 0.0,
     palm_aware: bool = False,
     score_weights: tuple[float, float, float, float, float] | None = None,
+    floor_margin_mm: float | None = None,
 ) -> tuple[list[GraspScoreBreakdown], dict]:
     """Run SFE and return camera-frame breakdowns plus its telemetry.
 
     An empty list is a real answer: the reconstruction admitted no grasp that clears the support.
     Refusing beats proposing one that drives a finger into the table.
+
+    ``floor_margin_mm`` of None is the stage's own floor, ``DEFAULT_FLOOR_MARGIN_MM``, read from where it
+    is declared.
     """
     candidates = generate_support_footprint_grasps(
         target_cloud_base_mm,
@@ -90,6 +95,7 @@ def support_footprint_breakdowns(
         inflate_mm=inflate_mm,
         palm_aware=palm_aware,
         score_weights=score_weights,
+        floor_margin_mm=DEFAULT_FLOOR_MARGIN_MM if floor_margin_mm is None else float(floor_margin_mm),
     )
     breakdowns: list[GraspScoreBreakdown] = []
     for candidate in candidates:

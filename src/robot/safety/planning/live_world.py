@@ -20,7 +20,18 @@ Two rules run through everything here:
     ends up driving through something that left the frame ten seconds ago.
   * The declared world is never lost. Registration replaces rather than extends, so every snapshot
     carries the bench, the fixtures and the payload underneath the perceived boxes, and a perceived
-    box can never take a declared box's name.
+    box can never take a declared box's name. Nor is it registered twice: what the cameras see of a
+    declared fixture or mesh is left to it (``perceived.DeclaredBody``), so a declared tote keeps its
+    hollow instead of coming back as a solid perceived block over it.
+
+A frame that answers is not yet a frame that saw. A pixel with no depth is space the planner would
+receive as free, so a frame that holds no depth at all is refused as blind, a goal whose surroundings
+are mostly holes in every camera that looks at it is refused as unseen, and what stays below those
+limits is said on the stamp the motion carries (``UnseenSpace``) rather than vouched for. How much of
+the whole frame has to hold a depth depends on where the camera stands. A fixed camera is never carried
+toward what it sees, so a fixed frame that is mostly holes is a camera fault and is refused as blind. A
+camera on the wrist is carried inside its own minimum range by every grasp, so its frame is judged
+where the motion goes, and by the whole frame only when no goal is named.
 
 The depth source is a protocol rather than the perception stack, and the self body arrives as
 capsules rather than as a model name. Both keep this module inside the safety layer instead of
@@ -39,11 +50,12 @@ from typing import Any, Protocol, Sequence
 import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
-from src.robot.core.camera_world import CameraWorldStamp
+from src.robot.core.camera_world import CameraWorldStamp, UnseenSpace
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.keep_out import GoalKeepOut, KeepOutBox, KeepOutSummary
 from src.robot.safety._capsule import AxisAlignedBox
 from src.robot.safety.planning.perceived import (
+    DeclaredBody,
     DepthView,
     PerceivedWorld,
     PerceptionGeometryError,
@@ -53,6 +65,7 @@ from src.robot.safety.planning.perceived import (
     WorldBuildLimits,
     WorldBuildTuning,
     build_perceived_boxes,
+    has_depth,
     target_keep_out_box,
 )
 from src.robot.safety.planning.world import merge_planner_worlds, planner_cuboid
@@ -82,12 +95,19 @@ class WorldVerdict(StrEnum):
     STALE = "stale"
     #: The camera answered nothing, or answered something that cannot be used.
     NO_FRAME = "no_frame"
-    #: The camera answered with a frame that holds no valid depth at all: a covered lens, a dead
-    #: emitter, a frame of zeros. Not an empty cell, which is valid depth that shows nothing on
-    #: the bench.
+    #: The camera answered with a frame that holds no valid depth at all, a covered lens, a dead
+    #: emitter, a frame of zeros, or so little that most of what it watches went unmeasured: less
+    #: than ``min_depth_coverage`` of its pixels in a fixed camera, as when a cable hangs in front
+    #: of the lens, and in a camera on the wrist asked about no goal. Not an empty cell, which is
+    #: valid depth that shows nothing on the bench.
     BLIND = "blind"
     #: The frame arrived and the geometry could not be built from it.
     UNUSABLE = "unusable"
+    #: The cameras that look at the motion's goal hold mostly holes about it, none of them enough:
+    #: the region is closer than they measure, or surfaces they cannot read. Planned against, that
+    #: region would be free because nothing was measured there. A fact about where the cameras stand
+    #: rather than a fault of a camera, so the motion is refused and no camera is asked again.
+    UNSEEN = "unseen"
 
 
 #: What a camera answers when it cannot vouch for the cell. These are asked again, and after the
@@ -116,6 +136,16 @@ class DepthSnapshot:
     #: camera on the wrist needs it, and `None` means the producer did not stamp it. A wrist view
     #: refuses such a frame rather than place it by where the tool is now.
     tool_to_base_mm: np.ndarray | None = None
+    #: How far the place this frame is put may lie from where it was taken, as its producer
+    #: declares it, millimetres and degrees. A camera on the wrist declares how far the tool moved
+    #: between the poses read either side of its grab (``depth_source.RigDepthSource``), which its
+    #: rig's shutter motion tolerance bounds: the frame is placed by the pose read before, and the
+    #: tool moved that far before the shutter closed. It widens the bench band of every point of
+    #: the frame (``perceived.DepthView.placement_error_mm``). Zero is a producer that declares
+    #: nothing, or an arm that stood still, and then the configured plane clearance holds every
+    #: error alone.
+    placement_error_mm: float = 0.0
+    placement_error_deg: float = 0.0
 
 
 class SurfaceDepthSource(Protocol):
@@ -197,6 +227,14 @@ class PlannerWorldSnapshot:
     #: What a `FRESH` world left out: the goal region or why there was none, and the held boxes;
     #: `None` when no goal was asked about and no box was held.
     keep_out: KeepOutSummary | None = None
+    #: The cameras that looked at the motion's goal and held a depth over most of the region about
+    #: it, in camera order; `None` when no goal was asked about or the world is not `FRESH`. Empty is
+    #: a goal no camera looked at, whose surroundings reach the planner as whatever was declared
+    #: there.
+    goal_seen_by: tuple[str, ...] | None = None
+    #: The declared fixtures or meshes the world could not read for its cameras, each with why. What the
+    #: cameras see of them comes back as obstacles, which is the direction it is safe to be wrong in.
+    unread_declared: tuple[str, ...] = ()
 
     @property
     def usable(self) -> bool:
@@ -216,6 +254,13 @@ class PlannerWorldSnapshot:
             f"world: {self.declared_count} declared + {self.perceived_count} perceived "
             f"obstacle(s), {age}"
         )
+        if self.goal_seen_by == ():
+            head += (
+                "\n  the goal is in no camera's view: around it the planner knows only what is "
+                "declared"
+            )
+        for unread in self.unread_declared:
+            head += f"\n  {unread}: what the cameras see of it comes back as obstacles"
         return head if self.perceived is None else head + "\n" + self.perceived.render()
 
     def to_dict(self) -> dict[str, Any]:
@@ -231,6 +276,7 @@ class PlannerWorldSnapshot:
             "dropped_obstacles": (
                 self.perceived.dropped_obstacle_count if self.perceived is not None else 0
             ),
+            "goal_seen_by": None if self.goal_seen_by is None else list(self.goal_seen_by),
         }
 
 
@@ -265,6 +311,26 @@ class LivePlannerWorld:
     #: Whether a registration the planner confirms only in part refuses the motion. From
     #: `planning_world.require_registration`, so every driver reads the cell's own answer.
     require_registration: bool = True
+    #: The share of the region about a goal a camera looks at, and of a frame's pixels where the
+    #: frame is judged whole, that has to hold a depth before it may vouch for anything. Below it a
+    #: goal is `UNSEEN` and a frame is `BLIND`. One half is "mostly holes" and nothing finer:
+    #: measured 2026-09-23 in a simulation of the owner's wrist D415 at its calibration view (45
+    #: degrees down, about 0.5 m from the marker, 1280 x 720 with its 450 mm minimum range), 64 % of
+    #: the frame held depth.
+    #:
+    #: A camera on the wrist is judged by the whole frame only when no goal is named. Measured the
+    #: same day by the review's ray cast of the owner's pick (the D415 60 mm beside the Hand-E and
+    #: 130 mm behind its TCP, tilted 45 degrees outward, a 40 mm cube): at the grasp the camera
+    #: stands 150 mm over the bench and 27 % of the frame holds a depth at 848 x 480, 12 % at
+    #: 1280 x 720, all of it bench beyond the minimum range, while the hand's line up is outside
+    #: the view at every pose of the pick. Judged whole, that frame raised on every retreat and left
+    #: the part clamped at the bench; judged where the retreat goes, it is planned against what is
+    #: declared there and the stamp says the goal was not seen.
+    min_depth_coverage: float = 0.5
+    #: Half the side of the region about a goal whose depth a camera that looks at the goal must
+    #: hold, millimetres at the goal's range. About a hand with its fingers open: the space the hand
+    #: arrives in, which is what the planner is about to route through.
+    goal_region_mm: float = 100.0
 
     _frames: dict[str, DepthSnapshot] = field(default_factory=dict, init=False, repr=False)
     #: Where the robot's body stood when each cached frame was taken, as its capsule end points
@@ -283,6 +349,10 @@ class LivePlannerWorld:
     _held: set[str] = field(default_factory=set, init=False, repr=False)
     #: The target box each offer's points were fitted to, by the same key.
     _targets: dict[str, KeepOutBox] = field(default_factory=dict, init=False, repr=False)
+    #: The declared fixtures and meshes as the cameras see them again, read once when the world is built.
+    _declared_bodies: tuple[DeclaredBody, ...] = field(default=(), init=False, repr=False)
+    #: The declared shapes that could not be read for that, each with why.
+    _unread_declared: tuple[str, ...] = field(default=(), init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.tuning.voxel_field_mm > 0.0:
@@ -303,6 +373,14 @@ class LivePlannerWorld:
                 f"two cameras share a name in {names}: a per-camera cache and a per-camera refusal "
                 "both key on it"
             )
+        if not 0.0 < float(self.min_depth_coverage) <= 1.0:
+            raise PerceptionGeometryError(
+                f"min_depth_coverage is a share above 0 and at most 1, got {self.min_depth_coverage!r}: "
+                "at 0 a frame of holes would vouch for the cell"
+            )
+        if not (np.isfinite(float(self.goal_region_mm)) and float(self.goal_region_mm) > 0.0):
+            raise PerceptionGeometryError(f"goal_region_mm is finite and above 0, got {self.goal_region_mm!r}")
+        self._declared_bodies, self._unread_declared = _declared_bodies(self.declared, self.declared_meshes)
 
     # -----------------------------------------------------------------------------------------
     # What the pick loop can add, and nothing else has to
@@ -432,7 +510,9 @@ class LivePlannerWorld:
             no perceived world is built at all.
         near_point_mm
             Where the motion is going. It decides which obstacles survive the slot budget, because
-            the ones near the path are the ones that matter.
+            the ones near the path are the ones that matter. When cameras look at it, one of them
+            has to hold a depth over most of the region about it (``goal_region_mm``), or the
+            world is `UNSEEN`; the cameras that did are named in ``goal_seen_by``.
         now
             The clock, injectable so a test can age a frame without sleeping.
         goal_keep_out
@@ -443,7 +523,12 @@ class LivePlannerWorld:
         clock = time.time() if now is None else float(now)
         declared = tuple(dict(box) for box in self.declared)
         meshes = tuple(dict(mesh) for mesh in self.declared_meshes)
-        frames, verdict, reason, failed_camera = self._frames_for(clock, _placed_body(self_envelope))
+        goal = None if near_point_mm is None else np.asarray(near_point_mm, dtype=np.float64).reshape(-1)
+        if goal is not None and not (goal.shape == (3,) and bool(np.all(np.isfinite(goal)))):
+            goal = None
+        frames, verdict, reason, failed_camera = self._frames_for(
+            clock, _placed_body(self_envelope), goal_named=goal is not None,
+        )
         # The clock is read again after the cameras answered, because a grab takes time and the
         # first reading is older than the frames it went out to fetch. Measured before this line
         # existed: a fresh frame reported as two milliseconds from the future.
@@ -495,6 +580,37 @@ class LivePlannerWorld:
                 meshes=meshes, declared_count=len(declared),
             )
 
+        # Where the motion goes has to have been measured by a camera that looks at it. The views are
+        # fused, so one camera that measured the region is enough and a second one's holes take
+        # nothing away; a camera that does not look at it vouches for nothing there, and the stamp
+        # says so.
+        goal_seen_by: tuple[str, ...] | None = None
+        if goal is not None:
+            seers: list[str] = []
+            blind_to_it: list[tuple[str, float]] = []
+            for camera in self.cameras:
+                share = _goal_coverage(frames[camera.name], placed[camera.name], goal, float(self.goal_region_mm))
+                if share is None:
+                    continue
+                if share < float(self.min_depth_coverage):
+                    blind_to_it.append((camera.name, share))
+                else:
+                    seers.append(camera.name)
+            if blind_to_it and not seers:
+                shares = " and ".join(f"{name!r} {100.0 * share:.0f}%" for name, share in blind_to_it)
+                return PlannerWorldSnapshot(
+                    verdict=WorldVerdict.UNSEEN, cuboids=declared, perceived=None, age_ms=oldest,
+                    reason=(
+                        f"the cameras that look at where this motion goes hold a depth on {shares} of the "
+                        f"{2.0 * float(self.goal_region_mm):.0f} mm about it, and at least "
+                        f"{100.0 * float(self.min_depth_coverage):.0f}% must: the rest is closer than a camera "
+                        "measures or a surface it cannot read, and planned against it would be free space "
+                        "nobody saw. Look from further away, or at a depth mode with a shorter minimum range"
+                    ),
+                    meshes=meshes, declared_count=len(declared), camera=blind_to_it[0][0],
+                )
+            goal_seen_by = tuple(seers)
+
         live = {key for key in self._offer_stamps if self._labels_fresh(key, clock)}
         views = [
             DepthView(
@@ -505,6 +621,7 @@ class LivePlannerWorld:
                 labelled_masks=self._masks_for(camera, live, self._labels),
                 name=camera.name,
                 timestamp=frames[camera.name].timestamp,
+                **_placement_error(camera, frames[camera.name]),
             )
             for camera in self.cameras
         ]
@@ -525,6 +642,12 @@ class LivePlannerWorld:
                 ),
                 near_point_mm=near_point_mm,
                 keep_out=keep_out,
+                # Where the robot's body can be, not where its TCP may go: the links, the hand and
+                # a wrist camera swing past the workspace box, and an obstacle there is one they meet.
+                reach=self_envelope.reach(padding_mm=float(self.tuning.margin_mm)),
+                declared=self._declared_bodies,
+                # Around the targets held out, and not around the goal's jaw region, which is not padded.
+                cut_around=tuple(self._targets[key] for key in held_keys),
             )
         except PerceptionGeometryError as exc:
             return PlannerWorldSnapshot(
@@ -557,6 +680,8 @@ class LivePlannerWorld:
             cameras=tuple(camera.name for camera in self.cameras),
             captured_at_s=self._oldest_capture_s(frames),
             keep_out=summary,
+            goal_seen_by=goal_seen_by,
+            unread_declared=self._unread_declared,
         )
 
     # -----------------------------------------------------------------------------------------
@@ -564,7 +689,7 @@ class LivePlannerWorld:
     # -----------------------------------------------------------------------------------------
 
     def _frames_for(
-        self, clock: float, body: "np.ndarray | None" = None
+        self, clock: float, body: "np.ndarray | None" = None, *, goal_named: bool = False,
     ) -> tuple[dict[str, DepthSnapshot], WorldVerdict, str, str]:
         """A reading from every camera: the cached one while it is young and the robot has not moved.
 
@@ -581,21 +706,19 @@ class LivePlannerWorld:
 
         A blind frame is judged per camera and never cached. Fused, a sighted camera's points would
         hide a blind one, and cached, a young blind frame would be served again instead of asking
-        the camera.
+        the camera. A cached frame is judged again, because whether it is blind depends on what it
+        is asked about (:meth:`_blind`): ``goal_named`` says the motion names where it goes.
         """
         frames: dict[str, DepthSnapshot] = {}
         for camera in self.cameras:
             cached = self._frames.get(camera.name)
             cached_age = None if cached is None else self._age_ms(cached, clock)
-            if (
+            reused = (
                 cached is not None and cached_age is not None and cached_age <= self.max_age_ms
                 and self._body_still(camera.name, body)
-            ):
-                frames[camera.name] = cached
-                continue
-
-            grabbed = camera.depth_source.grab_surface_depth()
-            if grabbed is None:
+            )
+            frame = cached if reused else camera.depth_source.grab_surface_depth()
+            if frame is None:
                 return (
                     frames,
                     WorldVerdict.NO_FRAME,
@@ -603,19 +726,17 @@ class LivePlannerWorld:
                     "in the part of the cell it watches",
                     camera.name,
                 )
-            if not _has_valid_depth(grabbed):
-                return (
-                    frames,
-                    WorldVerdict.BLIND,
-                    f"camera {camera.name!r} returned a depth frame with no valid pixel, so it is "
-                    "blind and cannot vouch for the part of the cell it watches",
-                    camera.name,
-                )
-            self._frames[camera.name] = grabbed
+            blind = self._blind(camera, frame, goal_named=goal_named)
+            if blind:
+                self.drop_cached_frame(camera.name)
+                return frames, WorldVerdict.BLIND, blind, camera.name
+            frames[camera.name] = frame
+            if reused:
+                continue
+            self._frames[camera.name] = frame
             self._frame_bodies[camera.name] = body
-            frames[camera.name] = grabbed
 
-            age = self._age_ms(grabbed, clock)
+            age = self._age_ms(frame, clock)
             if age is None:
                 return (
                     frames,
@@ -633,6 +754,36 @@ class LivePlannerWorld:
                     camera.name,
                 )
         return frames, WorldVerdict.FRESH, "", ""
+
+    def _blind(self, camera: CameraView, frame: DepthSnapshot, *, goal_named: bool) -> str:
+        """Why ``frame`` cannot vouch for the part of the cell ``camera`` watches, or empty when it can.
+
+        No depth at all is blind in every camera. Less than ``min_depth_coverage`` of the frame
+        holding a depth is blind in a fixed camera, which is never carried toward what it sees, so
+        a frame of it mostly holes is the camera or something in front of it. A camera on the wrist
+        is carried inside its own minimum range by every grasp, so its frame is blind by that share
+        only when no goal is named; asked about a goal it is judged about the goal instead
+        (``world_for``: the region about it, and the stamp saying what the rest of the frame did not
+        see).
+        """
+        coverage = _depth_coverage(frame)
+        if coverage <= 0.0:
+            return (
+                f"camera {camera.name!r} returned a depth frame with no valid pixel, so it is "
+                "blind and cannot vouch for the part of the cell it watches"
+            )
+        on_wrist = camera.camera_to_tool is not None
+        if coverage >= float(self.min_depth_coverage) or (on_wrist and goal_named):
+            return ""
+        return (
+            f"camera {camera.name!r} returned a depth frame in which {100.0 * coverage:.0f}% of the "
+            f"pixels hold a depth, and at least {100.0 * float(self.min_depth_coverage):.0f}% must, so "
+            "it is mostly blind and cannot vouch for the part of the cell it watches: it stands "
+            "closer to what it sees than its minimum range, something covers part of the lens, or "
+            "it looks at surfaces it cannot read"
+            + (". It is on the wrist and the motion names no goal, so the whole frame is what it is asked "
+               "about" if on_wrist else "")
+        )
 
     def _body_still(self, camera: str, body: "np.ndarray | None") -> bool:
         """Whether the robot stands where it stood when ``camera``'s cached frame was taken, within 1 mm."""
@@ -700,6 +851,66 @@ _BOX_ONLY_KEY = "box only: "
 _BODY_STILL_MM = 1.0
 
 
+def _declared_bodies(
+    cuboids: Sequence[dict[str, Any]], meshes: Sequence[dict[str, Any]],
+) -> tuple[tuple[DeclaredBody, ...], tuple[str, ...]]:
+    """The declared world in the planner's wire format, as the cameras see it again, and what could not be read.
+
+    A box is placed by its wire pose, metres and WXYZ, and sized by its wire dimensions. A mesh is read from the
+    path the sidecar reads, from the working directory it inherits from this process, scaled and placed as the
+    sidecar places it. One that cannot be read here is said, and left out of this filter only: what the cameras see
+    of it stays an obstacle.
+    """
+    bodies: list[DeclaredBody] = []
+    unread: list[str] = []
+    for cuboid in cuboids:
+        name = str(cuboid.get("name", "") or "unnamed box")
+        try:
+            pose = [float(v) for v in cuboid["pose"]]
+            dims = [float(v) for v in cuboid["dims_m"]]
+            bodies.append(DeclaredBody.box(name, _wire_matrix_mm(pose), [500.0 * d for d in dims]))
+        except (KeyError, TypeError, ValueError, IndexError, PerceptionGeometryError) as exc:
+            unread.append(f"declared box {name!r} could not be read ({type(exc).__name__}: {exc})")
+    for mesh in meshes:
+        name = str(mesh.get("name", "") or "unnamed mesh")
+        try:
+            bodies.append(_mesh_body(name, mesh))
+        except Exception as exc:  # noqa: BLE001 (a mesh file can fail in any way; it only keeps obstacles)
+            unread.append(f"declared mesh {name!r} could not be read ({type(exc).__name__}: {exc})")
+    return tuple(bodies), tuple(unread)
+
+
+def _wire_matrix_mm(pose: Sequence[float]) -> np.ndarray:
+    """A wire pose, metres and WXYZ, as a 4x4 in millimetres."""
+    if len(pose) != 7:
+        raise ValueError(f"a wire pose is three metres and a WXYZ quaternion, got {len(pose)} numbers")
+    w, x, y, z = pose[3:]
+    norm = float(np.sqrt(w * w + x * x + y * y + z * z))
+    if not np.isfinite(norm) or norm <= 0.0:
+        raise ValueError("a wire pose's quaternion has no length")
+    w, x, y, z = (v / norm for v in (w, x, y, z))
+    matrix = np.eye(4)
+    matrix[:3, :3] = [
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ]
+    matrix[:3, 3] = [1000.0 * float(v) for v in pose[:3]]
+    return matrix
+
+
+def _mesh_body(name: str, mesh: dict[str, Any]) -> DeclaredBody:
+    """One declared mesh, read from its file and placed in BASE millimetres as the sidecar places it."""
+    import trimesh  # noqa: PLC0415 (an optional dependency, and only a declared mesh needs it)
+
+    loaded: Any = trimesh.load(str(mesh["file_path"]), force="mesh")
+    scale = np.asarray(mesh.get("scale", [1.0, 1.0, 1.0]), dtype=np.float64).reshape(3)
+    matrix = _wire_matrix_mm([float(v) for v in mesh["pose"]])
+    vertices_m = np.asarray(loaded.vertices, dtype=np.float64) * scale
+    vertices_mm = (1000.0 * vertices_m) @ matrix[:3, :3].T + matrix[:3, 3]
+    return DeclaredBody.mesh(name, vertices_mm, np.asarray(loaded.faces, dtype=np.int64))
+
+
 def _placed_body(envelope: SelfEnvelope | None) -> "np.ndarray | None":
     """The robot's body as the end points of its capsules in BASE, or ``None`` for a body nobody can describe."""
     if envelope is None:
@@ -712,15 +923,70 @@ def _placed_body(envelope: SelfEnvelope | None) -> "np.ndarray | None":
     return np.asarray(points, dtype=np.float64).reshape(-1, 3)
 
 
-def _has_valid_depth(frame: DepthSnapshot) -> bool:
-    """Whether any pixel holds a depth the converter would use: finite and in front of the camera.
+def _depth_coverage(frame: DepthSnapshot) -> float:
+    """The share of the frame's pixels that hold a depth the converter would use, 0 to 1.
 
-    It is the same test the converter applies to each pixel, so a frame judged blind here is
-    exactly a frame that would have produced no point there.
+    It is the same test the converter applies to each pixel (``perceived.has_depth``), so a frame
+    judged blind here is exactly a frame whose points would have been too few there.
     """
-    depth = np.asarray(frame.depth_mm, dtype=np.float64)
-    with np.errstate(invalid="ignore"):
-        return bool(np.any(np.isfinite(depth) & (depth > 0.0)))
+    valid = has_depth(frame.depth_mm)
+    return float(np.count_nonzero(valid)) / float(valid.size) if valid.size else 0.0
+
+
+def _has_valid_depth(frame: DepthSnapshot) -> bool:
+    """Whether any pixel holds a depth the converter would use: finite and in front of the camera."""
+    return _depth_coverage(frame) > 0.0
+
+
+def _goal_coverage(
+    frame: DepthSnapshot, camera_to_base: np.ndarray, goal_mm: np.ndarray, region_mm: float
+) -> float | None:
+    """The share of the pixels about ``goal_mm`` in ``frame`` that hold a depth, or ``None`` when the camera does not look at it.
+
+    The goal is carried into the camera and projected with the frame's own intrinsics, the inverse
+    of how a pixel is back-projected. It is looked at when it stands in front of the camera and
+    projects inside the image. The region is the square of ``region_mm`` on each side of it at its
+    range, clipped to the image: the pixels whose rays pass about the goal. A ray with a depth
+    measured the space along it up to the surface it met, the goal's included; a ray with none
+    measured nothing.
+    """
+    matrix = np.asarray(frame.intrinsics, dtype=np.float64)
+    if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
+        return None
+    fx, fy, cx, cy = float(matrix[0, 0]), float(matrix[1, 1]), float(matrix[0, 2]), float(matrix[1, 2])
+    if fx == 0.0 or fy == 0.0:
+        return None
+    try:
+        base_to_camera = np.linalg.inv(np.asarray(camera_to_base, dtype=np.float64))
+    except np.linalg.LinAlgError:
+        return None
+    x, y, z = base_to_camera[:3, :3] @ goal_mm + base_to_camera[:3, 3]
+    depth = np.asarray(frame.depth_mm)
+    if depth.ndim != 2 or not np.isfinite(z) or z <= 0.0:
+        return None
+    rows, cols = depth.shape
+    u, v = fx * x / z + cx, fy * y / z + cy
+    if not (0.0 <= u < cols and 0.0 <= v < rows):
+        return None
+    half_u, half_v = abs(fx) * region_mm / z, abs(fy) * region_mm / z
+    col_lo, col_hi = max(0, int(np.floor(u - half_u))), min(cols, int(np.ceil(u + half_u)) + 1)
+    row_lo, row_hi = max(0, int(np.floor(v - half_v))), min(rows, int(np.ceil(v + half_v)) + 1)
+    window = has_depth(depth[row_lo:row_hi, col_lo:col_hi])
+    return float(np.count_nonzero(window)) / float(window.size) if window.size else None
+
+
+def _placement_error(camera: CameraView, frame: DepthSnapshot) -> dict[str, float]:
+    """How far ``frame`` may be placed off, as ``DepthView`` takes it: millimetres and radians.
+
+    The producer declares the tool's motion measured across the grab. For a camera on the wrist a turn of
+    the tool about the TCP also moves the camera, by at most the angle times its distance from the
+    TCP, which is added to the translation.
+    """
+    error_mm = float(frame.placement_error_mm)
+    error_rad = float(np.radians(float(frame.placement_error_deg)))
+    if camera.camera_to_tool is not None:
+        error_mm += error_rad * float(np.linalg.norm(np.asarray(camera.camera_to_tool, dtype=np.float64)[:3, 3]))
+    return {"placement_error_mm": error_mm, "placement_error_rad": error_rad}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -766,6 +1032,12 @@ class WorldRefresh:
     #: What the world left out for this motion: its goal region or why there was none, and the
     #: held boxes.
     keep_out: KeepOutSummary | None = None
+    #: The share of each camera's image that held a depth, in camera order, as the world was built
+    #: (``PerceivedWorld.depth_coverage``). Empty when no world was built.
+    depth_coverage: tuple[tuple[str, float], ...] = ()
+    #: The cameras that looked at the motion's goal and measured the region about it; `None` when
+    #: no goal was asked about or no world was built, empty when no camera looked at it.
+    goal_seen_by: tuple[str, ...] | None = None
 
     @property
     def ok(self) -> bool:
@@ -776,18 +1048,29 @@ class WorldRefresh:
     def total_ms(self) -> float:
         return self.build_ms + self.register_ms
 
+    def unseen(self) -> UnseenSpace | None:
+        """What this refresh's world did not see: pixels with no depth and a goal no camera looked at, or `None`."""
+        no_depth = tuple((name, 1.0 - share) for name, share in self.depth_coverage if share < 1.0)
+        goal_out_of_view = self.goal_seen_by == ()
+        if not no_depth and not goal_out_of_view:
+            return None
+        return UnseenSpace(no_depth=no_depth, goal_out_of_view=goal_out_of_view)
+
     def camera_world(self) -> CameraWorldStamp | None:
         """The stamp this refresh vouches for, or `None` when it vouches for nothing.
 
         PLANNED, on its cameras and the capture time of its oldest image, for a refresh the caller
         may plan against. A refused refresh vouches for nothing, and neither does one that cannot
-        name a camera or a capture time, because a stamp that vouches has to say for what.
+        name a camera or a capture time, because a stamp that vouches has to say for what. What the
+        world did not see rides on the stamp (:meth:`unseen`), so it is not vouched for.
         """
         if not self.ok or not self.cameras or self.captured_at_s is None:
             return None
         # The summary only when something was kept out: a stamp says what stood behind the motion.
         kept = self.keep_out if self.keep_out is not None and self.keep_out.in_force else None
-        return CameraWorldStamp.planned(cameras=self.cameras, captured_at_s=self.captured_at_s, keep_out=kept)
+        return CameraWorldStamp.planned(
+            cameras=self.cameras, captured_at_s=self.captured_at_s, keep_out=kept, unseen=self.unseen(),
+        )
 
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""
@@ -806,6 +1089,9 @@ class WorldRefresh:
             )
         if self.keep_out is not None:
             line += f"; kept out: {self.keep_out.render()}"
+        unseen = self.unseen()
+        if unseen is not None:
+            line += f"; not seen, planned as free: {unseen.render()}"
         return line
 
     def to_dict(self) -> dict[str, Any]:
@@ -825,6 +1111,8 @@ class WorldRefresh:
             "captured_at_s": self.captured_at_s,
             "reason": self.reason,
             "keep_out": None if self.keep_out is None else self.keep_out.to_dict(),
+            "depth_coverage": {name: float(share) for name, share in self.depth_coverage},
+            "goal_seen_by": None if self.goal_seen_by is None else list(self.goal_seen_by),
         }
 
 
@@ -940,6 +1228,11 @@ def refresh_planner_world(
         voxels_registered=voxels,
         cameras=snapshot.cameras, captured_at_s=snapshot.captured_at_s,
         keep_out=snapshot.keep_out,
+        depth_coverage=(
+            () if snapshot.perceived is None
+            else tuple((name, float(share)) for name, share in snapshot.perceived.depth_coverage.items())
+        ),
+        goal_seen_by=snapshot.goal_seen_by,
     )
 
 

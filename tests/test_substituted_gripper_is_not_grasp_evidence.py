@@ -179,6 +179,11 @@ class RealGrippersAreStillJudgedByTheirJawsTests(unittest.TestCase):
         def get_width_mm(self) -> float:
             return 39.0
 
+        def width_is_measured(self) -> bool:
+            # Jaws with a position register, as every real jaw driver says (MeasuresWidth); a width that
+            # is not measured is not judged at all since 2026-09-23.
+            return True
+
     def test_a_gripper_with_jaws_still_passes_on_a_plausible_width(self) -> None:
         report = WidthDeltaGripperVerifier().verify(
             _context(

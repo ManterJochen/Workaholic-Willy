@@ -318,9 +318,12 @@ def build_closed_loop_actors(
         # reads them and applies ``vision_displacement_iou_max``.
         #
         # It matters most on the cell that has the least to say otherwise: a jaw gripper driven
-        # over digital I/O reports neither "object detected" nor a jaw width, so both gripper
-        # verifiers return inconclusive by construction there. Looking at the scene is then the
-        # only way to find out whether the object actually left the table.
+        # over digital I/O with no feedback wired measures neither a hold nor a jaw width. It
+        # answers "object detected" with its own close and reports its commanded band as a width,
+        # so both gripper verifiers read its hold evidence and whether its width is measured, and
+        # return inconclusive there (they passed the echo and failed the band as a collapse until
+        # 2026-09-23). Looking at the scene is then the only way to find out whether the object
+        # actually left the table.
         if bool(grasping_cfg.verification.post_lift_vision_check):
             verifiers.append(VisionTargetDisplacementVerifier())
 

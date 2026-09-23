@@ -63,7 +63,7 @@ from .errors import (
     RobotMotionRejected,
     RobotSingularityRisk,
 )
-from .gripper import Gripper, ObjectDetectingGripper, StoppableGripper
+from .gripper import Gripper, ObjectDetectingGripper, StoppableGripper, TwoStateGripper
 from .gripper_vendor import GripperVendor
 from .joint_positions import JointPositions
 from .motion_result import (
@@ -94,6 +94,7 @@ __all__ = [
     "NO_PLAN_FAIL_SAFE_MESSAGE",
     "ObjectDetectingGripper",
     "StoppableGripper",
+    "TwoStateGripper",
     "RobotArm",
     "RobotCapabilities",
     "RobotConnectionError",

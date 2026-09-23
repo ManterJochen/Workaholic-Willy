@@ -1791,7 +1791,8 @@
           "default": "single_solenoid",
           "enum": [
             "single_solenoid",
-            "double_solenoid"
+            "double_solenoid",
+            "single_toggle"
           ],
           "title": "Actuation",
           "type": "string"
@@ -1907,7 +1908,7 @@
     },
     "JointLimitSafetyConfig": {
       "additionalProperties": false,
-      "description": "Per-axis joint-limit guard configuration.\n\nThe guard prefers driver-side telemetry where it exists (UR's RTDE\n``query_joint_limits``) and otherwise falls back to the static ``min_deg`` /\n``max_deg`` lists below. With neither source it returns\n:attr:`SafetyReason.UNAVAILABLE` and fails closed while ``enforce`` is ``True``.\n\n``margin_deg`` is the buffer in degrees the guard keeps between each commanded\njoint angle and the axis limit itself.",
+      "description": "Per-axis joint-limit guard configuration.\n\nThe guard prefers driver-side telemetry where it exists (UR's RTDE\n``query_joint_limits``) and otherwise falls back to the static ``min_deg`` /\n``max_deg`` lists below. With neither source it returns\n:attr:`SafetyReason.UNAVAILABLE` and fails closed while ``enforce`` is ``True``.\n\n``margin_deg`` is the buffer in degrees the guard keeps between each commanded\njoint angle and the axis limit itself.\n\n``within_half_turn_of_home`` narrows every axis whose range is a full turn or more to\nhalf a turn either side of the arm's own home configuration (``robot.home_joint_positions``,\nor the driver's default where that is unset), before the margin comes off. A cable run along\nthe arm is then never wound more than half a turn from where it was at home, and no joint\nrange has to be typed. It costs no reach: a UR joint is 2*pi-periodic, so every angle has a\ntwin inside any full-turn window, and what the window refuses is a move across the seam\nbehind home, which is the long way round. The margin does cost a band of ``2 * margin_deg``\nat that seam. A UR's elbow is left as the table has it: Universal Robots plans it within\n+-180 degrees, so it never turns the full turn that winds a cable, and it has no twin to fall\nback on. It is off by default, so a cell that does not ask keeps its envelope.",
       "properties": {
         "enforce": {
           "default": true,
@@ -1950,6 +1951,11 @@
           ],
           "default": null,
           "title": "Min Deg"
+        },
+        "within_half_turn_of_home": {
+          "default": false,
+          "title": "Within Half Turn Of Home",
+          "type": "boolean"
         }
       },
       "title": "JointLimitSafetyConfig",

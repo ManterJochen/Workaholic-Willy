@@ -59,6 +59,22 @@ stage runs no IK, reachability or safety check: its candidates pass the same fil
 its own score is kept as `total_score`, because the geometric scorer does not order these candidates
 usefully.
 
+When the stage runs, an empty silhouette no longer ends the attempt: the stage replaces the silhouette's
+candidates anyway, and on a camera tilted 45 degrees a 40 mm cube's silhouette spans its top and its near
+side, 54.5 mm, wider than a 50 mm stroke. Three things keep the prism on the part when the view is
+tilted, where the table seen past the part's far edge lies 40 mm behind it rather than under it:
+
+- The mask pixels that measure more than 10 mm behind a pixel of the same mask within 3 px are left out
+  of the stage's input (`depth_steps.pixels_behind_depth_steps`); `support_footprint_depth_step_pixels`
+  in the telemetry counts them.
+- Low fragments that lie apart from the body, and never rise to half its height, are left out of the
+  footprint and kept as undilated obstacles, so no finger lands on them.
+- `floor_margin_mm` is how far above the support a point still counts as the support: 2.0 by default,
+  the number the reference measurements were made with in a simulator whose calibration is exact.
+  `Scene.from_robot_config` passes the larger of that and
+  `safety.planning_world.perceived.plane_clearance_mm`; a direct caller passes
+  `support_footprint_floor_margin_mm=` to the calculator.
+
 ## Two closing-axis rules
 
 **The closing axis lies in the support plane.** A jaw closes across an object standing on something,

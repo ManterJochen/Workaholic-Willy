@@ -30,9 +30,12 @@ class URConfig(StrictModel):
     #: connected, so the UR connection translates 0.0 -> -1.0 at the driver boundary.
     rtde_frequency: float = Field(default=0.0, ge=0.0)
     # Approach-phase planner, "curobo" by default. It plans a global collision-free trajectory in
-    # the process-isolated cuRobo planner (safety.planning) and executes it waypoint by waypoint
-    # over ur_rtde. "ik" is the controller's calibrated IK and a moveJ/moveL straight line, which
-    # knows nothing about the cell and will drive through anything in it.
+    # the process-isolated cuRobo planner (safety.planning), to the goal configuration nearest the
+    # arm, and runs it over ur_rtde as one moveJ per kept waypoint: the plan is shortened to the
+    # fewest of its own waypoints whose legs stay within the path gate's step of it, the local path
+    # gate and the planner both judge those legs, and exactly that list runs. "ik" is the
+    # controller's calibrated IK and a moveJ/moveL straight line, which knows nothing about the cell
+    # and will drive through anything in it.
     #
     # The "curobo" path is fail-closed: the move returns CONTROLLER_REJECTED when the planner is
     # unavailable and TIMEOUT when no collision-free plan exists. It never degrades to blind IK, so

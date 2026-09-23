@@ -1,11 +1,15 @@
 """Calibrate a camera on the arm's wrist: its CAMERA->TOOL transform, from a sweep over a board.
 
+The sweep is generated: tool-down poses across the workspace box. That suits a camera that looks
+where the tool points. A camera tilted off the tool axis, or on a bracket beside the hand, sees the
+table beside the board from most of them; 10 aims the camera itself at a marker instead.
+
 Fix a printed ArUco board flat on the table within reach, then run it at the cell, under the
 cell's profile:
     WILLY_PROFILE=<your cell> python examples/real_robot/09_calibrate_a_wrist_camera.py
 """
 
-from willy import HandEyeCalibration, SweepOptions, load_tree
+from willy import HandEyeCalibration, SweepOptions, load_tree, print_sweep_progress
 
 tree = load_tree()
 
@@ -19,12 +23,14 @@ print("tool frame source:", tree.robot.gripper.tool_frame.source)
 # place it, and on a cell that plans with geometry it is refused until you say why it may run
 # without it. It then sweeps with no camera body in the planner and the guard. The reason is
 # read only when the body cannot be placed; a recalibration places it from the previous solve.
+# The board is camera.hand_eye.eye_in_hand's (its printed edge as you measured it, its dictionary
+# and id, or a ChArUco `target`); SweepOptions(marker_length_mm=...) overrides it for one run.
 options = SweepOptions(
-    marker_length_mm=40.0,  # the printed edge, as you measured it
     unmodelled_wrist_body="first calibration: nothing can place the camera body before it",
+    preview="auto",  # the camera in a window where one can show; the pendant stops the robot
 )
 calibration = HandEyeCalibration.from_tree(tree, rig_id="wrist", mode="eye_in_hand",
-                                           options=options)
+                                           options=options, on_event=print_sweep_progress)
 
 print(calibration.check())  # the config alone: the rig, its body and the marker; opens nothing
 rehearsed = calibration.run(dry_run=True)  # built and attested, the body placed or declined

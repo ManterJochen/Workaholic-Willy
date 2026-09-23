@@ -22,6 +22,7 @@ from unittest import mock
 
 import yaml
 
+from src.config.schema.camera import HandEyeConfig
 from src.config.schema.robot import RobotConfig
 from src.robot.execution import hand_eye
 from src.robot.execution.real_cell import calibrate
@@ -44,6 +45,12 @@ class _Cameras:
 class _CameraCfg:
     def __init__(self, rigs: list) -> None:
         self.cameras = _Cameras(rigs)
+
+
+def _hand_eye() -> HandEyeConfig:
+    """A real hand-eye block. Its marker is validated at `--check`, so a Mock's attributes no longer pass for one:
+    a dictionary named `<Mock ...>` is the unknown dictionary the check now refuses."""
+    return HandEyeConfig.model_validate({"eye_to_hand": {"marker_length_mm": 50.0}})
 
 
 def _real_rgbd(rig_id: str = "overhead"):
@@ -110,8 +117,7 @@ class CheckTouchesNothingTests(unittest.TestCase):
         cfg = mock.Mock()
         cfg.robot.vendor = "ur"
         cfg.camera = _CameraCfg([_real_rgbd("overhead")])
-        cfg.camera.hand_eye = mock.Mock()
-        cfg.camera.hand_eye.eye_to_hand.marker_length_mm = 50.0
+        cfg.camera.hand_eye = _hand_eye()
 
         def explode(*_a, **_k):  # pragma: no cover - it must never be called
             raise AssertionError("--check built the arm")
@@ -132,8 +138,7 @@ class CheckTouchesNothingTests(unittest.TestCase):
         cfg = mock.Mock()
         cfg.robot = RobotConfig.model_validate({"vendor": "ur"})
         cfg.camera = _CameraCfg([_real_rgbd("overhead")])
-        cfg.camera.hand_eye = mock.Mock()
-        cfg.camera.hand_eye.eye_to_hand.marker_length_mm = 50.0
+        cfg.camera.hand_eye = _hand_eye()
 
         explode = mock.Mock(side_effect=RuntimeError("no controller here"))
         patched_load = mock.patch.object(calibrate, "_load", return_value=cfg)
@@ -150,8 +155,7 @@ class CheckTouchesNothingTests(unittest.TestCase):
         cfg = mock.Mock()
         cfg.robot.vendor = "ur"
         cfg.camera = _CameraCfg([_real_rgbd("overhead").model_copy(update={"enabled": False})])
-        cfg.camera.hand_eye = mock.Mock()
-        cfg.camera.hand_eye.eye_to_hand.marker_length_mm = 50.0
+        cfg.camera.hand_eye = _hand_eye()
         with mock.patch.object(calibrate, "_load", return_value=cfg):
             code = calibrate.main(["--rig", "overhead", "--check"])
         self.assertEqual(code, calibrate._EXIT_CONFIG)

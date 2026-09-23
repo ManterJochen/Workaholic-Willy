@@ -251,8 +251,49 @@ tool-mounted gripper is usually on `tool`, which both config blocks default to.
 | Your cell | What `connect()` does |
 |---|---|
 | end-stop switches wired | reads them; **opens only on an empty reading**, holds a detected part and warns so a person decides |
-| no switches, `open_on_connect_without_feedback: true` | **opens unconditionally**, and anything held is dropped |
+| no switches, `open_on_connect_without_feedback: true` | **opens unconditionally**, and anything held is dropped (refused for `single_toggle`) |
 | no switches, flag off | does not actuate at all |
+| `single_toggle`, no `open_confirm_input_pin` | never pulses, and **starts from its record** of its own pulses (`logs/robot/state`); refuses to pulse while the record says a pulse was not seen to finish, and takes the jaws to stand open only where there is no record at all |
+| `single_toggle` with `open_confirm_input_pin` | reads the switches: no pulse where they read open, one pulse where both prove the jaws **closed on nothing**, and **refuses to connect** otherwise |
+
+`single_toggle` is one output where every pulse flips the jaws. The pin level says nothing about
+them, so without an open switch the driver counts its own pulses and writes the count down after
+every one, one record per controller, bank and pin under `logs/robot/state` (`WILLY_JAW_STATE_DIR`
+moves it). The next program starts from it, so a program that ended with the jaws closed no longer
+inverts the one after it. A pulse the count never saw still inverts every later command: one lost
+to an e-stop or a cable, the pendant's I/O tab, a power cut mid stroke. An open switch makes that
+harmless, if `close_timeout_s` is longer than the full stroke: a switch that has not answered by then
+reads as a lost pulse. A closed switch alone is refused. Measure the pulse the device needs with
+`python -m src.robot.drivers.ur --pulse 0 --for 0.2 --yes`: one call must flip the jaws once.
+
+That bench pulse is one the driver does not count either. So once it is confirmed, and before the
+edge, the bench marks the toggle's record, as it does for `--set` and `--measure` on that pin, and the
+next program refuses to pulse until a person has looked at the jaws and said where they stand:
+
+```bash
+python -m src.robot.drivers.ur --profile <cell> --jaws-stand open --yes   # or closed: what you saw
+python -m src.robot.drivers.ur --profile <cell> --jaws open --yes         # moves them through the count
+```
+
+Declare after anything that moved the jaws behind the driver's back, and move them afterwards with
+`--jaws open` (or `closed`), which pulses only where the count says they stand the other way and
+records the pulse. Never move them by hand. A device that keeps its own flip state is not moved by a
+hand pushing its jaws open: its next pulse only brings that state round, nothing visibly moves, and
+every command after it is inverted, so a pick closes nothing and the place closes at the tray.
+An open switch that does not read open at connect refuses the connect, because a held part and a switch
+nobody wired read the same, and the second would swallow every close.
+
+Where no switch is read, `close_settle_s` is the only wait there is, on a close and on an open: the
+arm moves on that long after the edge, whether the jaws have arrived or not. Its schema default,
+0.3 s, is a small cylinder's stroke, and a Hand-E on its I/O coupling can take about 2 s. Time the
+full stroke both ways, with `--measure` where an input answers it (then declare, as after any bench
+pulse on the toggle's pin) or by stopwatch or video, and set `close_settle_s` to the longer, with a
+margin. The desk warns (`jaw travel time`) while it is still the default.
+
+**`closed_below_mm` reads only the widths you send yourself.** A digital-I/O jaw closes at or below it
+and opens above it when it is given a width (`set_width_mm`). The hand verbs (`pick`, `place`, `grasp`,
+`release`) and the pick loop tell `jaw_io` open or close by what they mean instead, so no width turns a
+verb round. The load refuses a value at or above `max_width_mm` or below `min_width_mm`.
 
 `vacuum` differs on purpose: it asserts off on connect, because releasing a latched cup is cheap, while
 opening jaws that hold a rigid part drops it wherever the arm stands. Its `disconnect()` never raises,

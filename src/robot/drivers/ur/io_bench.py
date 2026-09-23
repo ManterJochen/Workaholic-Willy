@@ -224,7 +224,8 @@ def pulse_output(
     port: DigitalIOPort,
     sleep: Callable[[float], Any] = time.sleep,
 ) -> None:
-    """Drive an output high for ``seconds``, then low: the double-solenoid and blow-off shape.
+    """Drive an output high for ``seconds``, then low: the double-solenoid, single-toggle and
+    blow-off shape.
 
     It always drops the pin, including where the sleep is interrupted. A latching coil
     left energised is the failure this exists to avoid, and an interrupt mid-pulse is

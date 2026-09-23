@@ -234,15 +234,31 @@ class JawIOGripperConfig(StrictModel):
     #: ``double_solenoid``: two pulsed outputs, one per direction, on a bistable valve. The valve
     #: holds the part on power loss, which is the safer failure, but the jaw state is then not
     #: inferable from the outputs, so feedback pins matter more here.
-    actuation: Literal["single_solenoid", "double_solenoid"] = "single_solenoid"
+    #:
+    #: ``single_toggle``: one pulsed output, where every pulse of ``pulse_s`` flips the jaws, closed
+    #: to open and back. The pin level says nothing about the jaws, so the driver pulses only when
+    #: they stand the other way from the request. With no open switch it counts its own pulses and
+    #: keeps the count on disk between programs (``logs/robot/state``), so a program that ended with
+    #: the jaws closed no longer inverts the next one; a pulse nobody counted (the pendant's I/O tab,
+    #: a power cut mid stroke) still does, and a person then says where the jaws stand:
+    #: ``python -m src.robot.drivers.ur --jaws-stand open --yes``. A pulse started and not seen to
+    #: finish makes the driver refuse to pulse until then. Wiring ``open_confirm_input_pin`` lets a
+    #: sensor decide instead; a closed switch alone is refused, because off its stop it can only
+    #: repeat what was last commanded.
+    actuation: Literal["single_solenoid", "double_solenoid", "single_toggle"] = "single_solenoid"
     #: Output that closes the jaws: held high while closed under ``single_solenoid``, pulsed
-    #: under ``double_solenoid``.
+    #: under ``double_solenoid``, and under ``single_toggle`` the one pin, pulsed to close and to
+    #: open.
     close_output_pin: int = Field(default=0, ge=0, le=7)
     #: Output that opens the jaws. Required for ``double_solenoid``; unused (and must stay unset)
-    #: for ``single_solenoid``, where "open" is simply dropping ``close_output_pin``.
+    #: for ``single_solenoid``, where "open" is simply dropping ``close_output_pin``, and for
+    #: ``single_toggle``, where "open" is a second pulse on it.
     open_output_pin: int | None = Field(default=None, ge=0, le=7)
-    #: Pulse length for ``double_solenoid``. A bistable valve latches, so the coil is energised only
-    #: long enough to throw it; holding it high is what cooks the coil.
+    #: Pulse length for ``double_solenoid`` and ``single_toggle``. A bistable valve latches, so the
+    #: coil is energised only long enough to throw it; holding it high is what cooks the coil. A
+    #: toggle flips once per pulse, so the pulse must be long enough for it to register, and its
+    #: pin is also held low for ``pulse_s`` before each pulse, since a flip is an edge, so one flip
+    #: takes twice this.
     pulse_s: float = Field(default=0.2, gt=0.0, le=5.0)
     #: Optional input from a dedicated part-present sensor. The simplest feedback: one pin, read
     #: directly.
@@ -258,10 +274,14 @@ class JawIOGripperConfig(StrictModel):
     #: Which I/O bank the pins live on. A tool-mounted gripper is usually on the tool block.
     io_port: Literal["standard", "configurable", "tool"] = "tool"
     #: How long to wait for the jaws to reach a settled state after a close. A timeout is a missed
-    #: grasp, not a fault; the verification stage decides, exactly as for suction.
+    #: grasp, not a fault; the verification stage decides, exactly as for suction. For a
+    #: ``single_toggle`` with an open switch it is also how long an open pulse waits for the open
+    #: stop, and a switch that has not answered by then is taken as a lost pulse, so set it above
+    #: the full stroke.
     close_timeout_s: float = Field(default=1.0, gt=0.0, le=30.0)
-    #: Fixed travel wait used when no feedback pin is wired: there is nothing to poll, so the driver
-    #: can only wait. Also the settle pause after the jaws leave the open switch.
+    #: The jaws' travel time, both ways. With no feedback pin wired it is the whole wait: there is nothing to poll,
+    #: so the driver can only wait. With one, a reading that also occurs mid-stroke is taken only after it. An open
+    #: with no open switch waits it too, so a place does not back out of jaws still opening.
     close_settle_s: float = Field(default=0.3, ge=0.0, le=10.0)
     #: Commanded width at/below which the driver closes. Mirrors ``vacuum_on_below_mm`` so both I/O
     #: end-effectors interpret the width-based Protocol identically.
@@ -272,7 +292,8 @@ class JawIOGripperConfig(StrictModel):
     #: hold and warn when it does not, rather than dropping an unknown workpiece wherever the arm
     #: happens to be. Without feedback "proven empty" is unreachable, so the same rule means not
     #: actuating. True gives the suction driver's behaviour instead: assert a known state on
-    #: connect, accepting that a held part is released.
+    #: connect, accepting that a held part is released. Refused for ``single_toggle``, which cannot
+    #: assert a state, only flip one.
     open_on_connect_without_feedback: bool = False
 
     @model_validator(mode="after")
@@ -289,6 +310,31 @@ class JawIOGripperConfig(StrictModel):
                 "gripper.jaw_io: actuation 'single_solenoid' opens by dropping `close_output_pin`, "
                 "so `open_output_pin` is never driven. Remove it, or set actuation to "
                 "'double_solenoid' if the valve really has two coils."
+            )
+        if self.actuation == "single_toggle" and self.open_output_pin is not None:
+            raise ValueError(
+                "gripper.jaw_io: actuation 'single_toggle' opens by a second pulse on "
+                "`close_output_pin`, so `open_output_pin` is never driven. Remove it, or set actuation "
+                "to 'double_solenoid' if the valve really has two coils."
+            )
+        # A toggle can only flip the jaws, not put them somewhere: a pulse on jaws that already
+        # stand open closes them, so asserting open on connect is the one thing it must not do.
+        if self.actuation == "single_toggle" and self.open_on_connect_without_feedback:
+            raise ValueError(
+                "gripper.jaw_io: actuation 'single_toggle' cannot assert 'open' on connect: every pulse "
+                "flips the jaws, so a pulse on jaws that already stand open would close them. Remove "
+                "`open_on_connect_without_feedback`; connect() pulses only where both end-stop "
+                "switches prove the jaws closed on nothing."
+            )
+        # Off its stop a lone closed switch can only repeat what was last commanded, so a lost pulse
+        # would be read back as a grasp and the next pulse would flip the jaws the wrong way.
+        if (self.actuation == "single_toggle" and self.closed_confirm_input_pin is not None
+                and self.open_confirm_input_pin is None):
+            raise ValueError(
+                "gripper.jaw_io: actuation 'single_toggle' with `closed_confirm_input_pin` and no "
+                "`open_confirm_input_pin`: off the closed stop that switch only repeats what was last "
+                "commanded, so a lost pulse would be read back as a grasp. Wire `open_confirm_input_pin` "
+                "too, or neither."
             )
         pins = [self.close_output_pin, self.open_output_pin]
         if self.open_output_pin is not None and self.close_output_pin == self.open_output_pin:
@@ -486,6 +532,25 @@ class GripperConfig(StrictModel):
                 f"max_width_mm - closed_width_mm and would collapse, turning every commanded width, "
                 f"open() included, into a full close."
             )
+        # A jaw_io gripper reads every commanded width as open or closed, closed at or below closed_below_mm. A release
+        # and a pick's pre-open command max_width_mm and a grasp commands at least min_width_mm, so a threshold outside
+        # that band makes every release close the jaws, or leaves no grasp that closes them. With 84, the 2F-85's
+        # number, on a Hand-E's 49.99 a pick closes the jaws at its pre-open, the symptom the owner's toggle cell
+        # reported on 2026-09-23.
+        if self.vendor == "jaw_io":
+            below = self.jaw_io.closed_below_mm
+            if below >= self.max_width_mm:
+                raise ValueError(
+                    f"gripper.jaw_io.closed_below_mm ({below}) must be < max_width_mm ({self.max_width_mm}): jaw_io "
+                    f"closes at or below it, and a release and a pick's pre-open command max_width_mm, so every "
+                    f"release would close the jaws. Set it just below max_width_mm, above the widest part less the "
+                    f"squeeze."
+                )
+            if below < self.min_width_mm:
+                raise ValueError(
+                    f"gripper.jaw_io.closed_below_mm ({below}) must be >= min_width_mm ({self.min_width_mm}): a pick "
+                    f"grasps at min_width_mm or wider, so below it a pick's grasp would never close the jaws."
+                )
         return self
 
 

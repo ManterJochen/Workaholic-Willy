@@ -456,21 +456,28 @@ robot:
       # return). The common pneumatic case. On power loss the spring opens and a held part FALLS.
       # ``double_solenoid`` TWO outputs, pulsed: one closes, the other opens, and the valve is bistable.
       # On power loss it HOLDS the part, which is the safer failure but the jaw state is then not
-      # inferable from the outputs, so feedback pins matter more here.
-      # [default: single_solenoid] [one of: single_solenoid | double_solenoid]
+      # inferable from the outputs, so feedback pins matter more here. ``single_toggle`` ONE output,
+      # pulsed: every pulse flips the jaws. With no open switch the driver counts its own pulses and
+      # keeps the count between programs (logs/robot/state); a pulse it did not count (the pendant, a
+      # power cut) inverts it until a person declares where the jaws stand (python -m
+      # src.robot.drivers.ur --jaws-stand open --yes); ``open_confirm_input_pin`` lets a sensor decide.
+      # [default: single_solenoid] [one of: single_solenoid | double_solenoid | single_toggle]
       actuation: single_solenoid
 
-      # Output that closes the jaws. Held high while closed (single) or pulsed (double).
+      # Output that closes the jaws. Held high while closed (single), pulsed (double), or the one pin
+      # a toggle pulses to close and to open.
       # [default: 0]
       close_output_pin: 0
 
       # Output that opens the jaws. REQUIRED for ``double_solenoid``; unused (and must stay unset) for
-      # ``single_solenoid``, where "open" is simply dropping ``close_output_pin``.
+      # ``single_solenoid``, where "open" is simply dropping ``close_output_pin``, and for
+      # ``single_toggle``, where "open" is a second pulse on it.
       # [default: null]
       open_output_pin: null
 
-      # Pulse length for ``double_solenoid``. A bistable valve latches, so the coil is energised only long
-      # enough to throw it holding it high is what cooks the coil.
+      # Pulse length for ``double_solenoid`` and ``single_toggle``. A bistable valve latches, so the coil
+      # is energised only long enough to throw it holding it high is what cooks the coil. A toggle's pin
+      # is also held low for ``pulse_s`` before each pulse, so one flip takes twice this.
       # [default: 0.2]
       pulse_s: 0.2
 
@@ -494,8 +501,9 @@ robot:
       # [default: 1.0]
       close_timeout_s: 1.0
 
-      # Fixed travel wait used when NO feedback pin is wired (there is nothing to poll, so the driver can
-      # only wait).
+      # The jaws' travel time, both ways. With no feedback pin wired it is the whole wait: there is nothing
+      # to poll, so the driver can only wait. With one, a reading that also occurs mid-stroke is taken only
+      # after it. An open with no open switch waits it too, so a place does not back out of opening jaws.
       # [default: 0.3]
       close_settle_s: 0.3
 
@@ -646,6 +654,16 @@ robot:
       # Per-axis upper joint limits in degrees; the companion of `min_deg`.
       # [default: null]
       max_deg: null
+
+      # Narrow every axis whose range is a full turn or more to half a turn either side of the arm's home
+      # (`robot.home_joint_positions`, or the driver's default), before `margin_deg` comes off, so a cable along
+      # the arm is never wound more than half a turn from home. It costs no reach: every UR joint is
+      # 2*pi-periodic, so each angle has one twin inside the window; the margin costs a band of 2 * margin_deg at
+      # the seam behind home. A UR's elbow is left alone: it is planned within +-180 deg and never turns a full
+      # turn. The UR driver chooses Cartesian goals inside the same window, and the real-cell desk check prints the
+      # matching PolyScope Joint Limits. On in the ur10 profile.
+      # [default: false]
+      within_half_turn_of_home: false
 
     # IK-solution-quality guard configuration.
     ik_quality:

@@ -58,8 +58,10 @@ is a green light for a robot nobody configured.
 | a move fails `TIMEOUT` | the planner found no collision-free plan | move the goal, or clear the cell |
 | `CuroboUnavailableError` from `check_joints` | no reply, a sidecar that exited, or a reply that is not a verdict for every sample | restart the sidecar from this tree |
 | `ValueError` from `check_joints` | no configuration, a value that is not finite, or a wrong joint count | send whole configurations |
-| `CameraWorldUnavailable` from a verb | a camera stays silent, blind or stale after `perceived.fresh_frame_attempts` more readings | fix the camera; a pick stops |
+| `CameraWorldUnavailable` from a verb | a camera stays silent, blind or stale after `perceived.fresh_frame_attempts` more readings; blind is a frame with no depth, a fixed camera's frame less than half of whose pixels hold one, or a wrist camera's asked about no goal | fix the camera, or move it further from what it sees; a pick stops |
+| a move fails `CONTROLLER_REJECTED`, world `unseen` | cameras look at the motion's goal and none holds a depth on half the 200 mm about it | look from further away, or use a depth mode with a shorter minimum range |
 | a planner that does not start | no committed evidence file for this arm, hand, coupling, placement and margin | measure one, see [`robot/evidence/`](robot/evidence/README.md) |
+| a planner that does not start, `..._a16.json` | a declared carried part (`planning_world.payload.length_mm`) reserves 16 attach slots, and nobody measured the combination with them | the refusal's `matrix_gate.py ... --attach 16` command, about a minute on the cell's GPU; the UR10 files are committed |
 
 The simulator refuses the same way as a real cell: there is no fallback to blind IK. `WILLY_CUROBO_ROBOT`
 loses to the arm and hand the cell declares, and the driver refuses a descriptor built for another arm,
@@ -85,6 +87,52 @@ move planned on a vouched world is stamped `PLANNED` with its cameras and the ca
 image. A pick's goal keeps the space between the open jaws out of every view (`goal_keep_out`), so a
 world that registered the part still has a plan to it; `WorldRefresh.keep_out` records what was left
 out, or why nothing was.
+
+### What the camera world does not see
+
+A pixel with no depth is space the planner receives as free: the camera measured nothing along that
+ray, because the surface was closer than its minimum range, could not be read, or lay in its shadowed
+band. Intel's datasheet gives a D415 a minimum range of about 450 mm at 1280 x 720 and about 310 mm at
+848 x 480 (not measured here), so a camera on the wrist is blind to what is near the hand. The world
+counts those pixels (`DropReason.NO_DEPTH`) and reports each camera's share of depth
+(`PerceivedWorld.depth_coverage`). A frame with no depth at all is `BLIND`, and so is a fixed camera's
+frame less than half of whose pixels hold one: a fixed camera is never carried toward what it sees, so
+that is the camera or something in front of it. A camera on the wrist is carried inside its minimum
+range by every grasp (the review's ray cast of the owner's pick: 27 % of the frame at the grasp at
+848 x 480, 12 % at 1280 x 720, with the hand's line out of view), so its frame is judged where the
+motion goes, and by the whole frame only when the motion names no goal. A goal that cameras look at,
+none of them holding a depth on half the region about it, is `UNSEEN` and refuses the motion. What
+stays below those limits, and a goal no camera looks at, is written on the motion's `PLANNED` stamp as
+`unseen`, so the stamp does not vouch for it. A camera on the wrist sees only where it points: a goal
+outside its view is planned against what is declared there.
+
+The bench is the support plane plus a band: the configured `perceived.plane_clearance_mm`, plus, for
+a camera on the wrist, the tool motion measured across its grab (at most its rig's shutter motion
+tolerance, and about nothing on an arm standing still) grown with each point's range, at most 25 mm
+more (`PerceivedWorld.bench_band_mm`). Anything lower than the band above the bench is not an obstacle.
+The workspace box bounds the TCP only, so the world keeps what the robot's own body can reach: a
+sphere about the base that holds every link, the hand, a wrist camera and a held part in every
+configuration (`SelfEnvelope.reach`, 1793 mm on a UR10 with a Hand-E).
+
+What the planner already holds is not registered twice. A camera point within
+`perceived.DECLARED_SURFACE_MM` (5 mm) of a declared fixture or a declared mesh, plus the view's
+measured error as above and never more than the bench band, is that fixture (`DropReason.DECLARED`,
+counted per body in `PerceivedWorld.declared_points`), so a declared tote keeps its hollow instead of
+coming back as a perceived block over it; what lies in the tote stays an obstacle. The band is not the
+bench band itself: a slab sunk below the bench raises `plane_clearance_mm` by the sink, and a part
+beside a declared tote is not the tote. A mesh that cannot be read for this is said on the snapshot,
+and what the cameras see of it stays an obstacle. A cluster that spans a
+keep-out box, the neighbours around a part in a pile or the floor of a tote around it, is cut around
+the box before it is fitted, into what lies beyond each of its sides, above it and below it
+(`PerceivedWorld.keep_out_cuts`). A cut box reaches into the keep-out by at most its margin, which is
+the margin a target's keep-out is grown by, so it never covers the target. Measured 2026-09-23 on a
+3 x 3 pile of 40 mm cubes: at a 30 mm gap the Hand-E's pads are free, where one box covered them before.
+
+A camera on the wrist has moved since its last frame. Its depth source reads the tool pose, tells the
+handle the camera moved where the handle can drop its temporal filter's history (`camera_moved()`),
+throws away five frames (`depth_source.WRIST_WARMUP_GRABS`, as the pick frame does) and keeps the next:
+a frame the stream queued during the move, and holes a temporal filter filled with the depth of the
+pose before, are among the ones thrown away. A fixed camera grabs once.
 
 `check_js` judges a whole joint path in one request: up to 1000 configurations, each against the joint
 limits, the robot itself and the world the planner holds, with an attached payload counted. A sample

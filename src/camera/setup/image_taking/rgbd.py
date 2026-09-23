@@ -16,6 +16,10 @@ on ``RGBDDeviceRigConfig.rgbd_backend`` and the rest of the pipeline sees one fr
 from __future__ import annotations
 
 import logging
+import math
+import re
+import time
+from collections.abc import Callable
 from typing import Any, Literal, Protocol, runtime_checkable
 
 import cv2 as cv
@@ -24,6 +28,68 @@ import numpy as np
 from src.config.schema.camera import RGBDDeviceRigConfig
 from src.camera.setup.image_taking.frames import RGBDFrame
 from src.camera.setup.quality import configure_camera_for_quality
+
+
+#: Intel's minimum depth (Min-Z) of a D400 camera, in millimetres, by model and depth-stream width: a surface nearer
+#: than this is not measured and reads as 0, a hole. The 1280-pixel values are Intel's datasheet figures for the full
+#: 1280 x 720 mode, and the D415's 848 x 480 value is the one the 2026-09-23 audit of the owner's cell took from
+#: Intel's material. None of them is measured on a device here. A D435i has the D435's depth module.
+_MIN_Z_MM: dict[str, dict[int, float]] = {
+    "D415": {1280: 450.0, 848: 310.0},
+    "D435": {1280: 280.0},
+    "D435I": {1280: 280.0},
+}
+
+
+def realsense_min_depth_mm(model: str | None, depth_width: int) -> float | None:
+    """How near a D400 camera measures at a depth-stream width, in millimetres, or ``None`` for a model not in the table.
+
+    A width the table does not list scales the model's 1280-pixel value with the width, as Intel's tuning guide
+    describes Min-Z: it falls in proportion to the horizontal depth resolution. The number is Intel's, not a
+    measurement, and a disparity shift, which this driver never sets, would change it.
+    """
+    table = _MIN_Z_MM.get((model or "").upper())
+    if table is None:
+        return None
+    if depth_width in table:
+        return table[depth_width]
+    return table[1280] * float(depth_width) / 1280.0
+
+
+def _depth_camera_model(device_name: str | None) -> str | None:
+    """The model in a device name the SDK reports, ``"D415"`` out of ``"Intel RealSense D415"``, or ``None``."""
+    match = re.search(r"\b(D\d{3}[A-Za-z]?)\b", device_name or "")
+    return match.group(1).upper() if match else None
+
+
+def _preset_key(name: str) -> str:
+    """A preset name reduced to letters and digits, so ``HighAccuracy`` names the SDK's ``high_accuracy``."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _camera_info(rs: Any, device: Any, key: str) -> str | None:
+    """One ``rs.camera_info`` field of a device, or ``None`` where the device does not report it.
+
+    Only ever a diagnostic, so a device or an SDK that cannot answer gives ``None`` rather than an error.
+    """
+    try:
+        field = getattr(rs.camera_info, key)
+        if not device.supports(field):
+            return None
+        value = str(device.get_info(field)).strip()
+    except Exception:  # noqa: BLE001 (a diagnostic never takes the stream down)
+        return None
+    return value or None
+
+
+def _connected_cameras(rs: Any) -> list[dict[str, str | None]]:
+    """The name, serial and USB link of every RealSense the SDK enumerates; empty where it cannot enumerate."""
+    try:
+        devices = list(rs.context().query_devices())
+    except Exception:  # noqa: BLE001 (a diagnostic never replaces the refusal it explains)
+        return []
+    return [{key: _camera_info(rs, device, key) for key in ("name", "serial_number", "usb_type_descriptor")}
+            for device in devices]
 
 
 @runtime_checkable
@@ -173,15 +239,34 @@ class OpenCvRGBDStreamer:
 class RealSenseRGBDStreamer:
     """Intel RealSense RGB-D streamer over ``pyrealsense2``.
 
-    Streams hardware time-synced BGR colour and Z16 depth, optionally aligned to the
-    colour frame, converts depth to uint16 millimetres with the device depth-scale and
-    runs the configured post-processing filter chain. The SDK import is deferred to
+    Streams hardware time-synced BGR colour and Z16 depth, runs the configured post-processing
+    filter chain on the depth, aligns it to the colour frame if configured, and converts it to
+    uint16 millimetres with the device's depth scale. The SDK import is deferred to
     :meth:`_import_rs`, so importing this module never requires ``pyrealsense2``, and
-    ``rs_module`` substitutes a stand-in for it, which runs the driver logic with no
-    hardware attached.
+    ``rs_module`` substitutes a stand-in for it, which runs the driver logic with no hardware
+    attached. ``clock`` is the monotonic clock the pause rule of :meth:`grab` reads.
+
+    The temporal filter averages each depth pixel over the frames this driver handed it and
+    fills a hole with a depth it saw in them, and the driver hands it only the frames it grabs.
+    On a camera the arm carries those frames can come from the pose before the last move, so
+    the history is dropped when :meth:`camera_moved` says the camera moved, and, on a camera the
+    arm carries, when a pause between two grabs is longer than a burst of back-to-back grabs
+    takes.
     """
 
-    def __init__(self, config: RGBDDeviceRigConfig, *, rs_module: Any | None = None) -> None:
+    #: The shortest pause between two grabs, in seconds, that drops a carried camera's temporal
+    #: history. A burst of back-to-back grabs, the warm-ups a pick frame takes, is one frame
+    #: period apart plus the filtering; any arm move and settle takes longer than this.
+    _PAUSE_S = 0.25
+    #: The same bound in frame periods, for a slow mode whose frame period nears the pause.
+    _PAUSE_FRAMES = 3.0
+    #: How far the depth scale the device reads back may lie from a configured ``depth_units_m``,
+    #: relative. The SDK holds the option as a 32-bit float, so a value written reads back within
+    #: about 1e-7 of itself; a unit the device did not take is off by a factor.
+    _UNITS_REL_TOL = 1e-3
+
+    def __init__(self, config: RGBDDeviceRigConfig, *, rs_module: Any | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.cfg = config
         self.rs_cfg = config.realsense
         self.logger = logging.getLogger(f"{__name__}.{config.rig_id}")
@@ -191,14 +276,24 @@ class RealSenseRGBDStreamer:
         self.fps = int(config.fps)
         self.serial = config.serial_number
         self.align_to_color = config.align_depth_to_color
+        #: A camera the arm carries: it declares a body, or its calibration says eye_in_hand.
+        self.carried = config.body is not None or (
+            config.extrinsics is not None and config.extrinsics.mounting_mode == "eye_in_hand")
 
         self._rs = rs_module
+        self._clock = clock
         self._pipeline: Any | None = None
         self._align: Any | None = None
         self._filters: list[Any] = []
+        #: Where the temporal filter sits in ``_filters``, or None when the chain has none.
+        self._temporal_at: int | None = None
+        self._last_grab_s: float | None = None
         self._depth_scale_m: float | None = None
         self._intrinsics: np.ndarray | None = None
         self._distortion: np.ndarray | None = None
+        self._device_name: str | None = None
+        self._usb: str | None = None
+        self._min_depth_mm: float | None = None
 
     # ------------------------------------------------------------------
     # SDK import seam
@@ -223,7 +318,12 @@ class RealSenseRGBDStreamer:
     # ------------------------------------------------------------------
 
     def open(self) -> None:
-        """Start the pipeline, configure the depth sensor and filters, then read intrinsics."""
+        """Start the pipeline, configure the depth sensor and filters, then read intrinsics.
+
+        A request the SDK cannot start is raised with the RealSense cameras it sees and the USB link
+        each is on. A depth sensor that did not take the configured ``depth_units_m`` refuses the open.
+        Either way the pipeline is not left running.
+        """
         rs = self._import_rs()
 
         rs_config = rs.config()
@@ -236,16 +336,34 @@ class RealSenseRGBDStreamer:
             rs.stream.depth, self.depth_res[0], self.depth_res[1], rs.format.z16, self.fps
         )
 
-        self._pipeline = rs.pipeline()
-        profile = self._pipeline.start(rs_config)
+        pipeline = rs.pipeline()
+        try:
+            profile = pipeline.start(rs_config)
+        except RuntimeError as exc:
+            raise RuntimeError(self._start_refusal(rs, exc)) from exc
+        self._pipeline = pipeline
+        try:
+            self._configure(rs, profile)
+        except BaseException:
+            self.release()
+            raise
 
-        depth_sensor = profile.get_device().first_depth_sensor()
+    def _configure(self, rs: Any, profile: Any) -> None:
+        """Everything ``open()`` does once the pipeline runs."""
+        device = profile.get_device()
+        self._device_name = _camera_info(rs, device, "name")
+        self._usb = _camera_info(rs, device, "usb_type_descriptor")
+        self._min_depth_mm = realsense_min_depth_mm(_depth_camera_model(self._device_name), int(self.depth_res[0]))
+
+        depth_sensor = device.first_depth_sensor()
         self._configure_depth_sensor(rs, depth_sensor)
-        self._depth_scale_m = self.rs_cfg.depth_units_m or float(depth_sensor.get_depth_scale())
+        self._depth_scale_m = self._read_back_depth_scale(depth_sensor)
 
         self._align = rs.align(rs.stream.color) if self.align_to_color else None
         self._filters = self._build_filters(rs)
+        self._last_grab_s = None
 
+        assert self._pipeline is not None  # set by open() before it calls this
         for _ in range(self.cfg.quality.warmup_frames):
             self._pipeline.wait_for_frames()
 
@@ -253,12 +371,7 @@ class RealSenseRGBDStreamer:
         if self.rs_cfg.export_intrinsics and self._intrinsics is not None:
             self._export_intrinsics(self._intrinsics)
 
-        self.logger.info(
-            "RealSense opened: colour %dx%d + depth %dx%d @ %d fps | depth_scale=%.6g m/unit | "
-            "align=%s | filters=%d",
-            self.color_res[0], self.color_res[1], self.depth_res[0], self.depth_res[1],
-            self.fps, self._depth_scale_m, self.align_to_color, len(self._filters),
-        )
+        self._say_what_opened(device, rs)
 
     def release(self) -> None:
         if self._pipeline is not None:
@@ -269,6 +382,8 @@ class RealSenseRGBDStreamer:
         self._pipeline = None
         self._align = None
         self._filters = []
+        self._temporal_at = None
+        self._last_grab_s = None
 
     def is_opened(self) -> bool:
         return self._pipeline is not None
@@ -278,11 +393,24 @@ class RealSenseRGBDStreamer:
     # ------------------------------------------------------------------
 
     def grab(self) -> RGBDFrame:
-        """Grab a colour and depth pair, aligned and filtered as configured, as an RGBDFrame."""
+        """Grab a colour and depth pair, filtered and aligned as configured, as an RGBDFrame.
+
+        On a camera the arm carries, a grab that follows the previous one by more than a burst
+        takes starts the temporal filter afresh (see the class docstring).
+        """
         if self._pipeline is None:
             raise RuntimeError("Device is not open. Call open() first.")
 
+        now = self._clock()
+        if self.carried and self._last_grab_s is not None and now - self._last_grab_s > self._pause_s():
+            self.camera_moved()
+        self._last_grab_s = now
+
         frameset = self._pipeline.wait_for_frames()
+        # librealsense's recommended order: every filter on the depth as it left the sensor, and the
+        # alignment to colour last. Spatial and temporal run between the two disparity transforms.
+        for filt in self._filters:
+            frameset = filt.process(frameset).as_frameset()
         if self._align is not None:
             frameset = self._align.process(frameset)
 
@@ -291,13 +419,24 @@ class RealSenseRGBDStreamer:
         if not depth_frame or not color_frame:
             raise RuntimeError("RealSense returned an incomplete frameset (missing colour or depth).")
 
-        for filt in self._filters:
-            depth_frame = filt.process(depth_frame)
-
         color = np.ascontiguousarray(np.asanyarray(color_frame.get_data()))
         depth_raw = np.asanyarray(depth_frame.get_data())
         depth_mm = self._match_color_size(self._to_millimetres(depth_raw), color)
         return RGBDFrame(color=color, depth=depth_mm)
+
+    def camera_moved(self) -> None:
+        """Say that the camera moved since its last grab, so the next frame holds only depth seen from where it is now.
+
+        Builds a new temporal filter in the old one's place, which drops the frames it averaged at
+        the pose before. The other filters keep no history. A no-op on a chain without a temporal
+        filter, and on a driver that is not open.
+        """
+        if self._temporal_at is None:
+            return
+        self._filters[self._temporal_at] = self._import_rs().temporal_filter()
+
+    def _pause_s(self) -> float:
+        return max(self._PAUSE_S, self._PAUSE_FRAMES / float(self.fps))
 
     # ------------------------------------------------------------------
     # Public accessors
@@ -318,8 +457,81 @@ class RealSenseRGBDStreamer:
 
     @property
     def depth_scale_m(self) -> float | None:
-        """Metres per raw depth unit reported by the device (available after ``open()``)."""
+        """Metres per raw depth unit, as the device reads it back after configuration (after ``open()``)."""
         return self._depth_scale_m
+
+    @property
+    def device_name(self) -> str | None:
+        """The name the SDK reports for the opened camera, ``"Intel RealSense D415"``, or None."""
+        return self._device_name
+
+    @property
+    def min_depth_mm(self) -> float | None:
+        """Intel's Min-Z for the opened model at this depth mode, in millimetres, or None where it is not known.
+
+        Nothing nearer than this is measured. A datasheet figure, not a measurement: see
+        :func:`realsense_min_depth_mm`.
+        """
+        return self._min_depth_mm
+
+    # ------------------------------------------------------------------
+    # Internal: what open() says
+    # ------------------------------------------------------------------
+
+    def _say_what_opened(self, device: Any, rs: Any) -> None:
+        serial = _camera_info(rs, device, "serial_number")
+        firmware = _camera_info(rs, device, "firmware_version")
+        name = self._device_name or "RealSense (the SDK reports no name)"
+        dw, dh = self.depth_res
+        min_z = ("Min-Z unknown for this model" if self._min_depth_mm is None
+                 else f"nothing nearer than about {self._min_depth_mm:.0f} mm is measured at this depth mode "
+                      "(Intel's figure, not measured here)")
+        self.logger.info(
+            "RealSense opened: %s (serial %s, firmware %s, USB %s) | colour %dx%d + depth %dx%d @ %d fps | %s | "
+            "depth_scale=%.6g m/unit read back from the device | align=%s | filters=%s",
+            name, serial or "?", firmware or "?", self._usb or "?", self.color_res[0], self.color_res[1],
+            dw, dh, self.fps, min_z, self._depth_scale_m, self.align_to_color,
+            [type(f).__name__ for f in self._filters],
+        )
+        if _depth_camera_model(self._device_name) == "D415" and (dw, dh) == (1280, 720):
+            self.logger.warning(
+                "%s streams depth at 1280x720, where a D415 measures nothing nearer than about %.0f mm: a surface "
+                "closer than that is a hole. A D415 on the wrist works nearer than that; depth_resolution "
+                "[848, 480] brings Min-Z to about %.0f mm, with color_resolution kept at [1280, 720] and depth "
+                "aligned to it (Intel's figures, not measured here).",
+                name, realsense_min_depth_mm("D415", 1280), realsense_min_depth_mm("D415", 848))
+        if self._usb is not None and self._usb.startswith("2"):
+            self.logger.warning(
+                "%s is on a USB %s link. A D400 camera offers fewer modes and lower frame rates over USB 2 than "
+                "over USB 3; on an arm this is usually the cable or an extension along it.", name, self._usb)
+
+    def _start_refusal(self, rs: Any, exc: BaseException) -> str:
+        """Why the pipeline did not start, with every RealSense the SDK sees and the USB link each is on."""
+        cw, ch = self.color_res
+        dw, dh = self.depth_res
+        asked = f"colour {cw}x{ch} and depth {dw}x{dh} at {self.fps} fps"
+        head = f"RealSense rig {self.cfg.rig_id!r} could not start {asked}: {exc}."
+        seen = _connected_cameras(rs)
+        if not seen:
+            return f"{head} librealsense sees no RealSense camera: check the cable and run rs-enumerate-devices."
+        listed = "; ".join(
+            f"{c['name'] or 'a RealSense'} serial {c['serial_number'] or '?'} on USB {c['usb_type_descriptor'] or '?'}"
+            for c in seen)
+        mine = [c for c in seen if not self.serial or c["serial_number"] == self.serial]
+        if not mine:
+            return f"{head} librealsense sees no RealSense with serial {self.serial!r}; it sees {listed}."
+        usb2 = [c for c in mine if (c["usb_type_descriptor"] or "").startswith("2")]
+        if usb2:
+            return (
+                f"{head} {listed}. A D400 camera on a USB 2 link offers fewer modes and lower frame rates than on "
+                "USB 3, so a request valid on USB 3 can fail there; on an arm this is usually the cable or an "
+                "extension along it. Connect it over USB 3 (rs-enumerate-devices shows the link as 'Usb Type "
+                "Descriptor'), or ask for a mode rs-enumerate-devices lists for this link.")
+        known = [c for c in mine if c["usb_type_descriptor"]]
+        if known:
+            return (f"{head} {listed}: the camera is on USB {known[0]['usb_type_descriptor']}, so the link is not "
+                    "the reason. rs-enumerate-devices lists the modes this model offers.")
+        return f"{head} {listed}. rs-enumerate-devices lists the modes and the USB link of each camera."
 
     # ------------------------------------------------------------------
     # Internal: depth conversion
@@ -335,9 +547,10 @@ class RealSenseRGBDStreamer:
     def _match_color_size(depth: np.ndarray, color: np.ndarray) -> np.ndarray:
         """Resize depth onto the colour grid so the RGBDFrame size invariant holds.
 
-        Only bites when depth and colour differ, once decimation has shrunk depth or on an
-        un-aligned native depth resolution, and is a no-op when the sizes already match.
-        Nearest interpolation keeps the depth values intact.
+        Only bites when depth and colour differ: decimated depth that was not aligned, or an
+        un-aligned native depth resolution. A no-op when the sizes already match, which they do
+        whenever depth is aligned, because the alignment runs after the filters. Nearest
+        interpolation keeps the depth values intact.
         """
         if depth.shape[:2] != color.shape[:2]:
             h, w = color.shape[:2]
@@ -349,50 +562,92 @@ class RealSenseRGBDStreamer:
     # ------------------------------------------------------------------
 
     def _configure_depth_sensor(self, rs: Any, sensor: Any) -> None:
-        """Apply emitter, laser power, depth-units override and visual preset."""
+        """Apply the visual preset, then the emitter, the laser power and the depth units over it.
+
+        The preset goes first because a D400 preset carries settings of its own, the laser among
+        them and, for ``Default`` on a D415, the depth units: a key the rig writes out is written
+        over the preset, never under it.
+        """
+        if self.rs_cfg.visual_preset:
+            self._apply_visual_preset(rs, sensor, self.rs_cfg.visual_preset)
         if sensor.supports(rs.option.emitter_enabled):
             sensor.set_option(rs.option.emitter_enabled, 1.0 if self.rs_cfg.enable_emitter else 0.0)
         if self.rs_cfg.laser_power_mw is not None and sensor.supports(rs.option.laser_power):
             sensor.set_option(rs.option.laser_power, float(self.rs_cfg.laser_power_mw))
         if self.rs_cfg.depth_units_m is not None and sensor.supports(rs.option.depth_units):
             sensor.set_option(rs.option.depth_units, float(self.rs_cfg.depth_units_m))
-        if self.rs_cfg.visual_preset:
-            self._apply_visual_preset(rs, sensor, self.rs_cfg.visual_preset)
+
+    def _read_back_depth_scale(self, sensor: Any) -> float:
+        """The depth scale the device reports once the preset and the units are written.
+
+        Always the device's reading, never the configured value: a scale the device does not stream
+        at would scale every depth by a constant factor. A configured ``depth_units_m`` the device did
+        not take refuses the open.
+        """
+        scale = float(sensor.get_depth_scale())
+        if not (math.isfinite(scale) and scale > 0.0):
+            raise RuntimeError(
+                f"RealSense rig {self.cfg.rig_id!r} reports a depth scale of {scale!r} m per unit, which no depth "
+                "can be read with.")
+        wanted = self.rs_cfg.depth_units_m
+        if wanted is not None and not math.isclose(scale, wanted, rel_tol=self._UNITS_REL_TOL):
+            raise RuntimeError(
+                f"camera.cameras.rigs[{self.cfg.rig_id!r}].realsense.depth_units_m is {wanted:g} m per unit, and the "
+                f"device reads back {scale:g} after the visual preset and the units were written, so it streams at "
+                f"{scale:g}: it does not offer the option, or did not take this value. Remove depth_units_m to keep "
+                "the device's own units, or write a value it takes (rs-enumerate-devices -o lists its range).")
+        return scale
 
     def _apply_visual_preset(self, rs: Any, sensor: Any, preset: str) -> None:
-        """Select a depth visual preset by name, matched case-insensitively.
+        """Select a depth visual preset by name, matched ignoring case, spaces and underscores.
 
-        The preset enum is device-family specific, so an unknown name is logged and
-        skipped rather than raised: a bad preset name must not take the stream down.
+        The SDK names its presets in snake case, ``high_accuracy``, and the config documents
+        ``HighAccuracy``; both name the same preset. The preset enum is device-family specific,
+        so an unknown name is logged and skipped rather than raised: a bad preset name must not
+        take the stream down.
         """
         if not sensor.supports(rs.option.visual_preset):
             self.logger.warning("Device does not support visual_preset; ignoring %r", preset)
             return
-        try:  # pragma: no cover (enum shape is device/SDK specific (on-box only))
+        try:
             enum = rs.rs400_visual_preset
             match = next(
-                (m for m in enum.__members__.values() if m.name.lower() == preset.lower()),
+                (m for m in enum.__members__.values() if _preset_key(m.name) == _preset_key(preset)),
                 None,
             )
             if match is None:
-                self.logger.warning("Unknown visual_preset %r; leaving device default", preset)
+                self.logger.warning(
+                    "Unknown visual_preset %r; leaving device default. The SDK offers %s",
+                    preset, sorted(enum.__members__))
                 return
             sensor.set_option(rs.option.visual_preset, float(int(match)))
         except Exception as exc:  # pragma: no cover (defensive, on-box only)
             self.logger.warning("Failed to apply visual_preset %r: %s", preset, exc)
 
     def _build_filters(self, rs: Any) -> list[Any]:
-        """Build the depth post-processing chain in librealsense's recommended order."""
+        """Build the depth post-processing chain in librealsense's recommended order.
+
+        Decimation, depth to disparity, spatial, temporal, disparity to depth, hole filling. Spatial
+        and temporal smooth disparity, which is what the sensor measures, rather than millimetres
+        rounded to the unit. The chain runs before the alignment to colour (see :meth:`grab`).
+        """
         pp = self.rs_cfg.post_processing
         filters: list[Any] = []
+        self._temporal_at = None
         if pp.decimation:
             dec = rs.decimation_filter()
             dec.set_option(rs.option.filter_magnitude, float(pp.decimation_magnitude))
             filters.append(dec)
+        smoothing = pp.spatial or pp.temporal
+        if smoothing:
+            filters.append(rs.disparity_transform(True))
         if pp.spatial:
             filters.append(rs.spatial_filter())
         if pp.temporal:
+            self._temporal_at = len(filters)
             filters.append(rs.temporal_filter())
+        if smoothing:
+            filters.append(rs.disparity_transform(False))
         if pp.hole_filling:
             hole = rs.hole_filling_filter()
             hole.set_option(rs.option.holes_fill, float(pp.hole_filling_mode))
@@ -402,7 +657,7 @@ class RealSenseRGBDStreamer:
     def _read_intrinsics(self, rs: Any, profile: Any) -> np.ndarray | None:
         """Read the colour-stream 3x3 K matrix from the active profile and store its distortion.
 
-        The D435 ships factory-calibrated and reports ``intr.coeffs``, the 5-term Brown-Conrady
+        A D400 camera ships factory-calibrated and reports ``intr.coeffs``, the 5-term Brown-Conrady
         distortion, right next to fx, fy, ppx and ppy. Storing it is what lets
         :meth:`get_distortion` hand a downstream ArUco or PnP solve the device's own
         coefficients instead of a zero vector, as decision D1 requires.

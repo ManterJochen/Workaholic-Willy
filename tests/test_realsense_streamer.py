@@ -6,6 +6,11 @@ stream configuration, device-option control, hardware align, the post-processing
 filter chain (and its order), the raw-units -> uint16-millimetre conversion,
 colour-size matching, intrinsics readout, and the SDK-missing error path -- is
 exercised deterministically without pyrealsense2 or a camera.
+
+The chain filters the whole frameset before the alignment, in librealsense's order, and
+the depth scale is the device's own reading after configuration:
+``test_a_moved_wrist_camera_forgets_the_last_pose.py`` and
+``test_a_realsense_says_what_it_opened.py`` hold both in detail.
 """
 
 from __future__ import annotations
@@ -38,6 +43,8 @@ class _FakeSensor:
 
     def set_option(self, opt: str, val: float) -> None:
         self.options[opt] = val
+        if opt == "depth_units":
+            self._scale = val   # a D400 streams at the units written, and reads them back
 
     def get_depth_scale(self) -> float:
         return self._scale
@@ -48,7 +55,8 @@ class _FakeProfile:
         self._sensor = sensor
 
     def get_device(self) -> Any:
-        return SimpleNamespace(first_depth_sensor=lambda: self._sensor)
+        return SimpleNamespace(first_depth_sensor=lambda: self._sensor, supports=lambda _info: False,
+                               get_info=lambda _info: "")
 
     def get_stream(self, _which: str) -> Any:
         intr = SimpleNamespace(
@@ -80,6 +88,9 @@ class _FakeFrameset:
     def get_depth_frame(self) -> _FakeFrame:
         return self._depth
 
+    def as_frameset(self) -> _FakeFrameset:
+        return self
+
 
 class _FakeAlign:
     def __init__(self, to: str) -> None:
@@ -88,6 +99,7 @@ class _FakeAlign:
 
     def process(self, fs: _FakeFrameset) -> _FakeFrameset:
         self.calls += 1
+        _FakeFilter.order.append("align")
         return fs
 
 
@@ -102,10 +114,10 @@ class _FakeFilter:
     def set_option(self, opt: str, val: float) -> None:
         self.options[opt] = val
 
-    def process(self, frame: _FakeFrame) -> _FakeFrame:
+    def process(self, frameset: _FakeFrameset) -> _FakeFrameset:
         self.calls += 1
         _FakeFilter.order.append(self.name)
-        return frame
+        return frameset
 
 
 class _FakePipeline:
@@ -156,8 +168,11 @@ def _make_fake_rs(pipeline: _FakePipeline) -> Any:
         ),
         config=_FakeConfig,
         pipeline=lambda: pipeline,
+        camera_info=SimpleNamespace(name="name", serial_number="serial_number",
+                                    firmware_version="firmware_version", usb_type_descriptor="usb_type_descriptor"),
         align=lambda to: _FakeAlign(to),
         decimation_filter=lambda: _FakeFilter("decimation"),
+        disparity_transform=lambda to_disparity=True: _FakeFilter("to_disparity" if to_disparity else "to_depth"),
         spatial_filter=lambda: _FakeFilter("spatial"),
         temporal_filter=lambda: _FakeFilter("temporal"),
         hole_filling_filter=lambda: _FakeFilter("hole"),
@@ -218,9 +233,10 @@ def test_open_configures_streams_device_and_filters() -> None:
     assert pipe.started is True
     assert pipe.waits == 2  # warmup_frames
     assert streamer.is_opened() is True
-    # depth scale read from the device, four filters built (decimation+spatial+temporal+hole).
+    # depth scale read from the device; six filters built: decimation, the two disparity transforms
+    # around spatial and temporal, and hole filling.
     assert streamer.depth_scale_m == pytest.approx(0.001)
-    assert len(streamer._filters) == 4
+    assert len(streamer._filters) == 6
     # colour intrinsics K assembled from the stream profile.
     k = streamer.get_intrinsics()
     assert k is not None
@@ -258,9 +274,9 @@ def test_grab_aligns_filters_in_order_and_converts_depth_to_mm() -> None:
     assert frame.depth.dtype == np.uint16
     assert int(frame.depth[0, 0]) == 1000
     assert frame.color.shape == frame.depth.shape[:2] + (3,)
-    # align ran, and the filters ran in librealsense's recommended order.
+    # the filters ran in librealsense's recommended order, spatial and temporal in disparity, and align last.
     assert streamer._align.calls == 1
-    assert _FakeFilter.order == ["decimation", "spatial", "temporal", "hole"]
+    assert _FakeFilter.order == ["decimation", "to_disparity", "spatial", "temporal", "to_depth", "hole", "align"]
 
 
 def test_grab_nearest_resizes_depth_to_colour_grid() -> None:
@@ -279,7 +295,7 @@ def test_grab_nearest_resizes_depth_to_colour_grid() -> None:
     assert int(frame.depth[0, 0]) == 500  # nearest keeps the value
 
 
-def test_depth_units_override_wins_over_device_scale() -> None:
+def test_depth_units_override_is_written_and_read_back() -> None:
     color, depth = _color_depth()
     pipe = _FakePipeline(color, depth, _FakeSensor(depth_scale=0.001))
     rs = _make_fake_rs(pipe)
@@ -287,6 +303,7 @@ def test_depth_units_override_wins_over_device_scale() -> None:
 
     streamer.open()
 
+    # the scale is what the device reads back after the write, which here is the value written.
     assert streamer.depth_scale_m == pytest.approx(0.0005)
     assert pipe._sensor.options["depth_units"] == pytest.approx(0.0005)
 

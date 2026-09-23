@@ -14,6 +14,7 @@ It provides:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 
@@ -104,6 +105,64 @@ except ImportError as exc:
 except OSError as exc:
     dashboard_client = None    # type: ignore[assignment]
     _DASHBOARD_UNAVAILABLE = _unloadable(exc)
+
+
+#: The first PolyScope version whose dashboard answers the remote-control question. A CB3 runs
+#: PolyScope 3.x and has no Remote/Local control mode at all. Below 5.6, ur_rtde 1.6.5 prints
+#: "Warning! isInRemoteControl() function is not supported on the dashboard server for PolyScope
+#: versions less than 5.6.0" (read from the installed library's own strings) and still hands back
+#: an answer, so a bool from it there is not the controller's.
+_REMOTE_CONTROL_SINCE: tuple[int, int] = (5, 6)
+
+#: The dashboard robot modes in which a controller runs no external control program, each with
+#: what it means. External control needs RUNNING: the arm powered and its brakes released.
+_NOT_RUNNING_MODES: dict[str, str] = {
+    "POWER_OFF": "the arm is powered off",
+    "BOOTING": "the arm is still powering on",
+    "POWER_ON": "the arm is still powering on",
+    "IDLE": "the arm is powered on and its brakes are still engaged",
+}
+
+
+def _polyscope_version(dash: object) -> tuple[int, int] | None:
+    """The (major, minor) PolyScope version a dashboard reports, or ``None`` where it will not say.
+
+    The dashboard answers with text such as ``URSoftware 3.15.4.106291 (...)`` on a CB3 and
+    ``URSoftware 5.11.1.108318 (...)`` on an e-Series. An answer with no version in it, and a
+    dashboard that raises, are no evidence.
+    """
+    try:
+        text = dash.polyscopeVersion()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 (cannot ask => no version)
+        return None
+    match = re.search(r"(\d+)\.(\d+)", text) if isinstance(text, str) else None
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def _answers_remote_control(dash: object) -> bool:
+    """Whether this dashboard's answer to ``isInRemoteControl`` is the controller's own.
+
+    Only a controller that says it runs PolyScope 5.6 or later. A version that cannot be read
+    answers ``False`` here, because an answer nobody can vouch for is not one to act on.
+    """
+    version = _polyscope_version(dash)
+    return version is not None and version >= _REMOTE_CONTROL_SINCE
+
+
+def _robot_mode_diagnosis(dash: object) -> tuple[str, str] | None:
+    """The dashboard's robot mode and what it means, where it is one that runs no external program.
+
+    ``None`` for RUNNING, for a mode this does not name, and where the dashboard will not say.
+    """
+    try:
+        text = dash.robotmode()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 (cannot ask => cannot claim)
+        return None
+    if not isinstance(text, str):
+        return None
+    mode = text.split(":", 1)[-1].strip().upper()
+    meaning = _NOT_RUNNING_MODES.get(mode)
+    return (text.strip(), meaning) if meaning is not None else None
 
 
 if TYPE_CHECKING:  # pragma: no cover (import only for static analysis)
@@ -352,19 +411,17 @@ class URConnection:
     def fk(self, joint_positions: list[float]) -> list[float]:
         """Forward kinematics from joints to the TCP pose ``[x, y, z, rx, ry, rz]``.
 
-        It uses the built-in FK of the controller.
+        It uses the built-in FK of the controller, ``getForwardKinematics(q, tcp_offset)``,
+        and always passes the TCP offset explicitly (:meth:`_fk_tcp_offset`). The q-only form
+        reads the offset from the controller float registers, which moveJ and moveL also
+        write, so after any commanded move it returned a pose off by hundreds of millimetres,
+        the mechanism GitLab #348 describes. With the offset passed it measured 0.000 mm
+        across three consecutive move and return cycles, so FK of an arbitrary q, as the
+        singularity guard, ``move_home`` and MotionController ask it, is not corrupted by the
+        motion before it.
 
-        Measured, this form is corrupted by motion. It shares the controller float
-        registers with moveJ and moveL, so after any commanded move it returns a pose
-        offset by hundreds of millimetres until those registers are rewritten, which is
-        the mechanism GitLab #348 describes. It is correct on a freshly powered
-        controller and after IK, and wrong after a move.
-
-        Where FK of the current joints is meant, use :meth:`fk_current`, which is
-        immune. Where FK of an arbitrary q is genuinely needed, as in the singularity
-        guard, move_home and MotionController, there is no immune equivalent and it
-        remains an open question for the real cell. Do not assume those call sites are
-        fine.
+        Where FK of the current joints is meant, :meth:`fk_current` is still the call: it asks
+        the controller for the TCP it stands at and needs no offset at all.
         """
         self._require_connected()
         assert self._ctrl is not None  # guaranteed by _require_connected()
@@ -728,6 +785,14 @@ class URConnection:
         * the controller is in a protective stop, for instance because the last run
           ended in one and nobody cleared it before restarting the cell.
 
+        A third is named from the dashboard's robot mode: an arm powered off, still powering
+        on, or powered with its brakes engaged runs no external program either. That one is
+        not measured here; it is the mode a CB3 is in after a power cycle.
+
+        The local-mode question is asked only of a controller that says it runs PolyScope 5.6
+        or later. A CB3 (PolyScope 3.x) has no Remote/Local mode, and below 5.6 ur_rtde's
+        answer is not the controller's, so there the diagnosis never claims local mode.
+
         It is claimed only where the dashboard answers. A dashboard that is absent or
         unhappy returns ``None`` and the caller re-raises the original fault, because
         being unable to ask is not an answer of no, and sending an operator to fix a
@@ -752,6 +817,17 @@ class URConnection:
                     "the arm is VISIBLE; that is a deliberate design decision in this stack, which "
                     "is why nothing here offers to clear it for you. Then connect again."
                 )
+            mode = _robot_mode_diagnosis(dash)
+            if mode is not None:
+                reported, meaning = mode
+                return (
+                    f"Could not open the UR control interface at {self.ip}: the controller reports "
+                    f"{reported!r}, so {meaning}. External control runs only with the arm powered on and "
+                    "its brakes released (robot mode RUNNING). On the teach pendant, where the arm is "
+                    "VISIBLE, power it on and release the brakes, then connect again."
+                )
+            if not _answers_remote_control(dash):
+                return None
             try:
                 if not bool(dash.isInRemoteControl()):
                     return (
@@ -783,8 +859,14 @@ class URConnection:
         external control will be refused. ``None`` means nobody could be asked, which is
         a different fact and must not be reported as local, because a caller that
         refuses on an unanswered question refuses cells that are perfectly fine.
+
+        A controller below PolyScope 5.6, every CB3 among them, answers ``None`` as well:
+        it has no dashboard answer to this question, and a CB3 has no Remote/Local mode.
+        So does one whose version cannot be read.
         """
         if self._dashboard is None:
+            return None
+        if not _answers_remote_control(self._dashboard):
             return None
         try:
             return bool(self._dashboard.isInRemoteControl())
@@ -805,6 +887,8 @@ class URConnection:
         try:
             dash = dashboard_client.DashboardClient(self.ip)
             dash.connect()
+            if not _answers_remote_control(dash):
+                return False
             return not bool(dash.isInRemoteControl())
         except Exception:  # noqa: BLE001 (cannot ask => cannot claim)
             return False

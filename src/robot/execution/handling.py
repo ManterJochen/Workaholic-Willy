@@ -12,15 +12,17 @@ cannot say is read as not measured and not modelled rather than guessed.
   confirmed; an unmeasured release detaches and says it was not checked.
 * No force is commanded.
 * A gripper that raises is stopped once where it can be stopped, and the report carries the fault.
-* Nothing is commanded on a robot with no gripper, a gripper that holds nothing, or an arm or gripper whose link is not
-  open.
+* Nothing is commanded on a robot with no gripper, a gripper that holds nothing, an arm or gripper whose link is not
+  open, or an arm whose controller cannot move (``SupportsRobotStatus`` reading not operational, or a status read that
+  raises): after a protective stop the jaws stay as they are, whatever they hold.
 
 ``Robot.pick`` and ``Robot.place`` put the hand verbs at the end of a straight descent. Before any command they refuse,
 in this order: a robot that cannot hold, a link that is not open, a pose not in BASE, a camera world the arm's own
-motion would be refused for (``ReadsCameraWorld``), and an arm whose motions do not go through cuRobo and the exact mesh
-guard (``motion.route_of``: a desk arm runs, a UR on the ik planner, a KUKA and an arm that does not say are refused).
-Then the motions: a planned move to the standoff, a line down to the pose, the hand verb, and a line back up to the
-standoff, each move carrying the caller's decline, each preceded by the arm's own steady gate where its tree asks for
+motion would be refused for (``ReadsCameraWorld``), an arm whose motions do not go through cuRobo and the exact mesh
+guard (``motion.route_of``: a desk arm runs, a UR on the ik planner, a KUKA and an arm that does not say are refused),
+and last, as the one question put to the controller, a controller that cannot move. Then the motions: a planned move to
+the standoff, a line down to the pose, the hand verb, which asks the controller again at the part, and a line back up to
+the standoff, each move carrying the caller's decline, each preceded by the arm's own steady gate where its tree asks for
 one (``safety.dwell``). A refused motion ends the verb with nothing commanded after it, and so does a camera that could
 not vouch for the cell, as its own outcome rather than a raise. A pick holds its keep-out offer in the arm's live world
 from before the detach to after its last motion, and forgets it on any exit.
@@ -40,7 +42,8 @@ import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
-from src.robot.core import MotionResult, MotionStatus, StoppableGripper
+from src.robot.core import MotionResult, MotionStatus, StoppableGripper, SupportsRobotStatus, TwoStateGripper
+from src.robot.core.gripper import OpensAndCloses
 from src.robot.core.arm_capabilities import CarriesPayload, LineMotion, LineReading, PayloadModel
 from src.robot.core.camera_world import (
     CameraWorldDecline,
@@ -184,8 +187,11 @@ def grasp(robot: Any, width_mm: float) -> HandReport:
         return refused
     gripper = robot.gripper
     commanded = float(width_mm)
+    why = "" if isinstance(gripper, OpensAndCloses) else _width_refusal(gripper, commanded, close=True, what="a grasp at")
+    if why:
+        return HandReport(verb=HandVerb.GRASP, outcome=HandOutcome.REFUSED, error=why)
     try:
-        gripper.set_width_mm(commanded)
+        _command(gripper, commanded, close=True)
         reported = float(gripper.get_width_mm())
         measured = width_is_measured_of(gripper)
         hold = hold_evidence_of(gripper)
@@ -207,8 +213,12 @@ def release(robot: Any) -> HandReport:
         return refused
     gripper = robot.gripper
     commanded = float(gripper.max_width_mm)
+    why = "" if isinstance(gripper, OpensAndCloses) else _width_refusal(gripper, commanded, close=False,
+                                                                       what="a release to")
+    if why:
+        return HandReport(verb=HandVerb.RELEASE, outcome=HandOutcome.REFUSED, error=why)
     try:
-        gripper.set_width_mm(commanded)
+        _command(gripper, commanded, close=False)
         reported = float(gripper.get_width_mm())
         measured = width_is_measured_of(gripper)
         hold = hold_evidence_of(gripper)
@@ -243,7 +253,68 @@ def _refusal(robot: Any, verb: HandVerb) -> HandReport | None:
         why = "the arm is not connected; call the hand verbs inside robot.connected()"
     elif not bool(getattr(gripper, "is_connected", False)):
         why = "the gripper is not connected; call the hand verbs inside robot.connected()"
+    else:
+        why = _controller_refusal(robot.arm)
     return None if not why else HandReport(verb=verb, outcome=HandOutcome.REFUSED, error=why)
+
+
+def _controller_refusal(arm: Any) -> str:
+    """Why ``arm``'s controller cannot act now, or ``""`` where it can, or where the arm does not say.
+
+    Asked before every gripper command, because a hand's I/O still switches while the arm is stopped: after a protective
+    stop mid-pick a toggle hand's pre-open pulsed and dropped the part from wherever the arm stood, before anything asked
+    the controller (owner-cell audit, reproduced with fakes, 2026-09-23). Only an arm that implements
+    ``SupportsRobotStatus`` (the UR driver) is asked; every other arm passes. The criterion is ``not is_operational``,
+    the one the pick loop and ``GraspExecutionPolicy`` use, so REDUCED safety mode is refused too. A read that raises
+    refuses as well: a verb promises a report, and a controller that cannot be asked cannot be said to move.
+    """
+    if not isinstance(arm, SupportsRobotStatus):
+        return ""
+    try:
+        status = arm.get_robot_status()
+    except Exception as exc:  # noqa: BLE001 (the verb reports, and nothing is commanded)
+        return (f"the controller's state could not be read ({type(exc).__name__}: {exc}), so nothing was commanded, "
+                "the jaws included")
+    if status.is_operational:
+        return ""
+    detail = f": {status.message}" if status.message else ""
+    return (f"the controller cannot move (robot_mode={status.robot_mode.value}, safety_mode={status.safety_mode.value}, "
+            f"protective_stop={status.protective_stopped}, emergency_stop={status.emergency_stopped}{detail}), so "
+            "nothing was commanded, the jaws included; clear the stop where the arm is visible, then run again")
+
+
+def _command(gripper: Any, width_mm: float, *, close: bool) -> None:
+    """Command the gripper for a verb that knows whether it closes: by intent where the gripper takes it, else by width.
+
+    A gripper that takes open and close as what they are (``OpensAndCloses``) is told which, and ``width_mm`` is not
+    sent: read against ``closed_below_mm`` it could turn the verb round (owner's toggle cell, 2026-09-23). Any other
+    gripper gets the width, which :func:`_width_refusal` has already been asked about.
+    """
+    if isinstance(gripper, OpensAndCloses):
+        gripper.set_closed(close)
+    else:
+        gripper.set_width_mm(width_mm)
+
+
+def _width_refusal(gripper: Any, width_mm: float, *, close: bool, what: str) -> str:
+    """Why ``width_mm`` would do the opposite of what the verb means on a gripper with two states, or ``""``.
+
+    A ``TwoStateGripper`` closes at or below its ``closed_below_mm`` and opens above it, whatever the verb that sent
+    the width meant: with the default of 5 mm, a pick of a 40 mm part grasps at 39 mm and opens the jaws, and with
+    no sensor it reports EXECUTED (found diagnosing the owner's toggle cell, 2026-09-23). ``what`` names the command
+    in the sentence, for example "a grasp at".
+    """
+    if not isinstance(gripper, TwoStateGripper):
+        return ""
+    below = float(gripper.closed_below_mm)
+    if (width_mm <= below) is close:
+        return ""
+    if close:
+        return (f"the gripper has two states and closes only at or below its closed_below_mm, {below} mm, so {what} "
+                f"{width_mm} mm would open it: set robot.gripper.jaw_io.closed_below_mm at or above {width_mm} and "
+                f"below max_width_mm")
+    return (f"the gripper has two states and closes at or below its closed_below_mm, {below} mm, so {what} "
+            f"{width_mm} mm would close it: set robot.gripper.jaw_io.closed_below_mm below {width_mm}")
 
 
 def _fault(gripper: Any, verb: HandVerb, commanded: float, exc: BaseException) -> HandReport:
@@ -457,6 +528,11 @@ class _Handling:
         refused = self._refusal()
         if refused is not None:
             return refused
+        # Asked before the arm moves, not when release() asks it at the tray.
+        why = "" if isinstance(self.gripper, OpensAndCloses) else _width_refusal(
+            self.gripper, float(self.gripper.max_width_mm), close=False, what="the place's release to")
+        if why:
+            return self._report(HandlingOutcome.REFUSED, message=why)
         try:
             standoff = self._standoff()
             self._move(standoff, linear=False)
@@ -475,21 +551,29 @@ class _Handling:
             return ended.report
 
     def _pick_body(self, *, width_mm: float, squeeze_mm: float, pre_open_mm: "Maybe[float | None]") -> HandlingReport:
+        opening = float(self.gripper.max_width_mm) if not chosen(pre_open_mm) else pre_open_mm
+        close_to = max(float(self.gripper.min_width_mm), width_mm - squeeze_mm)
+        # Both widths are asked what they mean before the arm moves, not at the part. A gripper told open and close
+        # by intent has nothing to ask: no width reaches it.
+        why = "" if isinstance(self.gripper, OpensAndCloses) else (
+            (_width_refusal(self.gripper, float(opening), close=False, what="the pick's pre-open to")
+             if opening is not None else "")
+            or _width_refusal(self.gripper, close_to, close=True, what="the pick's grasp at"))
+        if why:
+            return self._report(HandlingOutcome.REFUSED, message=why)
         detach = getattr(self.arm, "detach_payload", None)
         if callable(detach):
             detach()
-        opening = float(self.gripper.max_width_mm) if not chosen(pre_open_mm) else pre_open_mm
         if opening is not None:
-            self._command_gripper(float(opening))
+            self._command_gripper(float(opening), close=False)
         standoff = self._standoff()
         self._move(standoff, linear=False)
         self._move(self.pose, linear=True)
-        close_to = max(float(self.gripper.min_width_mm), width_mm - squeeze_mm)
         hand = grasp(self.robot, close_to)
         if hand.outcome is HandOutcome.GRIPPER_FAULT:
             return self._report(HandlingOutcome.GRIPPER_FAULT, hand=hand, message=hand.error)
         if hand.outcome is HandOutcome.NOTHING_HELD:
-            self._command_gripper(float(self.gripper.max_width_mm))
+            self._command_gripper(float(self.gripper.max_width_mm), close=False)
             self._move(standoff, linear=True)
             return self._report(HandlingOutcome.NOTHING_HELD, hand=hand, message=(
                 "the gripper measured nothing held, so it opened and backed out to the standoff"))
@@ -526,6 +610,11 @@ class _Handling:
         self.line = route.line
         if not route.runs:
             return self._report(HandlingOutcome.REFUSED, message=route.reason)
+        # Last, because it is the one question that goes to the controller, and before the detach and the pre-open:
+        # the jaws of a stopped arm stay as they are, whatever they hold.
+        why = _controller_refusal(self.arm)
+        if why:
+            return self._report(HandlingOutcome.REFUSED, message=why)
         return None
 
     # ---- the steps ----------------------------------------------------------------------------
@@ -564,9 +653,9 @@ class _Handling:
             if not result.ok:
                 raise _Refused(self._report(HandlingOutcome.MOTION_REFUSED, message=result.message or ""))
 
-    def _command_gripper(self, width_mm: float) -> None:
+    def _command_gripper(self, width_mm: float, *, close: bool) -> None:
         try:
-            self.gripper.set_width_mm(width_mm)
+            _command(self.gripper, width_mm, close=close)
         except Exception as exc:  # noqa: BLE001 (a gripper fault ends the verb, after the jaws are stopped)
             hand = _fault(self.gripper, HandVerb.RELEASE, width_mm, exc)
             raise _Refused(self._report(HandlingOutcome.GRIPPER_FAULT, hand=hand, message=hand.error))
