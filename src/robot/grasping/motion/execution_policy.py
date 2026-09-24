@@ -27,6 +27,22 @@ the pick as :attr:`PolicyOutcome.MOTION_FAILED` with
 :attr:`MotionStatus.CONTROLLER_REJECTED` and nothing commanded, the jaws
 included.
 
+A hand that toggles with no sensor
+----------------------------------
+A :class:`TogglesWithoutSensor` hand (a ``jaw_io`` single_toggle) is never
+pulsed before the arm moves: the pre-open is skipped whatever
+``pre_open_width_mm`` says, and the hand is asked instead whether its jaws
+stand open (``jaws_open_for_a_pick``), which asks a person where it believes
+them closed. A pick nobody can vouch for ends as
+:attr:`PolicyOutcome.GRIPPER_FAULT` before any motion. At the part it gets
+exactly one close.
+
+A gripper that raises
+---------------------
+A driver that raises while the jaws are commanded, a :class:`RobotError`
+above all, ends the pick as :attr:`PolicyOutcome.GRIPPER_FAULT` with the
+exception on the report, never as an exception out of :meth:`execute`.
+
 Numerics
 --------
 * TCP positions are :class:`Pose`: millimetres, an XYZW quaternion and a :class:`Frame`.
@@ -65,6 +81,7 @@ from src.robot.core.gripper import (
     OpensAndCloses,
     ReportsHoldEvidence,
     hold_evidence_of,
+    toggle_without_sensor_of,
     width_is_measured_of,
 )
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
@@ -101,6 +118,13 @@ class PolicyOutcome(str, Enum):
     scene obstacle cloud, as judged by the swept-volume validator, so no candidate was executed.
     The dense-mode approach-validation fallback in the orchestrator surfaces this. No motion was
     commanded.
+    """
+
+    GRIPPER_FAULT = "gripper_fault"
+    """The gripper raised while it was commanded (``error`` carries it), or a hand that toggles
+    with no sensor would not start the pick: it believed its jaws closed and nobody at a terminal
+    said otherwise, or a person aborted. ``motion_message`` says which. Nothing was commanded
+    after it.
     """
 
 
@@ -181,7 +205,8 @@ class GraspExecutionPolicy:
         point. Must be ``>= 2``.
     pre_open_width_mm
         Optional jaw width commanded before the approach when a gripper
-        is present. ``None`` skips the pre-open command.
+        is present. ``None`` skips the pre-open command, and so does a
+        hand that toggles with no sensor, whatever this says.
     close_width_mm
         Jaw width commanded at the grasp point. When :data:`None`, falls
         back to ``max(gripper.min_width_mm, grasp.grip_width_mm - 1.0)``
@@ -301,6 +326,16 @@ class GraspExecutionPolicy:
                 motion_message=refused,
                 line_motion=line_motion,
             )
+        toggle = toggle_without_sensor_of(self.gripper)
+        if toggle is not None:
+            # Never a pulse before the arm moves (owner's decision, 2026-09-24): a toggle is asked, and asks a person
+            # where it believes its jaws closed, instead of being pulsed open. A pick nobody can vouch for ends here.
+            try:
+                why = toggle.jaws_open_for_a_pick()
+            except Exception as exc:  # noqa: BLE001 (a gripper fault is the report, never an escaping raise)
+                return _gripper_fault(exc, line_motion=line_motion)
+            if why:
+                return PolicyReport(outcome=PolicyOutcome.GRIPPER_FAULT, motion_message=why, line_motion=line_motion)
         # Forget any part from a previous pick. Detaching here rather than on release means a
         # stale attachment cannot survive a failed pick, a recovery, or a runner that never released:
         # the planner is only ever told about a part between a confirmed close and the next attempt.
@@ -311,16 +346,19 @@ class GraspExecutionPolicy:
 
         # Pre-open the gripper before driving the approach so the jaws
         # are clear at the grasp point.
-        if self.gripper is not None and self.pre_open_width_mm is not None:
-            if isinstance(self.gripper, OpensAndCloses):
-                # A two-state gripper told what it means: a pre-open is an open whatever its width reads as.
-                self.gripper.set_closed(False)
-            else:
-                self.gripper.set_width_mm(
-                    float(self.pre_open_width_mm),
-                    speed=self.close_speed,
-                    force=None,
-                )
+        if self.gripper is not None and self.pre_open_width_mm is not None and toggle is None:
+            try:
+                if isinstance(self.gripper, OpensAndCloses):
+                    # A two-state gripper told what it means: a pre-open is an open whatever its width reads as.
+                    self.gripper.set_closed(False)
+                else:
+                    self.gripper.set_width_mm(
+                        float(self.pre_open_width_mm),
+                        speed=self.close_speed,
+                        force=None,
+                    )
+            except Exception as exc:  # noqa: BLE001 (a gripper fault is the report, never an escaping raise)
+                return _gripper_fault(exc, line_motion=line_motion)
 
         commanded: list[Pose] = []
         last_status: MotionStatus | None = None
@@ -382,22 +420,26 @@ class GraspExecutionPolicy:
                     line_motion=line_motion,
                 )
             target_width = self._resolve_close_width(grasp)
-            if isinstance(self.gripper, OpensAndCloses):
-                # The grasp width read against closed_below_mm opens a two-state gripper when the part is wider than
-                # the threshold, and the loop then reported object_not_detected on jaws it never closed (URSim, the
-                # owner's toggle cell, 2026-09-23). A grasp is a close.
-                self.gripper.set_closed(True)
-            else:
-                self.gripper.set_width_mm(
-                    target_width,
-                    speed=self.close_speed,
-                    force=self.close_force_n,
-                )
-            # What the gripper measured, not what it echoes: a jaw with no feedback wired answers
-            # is_object_detected with its own close, and the pick service recorded that as a detected part
-            # on every close (owner-cell audit, 2026-09-23). Unmeasured is None, and the pick goes on as the
-            # trusted close it always was.
-            object_detected = _hold_after_close(self.gripper)
+            try:
+                if isinstance(self.gripper, OpensAndCloses):
+                    # The grasp width read against closed_below_mm opens a two-state gripper when the part is wider
+                    # than the threshold, and the loop then reported object_not_detected on jaws it never closed
+                    # (URSim, the owner's toggle cell, 2026-09-23). A grasp is a close.
+                    self.gripper.set_closed(True)
+                else:
+                    self.gripper.set_width_mm(
+                        target_width,
+                        speed=self.close_speed,
+                        force=self.close_force_n,
+                    )
+                # What the gripper measured, not what it echoes: a jaw with no feedback wired answers
+                # is_object_detected with its own close, and the pick service recorded that as a detected part
+                # on every close (owner-cell audit, 2026-09-23). Unmeasured is None, and the pick goes on as the
+                # trusted close it always was.
+                object_detected = _hold_after_close(self.gripper)
+            except Exception as exc:  # noqa: BLE001 (a gripper fault is the report, never an escaping raise)
+                return _gripper_fault(exc, line_motion=line_motion, waypoints=tuple(commanded),
+                                      motion_status=last_status, camera_worlds=tuple(stamps))
             if object_detected is False:
                 return PolicyReport(
                     outcome=PolicyOutcome.OBJECT_NOT_DETECTED,
@@ -603,6 +645,30 @@ def _controller_refusal(arm: object) -> str:
         f"the controller cannot move (robot_mode={status.robot_mode.value}, safety_mode={status.safety_mode.value}, "
         f"protective_stop={status.protective_stopped}, emergency_stop={status.emergency_stopped}{detail}), so "
         "nothing was commanded, the jaws included; clear the stop where the arm is visible, then run again"
+    )
+
+
+def _gripper_fault(
+    exc: Exception,
+    *,
+    line_motion: LineMotion | None,
+    waypoints: tuple[Pose, ...] = (),
+    motion_status: MotionStatus | None = None,
+    camera_worlds: tuple[CameraWorldStamp, ...] = (),
+) -> PolicyReport:
+    """The report of a gripper that raised while it was commanded: the pick ends here, with nothing commanded after it.
+
+    A driver's ``RobotError`` (a toggle that cannot say where its jaws stand, an I/O write the controller refused) used
+    to leave :meth:`GraspExecutionPolicy.execute` as an exception, and the pick loop lost every motion before it.
+    """
+    return PolicyReport(
+        outcome=PolicyOutcome.GRIPPER_FAULT,
+        waypoints=waypoints,
+        error=exc,
+        motion_status=motion_status,
+        motion_message=f"the gripper raised: {type(exc).__name__}: {exc}",
+        camera_worlds=camera_worlds,
+        line_motion=line_motion,
     )
 
 

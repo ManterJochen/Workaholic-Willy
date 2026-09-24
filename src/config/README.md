@@ -98,6 +98,18 @@ editing a file.
 | `grasping_presets/` | operator overlays the loader never reads |
 | `all_keys/` | a reference tree with every key written out; `python -m src.config --data config/all_keys` validates it |
 
+**Paths.** A relative path in any file of a tree is read against the tree's folder (the `root` it was
+loaded from), wherever that folder is: not against the working directory, and not against the
+subfolder of the file that writes it. `${WILLY_PROJECT_ROOT}/...` names the repository (or the folder
+the `WILLY_PROJECT_ROOT` variable names), in path keys only (any other key refuses it, and it may be
+written unquoted inside `{...}` or `[...]`), which is how the shipped tree names model weights and
+committed artifacts so a copy of `config/` elsewhere still finds them; the shipped tree reaches its
+cell data at the repository root with `../`. An absolute path is read as written and `~` is the home
+folder. A schema default is written nowhere and names the repository's file. Every path field is typed
+`ConfigPath` and the loader validates with the tree's folder as context, so the loaded config holds
+absolute paths and no reader needs the rule; a model built in code with no tree keeps a relative path
+as written. [`paths.py`](paths.py) states the rule and why it is applied at load.
+
 `robot.gripper.model` names the hand (the registry holds `robotiq_2f85`, `robotiq_hande` and
 `schunk_egu50`); the loader fills its widths and collision envelope for every key the chain leaves
 unset and refuses a stated one that differs, while `robot.gripper.vendor` picks the driver.
@@ -143,6 +155,7 @@ controller addresses are refused while anything is connected.
 | --- | --- |
 | `tree.py` | `ConfigTree`, `LoadedTree`, `load_tree`, `default_data_dir` |
 | `loader.py` | `load_config`, `load_robot_config`, the section loaders, `reload_config`, `ConfigError` |
+| `paths.py` | the path rule: `ConfigPath`, `${WILLY_PROJECT_ROOT}`, and `path_note` for a refusal that cannot find a file |
 | `explain.py`, `_provenance.py`, `_schema_index.py`, `_tiers.py` | `explain`, `where` and `decisions`: value, type, default, tier and the layer that set it |
 | `edit.py` | the allowlisted bench writes |
 | `grippers.py`, `cameras.py`, `_registry.py`, `hand_numbers.py` | the hand and camera registries, and the robot keys a named hand fills |

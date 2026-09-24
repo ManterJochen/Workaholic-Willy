@@ -43,7 +43,7 @@ from src.calibration.stereo.sub_modules.aruco_esti import ArucoPoseEstimator
 from src.calibration.targets import CharucoPoseEstimator
 from src.camera.orchestration.camera import Camera
 from src.config.schema.robot import RobotConfig
-from src.geometry import Frame, Transform
+from src.geometry import Frame, Pose, Transform
 from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.events import RobotCalibrationEvent
 from src.robot.execution.calibration import CalibrationResult, CalibrationRoutine
@@ -480,7 +480,10 @@ class OneThreadDrawsTests(unittest.TestCase):
                 preview.start()
                 self.assertTrue(_until(lambda: not preview.running))
                 self.assertEqual(preview.off, reason)
-                self.assertEqual(said, [f"preview closed ({reason}). The sweep goes on; the pendant stops the robot"])
+                self.assertEqual(said, [f"preview closed ({reason}). The sweep goes on, and a run guided by hand "
+                                        "finishes and holds the arm; the pendant stops the robot"])
+                self.assertEqual((preview.poll_key(), preview.poll_key()), ("closed", None),
+                                 "a person guiding the arm reads the close once, as a finish")
 
     def test_ctrl_c_in_the_window_is_said_once_and_stops_nothing(self) -> None:
         preview, said = _preview(gui=_Gui(keys=(3, -1, 3)), live_hz=0)
@@ -585,7 +588,10 @@ class _Noun(unittest.TestCase):
         self.addCleanup(self.camera.release)
         self.arm = _Arm(refuse=refuse)
         out = self.enterContext(tempfile.TemporaryDirectory())
-        options = SweepOptions(out_dir=out) if preview is None else SweepOptions(out_dir=out, preview=preview)
+        # Nothing generates a station: the sweep names its own.
+        stations = [Pose.tool_down(400.0, 0.0, 350.0, label="look_0")]
+        options = (SweepOptions(out_dir=out, fixed_poses=stations) if preview is None
+                   else SweepOptions(out_dir=out, fixed_poses=stations, preview=preview))
         return HandEyeCalibration.from_parts(
             robot=Robot.from_parts(arm=self.arm, gripper=None, lock_key=lock_key), camera=self.camera,
             robot_config=RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": _IP}}), mode="eye_to_hand",
@@ -640,11 +646,11 @@ class TheNounOpensThePreviewWithTheSweepTests(_Noun):
             CalibrationOutcome.CELL_BUSY: (dict(lock_key=_KEY), MagicMock(side_effect=AssertionError("swept"))),
             CalibrationOutcome.CONNECT_FAILED: (dict(refuse=True), MagicMock(side_effect=AssertionError("swept"))),
         }
-        for outcome, (noun, run_auto) in ways.items():
+        for outcome, (noun, sweep) in ways.items():
             with self.subTest(outcome.value):
                 self.log.clear()
                 calibration = self._noun(**noun)
-                with patch.object(CalibrationRoutine, "run_auto", run_auto):
+                with patch.object(CalibrationRoutine, "run_with_poses", sweep):
                     if outcome is CalibrationOutcome.CELL_BUSY:
                         with CellLock(_KEY, owner="operator console"):
                             report = calibration.run()
@@ -688,7 +694,7 @@ class TheNounOpensThePreviewWithTheSweepTests(_Noun):
             return _eth_result()
 
         with _patched(preview_unavailable=lambda: None, _highgui=lambda: gui), \
-                patch.object(CalibrationRoutine, "run_auto", autospec=True, side_effect=sweep):
+                patch.object(CalibrationRoutine, "run_with_poses", autospec=True, side_effect=sweep):
             report = self._noun().run()
         self.assertIs(report.outcome, CalibrationOutcome.WRITTEN, report.render())
         self.assertEqual(len(gui.threads()), 1)
@@ -753,7 +759,7 @@ class TheCliAsksForThePreviewTests(unittest.TestCase):
         with patch.object(calibrate, "_load", return_value=app), \
                 patch.object(calibrate.HandEyeCalibration, "from_config", side_effect=spy), \
                 redirect_stdout(io.StringIO()):
-            self.assertEqual(calibrate.main(["--rig", "overhead", "--check", *argv]), calibrate._EXIT_OK)
+            self.assertEqual(calibrate.main(["--rig", "overhead", "--check", "--freedrive", *argv]), calibrate._EXIT_OK)
         return seen[0]
 
     def test_the_flag_and_its_negation_and_the_default(self) -> None:

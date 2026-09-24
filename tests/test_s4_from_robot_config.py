@@ -45,7 +45,7 @@ class VacuumBranchTests(unittest.TestCase):
                 # The hand the UR arm's exact mesh guard checks, the 2F-85 every arm bundle carries: the
                 # registry holds no suction hand yet, and a UR arm naming no hand refuses to build (Step 4f).
                 _cfg("ur", {"vendor": "vacuum", "model": "robotiq_2f85",
-                            "vacuum": {"vacuum_output_pin": 2, "io_port": "tool"}}),
+                            "vacuum": {"vacuum_output_pin": 1, "io_port": "tool"}}),
                 calculator=calc, perception=perc,  # type: ignore[arg-type]
             )
         self.assertIsInstance(svc.orchestrator.gripper, VacuumGripper)

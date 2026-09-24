@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import AfterValidator, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-from .._base import StrictModel, validate_aruco_dict_name
+from .._base import ConfigPath, StrictModel, validate_aruco_dict_name
 from ..cameras import OpticalBox
 from ..grippers import MODEL_NAME_PATTERN
 
@@ -26,12 +26,12 @@ class StereoCalibPaths(StrictModel):
     writing it out in YAML.
     """
 
-    base_dir: str
-    stereo_map_file: str = ""
-    left_images_dir: str = ""
-    right_images_dir: str = ""
-    left_images_glob: str = ""
-    right_images_glob: str = ""
+    base_dir: ConfigPath
+    stereo_map_file: ConfigPath = ""
+    left_images_dir: ConfigPath = ""
+    right_images_dir: ConfigPath = ""
+    left_images_glob: ConfigPath = ""
+    right_images_glob: ConfigPath = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -61,8 +61,8 @@ class RGBDCalibPaths(StrictModel):
     together: one without the other is dead.
     """
 
-    base_dir: str
-    intrinsics_file: str = ""
+    base_dir: ConfigPath
+    intrinsics_file: ConfigPath = ""
 
     @model_validator(mode="before")
     @classmethod
@@ -130,7 +130,7 @@ class RigExtrinsicsConfig(StrictModel):
     """
 
     mounting_mode: Literal["eye_to_hand", "eye_in_hand"]
-    artifact_path: str = Field(min_length=1)
+    artifact_path: ConfigPath = Field(min_length=1)
     shutter_motion_tolerance_mm: float | None = Field(default=None, gt=0.0)
     shutter_motion_tolerance_deg: float | None = Field(default=None, gt=0.0)
     #: How far, in millimetres, the flange to TCP a wrist camera's calibration recorded may lie from the
@@ -166,14 +166,15 @@ class RigExtrinsicsConfig(StrictModel):
         # left to the sweep, which names it in its config check, before the arm moves, on the cells that need it.
         mode = info.data.get("mounting_mode")
         command = "python -m src.robot.execution.real_cell.calibrate --rig <rig id>"
+        # --freedrive is the way that needs no stations file; a sweep that names no way is refused at --check.
         if mode == "eye_in_hand":
-            how = f"{command} --mode eye_in_hand, or examples/real_robot/09 or 10"
+            how = f"{command} --mode eye_in_hand --freedrive, or examples/real_robot/09 or 10"
             out = "comment it out, keeping the tolerances it holds"
         elif mode == "eye_to_hand":
-            how = f"{command} --mode eye_to_hand, or examples/real_robot/07 or 08"
+            how = f"{command} --mode eye_to_hand --freedrive, or examples/real_robot/07 or 08"
             out = "leave it out"
         else:
-            how = f"{command} --mode eye_to_hand or eye_in_hand, or examples/real_robot/07 to 10"
+            how = f"{command} --mode eye_to_hand (or eye_in_hand) --freedrive, or examples/real_robot/07 to 10"
             out = "leave it out"
         raise ValueError(
             "an extrinsics block names the artifact a calibration wrote, and this one names none. A camera that is "

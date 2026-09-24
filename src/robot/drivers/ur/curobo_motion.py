@@ -3,21 +3,27 @@
 It is the real-hardware counterpart of the cuRobo path in the Isaac sim driver,
 :meth:`src.robot.drivers.sim.arm.IsaacRobotArm._drive_curobo`. It asks the
 process-isolated cuRobo planner, :class:`~src.robot.safety.planning.CuroboPlanClient`,
-for a global collision-free joint trajectory, to a Cartesian goal (:meth:`CuroboUrPlanner.plan`)
-or to a joint configuration (:meth:`CuroboUrPlanner.plan_joint`), then executes a list of
-joint waypoints on the UR controller as one blocking ``ur_rtde`` ``moveJ`` per waypoint.
-Every pose reaches the planner through :class:`.planner_frame.PlannerFrameClient`,
-because the planner is rooted half a turn about Z from the controller's base.
+for a global collision-free joint trajectory to a joint configuration
+(:meth:`CuroboUrPlanner.plan_joint`), judges joint paths against the world the planner holds
+(:meth:`CuroboUrPlanner.check_joint_path`), and executes a list of joint waypoints on the UR
+controller as one blocking ``ur_rtde`` ``moveJ`` per waypoint. Every pose reaches the planner
+through :class:`.planner_frame.PlannerFrameClient`, because the planner is rooted half a turn
+about Z from the controller's base.
 
-Which list runs is the arm's decision, not this module's. cuRobo samples a plan every 25 ms
-(21 to 281 waypoints a move, measured on a UR10), and a ``moveJ`` starts from rest and stops at
-its target, so running every sample stopped the arm at every one. The arm shortens the plan to a
-subset of its own waypoints (:func:`~src.robot.safety.path_samples.simplify_joint_path`), has
-both authorities judge the legs of that list, and hands :meth:`CuroboUrPlanner.execute` exactly
-the list that passed, or the plan as cuRobo returned it where the shortened one was refused.
+Where the arm goes is the arm's decision, not this module's and never cuRobo's: the arm
+chooses the goal configuration (the nearest one on the branch it holds, for a Cartesian goal),
+runs the straight joint line there where that line is clear, and asks for a plan only where it
+is not. There is no Cartesian plan here, so cuRobo is never left to choose a goal.
+
+Which list runs is the arm's decision too. cuRobo samples a plan every 25 ms (21 to 281
+waypoints a move, measured on a UR10), and a ``moveJ`` starts from rest and stops at its target,
+so running every sample stopped the arm at every one. The arm shortens the plan to a subset of
+its own waypoints (:func:`~src.robot.safety.path_samples.simplify_joint_path`), has both
+authorities judge the legs of that list, and hands :meth:`CuroboUrPlanner.execute` exactly the
+list that passed, or the plan as cuRobo returned it where the shortened one was refused.
 
 It is fail-closed. Where the cuRobo environment or service is unavailable, or no
-collision-free plan exists, nothing falls back to blind IK: :meth:`CuroboUrPlanner.plan`
+collision-free plan exists, nothing falls back to blind IK: :meth:`CuroboUrPlanner.plan_joint`
 raises or returns ``None``, and the UR arm turns that into a typed failure,
 :attr:`MotionStatus.CONTROLLER_REJECTED` or :attr:`MotionStatus.TIMEOUT`, so a real cell
 never moves on an unplanned path.
@@ -36,10 +42,7 @@ import math
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
-import numpy as np
-
 from src.contracts import UNSET, Maybe
-from src.geometry import Pose
 from src.robot.constants import UR_CUROBO_LOG_FILE, create_robot_logger
 from src.robot.core import MotionCommand, MotionResult, MotionStatus
 from src.robot.core.errors import CameraWorldUnavailable
@@ -55,6 +58,8 @@ from src.robot.safety.planning.world import merge_planner_worlds
 from .planner_frame import PlannerFrameClient
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.geometry import Pose
+    from src.robot.core import JointPositions
     from src.robot.core.keep_out import GoalKeepOut
     from src.robot.safety.planning.reservation import PlannerReservation
     from src.robot.safety.planning.live_world import LivePlannerWorld
@@ -452,48 +457,6 @@ class CuroboUrPlanner:
     # Planning + execution
     # ------------------------------------------------------------------
 
-    def plan(self, pose: Pose, *, goal_keep_out: "Maybe[GoalKeepOut]" = UNSET) -> list[list[float]] | None:
-        """Plan from tool0 to ``pose`` in BASE with cuRobo, returning the trajectory in UR order.
-
-        It returns ``None`` where no plan exists. ``goal_keep_out`` is the space between the jaws at
-        the goal, which the refresh before the plan leaves out.
-
-        Raises
-        ------
-        CuroboUnavailableError
-            If the cuRobo environment or service cannot be brought up, and the caller
-            then fails closed.
-        """
-        goal_pos_m = (np.asarray(pose.position_mm, dtype=np.float64) / 1000.0).tolist()
-        qx, qy, qz, qw = (float(v) for v in pose.quaternion_xyzw)
-        goal_quat_wxyz = [qw, qx, qy, qz]
-
-        current_ur = [float(v) for v in self._conn.get_joint_positions()]
-        client = self._client_or_start()
-        # The goal decides which obstacles matter when the slot budget bites, so it goes in
-        # as plain numbers rather than as whatever array type the pose happens to carry.
-        self._refresh_world(near_point_mm=[float(v) for v in pose.position_mm], goal_keep_out=goal_keep_out)
-        start = self._to_client_order(current_ur, client.joint_names)
-        traj = client.plan(start, goal_pos_m, goal_quat_wxyz)
-        if not traj:
-            # The caller turns this into one fail-safe sentence, so the pair of links the planner
-            # could not get past is recoverable from here alone. Nothing on the wire changes: the
-            # verdict is still no plan.
-            refusal = self.last_refusal
-            if refusal is not None:
-                self.logger.warning("cuRobo refused this move. %s", refusal.render())
-            return None
-        return [self._to_ur_order(list(wp), client.joint_names) for wp in traj]
-
-    def plans_joint_goals(self) -> bool:
-        """Whether the planner behind this glue plans to a joint configuration, starting it if need be.
-
-        Every :class:`CuroboPlanClient` does (``plan_js``). An injected client may not, and then the arm
-        asks :meth:`plan` for a Cartesian goal, as it always did. Raises what :meth:`plan` raises when
-        the planner cannot be brought up.
-        """
-        return callable(getattr(self._client_or_start(), "plan_joint", None))
-
     def plan_joint(
         self,
         goal_ur: "Sequence[float]",
@@ -504,14 +467,15 @@ class CuroboUrPlanner:
     ) -> list[list[float]] | None:
         """Plan from the joints the arm stands at to ``goal_ur`` in joint space, returning the trajectory in UR order.
 
-        The joint-goal twin of :meth:`plan`: the same start read off the controller, the same world
-        refresh before the plan, the same joint-order remap both ways. ``None`` where cuRobo found no
-        plan, with the typed reason on :attr:`last_refusal`. Joints are the same numbers in the
-        planner's base as in the controller's, so nothing is turned.
+        The start is read off the controller, the world is refreshed before the plan, and the joints
+        are remapped into the planner's order and back. ``None`` where cuRobo found no plan, with the
+        typed reason on :attr:`last_refusal`. Joints are the same numbers in the planner's base as in
+        the controller's, so nothing is turned.
 
         ``refresh=False`` skips the refresh, for a caller that refreshed the world itself before
         judging the goal against it; ``near_point_mm`` and ``goal_keep_out`` are what that refresh
-        is handed otherwise, as :meth:`plan` hands them.
+        is handed otherwise: the flange at the goal, where the slot budget keeps its obstacles, and
+        the space between the jaws there, which the refresh leaves out.
 
         Raises
         ------
@@ -545,15 +509,19 @@ class CuroboUrPlanner:
         return getattr(self._client, "last_refusal", None)
 
     def check_joint_path(
-        self, samples_ur: "Sequence[Sequence[float]]", *, refresh: bool = True
+        self, samples_ur: "Sequence[Sequence[float]]", *, refresh: bool = True, clearance_mm: float = 0.0,
     ) -> JointCheckVerdict:
         """Ask cuRobo whether every configuration of a joint path is admissible, in UR joint order.
 
-        The same planner, the same world and the same attached payload the Cartesian path
-        gets, so a joint move is judged against the cell the planner actually holds rather
-        than against a second model that agreed with it when somebody last looked. The world
-        is refreshed first for the reason :meth:`_refresh_world` gives: a world registered
-        once is a photograph.
+        The same planner, the same world and the same attached payload a plan gets, so a joint
+        path is judged against the cell the planner actually holds rather than against a second
+        model that agreed with it when somebody last looked. The world is refreshed first for the
+        reason :meth:`_refresh_world` gives: a world registered once is a photograph.
+
+        ``clearance_mm`` above 0 refuses a configuration closer than that to the planner's world
+        (:meth:`CuroboPlanClient.check_joints`); the arm asks it of a straight line it would run
+        instead of a plan. 0, the default, is the check every planned path gets, and the client is
+        then asked exactly as it always was.
 
         Judged in one request. Returning after the first refused sample would cost a round
         trip per configuration, and the sidecar already answers with the index it stopped at.
@@ -583,13 +551,17 @@ class CuroboUrPlanner:
             # with `refresh=False`.
             self._refresh_world()
         ordered = [self._to_client_order(list(c), client.joint_names) for c in configs]
+        if clearance_mm > 0.0:
+            return client.check_joints(ordered, clearance_mm=float(clearance_mm))
         return client.check_joints(ordered)
 
     def execute(
         self,
         traj_ur: "Sequence[Sequence[float]]",
-        pose: Pose,
+        pose: "Pose | None" = None,
         *,
+        command: MotionCommand = MotionCommand.MOVE_TO,
+        target_joints: "JointPositions | None" = None,
         vel: float | None = None,
         acc: float | None = None,
     ) -> MotionResult:
@@ -599,7 +571,8 @@ class CuroboUrPlanner:
         stops there. So the legs this runs are the legs between neighbouring entries of ``traj_ur``,
         and the list the arm hands over is the list whose legs it had judged: nothing here drops,
         adds or moves a waypoint. ``vel`` and ``acc`` arrive clamped by the arm; ``None`` takes the
-        defaults this planner was built with.
+        defaults this planner was built with. The result names ``command`` and what it was
+        commanded to, ``pose`` for a Cartesian move and ``target_joints`` for a joint move.
 
         A failure says how far the list got. A waypoint ``ur_rtde`` refuses before sending it (a
         speed or acceleration outside its range raises ``ValueError``) is INVALID_TARGET. A ``moveJ``
@@ -610,40 +583,35 @@ class CuroboUrPlanner:
         v = vel if vel is not None else self._vel
         a = acc if acc is not None else self._acc
         total = len(traj_ur)
+        commanded: dict[str, Any] = {"target_pose": pose, "target_joints": target_joints}
         for index, waypoint in enumerate(traj_ur):
             try:
                 ok = self._conn.moveJ(list(waypoint), vel=v, acc=a)
             except ValueError as exc:
                 done = f"the {index} before it ran" if index else "nothing had moved"
                 return MotionResult.failed(
-                    MotionStatus.INVALID_TARGET,
-                    MotionCommand.MOVE_TO,
-                    target_pose=pose,
-                    message=(f"ur_rtde refused waypoint {index + 1} of {total} of the cuRobo trajectory before "
+                    MotionStatus.INVALID_TARGET, command, **commanded,
+                    message=(f"ur_rtde refused waypoint {index + 1} of {total} of the judged path before "
                              f"sending it ({exc}), so that moveJ was not sent and {done}"),
                     exception=exc,
                 )
             except (RuntimeError, OSError) as exc:
                 return MotionResult.failed(
-                    MotionStatus.CONNECTION_ERROR,
-                    MotionCommand.MOVE_TO,
-                    target_pose=pose,
-                    message=(f"UR moveJ raised executing waypoint {index + 1} of {total} of the cuRobo trajectory: "
+                    MotionStatus.CONNECTION_ERROR, command, **commanded,
+                    message=(f"UR moveJ raised executing waypoint {index + 1} of {total} of the judged path: "
                              f"{exc}. moveJ was sent, so the arm may have moved part of the way."
                              f"{self._state_text()}"),
                     exception=exc,
                 )
             if not ok:
                 return MotionResult.failed(
-                    MotionStatus.CONTROLLER_REJECTED,
-                    MotionCommand.MOVE_TO,
-                    target_pose=pose,
-                    message=(f"UR moveJ rejected waypoint {index + 1} of {total} of the cuRobo trajectory. moveJ "
+                    MotionStatus.CONTROLLER_REJECTED, command, **commanded,
+                    message=(f"UR moveJ rejected waypoint {index + 1} of {total} of the judged path. moveJ "
                              f"was sent and the controller did not complete it, so the arm may have moved part "
                              f"of the way.{self._state_text()}"),
                 )
-        self.logger.info("cuRobo trajectory executed on UR: %d moveJ", total)
-        return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose, message="curobo")
+        self.logger.info("judged path executed on UR: %d moveJ", total)
+        return MotionResult.executed(command, **commanded, message="curobo")
 
     def _state_text(self) -> str:
         """The controller's state as a sentence after a sent moveJ failed, or ``""``. Never a second fault."""

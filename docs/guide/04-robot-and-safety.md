@@ -65,22 +65,27 @@ python -c "from src.robot.core import MotionStatus; print([m.value for m in Moti
 `Robot.move`, `Robot.move_joints` and `Robot.home` call these typed verbs and return a `MotionReport`
 ([06](06-grippers.md), section 6).
 
-### 1.2 The three optional capability Protocols
+### 1.2 The four optional capability Protocols
 
 Some features only some controllers have. They live as separate `runtime_checkable` Protocols in
-[`src/robot/core/arm_capabilities.py`](../../src/robot/core/arm_capabilities.py), and a caller checks for
-one with `isinstance()`.
+[`src/robot/core/arm_capabilities.py`](../../src/robot/core/arm_capabilities.py), with hand guiding in
+its own module, [`src/robot/core/freedrive.py`](../../src/robot/core/freedrive.py), and a caller checks
+for one with `isinstance()`.
 
 | Protocol | What it adds |
 |---|---|
 | `SupportsDigitalIO` | `set_digital_output`, `get_digital_input`, analog out, banked by `DigitalIOPort` (`standard`, `configurable`, `tool`) |
 | `SupportsForceTorque` | `get_tcp_wrench` in N and Nm, BASE frame, plus `get_joint_torques` |
 | `SupportsRobotStatus` | `get_robot_status` and `recover_from_protective_stop` |
+| `SupportsFreedrive` | `freedrive()` -> `FreedriveSession`: `free()`, `hold()` and `sample()` inside a with-block that holds the arm on every way out, an exception or Ctrl-C included, while every motion verb of the arm refuses as long as it is open; `controller_payload()` -> `ControllerPayload \| None`, the mass and centre of gravity the controller compensates for, or `None` where the controller does not report them |
 
 The vendor-neutral `RobotMode` and `SafetyMode` enumerations turn a controller's integer status codes into
 portable words; the UR driver maps its integers in `src/robot/drivers/ur/arm.py`. `URRobotArm` is the only
-driver that implements any of the three. `SupportsDigitalIO` carries weight: the two digital-I/O
-end-effectors run on it, and neither is built on an arm that does not advertise it.
+driver that implements any of the four; its `SupportsFreedrive` is the UR teach mode. `SupportsDigitalIO`
+carries weight: the two digital-I/O end-effectors run on it, and neither is built on an arm that does not
+advertise it. So does `SupportsFreedrive`: the hand-guided calibration (`--freedrive`) and the fine-tune at
+each fixed station (`--adjust`) need it, and an arm without it, the simulator's among them, calibrates from
+fixed stations only ([03](03-calibration.md)).
 
 ### 1.3 `Gripper` and `ObjectDetectingGripper`
 
@@ -533,6 +538,20 @@ reach its sidecar refuses its motions too, and `resolve_runner_planner` refuses 
 simulator's planner is a runner flag, not a config key. `--motion-planner ik`, on the runners that take it,
 says a run is deliberately unplanned, and a pick on such a run is refused before the jaws open: ik keeps no
 straight line, and the pick's descent is one.
+
+**A cuRobo move runs a straight joint line first, and cuRobo never chooses the goal.** A move to a pose goes
+to the configuration of its goal nearest the arm, on the branch the arm holds, ranked from the closed-form
+inverse kinematics inside the joint window. The straight joint line there runs wherever it is clear, judged
+by the local path gate and by the planner against its world, the camera's included; cuRobo plans only where
+no line is clear, to the same goals in the same order, and there is no fallback that lets it pick a goal of
+its own. Two keys in `safety.planned_motion` bound that choice. `line_clearance_mm` (default 10) is how far
+every configuration of a straight line has to stay from the planner's world before the line runs instead of
+a plan: the distance cuRobo's optimiser keeps its plans from an obstacle, and the local guard's shipped
+`self_collision.min_distance_mm`. `max_detour_deg` (default 45) is how far any joint of a cuRobo plan may
+swing beyond the span between where it starts and where it ends: a plan past it is not run, the next goal
+is planned to instead, and with none left the move is refused `JOINT_LIMIT_REJECTED` naming the joint. A
+Cartesian goal out of reach is `IK_FAILED`, and no clear line and no plan is `TIMEOUT`. A `move_to_joints`
+takes the same order to the one configuration it names.
 
 **A cuRobo motion needs a camera world or a decline.** Every verb of a cuRobo UR arm, and of a cuRobo
 simulator arm outside mock mode, first asks whether a live camera world is wired or the caller declined one.

@@ -1,8 +1,10 @@
 """Pure-math tests for the sim-native eye-in-hand calibration helpers (no Isaac required).
 
-Covers the viewpoint geometry that the on-box calibration relies on: that a generated TCP
-viewpoint, fed back through the production EyeInHandFrameResolver, reconstructs a camera that
-looks exactly at the marker -- the algebraic contract between pose generation and the resolver.
+Covers the declared stations the on-box calibration runs: that each shipped stations file reads as the real cell's
+``--fixed-poses`` reads one, and that an eye-in-hand station, fed back through the production
+EyeInHandFrameResolver with the wrist mount the sim authors, reconstructs a camera that looks at the scene marker.
+Nothing generates a sim station any more (the owner, 2026-09-24): the files were frozen from the generators this
+repository used to carry, and these tests hold them to what those generators promised.
 """
 
 from __future__ import annotations
@@ -10,23 +12,21 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.willy_sim.calibration.hand_eye import (
-    generate_hemisphere_viewpoints,
-    look_at_world_matrix,
-    transform_delta,
-)
 from src.geometry import Frame, Pose, Transform
+from src.robot.execution.pose_provider import load_stations
 from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver
+from src.willy_sim.calibration.hand_eye import transform_delta
+from src.willy_sim.calibration.paths import STATIONS_DIR, declared_stations
+
+#: The scene marker each model's eye-in-hand stations look at (robot.sim.yaml, and robot.ur3e.yaml's own).
+_MARKERS = {"ur5e": (450.0, -150.0, 6.0), "ur3e": (150.0, -40.0, 6.0), "ur10e": (450.0, -150.0, 6.0)}
 
 
-def _t_cam_to_tool() -> Transform:
-    """A realistic CAMERA->TOOL (mirrors the on-box oracle: [130,0,-112] mm + a 35 deg tilt)."""
-    ang = np.radians(35.0)
-    rot = np.array(
-        [[1.0, 0.0, 0.0], [0.0, np.cos(ang), -np.sin(ang)], [0.0, np.sin(ang), np.cos(ang)]]
-    )
+def _mount() -> Transform:
+    """CAMERA->TOOL as the sim authors the wrist camera: 130 mm along the tool's +X, 112 mm behind the TCP, looking
+    along the tool's +Z (``mount_offset_mm`` and ``mount_aim_mm`` through the ``willy`` tool frame)."""
     mat = np.eye(4)
-    mat[:3, :3] = rot
+    mat[:3, :3] = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
     mat[:3, 3] = [130.0, 0.0, -112.0]
     return Transform.from_matrix(mat, from_frame=Frame.CAMERA, to_frame=Frame.TOOL)
 
@@ -41,57 +41,37 @@ class _FakeArm:
         return self._pose
 
 
-def test_look_at_world_matrix_points_optical_axis_at_target() -> None:
-    cam = np.array([100.0, -50.0, 300.0])
-    target = np.array([450.0, -150.0, 5.0])
-    mat = look_at_world_matrix(cam, target)
-    assert np.allclose(mat[:3, 3], cam)
-    rot = mat[:3, :3]
-    # right-handed, orthonormal
-    assert np.isclose(np.linalg.det(rot), 1.0, atol=1e-9)
-    assert np.allclose(rot.T @ rot, np.eye(3), atol=1e-9)
-    # CV optical +Z (third column) points from the camera toward the target
-    optical_z = rot[:, 2]
-    aim = (target - cam) / np.linalg.norm(target - cam)
-    assert np.allclose(optical_z, aim, atol=1e-9)
+def test_every_sim_model_declares_both_station_files_and_each_reads_as_a_fixed_poses_file() -> None:
+    """The three models the sim cell drives (robot.sim.robot_model: ur5e, ur3e, ur10e)."""
+    for model in _MARKERS:
+        for mounting in ("eth", "eih"):
+            path = declared_stations(mounting, model)
+            assert path.parent == STATIONS_DIR
+            stations = load_stations(path)
+            assert len(stations) >= 20, (path, len(stations))
+            assert all(isinstance(station, Pose) and station.frame is Frame.BASE for station in stations)
 
 
-def test_look_at_world_matrix_handles_up_parallel_to_axis() -> None:
-    # camera directly above the target -> forward == up_hint default (0,0,1); must not blow up.
-    cam = np.array([450.0, -150.0, 305.0])
-    target = np.array([450.0, -150.0, 5.0])
-    mat = look_at_world_matrix(cam, target)  # default up_hint (0,0,1) is parallel to forward
-    rot = mat[:3, :3]
-    assert np.isclose(np.linalg.det(rot), 1.0, atol=1e-9)
-    assert np.allclose(rot[:, 2], np.array([0.0, 0.0, -1.0]), atol=1e-9)  # looks straight down
+def test_a_model_with_no_declared_file_is_refused_with_the_way_out() -> None:
+    with pytest.raises(SystemExit, match="pass --stations PATH"):
+        declared_stations("eih", "ur99")
+    assert declared_stations("eih", "ur99", "mine.json").name == "mine.json"
 
 
-def test_generate_hemisphere_viewpoints_count_default() -> None:
-    vps = generate_hemisphere_viewpoints([450.0, -150.0, 5.0], _t_cam_to_tool())
-    # defaults: 2 radii * 2 elevations * 6 azimuths
-    assert len(vps) == 24
-    for vp in vps:
-        assert vp.tcp_pose.frame is Frame.BASE
-
-
-def test_generated_viewpoints_resolve_to_camera_looking_at_marker() -> None:
-    """The core contract: TCP target -> EyeInHandFrameResolver -> camera optical axis hits marker."""
-    marker = np.array([450.0, -150.0, 5.0])
-    t_cam_to_tool = _t_cam_to_tool()
-    resolver = EyeInHandFrameResolver(t_cam_to_tool=t_cam_to_tool)
-    vps = generate_hemisphere_viewpoints(marker, t_cam_to_tool)
-    worst_aim_deg = 0.0
-    worst_pos_mm = 0.0
-    for vp in vps:
-        arm = _FakeArm(vp.tcp_pose)
-        t_cam_to_base = resolver.camera_to_base_for_frame(None, arm=arm)  # type: ignore[arg-type]
-        base = np.asarray(t_cam_to_base.to_matrix())
-        cam_pos, optical_z = base[:3, 3], base[:3, 2]
-        aim = (marker - cam_pos) / np.linalg.norm(marker - cam_pos)
-        worst_aim_deg = max(worst_aim_deg, float(np.degrees(np.arccos(np.clip(optical_z @ aim, -1, 1)))))
-        worst_pos_mm = max(worst_pos_mm, float(np.linalg.norm(cam_pos - vp.cam_pos_mm)))
-    assert worst_aim_deg < 1e-3   # optical axis points at the marker (arccos numerical noise only)
-    assert worst_pos_mm < 1e-6    # camera position reconstructs exactly
+def test_the_declared_eih_stations_look_at_the_marker() -> None:
+    """The core contract: TCP station -> EyeInHandFrameResolver -> the camera's optical axis hits the marker."""
+    resolver = EyeInHandFrameResolver(t_cam_to_tool=_mount())
+    for model, marker_mm in _MARKERS.items():
+        marker = np.asarray(marker_mm)
+        worst_aim_deg = 0.0
+        for station in load_stations(declared_stations("eih", model)):
+            assert isinstance(station, Pose)
+            base = np.asarray(resolver.camera_to_base_for_frame(None, arm=_FakeArm(station)).to_matrix())  # type: ignore[arg-type]
+            cam_pos, optical_z = base[:3, 3], base[:3, 2]
+            aim = (marker - cam_pos) / np.linalg.norm(marker - cam_pos)
+            worst_aim_deg = max(worst_aim_deg, float(np.degrees(np.arccos(np.clip(optical_z @ aim, -1, 1)))))
+            assert 230.0 < float(np.linalg.norm(marker - cam_pos)) < 280.0, (model, station.label)
+        assert worst_aim_deg < 0.05, (model, worst_aim_deg)  # the rounding of the file only
 
 
 def test_aruco_marker_pose_source_detects_and_solves() -> None:

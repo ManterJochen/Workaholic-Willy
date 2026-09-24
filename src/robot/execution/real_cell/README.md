@@ -20,7 +20,7 @@ connected and the campaign did not pass its rule; `3` a fault of the cell stoppe
 
 The same steps from Python are
 [02_check_the_cell_at_a_desk.py](../../../../examples/real_robot/02_check_the_cell_at_a_desk.py) and
-[13_pick_campaign.py](../../../../examples/real_robot/13_pick_campaign.py):
+[11_pick_with_the_camera.py](../../../../examples/real_robot/11_pick_with_the_camera.py):
 
 ```python
 from willy import Cell, load_tree
@@ -112,24 +112,40 @@ exits 0.
 ## calibrate: one camera against the arm
 
 ```bash
-python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --check     # touches nothing
-python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --dry-run   # opens the camera
-python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --poses 22  # this moves the robot
+python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --freedrive --check    # touches nothing
+python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --freedrive --dry-run  # opens the camera
+python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --freedrive            # you move the arm
+python -m src.robot.execution.real_cell.calibrate --rig <rig id> --fixed-poses stations.json [--adjust]    # the arm moves
 ```
 
-Exit codes: `0` done; `1` the config or the build refused, another process holds the cell, or the
-connect refused; `2` it ran and wrote no artifact, and the camera keeps its previous calibration;
-`3` the sweep raised. The Python twin is
-[07_calibrate_a_fixed_camera.py](../../../../examples/real_robot/07_calibrate_a_fixed_camera.py):
-`HandEyeCalibration.from_tree(tree, rig_id=, mode=)`, then `check()` and `run(dry_run=)`.
+Nothing generates a station: a run names its stations (`--fixed-poses`) or is guided by hand
+(`--freedrive`), and a run that names neither is refused at `--check`. Exit codes: `0` done; `1` the
+config or the build refused, another process holds the cell, or the connect refused; `2` it ran and
+wrote no artifact, and the camera keeps its previous calibration; `3` the sweep raised. The Python twins
+are [07](../../../../examples/real_robot/07_calibrate_a_fixed_camera.py) to
+[10](../../../../examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py):
+`HandEyeCalibration.from_tree(tree, rig_id=, mode=, options=SweepOptions(...))`, then `check()` and
+`run(dry_run=)`.
 
 | Flag | What it sets |
 | --- | --- |
 | `--mode` | `eye_to_hand`, a fixed camera (`eth_<rig>.json`, CAMERA to BASE); `eye_in_hand`, a wrist camera (`eih_<rig>.json`) |
+| `--freedrive` | you move the arm by hand to every pose; Enter (console, or Enter or Space in the preview) captures once the arm stands still, `s` skips, `q` finishes; nothing moves by itself |
+| `--samples` | with `--freedrive`: how many counted poses end the run (`robot.calibration.freedrive_samples`, 15) |
+| `--fixed-poses PATH` | your stations, in the file's order: poses and joint stations (`{"joints_deg": [...]}`); beside `--freedrive` they are targets the preview shows the way to, never moved to |
+| `--adjust` | with `--fixed-poses`: frees the arm at each station it reached so you fine-tune it by hand; before the next automatic move, hands off, Enter, and a 3 s countdown |
 | `--marker-length-mm` | the printed edge (the mode's `camera.hand_eye` block); a wrong one scales every sample and still converges |
 | `--dict`, `--marker-id` | the ArUco dictionary (the mode's `camera.hand_eye` block) and the marker id (0) |
-| `--poses`, `--out` | how many generated poses the sweep visits (22) and where the artifact goes (`calibration/real`) |
+| `--out` | where the artifact, the dataset, the counted frames and a hand-guided run's stations file go (`calibration/real`) |
 | `--unmodelled-wrist-body "<reason>"` | sweeps a wrist camera whose body cannot be placed yet, with no body in the planner and the guard |
+
+`--freedrive` and `--adjust` need an arm that offers hand guiding (on a UR, teach mode); the build
+refuses them on any other. Before the arm is first freed, the controller payload is shown and has to
+be confirmed. A pose outside the cable window or the workspace box turns the preview red and is not
+captured; the arm is never held or stopped for it. Each pose counted by hand is written to
+`<out>/<mode>_<rig>_stations.json`, which `--fixed-poses` replays without hands; a replay of that
+very file with `--adjust` writes `<mode>_<rig>_stations.adjusted.json` beside it instead of
+overwriting the stations you taught.
 
 The sweep builds the arm alone (no hand, so no activation stroke beside the board), takes the same
 cell lock as `real_cell` and the console, and declines the camera world on every move, because it
@@ -164,4 +180,4 @@ camera, and a second camera also needs its entry in `grasping.fusion.cameras` be
 - Runbooks: [the first pick on a physical arm](../../../../docs/runbooks/real_cell_first_pick.md), [bringing up a cell](../../../../docs/runbooks/cell_bringup.md)
 - Measuring the extrinsics: [calibration-setup.md](../../../../docs/calibration-setup.md); every command: [docs/cli.md](../../../../docs/cli.md)
 - The library it calls: [execution](../README.md), [autonomous_grasp](../autonomous_grasp/README.md); the UR driver: [drivers/ur](../../drivers/ur/README.md)
-- Tests: `tests/test_real_cell_runner.py`, `tests/test_real_cell_calibrate.py`, `tests/test_calibrate_cli_transcript.py`
+- Tests: `tests/test_real_cell_runner.py`, `tests/test_real_cell_calibrate.py`, `tests/test_calibrate_cli_transcript.py`, `tests/test_a_calibration_can_be_guided_by_hand.py`

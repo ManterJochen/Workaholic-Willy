@@ -76,11 +76,11 @@ camera:
       - rig_id: cam_left
         extrinsics:
           mounting_mode: eye_to_hand
-          artifact_path: "calibration/real/eth_cam_left.json"
+          artifact_path: "../calibration/real/eth_cam_left.json"     # relative to the config tree's folder
       - rig_id: cam_right
         extrinsics:
           mounting_mode: eye_to_hand
-          artifact_path: "calibration/real/eth_cam_right.json"
+          artifact_path: "../calibration/real/eth_cam_right.json"
 robot:
   grasping:
     fusion:

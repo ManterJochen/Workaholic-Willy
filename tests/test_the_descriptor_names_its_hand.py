@@ -142,8 +142,8 @@ class _Client:
         self.calls.append("set_world")
         return len(cuboids)
 
-    def plan(self, start: list, pos_m: list, quat_wxyz: list) -> list:
-        self.calls.append("plan")
+    def plan_joint(self, start: list, goal: list) -> list:
+        self.calls.append("plan_joint")
         return [[0.0] * 6]
 
     def close(self) -> None:
@@ -200,9 +200,9 @@ class TheURPlannerChecksWhatItLoadedTests(unittest.TestCase):
 
         with self.assertLogs("CuroboUrPlanner", level="ERROR") as logs, \
                 self.assertRaises(CuroboUnavailableError) as refused:
-            planner.plan(_pose())
+            planner.plan_joint([0.1] * 6)
         self.assertIn("build_ur_config.py", str(refused.exception))
-        self.assertNotIn("plan", client.calls)
+        self.assertNotIn("plan_joint", client.calls)
         self.assertEqual(planner._conn.moves, [])  # noqa: SLF001
         self.assertTrue(client.closed, "a client on the wrong descriptor is closed, not kept for the next move")
         self.assertEqual(len([r for r in logs.records if r.levelname == "ERROR"]), 1, logs.output)
@@ -211,9 +211,9 @@ class TheURPlannerChecksWhatItLoadedTests(unittest.TestCase):
         """The control."""
         client = _Client(arm_identity())
         planner = self._planner(client, _link())
-        result = planner.execute(planner.plan(_pose()), _pose())
+        result = planner.execute(planner.plan_joint([0.1] * 6), _pose())
         self.assertIs(result.status, MotionStatus.EXECUTED, result.message)
-        self.assertIn("plan", client.calls)
+        self.assertIn("plan_joint", client.calls)
 
     def test_the_ur_arm_starts_its_planner_on_the_arm_descriptor_with_the_hand_link(self) -> None:
         arm = _ur_arm({"model": "robotiq_hande", "coupling_plates": [{"name": "plate", "thickness_mm": 20.0}]})

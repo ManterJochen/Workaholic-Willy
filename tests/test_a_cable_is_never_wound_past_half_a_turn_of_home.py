@@ -3,8 +3,9 @@
 ``safety.joint_limits.within_half_turn_of_home`` narrows every axis whose range is a full turn or more to half a turn
 either side of the home the arm drives to, before the margin comes off; a UR elbow, which Universal Robots plans within
 +-180 degrees and so never turns a full turn, is left alone. The guard refuses outside it, the UR driver
-chooses a Cartesian goal's configuration inside it, a plan cuRobo was left to choose the goal of is refused by the
-same gates when it ends or passes outside, and the desk check prints the controller limits that hold it on the pendant.
+chooses a Cartesian goal's configuration inside it and never leaves cuRobo to choose one, a joint target outside it
+runs as its full turn inside, a plan that passes outside is refused by the path gate, and the desk check prints the
+controller limits that hold it on the pendant.
 
 What it costs, measured here with the closed-form inverse kinematics over random homes and poses: nothing at a margin
 of zero, because every UR joint is 2*pi-periodic and each angle has a twin inside any full-turn window; at the
@@ -24,7 +25,7 @@ import pytest
 
 from src.config.schema.robot import JointLimitSafetyConfig, RobotConfig
 from src.robot.constants import HOME_JOINTS_DEFAULT
-from src.robot.core import JointPositions, MotionCommand, MotionStatus, RobotCapabilities
+from src.robot.core import NO_PLAN_FAIL_SAFE_MESSAGE, JointPositions, MotionCommand, MotionStatus, RobotCapabilities
 from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.drivers.ur.curobo_motion import PLANNER_JOINT_ENVELOPE_RAD
 from src.robot.safety import JointLimitGuard, SafetyContext, SafetyPreflight, SafetyReason
@@ -40,7 +41,7 @@ from src.robot.safety.joint_limits import (
     stated_home_rad,
 )
 from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
-from tests.test_the_nearest_goal_is_planned import _Planner
+from tests._route_planner import RoutePlanner as _Planner
 
 _DECLINED = "unit double: this file reads which configurations a planner double is asked for, and no camera world"
 _HOME = (0.2, -1.4, 1.3, -1.5, -1.57, 0.1)
@@ -90,9 +91,11 @@ def _driven(planner: _Planner, *, judged: bool = True, **kwargs: Any) -> URRobot
 
 
 def _asked(planner: _Planner) -> "list[tuple[float, ...]]":
-    """Every configuration the arm put to the planner as a goal: screened alone, or planned to."""
+    """Every configuration the arm put to the planner as a goal: screened alone, lined to, planned to, or run to."""
     goals = [tuple(call[1]) for call in planner.named("plan_joint")]
     goals += [call[1][0] for call in planner.named("check") if len(call[1]) == 1]
+    goals += [call[1][-1] for call in planner.lines()]
+    goals += [call[1][-1] for call in planner.named("execute")]
     return goals
 
 
@@ -257,8 +260,8 @@ class TheDriverTests(unittest.TestCase):
         without = _Planner(here=here)
         with without_camera_world_of(_driven(without, judged=False, safety={})) as arm:
             arm.move(pose_where_it_ends(arm, end))
-        (asked,) = without.named("plan_joint")
-        self.assertAlmostEqual(190.0, math.degrees(asked[1][5]), places=4)
+        (ran,) = without.named("execute")
+        self.assertAlmostEqual(190.0, math.degrees(ran[1][-1][5]), places=4)
 
         within = _Planner(here=here)
         with without_camera_world_of(_driven(within, judged=False)) as arm:
@@ -268,7 +271,7 @@ class TheDriverTests(unittest.TestCase):
         for goal in _asked(within):
             for axis, value in enumerate(goal):
                 self.assertTrue(lower[axis] <= value <= upper[axis], f"axis {axis} asked at {math.degrees(value)}")
-        self.assertEqual([], within.named("plan"), "cuRobo was left to choose although a goal lies in the window")
+        self.assertTrue(within.named("execute"))
 
     def test_no_goal_outside_the_window_is_ever_asked_for(self) -> None:
         rng = np.random.default_rng(7)
@@ -284,47 +287,55 @@ class TheDriverTests(unittest.TestCase):
                     with self.subTest(trial=trial, axis=axis):
                         self.assertTrue(lower[axis] <= value <= upper[axis])
 
-    def test_cuRobos_own_goal_that_ends_outside_is_refused_and_named(self) -> None:
-        """Every goal in the window refused by the planner; cuRobo's own plan ends a full turn round on the base."""
+    def test_when_the_planner_refuses_every_goal_in_the_window_cuRobo_is_not_left_to_choose_one(self) -> None:
+        """This used to hand cuRobo the pose, and its own plan ended a full turn round on the base (plan_pose)."""
         here = list(_HOME)
         end = [_HOME[0] + 0.4, *_HOME[1:]]
-        wound = [end[0] + 2.0 * math.pi, *end[1:]]
-        planner = _Planner(here=here, cartesian=[list(here), wound])
+        planner = _Planner(here=here)
         planner.screen = lambda config: False
         with without_camera_world_of(_driven(planner)) as arm:
             result = arm.move(pose_where_it_ends(arm, end))
-        self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, result.status, result.message)
-        self.assertIn("cuRobo chose this goal's configuration itself (plan_pose)", result.message)
-        self.assertIn("ends outside the half turn either side of home", result.message)
-        self.assertIn("within_half_turn_of_home", result.message)
+        self.assertIs(MotionStatus.TIMEOUT, result.status, result.message)
+        self.assertEqual(NO_PLAN_FAIL_SAFE_MESSAGE, result.message)
+        self.assertEqual([], planner.named("plan_joint"))
         self.assertEqual([], planner.named("execute"))
 
-    def test_without_the_window_a_refused_end_says_nothing_about_one(self) -> None:
+    def test_a_joint_target_past_the_seam_runs_as_its_full_turn_inside_the_window(self) -> None:
+        """A station written at home + 190 deg on wrist 3 is the same pose as home - 170, which the window admits."""
         here = list(_HOME)
-        wound = [_HOME[0] + 0.4, *_HOME[1:]]
-        planner = _Planner(here=here, cartesian=[list(here), wound])
-        planner.screen = lambda config: False
-        limits = {"joint_limits": {"min_deg": [-360.0] * 6, "max_deg": [360.0] * 5 + [1.0]}}
-        with without_camera_world_of(_driven(planner, safety=limits)) as arm:
-            result = arm.move(pose_where_it_ends(arm, wound))
-        self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, result.status, result.message)
-        self.assertNotIn("plan_pose", result.message)
+        station = [*_HOME[:5], _HOME[5] + math.radians(190.0)]
+        planner = _Planner(here=here)
+        arm = _driven(planner, judged=False)
+        arm._conn.moveJ.return_value = True
+        with without_camera_world_of(arm), self.assertLogs("URRobotArm", level="INFO") as logs:
+            result = arm.move_to_joints(JointPositions(station))
+        self.assertTrue(result.ok, result.message)
+        ((sent, *_), _) = arm._conn.moveJ.call_args
+        self.assertAlmostEqual(_HOME[5] - math.radians(170.0), sent[5], places=9)
+        np.testing.assert_allclose(sent[:5], _HOME[:5], atol=0.0)
+        self.assertIn("twin wrap wrist_3_joint", "\n".join(logs.output))
 
 
 @pytest.mark.skipif(mesh_backend_status("ur10") != "ok", reason="no exact mesh backend on this box")
-def test_cuRobos_own_plan_that_passes_outside_is_refused_by_the_path_gate() -> None:
-    """Both ends inside the window, the base swinging past the seam between them: the path gate refuses it."""
+def test_a_plan_that_passes_outside_is_refused_by_the_path_gate() -> None:
+    """Both ends inside the window, the base swinging past the seam between them: the path gate refuses it.
+
+    The detour bound refuses such a plan first (tests/test_the_nearest_goal_is_planned.py); it is opened to its
+    ceiling here, so that what is read is the path gate, the second line of defence, on its own.
+    """
     here = list(_HOME)
     end = [_HOME[0] + 0.3, *_HOME[1:]]
     out = [_HOME[0] + math.radians(200.0), *_HOME[1:]]
     dense = [list(here)] + [[here[0] + (out[0] - here[0]) * i / 10, *here[1:]] for i in range(1, 11)]
     dense += [[out[0] + (end[0] - out[0]) * i / 10, *here[1:]] for i in range(1, 11)]
-    planner = _Planner(here=here, cartesian=dense)
-    planner.screen = lambda config: False
-    with without_camera_world_of(_driven(planner)) as arm:
+    planner = _Planner(here=here)
+    planner.line_clear = lambda start, end: False
+    planner.answer = lambda goal: [*dense[:-1], list(goal)]
+    safety = {**_WINDOW, "planned_motion": {"max_detour_deg": 360.0}}
+    with without_camera_world_of(_driven(planner, safety=safety)) as arm:
         result = arm.move(pose_where_it_ends(arm, end))
     assert result.status is MotionStatus.JOINT_LIMIT_REJECTED, result.message
-    assert "passes outside the half turn either side of home" in result.message
+    assert "half a turn either side of home" in result.message and "within_half_turn_of_home" in result.message
     assert "sample" in result.message
     assert planner.named("execute") == []
 

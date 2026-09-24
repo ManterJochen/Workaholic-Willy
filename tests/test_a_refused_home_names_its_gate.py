@@ -63,17 +63,25 @@ def _mesh_backend_available() -> bool:
 
 
 class _Planner:
-    """Answers ``check_joint_path`` with ``verdict``, a pass when it is ``None``, and records what it was asked."""
+    """Answers ``check_joint_path`` with ``verdict``, a pass when it is ``None``, and records what it was asked.
+
+    It plans nothing: a line it refuses is planned around, and there is no plan around it, so the line's refusal is
+    the move's.
+    """
 
     def __init__(self, verdict: JointCheckVerdict | None = None) -> None:
         self._verdict = verdict
         self.checked: list[list[float]] | None = None
+        self.last_refusal: StateRefusal | None = None
 
-    def check_joint_path(self, samples: Any, *, refresh: bool = True) -> JointCheckVerdict:
+    def check_joint_path(self, samples: Any, *, refresh: bool = True, clearance_mm: float = 0.0) -> JointCheckVerdict:
         self.checked = [list(s) for s in samples]
         if self._verdict is None:
             return JointCheckVerdict(valid=True, first_invalid=None, checked=len(self.checked), reason="clear")
         return self._verdict
+
+    def plan_joint(self, goal: Any, *, refresh: bool = True, **_: Any) -> None:
+        return None
 
 
 def _arm(*, home: tuple[float, ...] | None = _THERE, planner: _Planner | None = None,
@@ -265,7 +273,7 @@ class RobotHomeNamesTheGateTests(unittest.TestCase):
              MotionStatus.SELF_COLLISION_REJECTED, "forearm_link and wrist_2_link overlap by 4.2 mm"),
             (_refusal(StateRefusalKind.WORLD), MotionStatus.SELF_COLLISION_REJECTED,
              "into the world the planner holds"),
-            (None, MotionStatus.SELF_COLLISION_REJECTED, "the planner refused this joint path"),
+            (None, MotionStatus.SELF_COLLISION_REJECTED, "the planner refused this straight joint line"),
         )
         for refusal, status, said in cases:
             with self.subTest(kind=None if refusal is None else refusal.kind.value):
@@ -353,7 +361,8 @@ class OneHomeIsJudgedAndSentTests(unittest.TestCase):
         preflight = MagicMock()
         preflight.gate_joint_target.side_effect = lambda joints, **_: seen.append(("destination", joints))
         arm._preflight = preflight
-        arm._judge_joint_move = lambda joints, *, command: seen.append(("path", joints))  # type: ignore[method-assign]
+        arm._judge_joint_move = (  # type: ignore[method-assign]
+            lambda joints, *, command: (seen.append(("path", joints)), (joints, None, None))[1])
         arm._drive_joints = lambda joints, **_: seen.append(("drive", joints))  # type: ignore[method-assign]
 
         result = arm.move_to_home()
@@ -488,12 +497,23 @@ class ALineRefusalKeepsTheKindTests(unittest.TestCase):
 
 
 class _NoPlan:
-    """A cuRobo glue double that finds no plan and says why, as ``CuroboUrPlanner.last_refusal`` does."""
+    """A cuRobo glue double that finds no plan and says why, as ``CuroboUrPlanner.last_refusal`` does.
+
+    It passes every goal it screens and refuses every straight line, so each move asks it for a plan.
+    """
 
     def __init__(self, refusal: StateRefusal | None) -> None:
-        self.last_refusal = refusal
+        self._refusal = refusal
+        self.last_refusal: StateRefusal | None = None
 
-    def plan(self, pose: Any, *, goal_keep_out: Any = None) -> list[list[float]]:
+    def check_joint_path(self, samples: Any, *, refresh: bool = True, clearance_mm: float = 0.0) -> JointCheckVerdict:
+        count = len(list(samples))
+        if clearance_mm > 0.0:
+            return JointCheckVerdict(valid=False, first_invalid=0, checked=count, reason="the line grazes the tote")
+        return JointCheckVerdict(valid=True, first_invalid=None, checked=count, reason="clear")
+
+    def plan_joint(self, goal: Any, *, refresh: bool = True, **_: Any) -> list[list[float]]:
+        self.last_refusal = self._refusal
         return []
 
     def execute(self, *args: Any, **kwargs: Any) -> MotionResult:
@@ -508,6 +528,7 @@ class AStartThePlannerWillNotLeaveTests(unittest.TestCase):
         from tests.test_ur_arm import _pose
 
         arm = _plain_arm("curobo")
+        arm._conn.get_joint_positions.return_value = list(_HERE)
         arm._curobo_ur = _NoPlan(refusal)  # type: ignore[assignment]
         self.enterContext(arm.without_camera_world(_BENCH))
         return arm.move(_pose())

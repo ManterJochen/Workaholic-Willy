@@ -534,7 +534,7 @@
       "description": "The learned grasp ranker, in shadow: it computes, the telemetry records, the order never changes.\n\nMeasured on 1,611 (scene, view, object) units of `v1_proof`, out of fold and grouped by object\nso no scored object was ever trained on:\n\n    random (expected)   54.4 %      the calculator's own order   51.6 %\n    this ranker         84.1 %      best possible               100.0 %\n\n\"top-1 is valid\": the first candidate physically closes. Not \"the grasp holds\": the label is\nthe analytic verdict this stack computes, and the pilot's hold rate is 5.62 % where validity\nthere is 48.8 %. Those are different questions and only a shake answers the second, which is\nwhy nothing here promotes anything.\n\nShadow, for a measured reason. A ranker fitted on aletheia's shaken corpus beat the calculator\nby 17.7 pp on the same units and still lost to picking at random, because the failure it has to\npredict is `finger_collision` and its features cannot see the surroundings. What this logs is\n``would_change_top1``: whether turning it on would do anything, answered on every real pick.\n\nEnabling it adds telemetry keys and changes no decision. That is what the wiring guard checks: a\nflag whose runtime is unchanged fails, and telemetry is the runtime here.",
       "properties": {
         "artifact_dir": {
-          "default": "assets/models/grasp_ranker/v1",
+          "default": "${WILLY_PROJECT_ROOT}/assets/models/grasp_ranker/v1",
           "description": "Where the fitted ranker lives. The trees are gitignored and regenerated with `python -m datagen train-ranker`; the card beside them is committed.",
           "minLength": 1,
           "title": "Artifact Dir",
@@ -1169,7 +1169,7 @@
     },
     "GraspingSuccessModelConfig": {
       "additionalProperties": false,
-      "description": "Success-probability overlay (default off).\n\nPoints the runtime at a trained artifact and bounds what it may influence.\n``enabled=False`` means nothing in the pipeline loads or runs the model, so\nadding this block or omitting it is byte-identical.\n\nAttributes\n----------\nenabled\n    Master switch. Defaults to :data:`False`, so the runtime never loads the\n    artifact.\nartifact_dir\n    Path (absolute or relative to the config root) of the directory containing\n    ``model.json`` and ``manifest.json``. Defaults to the committed v1 artifact\n    under ``assets/models/success_probability/v1``.\napply_modes\n    Stable mode names the model may score in. Defaults to the four canonical\n    modes; ``\"easy\"`` is included because easy pick rate is the\n    strict-improvement target the model is calibrated against.\nranking_blend_enabled\n    Master switch for the bounded probability-blend reranker. Defaults to\n    :data:`False` (byte-identical). When :data:`True` (and ``enabled``, and a\n    non-shadow lifecycle artifact is loaded), the runtime reranks\n    ``best_result.candidates`` in dense modes only using the convex blend\n    ``(1 - w) * geometric + w * predicted_p``.\nranking_blend_weight\n    Blend weight ``w``. Clamped to ``[0.0, 0.5]`` so the geometric score always\n    retains >=50 % influence and a miscalibrated model cannot dominate ranking.\n    Default ``0.20``.\nranking_blend_modes\n    Locked dense-only subset of grasp-modes the blend reranker may operate in:\n    a subset of ``{\"dense_clutter\", \"dense_autonomous\"}`` (``\"easy\"`` and\n    ``\"auto\"`` stay geometry-only so easy pick-rate cannot regress). Must also\n    be a subset of ``apply_modes`` (else the shadow probability is never\n    annotated and the blend has nothing to read).",
+      "description": "Success-probability overlay (default off).\n\nPoints the runtime at a trained artifact and bounds what it may influence.\n``enabled=False`` means nothing in the pipeline loads or runs the model, so\nadding this block or omitting it is byte-identical.\n\nAttributes\n----------\nenabled\n    Master switch. Defaults to :data:`False`, so the runtime never loads the\n    artifact.\nartifact_dir\n    Path of the directory containing ``model.json`` and ``manifest.json``: absolute,\n    relative to the config folder, or under ``${WILLY_PROJECT_ROOT}``, the repository\n    (:mod:`src.config.paths`). Defaults to the committed v1 artifact under the\n    repository's ``assets/models/success_probability/v1``.\napply_modes\n    Stable mode names the model may score in. Defaults to the four canonical\n    modes; ``\"easy\"`` is included because easy pick rate is the\n    strict-improvement target the model is calibrated against.\nranking_blend_enabled\n    Master switch for the bounded probability-blend reranker. Defaults to\n    :data:`False` (byte-identical). When :data:`True` (and ``enabled``, and a\n    non-shadow lifecycle artifact is loaded), the runtime reranks\n    ``best_result.candidates`` in dense modes only using the convex blend\n    ``(1 - w) * geometric + w * predicted_p``.\nranking_blend_weight\n    Blend weight ``w``. Clamped to ``[0.0, 0.5]`` so the geometric score always\n    retains >=50 % influence and a miscalibrated model cannot dominate ranking.\n    Default ``0.20``.\nranking_blend_modes\n    Locked dense-only subset of grasp-modes the blend reranker may operate in:\n    a subset of ``{\"dense_clutter\", \"dense_autonomous\"}`` (``\"easy\"`` and\n    ``\"auto\"`` stay geometry-only so easy pick-rate cannot regress). Must also\n    be a subset of ``apply_modes`` (else the shadow probability is never\n    annotated and the blend has nothing to read).",
       "properties": {
         "apply_modes": {
           "default": [
@@ -1185,7 +1185,7 @@
           "type": "array"
         },
         "artifact_dir": {
-          "default": "assets/models/success_probability/v1",
+          "default": "${WILLY_PROJECT_ROOT}/assets/models/success_probability/v1",
           "minLength": 1,
           "title": "Artifact Dir",
           "type": "string"
@@ -1838,6 +1838,18 @@
           "default": null,
           "title": "Closed Confirm Input Pin"
         },
+        "confirm_open_at_start": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirm Open At Start"
+        },
         "io_port": {
           "default": "tool",
           "enum": [
@@ -2314,6 +2326,28 @@
       "title": "PerceivedWorldConfig",
       "type": "object"
     },
+    "PlannedMotionSafetyConfig": {
+      "additionalProperties": false,
+      "description": "How a cuRobo UR cell chooses the path of a move, and how far a planned path may wander.\n\nA move goes to the configuration of its goal nearest the arm, on the branch the arm holds, and it runs the\nstraight joint line there wherever that line is clear; cuRobo plans only where it is not, and never chooses the\ngoal. Both keys bound that choice.\n\n``line_clearance_mm`` is how far every configuration of a straight joint line has to stay from the planner's\nworld, the declared cell and the camera's, before the line runs instead of a plan. A line that comes closer is\nplanned around rather than driven along: the camera sees obstacles that only the planner holds, and a line that\ngrazes one by a millimetre passes a check that asks only for no penetration. The default is 10 mm, the distance at\nwhich cuRobo's own optimiser starts pushing its plans away from an obstacle (``optimizer_collision_activation_\ndistance`` at its default of 0.01 m, which the sidecar does not change), so a line is held to the clearance a plan\nis shaped to keep; it is also the local guard's shipped ``self_collision.min_distance_mm``, so both authorities ask\na line for the same 10 mm. It is not a certified distance, and 0 judges a line at no penetration, which is how a\nplanned path is judged.\n\n``max_detour_deg`` is how far any joint of a cuRobo path may swing beyond the span between where it starts and\nwhere it ends. A plan past it is not run: the next nearest configuration is planned to instead, and where none\nis left the move is refused naming the joint. 45 degrees admits a plan that bends a joint around a bin wall and\nrefuses the plan that swings the base or a wrist the long way round, which is what twisted a cable-carrying arm on\nthe owner's cell (2026-09-24).",
+      "properties": {
+        "line_clearance_mm": {
+          "default": 10.0,
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "title": "Line Clearance Mm",
+          "type": "number"
+        },
+        "max_detour_deg": {
+          "default": 45.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 360.0,
+          "title": "Max Detour Deg",
+          "type": "number"
+        }
+      },
+      "title": "PlannedMotionSafetyConfig",
+      "type": "object"
+    },
     "PlannerMeshConfig": {
       "additionalProperties": false,
       "description": "A piece of the cell the planner routes around as the shape it is, rather than as a box.\n\nThe one case that pays for itself is a container. As a box a tote is solid, so a cell that\ndeclares one can never reach into it; as a mesh it keeps its hollow and the planner takes the arm\ndown between the walls. The same goes for a machine with an opening, a fixture with a slot, or\nanything else whose useful part is the space inside it.\n\nThe guard cannot read a mesh. The path guard and the one-shot guards work on boxes, so\ngeometry declared here is known to the planner and to nothing else. That is not a gap to paper\nover silently: if this shape must also be enforced, declare the parts of it that matter as\n``self_collision.fixtures`` boxes as well, and accept that a box around a hollow is solid.\n\n``path`` is read by the planning sidecar, in its own process, so it has to be a path that process\ncan open. Anything trimesh loads works: STL, OBJ, PLY, GLB.",
@@ -2434,45 +2468,13 @@
     },
     "RobotCalibrationConfig": {
       "additionalProperties": false,
-      "description": "Tunable parameters for the hand-eye calibration routine.\n\nTwo keys this block deliberately does not offer:\n\n* ``quality_threshold_mm``, an auto-apply gate that would hold an RMSE above it for operator\n  review. No such gate exists anywhere: ``save_extrinsics`` writes whatever it is given,\n  judging the RMSE is the operator's job, and :data:`quality_bands_mm` is what labels it.\n* ``speed_scale``, an arm-speed scale for the duration of the routine. There is no speed\n  governor; ``robot.motion_limits`` is what the driver layer enforces, and the routine takes\n  a ``motion_limits=`` argument.\n\n``quality_bands_mm`` is the opposite case: both calibration runners (``run_eth_calibrate.py``,\n``run_eih_calibrate.py``) pass it straight into :func:`src.calibration.quality.classify_rmse`.",
+      "description": "Tunable parameters for the hand-eye calibration routine.\n\nTwo keys this block deliberately does not offer:\n\n* ``quality_threshold_mm``, an auto-apply gate that would hold an RMSE above it for operator\n  review. No such gate exists anywhere: ``save_extrinsics`` writes whatever it is given,\n  judging the RMSE is the operator's job, and :data:`quality_bands_mm` is what labels it.\n* ``speed_scale``, an arm-speed scale for the duration of the routine. There is no speed\n  governor; ``robot.motion_limits`` is what the driver layer enforces, and the routine takes\n  a ``motion_limits=`` argument.\n\n``quality_bands_mm`` is the opposite case: both calibration runners (``run_eth_calibrate.py``,\n``run_eih_calibrate.py``) pass it straight into :func:`src.calibration.quality.classify_rmse`.\n\nNor does it offer anything that shapes generated poses (a spread, a retry budget, a pose box):\nnothing generates calibration stations. They are written down, taught, or guided by hand.",
       "properties": {
-        "max_attempts_per_pose": {
-          "default": 200,
+        "freedrive_samples": {
+          "default": 15,
           "minimum": 1,
-          "title": "Max Attempts Per Pose",
+          "title": "Freedrive Samples",
           "type": "integer"
-        },
-        "orientation_spread_deg": {
-          "default": 15.0,
-          "maximum": 180.0,
-          "minimum": 0.0,
-          "title": "Orientation Spread Deg",
-          "type": "number"
-        },
-        "pose_box_z_frac": {
-          "anyOf": [
-            {
-              "additionalProperties": {
-                "maxItems": 2,
-                "minItems": 2,
-                "prefixItems": [
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "number"
-                  }
-                ],
-                "type": "array"
-              },
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Pose Box Z Frac"
         },
         "quality_bands_mm": {
           "$ref": "#/$defs/RobotCalibrationQualityBandsMm"
@@ -2991,7 +2993,7 @@
     },
     "RobotSafetyConfig": {
       "additionalProperties": false,
-      "description": "Vendor-neutral safety surface.\n\nEach guard is a dedicated sub-block carrying its own gate: ``enforce`` on most, ``enabled`` on\n:attr:`planning_world`, ``require_steady_before_motion`` on :attr:`dwell`. An operator can\ndisable one guard without touching the others.\n\nSub-blocks\n----------\n* :attr:`limits`: the ``workspace_margin_mm`` consumed by the workspace guard.\n* :attr:`joint_limits`: per-axis joint hard limits and margin.\n* :attr:`ik_quality`: IK-solution quality checks.\n* :attr:`motion_continuity`: step size between consecutive commanded targets.\n* :attr:`payload`: mass, CoG and inertia envelope.\n* :attr:`self_collision`: link-link and link-fixture collision.\n* :attr:`dwell`: post-Stop dwell and steady-state gating.\n* :attr:`planning_world`: the boxes the trajectory planner routes around.\n\nNot here: the emergency stop. It is a hardware and controller function, and nothing in this\npackage can enable, disable, route or observe it.",
+      "description": "Vendor-neutral safety surface.\n\nEach guard is a dedicated sub-block carrying its own gate: ``enforce`` on most, ``enabled`` on\n:attr:`planning_world`, ``require_steady_before_motion`` on :attr:`dwell`. An operator can\ndisable one guard without touching the others.\n\nSub-blocks\n----------\n* :attr:`limits`: the ``workspace_margin_mm`` consumed by the workspace guard.\n* :attr:`joint_limits`: per-axis joint hard limits and margin.\n* :attr:`ik_quality`: IK-solution quality checks.\n* :attr:`motion_continuity`: step size between consecutive commanded targets.\n* :attr:`planned_motion`: the straight line's clearance and the detour a cuRobo path may take.\n* :attr:`payload`: mass, CoG and inertia envelope.\n* :attr:`self_collision`: link-link and link-fixture collision.\n* :attr:`dwell`: post-Stop dwell and steady-state gating.\n* :attr:`planning_world`: the boxes the trajectory planner routes around.\n\nNot here: the emergency stop. It is a hardware and controller function, and nothing in this\npackage can enable, disable, route or observe it.",
       "properties": {
         "dwell": {
           "$ref": "#/$defs/DwellSafetyConfig"
@@ -3010,6 +3012,9 @@
         },
         "payload": {
           "$ref": "#/$defs/PayloadSafetyConfig"
+        },
+        "planned_motion": {
+          "$ref": "#/$defs/PlannedMotionSafetyConfig"
         },
         "planning_world": {
           "$ref": "#/$defs/PlanningWorldConfig"
@@ -3429,6 +3434,21 @@
           "default": null,
           "title": "Home Joint Positions"
         },
+        "home_joint_positions_deg": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Home Joint Positions Deg"
+        },
         "mock_mode": {
           "default": false,
           "title": "Mock Mode",
@@ -3764,9 +3784,6 @@
       "additionalProperties": false,
       "description": "Scene-authoring and experiment parameters, read by src.willy_sim only.",
       "properties": {
-        "eih_viewpoints": {
-          "$ref": "#/$defs/SimViewpointConfig"
-        },
         "gate": {
           "$ref": "#/$defs/SimGateConfig"
         },
@@ -3846,35 +3863,6 @@
         }
       },
       "title": "SimTableConfig",
-      "type": "object"
-    },
-    "SimViewpointConfig": {
-      "additionalProperties": false,
-      "description": "Eye-in-hand look-at viewpoint pattern (hemisphere around the marker).",
-      "properties": {
-        "azimuths_deg": {
-          "items": {
-            "type": "number"
-          },
-          "title": "Azimuths Deg",
-          "type": "array"
-        },
-        "elevations_deg": {
-          "items": {
-            "type": "number"
-          },
-          "title": "Elevations Deg",
-          "type": "array"
-        },
-        "radii_mm": {
-          "items": {
-            "type": "number"
-          },
-          "title": "Radii Mm",
-          "type": "array"
-        }
-      },
-      "title": "SimViewpointConfig",
       "type": "object"
     },
     "SupportPlaneConfig": {
@@ -4230,6 +4218,21 @@
       ],
       "default": null,
       "title": "Home Joint Positions"
+    },
+    "home_joint_positions_deg": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Home Joint Positions Deg"
     },
     "kuka": {
       "$ref": "#/$defs/KukaConfig"

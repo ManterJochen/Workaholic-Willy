@@ -5,14 +5,18 @@ docs/runbooks/real_cell_first_pick.md reads this output at the cell, so the move
 of it: not the banners, not the order of the build lines, not the blank line after the rig block.
 
 Everything below the arm-vendor gate is a double: the gate, the arm factory (a dummy arm), the camera noun
-(a handle with a fixed repr) and, for the sweep, the routine's ``run_auto``. This file imports nothing the
-move adds, so it runs on the tree before the move and on the tree after it.
+(a handle with a fixed repr) and, for the sweep, the routine's ``run_from_json``.
+
+Since the owner deleted every automatic station generator (2026-09-24) a sweep names its stations: the transcripts
+run ``--fixed-poses`` over a file of 22 stations, and a fourth pins ``--freedrive`` on an arm a person cannot guide,
+which the build refuses before the camera opens.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -47,7 +51,7 @@ _CONFIG = (
     "  mode       eye_to_hand\n"
     "  arm        ur\n"
     "  marker     50.0 mm, id 0, DICT_5X5_100\n"
-    "  poses      22\n"
+    "  poses      {poses}\n"
     "  artifact   {out}/eth_overhead.json\n"
 )
 
@@ -91,16 +95,22 @@ class TheCalibrateCliPrintsWhatItPrintedTests(unittest.TestCase):
         self.arm = DummyRobotArm()
         self.handle = _Handle()
         self.addCleanup(lambda: lock_path_for(_KEY).unlink(missing_ok=True))
+        self.stations = Path(self.enterContext(tempfile.TemporaryDirectory())) / "stations.json"
+        self.stations.write_text(json.dumps([
+            {"x": 300.0 + 10.0 * index, "y": 0.0, "z": 350.0, "rx": 0.0, "ry": 3.14159265, "rz": 0.0,
+             "label": f"pose_{index}"} for index in range(22)]), encoding="utf-8")
+        self.poses = f"22 from {self.stations}"
 
-    def _main(self, *argv: str, run_auto: Any = None) -> tuple[int, str]:
+    def _main(self, *argv: str, sweep: Any = None, stations: bool = True) -> tuple[int, str]:
         camera_cls = MagicMock(name="Camera")
         camera_cls.from_config.return_value.handle.return_value = self.handle
-        sweep = run_auto if run_auto is not None else MagicMock(side_effect=AssertionError("the sweep ran"))
+        sweep = sweep if sweep is not None else MagicMock(side_effect=AssertionError("the sweep ran"))
+        named = ["--fixed-poses", str(self.stations)] if stations else []
         printed = io.StringIO()
         with patch.object(calibrate, "_load", return_value=_tree()), patch(_READY), \
                 patch(_CREATE_ARM, return_value=self.arm), patch(_CAMERA, camera_cls), \
-                patch.object(CalibrationRoutine, "run_auto", sweep), redirect_stdout(printed):
-            code = calibrate.main(["--rig", "overhead", *argv])
+                patch.object(CalibrationRoutine, "run_from_json", sweep), redirect_stdout(printed):
+            code = calibrate.main(["--rig", "overhead", *named, *argv])
         return code, printed.getvalue()
 
     def _build(self) -> str:
@@ -117,24 +127,35 @@ class TheCalibrateCliPrintsWhatItPrintedTests(unittest.TestCase):
     def test_check(self) -> None:
         code, printed = self._main("--check")
         self.assertEqual(code, calibrate._EXIT_OK)
-        self.assertEqual(printed, _CONFIG.format(out="calibration/real")
+        self.assertEqual(printed, _CONFIG.format(out="calibration/real", poses=self.poses)
                          + "\n--check: the config and the rig are usable. Nothing was touched.\n")
 
     def test_dry_run(self) -> None:
         code, printed = self._main("--dry-run")
         self.assertEqual(code, calibrate._EXIT_OK)
-        self.assertEqual(printed, _CONFIG.format(out="calibration/real") + self._build()
+        self.assertEqual(printed, _CONFIG.format(out="calibration/real", poses=self.poses) + self._build()
                          + "\n--dry-run: built cleanly and the camera answered. Stopping before any motion.\n")
         self.assertEqual(self.handle.released, 1)
 
+    def test_freedrive_on_an_arm_nobody_can_guide_is_refused_at_the_build(self) -> None:
+        code, printed = self._main("--freedrive", stations=False)
+        self.assertEqual(code, calibrate._EXIT_CONFIG)
+        self.assertEqual(printed, (
+            _CONFIG.format(out="calibration/real", poses="15 guided by hand")
+            + "\n=== 2. BUILD === the arm alone, and one camera\n"
+            "[build] REFUSED: HandGuidingRefused: freedrive guides the arm to every pose by hand, and DummyRobotArm "
+            "offers no hand guiding (SupportsFreedrive; the UR teach mode is one). This arm has fixed stations only: "
+            "run them without adjust (--fixed-poses PATH)\n"))
+        self.assertEqual(self.handle.released, 0, "the camera was opened for an arm nobody can guide")
+
     def test_a_sweep_that_writes_its_artifact(self) -> None:
         out = str(self.enterContext(tempfile.TemporaryDirectory()))
-        code, printed = self._main("--out", out, run_auto=MagicMock(return_value=_solved()))
+        code, printed = self._main("--out", out, sweep=MagicMock(return_value=_solved()))
         written = str(Path(f"{out}/eth_overhead.json"))
         teardown = TeardownReport(StepOutcome.ABSENT, StepOutcome.RELEASED, StepOutcome.ABSENT).render()
         self.assertEqual(code, calibrate._EXIT_OK, printed)
         self.assertEqual(printed, (
-            _CONFIG.format(out=out) + self._build()
+            _CONFIG.format(out=out, poses=self.poses) + self._build()
             + "\n=== 3. SWEEP === the robot moves now, keep hands clear\n"
             "  arm connected, and no gripper: the sweep drives the arm alone\n"
             "\n  down: the arm, then the lock, then the camera\n"

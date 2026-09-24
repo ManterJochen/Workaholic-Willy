@@ -46,6 +46,10 @@ from src.robot.core import (
     RobotArm,
     RobotError,
 )
+from src.robot.core.errors import CameraWorldUnavailable
+from src.robot.core.gripper import toggle_without_sensor_of
+from src.robot.execution.looks import Look, LookPose, look_label, looks_of, move_to_look
+from src.robot.execution.motion import MotionOutcome, MotionReport
 from src.robot.grasping.types.feedback import GraspFailureReason
 from src.robot.execution.runtime_pick import (
     PickSessionReport,
@@ -167,6 +171,7 @@ from src.robot.grasping.rl.router import (
 if TYPE_CHECKING:
     from src.config.schema import CameraConfig
     from src.config.schema.robot import RobotConfig
+    from src.robot.execution.handling import HandlingReport
     from src.robot.grasping.loop.progress import (
         PickProgressListener,
         ShouldCancel,
@@ -928,11 +933,29 @@ class AutonomousGraspService:
         self,
         *,
         mode: GraspMode | str | None = None,
+        look: "Maybe[Look]" = UNSET,
     ) -> AutonomousGraspReport:
         """Run one autonomous pick attempt and return a typed report.
 
         Parameters
         ----------
+        look
+            Where the camera looks from before it perceives: one
+            :class:`~src.robot.core.JointPositions` (``JointPositions.deg``
+            takes degrees), ``"home"``, or several tried in order
+            (:mod:`src.robot.execution.looks`). The arm moves to each
+            through its own judged ``move_to_joints`` and the pick perceives
+            there; a look that finds nothing is followed by the next, and
+            the first that finds something is picked from. A look the arm
+            does not reach ends the attempt as ``EXECUTION_FAILED`` (or
+            ``CANCELLED`` on a stopped controller) with nothing perceived,
+            and a camera that could not vouch on the way is a fault. Nothing
+            is said to the hand before or between looks. The report's
+            ``looks`` names every look tried. Unset perceives from where the
+            arm stands, as a fixed camera does; ``PickRun`` hands a wrist
+            camera ``"home"`` when its program names no look. A list that
+            names nothing, or an entry that is not a look, raises before
+            anything moves.
         mode
             Optional per-call override for the :class:`GraspMode`. When
             omitted the service uses :attr:`default_mode`. The override
@@ -963,13 +986,46 @@ class AutonomousGraspService:
             ``EXECUTION_FAILED``, :attr:`AutonomousGraspReport.fault`
             carries it and ``pick_report`` is :data:`None`. A programmer
             error still raises.
+
+            A service with a gripper asks the controller first, as
+            ``Robot.pick`` does: one that cannot move, or whose state
+            cannot be read, ends the pick ``CANCELLED`` before the hand
+            is asked anything, with nothing perceived or commanded and
+            :attr:`AutonomousGraspReport.controller_stopped` set, so a
+            campaign stops on it.
+
+            A hand that toggles with no sensor is asked next, before
+            anything of the pick moves; one that will not start (it
+            believes its jaws closed and nobody at a terminal said
+            otherwise) is ``EXECUTION_FAILED`` with
+            :attr:`AutonomousGraspReport.gripper_fault` saying why.
         """
 
+        # A wrong look list is the program's error, raised before anything moves.
+        looks = looks_of(look) if chosen(look) else ()
         # A cancel that arrived between two picks is honoured here, before any work starts: a caller
         # running a campaign loops on pick(), and refusing to start is the cheapest possible stop.
         # Default ``None`` costs one attribute read and leaves the body below unchanged.
         if self._should_cancel is not None and self._should_cancel():
             return self._cancelled_report(mode=mode)
+        # The controller is asked before the hand, as Robot.pick asks it: a toggle that believes its jaws closed asks
+        # the person, and a person's 'p' pulses DO0, which on an arm still protective-stopped with the part in the
+        # jaws drops it from wherever the lift stopped (found auditing the owner's toggle cell, 2026-09-24). A stopped
+        # controller, or one whose state cannot be read, ends the pick here with nobody asked and nothing commanded.
+        stopped = self._controller_refusal()
+        if stopped:
+            return self._controller_refused_report(stopped, mode=mode)
+        # A hand that toggles with no sensor is asked before anything of the pick moves, a two-scan standoff and a
+        # relocation included (owner's decision, 2026-09-24): never a pulse there, and on jaws it believes closed it
+        # asks the person again, or the pick ends here with nobody to ask. The policy asks once more at the approach.
+        try:
+            hand = self._hand_refusal()
+        except _CELL_FAULTS as exc:
+            if isinstance(exc, _NOT_CELL_FAULTS):
+                raise
+            return self._fault_report(exc, mode=mode)
+        if hand:
+            return self._hand_refused_report(hand, mode=mode)
         # Install a per-attempt LatencyTracker so the decision / ranking
         # / fusion seams can record their spans via
         # ``self._current_latency_tracker``. The tracker is always
@@ -991,7 +1047,7 @@ class AutonomousGraspService:
         wall_t0_ns = time.monotonic_ns()
         fault: Optional[Exception] = None
         try:
-            report = self._run_with_recovery(mode=mode)
+            report = self._look_and_pick(looks, mode=mode)
         except _CELL_FAULTS as exc:
             if isinstance(exc, _NOT_CELL_FAULTS):
                 raise
@@ -1034,6 +1090,94 @@ class AutonomousGraspService:
         report = self._maybe_attach_shadow_router(report)
         self._maybe_log_record(report)
         return report
+
+    def _look_and_pick(self, looks: "tuple[LookPose, ...]", *, mode: GraspMode | str | None) -> AutonomousGraspReport:
+        """One attempt: from each look in turn until one finds something, or from where the arm stands with none.
+
+        Inside :meth:`pick`'s fault guard and its latency span, so a look is part of the attempt it serves: a camera
+        that could not vouch on the way is the attempt's fault, and one record is logged for the attempt, not one per
+        look.
+
+        A stop is asked for before every look, the first included (the hand may have asked a person in between): one
+        asked for while a look perceives ends the pick there, ``CANCELLED`` with the looks the arm was sent to, not the
+        one it would have been sent to next. The pick loop asks too, but only once the arm has reached that next look.
+        """
+        if not looks:
+            return self._run_with_recovery(mode=mode)
+        arm = self.runtime.orchestrator.arm
+        tried: list[str] = []
+        report: Optional[AutonomousGraspReport] = None
+        for pose in looks:
+            if self._should_cancel is not None and self._should_cancel():
+                return replace(self._cancelled_report(mode=mode), looks=tuple(tried), telemetry={
+                    "cancelled_before_start": not tried, "stage": "look", "cancelled_before_look": look_label(pose)})
+            tried.append(look_label(pose))
+            moved = move_to_look(arm, pose)
+            if moved.outcome is MotionOutcome.CAMERA_WORLD_UNAVAILABLE and isinstance(
+                    moved.result.exception, CameraWorldUnavailable):
+                raise moved.result.exception
+            if not moved.ok:
+                return self._look_not_reached(moved, tuple(tried), mode=mode)
+            report = self._run_with_recovery(mode=mode)
+            if not _found_nothing(report):
+                break
+        assert report is not None  # narrowed: `looks` is not empty and every path above returned or picked
+        return replace(report, looks=tuple(tried))
+
+    def _look_not_reached(
+        self, moved: MotionReport, tried: tuple[str, ...], *, mode: GraspMode | str | None,
+    ) -> AutonomousGraspReport:
+        """The report of an attempt whose look the arm did not reach: nothing perceived, nothing else commanded.
+
+        ``CANCELLED`` with the pick loop's own words where the controller cannot move, so a campaign stops on it as it
+        stops on a pick that ended on a stopped controller; ``EXECUTION_FAILED`` otherwise.
+        """
+        effective_mode = resolve_grasp_mode(mode) if mode is not None else self.default_mode
+        stopped = _controller_stop_telemetry(self.runtime.orchestrator)
+        return AutonomousGraspReport(
+            outcome=AutonomousGraspOutcome.CANCELLED if stopped else AutonomousGraspOutcome.EXECUTION_FAILED,
+            mode=effective_mode,
+            profile=_profile_for(effective_mode),
+            effective_config=self.effective_config,
+            telemetry={"stage": "look", "look_refused": f"{moved.status.value}: {moved.message}", **stopped},
+            looks=tried,
+        )
+
+    @property
+    def perceives_from_the_wrist(self) -> bool:
+        """Whether this cell's picks perceive through a camera on the wrist: its frames are placed by the tool pose.
+
+        Read off the resolver the build wired, as the build itself decides which frames to stamp: an eye-in-hand
+        resolver composes the tool pose into every grasp, a fixed camera's never asks. A wrist camera sees what the
+        arm points it at, so ``PickRun`` hands its picks a look (home, when the program names none).
+        """
+        from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver  # noqa: PLC0415
+
+        orchestrator = getattr(self.runtime, "orchestrator", None)
+        return isinstance(getattr(orchestrator, "frame_resolver", None), EyeInHandFrameResolver)
+
+    def put_back(self, report: AutonomousGraspReport) -> "HandlingReport":
+        """Put the part a pick lifted back where it was grasped: a planned move to the standoff, a line in, release, out.
+
+        The pose is the one the tool closed at (:attr:`AutonomousGraspReport.grasp_pose`), the standoff the pick's own
+        (the policy's ``standoff_mm``), and the verb :meth:`Robot.place <src.robot.execution.robot.Robot.place>` on
+        this service's arm and hand, so every refusal of a place stands and the release is the hand's own (on a toggle
+        hand, one pulse). What lets a campaign run many times on one part. A report that did not succeed, or carries no
+        grasp pose (the two-scan path), is refused with nothing commanded.
+        """
+        from src.robot.execution.handling import HandlingOutcome, HandlingReport, HandlingVerb  # noqa: PLC0415
+        from src.robot.execution.robot import Robot  # noqa: PLC0415
+
+        pose = report.grasp_pose
+        if not report.succeeded or pose is None:
+            why = "the pick did not succeed" if not report.succeeded else "the pick carries no grasp pose"
+            return HandlingReport(verb=HandlingVerb.PLACE, outcome=HandlingOutcome.REFUSED,
+                                  message=f"nothing to put back: {why}")
+        orchestrator = self.runtime.orchestrator
+        standoff_mm = float(getattr(orchestrator.policy, "standoff_mm", 80.0))
+        # No lock of its own: the connect that brought this service up holds the cell's.
+        robot = Robot.from_parts(arm=orchestrator.arm, gripper=orchestrator.gripper, lock_key=None)
+        return robot.place(pose, standoff_mm=standoff_mm)
 
     def enable_record_logging(
         self, log_path: "str | Path | None", *, provenance: "Mapping[str, Any] | None" = None
@@ -1104,6 +1248,63 @@ class AutonomousGraspService:
             profile=_profile_for(effective_mode),
             effective_config=self.effective_config,
             telemetry={"cancelled_before_start": True},
+        )
+
+    def _controller_refusal(self) -> str:
+        """Why the controller cannot start a pick, or ``""``: asked before the hand, of a service with a gripper.
+
+        The question ``Robot.pick`` asks (:func:`~src.robot.execution.handling._controller_refusal`), in its words: an
+        arm that implements ``SupportsRobotStatus`` (the UR driver) is asked, ``not is_operational`` refuses (REDUCED
+        safety mode too), and a read that raises refuses as well, because a controller that cannot be asked cannot be
+        said to move. Every other arm passes. A service with no gripper is not asked, as the policy does not ask: it
+        has no jaws to keep, and its first motion meets the controller as before.
+        """
+        from src.robot.execution.handling import _controller_refusal as controller_refusal  # noqa: PLC0415
+
+        orchestrator = getattr(self.runtime, "orchestrator", None)
+        if getattr(orchestrator, "gripper", None) is None:
+            return ""
+        return controller_refusal(getattr(orchestrator, "arm", None))
+
+    def _controller_refused_report(self, why: str, *, mode: "GraspMode | str | None") -> AutonomousGraspReport:
+        """The report for a pick a controller that cannot move ended before it began: nobody asked, nothing commanded.
+
+        CANCELLED with the pick loop's ``CONTROLLER_NOT_OPERATIONAL`` underneath, in the two keys
+        :func:`_controller_stop_telemetry` writes (``low_level_outcome`` and ``controller``), so
+        :attr:`AutonomousGraspReport.controller_stopped` reads it as it reads a stop the pick met mid-motion, and
+        ``PickRun`` and the console stop on it. ``why`` is the sentence the controller was refused with. Written here,
+        not read again through the pick loop's diagnosis: a second read can disagree with the first (one that raises
+        says nothing), and the report would then not stop a campaign. No ``pick_report``: no pick ran.
+        """
+        effective_mode = resolve_grasp_mode(mode) if mode is not None else self.default_mode
+        return AutonomousGraspReport(
+            outcome=AutonomousGraspOutcome.CANCELLED,
+            mode=effective_mode,
+            profile=_profile_for(effective_mode),
+            effective_config=self.effective_config,
+            telemetry={"stage": "before_start", "low_level_outcome": str(PickOutcome.CONTROLLER_NOT_OPERATIONAL),
+                       "controller": why},
+        )
+
+    def _hand_refusal(self) -> str:
+        """Why the hand will not start a pick, or ``""``: asked of a hand that toggles with no sensor, and no other."""
+        toggle = toggle_without_sensor_of(getattr(getattr(self.runtime, "orchestrator", None), "gripper", None))
+        return toggle.jaws_open_for_a_pick() if toggle is not None else ""
+
+    def _hand_refused_report(self, why: str, *, mode: "GraspMode | str | None") -> AutonomousGraspReport:
+        """The report for a pick a hand that toggles would not start: nothing moved and nothing was pulsed.
+
+        EXECUTION_FAILED with the pick loop's ``gripper_fault`` underneath, as the policy's own refusal reports it
+        (:attr:`AutonomousGraspReport.gripper_fault`), so a campaign stops on either. No ``pick_report``: no pick ran.
+        """
+        effective_mode = resolve_grasp_mode(mode) if mode is not None else self.default_mode
+        return AutonomousGraspReport(
+            outcome=AutonomousGraspOutcome.EXECUTION_FAILED,
+            mode=effective_mode,
+            profile=_profile_for(effective_mode),
+            effective_config=self.effective_config,
+            telemetry={"stage": "before_start", "low_level_outcome": str(PickOutcome.GRIPPER_FAULT),
+                       "gripper_fault": why},
         )
 
     def _fault_report(self, fault: Exception, *, mode: "GraspMode | str | None") -> AutonomousGraspReport:
@@ -1731,18 +1932,23 @@ class AutonomousGraspService:
                         profile=profile,
                         decision=final,
                         watchdog_report=watchdog_report,
+                        n_segmentations=len(frame.segmentations),
+                        reasons=tuple(getattr(grasp_result, "reasons", ()) or ()),
                     )
                 arm.move(next_vp)
                 viewpoints_visited.append(next_vp)
                 reobservation_count += 1
                 continue
 
-            # RECOVER or FAIL_CLOSED: terminate without dispatching.
+            # RECOVER or FAIL_CLOSED: terminate without dispatching. What the frame held goes with it, so a
+            # pick handed several looks can tell a view that held nothing from an object it could not grasp.
             return self._terminal_decision_report(
                 effective_mode=effective_mode,
                 profile=profile,
                 decision=decision,
                 watchdog_report=watchdog_report,
+                n_segmentations=len(frame.segmentations),
+                reasons=tuple(getattr(grasp_result, "reasons", ()) or ()),
             )
 
     # Decision-loop helpers
@@ -2028,8 +2234,17 @@ class AutonomousGraspService:
         profile: GraspBehaviorProfile,
         decision: DecisionReport,
         watchdog_report: Optional[WatchdogReport] = None,
+        n_segmentations: Optional[int] = None,
+        reasons: Optional[tuple[Any, ...]] = None,
     ) -> AutonomousGraspReport:
-        """Wrap a non-executing decision into an :class:`AutonomousGraspReport`."""
+        """Wrap a non-executing decision into an :class:`AutonomousGraspReport`.
+
+        ``n_segmentations`` and ``reasons`` are what the decided frame held: how many objects, and why its ranking
+        grasped none (``target_label_not_found`` where no object carried the prompted label). The engine answers an
+        empty frame and an object it cannot grasp with the same ``RECOVER`` for want of candidates; these two keys,
+        the refine path's own, are what tells a look that found nothing from one that found something
+        (``_found_nothing``). Left out where no frame was decided on (a watchdog block before perception).
+        """
 
         if decision.action is DecisionAction.RECOVER:
             outcome = AutonomousGraspOutcome.DECISION_RECOVER_PENDING
@@ -2060,6 +2275,10 @@ class AutonomousGraspService:
         telemetry.update(decision.to_dict())
         if watchdog_report is not None:
             telemetry.update(self._watchdog_telemetry_dict(watchdog_report))
+        if n_segmentations is not None:
+            telemetry["n_segmentations"] = int(n_segmentations)
+        if reasons is not None:
+            telemetry["reasons"] = tuple(str(r) for r in reasons)
         return AutonomousGraspReport(
             outcome=outcome,
             mode=effective_mode,
@@ -2591,6 +2810,10 @@ class AutonomousGraspService:
             if stopped:
                 outcome = AutonomousGraspOutcome.CANCELLED
                 executed_telemetry.update(stopped)
+            elif policy_report.outcome is PolicyOutcome.GRIPPER_FAULT:
+                # A hand that needs a person, said as the open-loop path says it, and a campaign stops on it too.
+                executed_telemetry["low_level_outcome"] = str(PickOutcome.GRIPPER_FAULT)
+                executed_telemetry["gripper_fault"] = policy_report.motion_message or ""
 
         # Verification runs only when the execution policy executed the
         # grasp. Any earlier failure already carries its own outcome;
@@ -2782,6 +3005,33 @@ class AutonomousGraspService:
         except Exception:  # pragma: no cover (defensive)
             return False
         return True
+
+
+def _found_nothing(report: AutonomousGraspReport) -> bool:
+    """Whether a pick found nothing to pick from where it looked: no object at all, or none with the prompted label.
+
+    What sends a pick on to its next look. Anything else was found and is answered from where it was seen: a grasp the
+    calculator refused, a motion that failed, a stop.
+
+    Each pick path says it in its own words. The pick loop's: ``NO_TARGET``, or a last attempt refused for want of the
+    label. The decision layer's: ``DECISION_RECOVER_PENDING`` (no candidates) on a frame that held no object, or whose
+    ranking carried ``target_label_not_found`` (:meth:`AutonomousGraspService._terminal_decision_report` keeps both).
+    The two-scan refine's: ``NO_VALID_GRASP`` at its first compute, before anything moved, for want of the label. A
+    report that does not say which (a watchdog block has no frame) is not empty: it ends the looking where it stands.
+    """
+    if report.outcome is AutonomousGraspOutcome.NO_TARGET:
+        return True
+    not_found = GraspFailureReason.TARGET_LABEL_NOT_FOUND.value
+    telemetry = report.telemetry or {}
+    said = tuple(str(reason) for reason in (telemetry.get("reasons") or ()))
+    if report.pick_report is None:
+        if report.outcome is AutonomousGraspOutcome.DECISION_RECOVER_PENDING:
+            return telemetry.get("n_segmentations") == 0 or not_found in said
+        return (report.outcome is AutonomousGraspOutcome.NO_VALID_GRASP
+                and telemetry.get("stage") == "initial_compute" and not_found in said)
+    attempts = getattr(report.pick_report, "attempts", ()) or ()
+    reasons = tuple(getattr(attempts[-1], "reasons", ()) or ()) if attempts else ()
+    return GraspFailureReason.TARGET_LABEL_NOT_FOUND in reasons
 
 
 # Policy outcome to autonomous outcome mapping

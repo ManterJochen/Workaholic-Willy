@@ -9,8 +9,9 @@ choose which one to go to rather than taking whichever one a numerical solver ha
 What it is for: a cuRobo move to a Cartesian goal lets the planner pick the goal configuration, and it does
 not prefer the one nearest the arm (measured on a UR10: 8 of 22 legs of a wrist sweep went the long way, one of
 them turning the base 8.57 rad where 2.37 rad would do). With every solution in hand, the UR driver takes the
-one nearest the arm and plans to it in joint space. This module only answers the geometry; which solution is
-admissible is the planner's and the guards' question.
+one nearest the arm on the branch the arm already holds (:func:`ur_branch`), runs the straight joint line to it
+where that line is clear, and plans to it in joint space where it is not; cuRobo never chooses a goal. This
+module only answers the geometry; which solution is admissible is the planner's and the guards' question.
 
 Accuracy. The closed form assumes the table's twist angles are exactly a quarter turn, and the tables carry
 1.570796327, 2e-10 rad off. One Newton step on the table's own chain removes that, so a returned solution puts
@@ -42,11 +43,14 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 __all__ = [
+    "BRANCH_POINT_TOL_RAD",
     "IK_SOLUTION_TOL_MM",
     "IK_SOLUTION_TOL_RAD",
     "NearestGoal",
+    "URBranch",
     "nearest_goals",
     "nearest_turn",
+    "ur_branch",
     "ur_flange_ik",
 ]
 
@@ -234,6 +238,80 @@ def ur_flange_ik(
                     continue
                 solutions.append(wrapped)
     return tuple(solutions)
+
+
+#: How near its branch point a joint reads as on both of the branches it separates, radians. The UR10 CB3's home is
+#: candle-straight: the elbow stretched, wrist 2 at 0 and the wrist centre on the shoulder's cylinder, all three branch
+#: points at once, and the encoders put each a few microradians to one side or the other. Read as bare signs, that noise
+#: would choose how the first move out of home holds the arm. Two degrees is far above the noise and far below any bend a
+#: move is chosen by: a joint that close to its branch point turns to either side for the same cost.
+BRANCH_POINT_TOL_RAD = math.radians(2.0)
+
+
+def _side(angle: float) -> int:
+    """``+1`` or ``-1`` for the side of its branch points (0 and pi) ``angle`` is on, ``0`` within the tolerance of one."""
+    sine = math.sin(angle)
+    if abs(sine) < math.sin(BRANCH_POINT_TOL_RAD):
+        return 0
+    return 1 if sine > 0.0 else -1
+
+
+@dataclass(frozen=True, slots=True)
+class URBranch:
+    """Which of the closed form's eight ways of holding the arm a configuration is in, as three sides.
+
+    ``shoulder`` is the side of the base axis the wrist centre is reached from, the sign of the offset the shoulder
+    takes against the wrist centre's bearing. ``wrist`` is the side of wrist 2 and ``elbow`` the side of the elbow, the
+    sign of the joint turned into ``(-pi, pi]``, so both can be read off the pendant. Two configurations on one branch
+    reach the poses between them without a joint swinging through a branch point; a change of branch is a different way
+    to hold the arm, with the cable, the camera and the hand turned with it.
+
+    Each side is ``+1`` or ``-1``, and ``0`` within :data:`BRANCH_POINT_TOL_RAD` of the branch point (a stretched or
+    folded elbow, wrist 2 at 0 or pi, the wrist centre on the shoulder's cylinder), where the two branches it separates
+    meet and the configuration is on both: :meth:`agrees_with` reads a ``0`` as agreeing with either side.
+    """
+
+    shoulder: int
+    wrist: int
+    elbow: int
+
+    def agrees_with(self, other: "URBranch") -> bool:
+        """Whether ``other`` holds the arm the same way: on every one of the three, the same side or a branch point."""
+        pairs = ((self.shoulder, other.shoulder), (self.wrist, other.wrist), (self.elbow, other.elbow))
+        return all(mine == theirs or mine == 0 or theirs == 0 for mine, theirs in pairs)
+
+    def render(self) -> str:
+        """The three sides as a person reads them, ``shoulder +, wrist 2 -, elbow +/-``; ``+/-`` is a branch point."""
+        def sign(value: int) -> str:
+            return "+" if value > 0 else "-" if value < 0 else "+/-"
+
+        return f"shoulder {sign(self.shoulder)}, wrist 2 {sign(self.wrist)}, elbow {sign(self.elbow)}"
+
+
+def ur_branch(model: str, joints: "Sequence[float]") -> "URBranch | None":
+    """The branch ``joints`` hold the arm in, by the conventions :func:`ur_flange_ik` solves with; ``None`` for no table.
+
+    The same reading for the configuration the arm stands in and for every solution of a goal, so "the same branch"
+    means the same three choices of the closed form and nothing a caller has to reconstruct. A full turn of any joint
+    changes nothing here, as it changes nothing about the arm.
+    """
+    table = UR_DH_TABLES_M.get(str(model).lower())
+    if table is None:
+        return None
+    q = [float(v) for v in joints]
+    if len(q) != len(table) or not all(math.isfinite(v) for v in q):
+        raise ValueError(f"a {model} configuration is {len(table)} finite joint values, got {joints!r}")
+    # The closed form sets the base to bearing + shoulder * offset + pi/2, the offset in [0, pi/2] because d4 > 0, so
+    # the shoulder is the side of what is left of the base joint once the wrist centre's bearing is taken off; it is 0
+    # where the wrist centre stands on the shoulder's cylinder and both ways round are one. Wrist 2 and the elbow are
+    # the signs the closed form gave them, acos in [0, pi] times the branch, with their branch points at 0 and pi.
+    wrist_centre = _flange_m(str(model).lower(), q) @ np.array([0.0, 0.0, -table[5].d_m, 1.0])
+    bearing = math.atan2(float(wrist_centre[1]), float(wrist_centre[0]))
+    return URBranch(
+        shoulder=_side(_wrapped(q[0] - math.pi / 2.0 - bearing)),
+        wrist=_side(q[4]),
+        elbow=_side(q[2]),
+    )
 
 
 @dataclass(frozen=True, slots=True)

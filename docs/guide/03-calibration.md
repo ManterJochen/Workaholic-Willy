@@ -10,16 +10,18 @@ A calibration is run by `HandEyeCalibration`, one camera at a time:
 from willy import HandEyeCalibration, SweepOptions, load_tree
 
 calibration = HandEyeCalibration.from_tree(load_tree(), rig_id="overhead", mode="eye_to_hand",
-                                           options=SweepOptions(marker_length_mm=40.0))
+                                           options=SweepOptions(freedrive=True, marker_length_mm=40.0))
 print(calibration.check())  # the config alone: rig, marker, poses, artifact path; opens nothing
 ```
 
 `calibration.run(dry_run=True)` then builds the arm and opens the camera without moving, and
-`calibration.run()` sweeps the arm. The whole flow is
+`calibration.run()` collects the samples. Nothing generates a pose: either a person guides the arm to
+each one by hand (`freedrive`, on an arm that offers hand guiding), or the arm drives to stations
+somebody wrote down or taught (`fixed_poses`), each optionally fine-tuned by hand (`adjust`). By hand,
 [`examples/real_robot/07_calibrate_a_fixed_camera.py`](../../examples/real_robot/07_calibrate_a_fixed_camera.py)
-for a fixed camera and
+is a fixed camera and
 [`examples/real_robot/09_calibrate_a_wrist_camera.py`](../../examples/real_robot/09_calibrate_a_wrist_camera.py)
-for a wrist camera. Fixed poses of your own, instead of the automatic sweep, are
+a wrist camera; from fixed stations,
 [`08_calibrate_a_fixed_camera_with_fixed_poses.py`](../../examples/real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py)
 and
 [`10_calibrate_a_wrist_camera_with_fixed_poses.py`](../../examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py). The command line is `python -m src.robot.execution.real_cell.calibrate`
@@ -169,7 +171,8 @@ The names are asymmetric. Read this table once rather than trying to fix it:
 Inputs read as "pose of Y in X", outputs as "maps X into Y". Both agree with the `Frame` tags, and the
 tags are what is enforced: eye-to-hand is checked `CAMERA` to `BASE` and eye-in-hand `CAMERA` to
 `TOOL`, at construction. Lengths are millimetres everywhere, solver and artifacts included. Rotations
-on the wire are XYZW quaternions, but `PoseProvider`'s `base_orientation` is axis-angle, in radians.
+on the wire are XYZW quaternions, but a stations file's `rx`, `ry`, `rz` are axis-angle, in radians, as
+the pendant shows them.
 
 ### 2.5 What a pose set must satisfy
 
@@ -182,15 +185,18 @@ runs before every solve, in both modes. All three must hold:
 3. those rotation axes span **two independent directions**, `matrix_rank(axes, tol=0.1) >= 2`, else
    `"sample set needs robot rotations around at least two independent axes"`.
 
-Condition 3 is why a pure-translation sweep can never solve a hand-eye problem, and why an eye-in-hand
-viewpoint hemisphere varies azimuth **and** elevation rather than only standoff.
+Condition 3 is why a pure-translation sweep can never solve a hand-eye problem, and why the poses,
+whether guided by hand or written in a file, have to tilt the tool about more than one axis rather
+than only move it.
 
 Two filters drop samples before that, on different data:
 
-- `WorkspaceGuard` rejects a **commanded** pose that is close to an accepted one on *both* axes at
-  once.
+- The station screen skips a **commanded** station that is close to one kept before it on *both* axes
+  at once (a station of a file, and every joint station, on the grasp centre its joints put the tool
+  at).
 - `add_sample` accepts a **measured** pose only if, against every stored sample,
-  `dist > min_distance_mm` **or** `angle > min_angle_deg`.
+  `dist > min_distance_mm` **or** `angle > min_angle_deg`. While a person guides the arm, the preview
+  says by this same rule whether the pose the arm stands at would count.
 
 That "or" is why widely spread translations with near-identical orientations pass `add_sample` and
 then fail condition 3. So that error means "tilt more", not "move further". Plan for more poses than
@@ -398,7 +404,7 @@ every pick that each other camera's view was dropped; with it off, nothing asks 
 | Either rotation error from section 2.5 | too little rotation, or every tilt about one axis; eye-in-hand varies azimuth and elevation |
 | Every pose logs `marker_not_found` | wrong dictionary or marker id, marker out of frame, too few pixels, or a black frame (below) |
 | Detection works, the residual is `marginal` or `poor` | a wrong `marker_length_mm` (below), a flexing mount, motion blur, too little tilt, or glare |
-| ArUco detects, the rotation is nonsense | planar-marker flip ambiguity at near-frontal views; add oblique views, as both sweeps do |
+| ArUco detects, the rotation is nonsense | planar-marker flip ambiguity at near-frontal views; add oblique views (the preview shows each view's tilt while you guide the arm) |
 | Residual `excellent`, picks miss by a **constant** offset | not millimetres (3.1); compare the loaded artifact's translation to the camera's mount |
 | A result rotated by a right angle or 180 degrees | check the reference it is compared against first: a wrong reference is harder to find |
 | Eye-to-hand expected, a `CAMERA -> TOOL` result arrived | settings with no `mode` make `CalibrationRoutine` default to eye-in-hand; pass `calibration_mode=` |
@@ -445,14 +451,20 @@ about perception accuracy. The ArUco runs are the ones that test perception.
 **Calibrating in simulation** is [`run_eth_calibrate.py`](../../src/willy_sim/run_eth_calibrate.py) and
 [`run_eih_calibrate.py`](../../src/willy_sim/run_eih_calibrate.py). Both add `--robot-model`, `--profile`
 and `--radial-closing` to their own flags, and write artifacts per robot model under
-`logs/calibration/`, which is not committed. Their `-h` is the procedure.
+`logs/calibration/`, which is not committed. Their `-h` is the procedure. They run declared stations,
+not generated ones: `src/willy_sim/calibration/stations/eth_<model>.json` and `eih_<model>.json` for
+the three models the sim cell drives, or `--stations PATH`. Those files were frozen from the generators
+this repository used to carry, and no Isaac run has been repeated on them since.
 
 **The real-cell sweep.** [`src/robot/execution/real_cell/calibrate.py`](../../src/robot/execution/real_cell/calibrate.py)
 is a caller of `HandEyeCalibration` in [`src/robot/execution/hand_eye.py`](../../src/robot/execution/hand_eye.py).
 It drives the same `CalibrationRoutine` with a live RGB-D ArUco marker source. `--check` reads the
 config only, and `--dry-run` opens the camera and builds the arm without moving. Past `--dry-run` it
 is unproven: that marker source has never seen a physical camera, and an aligned stream reports
-distortion coefficients near zero, so its residual is unconfirmed on a real bench.
+distortion coefficients near zero, so its residual is unconfirmed on a real bench. The two ways by
+hand, `--freedrive` and `--adjust`, go through the vendor's hand guiding (`SupportsFreedrive`, on a UR
+its teach mode); their console, stillness gate, boundaries and stations file are exercised against a
+scripted arm only.
 
 The sweep builds its arm through `Robot.from_config(robot_config, gripper=None)`, so the arm-vendor
 readiness gate runs and no gripper is built. It takes the cell lock before the arm connects, connects
@@ -473,7 +485,7 @@ prints the robot's camera world line, ending `this sweep declines for itself`.
 | The bench session: print the board, run the sweep, wire the artifact in | [docs/calibration-setup.md](../calibration-setup.md) |
 | The calibration commands and their exit codes | [docs/cli.md](../cli.md) |
 | One camera against a real robot, and the flags | [`src/robot/execution/real_cell/README.md`](../../src/robot/execution/real_cell/README.md) |
-| Both modes driven from Python | [`07_calibrate_a_fixed_camera.py`](../../examples/real_robot/07_calibrate_a_fixed_camera.py), [`09_calibrate_a_wrist_camera.py`](../../examples/real_robot/09_calibrate_a_wrist_camera.py) |
+| Both modes driven from Python, by hand and from fixed stations | [`07`](../../examples/real_robot/07_calibrate_a_fixed_camera.py), [`08`](../../examples/real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py), [`09`](../../examples/real_robot/09_calibrate_a_wrist_camera.py), [`10`](../../examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py) |
 | Config layering, `explain` and `where` | [01](01-configuration.md) |
 | Camera intrinsics, and building an arm | [02](02-models.md) . [04](04-robot-and-safety.md) |
 | The pick that consumes the transform | [05](05-pick-loop.md) |

@@ -71,7 +71,7 @@ print(plan.refusal())       # why a cuRobo cell may not build on it, or None
 
 Once a rig declares its calibration on a cuRobo cell, its world is mandatory: a build that produced
 none is refused (`CameraWorldRequired`) rather than planning blind.
-[`examples/real_robot/19`](../../examples/real_robot/19_a_cell_with_several_cameras.py) reads the
+[`examples/real_robot/14`](../../examples/real_robot/14_a_cell_with_several_cameras.py) reads the
 plan and then opens one `Camera` per world rig.
 
 ### Many rigs, one catalogue

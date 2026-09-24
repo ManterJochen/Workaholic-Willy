@@ -208,7 +208,7 @@ def _place(robot_cfg: Any, rig: Any, calibration_of: Any, *, reader: str,
         raise WristBodyUnplaced(
             f"{key}.body declares a camera the arm carries and the rig declares no calibration, so nothing "
             "places the body on the flange. Calibrate it first: python -m "
-            f"src.robot.execution.real_cell.calibrate --rig {rig.rig_id} --mode eye_in_hand "
+            f"src.robot.execution.real_cell.calibrate --rig {rig.rig_id} --mode eye_in_hand --freedrive "
             '--unmodelled-wrist-body "<why the sweep may run without it>"')
     calibration = calibration_of(rig)
     record = calibration.flange_to_tcp

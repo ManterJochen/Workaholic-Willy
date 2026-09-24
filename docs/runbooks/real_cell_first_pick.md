@@ -82,15 +82,14 @@ Two rows are reported `[bench]` and never block, because no interface answers th
   a vacuum tool needs its 24 V supply and its solenoid. The schema accepts I/O pins 0 to 7 on any
   bank and does not know how many outputs the bank you named actually has, so a pin the tool block
   does not carry validates cleanly and switches nothing. A `jaw_io` toggle with no open switch
-  (`actuation: single_toggle`) cannot read its jaws, so the driver counts its own pulses and keeps
-  that count on disk between programs (`logs/robot/state`, one record per controller, bank and
-  pin). A connect starts from the record, and only with no record at all takes the jaws to stand
-  open. After the jaws moved any other way (the pendant's I/O tab, a bench `--pulse`, `--set` or
-  `--measure` on that pin, a power cut mid stroke), look at them and say where they stand:
-  `python -m src.robot.drivers.ur --profile <cell> --jaws-stand open --yes` (or `closed`). A bench
-  write on the toggle's pin marks the record before the edge, and the driver refuses to pulse until
-  you have. `--jaws open` (or `closed`) moves them through the driver and its count. Never push
-  them by hand: a device that keeps its own flip state is not moved by a hand.
+  (`actuation: single_toggle`) cannot read its jaws, and nothing about them is kept between
+  programs: once per program start, when the gripper connects and before the arm moves, the
+  console asks whether the jaws stand open. Answered closed, it offers one pulse to open them, or
+  stops. From there the program counts its own pulses: one at the part to close, one at the release
+  to open, none before the arm moves at the start of a pick, and a pick that begins with the jaws
+  believed closed asks again rather than pulsing. Never push the jaws by hand, and never pulse the
+  pin from elsewhere while a program runs: a device that keeps its own flip state is not moved by a
+  hand, and a pulse the program did not send turns its count round.
 
 A `jaw_io` hand adds a warning, `jaw travel time`, while `close_settle_s` is the schema default
 0.3 s and it is the only wait the driver has: with no switch to read, the arm moves on that long
@@ -229,10 +228,17 @@ camera against a simulated arm, which is useful for proving the routine and usel
 The real command is one per rig:
 
 ```bash
-python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --check     # touches nothing
-python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --dry-run   # builds the arm, opens the camera
-python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --poses 22  # moves the robot
+python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --freedrive --check     # touches nothing
+python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --freedrive --dry-run   # builds the arm, opens the camera
 ```
+
+Every run names where its stations come from, and one that names neither way is refused, `--check`
+included, because nothing generates stations. `--fixed-poses PATH` visits stations you give (a JSON
+of poses or of joints, each one judged before it runs), and `--adjust` beside it frees the arm at
+each station it reached so you can fine-tune the view by hand; with a file, `--check` also reads it
+and counts its stations. `--freedrive` has the arm moved by hand to poses where the software checks
+the board is seen well. Then the sweep, which moves the robot: the same command without `--check`
+or `--dry-run`. `examples/real_robot/07` to `10` run both ways for a fixed and a wrist camera.
 
 The sweep takes the cell lock and connects the arm alone, with no gripper. While the operator console
 holds this cell the sweep exits 1 and names the holder, so end the console's session first. A refused
@@ -257,62 +263,53 @@ Multi-view is the reason to do this for every camera rather than one. A grasp is
 the primary camera's cloud, and a surface it never measured is a surface the finger placement is
 guessing at.
 
-### 8. Does a wrist camera look at the work before it locates?
+### 8. Where does a wrist camera look from before it locates?
 
 Only for a camera the arm carries (`eye_in_hand`). A fixed camera sees the work from where it is
-mounted, and nothing here applies to it.
+mounted, and nothing here applies to it: its picks do not move the arm to look.
 
 A wrist camera sees what the arm points it at. Asked to locate from wherever the arm stands, it
 sees whatever that is: after a connect, where the last program left the arm; in a campaign, the
 retreat 100 mm above the last grasp, which for a camera tilted 45 degrees on the wrist is nearer
-than a D415 measures and is turned by that grasp's yaw. Neither the locator nor the pick service
-moves the arm first, so the examples do (`examples/real_robot/11`, `13` and `18`):
+than a D415 measures and is turned by that grasp's yaw. So every pick of a wrist cell first moves
+the arm to a look pose: joint positions the program declares, in degrees, tried in order until one
+finds something (`examples/real_robot/11`):
 
 ```python
-view = viewing_pose(camera, WORK_MM, arm=robot.arm, distance_mm=500.0, closing_axis="-y")
-print(view)                        # FOUND, NOT NEEDED (a fixed camera) or REFUSED with its reason
-if view.pose is not None:
-    print(robot.move(view.pose))   # planned and judged as any move
+LOOK = [JointPositions.deg(-90.0, -100.0, -110.0, -60.0, 90.0, 0.0),   # your own, off --where
+        JointPositions.deg(-70.0, -100.0, -110.0, -60.0, 90.0, 0.0)]
+run = PickRun.from_cell(cell, runs=5, recording=Recording.off(), look=LOOK, put_back=True)
 ```
 
-* **It needs the eye-in-hand calibration** (step 7, or examples 09 and 10): the pose is aimed from
-  the CAMERA->TOOL the sweep measured, so the camera, not the tool, looks at `WORK_MM`. A camera
-  with no calibration is refused, as everywhere.
-* **`WORK_MM`** is a point on the table where the parts lie, in base millimetres. The camera
-  stands `distance_mm` from it, looking straight at it. A part's top is nearer the camera than the
-  table by up to its height.
+* **Joints, not a pose the software works out.** Jog the arm on the pendant to where the camera
+  sees the work, and read the six joints off in degrees with
+  `python -m src.robot.drivers.ur --profile <cell> --where`. The arm arrives in exactly that
+  configuration, the IK branch, the cable window and the camera's roll included, and a person has
+  seen it there. A list of bare numbers is refused as a look, because its unit cannot be told.
+* **Tried in order.** Each look is one judged joint move (`move_to_joints`), then the pick
+  perceives. A look that finds nothing is followed by the next; the first that finds something is
+  picked from. Nothing found from any look is the attempt's `no_target`, with every look tried
+  on its report. A look the arm does not reach ends the attempt with nothing perceived and names
+  the look.
+* **No look given**, a wrist camera looks from home: `robot.home_joint_positions` in radians, or
+  `robot.home_joint_positions_deg` in degrees, one of the two. Set the home to one facing the work:
+  the joint window half a turn about it keeps a cable along the arm from winding, and a look
+  outside that window is refused like any move.
 * **The distance has to be one the depth measures.** Intel gives a D415 a minimum depth of about
   450 mm at the schema's default 1280 x 720 depth mode and about 310 mm at 848 x 480 (datasheet
-  figures, not measured here). Where the rig names its camera (`body.model: realsense_d415`), a
-  distance nearer than its depth mode's is refused as `too_near`. Stand the camera 500 mm off, or
-  stream depth at `depth_resolution: [848, 480]` with colour kept at `[1280, 720]`.
-* **`closing_axis`** is the heading the tool keeps; the tool only tilts from `Pose.tool_down` with
-  it, as far as aiming needs. Use the one the calibration ran with, so the image is the way up it
-  was then.
-* **It is screened as a calibration station is**: the workspace box less its margin (TCP and
-  flange), the arm's reach, and the joint window half a turn about `robot.home_joint_positions`
-  that keeps a cable along the arm from winding. Set the home to one facing the work, because the
-  window is centred on it; a home whose wrist 2 stands half a turn from where the arm is leaves
-  the arm on the window's seam, and every move is refused until the home is changed. A refusal
-  names its reason, and then nothing is located.
-* **11, 13 and 18 empty the hand first.** Example 11 and the pick service place nothing, and a
-  toggle's record carries jaws left closed into the next program, so the next pick's pre-open
-  would drop the part wherever the arm then stands, the viewing pose included. So each viewing
-  move is preceded by a release where the last pick left the arm, which lets the part fall back
-  where it was picked, as the pre-open always did. A cell that keeps its parts places them between
-  picks (`robot.place`).
+  figures, not measured here). Choose a look that stands the camera 500 mm off the parts, or stream
+  depth at `depth_resolution: [848, 480]` with colour kept at `[1280, 720]`.
+* **Nothing is said to the hand before a look**: no release, no pulse. With `put_back=True` each
+  lifted part is placed back where the tool closed on it (the pick's standoff, a line in, the
+  release, a line out), so the hand is empty at the next look and one part serves the campaign; a
+  part that does not go back stops it. Without it, the part rides to the next look, and the next
+  pick opens the hand there, before its approach; a toggle hand whose jaws the program believes
+  closed asks first instead of pulsing.
+* **Each attempt says what was computed**: where the object's seen surface is centred in BASE
+  (`attempt.object_mm`) and the pose the tool closed at (`attempt.grasp_pose`), so a look and a
+  grasp can be checked against the cell with a ruler.
 
-Measured on 2026-09-23 against the CB3 URSim (PolyScope 3.15.8, UR10 profile, Hand-E driven as
-`jaw_io` on tool DO0, 156.2 mm tool frame, planner margin 4 mm, the half-turn window about an
-elbow-up home facing the work) with the cuRobo sidecar on the GPU, twice, with the same result.
-Example 10 now aims seventeen views. These numbers are from its first set of eleven, and the
-seventeen have not been measured this way yet. The eleven views round the marker at (-130, -700,
-50) mm, aimed from the stated 45-degree mount (URSim has no camera, so nothing was captured):
-8 moved, each as 2 `moveJ` from 21 to 61 planned waypoints, the largest turn of any joint in one
-move 113 degrees (wrist 3), no joint sample outside the window. The 3 views 15 degrees above the ring were refused by the arm with
-nothing moved: the configuration nearest the arm folds the forearm onto wrist 2 (0.1 to 1.3 mm
-inside the planner's margin), and cuRobo's own choice lay outside the window. The viewing pose
-then moved as 2 `moveJ` from where the sweep ended (64 degrees at most) and from home (6 degrees).
+Look poses have not yet been run against the CB3 URSim or the cell.
 
 ---
 

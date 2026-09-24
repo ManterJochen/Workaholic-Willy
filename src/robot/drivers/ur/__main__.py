@@ -5,8 +5,8 @@
     python -m src.robot.drivers.ur --set 4=1 --yes             # drive one output
     python -m src.robot.drivers.ur --pulse 4 --for 0.2 --yes   # the double-solenoid and single-toggle shape
     python -m src.robot.drivers.ur --measure 4=1 --watch 0 --yes   # <- the number you came for
-    python -m src.robot.drivers.ur --jaws open --yes           # a single-toggle hand, through its driver and count
-    python -m src.robot.drivers.ur --jaws-stand open --yes     # you looked: where a toggle's jaws stand
+    python -m src.robot.drivers.ur --jaws open --yes           # the configured jaw_io hand, through its driver
+    python -m src.robot.drivers.ur --where                     # where the arm stands, as lines to paste
 
 Why it exists. ``VacuumGripperConfig`` and ``JawIOGripperConfig`` deliberately put every
 wiring number in config, so the I/O end-effectors could be built before the hardware
@@ -20,6 +20,10 @@ input takes to answer, and prints the milliseconds that become ``close_settle_s`
 driver waits that budget out and a typical value turns into a dropped part on a slow
 stroke.
 
+``--where`` reads the arm's joints and TCP and prints them, the joints as a line to paste
+into a program (``JointPositions.deg(...)``, a look pose for instance), and exits 0. It
+reads and commands nothing else.
+
 Nothing here moves the arm. There is no path from this CLI to ``arm.move``: it opens
 the connection, which the UR driver gates on a declared tool frame and a coherent
 payload, and then touches digital I/O alone.
@@ -27,13 +31,18 @@ payload, and then touches digital I/O alone.
 Driving an output is still a physical action. A close pin closes real jaws on whatever
 is between them, and an ejector pin starts real suction. Every write is therefore gated
 behind ``--yes``, and in a non-interactive shell the gate refuses rather than prompts.
-``--read`` and ``--watch`` are read-only and need no gate.
+``--read``, ``--watch`` and ``--where`` are read-only and need no gate.
 
-A single toggle with no open switch keeps a count of its own pulses on disk, and a write on
-its pin (``--pulse``, ``--set``, ``--measure``) moves jaws that count never sees. So once the
-write is confirmed, and before the edge, the record is marked, and the next program refuses
-to pulse until ``--jaws-stand`` says where a person saw the jaws stand. ``--jaws`` moves them
-through the driver and its count instead.
+A single toggle's pin may be pulsed here freely: no count of its pulses outlives a
+program, and every program asks at its connect where the jaws stand. ``--jaws`` moves
+them through the driver, which asks that question first, and its last line says how many
+pulses went out, the one a person chose at that question included: it reads the driver's
+own count (``JawIOGripper.commands_sent``), never where the jaws stood before and after.
+
+Every refusal says which config it read: the profile chain from ``--profile`` or
+``WILLY_PROFILE``, or that neither was given and the base tree was loaded (it names a
+Robotiq, not a jaw_io hand), and, once the config loaded, the gripper vendor it names.
+No refusal prints a placeholder to fill in: it says ``--profile NAME`` in words.
 
 Exit codes: 0 where the command ran, 1 where config or the connection refused, 2 where
 the measurement timed out, meaning the output was driven and the input never answered,
@@ -50,7 +59,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.config.loader import ConfigError
@@ -80,6 +88,34 @@ def _load_robot_config(profile: str | None, data_dir: str | None) -> "RobotConfi
     from src.config.loader import load_robot_config
 
     return load_robot_config(data_dir, profile=UNSET if profile is None else profile)
+
+
+def _profile_chain(profile: str | None, robot_cfg: "RobotConfig | None" = None) -> str:
+    """Which config this session read, as a refusal says it: the chain and where it came from, or that there was none.
+
+    A refusal that does not say it sent an operator after the wrong fix: on the owner's PC the bench refused a jaw_io
+    command because neither ``--profile`` nor ``WILLY_PROFILE`` was given, the base tree names a Robotiq, and the fix
+    it printed carried a literal ``<cell>`` that the shell could not run (2026-09-24). Where the config loaded, the
+    gripper it names is said too.
+    """
+    from src.config.loader import active_profile
+
+    names = "" if robot_cfg is None else f", which names gripper vendor {str(robot_cfg.gripper.vendor)!r}"
+    if profile is not None:
+        return f"profile chain {profile!r} (from --profile){names}"
+    exported = active_profile()
+    if exported:
+        return f"profile chain {exported!r} (from WILLY_PROFILE){names}"
+    return (f"no profile: neither --profile nor WILLY_PROFILE was given, so the base tree was loaded{names}; pass "
+            "--profile NAME for your cell")
+
+
+def _refuse(profile: str | None, what: str, robot_cfg: "RobotConfig | None" = None) -> int:
+    """Print and log one refusal with the config it was read from; the refused exit code."""
+    chain = _profile_chain(profile, robot_cfg)
+    print(f"REFUSED: {what}\n   config: {chain}", flush=True)
+    logger.error("refused: %s (config: %s)", what, chain)
+    return _EXIT_REFUSED
 
 
 def _parse_pin_value(spec: str) -> tuple[int, bool]:
@@ -145,11 +181,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="seconds: --watch timeout (default 10), --pulse length (0.2), "
                          "--measure timeout (2)")
     ap.add_argument("--jaws", choices=["open", "closed"], default=None,
-                    help="open or close the configured jaw_io hand through its driver, which pulses a toggle only "
-                         "when its count says the jaws stand the other way, and records the pulse")
-    ap.add_argument("--jaws-stand", dest="jaws_stand", choices=["open", "closed"], default=None,
-                    help="a single toggle with no open switch: you looked at the jaws, and this is where they stand. "
-                         "Nothing is pulsed and nothing connects; the driver's count is set to it")
+                    help="open or close the configured jaw_io hand through its driver; a single toggle asks first "
+                         "where its jaws stand, and pulses only where they stand the other way")
+    ap.add_argument("--where", action="store_true",
+                    help="print the arm's joints as a JointPositions.deg(...) line to paste, and its TCP in mm and "
+                         "degrees, then exit (read-only)")
     ap.add_argument("--yes", action="store_true",
                     help="confirm that the cell is clear; required for any write")
     args = ap.parse_args(argv)
@@ -175,11 +211,11 @@ def main(argv: list[str] | None = None) -> int:
             ("--pulse", args.pulse is not None),
             ("--measure", args.measure is not None),
             ("--jaws", args.jaws is not None),
-            ("--jaws-stand", args.jaws_stand is not None),
+            ("--where", bool(args.where)),
         ) if given
     ]
     if not named:
-        ap.error("nothing to do: pass --read, --watch, --set, --pulse, --measure, --jaws or --jaws-stand")
+        ap.error("nothing to do: pass --read, --watch, --set, --pulse, --measure, --jaws or --where")
     if len(named) > 1:
         ap.error(
             f"{' and '.join(named)} are separate actions and this bench performs one at a time. "
@@ -194,8 +230,8 @@ def main(argv: list[str] | None = None) -> int:
     port = DigitalIOPort(args.port)
 
     logger.info(
-        "bench session: port=%s profile=%s read=%s watch=%s set=%s pulse=%s measure=%s",
-        port.value, args.profile, args.read, args.watch, args.set, args.pulse, args.measure,
+        "bench session: port=%s profile=%s read=%s watch=%s set=%s pulse=%s measure=%s jaws=%s where=%s",
+        port.value, args.profile, args.read, args.watch, args.set, args.pulse, args.measure, args.jaws, args.where,
     )
 
     try:
@@ -206,13 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     # refusal written here. `SystemExit` stays because other refusals on this path raise
     # it.
     except (SystemExit, ConfigError) as exc:
-        print(f"config refused: {exc}", flush=True)
-        logger.error("config refused: %s", exc)
-        return _EXIT_REFUSED
-
-    toggle = _toggle_record(robot_cfg)
-    if args.jaws_stand is not None:
-        return _declare_jaws(args, toggle)
+        return _refuse(args.profile, f"the config did not load: {exc}")
 
     try:
         from src.robot.drivers import create_arm
@@ -220,20 +250,14 @@ def main(argv: list[str] | None = None) -> int:
 
         vendor = RobotVendor.from_string(robot_cfg.vendor)
         if vendor is not RobotVendor.UR:
-            print(f"REFUSED: robot.vendor is {vendor.value!r}. Digital I/O is a UR capability here; "
-                  "only the UR driver advertises SupportsDigitalIO.", flush=True)
-            logger.error("refused: robot.vendor is %r, not 'ur'", vendor.value)
-            return _EXIT_REFUSED
+            return _refuse(args.profile, f"robot.vendor is {vendor.value!r}. Digital I/O is a UR capability here; "
+                                         "only the UR driver advertises SupportsDigitalIO.", robot_cfg)
         arm = create_arm(vendor, config=robot_cfg)
     except Exception as exc:  # noqa: BLE001 (a build failure is a refusal, not a crash)
-        print(f"could not build the arm: {type(exc).__name__}: {exc}", flush=True)
-        logger.error("could not build the arm: %s: %s", type(exc).__name__, exc)
-        return _EXIT_REFUSED
+        return _refuse(args.profile, f"could not build the arm: {type(exc).__name__}: {exc}", robot_cfg)
 
     if not isinstance(arm, SupportsDigitalIO):
-        print("REFUSED: this arm does not advertise SupportsDigitalIO.", flush=True)
-        logger.error("refused: %s does not advertise SupportsDigitalIO", type(arm).__name__)
-        return _EXIT_REFUSED
+        return _refuse(args.profile, "this arm does not advertise SupportsDigitalIO.", robot_cfg)
 
     try:
         # connect() is where the UR driver fails closed on an undeclared tool frame and
@@ -242,12 +266,11 @@ def main(argv: list[str] | None = None) -> int:
         # gripper on.
         arm.connect()
     except Exception as exc:  # noqa: BLE001
-        print(f"connect refused: {type(exc).__name__}: {exc}", flush=True)
-        logger.error("connect refused: %s: %s", type(exc).__name__, exc)
-        return _EXIT_REFUSED
+        return _refuse(args.profile, f"the connect was refused: {type(exc).__name__}: {exc}", robot_cfg)
 
-    uncounted = False
     try:
+        if args.where:
+            return _where(arm)
         # One action, one verb, and the interlock travels with it. `_confirm` is passed
         # in as the confirmation seam rather than called here, which is what lets the
         # library twin keep the gate: the `io_bench` functions energise a pin the moment
@@ -256,17 +279,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.jaws is not None:
             return _drive_jaws(args, robot_cfg, arm)
 
-        def confirm(what: str) -> bool:
-            # A write on a toggle's own pin marks its record once confirmed and before the
-            # edge, so a pulse cut short by Ctrl-C, or a write that raises after the jaws
-            # flipped, leaves the record demanding a declaration as a finished one does.
-            nonlocal uncounted
-            if not _confirm(args, what):
-                return False
-            uncounted = _uncount_a_toggle_pulse(args, port, toggle)
-            return True
-
-        bench = Bench.from_arm(arm, port=port, confirm=confirm)
+        bench = Bench.from_arm(arm, port=port, confirm=lambda what: _confirm(args, what))
         action: BenchAction
         if args.read:
             action = Read()
@@ -300,103 +313,107 @@ def main(argv: list[str] | None = None) -> int:
         print("\ninterrupted", flush=True)
         return _EXIT_ERROR
     finally:
-        if uncounted and toggle is not None:
-            print(f"\n-> this drove the toggle's own pin, which the driver does not count. Look at the jaws and say "
-                  f"where they stand: python -m src.robot.drivers.ur --profile <cell> --port {toggle[1]} --jaws-stand "
-                  f"open (or closed) --yes. Until then the driver refuses to pulse.", flush=True)
         try:
             arm.disconnect()
         except Exception:  # noqa: BLE001 (teardown must not mask the result)
             pass
 
 
-def _toggle_record(robot_cfg: "RobotConfig") -> "tuple[Path, str, int] | None":
-    """The record, bank and pin of the configured hand when it is a single toggle with no open switch, else None.
+def _where(arm: object) -> int:
+    """Print where the arm stands: its joints as a ``JointPositions.deg(...)`` line to paste, and its TCP. Read-only."""
+    from .bench import where_lines
 
-    Read through ``robot_parts``: no module under ``drivers/ur`` imports the grippers package.
-    """
-    from src.robot.execution.robot_parts import jaw_toggle_record
-
-    return jaw_toggle_record(robot_cfg)
-
-
-def _declare_jaws(args: argparse.Namespace, toggle: "tuple[Path, str, int] | None") -> int:
-    """Set a toggle's count to where a person saw the jaws stand. Nothing is pulsed and nothing connects."""
-    from src.robot.execution.robot_parts import declare_jaw_toggle_record, describe_jaw_toggle_record
-
-    if toggle is None:
-        print("REFUSED: --jaws-stand is for a jaw_io single_toggle with no open switch, the one hand that keeps a "
-              "count of its own pulses; this profile's gripper is not one.", flush=True)
-        return _EXIT_REFUSED
-    path, port, pin = toggle
-    closed = args.jaws_stand == "closed"
-    what = f"declare that the jaws on {port} pin {pin} stand {args.jaws_stand.upper()}, having looked at them"
-    if not args.yes and not (sys.stdin.isatty() and input(f"{what}? type 'yes': ").strip().lower() == "yes"):
-        print(f"REFUSED: {what} needs --yes, or 'yes' typed at a terminal.", flush=True)
-        return _EXIT_REFUSED
-    said = describe_jaw_toggle_record(path)
-    declare_jaw_toggle_record(path, closed=closed)
-    logger.warning("jaws declared %s on %s pin %s by the bench (the record said: %s)", args.jaws_stand, port, pin, said)
-    print(f"recorded: the jaws stand {args.jaws_stand.upper()} ({path}); the record said {said}", flush=True)
+    joints = arm.get_joint_positions()  # type: ignore[attr-defined]
+    tcp = arm.get_tcp_pose()  # type: ignore[attr-defined]
+    for line in where_lines(list(joints), tcp):
+        print(line, flush=True)
+    logger.info("--where: %s", " | ".join(where_lines(list(joints), tcp)))
     return _EXIT_OK
 
 
 def _drive_jaws(args: argparse.Namespace, robot_cfg: "RobotConfig", arm: object) -> int:
-    """Open or close the configured jaw_io hand through its own driver, so a toggle's count follows the pulse."""
+    """Open or close the configured jaw_io hand through its own driver; a single toggle asks where its jaws stand first."""
     from src.robot.core.gripper import OpensAndCloses
     from src.robot.execution.robot_parts import build_gripper
 
     gripper = build_gripper(robot_cfg, arm=arm)  # type: ignore[arg-type]
     if not isinstance(gripper, OpensAndCloses):
-        print(f"REFUSED: --jaws drives a jaw_io hand; this profile builds {type(gripper).__name__}.", flush=True)
-        return _EXIT_REFUSED
+        return _refuse(args.profile, f"--jaws drives a jaw_io hand, and this config builds {type(gripper).__name__}.",
+                       robot_cfg)
     if not _confirm(args, f"{args.jaws} the jaws through the {robot_cfg.gripper.jaw_io.actuation} driver"):
         return _EXIT_REFUSED
     from src.robot.core import RobotError
 
+    # What went out is counted by the driver across the connect and the command, not inferred from where the count
+    # stood before and after the command: the connect's question may itself have pulsed the jaws open (a person said
+    # closed and chose the pulse), and a summary that looked only after the connect then said "nothing was pulsed"
+    # about a pulse that went out (review, 2026-09-24).
+    toggle = bool(getattr(gripper, "toggles_without_sensor", False))
+    start = _commands_sent(gripper)
+    at_connect: "int | None" = None
     try:
         gripper.connect()  # type: ignore[attr-defined]
         try:
+            at_connect = _commands_sent(gripper)
             before = bool(getattr(gripper, "jaws_closed", False))
             gripper.set_closed(args.jaws == "closed")
             after = bool(getattr(gripper, "jaws_closed", False))
         finally:
             gripper.disconnect()  # type: ignore[attr-defined]
     except RobotError as exc:
-        # The driver's own refusal, a count nobody can vouch for above all, is the answer here, not a traceback.
-        print(f"REFUSED: {exc}", flush=True)
-        logger.error("--jaws %s refused: %s", args.jaws, exc)
-        return _EXIT_REFUSED
-    moved = "" if before != after else " (they already stood there: nothing was pulsed)"
-    print(f"the driver took the jaws from {'CLOSED' if before else 'OPEN'} to {'CLOSED' if after else 'OPEN'}{moved}",
+        # The driver's own refusal, a toggle nobody could ask about above all, is the answer here, not a traceback.
+        # What went out before it is said too: a refusal after a pulse is a hand that moved.
+        sent = _sent_before_a_refusal(start, at_connect, _commands_sent(gripper), toggle=toggle)
+        return _refuse(args.profile, f"--jaws {args.jaws}: {exc}{sent}", robot_cfg)
+    print(_jaws_summary(args.jaws, before, after, start, at_connect, _commands_sent(gripper), toggle=toggle),
           flush=True)
     return _EXIT_OK
 
 
-def _uncount_a_toggle_pulse(args: argparse.Namespace, port: object,
-                            toggle: "tuple[Path, str, int] | None") -> bool:
-    """A --pulse, --set or --measure on a toggle's own pin moves jaws the driver does not count: its record says so.
+def _commands_sent(gripper: object) -> "int | None":
+    """The driver's own count of the commands it sent the jaws (``JawIOGripper.commands_sent``); ``None`` without one."""
+    sent = getattr(gripper, "commands_sent", None)
+    return sent if isinstance(sent, int) and not isinstance(sent, bool) else None
 
-    Called once the write is confirmed and before the pin is driven, and it answers whether it marked the record.
-    Marked after the action instead, the record missed a --measure, which drives the pin as surely as a pulse, and a
-    pulse that was interrupted or raised, and the next program ran inverted with nothing refusing.
 
-    Flipping the count instead would keep a wrong count wrong, and a bench pulse is usually given because the count
-    was wrong. So the next program refuses to pulse until a person has said where the jaws stand.
+def _counted(n: int, *, toggle: bool) -> str:
+    """``1 pulse``, ``2 pulses``, ``nothing``; ``command`` in place of ``pulse`` for a hand that is not a toggle."""
+    if n == 0:
+        return "nothing"
+    noun = "pulse" if toggle else "command"
+    return f"{n} {noun}{'' if n == 1 else 's'}"
+
+
+def _jaws_summary(jaws: str, before: bool, after: bool, start: "int | None", at_connect: "int | None",
+                  end: "int | None", *, toggle: bool) -> str:
+    """The line ``--jaws`` ends on: where the command took the jaws, and what went out at the connect and for it.
+
+    "Nothing was pulsed" is said only where the driver's count says nothing went out at all, the connect included. A
+    driver that keeps no count is not credited with sending nothing: the line then says where the jaws went and no
+    more.
     """
-    if toggle is None:
-        return False
-    path, toggle_port, pin = toggle
-    spec = args.set if args.set is not None else args.measure
-    driven = args.pulse if args.pulse is not None else (_parse_pin_value(spec)[0] if spec is not None else None)
-    if driven is None or int(driven) != pin or getattr(port, "value", port) != toggle_port:
-        return False
-    from src.robot.execution.robot_parts import mark_jaw_toggle_record_uncounted
+    line = f"the driver took the jaws from {'CLOSED' if before else 'OPEN'} to {'CLOSED' if after else 'OPEN'}"
+    if start is None or at_connect is None or end is None:
+        return line
+    connect, command = at_connect - start, end - at_connect
+    if connect + command == 0:
+        return f"{line} (they already stood there: nothing was {'pulsed' if toggle else 'sent'})"
+    parts = [f"{_counted(connect, toggle=toggle)} at connect, to open them"] if connect else []
+    parts.append(f"{_counted(command, toggle=toggle)} for --jaws {jaws}"
+                 + ("" if command else " (they already stood there after the connect)"))
+    return f"{line}; {_counted(connect + command, toggle=toggle)} went out: {', and '.join(parts)}"
 
-    mark_jaw_toggle_record_uncounted(path, by="a bench write on the toggle's pin, which the driver does not count")
-    logger.warning("the bench drives the toggle's own %s pin %s: its record now demands a declaration (%s)",
-                   toggle_port, pin, path)
-    return True
+
+def _sent_before_a_refusal(start: "int | None", at_connect: "int | None", end: "int | None", *, toggle: bool) -> str:
+    """What a refusal adds about what went out before it: ``""`` where nothing did, or the driver keeps no count."""
+    if start is None or end is None or end == start:
+        return ""
+    # A connect that raised never set `at_connect`: then everything counted went out at the connect.
+    where = " at connect" if at_connect is None else (
+        f" ({_counted(at_connect - start, toggle=toggle)} at connect, {_counted(end - at_connect, toggle=toggle)} "
+        "for the command)")
+    return (f". Before this refusal the driver sent {_counted(end - start, toggle=toggle)}{where}, a write that raised "
+            "counted, because it may still have reached the controller: look at the jaws before anything else")
 
 
 if __name__ == "__main__":  # pragma: no cover

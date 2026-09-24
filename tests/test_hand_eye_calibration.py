@@ -18,6 +18,7 @@ The CLI's own transcripts are pinned in ``tests/test_calibrate_cli_transcript.py
 from __future__ import annotations
 
 import ast
+import dataclasses
 import datetime as dt
 import io
 import json
@@ -39,8 +40,8 @@ from src.config.schema.robot import RobotConfig
 from src.config.tree import ConfigTree, LoadedTree
 from src.calibration import Extrinsics, MountingMode
 from src.camera.orchestration.camera import Camera
-from src.contracts import UNSET, Rendered, Structured
-from src.geometry import Frame, Transform
+from src.contracts import UNSET, Rendered, Structured, chosen
+from src.geometry import Frame, Pose, Transform
 from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.execution import hand_eye
 from src.robot.execution.calibration import CalibrationResult, CalibrationRoutine
@@ -61,6 +62,9 @@ from tests.test_camera_boundaries import _rgbd_rig
 
 _IP = "10.253.253.31"
 _KEY = f"ur@{_IP}"
+_ROOT = Path(__file__).resolve().parents[1]
+#: A sweep's own stations: nothing generates one, so a sweep that names none is refused.
+_STATIONS = [Pose.tool_down(400.0, 0.0, 350.0, label="down_0"), Pose.tool_down(420.0, 60.0, 380.0, label="down_1")]
 _READY = "src.robot.drivers.doctor.require_arm_vendor_ready"
 _CREATE_ARM = "src.robot.drivers.create_arm"
 _CAMERA = "src.camera.orchestration.camera.Camera"
@@ -156,6 +160,10 @@ class _Doubles(unittest.TestCase):
         self.camera = Camera.from_rig(_rgbd_rig(rig_id), streamer=self.streamer)
         self.addCleanup(self.camera.release)
         robot = Robot.from_parts(arm=self.arm, gripper=None, lock_key=lock_key)
+        if not chosen(options):
+            options = SweepOptions(fixed_poses=_STATIONS)
+        elif not chosen(options.fixed_poses) and not chosen(options.freedrive):
+            options = dataclasses.replace(options, fixed_poses=_STATIONS)
         return HandEyeCalibration.from_parts(robot=robot, camera=self.camera,
                                              robot_config=robot_config if robot_config is not None else _ur(),
                                              mode=mode, options=options, **hooks)
@@ -200,28 +208,40 @@ class CheckTouchesNothingTests(unittest.TestCase):
         self.assertIn("realsense_d435", refusal)
 
     def test_a_usable_rig_reports_what_the_sweep_will_use(self) -> None:
-        check = HandEyeCalibration.from_config(_app(), rig_id="overhead", mode="eye_to_hand").check()
+        check = HandEyeCalibration.from_config(_app(), rig_id="overhead", mode="eye_to_hand",
+                                               options=SweepOptions(fixed_poses=_STATIONS)).check()
         self.assertTrue(check.ok, check.refusal)
         self.assertEqual(check.render(), "\n".join((
             "  rig        'overhead' (rgbd)",
             "  mode       eye_to_hand",
             "  arm        ur",
             "  marker     50.0 mm, id 0, DICT_5X5_100",
-            "  poses      22",
+            "  poses      2",
             "  artifact   calibration/real/eth_overhead.json",
         )))
+
+    def test_a_sweep_that_names_no_stations_is_refused_because_nothing_generates_them(self) -> None:
+        """The owner, 2026-09-24: every automatic station generator is gone, so the old default sweep of 22 generated
+        poses is a refusal that names both ways left, before anything is built."""
+        check = HandEyeCalibration.from_config(_app(), rig_id="overhead", mode="eye_to_hand").check()
+        self.assertFalse(check.ok)
+        for part in ("none were named", "--fixed-poses PATH", "--freedrive", "Nothing generates stations"):
+            self.assertIn(part, check.refusal)
+        self.assertFalse(hasattr(SweepOptions(), "poses"))
+        self.assertFalse(hasattr(SweepOptions(), "aim"))
 
     def test_a_chosen_option_wins_over_the_tree_and_the_tree_over_the_code(self) -> None:
         tree = HandEyeConfig.model_validate({"eye_to_hand": {"marker_length_mm": 48.0, "aruco_dict_name": "DICT_4X4_50"}})
         from_tree = HandEyeCalibration.from_config(_app(hand_eye=tree), rig_id="overhead", mode="eye_to_hand")
-        self.assertEqual((from_tree.marker_length_mm, from_tree.dict_name, from_tree.poses, from_tree.out_dir),
-                         (48.0, "DICT_4X4_50", 22, "calibration/real"))
+        self.assertEqual((from_tree.marker_length_mm, from_tree.dict_name, from_tree.samples, from_tree.out_dir),
+                         (48.0, "DICT_4X4_50", 15, "calibration/real"))
         chosen = HandEyeCalibration.from_config(
             _app(hand_eye=tree), rig_id="overhead", mode="eye_to_hand",
-            options=SweepOptions(poses=10, marker_length_mm=39.7, marker_id=3, dict_name="DICT_5X5_100", out_dir="bench"))
+            options=SweepOptions(freedrive=True, samples=10, marker_length_mm=39.7, marker_id=3,
+                                 dict_name="DICT_5X5_100", out_dir="bench"))
         self.assertEqual(chosen.check().render().splitlines()[3:], [
             "  marker     39.7 mm, id 3, DICT_5X5_100",
-            "  poses      10",
+            "  poses      10 guided by hand",
             "  artifact   bench/eth_overhead.json",
         ])
 
@@ -229,7 +249,8 @@ class CheckTouchesNothingTests(unittest.TestCase):
         """The CLI read ``camera.hand_eye.eye_to_hand`` for both mountings; the noun reads the block of its mode."""
         tree = HandEyeConfig.model_validate({"eye_in_hand": {"marker_length_mm": 30.0, "aruco_dict_name": "DICT_4X4_50"}})
         calibration = HandEyeCalibration.from_config(_app(_rgbd_rig("wrist"), hand_eye=tree, robot=_no_geometry()),
-                                                     rig_id="wrist", mode="eye_in_hand")
+                                                     rig_id="wrist", mode="eye_in_hand",
+                                                     options=SweepOptions(freedrive=True))
         self.assertIs(calibration.settings, tree.eye_in_hand)
         self.assertEqual((calibration.marker_length_mm, calibration.dict_name), (30.0, "DICT_4X4_50"))
         check = calibration.check()
@@ -314,7 +335,8 @@ class DryRunTests(_Doubles):
     def test_an_arm_that_cannot_be_built_is_refused_before_the_camera_is_built(self) -> None:
         with patch(_READY), patch(_CREATE_ARM, side_effect=RuntimeError("no controller here")), \
                 patch(_CAMERA) as camera_cls:
-            report = HandEyeCalibration.from_config(_app(), rig_id="overhead", mode="eye_to_hand").run()
+            report = HandEyeCalibration.from_config(_app(), rig_id="overhead", mode="eye_to_hand",
+                                                    options=SweepOptions(fixed_poses=_STATIONS)).run()
         self.assertIs(report.outcome, CalibrationOutcome.BUILD_REFUSED)
         assert report.build is not None
         self.assertEqual(report.build.refusal, "RuntimeError: no controller here")
@@ -322,7 +344,7 @@ class DryRunTests(_Doubles):
 
 
 # ---------------------------------------------------------------------------------------------------
-# run(): the sweep, with the routine's run_auto standing in for the motion
+# run(): the sweep, with the routine's run over the caller's stations standing in for the motion
 # ---------------------------------------------------------------------------------------------------
 
 
@@ -330,8 +352,8 @@ class SweepTests(_Doubles):
 
     def test_an_eye_to_hand_sweep_writes_the_artifact_keyed_by_the_rig(self) -> None:
         out = self._out()
-        run_auto = MagicMock(return_value=_eth_result())
-        with patch.object(CalibrationRoutine, "run_auto", run_auto):
+        sweep = MagicMock(return_value=_eth_result())
+        with patch.object(CalibrationRoutine, "run_with_poses", sweep):
             report = self._noun(options=SweepOptions(out_dir=out)).run()
         self.assertIs(report.outcome, CalibrationOutcome.WRITTEN)
         self.assertEqual(report.exit_code, 0)
@@ -344,9 +366,9 @@ class SweepTests(_Doubles):
         block = yaml.safe_load(report.rig_block)["camera"]["cameras"]["rigs"][0]
         self.assertEqual(block["rig_id"], "overhead")
         self.assertEqual(RigExtrinsicsConfig(**block["extrinsics"]).mounting_mode, "eye_to_hand")
-        self.assertEqual(run_auto.call_args.args, (22,))
-        keywords = run_auto.call_args.kwargs
-        self.assertEqual((keywords["orientation_spread_deg"], keywords["seed"]), (30.0, 0))
+        self.assertEqual(sweep.call_args.args, (_STATIONS,))
+        keywords = sweep.call_args.kwargs
+        self.assertEqual((keywords["adjust"], keywords["stations_save_path"]), (False, None))
         self.assertTrue(keywords["dataset_save_path"].endswith("eye_to_hand_overhead_dataset.json"))
         self.assertEqual(self.arm.connects, 1)
         assert report.teardown is not None
@@ -357,7 +379,7 @@ class SweepTests(_Doubles):
     def test_an_eye_in_hand_sweep_records_the_flange_to_tcp(self) -> None:
         """The wrist record (owner E13): read from the connected arm, written as /2, named on the report."""
         out = self._out()
-        with patch.object(CalibrationRoutine, "run_auto", MagicMock(return_value=_eih_result())):
+        with patch.object(CalibrationRoutine, "run_with_poses", MagicMock(return_value=_eih_result())):
             report = self._noun(mode="eye_in_hand", rig_id="wrist", robot_config=_no_geometry(),
                                 options=SweepOptions(out_dir=out)).run()
         self.assertIs(report.outcome, CalibrationOutcome.WRITTEN, report.render())
@@ -370,7 +392,7 @@ class SweepTests(_Doubles):
 
     def test_a_solve_with_no_carrier_writes_nothing_and_exits_2(self) -> None:
         out = self._out()
-        with patch.object(CalibrationRoutine, "run_auto", MagicMock(return_value=_eth_result(carrier=False))):
+        with patch.object(CalibrationRoutine, "run_with_poses", MagicMock(return_value=_eth_result(carrier=False))):
             report = self._noun(options=SweepOptions(out_dir=out)).run()
         self.assertIs(report.outcome, CalibrationOutcome.NO_ARTIFACT)
         self.assertEqual(report.exit_code, 2)
@@ -379,7 +401,8 @@ class SweepTests(_Doubles):
         self.assertIn("[result] no Extrinsics carrier; nothing was written.", report.summary())
 
     def test_a_sweep_that_raises_is_reported_once_the_arm_is_down(self) -> None:
-        with patch.object(CalibrationRoutine, "run_auto", MagicMock(side_effect=RuntimeError("the marker left the frame"))):
+        with patch.object(CalibrationRoutine, "run_with_poses",
+                          MagicMock(side_effect=RuntimeError("the marker left the frame"))):
             report = self._noun(options=SweepOptions(out_dir=self._out())).run()
         self.assertIs(report.outcome, CalibrationOutcome.SWEEP_FAILED)
         self.assertEqual(report.exit_code, 3)
@@ -392,7 +415,7 @@ class SweepTests(_Doubles):
     def test_a_held_cell_is_an_outcome_not_an_exception(self) -> None:
         calibration = self._noun(lock_key=_KEY, options=SweepOptions(out_dir=self._out()))
         with CellLock(_KEY, owner="operator console"), \
-                patch.object(CalibrationRoutine, "run_auto", MagicMock(side_effect=AssertionError("the sweep ran"))):
+                patch.object(CalibrationRoutine, "run_with_poses", MagicMock(side_effect=AssertionError("the sweep ran"))):
             report = calibration.run()
         self.assertIs(report.outcome, CalibrationOutcome.CELL_BUSY)
         self.assertEqual(report.exit_code, 1)
@@ -411,7 +434,7 @@ class SweepTests(_Doubles):
 class ReportContractTests(_Doubles):
 
     def test_every_report_renders_ascii_without_a_trailing_newline_and_its_dict_survives_json(self) -> None:
-        with patch.object(CalibrationRoutine, "run_auto", MagicMock(return_value=_eih_result())):
+        with patch.object(CalibrationRoutine, "run_with_poses", MagicMock(return_value=_eih_result())):
             report = self._noun(mode="eye_in_hand", rig_id="wrist", robot_config=_no_geometry(),
                                 options=SweepOptions(out_dir=self._out())).run()
         assert report.build is not None
@@ -469,7 +492,7 @@ class TheCliIsACallerOfTheNounTests(unittest.TestCase):
     def _check(self, app: Any, *argv: str) -> tuple[int, str]:
         printed = io.StringIO()
         with patch.object(calibrate, "_load", return_value=app), redirect_stdout(printed):
-            code = calibrate.main([*argv, "--check"])
+            code = calibrate.main([*argv, "--freedrive", "--check"])
         return code, printed.getvalue()
 
     def test_the_cli_builds_no_part_of_the_sweep_itself(self) -> None:
@@ -503,6 +526,60 @@ class TheCliIsACallerOfTheNounTests(unittest.TestCase):
         self.assertEqual(code, calibrate._EXIT_OK, printed)
         self.assertIn("  marker     30.0 mm, id 0, DICT_5X5_100\n", printed)
         self.assertIn("  artifact   calibration/real/eih_wrist.json\n", printed)
+
+
+# ---------------------------------------------------------------------------------------------------
+# check(): the planner's evidence, looked up at the desk
+# ---------------------------------------------------------------------------------------------------
+
+
+class TheCheckLooksUpThePlannersEvidenceTests(unittest.TestCase):
+    """Audit 3, commissioning: ``--check`` said "usable" for a cell whose sweep planner then refused to start, after
+    the arm connected, for want of an evidence file. The check now makes the lookup the planner start makes.
+
+    Moved here from the aimed-sweep tests when the aimed sweep was deleted (the owner, 2026-09-24); the lookup is the
+    check's, whatever the stations are.
+    """
+
+    def _robot(self, layer: str) -> Any:
+        import shutil
+
+        from src.config.loader import load_robot_config, reload_config
+
+        root = Path(self.enterContext(tempfile.TemporaryDirectory())) / "data"
+        shutil.copytree(_ROOT / "config", root)
+        (root / "robot" / "robot.trial.yaml").write_text(layer, encoding="utf-8")
+        reload_config()
+        self.addCleanup(reload_config)
+        self.root = root
+        return load_robot_config(root, profile="ur10,hande,trial")
+
+    def _check(self, robot: Any) -> Any:
+        return HandEyeCalibration.from_config(_app(_rgbd_rig("overhead"), robot=robot), rig_id="overhead",
+                                              mode="eye_to_hand", data_dir=self.root,
+                                              options=SweepOptions(freedrive=True)).check()
+
+    _MARGIN = "\n".join(("  safety:", "    self_collision:", "      planner_margin_mm: 4.0", ""))
+
+    def test_a_combination_nobody_measured_is_refused_at_the_desk(self) -> None:
+        """An I/O coupling measured at 16 mm: no committed file measured that plate (red before: the check said ok)."""
+        plate = "\n".join(("robot:", "  gripper:", "    coupling_plates:", "      - name: io_coupling",
+                           "        thickness_mm: 16.0", ""))
+        robot = self._robot(plate + self._MARGIN)
+        check = self._check(robot)
+        self.assertFalse(check.ok)
+        for part in ("the sweep's planner would refuse to start", "after the arm is connected",
+                     "ur10_robotiq_hande_c16mm", "matrix_gate.py"):
+            self.assertIn(part, check.refusal)
+
+    def test_a_measured_combination_passes(self) -> None:
+        """THE CONTROL: the shipped 20 mm plate at 4 mm, which a committed file measured."""
+        check = self._check(self._robot("robot:" + "\n" + self._MARGIN))
+        self.assertTrue(check.ok, check.refusal)
+
+    def test_an_undeclared_margin_is_left_to_the_desk_check(self) -> None:
+        self.assertTrue(HandEyeCalibration.from_config(_app(), rig_id="overhead", mode="eye_to_hand",
+                                                       options=SweepOptions(freedrive=True)).check().ok)
 
 
 if __name__ == "__main__":  # pragma: no cover

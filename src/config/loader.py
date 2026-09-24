@@ -38,7 +38,17 @@ Examples::
     model_path: ${MODEL_DIR}/whisper
 
 A referenced variable that is unset and carries no default raises
-:class:`ConfigError`.
+:class:`ConfigError`. ``${WILLY_PROJECT_ROOT}`` is the one name not substituted: it is the path anchor
+below, it reaches the parsed data as written in any YAML style, quoted or not, inside ``{...}`` and
+``[...]`` too, and the path rule expands it in a path field. Any other field refuses it.
+
+Paths
+-----
+A relative path in the tree is read against the tree's folder, ``data_dir``, wherever the tree
+lives; ``${WILLY_PROJECT_ROOT}/...`` names a file in the repository; an absolute path is read as
+written. Every path field is typed :data:`~src.config.paths.ConfigPath`, and every door below
+validates with ``data_dir`` as the validation context, so the validated config holds absolute paths.
+:mod:`src.config.paths` states the rule and why it is applied here.
 
 Errors
 ------
@@ -69,6 +79,7 @@ from pydantic import BaseModel, ValidationError
 from src.contracts import UNSET, Maybe, chosen
 
 from ._merge import _deep_merge
+from .paths import CONFIG_FOLDER, PROJECT_ROOT_ANCHOR, PROJECT_ROOT_VARIABLE
 from .schema.app import AppConfig, CameraConfig, ModelsConfig, PerceptionModelsConfig
 from .schema.models import SpeechToTextConfig
 from .schema.robot import RobotConfig
@@ -387,7 +398,7 @@ def _validate_section(
 ) -> _Section:
     """Validate one section as ``model``; a failure is described with the section's place in the tree."""
     try:
-        return model.model_validate(data)
+        return model.model_validate(data, context=_path_context(root))
     except ValidationError as exc:
         raise ConfigError(_describe_validation_error(exc, root, profile, prefix=prefix)) from exc
 
@@ -690,9 +701,18 @@ def _assemble(root: Path, profile: str, values: Mapping[str, Any]) -> AppConfig:
     _apply_named_hand(raw, root, profile, in_memory=given)
 
     try:
-        return AppConfig.model_validate(raw)
+        return AppConfig.model_validate(raw, context=_path_context(root))
     except ValidationError as exc:
         raise ConfigError(_describe_validation_error(exc, root, profile, in_memory=given)) from exc
+
+
+def _path_context(root: Path) -> dict[str, Any]:
+    """The validation context every door validates with: the tree's folder, which relative paths are read against.
+
+    A value given in memory is validated under it too, because it is part of this tree: the same value
+    written in a layer would be read against the same folder.
+    """
+    return {CONFIG_FOLDER: root}
 
 
 def _describe_validation_error(
@@ -1215,9 +1235,11 @@ def _load_yaml(path: Path) -> Any:
         raise ConfigError(f"env-var substitution failed in {path}: {exc}") from exc
 
     try:
-        return yaml.safe_load(text)
+        # A `yaml.SafeLoader` that differs only in how it builds a string (`_TreeYamlLoader`), so this is
+        # as safe as `yaml.safe_load`.
+        return yaml.load(text, Loader=_TreeYamlLoader)  # noqa: S506
     except yaml.YAMLError as exc:
-        raise ConfigError(f"YAML parse error in {path}: {exc}") from exc
+        raise ConfigError(f"YAML parse error in {path}: {_as_written(exc)}") from exc
 
 
 def _load_yaml_optional(path: Path) -> Any | None:
@@ -1230,10 +1252,34 @@ def _substitute_env_vars(text: str, path: Path) -> str:
     """Replace ``${VAR}`` and ``${VAR:-default}`` with the corresponding environment values.
 
     A variable that is unset and carries no default raises :class:`ConfigError`, naming ``path``.
+
+    ``${WILLY_PROJECT_ROOT}`` is not substituted, set or not: it is the path anchor, and
+    :func:`~src.config.paths.resolve_config_path` expands it in a path field. Substituted here, a
+    Windows value (``D:\\dev\\...``) would land inside a double-quoted YAML string as escapes and
+    stop the file from parsing. Nor is it left as written: unquoted inside ``{...}`` or ``[...]`` its
+    own braces are flow indicators, and the file stopped at "while parsing a flow mapping" where any
+    other ``${VAR}`` loads (measured 2026-09-24). It becomes :data:`_ANCHOR_STAND_IN`, which is plain
+    text in every YAML style, and :class:`_TreeYamlLoader` turns it back into the anchor in every
+    string the parse builds. So the path rule still sees the anchor as written, and neither the
+    variable's value nor the anchor's braces ever meet the parser. Written with a default, the anchor
+    is left as written: a path field refuses it naming the key, and so does every other field
+    (:class:`~src.config.schema._base.StrictModel`); inside ``{...}`` it stops the parse instead, which
+    refuses it all the same.
+
+    A file that already holds the stand-in's text is refused, naming ``path``: the parse would turn it
+    into an anchor nobody wrote.
     """
+    if _ANCHOR_STAND_IN in text:
+        raise ConfigError(
+            f"{path} holds the text {_ANCHOR_STAND_IN}, which the loader reserves: it parses "
+            f"{PROJECT_ROOT_ANCHOR} as that text and turns it back afterwards, so the file would read "
+            f"an anchor it does not write. Rename whatever holds it"
+        )
 
     def repl(match: re.Match[str]) -> str:
         name = match.group(1)
+        if name == PROJECT_ROOT_VARIABLE:
+            return _ANCHOR_STAND_IN if match.group(2) is None else match.group(0)
         default = match.group(2)
         value = os.environ.get(name)
         if value is not None:
@@ -1246,6 +1292,42 @@ def _substitute_env_vars(text: str, path: Path) -> str:
         )
 
     return _ENV_VAR_RE.sub(repl, text)
+
+
+#: What ``${WILLY_PROJECT_ROOT}`` is written as while a file is parsed (:func:`_substitute_env_vars`
+#: says why). Letters and underscores only, so it is plain text quoted or unquoted, in a block or inside
+#: ``{...}`` and ``[...]``, and it cannot resolve to a number, a boolean or a null. As long as the anchor,
+#: so a parse error that quotes the line keeps its column once the anchor is put back.
+_ANCHOR_STAND_IN: Final = "__" + PROJECT_ROOT_VARIABLE + "_"
+
+
+class _TreeYamlLoader(yaml.SafeLoader):
+    """``yaml.SafeLoader``, except that every string it builds holds the anchor where the text held its stand-in.
+
+    Keys and values alike, since both are built as strings; nothing else about the safe loader changes.
+    """
+
+
+def _construct_tree_string(loader: yaml.SafeLoader, node: Any) -> str:
+    return str(loader.construct_scalar(node)).replace(_ANCHOR_STAND_IN, PROJECT_ROOT_ANCHOR)
+
+
+_TreeYamlLoader.add_constructor("tag:yaml.org,2002:str", _construct_tree_string)
+
+
+def _as_written(exc: yaml.YAMLError) -> str:
+    """A parse error as the operator's file reads: the anchor, not its stand-in, in the quoted line.
+
+    The quoted line is cut from the text the parser held, and cut short (``__WILLY_PROJECT ...``), so
+    replacing the stand-in in the finished message misses it. The anchor goes back into that text
+    instead, before the message is rendered; the stand-in is as long as the anchor, so the column and
+    the caret still point where they did.
+    """
+    for mark in (getattr(exc, "context_mark", None), getattr(exc, "problem_mark", None)):
+        buffer = getattr(mark, "buffer", None)
+        if mark is not None and isinstance(buffer, str):
+            mark.buffer = buffer.replace(_ANCHOR_STAND_IN, PROJECT_ROOT_ANCHOR)
+    return str(exc).replace(_ANCHOR_STAND_IN, PROJECT_ROOT_ANCHOR)
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,8 @@
 """Calibrate one camera of a real cell against the robot: the missing half of multi-view.
 
-    python -m src.robot.execution.real_cell.calibrate --rig overhead --check
-    python -m src.robot.execution.real_cell.calibrate --rig overhead --poses 22
+    python -m src.robot.execution.real_cell.calibrate --rig overhead --freedrive --check
+    python -m src.robot.execution.real_cell.calibrate --rig overhead --freedrive
+    python -m src.robot.execution.real_cell.calibrate --rig overhead --fixed-poses stations.json
 
 `grasping.fusion.geometry`, the biggest measured lever this stack has (top-1 43.50 % single-view
 -> 55.93 % fused on the datagen reference, n=354), states its own precondition: ``cameras`` must be
@@ -11,8 +12,8 @@ calibration, `build_config_frame_resolvers` turning the fused cameras into
 artifact keyed by `rig_id`, and `CalibrationRoutine` itself. `real_cell/preflight.py` only checks
 for an artifact and refuses without one; it cannot make one. This command makes one.
 
-It follows the simulated runner's path: the same `CalibrationRoutine`, the same `run_auto`, the same
-`save_extrinsics` keyed by camera id, with three real-hardware substitutions:
+It follows the simulated runner's path: the same `CalibrationRoutine`, the same fixed stations, the
+same `save_extrinsics` keyed by camera id, with three real-hardware substitutions:
 
 * the marker comes from `RGBDArucoMarkerSource` on a live RGB-D rig instead of simulated ground
   truth,
@@ -25,27 +26,36 @@ The flow is the library noun `src.robot.execution.hand_eye.HandEyeCalibration`, 
 caller of it: it loads the tree, prints the stage banners and what each stage reports, and returns
 the report's exit code.
 
-This moves the robot. `run_auto` drives the arm to N generated poses, in bearing order round the
-base. `--fixed-poses PATH` visits your own stations instead, in the order a JSON file lists them:
-poses, and joint stations written as the pendant shows a configuration (`{"joints_deg": [six
-values]}`, see `pose_provider`). A joint station is sent as one joint move, which the arm judges as
-it judges any joint move, after the grasp centre the arm's forward kinematics puts at its joints has
-passed the workspace box; a station that does not pass is reported and never moved to. `--check`
-validates everything, reads and checks a stations file and counts its stations, and on a cuRobo UR cell
-that declares its planner margin looks up the committed evidence the sweep's planner starts on, so a
-combination nobody measured (a declared `payload.length_mm` among them) is refused at the desk rather
-than after the arm connects. It touches nothing. `--dry-run` additionally runs the arm-vendor
-readiness gate, builds the arm, opens the camera and prints what the arm's safety pipeline refuses,
-but takes no lock and never commands a motion. Run both before the first live sweep.
+The stations come one of two ways, and nothing generates them:
 
-`--aim-at=X,Y,Z` aims a wrist camera (`--mode eye_in_hand`) at one marker lying flat, face up, at
-that point in BASE millimetres, with `--board aruco:ID:SIZE_MM[:DICT]` or the block's marker: the
-sweep looks once from where the arm stands, estimates from that view where the camera sits on the
-tool, and visits a cone of views round the marker from `--aim-distance-mm` (500 by default), each
-tilting the tool as little as it can from tool-down with `--closing-axis`, re-aimed as the marker is
-seen (`src/robot/execution/camera_aim.py`). Write it with `=`, because a value that starts with a
-minus sign reads as a flag otherwise. A first look that sees no marker moves nothing and exits 3
-saying what to do.
+* `--fixed-poses PATH` visits your own stations, in the order a JSON file lists them: poses, and
+  joint stations written as the pendant shows a configuration (`{"joints_deg": [six values]}`, see
+  `pose_provider`). This moves the robot. A joint station is sent as one joint move, which the arm
+  judges as it judges any joint move, after the grasp centre the arm's forward kinematics puts at
+  its joints has passed the workspace box; a station that does not pass is reported and never
+  moved to. `--adjust` frees the arm at each station it reached so you can fine-tune the view by
+  hand: Enter captures once the arm stands still, and before the arm drives to the next station the
+  console asks for your hands off it and counts down three seconds.
+* `--freedrive` moves nothing by itself: you move the arm by hand to each pose where the camera
+  sees the board and press Enter (in the console, or Enter or Space in the preview), `s` skips, `q`
+  finishes. It ends at `--samples` counted (the tree's `robot.calibration.freedrive_samples`, 15).
+  With `--fixed-poses PATH` beside it, the file's stations are targets the preview shows the way
+  to, in millimetres and degrees along the tool's own axes; they are never moved to.
+
+Both ways by hand need an arm that offers hand guiding (the UR teach mode); on any other the build
+refuses them. Before the arm is first freed the controller payload is shown and has to be
+confirmed, because a wrong one makes the freed arm sink or rise in your hands. A pose outside the
+cable window (the joint-limit guard's half turn about home) or the workspace box turns the preview
+red and Enter does not capture there; the arm is never held or stopped for it. Each pose counted by
+hand is written to `<out>/<mode>_<rig>_stations.json`, which `--fixed-poses` replays without hands.
+
+`--check` validates everything, reads and checks a stations file and counts its stations, and on a
+cuRobo UR cell that declares its planner margin looks up the committed evidence the sweep's planner
+starts on, so a combination nobody measured (a declared `payload.length_mm` among them) is refused
+at the desk rather than after the arm connects. It touches nothing. `--dry-run` additionally runs
+the arm-vendor readiness gate, builds the arm, opens the camera and prints what the arm's safety
+pipeline refuses, but takes no lock and never commands a motion. Run both before the first live
+sweep.
 
 A refused move skips its pose. The sweep stops at a pose, and exits 3 naming it, where the
 controller cannot be reached, refused a move it had been sent, or reports a protective or
@@ -70,11 +80,13 @@ arm is going, what the camera saw, and whether the pose counted or why not. The 
 every pose again.
 
 A window beside the sweep shows the camera while the arm moves and pins each judged frame with the
-target drawn on it (`src/calibration/preview.py`). By default it opens only where OpenCV has a GUI,
-a display is there and stdout is a terminal, so a piped or logged run prints what it printed before;
-`--preview` asks for it and the build says why when it cannot open, `--no-preview` and
-`WILLY_NO_PREVIEW=1` keep it shut. It is display only: closing it or pressing ESC closes the window,
-and the sweep goes on. The pendant stops the robot.
+target drawn on it (`src/calibration/preview.py`); while you guide the arm it also shows the way to
+the next target, the nearest counted pose and the boundaries. By default it opens only where OpenCV
+has a GUI, a display is there and stdout is a terminal, so a piped or logged run prints what it
+printed before; `--preview` asks for it and the build says why when it cannot open, `--no-preview`
+and `WILLY_NO_PREVIEW=1` keep it shut. It draws only: closing it or pressing ESC closes the window
+and the sweep goes on, or, guided by hand, finishes the run and holds the arm. The pendant stops the
+robot.
 
 The routine and the solve are exercised in simulation only. The ArUco marker source has never seen
 a physical D435, and nothing here has run against a physical controller.
@@ -135,27 +147,24 @@ def build_parser() -> argparse.ArgumentParser:
                     help="eye_to_hand = a fixed camera; the artifact is CAMERA->BASE and this is what "
                          "multi-view fusion consumes. eye_in_hand = a wrist camera; the artifact is "
                          "CAMERA->TOOL and is composed with the live TCP each frame")
-    stations = ap.add_mutually_exclusive_group()
-    stations.add_argument("--poses", type=int, default=UNSET,
-                          help="how many generated TCP poses to visit (default 22, as in sim), in bearing order round "
-                               "the base")
-    stations.add_argument("--fixed-poses", dest="fixed_poses", default=UNSET, metavar="PATH",
-                          help="visit your own stations instead, in the order a JSON file lists them: poses "
-                               "{x, y, z, rx, ry, rz} (mm, axis-angle rad) and joint stations {\"joints_deg\": [six "
-                               "values]} or {\"joints_rad\": [...]}, from the base to the last wrist joint. --check "
-                               "reads and checks the file and counts its stations. A joint station runs as one judged "
-                               "joint move; a station whose grasp centre is outside the workspace box, or too close to "
-                               "one before it, is reported and never moved to")
-    stations.add_argument("--aim-at", dest="aim_at", default=UNSET, metavar="X,Y,Z",
-                          help="eye_in_hand only: aim the CAMERA at one marker lying flat, face up, at this point in "
-                               "BASE mm (write --aim-at=-130,-700,50). The sweep looks once from where the arm stands, "
-                               "estimates where the camera sits on the tool, and visits views round the marker; a "
-                               "first look that sees no marker moves nothing. Needs one marker as the target")
-    ap.add_argument("--aim-distance-mm", dest="aim_distance_mm", type=float, default=UNSET,
-                    help="with --aim-at: how far the camera stands from the marker (default 500)")
-    ap.add_argument("--closing-axis", dest="closing_axis", default=UNSET,
-                    help="with --aim-at: the heading each aimed station keeps, tilting only to aim, as Pose.tool_down "
-                         "takes it (x, -x, y, -y, radial, tangential and their negatives; default x)")
+    ap.add_argument("--fixed-poses", dest="fixed_poses", default=UNSET, metavar="PATH",
+                    help="visit your own stations, in the order a JSON file lists them: poses {x, y, z, rx, ry, rz} "
+                         "(mm, axis-angle rad) and joint stations {\"joints_deg\": [six values]} or "
+                         "{\"joints_rad\": [...]}, from the base to the last wrist joint. --check reads and checks the "
+                         "file and counts its stations. A joint station runs as one judged joint move; a station whose "
+                         "grasp centre is outside the workspace box, or too close to one before it, is reported and "
+                         "never moved to. With --freedrive the stations are targets and are never moved to")
+    by_hand = ap.add_mutually_exclusive_group()
+    by_hand.add_argument("--freedrive", action="store_true", default=UNSET,
+                         help="guide the arm by hand to every pose; nothing moves by itself. Enter captures once the "
+                              "arm stands still, s skips, q finishes. Needs an arm that offers hand guiding")
+    by_hand.add_argument("--adjust", action="store_true", default=UNSET,
+                         help="with --fixed-poses: free the arm at each station it reached so you can fine-tune the "
+                              "view by hand, Enter captures; before the next automatic move the console asks for your "
+                              "hands off the arm and counts down. Needs an arm that offers hand guiding")
+    ap.add_argument("--samples", type=int, default=UNSET,
+                    help="with --freedrive: how many counted samples to collect (default "
+                         "robot.calibration.freedrive_samples, 15)")
     ap.add_argument("--marker-length-mm", type=float, default=UNSET,
                     help="printed ArUco square edge in mm. Default: camera.hand_eye's. A wrong "
                          "value scales every sample uniformly; the solve converges and is uniformly "
@@ -191,33 +200,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="a window beside the sweep: the camera while the arm moves, each judged frame with the "
                          "target drawn on it, and whether the pose counted. Default: open where OpenCV has a GUI, a "
                          "display is there and stdout is a terminal. WILLY_NO_PREVIEW=1 keeps it shut. Closing it "
-                         "closes the window only; the pendant stops the robot")
+                         "closes the window, and finishes a run guided by hand (the arm is held); the pendant stops "
+                         "the robot")
     return ap
-
-
-def _aim(args: argparse.Namespace) -> Any:
-    """The ``MarkerAim`` the flags describe, ``UNSET`` without ``--aim-at``; ``ValueError`` names a bad one."""
-    shaped = (("--aim-distance-mm", args.aim_distance_mm), ("--closing-axis", args.closing_axis))
-    extras = [flag for flag, value in shaped if value is not UNSET]
-    if args.aim_at is UNSET:
-        if extras:
-            raise ValueError(f"{' and '.join(extras)} shape an aimed sweep, and there is none without --aim-at")
-        return UNSET
-    from src.robot.execution.camera_aim import MarkerAim
-
-    parts = [part.strip() for part in str(args.aim_at).split(",")]
-    try:
-        point = tuple(float(part) for part in parts)
-    except ValueError:
-        point = ()
-    if len(point) != 3:
-        raise ValueError(f"--aim-at is the marker's centre as X,Y,Z in base millimetres, not {args.aim_at!r}")
-    shape: dict[str, Any] = {}
-    if args.aim_distance_mm is not UNSET:
-        shape["distance_mm"] = args.aim_distance_mm
-    if args.closing_axis is not UNSET:
-        shape["closing_axis"] = args.closing_axis
-    return MarkerAim(marker_mm=point, **shape)  # type: ignore[arg-type]
 
 
 def _narrate(stage: "ConnectStage") -> None:
@@ -247,20 +232,16 @@ def main(argv: "list[str] | None" = None) -> int:
         """What the arm will refuse, printed before it moves, and the banner of the sweep that follows."""
         print(build.render(), flush=True)
         if build.ok and not args.dry_run:
-            print(f"\n{CalibrationStage.SWEEP.banner()}", flush=True)
+            print(f"\n{check.sweep_banner()}", flush=True)
 
     # A board file is read and validated by the check, like a spec, so `--check` refuses a bad one.
     target = args.board if args.board_file is UNSET else Path(args.board_file)
-    try:
-        aim = _aim(args)
-    except ValueError as exc:
-        print(f"[config] REFUSED: {exc}", flush=True)
-        return _EXIT_CONFIG
     calibration = HandEyeCalibration.from_config(
         cfg, rig_id=args.rig, mode=args.mode, data_dir=args.data_dir,
-        options=SweepOptions(poses=args.poses, fixed_poses=args.fixed_poses, marker_length_mm=args.marker_length_mm,
+        options=SweepOptions(fixed_poses=args.fixed_poses, freedrive=args.freedrive, adjust=args.adjust,
+                             samples=args.samples, marker_length_mm=args.marker_length_mm,
                              marker_id=args.marker_id, dict_name=args.dict_name, out_dir=args.out,
-                             unmodelled_wrist_body=args.unmodelled_wrist_body, target=target, aim=aim,
+                             unmodelled_wrist_body=args.unmodelled_wrist_body, target=target,
                              preview="auto" if args.preview is None else bool(args.preview)),
         announce=_narrate, on_event=print_sweep_progress, on_built=_built,
     )

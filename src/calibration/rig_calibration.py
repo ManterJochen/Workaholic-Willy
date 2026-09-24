@@ -56,9 +56,14 @@ def _key(rig_id: str) -> str:
 
 
 def _no_file_at(path: str) -> str:
-    """What was looked for and where: a relative path names the working directory it was read against."""
+    """What was looked for and where. A path a tree resolved says how the tree wrote it and the rule that
+    placed it (`src.config.paths`); a relative path, which only a rig built in code still holds, names the
+    working directory it was read against."""
     if Path(path).anchor:  # absolute, or rooted at a drive or its root (`\\x.json`): not read against the cwd
-        return "there is no file at that path"
+        from src.config.paths import path_note
+
+        note = path_note(path)  # a sentence of its own; the caller ends this one
+        return f"there is no file at that path.{note.removesuffix('.')}" if note else "there is no file at that path"
     try:
         cwd = str(Path.cwd())
     except OSError:  # on POSIX the working directory can be removed under the program
@@ -72,7 +77,7 @@ def _sweep_remedy(rig_id: str, mode: str) -> str:
     It says to set ``artifact_path`` and not to paste the sweep's block over this one: a wrist block holds
     tolerances measured on the cell, which the printed block carries only as comments.
     """
-    command = f"python -m src.robot.execution.real_cell.calibrate --rig {rig_id} --mode {mode}"
+    command = f"python -m src.robot.execution.real_cell.calibrate --rig {rig_id} --mode {mode} --freedrive"
     if mode == "eye_in_hand":
         run = f"{command}, or examples/real_robot/09 or 10) and set artifact_path to the file it writes, keeping the "
         run += "tolerances the block holds; until then, comment the block out"
@@ -110,8 +115,9 @@ class RigCalibration:
             # CAMERA to BASE file for a camera that moves.
             raise RigNotCalibrated(
                 f"rig {rig_id!r} declares no calibration. Calibrate it (python -m "
-                f"src.robot.execution.real_cell.calibrate --rig {rig_id} --mode eye_to_hand for a fixed camera, "
-                f"--mode eye_in_hand for one the arm carries) and set {_key(rig_id)} to the artifact that writes.")
+                f"src.robot.execution.real_cell.calibrate --rig {rig_id} --mode eye_to_hand --freedrive for a fixed "
+                f"camera, --mode eye_in_hand for one the arm carries, or --fixed-poses PATH for stations of your own) "
+                f"and set {_key(rig_id)} to the artifact that writes.")
         mode = extrinsics_cfg.mounting_mode
         path = str(extrinsics_cfg.artifact_path)
         record: Maybe[FlangeToTcp] = UNSET
@@ -122,7 +128,7 @@ class RigCalibration:
                 transform, record = load_cam_to_tool_artifact(path)
         except FileNotFoundError as exc:
             # A different fix from a file that exists and does not parse, so a sentence of its own. It
-            # states what was observed and not why: a relative path is read from the working directory,
+            # states what was observed and not why: a relative path is read against the config folder,
             # so a sweep that did run can look like one that never did. The usual cause, the block
             # written before its sweep, comes second and conditionally.
             raise RigArtifactMissing(
@@ -231,7 +237,7 @@ def flange_to_tcp_record_refusal(
         return (f"{key} was calibrated against a flange to TCP {d_t:.3f} mm and {d_r:.3f} deg away from the one "
                 f"this cell applies (allowed {limit_mm:g} mm and {limit_deg:g} deg), so its body and its pick "
                 f"frame are both stale: calibrate the rig again (python -m "
-                f"src.robot.execution.real_cell.calibrate --rig {rig_id} --mode eye_in_hand)")
+                f"src.robot.execution.real_cell.calibrate --rig {rig_id} --mode eye_in_hand --freedrive)")
     return None
 
 
@@ -251,7 +257,7 @@ def flange_to_tcp_refusal(calibration: Any, tool_frame: Any) -> "str | None":
         return None
     rig_id = str(calibration.rig_id)
     key = f"camera.cameras.rigs[{rig_id!r}]"
-    again = f"python -m src.robot.execution.real_cell.calibrate --rig {rig_id} --mode eye_in_hand"
+    again = f"python -m src.robot.execution.real_cell.calibrate --rig {rig_id} --mode eye_in_hand --freedrive"
     record = getattr(calibration, "flange_to_tcp", UNSET)
     if not chosen(record) or record is None:
         return (f"{key} is placed from the flange to TCP its calibration was solved against, and "

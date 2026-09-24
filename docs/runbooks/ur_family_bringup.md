@@ -169,7 +169,8 @@ derived. Your cell is a room: it has a table, a wall and one direction you work 
 These are **deliberately absent** and inherit a tree authored for a UR5e:
 
 - `home_joint_positions` — the UR5e default puts a UR3e grasp centre at 93.4 % of its reach, past the
-  85 % this project treats as near-singular. Measured, in `robot_schema.py`.
+  85 % this project treats as near-singular. Measured, in `robot_schema.py`. Write it in radians, or
+  in degrees as the pendant shows it with `home_joint_positions_deg` (one of the two, never both).
 - `park_joint_positions`, the camera poses, the scene layout.
 
 Set them from your own cell before a real pick. [real_cell_first_pick.md](real_cell_first_pick.md)

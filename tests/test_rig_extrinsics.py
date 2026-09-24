@@ -155,7 +155,7 @@ class TheLoaderTests(unittest.TestCase):
         self.assertIn("camera.cameras.rigs['overhead'].extrinsics", str(caught.exception))
         # The command defaults to eye_to_hand, and a wrist camera swept that way writes a CAMERA to BASE
         # file for a camera that moves: the refusal names both modes.
-        self.assertIn("--mode eye_to_hand for a fixed camera", str(caught.exception))
+        self.assertIn("--mode eye_to_hand --freedrive for a fixed camera", str(caught.exception))
         self.assertIn("--mode eye_in_hand for one the arm carries", str(caught.exception))
 
     def test_a_block_written_before_its_sweep_says_to_run_it_or_leave_the_block_out(self) -> None:
@@ -212,7 +212,7 @@ class TheLoaderTests(unittest.TestCase):
                  "shutter_motion_tolerance_mm": 2.0, "shutter_motion_tolerance_deg": 1.0}
         with self.assertRaises(RigCalibrationError) as caught:
             RigCalibration.from_config("wrist", _rgbd(wrist).extrinsics)
-        self.assertIn("--mode eye_in_hand, or examples/real_robot/09 or 10", str(caught.exception))
+        self.assertIn("--mode eye_in_hand --freedrive, or examples/real_robot/09 or 10", str(caught.exception))
         self.assertIn("keeping the tolerances the block holds; until then, comment the block out", str(caught.exception))
         self.assertNotIn("leave the block out", str(caught.exception))
         self.assertNotIn("paste", str(caught.exception))

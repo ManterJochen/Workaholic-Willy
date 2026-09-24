@@ -18,7 +18,7 @@ for obj in objects:
 
 Images go in as OpenCV BGR arrays; each wrapper swaps to RGB itself, so do not swap before calling.
 The same calls run in [resolve_perception_stack.py](../../examples/offline/perception/resolve_perception_stack.py),
-and a located pick at a cell in [11_locate_and_pick.py](../../examples/real_robot/11_locate_and_pick.py).
+and a located pick at a cell in [13_speak_pick_and_hand_handover.py](../../examples/real_robot/13_speak_pick_and_hand_handover.py).
 `python -m src.robot.perception --rig <rig id>` runs detection and segmentation on a live camera
 ([docs/cli.md](../../docs/cli.md)).
 
@@ -104,7 +104,9 @@ python -m src.models.detection.closed_set.train train --data-dir data/detect/v1 
 A dataset is `<data-dir>/{train,val}/`, each with `images/` and a COCO `annotations.json`; `val` is
 optional. The head is re-initialised from the dataset's `categories`, and the export is a
 `save_pretrained` checkpoint plus `manifest.json`. Wire it in with `models.detector: "rtdetr"`,
-`models.rtdetr.model_path: "assets/models/rtdetr/v1"` and `models.rtdetr.local: true`. Exit codes: `0`
+`models.rtdetr.model_path: "${WILLY_PROJECT_ROOT}/assets/models/rtdetr/v1"` (the repository, where the
+command above wrote it when run from the repository root; a relative path in the tree is read against
+the config folder, [`src/config/paths.py`](../config/paths.py)) and `models.rtdetr.local: true`. Exit codes: `0`
 ok, `2` bad arguments or missing data, `3` training failed. `inspect` runs without the training stack.
 
 ## Files

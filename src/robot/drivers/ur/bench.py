@@ -19,10 +19,14 @@ The bank is resolved from the config rather than defaulted. `from_robot_config` 
 gripper of this cell is wired to and measuring that gripper is the point of the bench. A
 default here would be a fifth declaration of a fact that already disagreed across four
 places.
+
+:func:`where_lines` is the bench's one reading that is not I/O: where the arm stands, as
+the CLI's ``--where`` prints it.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Callable, Sequence
@@ -31,6 +35,7 @@ from src.contracts import UNSET, Maybe, chosen
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import RobotConfig
+    from src.geometry import Pose
     from src.robot.core.arm_capabilities import DigitalIOPort, SupportsDigitalIO
 
 __all__ = [
@@ -42,7 +47,31 @@ __all__ = [
     "Read",
     "Set",
     "Watch",
+    "where_lines",
 ]
+
+
+def _one_decimal(value: float) -> str:
+    """``value`` to one decimal, with no ``-0.0``: a line a person pastes should not carry a sign that means nothing."""
+    text = f"{value:.1f}"
+    return "0.0" if text == "-0.0" else text
+
+
+def where_lines(joints_rad: Sequence[float], tcp: "Pose") -> tuple[str, ...]:
+    """Where the arm stands, as two lines: the joints to paste into a program, and the TCP to read.
+
+    The first line is Python, ``JointPositions.deg(-45.0, -100.2, -110.0, -60.0, 90.0, 0.0)``, one decimal of a
+    degree per joint, so a look pose or a home is taken off the arm where a person has stood it. The second is the
+    TCP in the frame the driver reports it in: millimetres, and the rotation vector in degrees.
+    """
+    joints = ", ".join(_one_decimal(math.degrees(float(value))) for value in joints_rad)
+    x, y, z = (float(v) for v in tcp.position_mm)
+    rx, ry, rz = (math.degrees(float(v)) for v in tcp.axis_angle_rad())
+    return (
+        f"JointPositions.deg({joints})",
+        f"TCP ({tcp.frame.value})  x {_one_decimal(x)}  y {_one_decimal(y)}  z {_one_decimal(z)} mm  "
+        f"rx {_one_decimal(rx)}  ry {_one_decimal(ry)}  rz {_one_decimal(rz)} deg (rotation vector)",
+    )
 
 
 class BenchVerdict(StrEnum):

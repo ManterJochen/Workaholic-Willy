@@ -30,12 +30,13 @@ and ``composed_sha256`` is taken over the config without it, the one the combina
 evidence names.
   request <- {"start_joints":[6 rad],"goal_pos_m":[x,y,z],"goal_quat_wxyz":[w,x,y,z]}
              {"cmd":"fk","joints":[6 rad]}   |   {"cmd":"shutdown"}
-             {"cmd":"check_js","joints":[[6 rad],...]}   |   {"cmd":"explain_js","joints":[[6 rad],...]}
+             {"cmd":"check_js","joints":[[6 rad],...],"clearance_m":float?}   |   {"cmd":"explain_js","joints":[[6 rad],...]}
              {"cmd":"set_world","cuboids":[...],"meshes":[...],"voxels":{"path","dims_m","voxel_size_m","pose"}|null}
              {"cmd":"set_voxels","path":str|null,"dims_m":[...],"voxel_size_m":float,"pose":[...]}
   reply   -> {"success":bool,"trajectory":[[6 rad]...],"dt":float}  |  {"success":false,"reason":str}
              {"fk_pos_m":[...],"fk_quat_wxyz":[...]}
-             check_js: {"success":true,"valid":bool,"first_invalid":int|null,"checked":int,"refusal":{...}?}
+             check_js: {"success":true,"valid":bool,"first_invalid":int|null,"checked":int,"clearance_m":float,
+                        "refusal":{...}?}
                        |  {"success":false,"planner_error":true,"reason":str}
              explain_js: {"success":true,"self_collides":[bool],"bound_ok":[bool],"pairs":[[a,b]|null],
                           "depths_mm":[float|null]}  |  {"success":false,"planner_error":true,"reason":str}
@@ -48,7 +49,7 @@ round, every voxel that is not an obstacle reads as inside one and the whole gri
 as ``scripts/curobo/probe_live_world.py`` measures.
 
 A refusal block is {"where":"default_q"|"start"|"goal", "kind":"self_collision"|"joint_limit"|"world",
-"joints":[6 rad], "pair":[link,link]?, "depth_mm":float?}. The pair is named from sphere
+"joints":[6 rad], "pair":[link,link]?, "depth_mm":float?, "clearance_mm":float?}. The pair is named from sphere
 ownership in the config this sidecar loaded, through ``_curobo_pairs``; a descriptor that
 resolves its spheres from a file carries no ownership, and the refusal is then unnamed
 rather than absent. default_q is judged before the ready line and a refusal exits the
@@ -59,9 +60,15 @@ check_js judges every configuration of a joint path, in joint_names order, again
 joint limits, the robot itself and the planner's world, on the planner's own collision
 spheres so that an attached payload counts. A sample passes when those three terms sum to
 exactly 0, and first_invalid is the 0-based index of the first sample that does not. A
-sidecar older than check_js has no such branch: the request falls into the plan branch,
-fails on the missing start_joints and answers planner_error, which the client reports as a
-sidecar to restart.
+request with a clearance_m judges the world term at that clearance rather than at no
+penetration, so a sample closer to the world than that is refused (``_curobo_plan_policy``);
+the reply says the clearance it judged at. A sidecar older than check_js has no such branch:
+the request falls into the plan branch, fails on the missing start_joints and answers
+planner_error, which the client reports as a sidecar to restart.
+
+Every plan starts from the same seed, and the graph planner seeds its roadmap from the start
+and the goal alone, never through the retract (``_curobo_plan_policy``): the same request in
+the same world gets the same plan.
 
 The goal pose is the tool0 pose, which Lula calls the EE pose, in metres in the base
 frame with a WXYZ quaternion. The caller maps its grasp TCP onto tool0 and converts
@@ -78,13 +85,14 @@ import sys
 from typing import Any
 
 ROBOT = sys.argv[1] if len(sys.argv) > 1 else "ur5e.yml"
-# Reliability for a constrained query, such as a tight bin. cuRobo plan_pose is
-# stochastic, on random IK and trajopt seeds, and the default max_attempts=5 is flaky
-# on a hard pick: a collision-free plan provably exists, since the same query measures
-# as none and then as a plan across runs, and the seeds sometimes miss it. More
-# attempts, each a fresh IK and trajopt seed batch, find it reliably. Keep
-# enable_graph_attempt=1, the cuRobo default, so the first attempt is trajopt-only: the
-# graph seeder can return no seed for a tight final approach and would otherwise skip
+# Reliability for a constrained query, such as a tight bin. cuRobo samples its IK and
+# trajopt seeds at random, and the default max_attempts=5 is flaky on a hard pick: a
+# collision-free plan provably exists, since the same query measures as none and then as
+# a plan across runs, and the seeds sometimes miss it. More attempts, each a fresh seed
+# batch, find it reliably. The seed is reset before every plan, so the attempts of one
+# request differ from each other and the same request gets the same attempts every time.
+# Keep enable_graph_attempt=1, the cuRobo default, so the first attempt is trajopt-only:
+# the graph seeder can return no seed for a tight final approach and would otherwise skip
 # every attempt. Both are overridable through the environment.
 _PLAN_MAX_ATTEMPTS = int(os.environ.get("WILLY_CUROBO_MAX_ATTEMPTS", "16"))
 _PLAN_GRAPH_FROM = int(os.environ.get("WILLY_CUROBO_GRAPH_FROM_ATTEMPT", "1"))
@@ -199,6 +207,7 @@ try:
     import torch  # type: ignore[import-not-found]
     from curobo._src.geom.types import SceneCfg  # type: ignore[import-not-found]
     from curobo.content import get_content_root as _content_root  # type: ignore[import-not-found]
+    from curobo.content import get_task_configs_path as _task_configs  # type: ignore[import-not-found]
     from curobo.kinematics import Kinematics, KinematicsCfg  # type: ignore[import-not-found]
     from curobo.motion_planner import MotionPlanner, MotionPlannerCfg  # type: ignore[import-not-found]
     from curobo.types import GoalToolPose, JointState  # type: ignore[import-not-found]
@@ -230,6 +239,12 @@ try:
     )
     from _curobo_margin import ENV_SELF_COLLISION_MARGIN_MM  # type: ignore[import-not-found]
     from _curobo_pairs import SphereLayout, deepest_pairs  # type: ignore[import-not-found]
+    from _curobo_plan_policy import (  # type: ignore[import-not-found]
+        CLEARANCE_KEY,
+        GRAPH_PLANNER_CONFIG,
+        graph_planner_without_retract,
+        requested_clearance_m,
+    )
     from _curobo_protocol import (  # type: ignore[import-not-found]
         ENV_MEASURE_ONLY,
         KIND_JOINT_LIMIT,
@@ -326,14 +341,23 @@ try:
     # Over the evidence config: the loaded one without the wrist camera, which for a cell
     # without one is the loaded config itself.
     _composed_sha256 = canonical_sha256(_EVIDENCE)
+    # cuRobo's own graph planner config with one change: no roadmap is seeded through the
+    # retract. Handed in as a dict, which MotionPlannerCfg.create takes in place of a path;
+    # it is a planner setting and no part of the robot, so none of the hashes above moves.
+    _graph = graph_planner_without_retract(
+        resolve_config(os.path.join(str(_task_configs()), GRAPH_PLANNER_CONFIG))
+    )
     _planner = MotionPlanner(
         MotionPlannerCfg.create(
             robot=copy.deepcopy(_COMPOSED),
             scene_model={"cuboid": _world},
             collision_cache=_collision_cache,
+            graph_planner_config=_graph,
         )
     )
     print(f"[cache] {_collision_cache}", file=sys.stderr, flush=True)
+    print("[graph] roadmaps seed from the start and the goal alone, never through the retract",
+          file=sys.stderr, flush=True)
     _planner.warmup(enable_graph=True, num_warmup_iterations=5)
     _DT = float(_planner.trajopt_solver.config.interpolation_dt)
     _N = len(_planner.joint_names)
@@ -378,13 +402,32 @@ try:
     # as real and the pair has no name.
     _LAYOUT = SphereLayout.from_robot_config(_COMPOSED)
 
-    def _terms(rows: list) -> tuple:
+    def _world_term(spheres: Any, clearance_m: float) -> Any:
+        """The world cost of every sphere: zero where none penetrates, or with a clearance, where none comes that close.
+
+        No clearance is the constraint cuRobo validates its own plans with, at an activation
+        distance of 0.0. A clearance is read off the checker's collision cost instead, whose
+        activation distance is set to it for this one question and put back after: that cost
+        is zero exactly where every sphere keeps the clearance, which is the whole question.
+        """
+        if clearance_m <= 0.0:
+            return _CHECKER.get_collision_constraint(spheres)
+        cost = _CHECKER.collision_cost
+        kept = cost.config.activation_distance
+        cost.config.activation_distance = kept.new_tensor([float(clearance_m)])
+        try:
+            return _CHECKER.get_collision_distance(spheres)
+        finally:
+            cost.config.activation_distance = kept
+
+    def _terms(rows: list, clearance_m: float = 0.0) -> tuple:
         """The three costs cuRobo's own validation adds up, per configuration, plus the spheres they were read from.
 
         The spheres come from the planner's kinematics. A checker keeps a Kinematics of its
         own, and that copy never sees a payload attached to the planner: a part 50 mm inside
         a wall passes it. An activation distance of 0.0 makes a zero mean that the spheres do
-        not penetrate, not that they keep any clearance.
+        not penetrate, not that they keep any clearance; ``clearance_m`` asks the world term
+        for that clearance, and leaves the robot's own two terms as they are.
         """
         cq = torch.tensor(rows, device="cuda", dtype=torch.float32)
         if cq.ndim != 2 or cq.shape[0] == 0 or cq.shape[1] != _N:
@@ -397,7 +440,7 @@ try:
         ).robot_spheres.reshape(1, h, -1, 4)
         bound = _CHECKER.get_bound(cq).reshape(1, h, -1).sum(dim=-1).reshape(-1)
         self_hit = _CHECKER.get_self_collision(spheres).reshape(1, h, -1).sum(dim=-1).reshape(-1)
-        world_hit = _CHECKER.get_collision_constraint(spheres).reshape(1, h, -1).sum(dim=-1).reshape(-1)
+        world_hit = _world_term(spheres, clearance_m).reshape(1, h, -1).sum(dim=-1).reshape(-1)
         return bound, self_hit, world_hit, spheres.reshape(h, -1, 4)
 
     def _named_pairs(spheres: Any, count: int) -> list:
@@ -406,15 +449,17 @@ try:
             return [None] * count
         return list(deepest_pairs(spheres.detach().cpu().numpy().astype("float64"), _LAYOUT))
 
-    def _judge_states(rows: list, *, world: bool) -> list:
+    def _judge_states(rows: list, *, world: bool, clearance_m: float = 0.0) -> list:
         """One block per configuration saying what is wrong with it, or None where nothing is.
 
         The self collision is reported first and named, because it is the one an operator
         cannot see from the outside: it says this arm and this hand do not fit together in
         this pose. The joint bound comes second and the world last, and the world is left out
-        where it is not a property of the robot, which is the ready gate.
+        where it is not a property of the robot, which is the ready gate. Judged at a
+        clearance, a world block says the clearance it missed rather than a depth, because
+        the cost it was read from is not one.
         """
-        bound, self_hit, world_hit, spheres = _terms(rows)
+        bound, self_hit, world_hit, spheres = _terms(rows, clearance_m)
         pairs = _named_pairs(spheres, len(rows))
         found: list = []
         for index, row in enumerate(rows):
@@ -432,7 +477,9 @@ try:
             elif float(bound[index]) > 0.0:
                 found.append({"kind": KIND_JOINT_LIMIT, "joints": joints})
             elif world and float(world_hit[index]) > 0.0:
-                found.append({"kind": KIND_WORLD, "joints": joints, "depth_mm": float(world_hit[index]) * 1000.0})
+                found.append({"kind": KIND_WORLD, "joints": joints, "clearance_mm": clearance_m * 1000.0}
+                             if clearance_m > 0.0 else
+                             {"kind": KIND_WORLD, "joints": joints, "depth_mm": float(world_hit[index]) * 1000.0})
             else:
                 found.append(None)
         return found
@@ -448,6 +495,8 @@ try:
             )
         elif block.get("kind") == KIND_JOINT_LIMIT:
             reached = "a joint sits outside the limits this planner was built with"
+        elif block.get("clearance_mm") is not None:
+            reached = f"it comes closer than {block['clearance_mm']:.1f} mm to the world the planner holds"
         else:
             reached = f"it reaches {depth:.1f} mm into the world the planner holds" if depth is not None else (
                 "it reaches into the world the planner holds")
@@ -551,7 +600,11 @@ for _line in sys.stdin:
             # it: a joint-space goal can be most of a turn away, since park is a pi
             # shoulder swing from anywhere in the workspace, and pure trajectory
             # optimisation from a straight-line seed has no way around an obstacle in
-            # the middle. The graph search does.
+            # the middle. The graph search does, from the start and the goal alone.
+            #
+            # The same seed for every plan: the same request in the same world gets the
+            # same plan, so a move a person watched once is the move it makes again.
+            _planner.reset_seed()
             result = _planner.plan_cspace(
                 goal, start, max_attempts=_PLAN_MAX_ATTEMPTS, enable_graph_attempt=_PLAN_GRAPH_FROM,
             )
@@ -587,20 +640,23 @@ for _line in sys.stdin:
         # checked here and a start judged before a plan cannot disagree. A sample passes
         # only when their sum is exactly 0: the checker carries the guard margin in its self
         # collision padding and an activation distance of 0.0, so a pass means cuRobo's
-        # spheres do not penetrate, not that they keep any clearance.
+        # spheres do not penetrate, not that they keep any clearance. A request that names a
+        # clearance asks the world term for it, and the reply says which it was judged at.
         try:
-            _bound, _self_hit, _world_hit, _spheres = _terms(req["joints"])
+            _clearance = requested_clearance_m(req)
+            _bound, _self_hit, _world_hit, _spheres = _terms(req["joints"], _clearance)
             _passes = ((_bound + _self_hit + _world_hit) == 0.0).reshape(-1).cpu().tolist()
             _first = next((i for i, ok in enumerate(_passes) if not ok), None)
             _word = "valid" if _first is None else f"invalid from sample {_first}"
-            print(f"[check_js] {len(_passes)} sample(s): {_word}", file=sys.stderr, flush=True)
+            _said = f"[check_js] {len(_passes)} sample(s) at {_clearance * 1000.0:g} mm clearance: {_word}"
+            print(_said, file=sys.stderr, flush=True)
             _reply: dict = {"success": True, "valid": _first is None,
-                            "first_invalid": _first, "checked": len(_passes)}
+                            "first_invalid": _first, "checked": len(_passes), CLEARANCE_KEY: _clearance}
             if _first is not None:
                 # The same judgement again, for the one sample the verdict names: the client
                 # reports the pair beside the index, and an index alone points at a
                 # configuration nobody can picture.
-                _named = _judge_states([req["joints"][_first]], world=True)[0]
+                _named = _judge_states([req["joints"][_first]], world=True, clearance_m=_clearance)[0]
                 if _named is not None:
                     _reply["refusal"] = dict(_named, where=WHERE_START)
             _emit(_reply)
@@ -803,6 +859,9 @@ for _line in sys.stdin:
             position=torch.tensor([[[[req["goal_pos_m"]]]]], device="cuda", dtype=torch.float32),
             quaternion=torch.tensor([[[[req["goal_quat_wxyz"]]]]], device="cuda", dtype=torch.float32),
         )
+        # The same seed as every other plan, for the reason plan_js gives. Only the sim asks for
+        # this branch: the UR driver never lets cuRobo choose a goal configuration.
+        _planner.reset_seed()
         result = _planner.plan_pose(
             goal, q_start, max_attempts=_PLAN_MAX_ATTEMPTS, enable_graph_attempt=_PLAN_GRAPH_FROM,
         )

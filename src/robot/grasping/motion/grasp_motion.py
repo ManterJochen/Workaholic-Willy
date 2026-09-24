@@ -3,7 +3,8 @@
 ``GraspMotion`` is what a caller may choose about the approach, the close and the lift. It carries no arm, no hand and
 no guard. The pick service builds the one :class:`GraspExecutionPolicy` it drives from it, with the arm and hand it
 resolved, the base frame guard where a frame resolver is wired, the dwell gate the tree asks for, and the jaws opened
-to the hand's width before every approach. A policy built by hand drives whatever arm it holds and carries only the
+to the hand's width before every approach (a hand that toggles with no sensor is asked where its jaws stand instead,
+and never pulsed before the arm moves). A policy built by hand drives whatever arm it holds and carries only the
 guards its builder set, so while ``policy=`` is still accepted the service refuses one whose arm or hand is not its own.
 
     from src.robot.grasping.motion.grasp_motion import GraspMotion
@@ -20,6 +21,7 @@ from typing import Any
 
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.core import Gripper, RobotArm
+from src.robot.core.gripper import toggle_without_sensor_of
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
 
 __all__ = ["GraspMotion", "build_execution_policy", "foreign_policy_refusal"]
@@ -36,9 +38,11 @@ class GraspMotion:
     ``retreat_mm`` the lift after the close. ``approach_steps`` (at least 2) and ``retreat_steps`` (at least 1) split
     them into waypoints on an arm that keeps no line. ``pre_open_width_mm`` is how far the jaws open before the
     approach, the hand's widest when unset, and never ``None``: the pre-open is what keeps an approach from arriving
-    with the jaws wherever the last close left them. ``close_squeeze_mm`` is how far below the measured width the jaws
-    close, ``close_speed`` (0 to 1) and ``close_force_n`` what the hand is asked for, and ``align_closing_to_base_x``
-    yaws a symmetric top-down grasp so it closes along base X.
+    with the jaws wherever the last close left them. A hand that toggles with no sensor is the one exception, and it
+    is the hand's, not this object's: it is never pulsed before the arm moves, it is asked where its jaws stand
+    instead, and it takes no width, so the builder drops the pre-open for it whatever this says. ``close_squeeze_mm``
+    is how far below the measured width the jaws close, ``close_speed`` (0 to 1) and ``close_force_n`` what the hand
+    is asked for, and ``align_closing_to_base_x`` yaws a symmetric top-down grasp so it closes along base X.
     """
 
     standoff_mm: Maybe[float] = UNSET
@@ -107,11 +111,16 @@ def build_execution_policy(
 
     ``base_frame_required`` is whether a frame resolver is wired, so a camera frame grasp is refused before any
     motion. ``dwell`` is the tree's ``safety.dwell`` block, read by name: its steady gate holds every move until the
-    arm stands still. The jaws open to ``motion.pre_open_width_mm``, else the hand's widest, before every approach.
-    Refused (``ValueError``): a pre-open wider than the hand opens, and a pre-open on a service that drives no hand.
+    arm stands still. The jaws open to ``motion.pre_open_width_mm``, else the hand's widest, before every approach,
+    except on a hand that toggles with no sensor, which takes no width and is never pulsed before the arm moves: its
+    pre-open is dropped and no width is checked. Refused (``ValueError``): a pre-open wider than the hand opens, and a
+    pre-open on a service that drives no hand.
     """
     widest = getattr(gripper, "max_width_mm", None) if gripper is not None else None
-    if chosen(motion.pre_open_width_mm):
+    pre_open: float | None
+    if toggle_without_sensor_of(gripper) is not None:
+        pre_open = None
+    elif chosen(motion.pre_open_width_mm):
         if gripper is None:
             raise ValueError(
                 f"GraspMotion.pre_open_width_mm is {motion.pre_open_width_mm} mm and this service drives no hand, so "
@@ -120,7 +129,7 @@ def build_execution_policy(
             raise ValueError(
                 f"GraspMotion.pre_open_width_mm is {motion.pre_open_width_mm} mm and this hand opens "
                 f"{float(widest)} mm at most")
-        pre_open: float | None = float(motion.pre_open_width_mm)
+        pre_open = float(motion.pre_open_width_mm)
     else:
         pre_open = float(widest) if widest is not None else None
     standoff, retreat = motion.standoff_and_retreat(standoff_mm, retreat_mm)

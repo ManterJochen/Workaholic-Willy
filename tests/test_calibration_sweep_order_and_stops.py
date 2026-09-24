@@ -1,28 +1,25 @@
-"""A sweep visits its stations in an order that does not swing the base back and forth, and stops when the arm cannot
-be trusted to be where it was judged.
+"""A sweep stops when the arm cannot be trusted to be where it was judged, and goes on where nothing moved.
 
-Calibration chain, part 3 (owner, 2026-09-23), the sweep-order and robustness items of the analysis:
+Calibration chain, part 3 (owner, 2026-09-23), the robustness items of the analysis:
 
-* the generated poses ran in the order they were drawn, uniformly at random over the whole box. Measured on a
-  22-pose sweep planned with cuRobo on a UR10 descriptor (the analysis's GPU probe, not a physical arm): 188.8 and
-  201.2 rad of joint travel as drawn, 77.1 and 80.0 rad in bearing order round the base;
 * any move that did not execute was followed by the next pose, a connection error and a protective stop midway
   through a ``moveJ`` included, so the sweep tried and refused every remaining pose and reported too few samples;
 * a ``False`` from ``wait_until_steady`` was ignored and the frame taken anyway.
 
-The order and the stop change which stations are commanded and when the commanding ends. Neither changes how any one
-move is judged: every station still goes through the arm's own gates.
+The sweep-order half of that item went with the generated sweep it ordered (the owner, 2026-09-24, deleted every
+automatic station generator): stations run in the order somebody wrote them down or guided the arm to them. The
+stop changes when the commanding ends, never how any one move is judged: every station still goes through the arm's
+own gates.
 """
 
 from __future__ import annotations
 
-import math
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 
@@ -32,89 +29,15 @@ from src.robot.core import RobotEmergencyStop
 from src.robot.core.arm_capabilities import RobotMode, RobotStatus, SafetyMode
 from src.robot.core.motion_result import NO_PLAN_FAIL_SAFE_MESSAGE, MotionCommand, MotionResult, MotionStatus
 from src.robot.events import RobotCalibrationEvent
-from src.robot.execution import pose_provider
 from src.robot.execution.calibration import CalibrationRoutine, SweepStopped
 from src.robot.execution.hand_eye import CalibrationOutcome, CalibrationRunReport
-from src.robot.execution.pose_provider import PoseProvider, order_by_bearing
-from src.robot.safety.workspace import WorkspaceGuard
 from tests.test_robot_boundaries import _inverse, _synthetic_eye_to_hand_data
 
 _WIDE = WorkspaceLimitsConfig(x_min=-2000.0, x_max=2000.0, y_min=-2000.0, y_max=2000.0, z_min=-2000.0, z_max=2000.0)
 
 
-def _bearing(pose: Pose) -> float:
-    return math.atan2(float(pose.position_mm[1]), float(pose.position_mm[0]))
-
-
-def _base_travel(poses: list[Pose]) -> float:
-    """A synthetic joint-travel figure: how far the base turns visiting the poses in order, the short way each leg."""
-    return sum(abs((_bearing(b) - _bearing(a) + math.pi) % (2.0 * math.pi) - math.pi)
-               for a, b in zip(poses, poses[1:]))
-
-
 def _at(x: float, y: float, z: float = 300.0, label: str = "") -> Pose:
     return Pose.tool_down(x, y, z, label=label)
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# The order of a generated sweep
-# ---------------------------------------------------------------------------------------------------------------------
-
-
-class GeneratedPosesRunRoundTheBaseTests(unittest.TestCase):
-
-    def _generated(self, **keywords: Any) -> list[Pose]:
-        box = WorkspaceLimitsConfig(x_min=200.0, x_max=900.0, y_min=-700.0, y_max=700.0, z_min=100.0, z_max=600.0)
-        return PoseProvider(WorkspaceGuard(box, min_distance_mm=30.0, min_angle_deg=5.0)).generate(22, seed=0,
-                                                                                                    **keywords)
-
-    def test_the_bearing_order_cuts_the_base_travel_of_the_order_drawn(self) -> None:
-        """Red before: generate() returned the poses in the order drawn."""
-        with patch.object(pose_provider, "order_by_bearing", side_effect=lambda poses, start_mm=None: list(poses)):
-            drawn = self._generated()
-        ordered = self._generated()
-        self.assertEqual(sorted(tuple(p.position_mm) for p in drawn), sorted(tuple(p.position_mm) for p in ordered))
-        self.assertLess(_base_travel(ordered), 0.5 * _base_travel(drawn))
-        bearings = [_bearing(pose) for pose in ordered]
-        self.assertTrue(bearings == sorted(bearings) or bearings == sorted(bearings, reverse=True), bearings)
-        self.assertAlmostEqual(_base_travel(ordered), max(bearings) - min(bearings))
-
-    def test_labels_follow_the_order_they_run_in(self) -> None:
-        self.assertEqual([pose.label for pose in self._generated()], [f"auto_{index}" for index in range(22)])
-
-    def test_the_round_starts_at_the_end_nearer_the_tool(self) -> None:
-        left, right = self._generated(start_mm=[400.0, 600.0, 300.0]), self._generated(start_mm=[400.0, -600.0, 300.0])
-        self.assertGreater(_bearing(left[0]), _bearing(left[-1]))
-        self.assertLess(_bearing(right[0]), _bearing(right[-1]))
-        self.assertEqual([tuple(p.position_mm) for p in left], [tuple(p.position_mm) for p in reversed(right)])
-
-    def test_a_round_that_straddles_the_line_behind_the_base_is_not_cut_in_two(self) -> None:
-        behind = [_at(-500.0, 100.0), _at(-500.0, -100.0), _at(-400.0, 300.0), _at(-400.0, -300.0)]
-        ordered = order_by_bearing(behind)
-        # Sorted by atan2 alone the round runs -169, -143, +143, +169 deg: 125 deg of base, the back crossed twice.
-        self.assertAlmostEqual(math.degrees(_base_travel(ordered)), 73.7, places=1)
-        self.assertEqual({tuple(p.position_mm) for p in ordered}, {tuple(p.position_mm) for p in behind})
-
-    def test_run_auto_starts_the_round_where_the_tool_stands(self) -> None:
-        arm = SimpleNamespace(get_tcp_pose=lambda: _at(400.0, -600.0))
-        routine = CalibrationRoutine(
-            arm=arm, marker_source=lambda: None, workspace_limits=_WIDE, calibration_mode="eye_to_hand",  # type: ignore[arg-type]
-            settle_time_s=0.0, eth_settings=SimpleNamespace(mode="eye_to_hand", min_samples=4, min_distance_mm=30.0,
-                                                            min_angle=5.0, min_angle_deg=5.0))  # type: ignore[arg-type]
-        with patch.object(PoseProvider, "generate", autospec=True, return_value=[]) as generate, \
-                patch.object(CalibrationRoutine, "_execute", autospec=True, return_value="solved"):
-            routine.run_auto(22, seed=0)
-        self.assertEqual(generate.call_args.kwargs["start_mm"], [400.0, -600.0, 300.0])
-
-    def test_an_arm_that_cannot_say_where_it_stands_orders_from_the_first_bearing(self) -> None:
-        def unread() -> Pose:
-            raise RuntimeError("not connected")
-
-        routine = object.__new__(CalibrationRoutine)
-        routine.arm = SimpleNamespace(get_tcp_pose=unread)  # type: ignore[attr-defined]
-        self.assertIsNone(routine._tool_position_mm())  # noqa: SLF001
-        routine.arm = MagicMock()  # type: ignore[attr-defined]
-        self.assertIsNone(routine._tool_position_mm())  # noqa: SLF001
 
 
 # ---------------------------------------------------------------------------------------------------------------------

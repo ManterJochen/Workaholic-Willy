@@ -612,7 +612,8 @@ def _probe_planner_combination(
         return (Probe(
             "planner combination", ProbeStatus.MISSING,
             "no cell was loaded, so the retract row and the evidence file a planner start looks up could not be asked",
-            "run the doctor with --profile <the cell's profile chain>, so it reads the cell's placement, plates and margins",
+            "run the doctor with --profile NAME, NAME being your cell's profile chain, so it reads the cell's "
+            "placement, plates and margins",
         ),)
     if str(getattr(getattr(cell, "ur", None), "motion_planner", "")) != "curobo":
         said = "no planner starts on this cell, so no retract row and no evidence file is looked up"

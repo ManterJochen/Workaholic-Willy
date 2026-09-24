@@ -13,7 +13,8 @@ things around it.
 
    A pick that ended on a controller that cannot move (a protective or emergency stop) stops the
    campaign as a fault of the cell does: the next run would otherwise start on an arm a person has
-   to walk up to.
+   to walk up to. So does a pick that ended on a hand that needs a person (a gripper that raised, a
+   toggle that would not start on jaws it believes closed with nobody at a terminal to say otherwise).
 
 2. The connect belongs outside the loop. Connecting is motion: Robotiq activation is a calibration
    sweep of the full finger travel, the cross-process `CellLock` is taken and released once, and on
@@ -27,6 +28,13 @@ things around it.
 4. Record logging is off by default. The shipped tree has ``record_log_path: null``, so
    `from_robot_config` wires nothing and a caller that wants a JSONL corpus asks for one. `Recording`
    is an argument with no default, and the report says which way it went.
+
+Two more are the owner's, 2026-09-24. Where each pick looks from (``look``): a wrist camera sees what
+the arm points it at, and a pick ends above its own grasp, so every pick of a wrist cell first moves to
+a look the program declares, or home when it declares none (`src.robot.execution.looks`); a fixed
+camera does not move. And ``put_back``: a part lifted is put back where it was grasped, so one part
+serves a whole campaign; a part that could not be put back stops the campaign, because the next pick
+would start with it in the hand.
 """
 
 from __future__ import annotations
@@ -38,8 +46,11 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 from src.contracts import UNSET, Maybe, chosen
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.geometry import Pose
     from src.robot.execution.cell import Cell
+    from src.robot.execution.handling import HandlingReport
     from src.robot.execution.lifecycle import ConnectStage, TeardownReport
+    from src.robot.execution.looks import Look, LookPose
 
 __all__ = [
     "PassRule",
@@ -69,8 +80,8 @@ class PickOutcome(StrEnum):
     FAILED = "failed"
     #: A fault of the cell ended the pick: `pick()` reported one (a camera that could not vouch, a
     #: controller link that dropped), the pick ended on a controller that cannot move (a protective
-    #: or emergency stop, a power-off), or an exception escaped it. The campaign stops; the cell still
-    #: comes down.
+    #: or emergency stop, a power-off) or on a hand that needs a person, or an exception escaped it.
+    #: The campaign stops; the cell still comes down.
     RAISED = "raised"
     #: The campaign was asked to stop before this attempt started.
     CANCELLED = "cancelled"
@@ -159,6 +170,18 @@ class PickAttempt:
     #: `hold_measured`). `False` is a success that rests on the close command alone; `None` where
     #: the attempt did not succeed or the service does not say.
     hold_measured: bool | None = None
+    #: Where the object this attempt went for was seen, BASE mm (the service report's `object_centre_mm`): the
+    #: median of its mask's surface. `None` where no candidate reached the arm or the service does not say.
+    object_mm: "tuple[float, float, float] | None" = None
+    #: The pose the tool closed at, in BASE, on an attempt that succeeded (the service report's `grasp_pose`): the
+    #: grasp waypoint that was judged and ran. `None` otherwise.
+    grasp_pose: "Pose | None" = None
+    #: The looks the attempt moved to before it perceived, as they read (`home`, or joints in degrees). Empty where
+    #: it perceived from where the arm stood.
+    looks: tuple[str, ...] = ()
+    #: How the part went back where it was grasped, on a campaign that puts it back (`PickRun.put_back`). `None`
+    #: where nothing was put back.
+    put_back: "HandlingReport | None" = None
 
     @property
     def passed(self) -> bool:
@@ -174,9 +197,19 @@ class PickAttempt:
         return self.render()
 
     def render(self) -> str:
-        return f"  run {self.index}: {self.reported or self.outcome.value}" + (
+        lines = [f"  run {self.index}: {self.reported or self.outcome.value}" + (
             f"  {self.detail}" if self.detail else ""
-        ) + ("  hold not measured" if self.unmeasured else "")
+        ) + ("  hold not measured" if self.unmeasured else "")]
+        if self.looks:
+            lines.append(f"    looked from {'; '.join(self.looks)}")
+        if self.object_mm is not None:
+            lines.append("    object seen at ({:.1f}, {:.1f}, {:.1f}) mm BASE".format(*self.object_mm))
+        if self.grasp_pose is not None:
+            lines.append("    grasp closed at ({:.1f}, {:.1f}, {:.1f}) mm BASE".format(*self.grasp_pose.position_mm))
+        if self.put_back is not None:
+            lines.append(f"    put back: {self.put_back.outcome.value}"
+                         + ("" if self.put_back.ok else f", {self.put_back.message or 'see the place report'}"))
+        return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -185,6 +218,12 @@ class PickAttempt:
             "reported": self.reported,
             "detail": self.detail,
             "hold_measured": self.hold_measured,
+            "object_mm": None if self.object_mm is None else list(self.object_mm),
+            "grasp_pose": None if self.grasp_pose is None else {
+                "position_mm": [float(v) for v in self.grasp_pose.position_mm],
+                "quaternion_xyzw": [float(v) for v in self.grasp_pose.quaternion_xyzw]},
+            "looks": list(self.looks),
+            "put_back": None if self.put_back is None else self.put_back.outcome.value,
         }
 
 
@@ -247,7 +286,8 @@ class PickRunReport:
 
     @property
     def exit_code(self) -> int:
-        """0 pass, 1 refused before picking, 2 picked and did not pass, 3 a fault of the cell stopped it.
+        """0 pass, 1 refused (before picking, or to go on without a part put back), 2 picked and did not pass, 3 a
+        fault of the cell stopped it.
 
         The same four codes the command-line runner returns, derived from the report rather than
         branched at four `return` statements.
@@ -369,6 +409,13 @@ class PickRun:
     #: what a caller writes between two calls. This loop runs inside one verb, and an operator at a
     #: bench must see run 3 before run 4 starts rather than all ten at the end.
     on_attempt: "Callable[[PickAttempt], None] | None" = None
+    #: Where each pick looks from before it perceives, tried in order until one finds something
+    #: (`src.robot.execution.looks`). Unset: a wrist camera looks from the arm's home, a fixed camera
+    #: from where it is mounted, with no motion. Nothing is said to the hand before a look.
+    look: "tuple[LookPose, ...]" = ()
+    #: Put each lifted part back where it was grasped (`service.put_back`), so one part serves the
+    #: whole campaign. A part that does not go back stops the campaign.
+    put_back: bool = False
 
     # --- two doors -----------------------------------------------------------------------------
 
@@ -385,12 +432,15 @@ class PickRun:
         should_cancel: "Callable[[], bool] | None" = None,
         announce: "Callable[[ConnectStage], None] | None" = None,
         on_attempt: "Callable[[PickAttempt], None] | None" = None,
+        look: "Maybe[Look]" = UNSET,
+        put_back: bool = False,
     ) -> "PickRun":
         """A cell this campaign will build, connect, drive and take down.
 
         The connect happens once, outside the loop. Connecting is motion: a Robotiq activation
         sweeps the full finger travel and a vacuum cup asserts its ejector immediately. Ten
-        campaigns of one are not one campaign of ten.
+        campaigns of one are not one campaign of ten. A look list that names nothing raises here,
+        before any cell is built.
         """
         return cls(
             cell=cell,
@@ -402,6 +452,8 @@ class PickRun:
             should_cancel=should_cancel,
             announce=announce,
             on_attempt=on_attempt,
+            look=_checked_looks(look),
+            put_back=bool(put_back),
         )
 
     @classmethod
@@ -416,6 +468,8 @@ class PickRun:
         prompt: "Maybe[str]" = UNSET,
         should_cancel: "Callable[[], bool] | None" = None,
         on_attempt: "Callable[[PickAttempt], None] | None" = None,
+        look: "Maybe[Look]" = UNSET,
+        put_back: bool = False,
     ) -> "PickRun":
         """An already-connected service. The caller owns the connect and the teardown.
 
@@ -431,6 +485,8 @@ class PickRun:
             prompt=_checked_prompt(prompt),
             should_cancel=should_cancel,
             on_attempt=on_attempt,
+            look=_checked_looks(look),
+            put_back=bool(put_back),
         )
 
     # --- the verb ------------------------------------------------------------------------------
@@ -478,6 +534,34 @@ class PickRun:
         if self.on_attempt is not None:
             self.on_attempt(attempt)
 
+    def _looks_for(self, service: Any) -> "Look | None":
+        """What every pick of this campaign looks from: the program's looks, else home on a wrist camera, else none.
+
+        `is True`, so a double that answers every attribute is not read as a wrist camera; a service that
+        does not say perceives from where the arm stands, as it always did.
+        """
+        from src.robot.execution.looks import HOME  # noqa: PLC0415
+
+        if self.look:
+            return self.look
+        return HOME if getattr(service, "perceives_from_the_wrist", False) is True else None
+
+    def _put_back(self, service: Any, report: Any) -> "tuple[HandlingReport | None, str]":
+        """The put back of a part a pick lifted, and why it did not go back: `""` when it did or none was asked for.
+
+        A put back that raised is a part not put back as well, said in the same words: the campaign stops on it with
+        its report, and the cell still comes down.
+        """
+        if not self.put_back:
+            return None, ""
+        try:
+            placed = service.put_back(report)
+        except Exception as exc:  # noqa: BLE001 (the campaign stops, the cell still comes down)
+            return None, f"raised {type(exc).__name__}: {exc}"
+        if placed.ok:
+            return placed, ""
+        return placed, placed.outcome.value + (f": {placed.message}" if placed.message else "")
+
     def _drive(self, service: Any, *, teardown: "TeardownReport | None") -> PickRunReport:
         """The loop, and the three per-campaign settings that must be put back afterwards."""
         # The prompt first: it is the one setting that can refuse, and a refusal here leaves the other
@@ -494,6 +578,10 @@ class PickRun:
 
         attempts: list[PickAttempt] = []
         last: Any = None
+        error = ""
+        # Asked once: whether a camera sits on the wrist does not change between two picks. A service
+        # handed no look is called as it always was, so a service that takes none still runs.
+        look = self._looks_for(service)
         try:
             for index in range(self.runs):
                 if self.should_cancel is not None and self.should_cancel():
@@ -503,7 +591,7 @@ class PickRun:
                     )
                     break
                 try:
-                    report_i = service.pick()
+                    report_i = service.pick() if look is None else service.pick(look=look)
                 except Exception as exc:  # noqa: BLE001 (the campaign stops, the cell still comes down)
                     stopped_by = f"{type(exc).__name__}: {exc}"
                 else:
@@ -524,6 +612,13 @@ class PickRun:
                             "so the campaign stops; a person clears the stop where the arm is visible: "
                             + str(report_i.failure_summary())
                         )
+                    # And so does a hand that needs a person: a gripper that raised, or a toggle that would not
+                    # start the pick on jaws it believes closed with nobody at a terminal to say otherwise. The
+                    # next run would perceive again for a hand that still cannot start (owner's decision,
+                    # 2026-09-24). A string, so a double that answers every attribute is not read as one.
+                    hand = getattr(report_i, "gripper_fault", "")
+                    if not stopped_by and isinstance(hand, str) and hand:
+                        stopped_by = f"the gripper needs a person, so the campaign stops: {hand}"
                 if stopped_by:
                     attempts.append(
                         PickAttempt(index=index, outcome=PickOutcome.RAISED, detail=stopped_by)
@@ -545,6 +640,9 @@ class PickRun:
                 # Whether the gripper measured the hold, as the service says it: only a bool counts,
                 # so a service that does not say leaves it None.
                 hold = getattr(report_i, "hold_measured", None)
+                # Whenever the service says it lifted a part, whatever a second opinion made of it: the
+                # jaws closed on something, and the next pick must not start with it in the hand.
+                put_back, not_back = self._put_back(service, report_i) if reported == _SUCCEEDED else (None, "")
                 attempts.append(
                     PickAttempt(
                         index=index,
@@ -552,9 +650,19 @@ class PickRun:
                         reported=reported,
                         detail="" if ok else str(report_i.failure_summary()),
                         hold_measured=hold if ok and isinstance(hold, bool) else None,
+                        **_what_the_attempt_saw(report_i),
+                        put_back=put_back,
                     )
                 )
                 self._announce(attempts[-1])
+                if not_back:
+                    error = (f"the part of run {index} was not put back ({not_back}), so no further pick starts "
+                             "with it in the hand")
+                    attempts.extend(
+                        PickAttempt(index=i, outcome=PickOutcome.CANCELLED)
+                        for i in range(index + 1, self.runs)
+                    )
+                    break
         finally:
             # Put back in a `finally`. A per-campaign setting that outlives its campaign is
             # indistinguishable from a configured one: on a shared service every later run would
@@ -569,5 +677,30 @@ class PickRun:
 
         return PickRunReport(
             requested=self.runs, attempts=tuple(attempts), rule=self.rule,
-            recording=self.recording, teardown=teardown, last=last,
+            recording=self.recording, teardown=teardown, last=last, error=error,
         )
+
+
+def _checked_looks(look: "Maybe[Look]") -> "tuple[LookPose, ...]":
+    """A campaign's looks, in order, refused at the factory when they name nothing, before a cell is built."""
+    from src.robot.execution.looks import looks_of  # noqa: PLC0415
+
+    return looks_of(look) if chosen(look) else ()
+
+
+def _what_the_attempt_saw(report: Any) -> dict[str, Any]:
+    """Where the service says the object was, where the tool closed and where it looked from, as `PickAttempt` keeps them.
+
+    Each only where the service says it in the type it promises, so a service that does not say, or a double that
+    answers every attribute, leaves the attempt as it was.
+    """
+    from src.geometry import Pose  # noqa: PLC0415
+
+    centre = getattr(report, "object_centre_mm", None)
+    grasp = getattr(report, "grasp_pose", None)
+    looks = getattr(report, "looks", ())
+    return {
+        "object_mm": centre if isinstance(centre, tuple) and len(centre) == 3 else None,
+        "grasp_pose": grasp if isinstance(grasp, Pose) else None,
+        "looks": looks if isinstance(looks, tuple) and all(isinstance(v, str) for v in looks) else (),
+    }

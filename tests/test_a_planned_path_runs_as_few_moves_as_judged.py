@@ -6,6 +6,10 @@ shortened to a subset of its own waypoints whose joint-space legs stay within th
 path gate and the planner judge the legs of that shortened list, and exactly that list runs. Where either refuses,
 the plan as cuRobo returned it is judged by both and runs instead; where that is refused too, nothing moves.
 
+A plan is asked for only where the straight joint line to the goal is refused (tests/test_the_nearest_goal_is_planned.py
+holds that choice). Here the local gate refuses every first list it is shown, which is that line, so each move below
+reaches the plan, and the lists the tests read are the plan's.
+
 The rule this file holds is the project's: the move that was judged is the move that runs. So the tests compare
 objects, not lengths: the list handed to ``execute`` is the list ``gate_planned_path`` judged, and the samples the
 planner judged are the samples of that list.
@@ -23,7 +27,7 @@ import numpy as np
 import pytest
 
 from src.config.schema.robot import RobotConfig
-from src.robot.core import MotionCommand, MotionResult, MotionStatus
+from src.robot.core import JointPositions, MotionCommand, MotionResult, MotionStatus
 from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES, CuroboUrPlanner
 from src.robot.safety._fcl_self_collision import mesh_backend_status
@@ -148,25 +152,39 @@ class SimplifyJointPathTests(unittest.TestCase):
 
 
 class _Planner:
-    """Hands back one trajectory and records, in order, everything the arm asked of it."""
+    """Hands back one trajectory to every joint goal and records, in order, everything the arm asked of the plan.
 
-    def __init__(self, trajectory: "list[list[float]]", *, verdicts: "list[JointCheckVerdict] | None" = None) -> None:
+    The screen of a goal, one configuration, is answered clear and kept apart in ``screens``: this file reads the plan.
+    """
+
+    def __init__(self, trajectory: "list[list[float]]", *, verdicts: "list[JointCheckVerdict] | None" = None,
+                 refuse_lines: bool = False) -> None:
         self.trajectory = trajectory
         self.calls: list[tuple[Any, ...]] = []
+        self.screens: list[Any] = []
+        self.lines: list[Any] = []
         self._verdicts = list(verdicts or [])
+        self._refuse_lines = refuse_lines
 
-    def plan(self, goal: Any, **_: Any) -> "list[list[float]]":
+    def plan_joint(self, goal: Any, *, refresh: bool = True, **_: Any) -> "list[list[float]]":
         self.calls.append(("plan",))
         return self.trajectory
 
-    def check_joint_path(self, samples: Any, *, refresh: bool = True) -> JointCheckVerdict:
+    def check_joint_path(self, samples: Any, *, refresh: bool = True, clearance_mm: float = 0.0) -> JointCheckVerdict:
         configs = [tuple(float(v) for v in sample) for sample in samples]
-        self.calls.append(("check", configs, refresh))
+        if len(configs) == 1:
+            self.screens.append(configs[0])
+            return JointCheckVerdict(valid=True, first_invalid=None, checked=1, reason="the double accepts")
+        if clearance_mm > 0.0 and self._refuse_lines:
+            self.lines.append(configs)
+            return JointCheckVerdict(valid=False, first_invalid=1, checked=len(configs),
+                                     reason="the double's straight line comes too close to the tote")
+        self.calls.append(("check", configs, refresh, clearance_mm))
         if self._verdicts:
             return self._verdicts.pop(0)
         return JointCheckVerdict(valid=True, first_invalid=None, checked=len(configs), reason="the double accepts")
 
-    def execute(self, traj: Any, pose: Any, *, vel: Any = None, acc: Any = None) -> MotionResult:
+    def execute(self, traj: Any, pose: Any = None, *, vel: Any = None, acc: Any = None, **_: Any) -> MotionResult:
         self.calls.append(("execute", traj, vel, acc))
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose, message="curobo")
 
@@ -179,7 +197,11 @@ def _refused(reason: str = "the double refuses") -> JointCheckVerdict:
 
 
 def _arm(planner: _Planner) -> tuple[URRobotArm, list[Any]]:
-    """A ur5e on cuRobo with a planner double; the local path gate is a spy that records what it judged."""
+    """A ur5e on cuRobo with a planner double; the local path gate is a spy that records what it judged.
+
+    The first list the spy is shown is the straight line to the goal, which it refuses without recording, so that the
+    move plans; everything it records after that is the plan's.
+    """
     arm = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
         "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"},
@@ -193,8 +215,13 @@ def _arm(planner: _Planner) -> tuple[URRobotArm, list[Any]]:
     arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
     judged: list[Any] = []
     verdicts: list["MotionResult | None"] = []
+    lined: list[Any] = []
 
     def gate(waypoints: Any, *, arm: Any = None, command: Any = None) -> "MotionResult | None":
+        if not lined:
+            lined.append(waypoints)
+            return MotionResult.failed(MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO,
+                                       message="the spy: the straight line grazes the bench")
         judged.append(waypoints)
         return verdicts.pop(0) if verdicts else None
 
@@ -236,6 +263,7 @@ class JudgedIsExecutedTests(unittest.TestCase):
         self.assertEqual(list(expected), check[1])
         self.assertIs(False, check[2], "the planner refreshed its world after the gate had judged against it")
         self.assertEqual(["plan", "check", "execute"], [call[0] for call in planner.calls])
+        self.assertEqual(0.0, check[3], "a plan's legs are judged at no clearance, as cuRobo validated them")
 
     def test_a_shortened_list_the_planner_refuses_falls_back_to_the_plan_as_returned(self) -> None:
         dense = _line(_HERE, _THERE, 41)
@@ -330,16 +358,20 @@ class JudgedIsExecutedTests(unittest.TestCase):
         with self.assertLogs("URRobotArm", level="INFO") as logs:
             self._move(arm, _THERE)
         said = "\n".join(logs.output)
-        self.assertIn("41 waypoint(s) planned, 2 run as moveJ", said)
-        self.assertIn("rad in total", said)
+        self.assertIn("cuRobo plan to goal 1 of", said)
+        self.assertIn("41 waypoint(s) dense, 2 executed (1 leg(s))", said)
+        self.assertIn("total/largest leg", said)
+        self.assertIn(f"shoulder_pan_joint {math.degrees(0.6):.1f}/{math.degrees(0.6):.1f}", said)
         self.assertNotIn("long way round", said)
 
     def test_a_joint_turning_the_long_way_round_is_a_warning(self) -> None:
-        end = [*_HERE[:5], _HERE[5] + 2 * math.pi + 0.2]
+        """A joint target a full turn and a bit away inside a window of two turns: the one move still left that can."""
+        end = [*_HERE[:5], _HERE[5] + 2 * math.pi - 0.3]
         planner = _Planner(_line(_HERE, end, 41))
         arm, _ = _arm(planner)
-        with self.assertLogs("URRobotArm", level="WARNING") as logs:
-            self._move(arm, end)
+        with arm.without_camera_world(_DECLINED), self.assertLogs("URRobotArm", level="WARNING") as logs:
+            result = arm.move_to_joints(JointPositions(end))
+        self.assertTrue(result.ok, result.message)
         said = "\n".join(logs.output)
         self.assertIn("wrist_3_joint", said)
         self.assertIn("long way round", said)
@@ -347,7 +379,32 @@ class JudgedIsExecutedTests(unittest.TestCase):
 
 @pytest.mark.skipif(mesh_backend_status("ur5e") != "ok", reason="no exact mesh backend on this box")
 def test_with_the_real_local_gate_a_clear_plan_runs_as_one_moveJ() -> None:
-    """The control with nothing stubbed on the local side: the exact mesh gate judges the shortened legs."""
+    """The control with nothing stubbed on the local side: the exact mesh gate judges the shortened legs.
+
+    The planner double refuses the straight line to the goal, so the move plans, and the plan the real gate passes is
+    the plan's two ends.
+    """
+    planner = _Planner(_line(_HERE, _THERE, 41), refuse_lines=True)
+    arm = URRobotArm(RobotConfig.model_validate({
+        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
+        "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"},
+        "workspace_limits": OPEN_WORKSPACE,
+    }))
+    arm._conn = MagicMock()
+    arm._conn.is_connected = True
+    arm._conn.get_joint_positions.return_value = list(_HERE)
+    arm._curobo_ur = planner  # type: ignore[assignment]
+    with arm.without_camera_world(_DECLINED):
+        result = arm.move(pose_where_it_ends(arm, _THERE))
+    assert result.ok, result.message
+    assert len(planner.lines) == 1, "the straight line was not judged before the plan"
+    (execute,) = planner.named("execute")
+    assert [tuple(w) for w in execute[1]] == [tuple(_HERE), tuple(_THERE)]
+
+
+@pytest.mark.skipif(mesh_backend_status("ur5e") != "ok", reason="no exact mesh backend on this box")
+def test_with_the_real_local_gate_a_clear_line_runs_and_nothing_is_planned() -> None:
+    """The control of the control: where both authorities pass the straight line, it runs and cuRobo plans nothing."""
     planner = _Planner(_line(_HERE, _THERE, 41))
     arm = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
@@ -361,14 +418,19 @@ def test_with_the_real_local_gate_a_clear_plan_runs_as_one_moveJ() -> None:
     with arm.without_camera_world(_DECLINED):
         result = arm.move(pose_where_it_ends(arm, _THERE))
     assert result.ok, result.message
+    assert planner.named("plan") == []
+    ((_, configs, _, clearance),) = planner.named("check")
+    assert clearance == 10.0, "the line was not judged at the shipped clearance"
     (execute,) = planner.named("execute")
-    assert [tuple(w) for w in execute[1]] == [tuple(_HERE), tuple(_THERE)]
+    assert len(execute[1]) == 2
+    np.testing.assert_allclose(execute[1][-1], _THERE, atol=1e-6)
+    np.testing.assert_allclose(configs[-1], execute[1][-1], atol=0.0)
 
 
 @pytest.mark.skipif(mesh_backend_status("ur5e") != "ok", reason="no exact mesh backend on this box")
 def test_a_waypoint_that_cannot_be_read_is_refused_by_the_gate_and_not_shortened_away() -> None:
     """A NaN in the middle of a plan: shortening would drop it without a word, so the plan meets the gate whole."""
-    planner = _Planner([list(_HERE), [float("nan")] * 6, list(_THERE)])
+    planner = _Planner([list(_HERE), [float("nan")] * 6, list(_THERE)], refuse_lines=True)
     arm = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
         "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"},

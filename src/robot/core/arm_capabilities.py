@@ -5,7 +5,10 @@ with a contract-locked member set. The extras a controller can offer (digital an
 analog I/O, live force and torque, live robot and safety status, what a straight line
 keeps, a model of the carried part, a move home that says why it was refused) are
 declared here as separate ``runtime_checkable`` Protocols, mirroring
-:class:`~src.robot.core.gripper.ObjectDetectingGripper`.
+:class:`~src.robot.core.gripper.ObjectDetectingGripper`. Hand guiding follows the same
+pattern from its own module, :mod:`~src.robot.core.freedrive`: an arm a person may move by
+hand advertises ``SupportsFreedrive`` (the UR driver, on teach mode), and one that does not,
+the sim arm among them, keeps the calibration stations it drives to itself.
 
 A driver opts in by implementing one. A caller feature-checks with
 ``isinstance(arm, SupportsForceTorque)`` and falls back where the capability is

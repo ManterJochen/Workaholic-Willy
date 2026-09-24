@@ -7,7 +7,7 @@ segmenter:
 
   # Where SAM2's weights come from when `local: true` a local directory of HF files, no download.
   # [REQUIRED - no default]
-  model_path: assets/models/hf/segmentation/facebook--sam2-hiera-large
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/segmentation/facebook--sam2-hiera-large"
 
   # Model ID for the SAM2 weights, used when `local` is false.
   # [default: null] [DIFFERS from the default]
@@ -54,7 +54,7 @@ oneformer:
 
   # Local directory for the OneFormer universal-segmentation weights.
   # [REQUIRED - no default]
-  model_path: assets/models/hf/segmentation/shi-labs--oneformer_coco_swin_large
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/segmentation/shi-labs--oneformer_coco_swin_large"
 
   # Model ID for the OneFormer universal-segmentation weights.
   # [default: null] [DIFFERS from the default]

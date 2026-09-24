@@ -82,6 +82,7 @@ def _ur_ik() -> URRobotArm:
 
 def _ur_curobo(planner: object | None = None, *, live_world: object | None = None) -> URRobotArm:
     arm = _ur_arm("curobo")
+    arm._conn.get_joint_positions.return_value = _JOINTS.tolist()
     arm._preflight = SafetyPreflight([_AcceptingGuard("workspace")])
     if live_world is not None:
         arm.set_live_planner_world(live_world)  # type: ignore[arg-type]
@@ -203,7 +204,6 @@ class TheStampMatrixTests(unittest.TestCase):
 
     def test_a_planner_double_that_returns_no_result_is_handed_back_untouched(self) -> None:
         planner = MagicMock()
-        planner.plan.return_value = [[0.0] * 6, [0.1] * 6]
         arm = _ur_curobo(planner)
         # Declined, so what is read is the planner double's result and not the refusal of a motion with no world.
         with arm.without_camera_world("the planner double's own result is what this test reads"):

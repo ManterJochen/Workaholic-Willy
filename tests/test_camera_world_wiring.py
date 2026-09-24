@@ -377,9 +377,11 @@ class APlannedStampNamesEveryWorldCameraTests(unittest.TestCase):
                                     lambda arm: arm.move(_pose()))
             rows[("ur", "move_to_joints")] = (lambda: _ur(None, _Client(joint_names=UR_ARM_JOINT_NAMES), []),  # type: ignore[arg-type]
                                               lambda arm: arm.move_to_joints(JointPositions(_THERE)))
-        now = time.time()
         for (arm_name, verb), (build, motion) in rows.items():
             with self.subTest(arm=arm_name, verb=verb):
+                # Per row: a UR move judges its straight line on the exact meshes first, 2.8 s here for 648 samples,
+                # and frames stamped once for all four rows went stale under the 5 s the cell allows before the last.
+                now = time.time()
                 arm = build()
                 owners = {"overhead": _Owner("overhead", captured_at_s=now - 2.0),
                           "side": _Owner("side", captured_at_s=now - 1.0)}

@@ -6,7 +6,7 @@ from typing import Literal, get_args
 
 from pydantic import Field, field_validator, model_validator
 
-from .._base import StrictModel
+from .._base import ConfigPath, StrictModel
 
 
 class InferenceOptimization(StrictModel):
@@ -53,7 +53,7 @@ class ObjectDetectorConfig(StrictModel):
     detector refuses to build otherwise. ``threshold`` is the confidence a box must clear.
     """
 
-    model_path: str
+    model_path: ConfigPath
     model_id: str | None = None
     threshold: float
     local: bool
@@ -66,7 +66,7 @@ class SegmenterConfig(StrictModel):
     ``local`` picks the weight source the same way as :class:`ObjectDetectorConfig`.
     """
 
-    model_path: str
+    model_path: ConfigPath
     model_id: str | None = None
     local: bool
     optim: InferenceOptimization = Field(default_factory=InferenceOptimization)
@@ -78,7 +78,7 @@ class OneFormerConfig(StrictModel):
     ``local`` picks the weight source the same way as :class:`ObjectDetectorConfig`.
     """
 
-    model_path: str
+    model_path: ConfigPath
     model_id: str | None = None
     local: bool
     #: ``instance`` is the only mode the wrapper implements: it always calls
@@ -111,12 +111,12 @@ class SpeechToTextConfig(StrictModel):
     """Speech-to-text configuration: Whisper, the Silero voice detector, and the cell PC's microphone."""
 
     model_id: str
-    model_path: str
+    model_path: ConfigPath
     #: The Silero VAD TorchScript file (`silero_vad.jit` from the silero-vad 6.2.1 wheel, MIT), read by
     #: `SileroVoiceActivityDetector.from_config`. The upload path scores every recording with it before
     #: Whisper is asked, and `Listener.from_config` cuts utterances with it. Always a local file, whatever
     #: `local` says; `scripts/model_weights/fetch.py silero-vad` writes it, pinned by hash.
-    vad_model_path: str
+    vad_model_path: ConfigPath
     #: The rate in Hz Whisper is fed at and the cell PC's microphone stream opens at. An upload at any
     #: other rate is resampled to it. 16000 for every Whisper checkpoint, and for Silero VAD.
     samplerate: int = Field(gt=0)
@@ -174,10 +174,12 @@ class HandDetectConfig(StrictModel):
     raises with the URL rather than failing inside MediaPipe's graph.
     """
 
-    #: Path to the MediaPipe hand-landmark ``.task`` bundle; a relative path resolves against the
-    #: process working directory. Download:
+    #: Path to the MediaPipe hand-landmark ``.task`` bundle. Written in a tree, a relative path is read
+    #: against the tree's folder; the default is the repository's weights folder, where
+    #: ``scripts/model_weights/fetch.py`` puts it (see :mod:`src.config.paths`). Download:
     #: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
-    model_path: str = "assets/models/hf/mediapipe/hand_landmarker.task"
+    model_path: ConfigPath = Field(
+        default="${WILLY_PROJECT_ROOT}/assets/models/hf/mediapipe/hand_landmarker.task", validate_default=True)
 
     #: Upper bound on simultaneously tracked hands -> ``num_hands``. The 3-D
     #: :class:`~src.models.handdetection.hand_finder.HandFinder` refuses a frame with more than one
@@ -221,9 +223,10 @@ class GestureDetectConfig(StrictModel):
     """
 
     #: Path to the MediaPipe gesture-recognizer ``.task`` bundle; like the hand-landmark bundle it
-    #: is an operator download rather than a repository file. Download:
+    #: is an operator download rather than a repository file, and its path is read the same way. Download:
     #: https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task
-    model_path: str = "assets/models/hf/mediapipe/gesture_recognizer.task"
+    model_path: ConfigPath = Field(
+        default="${WILLY_PROJECT_ROOT}/assets/models/hf/mediapipe/gesture_recognizer.task", validate_default=True)
 
     #: -> ``num_hands``.
     max_hands: int = Field(default=2, ge=1, le=4)
@@ -261,7 +264,7 @@ class VlmConfig(StrictModel):
     #: with SAM2 from the same bbox_2d JSON the paper's own decoder consumes. A native-mask
     #: checkpoint, if one is ever released, becomes a different backend behind the same seam.
     model_id: str = "Qwen/Qwen3-VL-4B-Instruct-FP8"
-    model_path: str | None = None
+    model_path: ConfigPath | None = None
     local: bool = False
     #: Load at cell build: predictable latency, VRAM held from the start. The default loads on the
     #: first complex prompt instead, paying nothing until something needs the model and taking a

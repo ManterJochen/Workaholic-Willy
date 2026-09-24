@@ -1,6 +1,6 @@
 """Roll a campaign's record log up into KPIs, and read what the numbers do and do not rest on.
 
-The other half of `real_robot/13_pick_campaign.py`. A campaign writes one record per attempt;
+The other half of `real_robot/11_pick_with_the_camera.py`. A campaign writes one record per attempt;
 `RecordLog` reads that file back and computes the rates over it. It opens no cell, loads no policy
 and never writes, so the same call answers for a log captured months ago at a customer's site.
 

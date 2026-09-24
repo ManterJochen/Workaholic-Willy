@@ -118,9 +118,12 @@ robot:
 #
 # 4. Calibrate each camera against the robot. This moves the robot. Check first, then run:
 #
-#      python -m src.robot.execution.real_cell.calibrate --profile ur5e,eth2 --rig cam_left --check
-#      python -m src.robot.execution.real_cell.calibrate --profile ur5e,eth2 --rig cam_left
-#      python -m src.robot.execution.real_cell.calibrate --profile ur5e,eth2 --rig cam_right
+#      python -m src.robot.execution.real_cell.calibrate --profile ur5e,eth2 --rig cam_left --freedrive --check
+#      python -m src.robot.execution.real_cell.calibrate --profile ur5e,eth2 --rig cam_left --freedrive
+#      python -m src.robot.execution.real_cell.calibrate --profile ur5e,eth2 --rig cam_right --freedrive
+#
+#    --freedrive guides the arm by hand to each pose; --fixed-poses PATH visits stations from a file
+#    instead. A run that names neither is refused, --check included.
 #
 #    Each run writes `calibration/real/eth_<rig>.json` and prints the rig block to paste. The two
 #    `extrinsics` blocks in camera/cam.eth2.yaml already name those files; point them elsewhere

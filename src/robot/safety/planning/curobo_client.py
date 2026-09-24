@@ -36,6 +36,7 @@ from src.robot.constants import CUROBO_CLIENT_LOG_FILE, create_robot_logger
 from ._curobo_attach import ENV_ATTACH_SPHERES
 from ._curobo_body_links import ENV_BODY_LINKS, ENV_DEFAULT_Q, ENV_WRIST_BODY_LINKS
 from ._curobo_margin import ENV_SELF_COLLISION_MARGIN_MM
+from ._curobo_plan_policy import CLEARANCE_KEY, MAX_CLEARANCE_M
 from ._curobo_protocol import (
     ENV_MEASURE_ONLY,
     KIND_SELF_COLLISION,
@@ -121,7 +122,8 @@ class StateRefusal:
     into one another they reach. Each is UNSET where the sidecar could not say it: a
     descriptor that resolves its collision spheres from a file carries no per link
     ownership, so the refusal is real and the pair has no name. That costs a name, never a
-    plan.
+    plan. ``clearance_mm`` is set where the world was judged at a clearance rather than at no
+    penetration: the configuration comes closer to the world than that, and it has no depth.
     """
 
     where: StateWhere
@@ -130,6 +132,7 @@ class StateRefusal:
     link_a: Maybe[str] = UNSET
     link_b: Maybe[str] = UNSET
     depth_mm: Maybe[float] = UNSET
+    clearance_mm: Maybe[float] = UNSET
 
     @classmethod
     def from_reply(cls, block: object) -> StateRefusal:
@@ -159,15 +162,17 @@ class StateRefusal:
             if not (isinstance(pair, (list, tuple)) and len(pair) == 2 and all(isinstance(n, str) for n in pair)):
                 raise CuroboUnavailableError(f"the cuRobo sidecar sent a refusal whose pair is not two links: {pair!r}")
             link_a, link_b = str(pair[0]), str(pair[1])
-        depth = block.get("depth_mm")
-        if depth is not None and not (isinstance(depth, (int, float)) and math.isfinite(depth)):
-            raise CuroboUnavailableError(f"the cuRobo sidecar sent a refusal whose depth is not a number: {depth!r}")
+        depth, clearance = block.get("depth_mm"), block.get("clearance_mm")
+        for name, value in (("depth", depth), ("clearance", clearance)):
+            if value is not None and not (isinstance(value, (int, float)) and math.isfinite(value)):
+                raise CuroboUnavailableError(f"the cuRobo sidecar sent a refusal whose {name} is not a number: {value!r}")
         return cls(
             where=StateWhere(where), kind=StateRefusalKind(kind),
             joints=tuple(float(value) for value in joints),
             link_a=link_a,
             link_b=link_b,
             depth_mm=float(depth) if depth is not None else UNSET,
+            clearance_mm=float(clearance) if clearance is not None else UNSET,
         )
 
     def render(self) -> str:
@@ -186,6 +191,8 @@ class StateRefusal:
             )
         elif self.kind is StateRefusalKind.JOINT_LIMIT:
             found = f"a joint sits outside the limits the planner was built with, by {depth}"
+        elif chosen(self.clearance_mm):
+            found = f"it comes closer than {self.clearance_mm:.1f} mm to the world the planner holds"
         else:
             found = f"it reaches {depth} into the world the planner holds"
         joints = ", ".join(f"{value:.4f}" for value in self.joints)
@@ -200,6 +207,7 @@ class StateRefusal:
             "link_a": self.link_a if chosen(self.link_a) else None,
             "link_b": self.link_b if chosen(self.link_b) else None,
             "depth_mm": self.depth_mm if chosen(self.depth_mm) else None,
+            "clearance_mm": self.clearance_mm if chosen(self.clearance_mm) else None,
         }
 
 
@@ -433,12 +441,22 @@ class SceneRegistration:
     reason: str
 
 
-def _verdict_from_reply(msg: dict, *, sent: int) -> JointCheckVerdict:
+def _verdict_from_reply(msg: dict, *, sent: int, clearance_m: float = 0.0) -> JointCheckVerdict:
     """Read a check_js reply as a verdict on ``sent`` samples, or raise: only a whole verdict passes.
 
     A failed call, an old sidecar and a reply that does not account for every sample sent
     all raise ``CuroboUnavailableError``, because each of them means nobody judged the path.
+    So does a reply to a request that asked for a clearance and does not say it judged at
+    that clearance: a sidecar from before the clearance judges at no penetration and passes
+    a line that grazes the world, which is exactly the line the clearance is there to refuse.
     """
+    if msg.get("success") and clearance_m > 0.0:
+        judged_at = msg.get(CLEARANCE_KEY)
+        if not isinstance(judged_at, (int, float)) or abs(float(judged_at) - clearance_m) > 1e-9:
+            raise CuroboUnavailableError(
+                f"the cuRobo sidecar was asked to judge at {clearance_m * 1000.0:g} mm clearance and says it judged at "
+                f"{judged_at!r} m; it is not the sidecar in this tree, restart it"
+            )
     if not msg.get("success"):
         reason = msg.get("reason")
         if _OLD_SIDECAR_MARK in str(reason):
@@ -1003,13 +1021,21 @@ class CuroboPlanClient:
         )
         return None
 
-    def check_joints(self, configs: "Sequence[Sequence[float]]") -> JointCheckVerdict:
+    def check_joints(
+        self, configs: "Sequence[Sequence[float]]", *, clearance_mm: float = 0.0,
+    ) -> JointCheckVerdict:
         """Judge every configuration of a joint path in the world this sidecar plans in.
 
         ``configs`` are joint configurations in :attr:`joint_names` order, in radians and in
         path order. A path longer than :data:`MAX_CHECK_CONFIGURATIONS` is sent in that many
         at a time and the verdict names the first sample cuRobo refuses, counted in the whole
         path.
+
+        ``clearance_mm`` above 0 refuses a sample closer than that to the planner's world, where
+        0, the default and every planned path's check, refuses only a sample that penetrates it.
+        The robot's own terms are judged as they always are. It is sent only when it is not 0, so
+        every other request is the one it always was, and a reply that does not say it judged at
+        the clearance asked is refused (``CuroboUnavailableError``).
 
         The cap is the size of a request and not a rule about moves. Refusing a longer path
         outright costs real picks: a cuRobo plan of 121 waypoints needs more than 1000
@@ -1030,6 +1056,12 @@ class CuroboPlanClient:
             raise ValueError(
                 "check_joints was given no configuration, and an empty path is not a checked path"
             )
+        clearance_m = float(clearance_mm) / 1000.0
+        if not math.isfinite(clearance_m) or not 0.0 <= clearance_m <= MAX_CLEARANCE_M:
+            raise ValueError(
+                f"clearance_mm has to lie from 0 to {MAX_CLEARANCE_M * 1000.0:g} mm, got {clearance_mm!r}"
+            )
+        asked: dict[str, Any] = {CLEARANCE_KEY: clearance_m} if clearance_m > 0.0 else {}
         for index, row in enumerate(rows):
             if not all(math.isfinite(v) for v in row):
                 raise ValueError(
@@ -1049,14 +1081,14 @@ class CuroboPlanClient:
         checked = 0
         for offset in range(0, len(rows), MAX_CHECK_CONFIGURATIONS):
             batch = rows[offset : offset + MAX_CHECK_CONFIGURATIONS]
-            want = self._send({"cmd": "check_js", "joints": batch})
+            want = self._send({"cmd": "check_js", "joints": batch, **asked})
             msg = self._recv(_PLAN_TIMEOUT_S, want=want)
             if msg is None:
                 raise CuroboUnavailableError(
                     "the cuRobo sidecar gave no verdict on the joint path: it did not answer in time "
                     "or it exited"
                 )
-            verdict = _verdict_from_reply(msg, sent=len(batch))
+            verdict = _verdict_from_reply(msg, sent=len(batch), clearance_m=clearance_m)
             checked += verdict.checked
             if not verdict.valid:
                 # Stop here: the arm is not taking this path, so the rest of it is not a

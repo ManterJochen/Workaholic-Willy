@@ -49,14 +49,24 @@ def _mesh_backend_available() -> bool:
 
 
 class _RecordingPlanner:
-    """Answers `check_joint_path` and records what it was asked."""
+    """Answers `check_joint_path` and records what it was asked, and at what clearance.
+
+    It plans nothing, so a line it or the guards refuse is refused: a plan around it has its own tests
+    (tests/test_a_joint_target_goes_to_its_twin_and_around_what_its_line_hits.py).
+    """
 
     def __init__(self, verdict: JointCheckVerdict | Exception | None = None) -> None:
         self._verdict = verdict
         self.checked: list[list[float]] | None = None
+        self.clearance_mm: float | None = None
+        self.last_refusal = None
 
-    def check_joint_path(self, samples, *, refresh=True):
+    def plan_joint(self, goal, *, refresh=True, **_):
+        return None
+
+    def check_joint_path(self, samples, *, refresh=True, clearance_mm=0.0):
         self.checked = [list(s) for s in samples]
+        self.clearance_mm = clearance_mm
         if isinstance(self._verdict, Exception):
             raise self._verdict
         if self._verdict is None:
@@ -109,6 +119,7 @@ class TheWholeJointPathIsJudgedTests(unittest.TestCase):
         self.assertGreater(len(planner.checked), 2, "the planner saw the endpoints and no line")
         np.testing.assert_allclose(planner.checked[0], _HERE, atol=1e-9)
         np.testing.assert_allclose(planner.checked[-1], _THERE, atol=1e-9)
+        self.assertEqual(10.0, planner.clearance_mm, "the line was not judged at safety.planned_motion's clearance")
 
     def test_one_movej_reaches_the_controller_and_it_is_the_goal(self) -> None:
         arm = _arm()

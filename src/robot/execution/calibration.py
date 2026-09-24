@@ -33,22 +33,47 @@ When all poses are processed the calibrator solves for ``T_cam_to_base``
 validated. Both metrics (RMSE, max error) are carried on
 :class:`CalibrationResult`.
 
-A generated sweep runs in bearing order round the base
-(:func:`order_by_bearing`), and a JSON file runs in the order it was
-written, with a warning where a joint turns more than half a turn.
+Stations run in the order they were given. Nothing here generates one:
+every station is one somebody wrote down, taught on the pendant, or
+guided the arm to by hand.
 
-An aimed sweep (:meth:`CalibrationRoutine.run_aimed`, eye in hand) aims
-the CAMERA at one marker lying flat at a known place: it first looks from
-where the arm stands (:meth:`CalibrationRoutine.look`, nothing moved),
-estimates where the camera sits on the tool from that one view, and
-visits a cone of views round the marker (``camera_aim``), each rolling
-the camera about its line of sight, under the aim's heading or, where
-that admits fewer views than the solve needs, the heading that admits
-the most. Every view the marker is seen in refines the estimate, and the
-views still to come are aimed afresh from it. A view that cannot be aimed or reached is a
-:class:`SkippedStation`: reported with its reason, never moved to. Each
-station that is moved to is a :class:`Pose` the arm plans and judges
-when it moves, as any other.
+Hand guiding
+------------
+Two flows hand the arm to a person, on an arm that offers it
+(:class:`~src.robot.core.freedrive.SupportsFreedrive`, the UR teach mode);
+an arm without it has fixed stations only, and asking for either refuses
+with :class:`~src.robot.execution.hand_guiding.HandGuidingRefused` before
+anything moves.
+
+* **Adjust** (``run_with_poses(adjust=True)``, ``run_from_json(adjust=True)``):
+  at each fixed station the arm reached, it is freed so a person can
+  fine-tune the view by hand; Enter (after the stillness gate) holds it
+  where it stands and the station is judged there. Before the next
+  automatic move the console asks for the hands off the arm and counts
+  down three seconds.
+* **Freedrive** (:meth:`CalibrationRoutine.run_freedrive`): nothing moves
+  by itself. The person moves the arm to a pose where the camera sees the
+  board and presses Enter; the arm is held, settled, its TCP read and one
+  frame judged, and it is freed again, until ``samples`` counted or the
+  person finishes. Given stations, each is a target the preview shows the
+  way to, in millimetres and degrees along the tool's own axes.
+
+Both show the controller payload and ask whether it is right before the
+first free, sample the free arm at 50 Hz (which feeds the vendor's crash
+watchdog), and show a sample outside the cable window or the workspace
+box in red, where Enter does not capture; a boundary never holds or stops
+the arm. Each station counted by hand is written, joints first, to a
+stations file :func:`~src.robot.execution.pose_provider.load_stations`
+reads back, so the sweep can be run again without hands
+(``run_from_json``). The file a run reads its stations from is never the
+file it writes (:func:`stations_file_to_write`): a replay with ``adjust``
+that names its own file to save to writes ``<name>.adjusted.json`` beside
+it, so a replay finished partway keeps every station it was given.
+
+Once a person has guided the arm, the routine's guide asks for the hands
+off it and counts down before the next move the routine commands, adjust
+or not: a replay run on a routine that has just been guided by hand does
+not drive before that.
 
 When the sweep stops
 --------------------
@@ -102,6 +127,8 @@ commanded or which sample counts; it says why.
 
 from __future__ import annotations
 
+import math
+import os
 import re
 import time
 from collections.abc import Callable, Sequence
@@ -128,33 +155,31 @@ from src.robot.constants import ROBOT_LOG_DIR, ROBOT_LOG_FILE
 from src.robot.core import (
     CameraWorldDecline,
     CameraWorldStamp,
-    JointPositions,
     MotionStatus,
     RobotArm,
     RobotEmergencyStop,
 )
 from src.robot.core.camera_world import without_camera_world
+from src.robot.core.freedrive import FreedriveSample, SupportsFreedrive
 from src.robot.events import RobotCalibrationEvent, RobotCalibrationEventListener
-from src.robot.execution.camera_aim import (
-    AimedSweep,
-    ArmReach,
-    HeadingChoice,
-    Look,
-    MarkerAim,
-    MountEstimate,
-    NotAimed,
-    View,
-    estimate_camera_in_tool,
-    flange_in_tool_mm,
+from src.robot.execution.hand_guiding import (
+    CAPTURE,
+    FINISH,
+    HandGuide,
+    HandGuidingLimits,
+    HandGuidingRefused,
+    offset_in_tool,
+    sample_pose,
 )
 from src.robot.execution.pose_provider import (
+    JOINT_NAMES,
     JointStation,
     PoseProvider,
-    SkippedStation,
     Station,
     StationScreen,
-    joint_hop,
     load_stations,
+    station_record,
+    write_stations,
 )
 from src.robot.safety.workspace import WorkspaceGuard
 from src.utility.log_cfg import create_logger
@@ -220,9 +245,9 @@ class PoseVerdict:
       file, or a joint station, whose grasp centre is outside the box or too close to a station kept before it);
     * ``not_boxed``: a joint station whose grasp centre the arm could not place, so the box never saw it and
       nothing moved;
-    * ``outside_workspace``, ``out_of_reach``, ``outside_joint_window``, ``too_tilted`` or ``not_aimed``: a view of
-      an aimed sweep that could not be aimed or reached (a :class:`SkippedStation`), so nothing moved;
     * ``move_rejected``: the arm refused or failed the move;
+    * ``not_captured``: an adjusted station the person skipped (``s``) or finished the sweep at (``q``), so no
+      frame was taken;
     * ``not_steady``: the arm did not report steady after two waits, so no frame was taken;
     * ``marker_not_found``, ``sample_rejected`` or ``exception``,
 
@@ -273,16 +298,12 @@ class CalibrationResult:
         move in command order, rejected moves included. A move that raised
         returned no result and has no stamp.
     pose_log : tuple of PoseVerdict
-        Each pose the sweep visited, in order: counted, or why not.
-    aim_estimates : tuple of MountEstimate
-        For an aimed sweep, each estimate of where the camera sits on the
-        tool that its stations were aimed from, in order: the first look's
-        (or the mount stated for a look that saw nothing), then each
-        refinement. Empty for any other sweep.
-    aim_heading : HeadingChoice or None
-        For an aimed sweep, the heading its stations kept: the aim's, or the
-        one that admitted the most views where the aim's admitted fewer than
-        the solve needs. ``None`` for any other sweep.
+        Each pose the sweep visited, in order: counted, or why not. For a
+        hand-guided run, each capture the person asked for.
+    stations_path : str or None
+        The stations file a run guided by hand wrote, one joint station per
+        counted pose, which ``run_from_json`` replays without hands.
+        ``None`` for a run that wrote none.
     """
 
     T_cam_to_base: np.ndarray | None
@@ -296,8 +317,41 @@ class CalibrationResult:
     mode: CalibrationMode = MountingMode.EYE_TO_HAND
     camera_worlds: tuple[CameraWorldStamp, ...] = ()
     pose_log: tuple[PoseVerdict, ...] = ()
-    aim_estimates: tuple[MountEstimate, ...] = ()
-    aim_heading: HeadingChoice | None = None
+    stations_path: str | None = None
+
+
+#: How many counted samples a hand-guided run collects unless its caller says otherwise
+#: (``robot.calibration.freedrive_samples`` in a tree).
+DEFAULT_FREEDRIVE_SAMPLES = 15
+
+
+def stations_file_to_write(read_from: str | Path | None, save_to: str | Path | None) -> str | None:
+    """Where a run writes the stations it counts by hand: ``save_to``, unless that is the file ``read_from`` names.
+
+    A run begins its stations file afresh and writes it after every pose it counts, so a run that wrote into the
+    file its own stations came from would leave, when finished partway (``q``), one station of the many it was
+    given. That file is never written over: the stations go to ``<name>.adjusted<suffix>`` beside it instead
+    (``eye_in_hand_wrist_stations.json`` gives ``eye_in_hand_wrist_stations.adjusted.json``). The same file is
+    the same whichever way it is spelt: relative or absolute, through ``..``, a link, or in another case where
+    the file system ignores case. ``None`` when there is nowhere to write.
+    """
+    if save_to is None:
+        return None
+    if read_from is None or not _same_file(read_from, save_to):
+        return str(save_to)
+    path = Path(save_to)
+    beside = path.with_name(f"{path.stem}.adjusted{path.suffix}")
+    while _same_file(read_from, beside):  # a link named like the one beside it back to the file read
+        beside = beside.with_name(f"{beside.stem}.adjusted{beside.suffix}")
+    return str(beside)
+
+
+def _same_file(one: str | Path, other: str | Path) -> bool:
+    """Whether two paths name one file: the file system's answer when both exist, else their absolute spellings."""
+    try:
+        return os.path.samefile(one, other)
+    except OSError:
+        return os.path.normcase(os.path.abspath(one)) == os.path.normcase(os.path.abspath(other))
 
 
 class CalibrationRoutine:
@@ -362,6 +416,14 @@ class CalibrationRoutine:
         that plans with cuRobo each move then says DECLINED with this
         reason, and an arm whose live camera world is wired refuses a
         declined planned move. A move no planner plans says UNPLANNED.
+    hand_guide : HandGuide, keyword only
+        The console side of hand guiding (the adjust step and
+        :meth:`run_freedrive`): where the person reads and types, the preview
+        it shows in, and the clock it runs on. Left unset, the terminal and
+        no window.
+    images_dir : str or Path, keyword only
+        Where each counted sample's judged frame is written as a PNG, when the
+        marker source keeps it (``last_frame``). ``None`` writes none.
     """
 
     #: The decline the sweep's moves run under. ``__init__`` sets it from the caller or the
@@ -377,9 +439,13 @@ class CalibrationRoutine:
     #: The verdict of each pose visited since the run began, in order. Kept on the routine as well as on the
     #: result, so a caller still has it when the solve raises.
     pose_log: tuple[PoseVerdict, ...] = ()
-    #: The aimed sweep of the last :meth:`run_aimed`, ``None`` before one; its ``estimates`` are what the stations
-    #: were aimed from, kept here as well as on the result for a solve that raises.
-    aimed: AimedSweep | None = None
+    #: The stations file the last run guided by hand wrote, ``None`` before one; kept here as well as on the result
+    #: for a solve that raises, because the stations are what makes the run repeatable without hands.
+    stations_path: str | None = None
+    #: The console side of hand guiding; ``__init__`` sets it, and a routine built without ``__init__`` has none.
+    hand_guide: HandGuide | None = None
+    _images_dir: Path | None = None
+    _stations: list[dict[str, Any]] = []  # noqa: RUF012 (rebound whole by every run, never mutated)
 
     def __init__(
         self,
@@ -398,6 +464,8 @@ class CalibrationRoutine:
         marker_source: MarkerPoseProvider | None = None,
         *,
         camera_world: Maybe[CameraWorldDecline] = UNSET,
+        hand_guide: HandGuide | None = None,
+        images_dir: str | Path | None = None,
     ):
         if arm is None:
             raise ValueError("CalibrationRoutine requires arm=RobotArm.")
@@ -454,6 +522,8 @@ class CalibrationRoutine:
         self.settle_time_s = max(0.0, float(settle_time_s))
         self.calibration_mode = selected_mode
         self._camera_world = camera_world if chosen(camera_world) else _SWEEP_DECLINES[selected_mode]
+        self.hand_guide = hand_guide
+        self._images_dir = Path(images_dir) if images_dir is not None else None
 
     @staticmethod
     def _build_calibrator(
@@ -492,162 +562,133 @@ class CalibrationRoutine:
         poses_path: str | Path,
         T_tool_to_marker: np.ndarray | None = None,
         dataset_save_path: str | None = None,
+        *,
+        adjust: bool = False,
+        stations_save_path: str | Path | None = None,
     ) -> CalibrationResult:
         """Run a calibration using pre-planned stations from a JSON file, in the order it lists them.
 
         The records may be poses or joint stations (:mod:`pose_provider`), and every record is checked
         before anything moves. Each station is screened as the sweep reaches it: one whose grasp centre is
         outside the workspace box, or too close to a station kept before it, is reported with its label and
-        reason (``outside_workspace``, ``too_similar``) and never moved to.
+        reason (``outside_workspace``, ``too_similar``) and never moved to. ``adjust`` and
+        ``stations_save_path`` are :meth:`run_with_poses`'s, except that ``poses_path`` is never written over: a
+        ``stations_save_path`` naming that same file writes ``<name>.adjusted.json`` beside it instead, says so
+        on the guide's console and in the log, and the result's ``stations_path`` names where the stations went.
         """
         stations = load_stations(poses_path)
         self.logger.info("Loaded %d stations from %s.", len(stations), poses_path)
-        return self._execute(stations, T_tool_to_marker, dataset_save_path, screen_all=True)
-
-    def run_auto(
-        self,
-        n_poses: int,
-        T_tool_to_marker: np.ndarray | None = None,
-        dataset_save_path: str | None = None,
-        base_orientation: list[float] | None = None,
-        orientation_spread_deg: float = 15.0,
-        max_attempts_per_pose: int = 200,
-        seed: int | None = None,
-    ) -> CalibrationResult:
-        """Run a calibration using auto-generated diverse poses, in bearing order round the base.
-
-        The round starts at the end nearer where the tool stands, when the arm says where that is.
-        """
-        poses = self.pose_provider.generate(
-            n_poses,
-            base_orientation=base_orientation,
-            orientation_spread_deg=orientation_spread_deg,
-            max_attempts_per_pose=max_attempts_per_pose,
-            seed=seed,
-            start_mm=self._tool_position_mm(),
-        )
-        return self._execute(poses, T_tool_to_marker, dataset_save_path)
+        # The file read is never the file written: a run begins its stations file afresh and writes it after every
+        # pose counted, so a replay finished partway would leave one station of the many it was given.
+        save_to = stations_file_to_write(poses_path, stations_save_path)
+        if stations_save_path is not None and save_to != str(stations_save_path):
+            said = (f"{stations_save_path} is the file the stations were read from, so it is not written over: the "
+                    f"stations counted by hand go to {save_to}")
+            self.logger.warning("%s.", said)
+            if self.hand_guide is not None:
+                self.hand_guide.console.say(f"{said}.")
+        return self._execute(stations, T_tool_to_marker, dataset_save_path, screen_all=True, adjust=adjust,
+                             stations_save_path=save_to)
 
     def run_with_poses(
         self,
         poses: Sequence[Station],
         T_tool_to_marker: np.ndarray | None = None,
         dataset_save_path: str | None = None,
+        *,
+        adjust: bool = False,
+        stations_save_path: str | Path | None = None,
     ) -> CalibrationResult:
         """Run a calibration using an explicit, caller-supplied list of stations, in order.
 
-        For viewpoint patterns that ``PoseProvider.generate`` cannot express, such as eye-in-hand
-        look-at viewpoints that must aim a wrist camera at a fixed marker, the caller plans the
-        poses itself and feeds them here. Identical collection and solve path to ``run_auto`` and
-        ``run_from_json``: move, settle, read FK, capture marker, add_sample, then AX=XB.
+        Move, settle, read the TCP, capture the marker, add the sample, then AX=XB, as ``run_from_json``. A
+        station is a :class:`Pose`, which the arm's own gates box when it moves, or a :class:`JointStation`,
+        which is screened first as a JSON file's stations are.
 
-        A station is a :class:`Pose`, which the arm's own gates box when it moves, or a
-        :class:`JointStation`, which is screened first as a JSON file's stations are.
+        ``adjust`` frees the arm at each station it reached so a person can fine-tune the view by hand (see
+        the module's *Hand guiding*): Enter holds it where it stands and the station is judged there, and
+        before the next automatic move the console asks for the hands off the arm and counts down. It needs
+        an arm that offers hand guiding and refuses, before anything moves, on one that does not. Each station
+        counted by hand is written to ``stations_save_path`` when given, as a joint station.
         """
-        return self._execute(list(poses), T_tool_to_marker, dataset_save_path)
+        return self._execute(list(poses), T_tool_to_marker, dataset_save_path, adjust=adjust,
+                             stations_save_path=stations_save_path)
 
-    def look(self) -> Look:
-        """What the camera sees from where the arm stands. Nothing moves.
-
-        Waits for the arm to report steady as after any move, reads the TCP, then takes one judged
-        frame through the marker source, in the order a sweep station does, so the TCP and the frame
-        belong together. ``marker_in_camera`` is ``None`` where the source found no marker, with its
-        sentence in ``why_not``. Raises :class:`NotAimed` where the arm does not report steady, and
-        lets a camera that fails raise as it would at any station.
-        """
-        if not self._wait_for_settle():
-            raise NotAimed(
-                f"the arm did not report steady within {self.settle_time_s:g} s, twice, where it stands, so no first "
-                "look was taken and nothing moved")
-        tcp_pose = self._read_actual_tcp_pose()
-        joints = self._joints_now()
-        T_cam_to_marker = self._capture_marker_pose()
-        observation = self._last_observation()
-        why_not = "" if T_cam_to_marker is not None else (
-            str(getattr(observation, "why_not", "") or "") or "the marker source returned no pose")
-        return Look(tool_in_base=tcp_pose, joints=joints, marker_in_camera=T_cam_to_marker, why_not=why_not)
-
-    def run_aimed(
+    def run_freedrive(
         self,
-        aim: MarkerAim,
+        stations: Sequence[Station] | None = None,
+        samples: int = DEFAULT_FREEDRIVE_SAMPLES,
         dataset_save_path: str | None = None,
         *,
-        reach: ArmReach | None = None,
-        margin_mm: float = 0.0,
+        stations_save_path: str | Path | None = None,
     ) -> CalibrationResult:
-        """An eye-in-hand sweep aimed at one marker: look once, estimate the mount, visit a cone of views round it.
+        """A calibration a person guides by hand: nothing moves by itself.
 
-        The first look (:meth:`look`) is taken where the arm stands. Where it sees the marker, the
-        camera's pose in the tool frame is estimated from that one view
-        (:func:`~src.robot.execution.camera_aim.estimate_camera_in_tool`, the camera first taken to
-        stand at the flange when ``reach`` or the arm says where that is); where it does not,
-        ``aim.mount_if_unseen`` is aimed from, and without one :class:`NotAimed` is raised with
-        nothing moved and a sentence saying what to do. The views of ``aim`` are then aimed, screened
-        against the workspace box less ``margin_mm`` and, with ``reach``, against the arm's reach and
-        joint window, and ordered by joint travel from where the arm stands. The sweep visits them in
-        that order, and every view the marker is seen in refines the estimate and re-aims the views
-        still to come (:class:`~src.robot.execution.camera_aim.AimedSweep`). A view that cannot be
-        aimed or reached is reported with its reason and never moved to; every other is a ``Pose``
-        the arm plans and judges when it moves, as any station. Each view also rolls the camera
-        about its line of sight; a rolled station the arm refuses with nothing moved is tried once
-        more with the tool's heading, as ``<label>_r0`` (``AimedSweep.unrolled``).
+        Before the arm is freed, the controller payload is shown and has to be confirmed. Then, until
+        ``samples`` counted or the person finishes (``q``, ESC or closing the preview), the console and the
+        preview ask for a new pose where the camera sees the board; Enter from either, once the arm stood
+        still for half a second, holds the arm, waits for it to settle, reads its TCP, judges one frame and
+        frees it again. Each capture is on the events and the pose log like a station of a sweep. A pose
+        outside the cable window or the workspace box is shown in red and not captured; the arm is never held
+        for it.
 
-        Before any station, the heading: where ``aim.closing_axis`` admits fewer views than the
-        solve's ``min_samples``, the one of ``-y``, ``y``, ``x``, ``-x`` that admits the most is
-        kept instead (``AimedSweep.settle_heading``), the log says so, and
-        :attr:`CalibrationResult.aim_heading` carries the choice. A camera tilted toward the tool's -X
-        under a heading written for one tilted toward +X stands every view outside the box, and the
-        opposite heading stands them inside.
-
-        The first look is not a sample: every sample comes from a station the sweep moved to.
+        ``stations``, when given, are targets and are never moved to: the preview shows the way to the current
+        one along the tool's axes (a joint station through the arm's forward kinematics, else joint by joint),
+        and it moves on after each counted capture or on ``s``. Every counted pose is written to
+        ``stations_save_path`` as it is taken, a stations file ``run_from_json`` replays. The dataset is saved
+        after every counted pose as well, so a run that is stopped keeps what it counted.
         """
-        if self.calibration_mode is not MountingMode.EYE_IN_HAND:
-            raise ValueError("run_aimed aims a camera on the tool, an eye_in_hand sweep; this routine is "
-                             f"{self.calibration_mode.value}")
-        prior = flange_in_tool_mm(reach.flange_to_tcp if reach is not None
-                                  else getattr(self.arm, "active_tool_frame", None))
-        look = self.look()
-        views: tuple[View, ...] = ()
-        if look.view is None:
-            if aim.mount_if_unseen is None:
-                raise NotAimed(
-                    f"the first look, from where the arm stands, saw no marker ({look.why_not}), so no station could "
-                    "be aimed and nothing moved. Jog the arm on the pendant until the marker is in the camera's view, "
-                    f"about {aim.distance_mm:.0f} mm from it and seen from one side rather than from straight above, "
-                    "then run this again; or state the camera's mount (MarkerAim.mount_if_unseen) to aim from. To "
-                    "see the camera while you jog, build the cell in the operator console (python -m api --profile "
-                    "<cell>) and watch its camera view, which shows a frame taken now (api/viewfinder.py); stop the "
-                    "console before this runs, because both open the camera")
-            mount = aim.mount_if_unseen
-            self.logger.warning("First look: no marker (%s). Aiming from %s until a station sees it.",
-                                look.why_not, mount.source)
-        else:
-            try:
-                mount = estimate_camera_in_tool(look.tool_in_base, look.marker_in_camera, aim.marker_mm,
-                                                camera_prior_in_tool_mm=prior)
-            except ValueError as exc:
-                raise NotAimed(
-                    f"the first look saw the marker, and its view cannot be aimed from: {exc}. Nothing moved; jog the "
-                    "arm and run this again") from None
-            views = (look.view,)
-            self.logger.info("First look: %s.", mount.line())
-        sweep = AimedSweep(aim, mount, box=self.guard.limits, margin_mm=margin_mm, reach=reach,
-                           camera_prior_in_tool_mm=prior, joints_now=self._joints_now,
-                           tool_now=self._tool_position_mm)
-        self.aimed = sweep
-        start_tool = [float(v) for v in look.tool_in_base.position_mm]
-        heading = sweep.settle_heading(self._min_samples() or 1, start_joints=look.joints, start_tool_mm=start_tool)
-        if heading.changed or dict(heading.admitted)[heading.asked] < heading.need:
-            self.logger.warning("Heading: %s.", heading.line())
-        else:
-            self.logger.info("Heading: %s.", heading.line())
-        planned = sweep.stations(start_joints=look.joints, start_tool_mm=start_tool)
-        moving = sum(1 for station in planned if station.pose is not None)
-        self.logger.info("%s: %d of %d views aimed, %s.", sweep.aim.line(), moving, len(planned),
-                         "ordered by joint travel" if reach is not None and look.joints is not None
-                         else "ordered by the tool's travel")
-        return self._execute([station.as_station() for station in planned], None, dataset_save_path,
-                             replan=sweep.replan, views=views, retry=sweep.unrolled)
+        arm = self._freedrive_arm("a hand-guided calibration")
+        guide = self._guide()
+        targets = list(stations or ())
+        need = self._min_samples()
+        wanted = max(1, int(samples))
+        self._begin(stations_save_path)
+        self.logger.info("Hand-guided calibration: %d samples wanted, %d target stations (marker_id=%d).", wanted,
+                         len(targets), self.marker_id)
+        guide.confirm_payload(arm)
+        limits = HandGuidingLimits.of(arm, self.guard.limits)
+        guide.console.say(f"Watched while you guide the arm: {limits.window}.")
+        accepted = attempts = 0
+        target = 0
+        stopped: SweepStopped | None = None
+        with arm.freedrive() as session:
+            session.free()
+            while accepted < wanted:
+                aim = targets[target] if target < len(targets) else None
+                where = (f"to target {aim.label or target + 1!r} ({target + 1} of {len(targets)})" if aim is not None
+                         else "to a new pose where the camera sees the board")
+                choice = guide.wait(session, limits, banner=f"MOVE THE ARM BY HAND {where}, then Enter",
+                                    status=self._guidance(aim, accepted, wanted))
+                if choice == FINISH:
+                    break
+                if choice != CAPTURE:
+                    if aim is not None:
+                        target += 1
+                    continue
+                attempts += 1
+                label = aim.label if aim is not None and aim.label else f"hand_{attempts:02d}"
+                session.hold()
+                try:
+                    tcp = self._judge_here(attempts, wanted, label, accepted, need)
+                except (RuntimeError, OSError, ValueError) as exc:
+                    self.logger.error("Capture %d '%s' raised: %s", attempts, label, exc)
+                    why = self._stopped_state()
+                    if why is not None:
+                        stopped = self._stop(attempts, wanted, label, "exception", str(exc), why)
+                        break
+                    self._reject(attempts, wanted, label, "exception", str(exc))
+                    tcp = None
+                if tcp is not None:
+                    accepted += 1
+                    self._record_station(label, tcp)
+                    if dataset_save_path:
+                        self.calibrator.save_dataset(dataset_save_path)
+                    if aim is not None:
+                        target += 1
+                guide.console.say(f"{accepted} of {wanted} counted.")
+                session.free()
+        return self._finish(accepted, attempts, dataset_save_path, stopped)
 
     # ------------------------------------------------------------------
     # Core loop
@@ -655,62 +696,55 @@ class CalibrationRoutine:
 
     def _execute(
         self,
-        poses: Sequence[Station | SkippedStation],
+        poses: Sequence[Station],
         T_tool_to_marker: np.ndarray | None,
         dataset_save_path: str | None,
         *,
         screen_all: bool = False,
-        replan: Callable[[tuple[View, ...], tuple[str, ...]], Sequence[Station | SkippedStation] | None] | None = None,
-        views: Sequence[View] = (),
-        retry: Callable[[str], Station | None] | None = None,
+        adjust: bool = False,
+        stations_save_path: str | Path | None = None,
     ) -> CalibrationResult:
         """Visit each station in order, then solve. ``screen_all`` screens poses too, not only joint stations.
 
-        A :class:`SkippedStation` is reported with its reason and never moved to. ``replan``, when given, is called
-        after every frame in which the marker was posed, with every view so far (``views`` first) and the labels of
-        the stations reached so far; a sequence it returns replaces the stations still to come, and ``None`` keeps
-        them. ``retry``, when given, is called with a station's label after the arm refused it and the sweep goes on
-        (nothing moved); a station it returns is visited next, and ``None`` visits none. Each station either returns is
-        commanded, judged and reported as any other.
+        With ``adjust`` the arm is refused before anything moves unless it offers hand guiding, the payload is
+        confirmed before the first move, and each station the arm reached is adjusted by hand
+        (:meth:`_adjusted`) before it is judged.
+
+        Before every move, adjust or not, the routine's hand guide (when it has one) asks for the hands off the
+        arm and counts down if a person has guided the arm since the last countdown (``HandGuide.touched``): a
+        replay run on a routine that just ran :meth:`run_freedrive` drives only after that, and ``q`` there
+        moves nothing. A guide nobody touched asks nothing.
         """
         self.logger.info(
             "Starting calibration with %d poses (marker_id=%d).",
             len(poses), self.marker_id,
         )
 
-        if replan is None:
-            self.aimed = None  # the estimates of an earlier aimed run belong to that run's result
+        guide: HandGuide | None = self.hand_guide
+        if adjust:
+            arm = self._freedrive_arm("--adjust, which frees the arm at each station,")
+            guide = self._guide()
+            guide.confirm_payload(arm)
         accepted = 0
-        stations: list[Station | SkippedStation] = list(poses)
-        seen_views: list[View] = list(views)
-        reached: list[str] = []
+        stations: list[Station] = list(poses)
         need = self._min_samples()
-        self._camera_worlds = ()
-        self.pose_log = ()
+        self._begin(stations_save_path)
         screen = self.pose_provider.screen()
         stopped: SweepStopped | None = None
         total = len(stations)
-        i = 0
-        while i < len(stations):
-            station = stations[i]
-            i += 1
-            idx, total = i, len(stations)
-            if isinstance(station, SkippedStation):
-                reached.append(station.label)
-                self.logger.warning("Pose %d/%d '%s' skipped, %s: %s", idx, total, station.label, station.reason,
-                                    station.detail)
-                self._reject(idx, total, station.label, station.reason, station.detail)
-                continue
+        for idx, station in enumerate(stations, start=1):
             if not isinstance(station, (Pose, JointStation)):
                 raise TypeError(
                     f"CalibrationRoutine requires Pose or JointStation targets; got {type(station).__name__}."
                 )
             label = station.label or ""
-            reached.append(label)
             self.logger.info("=== Pose %d/%d '%s' ===", idx, total, station.label)
             target = self._screened(idx, total, station, screen, screen_all=screen_all)
             if target is None:
                 continue
+            if guide is not None and not guide.hands_off():
+                self.logger.info("The person finished the sweep before pose %d/%d '%s'.", idx, total, label)
+                break
             self._emit_moving_to_pose(idx, total, target, accepted, need, station=station)
 
             # Calibration hops between maximally-diverse viewpoints, so the motion-continuity guard
@@ -738,77 +772,19 @@ class CalibrationRoutine:
                                              message=message)
                         break
                     self._reject(idx, total, label, "move_rejected", detail, status=status, message=message)
-                    if retry is not None:
-                        try:
-                            instead = retry(label)
-                        except Exception:  # noqa: BLE001 (the hook chooses a target only; the sweep goes on)
-                            self.logger.exception("The retry hook raised; the sweep goes on to the next station.")
-                            instead = None
-                        if instead is not None:
-                            self.logger.info("Pose %d/%d '%s' refused; its view is tried once more as '%s'.", idx,
-                                             total, label, getattr(instead, "label", "") or "")
-                            stations.insert(i, instead)
                     continue
 
-                if not self._wait_for_settle():
-                    self._reject(idx, total, label, "not_steady",
-                                 f"the arm did not report steady within {self.settle_time_s:g} s, twice, after the "
-                                 "move, so no frame was taken")
-                    continue
-
-                # The TCP the arm reports, not the station: the sample and the guard's history both rest on
-                # where the arm is, and a joint station has no pose of its own to stand in for it.
-                tcp_pose = self._read_actual_tcp_pose()
-                T_base_to_tool = pose_to_matrix(tcp_pose)
-
-                T_cam_to_marker = self._capture_marker_pose()
-                observation = self._last_observation()
-                if T_cam_to_marker is None:
-                    why_not = str(getattr(observation, "why_not", "") or "") or (
-                        "the marker source returned no pose")
-                    # The one verdict that said nothing on the console: the log jumped to the next pose.
-                    self.logger.warning("Pose %d/%d '%s': no marker pose: %s", idx, total, label, why_not)
-                    self._reject(idx, total, label, "marker_not_found", why_not,
-                                 marker_id=self.marker_id, why_not=why_not)
-                    continue
-
-                seen = self._seen(T_cam_to_marker, observation)
-                if seen["hint"]:
-                    self.logger.warning("Pose %d/%d '%s': %s", idx, total, label, seen["hint"])
-                self._emit(RobotCalibrationEvent.MARKER_DETECTED, {
-                    "index": idx, "total": total, "label": label, "marker_id": self.marker_id, **seen,
-                })
-
-                added = self.calibrator.add_sample(
-                    T_base_to_tool, T_cam_to_marker, marker_id=self.marker_id,
-                )
-                if added:
-                    accepted += 1
-                    self.guard.accept(tcp_pose)
-                    self.logger.info("Sample %d accepted.", accepted)
-                    self.pose_log = (*self.pose_log, PoseVerdict(idx, label, True, detail=seen["summary"]))
-                    self._emit(RobotCalibrationEvent.POSE_ACCEPTED, {
-                        "index": idx, "total": total, "label": label, "accepted": accepted,
-                        "min_samples": need, "detail": seen["summary"],
-                    })
+                finished = False
+                if guide is None or not adjust:
+                    counted = self._judge_here(idx, total, label, accepted, need)
                 else:
-                    rejection = getattr(self.calibrator, "last_rejection", None)
-                    detail = rejection.render() if rejection is not None else "the calibrator refused the sample"
-                    self.logger.warning("Sample rejected by calibrator: %s.", detail)
-                    extra = {"rejection": rejection.to_dict()} if rejection is not None else {}
-                    self._reject(idx, total, label, "sample_rejected", detail, **extra)
-
-                if replan is not None:
-                    # Every view the marker was posed in, counted or not: what the camera saw is the same
-                    # evidence of where it sits whether or not the solve keeps the sample.
-                    seen_views.append(View.of(tcp_pose, T_cam_to_marker))
-                    try:
-                        upcoming = replan(tuple(seen_views), tuple(reached))
-                    except Exception:  # noqa: BLE001 (the hook chooses targets only; the planned ones stay)
-                        self.logger.exception("The re-plan hook raised; the stations still to come stay as planned.")
-                        upcoming = None
-                    if upcoming is not None:
-                        stations = stations[:i] + list(upcoming)
+                    finished, counted = self._adjusted(guide, idx, total, label, accepted, need)
+                    if counted is not None:
+                        self._record_station(label, counted)
+                if counted is not None:
+                    accepted += 1
+                if finished:
+                    break
 
             except (RuntimeError, OSError, ValueError) as exc:
                 # RuntimeError: ur_rtde controller errors / IK failures.
@@ -827,6 +803,28 @@ class CalibrationRoutine:
                 self._reject(idx, total, label, "exception", str(exc))
                 continue
 
+        return self._finish(accepted, total, dataset_save_path, stopped)
+
+    def _begin(self, stations_save_path: str | Path | None) -> None:
+        """A run's fresh state: no stamps, no verdicts, no stations counted by hand yet."""
+        self._camera_worlds = ()
+        self.pose_log = ()
+        self._stations = []
+        self.stations_path = str(stations_save_path) if stations_save_path is not None else None
+
+    @property
+    def stations_written(self) -> str | None:
+        """The stations file this run wrote, once it recorded at least one station there; ``None`` before.
+
+        :attr:`stations_path` is where the run would write, set when it begins; a file already standing there may be
+        an earlier run's. This names it only for stations of this run, so a run that failed before it counted
+        anything never hands on an old file as its own.
+        """
+        return self.stations_path if self._stations else None
+
+    def _finish(self, accepted: int, total: int, dataset_save_path: str | None,
+                stopped: SweepStopped | None) -> CalibrationResult:
+        """Save the dataset, raise a stop once it is saved, then solve and build the result."""
         self.logger.info(
             "Collection done: %d / %d samples accepted.", accepted, total,
         )
@@ -844,6 +842,8 @@ class CalibrationRoutine:
                 ds_path = str(self.calibrator.save_dataset(dataset_save_path))
             if ds_path is not None:
                 self.logger.info("Dataset saved to %s.", ds_path)
+        if self.stations_written is not None:
+            self.logger.info("%d stations counted by hand written to %s.", len(self._stations), self.stations_written)
         if stopped is not None:
             raise stopped
 
@@ -854,6 +854,7 @@ class CalibrationRoutine:
                 f"{self.calibration_mode.value}."
             )
         transform = result.transform
+        stations_path = self.stations_written
 
         if self.calibration_mode is MountingMode.EYE_TO_HAND:
             T_cam_to_base = transform.to_matrix()
@@ -874,8 +875,7 @@ class CalibrationRoutine:
                 mode=self.calibration_mode,
                 camera_worlds=self._camera_worlds,
                 pose_log=self.pose_log,
-                aim_estimates=self._aim_estimates(),
-                aim_heading=self._aim_heading(),
+                stations_path=stations_path,
             )
 
         T_cam_to_tool = transform.to_matrix()
@@ -895,9 +895,187 @@ class CalibrationRoutine:
             mode=self.calibration_mode,
             camera_worlds=self._camera_worlds,
             pose_log=self.pose_log,
-            aim_estimates=self._aim_estimates(),
-            aim_heading=self._aim_heading(),
+            stations_path=stations_path,
         )
+
+    def _judge_here(self, idx: int, total: int, label: str, accepted: int, need: int | None) -> Pose | None:
+        """Judge the station the arm stands at: settle, read the TCP, take one frame, hand the pair to the calibrator.
+
+        Returns the TCP the sample was taken at when it counted, ``None`` when it did not, and every verdict is
+        on the pose log and the events. Raises what the arm or the camera raise, for the caller's recovery.
+        """
+        if not self._wait_for_settle():
+            self._reject(idx, total, label, "not_steady",
+                         f"the arm did not report steady within {self.settle_time_s:g} s, twice, after the "
+                         "move, so no frame was taken")
+            return None
+
+        # The TCP the arm reports, not the station: the sample and the guard's history both rest on
+        # where the arm is, and a joint station has no pose of its own to stand in for it.
+        tcp_pose = self._read_actual_tcp_pose()
+        T_base_to_tool = pose_to_matrix(tcp_pose)
+
+        T_cam_to_marker = self._capture_marker_pose()
+        observation = self._last_observation()
+        if T_cam_to_marker is None:
+            why_not = str(getattr(observation, "why_not", "") or "") or (
+                "the marker source returned no pose")
+            # The one verdict that said nothing on the console: the log jumped to the next pose.
+            self.logger.warning("Pose %d/%d '%s': no marker pose: %s", idx, total, label, why_not)
+            self._reject(idx, total, label, "marker_not_found", why_not,
+                         marker_id=self.marker_id, why_not=why_not)
+            return None
+
+        seen = self._seen(T_cam_to_marker, observation)
+        if seen["hint"]:
+            self.logger.warning("Pose %d/%d '%s': %s", idx, total, label, seen["hint"])
+        self._emit(RobotCalibrationEvent.MARKER_DETECTED, {
+            "index": idx, "total": total, "label": label, "marker_id": self.marker_id, **seen,
+        })
+
+        added = self.calibrator.add_sample(
+            T_base_to_tool, T_cam_to_marker, marker_id=self.marker_id,
+        )
+        if not added:
+            rejection = getattr(self.calibrator, "last_rejection", None)
+            detail = rejection.render() if rejection is not None else "the calibrator refused the sample"
+            self.logger.warning("Sample rejected by calibrator: %s.", detail)
+            extra = {"rejection": rejection.to_dict()} if rejection is not None else {}
+            self._reject(idx, total, label, "sample_rejected", detail, **extra)
+            return None
+        self.guard.accept(tcp_pose)
+        self.logger.info("Sample %d accepted.", accepted + 1)
+        self.pose_log = (*self.pose_log, PoseVerdict(idx, label, True, detail=seen["summary"]))
+        self._emit(RobotCalibrationEvent.POSE_ACCEPTED, {
+            "index": idx, "total": total, "label": label, "accepted": accepted + 1,
+            "min_samples": need, "detail": seen["summary"],
+        })
+        self._keep_image(idx, label)
+        return tcp_pose
+
+    def _adjusted(self, guide: HandGuide, idx: int, total: int, label: str, accepted: int,
+                  need: int | None) -> tuple[bool, Pose | None]:
+        """The adjust step at a station the arm reached: ``(finished, the TCP it counted at or None)``.
+
+        The arm is freed for the person to fine-tune the view, and held on Enter once it stood still; the
+        station is judged there, inside the session. ``s`` leaves the station uncounted and ``q`` finishes the
+        sweep here, each as ``not_captured``. Leaving the session holds the arm and gives motion back.
+        """
+        arm = self._freedrive_arm("--adjust")
+        limits = HandGuidingLimits.of(arm, self.guard.limits)
+        with arm.freedrive() as session:
+            session.free()
+            choice = guide.wait(session, limits,
+                                banner=f"ADJUST pose {idx}/{total} {label!r} BY HAND until the view is right, then Enter",
+                                status=self._guidance(None, accepted, total))
+            session.hold()
+            if choice != CAPTURE:
+                said = "finished the sweep here (q)" if choice == FINISH else "skipped this station (s)"
+                self._reject(idx, total, label, "not_captured", f"the person {said}, so no frame was taken")
+                return choice == FINISH, None
+            return False, self._judge_here(idx, total, label, accepted, need)
+
+    # ------------------------------------------------------------------
+    # Hand guiding helpers
+    # ------------------------------------------------------------------
+
+    def _freedrive_arm(self, what: str) -> SupportsFreedrive:
+        """The arm as one a person can guide, or :class:`HandGuidingRefused` before anything moves."""
+        if not isinstance(self.arm, SupportsFreedrive):
+            raise HandGuidingRefused(
+                f"{what} needs an arm a person can guide by hand, and {type(self.arm).__name__} offers no hand "
+                "guiding (SupportsFreedrive; the UR teach mode is one). Run the fixed stations without it; nothing "
+                "moved")
+        return self.arm
+
+    def _guide(self) -> HandGuide:
+        """The console side of hand guiding: the one given, else the terminal with no window."""
+        if self.hand_guide is None:
+            self.hand_guide = HandGuide()
+        return self.hand_guide
+
+    def _guidance(self, aim: Station | None, accepted: int, wanted: int
+                  ) -> Callable[[FreedriveSample], tuple[list[str], float | None]]:
+        """What the preview shows beside a free arm, from each sample: the way to ``aim``, the nearest counted pose
+        and the count. The target's pose is placed once, not per sample."""
+        target: Pose | None = None
+        if isinstance(aim, JointStation):
+            target, _ = self._grasp_centre_at(aim)
+        elif isinstance(aim, Pose):
+            target = aim
+        need = self._min_samples()
+        count = f"{accepted} of {wanted} counted" + (f", the solve needs {need}" if need else "")
+        name = repr(aim.label) if aim is not None and aim.label else "the target"
+
+        def lines(sample: FreedriveSample) -> tuple[list[str], float | None]:
+            said: list[str] = []
+            bar: float | None = None
+            if target is not None:
+                offset = offset_in_tool(sample, target)
+                said.append(f"to {name}: {offset.line()}")
+                bar = offset.closeness
+            elif isinstance(aim, JointStation):
+                turns = [f"{joint} {math.degrees(float(want) - float(have)):+.0f}" for joint, have, want
+                         in zip(JOINT_NAMES, sample.joints_rad, aim.joints.values)]
+                said.append(f"to {name}, turn (deg): {', '.join(turns)}")
+            said += [self._nearest_counted(sample), count]
+            return said, bar
+
+        return lines
+
+    def _nearest_counted(self, sample: FreedriveSample) -> str:
+        """Whether the TCP stands far enough from every pose counted so far to count, by the calibrator's own rule
+        (a stored pose within both ``min_distance_mm`` and ``min_angle_deg`` blocks it), and how far the nearest is."""
+        now = sample_pose(sample).to_matrix()
+        dataset = getattr(self.calibrator, "dataset", None)
+        settings = getattr(self.calibrator, "settings", None)
+        min_mm = float(getattr(settings, "min_distance_mm", 0.0) or 0.0)
+        min_deg = float(getattr(settings, "min_angle_deg", 0.0) or 0.0)
+        nearest: tuple[float, float] | None = None
+        blocking: tuple[float, float] | None = None
+        for stored in (dataset.iter_samples() if dataset is not None else ()):
+            before = np.asarray(stored.T_base_to_tool, dtype=np.float64)
+            distance = float(np.linalg.norm(before[:3, 3] - now[:3, 3]))
+            cos = (float(np.trace(before[:3, :3].T @ now[:3, :3])) - 1.0) / 2.0
+            angle = math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+            if nearest is None or distance < nearest[0]:
+                nearest = (distance, angle)
+            if distance <= min_mm and angle <= min_deg and (blocking is None or distance < blocking[0]):
+                blocking = (distance, angle)
+        if nearest is None:
+            return "no pose counted yet: any view of the board is a new one"
+        if blocking is not None:
+            return (f"too close to a counted pose ({blocking[0]:.0f} mm, {blocking[1]:.0f} deg away): move "
+                    f"{min_mm:g} mm or turn {min_deg:g} deg from it")
+        return f"a new view: the nearest counted pose is {nearest[0]:.0f} mm, {nearest[1]:.0f} deg away"
+
+    def _record_station(self, label: str, tcp: Pose) -> None:
+        """Write a pose counted by hand to the stations file, joints first; a joint read that fails is logged only."""
+        if self.stations_path is None:
+            return
+        try:
+            joints = self.arm.get_joint_positions()
+        except Exception:  # noqa: BLE001 (the sample counted; only its replay record is lost, and said so)
+            self.logger.exception("The joints of '%s' could not be read; it is not in the stations file.", label)
+            return
+        self._stations = [*self._stations, station_record(label, joints, tcp)]
+        write_stations(self.stations_path, self._stations)
+
+    def _keep_image(self, idx: int, label: str) -> None:
+        """Write the judged frame of a counted sample as a PNG, when there is a folder and the source kept it."""
+        frame = getattr(self._marker_source, "last_frame", None)
+        if self._images_dir is None or frame is None:
+            return
+        try:
+            import cv2
+
+            self._images_dir.mkdir(parents=True, exist_ok=True)
+            name = re.sub(r"[^A-Za-z0-9_.-]+", "_", label) or "pose"
+            path = self._images_dir / f"{idx:02d}_{name}.png"
+            if not cv2.imwrite(str(path), np.asarray(frame)):
+                raise OSError(f"cv2.imwrite refused {path}")
+        except Exception:  # noqa: BLE001 (the sample counted; its picture is a record, not a gate)
+            self.logger.exception("The frame of pose %d '%s' was not written.", idx, label)
 
     # ------------------------------------------------------------------
     # Per-pose helpers (each returns success/value or None on skip)
@@ -1138,37 +1316,6 @@ class CalibrationRoutine:
         """The TCP the arm reports now, a typed :class:`Pose` in :attr:`Frame.BASE`, in millimetres."""
         return self.arm.get_tcp_pose()
 
-    def _joints_now(self) -> tuple[float, ...] | None:
-        """The joints the arm stands at, in radians, or ``None`` where it cannot say. Read best effort: only the
-        order of an aimed sweep reads it."""
-        try:
-            joints = self.arm.get_joint_positions()
-        except Exception:  # noqa: BLE001 (an order's input, never a gate's)
-            return None
-        values = getattr(joints, "values", joints)
-        try:
-            return tuple(float(v) for v in values)
-        except (TypeError, ValueError):
-            return None
-
-    def _aim_estimates(self) -> tuple[MountEstimate, ...]:
-        """What the last aimed sweep's stations were aimed from, in order; empty for any other sweep."""
-        return tuple(self.aimed.estimates) if self.aimed is not None else ()
-
-    def _aim_heading(self) -> HeadingChoice | None:
-        """The heading the last aimed sweep's stations kept; ``None`` for any other sweep."""
-        return self.aimed.heading if self.aimed is not None else None
-
-    def _tool_position_mm(self) -> list[float] | None:
-        """Where the tool stands now, in BASE millimetres, or ``None`` where the arm cannot say."""
-        try:
-            pose = self.arm.get_tcp_pose()
-        except Exception:  # noqa: BLE001 (only the order of a generated sweep reads this)
-            return None
-        if not isinstance(pose, Pose) or pose.frame is not Frame.BASE:
-            return None
-        return [float(v) for v in pose.position_mm]
-
     def _capture_marker_pose(self) -> np.ndarray | None:
         """Return T_cam_to_marker (4x4) for the current view, or None if not detected.
 
@@ -1268,8 +1415,7 @@ class CalibrationRoutine:
         # ``x/y/z`` in millimetres, ``rx/ry/rz`` as the axis-angle
         # rotation vector in radians. For a joint station ``pose`` is the
         # grasp centre its joints put the tool at, and the joints ride along
-        # in degrees, with the joints that turn more than half a turn from
-        # where the arm stands.
+        # in degrees.
         axis_angle = pose.axis_angle_rad()
         position = pose.position_mm
         payload: dict[str, Any] = {
@@ -1287,24 +1433,7 @@ class CalibrationRoutine:
         }
         if isinstance(station, JointStation):
             payload["joints_deg"] = [round(value, 3) for value in station.degrees]
-            hop = self._hop_from_here(station)
-            if hop:
-                self.logger.warning("Pose %d/%d '%s': from where the arm stands, %s.", idx, total,
-                                    station.label or "", hop)
-                payload["hop"] = hop
         self._emit(RobotCalibrationEvent.MOVING_TO_POSE, payload)
-
-    def _hop_from_here(self, station: JointStation) -> str:
-        """The joints that turn more than half a turn from where the arm stands to ``station``; ``""`` for none or
-        where the arm cannot say. A warning only: the station runs as written."""
-        try:
-            here = self.arm.get_joint_positions()
-        except Exception:  # noqa: BLE001 (a warning's input; the move reads its own start)
-            return ""
-        if not isinstance(here, JointPositions) or here.dof != station.joints.dof:
-            return ""
-        hop = joint_hop(here, station.joints)
-        return f"{hop}, more than half a turn; it runs as written, the long way round" if hop else ""
 
     def _emit_pose_rejected(
         self, idx: int, total: int, *, reason: str, **extra: Any,

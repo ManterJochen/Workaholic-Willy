@@ -23,6 +23,12 @@ Readings a caller takes after a command
   whether a hold was measured reads this instead.
 * :class:`MeasuresWidth` says whether ``get_width_mm`` is a measurement or the band the jaws were
   commanded to.
+
+A hand that toggles
+-------------------
+* :class:`TogglesWithoutSensor` is a hand whose every command is one pulse that flips its jaws, with no
+  sensor to say where they stand. A pick asks it before the arm moves instead of commanding an open
+  (:func:`toggle_without_sensor_of`), so the pick code needs no driver import.
 """
 
 from __future__ import annotations
@@ -38,8 +44,10 @@ __all__ = [
     "OpensAndCloses",
     "ReportsHoldEvidence",
     "StoppableGripper",
+    "TogglesWithoutSensor",
     "TwoStateGripper",
     "hold_evidence_of",
+    "toggle_without_sensor_of",
     "width_is_measured_of",
 ]
 
@@ -207,6 +215,57 @@ class MeasuresWidth(Protocol):
     def width_is_measured(self) -> bool:
         """``True`` where ``get_width_mm`` reads a position sensor."""
         ...
+
+
+@runtime_checkable
+class TogglesWithoutSensor(Protocol):
+    """Capability extension: every command is one pulse that flips the jaws, and nothing measures where they stand.
+
+    ``jaw_io`` with ``actuation: single_toggle`` is one: the owner's Hand-E on the Robotiq I/O Coupling, one tool
+    output, 24 V, no feedback. The program counts its own pulses from where a person said the jaws stood when the
+    gripper connected, so a pulse sent on a wrong count moves the jaws the wrong way and nothing notices. Three rules
+    follow, and every pick path keeps them:
+
+    * No pulse before the arm moves at the start of a pick. A pick asks :meth:`jaws_open_for_a_pick` instead of
+      commanding an open: where the count says open it answers at once, and where it says closed it asks the person
+      again rather than pulsing, and refuses the pick when nobody can be asked.
+    * Exactly one pulse at the part (the close) and one at the release, each only where the count says the jaws stand
+      the other way.
+    * No width is checked and no hold is measured: a close counts as a grasp, and a report says it was not checked
+      because there is no sensor.
+
+    ``toggles_without_sensor`` is read as ``is True``, so a double that answers every attribute is not taken for one.
+    """
+
+    @property
+    def toggles_without_sensor(self) -> bool:
+        """``True`` where every command is a pulse that flips the jaws and nothing reads them back."""
+        ...
+
+    @property
+    def jaws_closed(self) -> bool:
+        """Where the program believes the jaws stand: its own count of its pulses, never a measurement."""
+        ...
+
+    @property
+    def edge_unknown(self) -> bool:
+        """``True`` where a pulse failed so that nobody can say whether the jaws flipped, until a person says again."""
+        ...
+
+    def jaws_open_for_a_pick(self) -> str:
+        """Before a pick moves the arm: ``""`` where the jaws stand open, else why the pick must not start.
+
+        Never pulses on its own. Where the count says closed it asks a person again, and a person who says closed
+        may choose one pulse to open them there and then.
+        """
+        ...
+
+
+def toggle_without_sensor_of(gripper: object) -> TogglesWithoutSensor | None:
+    """``gripper`` where it is a hand that toggles with no sensor (:class:`TogglesWithoutSensor`), else ``None``."""
+    if isinstance(gripper, TogglesWithoutSensor) and getattr(gripper, "toggles_without_sensor", False) is True:
+        return gripper
+    return None
 
 
 def hold_evidence_of(gripper: object) -> HoldEvidence:

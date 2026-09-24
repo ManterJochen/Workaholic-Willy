@@ -1,16 +1,14 @@
 """Speak what to pick, pick it by camera, then bring it to where the person's hand actually is.
 
-Three pieces that are each their own example: speech (15), a camera-grounded pick (11), and a
-hand-over (16). Both halves of the hand-over differ from 16, which drives to a pose written into
-the file and waits on the TCP wrench: here the camera locates the open hand and seeing it IS the
-signal, so this works on a driver that reports no wrench.
+Speech is 12's; the pick is the camera's, as in 11, taken one step at a time here: a Locator places what
+the camera sees in BASE, the scene of the part gives its grasps, and robot.pick runs the best one. The
+hand-over needs no written pose and no force reading: the camera locates the open hand, and seeing it IS the signal.
 
-The hand comes back in millimetres in the robot's BASE frame, the frame every pose here is in,
-because the search reads the camera's own calibration. That needs a FIXED camera: a wrist rig's
-artifact is CAMERA to TOOL, and the builder refuses it rather than composing one of its own.
+The hand comes back in BASE millimetres through the camera's own calibration, so it needs a FIXED camera:
+a wrist rig's artifact is CAMERA to TOOL, and the builder refuses it rather than composing one of its own.
 
 Run it at the cell, under its profile, once that camera is calibrated (07-10):
-    WILLY_PROFILE=<your cell> python examples/real_robot/17_speak_pick_and_hand_handover.py
+    WILLY_PROFILE=<your cell> python examples/real_robot/13_speak_pick_and_hand_handover.py
 """
 
 import threading
@@ -30,7 +28,7 @@ def release_on_enter() -> None:
     button.release()
 
 
-with PushToTalkSource.from_config(config=speech, switch=button) as microphone:  # 15, verbatim
+with PushToTalkSource.from_config(config=speech, switch=button) as microphone:  # 12, verbatim
     input("Press Enter, say what to pick, then press Enter again. ")
     button.press()
     threading.Thread(target=release_on_enter, daemon=True).start()
@@ -65,6 +63,8 @@ with Camera.from_tree(tree) as camera:
             raise SystemExit(f"no single hand with usable depth in {timeout_s} s; part stays held")
         palm = seen.position.position_base
         handover = Pose.tool_down(float(palm[0]), float(palm[1]), float(palm[2]) + standoff_mm)
-        # Planned and camera-world checked like every move: a palm outside the workspace is refused.
-        print(robot.move(handover))
+        # Planned and camera-world checked like every move; only a move that arrived opens the hand.
+        print(moved := robot.move(handover))
+        if not moved.ok:
+            raise SystemExit("the arm did not reach the hand; the part stays held, nothing was released")
         print(robot.release())

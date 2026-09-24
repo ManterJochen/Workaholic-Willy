@@ -320,7 +320,7 @@ class PlannerAndGuardConsumeTheTruthTests(unittest.TestCase):
         arm = URRobotArm(cfg)
         arm._conn = _conn(None if source == "willy" else tool_frame_matrix(_2F85_OFFSET, _2F85_QUAT))
         planner = MagicMock()
-        planner.plan.return_value = [list(_Q)]
+        planner.plan_joint.side_effect = lambda goal, **_: [list(_Q), list(goal)]
         arm._curobo_ur = planner
         return arm, planner
 
@@ -335,11 +335,18 @@ class PlannerAndGuardConsumeTheTruthTests(unittest.TestCase):
         for source in ("willy", "polyscope"):
             with self.subTest(source=source):
                 arm, planner = self._curobo_arm(source)
+                # The swing from the fake controller's joints clears the forearm by 9.5 mm at one sample, under the
+                # guard's 10; where the arm goes is what this reads, not what it passes on the way.
+                arm._preflight.gate_planned_path = lambda *_, **__: None
                 tcp = self._tcp()
                 with arm.without_camera_world(_DECLINED):
                     arm.move(tcp)
-                planned = planner.plan.call_args[0][0]
-                offset = float(np.linalg.norm(planned.position_mm - tcp.position_mm))
+                # cuRobo is handed a configuration now, the one the arm solved the goal into: where it puts the
+                # flange is the goal the planner was given, and it has to be the flange goal.
+                final = planner.execute.call_args[0][0][-1]
+                frames = ur_link_transforms_mm(str(arm.config.ur.model), np.asarray(final, dtype=np.float64))
+                assert frames is not None
+                offset = float(np.linalg.norm(np.asarray(frames[-1])[:3, 3] - tcp.position_mm))
                 self.assertAlmostEqual(offset, 132.0, places=3,
                                        msg="cuRobo must receive the flange goal, not the grasp centre")
 

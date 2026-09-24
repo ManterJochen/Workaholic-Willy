@@ -4,9 +4,10 @@
 # SAM2, prompted with one box and returning one mask. `local: True` reads the weights from
 # `model_path` and downloads nothing; `local: false` pulls `model_id` from the Hub. The path below
 # is what `python scripts/model_weights/fetch.py sam2` writes, so a fresh checkout reaches it with
-# one command and the weights leave with the checkout.
+# one command and the weights leave with the checkout. ${WILLY_PROJECT_ROOT} is the repository, so
+# the path holds wherever this config folder lives.
 segmenter:
-  model_path: "assets/models/hf/segmentation/facebook--sam2-hiera-large"
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/segmentation/facebook--sam2-hiera-large"
   model_id: "facebook/sam2-hiera-large"
   local: True
   optim:
@@ -29,7 +30,7 @@ segmenter_backend: "sam2"
 # that publishes no safetensors at all, so the fetch keeps its .bin files where every other entry
 # drops them.
 oneformer:
-  model_path: "assets/models/hf/segmentation/shi-labs--oneformer_coco_swin_large"
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/segmentation/shi-labs--oneformer_coco_swin_large"
   model_id: "shi-labs/oneformer_coco_swin_large"
   local: true
   # The only value the schema accepts and the only mode the wrapper implements.

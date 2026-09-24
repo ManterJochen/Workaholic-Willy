@@ -11,12 +11,12 @@ stt:
 
   # Local directory holding the Whisper checkpoint, used when `local: true`
   # [REQUIRED - no default]
-  model_path: assets/models/hf/speech/openai--whisper-large-v3-turbo
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/speech/openai--whisper-large-v3-turbo"
 
   # The Silero voice activity detector as a TorchScript file, read from disk whatever `local` says.
   # Every recording is scored for speech before Whisper is asked what was said.
   # [REQUIRED - no default]
-  vad_model_path: assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit
+  vad_model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit"
 
   # The sample rate in Hz that Whisper is fed at, and the rate the microphone stream opens at. Audio that
   # arrives at another rate is resampled to it. Must be greater than 0.

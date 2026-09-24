@@ -56,8 +56,9 @@ def require_mediapipe(what: str) -> None:
 def resolve_model_file(path: str, *, config_key: str, download_url: str) -> str:
     """Return `path` as an absolute string, or raise naming the key, the path and the download.
 
-    Relative paths resolve against the process working directory, the convention `create_logger`
-    uses for `logs/`, so one config resolves the same way across the stack.
+    A path read from a config tree arrives absolute: the loader read it against the config folder
+    (`src.config.paths`). A relative one, which only a caller that built the block in code passes, is
+    read against the process working directory.
     """
     if not path or not path.strip():
         raise FileNotFoundError(
@@ -71,10 +72,14 @@ def resolve_model_file(path: str, *, config_key: str, download_url: str) -> str:
         resolved = Path.cwd() / resolved
 
     if not resolved.is_file():
+        from src.config.paths import path_note
+
+        note = path_note(path)
         raise FileNotFoundError(
             f"MediaPipe model file not found: {resolved}\n"
             f"  Configured by: {config_key} = {path!r}\n"
-            f"  Download it and put it there:\n"
+            + (f"  {note.strip()}\n" if note else "")
+            + f"  Download it and put it there:\n"
             f"    {download_url}\n"
             f"  The bundles are NOT committed to this repository (they are binaries, and the\n"
             f"  operator chooses which revision to run)."

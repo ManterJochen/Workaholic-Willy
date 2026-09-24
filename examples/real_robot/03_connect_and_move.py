@@ -17,8 +17,8 @@ lower = Pose.tool_down(450.0, 100.0, 200.0)
 
 # Connecting takes the cell's lock, then the arm, then the hand; a hand may sweep its fingers as it
 # activates. Every motion is planned and checked against the camera world. With no camera handed in
-# there is no world, so this bench run says why it moves without one; 11_locate_and_pick.py hands
-# the robot its cameras. Each verb returns a report, and a refused motion is a report too.
+# there is no world, so this bench run says why it moves without one; 13_speak_pick_and_hand_handover.py
+# hands the robot its cameras. Each verb returns a report, and a refused motion is a report too.
 with robot.connected(), robot.without_camera_world("bench run, the table is clear"):
     print(robot.home())
     print(robot.move(above))

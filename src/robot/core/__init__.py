@@ -8,6 +8,9 @@ Public exports:
 
 * :class:`RobotArm`, :class:`Gripper`, :class:`ObjectDetectingGripper` and
   :class:`StoppableGripper` are the driver `Protocol`s.
+* :class:`TogglesWithoutSensor` is a hand whose every command is one pulse that flips its
+  jaws, with nothing to read them back; :func:`toggle_without_sensor_of` finds one, so a pick
+  asks it before the arm moves instead of commanding an open, with no driver import.
 * :class:`RobotVendor`, :class:`GripperVendor` are the canonical driver identifiers.
 * :class:`JointPositions` is the typed joint-vector wrapper, in radians.
 * :class:`RobotCapabilities` holds the declarative driver feature flags.
@@ -20,6 +23,9 @@ Public exports:
   declines, reads a decline and stamps its motions, and :func:`camera_world_refusal` with
   ``NO_CAMERA_WORLD_MESSAGE`` says which stamped motions a driver refuses before they move.
 * :class:`RobotError` and its subclasses are the vendor-neutral error hierarchy.
+* :class:`SupportsFreedrive` is hand guiding as a vendor capability: a :class:`FreedriveSession`
+  frees the arm for a person and reads it as :class:`FreedriveSample`, and
+  :class:`ControllerPayload` is the payload the controller compensates for while it is free.
 
 The numerics contract mirrors :mod:`src.geometry`: translations in millimetres,
 orientations as unit XYZW quaternions with a canonical sign, joint angles in radians,
@@ -63,7 +69,20 @@ from .errors import (
     RobotMotionRejected,
     RobotSingularityRisk,
 )
-from .gripper import Gripper, ObjectDetectingGripper, StoppableGripper, TwoStateGripper
+from .freedrive import (
+    ControllerPayload,
+    FreedriveSample,
+    FreedriveSession,
+    SupportsFreedrive,
+)
+from .gripper import (
+    Gripper,
+    ObjectDetectingGripper,
+    StoppableGripper,
+    TogglesWithoutSensor,
+    TwoStateGripper,
+    toggle_without_sensor_of,
+)
 from .gripper_vendor import GripperVendor
 from .joint_positions import JointPositions
 from .motion_result import (
@@ -79,11 +98,14 @@ __all__ = [
     "CameraWorldDecline",
     "CameraWorldStamp",
     "CameraWorldUse",
+    "ControllerPayload",
     "DECLINE_ON_A_LIVE_WORLD_MESSAGE",
     "NO_CAMERA_WORLD_MESSAGE",
     "DeclinesCameraWorld",
     "CameraWorldUnavailable",
     "DigitalIOPort",
+    "FreedriveSample",
+    "FreedriveSession",
     "Gripper",
     "GripperVendor",
     "IsaacNotAvailableError",
@@ -94,6 +116,7 @@ __all__ = [
     "NO_PLAN_FAIL_SAFE_MESSAGE",
     "ObjectDetectingGripper",
     "StoppableGripper",
+    "TogglesWithoutSensor",
     "TwoStateGripper",
     "RobotArm",
     "RobotCapabilities",
@@ -109,11 +132,13 @@ __all__ = [
     "SafetyMode",
     "SupportsDigitalIO",
     "SupportsForceTorque",
+    "SupportsFreedrive",
     "SupportsRobotStatus",
     "Wrench",
     "active_decline",
     "camera_world_refusal",
     "resolve_camera_world",
     "stamp_result",
+    "toggle_without_sensor_of",
     "without_camera_world",
 ]

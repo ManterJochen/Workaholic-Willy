@@ -33,7 +33,7 @@ world, so each motion says why it needs none: `without_camera_world(reason)` for
 on one verb. The command line over `Cell` and `PickRun` is `python -m src.robot.execution.real_cell`
 ([real_cell/](real_cell/README.md)). The examples bring a cell up in order, from
 [03_connect_and_move.py](../../../examples/real_robot/03_connect_and_move.py) to
-[13_pick_campaign.py](../../../examples/real_robot/13_pick_campaign.py), and
+[11_pick_with_the_camera.py](../../../examples/real_robot/11_pick_with_the_camera.py), and
 [01_rehearse_a_pick.py](../../../examples/simulation/01_rehearse_a_pick.py) runs a campaign at a
 desk on a dummy arm.
 
@@ -43,7 +43,7 @@ desk on a dummy arm.
 | --- | --- | --- | --- |
 | `Robot` | `from_tree`, `from_config`, `from_parts` | `connected()`, `move`, `move_joints`, `home`, `grasp`, `release`, `pick`, `place` | `MotionReport`, `HandReport`, `HandlingReport` |
 | `Cell` | `from_tree`, `from_robot_config`, `rehearsal` | `preflight()`, `start_planner()`, `build()`, `safety()`, `connected()` | `PreflightReport`, `PlannerStartReport`, `SafetyAttestation` |
-| `PickRun` | `from_cell` (it owns the connect), `from_service` (you do) | `execute()` | `PickRunReport`, with one `PickAttempt` per pick |
+| `PickRun` | `from_cell` (it owns the connect), `from_service` (you do); `look=` where each pick looks from, `put_back=True` to put each lifted part back | `execute()` | `PickRunReport`, with one `PickAttempt` per pick: its looks, `object_mm`, `grasp_pose` and put back |
 | `PassRule` | `PassRule(fraction=1.0, confirm=None)` | `accepts(attempts)` | the verdict rule; the default is every pick |
 | `Recording` | `Recording.off()`, `Recording.to_file(path)` | | where a campaign appends one record per attempt |
 | `HandEyeCalibration` | `from_tree(tree, rig_id=, mode=)`, `from_config`, `from_parts` | `check()`, `run(dry_run=False)` | `CalibrationCheck`, `CalibrationRunReport` |
@@ -66,6 +66,13 @@ says `UNPLANNED`.
 
 `PassRule` defaults to unanimity. Without `confirm=`, the service's own word is the evidence of a
 success, so a campaign that must not take that word passes a check of its own per attempt.
+
+A wrist camera sees what the arm points it at, so each pick of a wrist cell first moves to a look:
+joint positions the program declares (`JointPositions.deg(...)` takes the pendant's degrees), tried in
+order until one finds something, or home when the program declares none. A fixed camera does not move
+to look. Nothing is said to the hand before a look. With `put_back=True` a campaign places each lifted
+part back at the pose the tool closed at, so one part serves every pick, and a part that does not go
+back stops the campaign ([looks.py](looks.py)).
 
 ## What it refuses
 
@@ -108,6 +115,7 @@ a pick.
 | `motion.py`, `handling.py` | the motion verbs and the hand verbs `Robot` delegates to, and their reports |
 | `cell.py` | `Cell`, `CellNotBuilt` |
 | `pick_run.py` | `PickRun`, `PickRunReport`, `PassRule`, `Recording`, `PickAttempt`, `PickOutcome` |
+| `looks.py` | where a camera looks from before a pick: the joints a program declares, or home, and the move there |
 | `lifecycle.py` | connecting and taking down a cell as one transaction, `NoRealGripper`, `TeardownReport` |
 | `cell_lock.py` | `CellLock`, `CellBusy`: one owner per controller, shared with the operator console |
 | `robot_parts.py` | the arm and the hand a robot section describes, with the readiness gate and every substitution |

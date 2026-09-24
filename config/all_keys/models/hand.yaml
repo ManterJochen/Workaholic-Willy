@@ -7,8 +7,10 @@ handdetect:
 
   # Filesystem path to the MediaPipe hand-landmark `.task` bundle -> MediaPipe's
   # `BaseOptions.model_asset_path`.
-  # [default: assets/models/hf/mediapipe/hand_landmarker.task]
-  model_path: assets/models/hf/mediapipe/hand_landmarker.task
+  # ${WILLY_PROJECT_ROOT} is the repository, where the fetch writes; a relative path is read against
+  # the config folder.
+  # [default: ${WILLY_PROJECT_ROOT}/assets/models/hf/mediapipe/hand_landmarker.task]
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/mediapipe/hand_landmarker.task"
 
   # Upper bound on simultaneously tracked hands -> `num_hands`.
   # [default: 2]
@@ -39,8 +41,8 @@ handdetect:
 gesturedetect:
 
   # Filesystem path to the MediaPipe canned gesture-recognizer `.task` bundle -> `BaseOptions.model_asset_path`.
-  # [default: assets/models/hf/mediapipe/gesture_recognizer.task]
-  model_path: assets/models/hf/mediapipe/gesture_recognizer.task
+  # [default: ${WILLY_PROJECT_ROOT}/assets/models/hf/mediapipe/gesture_recognizer.task]
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/mediapipe/gesture_recognizer.task"
 
   # Upper bound on simultaneously recognised hands -> `num_hands`.
   # [default: 2]

@@ -133,6 +133,7 @@ def motion_warnings(robot_config: "RobotConfig", gripper: object) -> tuple[Motio
     ``robot_config.gripper.vendor``, a config string; only the ``jaw_io`` sentence is read off the
     built gripper, and a new branch whose wording depends on the wiring should do the same.
     """
+    from src.robot.core.gripper import toggle_without_sensor_of
     from src.robot.grippers.null import NullGripper
 
     warnings: list[MotionWarning] = []
@@ -183,19 +184,28 @@ def motion_warnings(robot_config: "RobotConfig", gripper: object) -> tuple[Motio
         # warning that is false half the time is one an operator learns to skip.
         has_feedback = bool(getattr(gripper, "has_feedback", False))
         opts_in = bool(getattr(gripper, "_open_on_connect_without_feedback", False))
-        # A toggle with no open switch is the one jaw cell whose connect depends on a PERSON: the driver takes
-        # the jaws to stand open, and a closed start inverts every later command.
-        blind_toggle = (getattr(gripper, "_actuation", None) == "single_toggle"
-                        and getattr(gripper, "_open_confirm_pin", None) is None)
-        if blind_toggle:
+        # A toggle is the one jaw cell whose connect always depends on a PERSON: nothing reads its jaws back, so the
+        # driver asks where they stand before anything moves, and counts its own pulses from the answer. A solenoid
+        # asks too where it opted in (confirm_open_at_start), and then connects by its feedback as below.
+        toggle = toggle_without_sensor_of(gripper) is not None
+        if not toggle and getattr(gripper, "asks_at_connect", False) is True:
             warnings.append(MotionWarning(
                 subject="gripper",
-                what="Connecting moves NOTHING, and the driver takes the jaws to stand OPEN. They are a "
-                     "toggle on one output with no open switch wired, so every later pulse flips them "
-                     "from wherever they really stand.",
-                precaution="Stand the jaws open with a pulse before every connect, never by hand: a device "
-                           "that keeps its own flip state is not moved by a hand. If they stand closed, every "
-                           "open and close from here is inverted until they are reset.",
+                what="Connecting first ASKS whether the jaws stand open (confirm_open_at_start), at the terminal "
+                     "this console runs in, and waits for the answer; with no terminal the connect is refused.",
+                precaution="Look at the jaws before you answer. If they stand closed you are offered to OPEN them, "
+                           "which releases anything between them where the arm stands; answer 'a' to abort instead.",
+            ))
+        if toggle:
+            warnings.append(MotionWarning(
+                subject="gripper",
+                what="Connecting first ASKS where the jaws stand, at the terminal this console runs in, and "
+                     "waits for the answer; with no terminal the connect is refused. The hand is a toggle on "
+                     "one output with no sensor, so every pulse flips the jaws and only a person can say where "
+                     "the program's count of its pulses starts.",
+                precaution="Look at the jaws before you answer. If they stand closed you are offered ONE PULSE "
+                           "to open them, which releases anything between them where the arm stands; answer "
+                           "'a' to abort instead.",
             ))
         elif has_feedback:
             warnings.append(MotionWarning(

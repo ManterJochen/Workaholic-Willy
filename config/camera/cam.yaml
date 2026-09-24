@@ -109,7 +109,9 @@ cameras:
       calibration_paths:
         # Root of this rig's calibration artefacts. `stereo_map_file`, the left and right image
         # directories and their globs derive from it, and each can be written out to override.
-        base_dir: calibration/webcam_main
+        # Relative to this config folder, like every path in the tree: `..` is the repository root,
+        # where this tree's cell data lives.
+        base_dir: ../calibration/webcam_main
 
     # --- Single stereo device at index 0 ---
     # One capture device that delivers both eyes in one frame. The frame is cropped, split by
@@ -161,7 +163,7 @@ cameras:
         fps_tolerance: 3.0
 
       calibration_paths:
-        base_dir: calibration/stereo_dev0
+        base_dir: ../calibration/stereo_dev0
 
     # --- Single stereo device at index 3 ---
     # A second entry for the same kind of device on another USB index; see stereo_dev0 for what
@@ -195,7 +197,7 @@ cameras:
         fps_tolerance: 3.0
 
       calibration_paths:
-        base_dir: calibration/stereo_dev3
+        base_dir: ../calibration/stereo_dev3
 
     # --- RGB-D camera, for example an Intel RealSense D435 ---
     # One camera: `serial_number: null` opens the first RealSense the SDK offers, and
@@ -277,10 +279,10 @@ cameras:
         fps_tolerance: 3.0
 
       # No `extrinsics` block, so this camera is not calibrated. The calibration command
-      # (python -m src.robot.execution.real_cell.calibrate --rig realsense_d435) writes the artifact
-      # such a block names: `extrinsics: {mounting_mode: eye_to_hand, artifact_path: <that file>}`.
+      # (python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --freedrive) writes the
+      # artifact such a block names: `extrinsics: {mounting_mode: eye_to_hand, artifact_path: <that file>}`.
       calibration_paths:
         # `intrinsics_file` derives from this as `<base_dir>/intrinsics.json`, which
         # `export_intrinsics` writes. Nothing reads it back from config: `load_intrinsics` takes
         # a path, and its only caller passes the hand-detection CLI's `--intrinsics`.
-        base_dir: calibration/realsense_d435
+        base_dir: ../calibration/realsense_d435

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import unittest
 
+from src.willy_sim.calibration.paths import STATIONS_DIR
 from src.willy_sim.config import load_sim_config, require_robot
 from src.willy_sim.harness.reach import (
     audit_reach,
@@ -62,26 +63,28 @@ class ReachAuditTests(unittest.TestCase):
         self.assertFalse(corner.reachable)
         self.assertGreater(corner.overshoot_mm, 20.0)
 
-    def test_eih_viewpoint_sphere_is_audited_not_just_the_marker(self) -> None:
-        """The marker being reachable does NOT mean the calibration is: the arm never goes to the marker,
-        it circles a standoff sphere of camera viewpoints around it.
+    def test_the_eih_stations_are_audited_not_just_the_marker(self) -> None:
+        """The marker being reachable does NOT mean the calibration is: the arm never goes to the marker, it goes
+        to the stations round it.
 
         MEASURED on-box 2026-07-24 -- a UR3e cell whose marker audited fine collected 0 of 24 EIH samples
-        (every pose workspace_rejected or ik_failed). This is that failure in miniature: on the UR5e-authored
-        scene the marker sits at r~496 mm, just INSIDE a UR3e's 500 mm sphere, while the viewpoints around it
-        are ~240 mm outside it. Auditing only the marker waves the run through; auditing the sphere stops it.
+        (every pose workspace_rejected or ik_failed). This is that failure in miniature: the UR5e scene's marker
+        sits at r~496 mm, just INSIDE a UR3e's 500 mm sphere, while the stations declared round it for the UR5e
+        stand well outside. Auditing only the marker waves the run through; auditing the stations stops it.
         """
-        findings = {f.label: f for f in audit_reach(_robot("ur3e"))}
-        marker, viewpoints = findings["scene_setup.marker"], findings["scene_setup.eih_viewpoints (worst)"]
+        findings = {f.label: f for f in audit_reach(_robot("ur3e"), eih_stations=STATIONS_DIR / "eih_ur5e.json")}
+        marker, stations = findings["scene_setup.marker"], findings["eih stations (worst)"]
         self.assertTrue(marker.reachable, "precondition: the marker itself audits as reachable")
-        self.assertFalse(viewpoints.reachable)
-        self.assertGreater(viewpoints.overshoot_mm, 200.0)
+        self.assertFalse(stations.reachable)
+        self.assertGreater(stations.overshoot_mm, 100.0)
 
-    def test_eih_viewpoint_audit_does_not_false_alarm_on_the_arm_it_was_authored_for(self) -> None:
-        """The same sphere on a UR5e is r~743 mm of an 850 mm reach. A check that fired here would be noise,
-        and operators would learn to ignore it."""
-        vp = next(f for f in audit_reach(_robot("ur5e")) if f.label.startswith("scene_setup.eih_viewpoints"))
-        self.assertTrue(vp.reachable)
+    def test_the_stations_declared_for_each_arm_fit_it(self) -> None:
+        """Each model's own declared stations are inside its reach. A check that fired here would be noise, and
+        operators would learn to ignore it."""
+        for model in ("ur5e", "ur3e"):
+            with self.subTest(model):
+                row = next(f for f in audit_reach(_robot(model)) if f.label == "eih stations (worst)")
+                self.assertTrue(row.reachable, f"r={row.radius_mm:.0f} mm")
 
     def test_report_is_human_readable_and_flags_offenders(self) -> None:
         findings = audit_reach(_robot("ur3e"))

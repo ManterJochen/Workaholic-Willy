@@ -10,6 +10,9 @@ cannot say is read as not measured and not modelled rather than guessed.
   close hands nothing.
 * A release opens to the hand's width. A part still measured in the jaws keeps its model and the release is not
   confirmed; an unmeasured release detaches and says it was not checked.
+* A hand that toggles with no sensor (``core.gripper.TogglesWithoutSensor``, a ``jaw_io`` single_toggle) is told open
+  or close and never a width: a report carries no width, says the hold and the release were not checked because there
+  is no sensor, and says where the jaws already stood and nothing was pulsed.
 * No force is commanded.
 * A gripper that raises is stopped once where it can be stopped, and the report carries the fault.
 * Nothing is commanded on a robot with no gripper, a gripper that holds nothing, an arm or gripper whose link is not
@@ -20,7 +23,10 @@ cannot say is read as not measured and not modelled rather than guessed.
 in this order: a robot that cannot hold, a link that is not open, a pose not in BASE, a camera world the arm's own
 motion would be refused for (``ReadsCameraWorld``), an arm whose motions do not go through cuRobo and the exact mesh
 guard (``motion.route_of``: a desk arm runs, a UR on the ik planner, a KUKA and an arm that does not say are refused),
-and last, as the one question put to the controller, a controller that cannot move. Then the motions: a planned move to
+and last, as the one question put to the controller, a controller that cannot move. A pick on a hand that toggles with
+no sensor then asks it whether its jaws stand open (``jaws_open_for_a_pick``) instead of pulsing them open: never a pulse
+before the arm moves, and the pick is refused where the hand believes them closed and nobody at a terminal says
+otherwise. Then the motions: a planned move to
 the standoff, a line down to the pose, the hand verb, which asks the controller again at the part, and a line back up to
 the standoff, each move carrying the caller's decline, each preceded by the arm's own steady gate where its tree asks for
 one (``safety.dwell``). A refused motion ends the verb with nothing commanded after it, and so does a camera that could
@@ -53,7 +59,7 @@ from src.robot.core.camera_world import (
     weakest_camera_world,
 )
 from src.robot.core.errors import CameraWorldUnavailable
-from src.robot.core.gripper import HoldEvidence, hold_evidence_of, width_is_measured_of
+from src.robot.core.gripper import HoldEvidence, hold_evidence_of, toggle_without_sensor_of, width_is_measured_of
 from src.robot.core.keep_out import SegmentationOffer, keeping_out
 from src.robot.execution.motion import route_of, steady_timeout_of
 
@@ -127,6 +133,10 @@ class HandReport:
     payload: PayloadState = PayloadState.UNCHANGED
     payload_reason: str = ""
     error: str = ""
+    #: The hand has no sensor at all (it toggles): nothing about the width, the hold or the release was checked.
+    no_sensor: bool = False
+    #: What the hand said about the command, such as that the jaws already stood there and nothing was pulsed.
+    note: str = ""
 
     @property
     def ok(self) -> bool:
@@ -148,9 +158,14 @@ class HandReport:
         if self.reported_width_mm is not None:
             read = "measured" if self.width_measured else "reported, width not measured"
             parts.append(f"{self.reported_width_mm:.2f} mm {read}")
-        hold = "hold not measured" if self.hold is HoldEvidence.UNMEASURED else f"hold {self.hold.value.upper()}"
-        if self.verb is HandVerb.RELEASE and self.hold is HoldEvidence.UNMEASURED:
-            hold += ", release not checked"
+        if self.note:
+            parts.append(self.note)
+        if self.no_sensor:
+            hold = "release not checked (no sensor)" if self.verb is HandVerb.RELEASE else "hold not checked (no sensor)"
+        elif self.hold is HoldEvidence.UNMEASURED:
+            hold = "hold not measured" + (", release not checked" if self.verb is HandVerb.RELEASE else "")
+        else:
+            hold = f"hold {self.hold.value.upper()}"
         parts.append(hold)
         payload = f"payload {self.payload.value.upper()}"
         if self.payload_reason:
@@ -177,6 +192,8 @@ class HandReport:
             "payload": self.payload.value,
             "payload_reason": self.payload_reason,
             "error": self.error,
+            "no_sensor": self.no_sensor,
+            "note": self.note,
         }
 
 
@@ -190,6 +207,8 @@ def grasp(robot: Any, width_mm: float) -> HandReport:
     why = "" if isinstance(gripper, OpensAndCloses) else _width_refusal(gripper, commanded, close=True, what="a grasp at")
     if why:
         return HandReport(verb=HandVerb.GRASP, outcome=HandOutcome.REFUSED, error=why)
+    toggle = toggle_without_sensor_of(gripper)
+    note = _already(toggle, closed=True)
     try:
         _command(gripper, commanded, close=True)
         reported = float(gripper.get_width_mm())
@@ -200,7 +219,11 @@ def grasp(robot: Any, width_mm: float) -> HandReport:
     if hold is HoldEvidence.EMPTY:
         return HandReport(verb=HandVerb.GRASP, outcome=HandOutcome.NOTHING_HELD, commanded_width_mm=commanded,
                           reported_width_mm=reported, width_measured=measured, hold=hold)
+    # A toggle's part is carried at the width the caller named: the width it reports is a band, not the part.
     state, reason = _attach(robot.arm, reported if measured else commanded)
+    if toggle is not None:
+        return HandReport(verb=HandVerb.GRASP, outcome=HandOutcome.GRASPED, hold=hold, payload=state,
+                          payload_reason=reason, no_sensor=True, note=note)
     return HandReport(verb=HandVerb.GRASP, outcome=HandOutcome.GRASPED, commanded_width_mm=commanded,
                       reported_width_mm=reported, width_measured=measured, hold=hold, payload=state,
                       payload_reason=reason)
@@ -217,6 +240,8 @@ def release(robot: Any) -> HandReport:
                                                                        what="a release to")
     if why:
         return HandReport(verb=HandVerb.RELEASE, outcome=HandOutcome.REFUSED, error=why)
+    toggle = toggle_without_sensor_of(gripper)
+    note = _already(toggle, closed=False)
     try:
         _command(gripper, commanded, close=False)
         reported = float(gripper.get_width_mm())
@@ -229,6 +254,9 @@ def release(robot: Any) -> HandReport:
                           commanded_width_mm=commanded, reported_width_mm=reported, width_measured=measured,
                           hold=hold, payload_reason="the gripper still measures a part, so its model is kept")
     state, reason = _detach(robot.arm)
+    if toggle is not None:
+        return HandReport(verb=HandVerb.RELEASE, outcome=HandOutcome.RELEASED, hold=hold, payload=state,
+                          payload_reason=reason, no_sensor=True, note=note)
     return HandReport(verb=HandVerb.RELEASE, outcome=HandOutcome.RELEASED, commanded_width_mm=commanded,
                       reported_width_mm=reported, width_measured=measured, hold=hold, payload=state,
                       payload_reason=reason)
@@ -317,7 +345,14 @@ def _width_refusal(gripper: Any, width_mm: float, *, close: bool, what: str) -> 
             f"{width_mm} mm would close it: set robot.gripper.jaw_io.closed_below_mm below {width_mm}")
 
 
-def _fault(gripper: Any, verb: HandVerb, commanded: float, exc: BaseException) -> HandReport:
+def _already(toggle: Any, *, closed: bool) -> str:
+    """For a hand that toggles, where its count says the jaws already stand as asked: no pulse goes out, said so."""
+    if toggle is None or bool(toggle.jaws_closed) is not closed:
+        return ""
+    return f"already {'closed' if closed else 'open'}: no pulse"
+
+
+def _fault(gripper: Any, verb: HandVerb, commanded: float | None, exc: BaseException) -> HandReport:
     if isinstance(gripper, StoppableGripper):
         try:
             gripper.stop()
@@ -561,6 +596,19 @@ class _Handling:
             or _width_refusal(self.gripper, close_to, close=True, what="the pick's grasp at"))
         if why:
             return self._report(HandlingOutcome.REFUSED, message=why)
+        toggle = toggle_without_sensor_of(self.gripper)
+        if toggle is not None:
+            # Never a pulse before the arm moves (owner's decision, 2026-09-24): every pulse flips a toggle, and a pulse
+            # on a wrong count closed the owner's jaws before the part. The hand is asked instead, and it asks a person
+            # where it believes its jaws closed; a pick nobody can vouch for ends here, before any motion.
+            try:
+                why = toggle.jaws_open_for_a_pick()
+            except Exception as exc:  # noqa: BLE001 (a gripper fault is the report, after the jaws are stopped)
+                hand = _fault(self.gripper, HandVerb.GRASP, None, exc)
+                return self._report(HandlingOutcome.GRIPPER_FAULT, hand=hand, message=hand.error)
+            if why:
+                return self._report(HandlingOutcome.REFUSED, message=why)
+            opening = None
         detach = getattr(self.arm, "detach_payload", None)
         if callable(detach):
             detach()

@@ -55,7 +55,7 @@ def main() -> int:
     if not declared:
         return _not_ready(
             "no rig in camera.cameras.rigs declares `extrinsics`, so this tree has no calibration to open",
-            "calibrate a camera (python -m src.robot.execution.real_cell.calibrate --rig <id>) and "
+            "calibrate a camera (python -m src.robot.execution.real_cell.calibrate --rig <id> --freedrive) and "
             "paste the rig block it prints, or point this at a calibrated tree")
 
     print(f"{len(declared)} rig(s) declare a calibration; every artifact is opened here")
@@ -75,7 +75,7 @@ def main() -> int:
         for line in failed:
             print(f"  {line}")
         print("  calibrate the camera that failed, one run per rig: python -m "
-              "src.robot.execution.real_cell.calibrate --rig <rig>")
+              "src.robot.execution.real_cell.calibrate --rig <rig> --freedrive")
         return EXIT_FAILED
     print(f"\nOK: every declared calibration resolved ({len(declared)} artifact(s) opened)")
     return EXIT_OK

@@ -5,13 +5,14 @@
 stt:
   # `local: True` below reads `model_path` from disk and downloads nothing, and
   # `python scripts/model_weights/fetch.py whisper-turbo` writes that directory, pinned to one hub
-  # commit. It lands as 1.6 GB of safetensors.
+  # commit. It lands as 1.6 GB of safetensors. ${WILLY_PROJECT_ROOT} is the repository, where the
+  # fetch writes, so both paths hold wherever this config folder lives.
   model_id: "openai/whisper-large-v3-turbo"
-  model_path: "assets/models/hf/speech/openai--whisper-large-v3-turbo"
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/speech/openai--whisper-large-v3-turbo"
   # The Silero voice detector, read from disk whatever `local` says. Every recording is scored for
   # speech before Whisper is asked what was said, because Whisper answers silence with a word.
   # `python scripts/model_weights/fetch.py silero-vad` writes it, pinned by hash.
-  vad_model_path: "assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit"
+  vad_model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit"
   # The microphone stream. Audio that arrives from anywhere else is resampled to `samplerate`, so
   # that key is the model's input rate and not only a device setting.
   samplerate: 16000

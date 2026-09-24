@@ -46,16 +46,14 @@ from src.robot.execution.calibration import CalibrationRoutine
 from src.robot.execution.hand_eye import HandEyeCalibration, SweepOptions, render_sweep_event
 from src.robot.execution.pose_provider import (
     JointStation,
-    PoseProvider,
-    joint_hops,
     load_stations,
 )
 from src.robot.execution.real_cell import calibrate
-from src.robot.safety.workspace import WorkspaceGuard
 from tests.test_camera_boundaries import _rgbd_rig
 from tests.test_robot_boundaries import _inverse, _synthetic_eye_to_hand_data
 
 _ROOT = Path(__file__).resolve().parents[1]
+_STATION = Pose.tool_down(400.0, 0.0, 350.0, label="down")
 _WIDE = WorkspaceLimitsConfig(x_min=-2000.0, x_max=2000.0, y_min=-2000.0, y_max=2000.0, z_min=-2000.0, z_max=2000.0)
 _HOME_DEG = [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]
 
@@ -143,30 +141,26 @@ class AStationsFileIsReadAndCheckedTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             JointStation([0.0] * 6)  # type: ignore[arg-type]
 
-    def test_the_pose_only_loader_sends_a_joint_file_to_the_routine(self) -> None:
-        path = _write(self.folder, [{"label": "taught", "joints_deg": _HOME_DEG}])
-        with self.assertRaisesRegex(ValueError, "holds joint stations \\('taught'\\).*run_from_json"):
-            PoseProvider(WorkspaceGuard(_WIDE)).load_from_json(path)
-
-    def test_a_leg_turning_a_joint_more_than_half_a_turn_is_named_and_left_as_written(self) -> None:
+    def test_a_wound_joint_is_read_as_written(self) -> None:
+        """Nothing here rewrites a value: the arm turns a joint onto the full turn nearest where it stands, inside its
+        cable window, when it moves (the owner, 2026-09-24); the file keeps what it says."""
         wound = [0.0, -90.0, 90.0, -90.0, -90.0, 270.0]
-        path = _write(self.folder, [
-            {"label": "a", "joints_deg": _HOME_DEG},
-            {"label": "b", "joints_deg": wound},
-            {"label": "c", "x": 400.0, "y": 0.0, "z": 350.0, "rx": 0.0, "ry": 3.14159265, "rz": 0.0},
-            {"label": "d", "joints_deg": _HOME_DEG},
-            {"label": "e", "joints_deg": [10.0, -80.0, 100.0, -90.0, -90.0, 170.0]},
-        ])
+        path = _write(self.folder, [{"label": "a", "joints_deg": _HOME_DEG}, {"label": "b", "joints_deg": wound}])
         stations = load_stations(path)
-        self.assertEqual(joint_hops(stations), [
-            "'a' to 'b': wrist 3 turns +270 deg, more than half a turn; it runs as written, the long way round"])
         np.testing.assert_array_equal(stations[1].joints.values, np.radians(wound))
+
+    def test_a_joint_station_may_carry_the_tcp_it_was_taught_at_as_a_note(self) -> None:
+        """The record a hand-guided run writes: the joints run, the TCP beside them is for the person reading it."""
+        path = _write(self.folder, [{"label": "hand_01", "joints_deg": _HOME_DEG,
+                                     "tcp_pose": {"x": 1.0, "y": 2.0, "z": 3.0, "rx": 0.0, "ry": 3.14, "rz": 0.0}}])
+        (station,) = load_stations(path)
+        self.assertIsInstance(station, JointStation)
+        np.testing.assert_array_equal(station.joints.values, np.radians(_HOME_DEG))
 
     def test_the_template_file_reads_as_four_joint_stations_and_two_poses(self) -> None:
         stations = load_stations(_ROOT / "examples" / "real_robot" / "eih_fixed_stations.json")
         self.assertEqual([isinstance(one, JointStation) for one in stations], [True] * 4 + [False] * 2)
         self.assertEqual([one.label for one in stations], [f"look_{index}" for index in range(6)])
-        self.assertEqual(joint_hops(stations), [])
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -378,26 +372,22 @@ class JointStationsRunAsJudgedJointMovesTests(unittest.TestCase):
         self.assertEqual([verdict.reason for verdict in result.pose_log], ["", "", "move_rejected", "", ""])
         self.assertEqual(result.pose_log[2].detail, "self_collision_rejected: the planner refused this joint path")
 
-    def test_a_joint_station_says_its_joints_and_a_long_way_round_from_where_the_arm_stands(self) -> None:
+    def test_a_joint_station_says_its_joints_and_is_handed_to_the_arm_as_written(self) -> None:
+        """Which full turn a joint takes is the arm's to choose, the one nearest where it stands inside its cable
+        window (the owner, 2026-09-24): the sweep neither rewrites nor wraps a station, and warns of no hop."""
         tool = _tool()
         far = JointPositions([0.0, -1.2, 1.4, -1.6, -1.5, 4.0])
         arm = _Arm({**{tuple(_joints(i).tolist()): tool[i] for i in range(4)}, tuple(far.tolist()): tool[5]})
         arm.joints = JointPositions([0.0, -1.2, 1.4, -1.6, -1.5, -0.5])
         routine, events = _routine(arm)
         stations = [JointStation(far, label="far"), *(JointStation(_joints(i), label=f"j{i}") for i in range(4))]
-        with self.assertLogs(routine.logger, level="WARNING") as logs:
-            routine.run_with_poses(stations)
+        routine.run_with_poses(stations)
         moving = [data for kind, data in events if kind == RobotCalibrationEvent.MOVING_TO_POSE]
         self.assertEqual(moving[0]["joints_deg"], [0.0, -68.755, 80.214, -91.673, -85.944, 229.183])
-        self.assertEqual(moving[0]["hop"], "wrist 3 turns +258 deg, more than half a turn; it runs as written, the "
-                                           "long way round")
-        self.assertIn("far", " ".join(logs.output))
+        self.assertNotIn("hop", moving[0])
         self.assertEqual(render_sweep_event(RobotCalibrationEvent.MOVING_TO_POSE, moving[0]),
-                         "pose  1/5 'far'  moving, 0 counted so far, need 4; !! wrist 3 turns +258 deg, more than "
-                         "half a turn; it runs as written, the long way round")
-        self.assertTrue(moving[1]["hop"].startswith("wrist 3 turns -229 deg"), "the way back is as long")
-        self.assertNotIn("hop", moving[2], "a short leg warned")
-        self.assertIs(arm.commanded()[0][1], far)  # warned, and run as written
+                         "pose  1/5 'far'  moving, 0 counted so far, need 4")
+        self.assertIs(arm.commanded()[0][1], far)
 
     def test_anything_but_a_pose_or_a_joint_station_is_a_programming_error(self) -> None:
         routine, _ = _routine(_Arm({}))
@@ -439,6 +429,7 @@ class OnACuroboUrTheJudgedLineIsTheLineThatRunsTests(unittest.TestCase):
         judged: list[list[list[float]]] = []
         checked: list[list[list[float]]] = []
         arm._preflight = SimpleNamespace(  # noqa: SLF001
+            gate_joint_target=lambda joints, *, arm=None: None,
             gate_planned_path=lambda waypoints, *, arm=None, command=None: judged.append(
                 [list(map(float, w)) for w in waypoints]),
             path_step_mm=5.0, joint_radii_mm=lambda _arm: [100.0] * 6)
@@ -446,7 +437,8 @@ class OnACuroboUrTheJudgedLineIsTheLineThatRunsTests(unittest.TestCase):
         class _Planner:
             last_world_refresh = None
 
-            def check_joint_path(self, configs: Any, *, refresh: bool = True) -> JointCheckVerdict:
+            def check_joint_path(self, configs: Any, *, refresh: bool = True,
+                                 clearance_mm: float = 0.0) -> JointCheckVerdict:
                 checked.append([list(map(float, c)) for c in configs])
                 return JointCheckVerdict(valid=True, first_invalid=None, checked=len(configs), reason="accepts")
 
@@ -546,8 +538,7 @@ class TheCheckCountsTheStationsTests(unittest.TestCase):
         self.assertEqual((check.poses, check.joint_stations, check.poses_file), (3, 2, str(path)))
         lines = check.render().splitlines()
         self.assertEqual(lines[4], f"  poses      3 from {path}, 2 of them joint stations")
-        self.assertEqual(lines[5], "  !! 'a' to 'b': wrist 3 turns +200 deg, more than half a turn; it runs as "
-                                   "written, the long way round")
+        self.assertEqual(lines[5], "  artifact   calibration/real/eth_overhead.json")
         self.assertEqual(check.to_dict()["joint_stations"], 2)
 
     def test_a_bad_or_missing_file_is_refused_at_check(self) -> None:
@@ -566,8 +557,21 @@ class TheCheckCountsTheStationsTests(unittest.TestCase):
         self.assertEqual(_noun(fixed_poses=[stations[1], [0.0] * 6]).check().refusal,
                          "fixed_poses[1] is a list; a station is a Pose (BASE) or a JointStation")
 
-    def test_a_generated_sweep_renders_as_it_did(self) -> None:
-        self.assertEqual(_noun().check().render().splitlines()[4], "  poses      22")
+    def test_no_stations_and_no_hands_is_refused_because_nothing_generates_them(self) -> None:
+        self.assertIn("Nothing generates stations", _noun().check().refusal)
+
+    def test_a_file_beside_freedrive_is_the_targets_it_shows_the_way_to(self) -> None:
+        path = _ROOT / "examples" / "real_robot" / "eih_fixed_stations.json"
+        check = _noun(fixed_poses=str(path), freedrive=True, samples=8).check()
+        self.assertTrue(check.ok, check.refusal)
+        self.assertEqual(check.render().splitlines()[4], f"  poses      8 guided by hand, toward the 6 stations of {path}")
+        self.assertEqual((check.by_hand, check.targets), ("freedrive", 6))
+
+    def test_adjust_needs_fixed_stations_and_is_not_freedrive(self) -> None:
+        self.assertIn("adjust fine-tunes fixed stations by hand, and none were given", _noun(adjust=True).check().refusal)
+        self.assertIn("Give one of them", _noun(adjust=True, freedrive=True, fixed_poses=[_STATION]).check().refusal)
+        check = _noun(adjust=True, fixed_poses=[_STATION]).check()
+        self.assertEqual(check.render().splitlines()[4], "  poses      1, each adjusted by hand")
 
 
 class TheCliTakesAStationsFileTests(unittest.TestCase):
@@ -606,10 +610,21 @@ class TheCliTakesAStationsFileTests(unittest.TestCase):
             self._main("--fixed-poses", "stations.json", "--check")
         self.assertEqual(seen[0].fixed_poses, "stations.json")
 
-    def test_poses_and_fixed_poses_are_one_or_the_other(self) -> None:
+    def test_the_generated_and_the_aimed_sweep_flags_are_gone(self) -> None:
+        """The owner, 2026-09-24: every automatic station generator was deleted, their flags with them."""
+        for flags in (("--poses", "12"), ("--aim-at=-130,-700,50",), ("--aim-distance-mm", "500"),
+                      ("--closing-axis", "-y")):
+            with self.subTest(flags[0]):
+                stderr = io.StringIO()
+                with patch("sys.stderr", stderr):
+                    code, _ = self._main(*flags, "--freedrive", "--check")
+                self.assertEqual(code, "exit 2")
+                self.assertIn("unrecognized arguments", stderr.getvalue())
+
+    def test_freedrive_and_adjust_are_one_or_the_other(self) -> None:
         stderr = io.StringIO()
         with patch("sys.stderr", stderr):
-            code, _ = self._main("--poses", "12", "--fixed-poses", "stations.json", "--check")
+            code, _ = self._main("--freedrive", "--adjust", "--fixed-poses", "stations.json", "--check")
         self.assertEqual(code, "exit 2")
         self.assertIn("not allowed with argument", stderr.getvalue())
 

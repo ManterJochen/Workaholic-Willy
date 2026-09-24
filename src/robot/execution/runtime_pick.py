@@ -58,6 +58,8 @@ from src.robot.grasping.loop.pick_loop import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover (import only for typing)
+    from src.geometry import Pose
+
     # Telemetry carriers, referenced only from string-form field
     # annotations (PEP 563 ``from __future__ import annotations`` is in
     # effect at module top). Keeping the import behind ``TYPE_CHECKING``
@@ -164,6 +166,15 @@ class PickSessionReport:
         any. Typed motion failures do not populate this field: they
         live in :attr:`motion_status_chain`, so a non-``None`` value
         always indicates an out-of-band failure.
+    object_centre_mm
+        Where the object the pick went for was seen, in BASE
+        millimetres (:attr:`PickReport.target_centre_mm`). ``None`` when
+        no candidate reached the arm or the cell resolves no BASE.
+    grasp_pose
+        The pose the tool closed at, in BASE, on a pick that executed:
+        the grasp waypoint the execution policy judged and drove, read
+        off its commanded waypoints rather than rebuilt. ``None`` on
+        every other outcome.
     """
 
     outcome: PickOutcome
@@ -216,6 +227,8 @@ class PickSessionReport:
     # consumers can distinguish "no commit policy" from "policy ran
     # and approved".
     commit_decision: "CommitDecision | None" = None
+    object_centre_mm: Optional[tuple[float, float, float]] = None
+    grasp_pose: "Pose | None" = None
 
     @property
     def succeeded(self) -> bool:
@@ -465,6 +478,8 @@ class RuntimePickService:
             uncertainty_rerank_telemetry=pick_report.uncertainty_rerank_telemetry,
             fusion_telemetry=pick_report.fusion_telemetry,
             commit_decision=pick_report.commit_decision,
+            object_centre_mm=getattr(pick_report, "target_centre_mm", None),
+            grasp_pose=_closed_at(policy_report) if pick_report.outcome is PickOutcome.EXECUTED else None,
         )
 
     def _capabilities(self) -> RobotCapabilities | None:
@@ -546,3 +561,18 @@ class RuntimePickService:
             return None, 0.0, 0
         last = pick_report.attempts[-1]
         return last.target_index, float(last.score), 0
+
+
+def _closed_at(policy_report: PolicyReport | None) -> "Pose | None":
+    """The pose the tool closed at: the last commanded waypoint before the lift, on a policy report that executed.
+
+    The policy labels its lift ``retreat`` (or ``retreat_NN``) and everything before it ``approach_NN``, the grasp
+    last, whether it drove the interpolated approach or a planned standoff and one line. So the pose is read off what
+    was commanded, the move that was judged and ran, rather than rebuilt from the grasp point, which a yaw alignment
+    (``align_closing_to_base_x``) would get wrong.
+    """
+    if policy_report is None:
+        return None
+    before_lift = [pose for pose in getattr(policy_report, "waypoints", ()) or ()
+                   if not str(getattr(pose, "label", "") or "").startswith("retreat")]
+    return before_lift[-1] if before_lift else None

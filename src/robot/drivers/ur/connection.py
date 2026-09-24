@@ -9,7 +9,9 @@ It provides:
     - the current joint angles, through ``get_joint_positions``;
     - forward kinematics, through ``fk``;
     - inverse kinematics, through ``ik``;
-    - the low-level move wrappers ``moveJ`` and ``moveL``.
+    - the low-level move wrappers ``moveJ`` and ``moveL``;
+    - the hand-guiding primitives, teach mode, the RTDE watchdog and a fresh control
+      program, which :mod:`.freedrive` puts together into a session.
 """
 
 from __future__ import annotations
@@ -220,25 +222,7 @@ class URConnection:
         self._tcp_offset_cache = None
         self.logger.info("Connecting to UR robot at %s ...", self.ip)
         try:
-            # 0.0 is the not-configured sentinel of this stack and not of ur_rtde. The
-            # schema ships `ur.rtde_frequency: 0.0` with `ge=0.0`, meaning the controller
-            # decides; the ur_rtde sentinel for the same thing is -1.0, and it takes 0.0
-            # literally as zero hertz. Measured against URSim 5.26.0, one variable at a
-            # time:
-            #
-            #     frequency=0.0   -> failed in 6.1 s: "Failed to start RTDE data synchronization"
-            #     frequency=-1.0  -> connected in 0.1 s
-            #     frequency=500.0 -> connected in 0.6 s
-            #
-            # Without this translation the shipped default could never connect to a real
-            # UR, and would fail with a message naming nothing, next to a powered arm.
-            # Translating the sentinel here rather than changing the schema default keeps
-            # every existing config loadable and puts the vendor convention inside the
-            # driver boundary, which is where this repo keeps one.
-            frequency = float(self.frequency) if float(self.frequency) > 0.0 else -1.0
-            self._ctrl = rtde_control.RTDEControlInterface(
-                self.ip, frequency,
-            )
+            self._ctrl = self._open_control()
             self._recv = rtde_receive.RTDEReceiveInterface(self.ip)
         except Exception as exc:  # noqa: BLE001 (roll back a partial connect, then reraise the transport fault)
             # Roll back a partially-opened connection.
@@ -290,6 +274,29 @@ class URConnection:
         self.logger.info("Connected (control + receive%s%s).",
                          " + io" if self._io is not None else "",
                          " + dashboard" if self._dashboard is not None else "")
+
+    def _open_control(self) -> RTDEControlInterface:
+        """A new control interface, whose constructor uploads the control script and returns once it runs."""
+        assert rtde_control is not None  # connect() refused a missing ur_rtde before this
+        # 0.0 is the not-configured sentinel of this stack and not of ur_rtde. The
+        # schema ships `ur.rtde_frequency: 0.0` with `ge=0.0`, meaning the controller
+        # decides; the ur_rtde sentinel for the same thing is -1.0, and it takes 0.0
+        # literally as zero hertz. Measured against URSim 5.26.0, one variable at a
+        # time:
+        #
+        #     frequency=0.0   -> failed in 6.1 s: "Failed to start RTDE data synchronization"
+        #     frequency=-1.0  -> connected in 0.1 s
+        #     frequency=500.0 -> connected in 0.6 s
+        #
+        # Without this translation the shipped default could never connect to a real
+        # UR, and would fail with a message naming nothing, next to a powered arm.
+        # Translating the sentinel here rather than changing the schema default keeps
+        # every existing config loadable and puts the vendor convention inside the
+        # driver boundary, which is where this repo keeps one.
+        frequency = float(self.frequency) if float(self.frequency) > 0.0 else -1.0
+        return rtde_control.RTDEControlInterface(
+            self.ip, frequency,
+        )
 
     def disconnect(self) -> None:
         """Idempotent: safe to call repeatedly, and after a failed connect()."""
@@ -910,6 +917,121 @@ class URConnection:
         except Exception as exc:  # noqa: BLE001 (surface the failure as "not recovered", never raise)
             self.logger.warning("unlockProtectiveStop() failed: %s", exc)
             return False
+
+    # ------------------------------------------------------------------
+    # Hand guiding: teach mode, the RTDE watchdog, the control script
+    # ------------------------------------------------------------------
+    # The primitives :class:`~.freedrive.URFreedriveSession` is made of; the order they run in, and
+    # why, is that module's. Read from the installed ur_rtde 1.6.5 and measured on the CB3 URSim
+    # (PolyScope 3.15.8 in Docker under WSL, 2026-09-24):
+    #
+    # * ``teachMode``/``endTeachMode`` and not ``freedriveMode``. The control script ur_rtde uploads
+    #   prefixes every freedrive_mode line with ``$5.10``, so a controller below PolyScope 5.10, every
+    #   CB3 among them, gets a script without them and ``freedriveMode()`` does nothing there.
+    #   teach_mode() has no version prefix and runs on the CB3 3.15 the owner's cell has.
+    # * Teach mode lives in the control program: a program that ends (a stop on the pendant, a
+    #   protective stop, a new control interface, a reconnect) ends it and the arm holds.
+    # * ``setWatchdog`` asks the script for ``rtde_set_watchdog("input_int_register_0", f, "stop")``:
+    #   every command the control interface sends updates that register, and a program that sees no
+    #   update for 1/f seconds or a little more is stopped, which ends teach mode (at 2 Hz: 0.5 s on a
+    #   bare ur_rtde connection, 1.0 s on this one with its I/O and dashboard clients attached). That
+    #   stop is a protective stop. It stays armed for the life of the program, so a later blocking
+    #   moveJ, which sends nothing while it runs, would trip it; a fresh program is what clears it.
+    #   ``setWatchdog(0)`` does not disarm it: it protective-stopped the arm 0.05 s later. The I/O
+    #   interface drives tool DO0 as before on the fresh program.
+    # * A fresh program comes from a fresh control interface, not from ``reuploadScript``. On a control
+    #   interface a few seconds old ``reuploadScript`` answered ``True`` and no program ran, with teach
+    #   mode and without it, after a ``stopScript`` and without one, and no later upload on that
+    #   interface ran either (it still ran 1 s after connecting without teach mode, and not 2 s after;
+    #   once teach mode had been used, 0.8 s was already too late). ``reconnect()`` hung for over a
+    #   minute. A new interface ran its program every time, about 2 s after the stop, and the payload
+    #   the controller compensates for outlived the old program.
+
+    def teach_mode(self) -> bool:
+        """Free the arm for a person to move by hand (``teachMode``). ``True`` where the controller took it."""
+        self._require_connected()
+        assert self._ctrl is not None  # guaranteed by _require_connected()
+        return bool(self._ctrl.teachMode())
+
+    def end_teach_mode(self) -> bool:
+        """Put the arm back under position control where it stands (``endTeachMode``)."""
+        self._require_connected()
+        assert self._ctrl is not None  # guaranteed by _require_connected()
+        return bool(self._ctrl.endTeachMode())
+
+    def set_watchdog(self, min_frequency_hz: float) -> bool:
+        """Arm the RTDE watchdog: the control program stops when no command arrives for ``1/min_frequency_hz`` s."""
+        self._require_connected()
+        assert self._ctrl is not None  # guaranteed by _require_connected()
+        return bool(self._ctrl.setWatchdog(float(min_frequency_hz)))
+
+    def kick_watchdog(self) -> bool:
+        """Tell the armed watchdog this program is alive. ``False`` where the control script did not answer."""
+        self._require_connected()
+        assert self._ctrl is not None  # guaranteed by _require_connected()
+        return bool(self._ctrl.kickWatchdog())
+
+    def restart_control_script(self) -> None:
+        """Stop the control program and start a fresh one on a new control interface.
+
+        ``stopScript`` ends the old program, and its teach mode and watchdog with it, so the arm holds;
+        the control interface is closed and a new one built, whose constructor uploads the script and
+        returns once it runs. The fresh program carries no watchdog and no teach mode, and it is what a
+        moveJ after a hand-guided session needs. Where the new interface does not come up, every
+        interface is closed before the error is raised, so the arm reads as disconnected and the next
+        ``connect()`` starts clean.
+        """
+        self._require_connected()
+        assert self._ctrl is not None  # guaranteed by _require_connected()
+        self._tcp_offset_cache = None
+        try:
+            for step in ("stopScript", "disconnect"):
+                try:
+                    getattr(self._ctrl, step)()
+                except Exception as exc:  # noqa: BLE001 (the new interface below is the check that counts)
+                    self.logger.warning("%s() on the old control interface failed: %s", step, exc)
+            self._ctrl = None
+            self._ctrl = self._open_control()
+        except BaseException:  # a Ctrl-C included: half a restart leaves nothing open
+            self._safe_teardown()
+            raise
+        self.logger.info("A fresh control program runs on a new control interface.")
+
+    def is_program_running(self) -> bool:
+        """Whether the ur_rtde control program runs on the controller, read on the control interface."""
+        self._require_connected()
+        assert self._ctrl is not None  # guaranteed by _require_connected()
+        return bool(self._ctrl.isProgramRunning())
+
+    def get_joint_speeds(self) -> list[float]:
+        """The actual joint speeds ``[qd0 ... qd5]`` in rad/s (``getActualQd``).
+
+        ``isSteady`` is no stillness test for a hand-guided arm: it reads the script's own motion state,
+        which is never steady in teach mode.
+        """
+        self._require_connected()
+        assert self._recv is not None  # guaranteed by _require_connected()
+        return [float(v) for v in self._recv.getActualQd()]
+
+    def get_payload(self) -> tuple[float, tuple[float, float, float]] | None:
+        """The payload the controller compensates for, as mass in kg and CoG from the flange in mm.
+
+        ``None`` where the receive recipe does not carry it: ur_rtde raises "unable to get state data for
+        specified key: payload" for an output this controller did not publish. The CoG is converted from
+        the controller's metres at this boundary, as :meth:`set_payload` converts the other way.
+        """
+        self._require_connected()
+        assert self._recv is not None  # guaranteed by _require_connected()
+        try:
+            mass_kg = float(self._recv.getPayload())
+            cog_m = [float(v) for v in self._recv.getPayloadCog()]
+        except RuntimeError as exc:
+            self.logger.warning("The controller payload cannot be read over RTDE (%s).", exc)
+            return None
+        if len(cog_m) != 3:
+            self.logger.warning("The controller payload CoG has %d values, not 3; not read.", len(cog_m))
+            return None
+        return mass_kg, (cog_m[0] * 1e3, cog_m[1] * 1e3, cog_m[2] * 1e3)
 
     # ------------------------------------------------------------------
     # Internal

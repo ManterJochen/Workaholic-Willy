@@ -16,6 +16,7 @@ import io
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -24,6 +25,7 @@ from src.config.schema.camera import HandEyeConfig
 from src.config.schema.robot import RobotConfig, WorkspaceLimitsConfig
 from src.geometry import Frame, Pose
 from src.robot.core import (
+    NO_PLAN_FAIL_SAFE_MESSAGE,
     MotionCommand,
     MotionResult,
     MotionStatus,
@@ -75,18 +77,18 @@ def _curobo_ur(*, plans: bool = True) -> tuple[URRobotArm, list[MotionResult]]:
     arm._preflight = SafetyPreflight([_AcceptingGuard("workspace")])
     planner = _PlannerThatArrives([[0.0, -1.5, 1.5, 0.0, 1.5, 0.0]] if plans else [])
     arm._curobo_ur = planner  # type: ignore[assignment]
-    arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
-    # And the plan's end. This double hands back one trajectory whatever it is asked, which a real planner never
-    # does, and what this file reads is not where a plan ends: the UR driver refuses a plan off its goal before
-    # anything moves (Step 8f), and tests/test_the_planner_sees_the_cell_where_the_controller_has_it.py holds that half.
-    arm._plan_end_refusal = lambda goal, joints, pose: None  # type: ignore[method-assign]
-    # The path gate too. This file is about what a calibration sweep says about the camera world,
-    # and the preflight above holds one accepting stand-in rather than a self collision guard,
-    # which a judged path refuses outright (exact meshes on every sample, or no motion).
-    # tests/test_planned_paths_are_judged.py holds that half.
-    arm._preflight.gate_planned_path = (  # type: ignore[method-assign]
-        lambda waypoints, *, arm=None, command=None: None
-    )
+
+    def drive(pose: Pose, *, vel: Any = None, acc: Any = None) -> MotionResult:
+        # The route. This file is about what a calibration sweep says about the camera world, which the verb stamps
+        # on whatever its body returns; the synthetic sweep's poses are not all within a UR5e's reach, and where a
+        # move goes and how is held by tests/test_the_nearest_goal_is_planned.py. So the body is the double's: it
+        # arrives, or it finds no plan.
+        if not plans:
+            return MotionResult.failed(MotionStatus.TIMEOUT, MotionCommand.MOVE_TO, target_pose=pose,
+                                       message=NO_PLAN_FAIL_SAFE_MESSAGE)
+        return planner.execute([], pose)
+
+    arm._drive_curobo = drive  # type: ignore[method-assign]
     arm.get_tcp_pose = lambda: planner.at  # type: ignore[method-assign, assignment, return-value]
     seen: list[MotionResult] = []
     move = arm.move
@@ -225,18 +227,22 @@ class TheCliConnectsTheArmThroughRobotTests(unittest.TestCase):
     ) -> tuple[int, str, MagicMock, MagicMock]:
         """``main`` over the tree, with the gate, the arm factory, the camera and the sweep patched.
 
-        ``sweep`` is what ``run_auto`` raises. Returns the exit code, what was printed, the arm factory
-        and the camera handle, whose release is recorded on ``self.order``.
+        ``sweep`` is what ``run_from_json`` raises, over a file of two stations. Returns the exit code, what was
+        printed, the arm factory and the camera handle, whose release is recorded on ``self.order``.
         """
         camera_cls = MagicMock(name="Camera")
         camera_cls.from_config.return_value.handle.return_value.release.side_effect = (
             lambda: self.order.append("camera released"))
+        stations = Path(self._out.name) / "stations.json"
+        stations.write_text('[{"x": 400, "y": 0, "z": 350, "rx": 0, "ry": 3.14159265, "rz": 0}, '
+                            '{"x": 420, "y": 60, "z": 380, "rx": 0, "ry": 3.14159265, "rz": 0}]', encoding="utf-8")
         printed = io.StringIO()
         with patch.object(calibrate, "_load", return_value=_tree(self.IP)), patch(_READY), \
                 patch(_CREATE_ARM, return_value=arm) as create_arm, patch(_CAMERA, camera_cls), \
-                patch.object(CalibrationRoutine, "run_auto", side_effect=sweep), \
+                patch.object(CalibrationRoutine, "run_from_json", side_effect=sweep), \
                 redirect_stdout(printed):
-            code = calibrate.main(["--rig", "overhead", "--out", self._out.name, *argv])
+            code = calibrate.main(["--rig", "overhead", "--out", self._out.name, "--fixed-poses", str(stations),
+                                   *argv])
         return code, printed.getvalue(), create_arm, camera_cls.from_config.return_value.handle.return_value
 
     def test_a_held_cell_exits_config_and_names_the_holder(self) -> None:

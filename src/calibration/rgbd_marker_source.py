@@ -11,7 +11,8 @@ seam with an Isaac source.
 
 What the judged frame showed stays on the source: ``last_observation`` is the
 :class:`~src.calibration.targets.Observation` of the last call, whose ``why_not`` says why a pose was not
-returned, and ``on_observation(bgr, observation, K, dist)`` is called with the exact frame that was judged.
+returned, ``last_frame`` a copy of that frame (the routine writes it beside the dataset for a sample that
+counted), and ``on_observation(bgr, observation, K, dist)`` is called with the exact frame that was judged.
 The hook is display-only: whatever it does or raises, the returned pose is the estimator's.
 
 The streamer is duck-typed (``grab`` / ``get_intrinsics`` / ``get_distortion``), so this module imports
@@ -93,6 +94,8 @@ class RGBDArucoMarkerSource:
         self.intrinsics_source = "override" if intrinsics is not None else "factory"
         #: What the last call's frame showed; ``None`` before the first call and after a call that raised.
         self.last_observation: Observation | None = None
+        #: The last call's judged frame, BGR, copied out of the device's buffer; ``None`` as ``last_observation``.
+        self.last_frame: np.ndarray | None = None
         self.on_observation: ObservationHook | None = on_observation
 
     @property
@@ -101,6 +104,7 @@ class RGBDArucoMarkerSource:
 
     def __call__(self) -> Optional[np.ndarray]:
         self.last_observation = None
+        self.last_frame = None
         for _ in range(self._warmup):
             self._streamer.grab()
         frame = self._streamer.grab()
@@ -131,6 +135,7 @@ class RGBDArucoMarkerSource:
             # a frame the estimator refuses is this pose's failure, not the sweep's.
             raise RuntimeError(f"the target estimator refused this frame: {exc}") from exc
         self.last_observation = observation
+        self.last_frame = bgr.copy()
         self._notify(bgr, observation, K, dist)
         pose = observation.T_cam_to_target
         return None if pose is None else np.asarray(pose, dtype=np.float64)

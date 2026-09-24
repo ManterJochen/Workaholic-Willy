@@ -28,9 +28,12 @@ rig in `camera.cameras.rigs`. The whole programs are
 procedure at the cell is [`docs/calibration-setup.md`](../../docs/calibration-setup.md). From a shell:
 
 ```bash
-python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --check
-python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --dry-run
+python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --freedrive --check
+python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --freedrive --dry-run
 ```
+
+Every run names where its stations come from, `--check` included: `--freedrive` guides the arm by hand
+to each pose, and `--fixed-poses PATH` visits stations from a file. Nothing generates them.
 
 It exits 0 when done, 1 when the configuration or the build refused, another process holds the cell or
 the connect refused, 2 when it ran and wrote no artifact, and 3 when the sweep raised. The sweep lines

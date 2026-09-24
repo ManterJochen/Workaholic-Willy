@@ -261,8 +261,12 @@ robot:
   grasping:
     calculator: deep
     deep_generator:
-      artifact_path: logs/dl/models/mine/set_grasp_generator_v1.pt
+      artifact_path: "${WILLY_PROJECT_ROOT}/logs/dl/models/mine/set_grasp_generator_v1.pt"
 ```
+
+A relative path would be read against the config tree's folder, not the repository root, so the
+training output under the repository's `logs/` is named through `${WILLY_PROJECT_ROOT}`; an absolute
+path works as well.
 
 It fails closed. `calculator: deep` with no readable artifact of the right kind and version refuses
 to build the cell rather than falling back to the analytic stack, because a cell that asked for the

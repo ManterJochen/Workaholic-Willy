@@ -181,23 +181,35 @@ class SuccessAndPassthroughTests(unittest.TestCase):
 
 
 class _FakePlanner:
+    """A joint-goal glue: every straight line it is shown comes too close, so each move asks it for its plan.
+
+    ``plan_result`` is the plan, and a plan that has waypoints ends on the configuration it was asked for, as a
+    cuRobo joint plan does: its last waypoint is the goal.
+    """
+
     def __init__(self, *, plan_result: object, execute_result: MotionResult | None = None) -> None:
         self._plan_result, self._execute_result = plan_result, execute_result
+        self.last_refusal = None
 
-    def plan(self, pose: Pose, *, goal_keep_out: object = None) -> object:
+    def plan_joint(self, goal: object, *, refresh: bool = True, **_: object) -> object:
         if isinstance(self._plan_result, Exception):
             raise self._plan_result
+        if isinstance(self._plan_result, list) and self._plan_result:
+            return [*self._plan_result[:-1], [float(v) for v in goal]]  # type: ignore[attr-defined]
         return self._plan_result
 
     def refresh_world(self, *, near_point_mm: object = None, goal_keep_out: object = None) -> None:
         """Asked before a judged joint move or line on a live camera world. The double has no world."""
         return None
 
-    def check_joint_path(self, samples: object, *, refresh: bool = True) -> object:
-        """Asked about the legs a plan will run, after the local gate. The double's world holds nothing to refuse."""
+    def check_joint_path(self, samples: object, *, refresh: bool = True, clearance_mm: float = 0.0) -> object:
+        """Asked about a goal, a line and the legs a plan will run. It refuses the lines and nothing else."""
         from src.robot.safety.planning import JointCheckVerdict
 
-        return JointCheckVerdict(valid=True, first_invalid=None, checked=len(list(samples)), reason="the double accepts")
+        count = len(list(samples))  # type: ignore[call-overload]
+        if clearance_mm > 0.0:
+            return JointCheckVerdict(valid=False, first_invalid=0, checked=count, reason="the line grazes the tote")
+        return JointCheckVerdict(valid=True, first_invalid=None, checked=count, reason="the double accepts")
 
     def execute(self, traj: object, pose: Pose, *, vel: object = None, acc: object = None) -> MotionResult:
         assert self._execute_result is not None
@@ -207,6 +219,7 @@ class _FakePlanner:
 class CuroboBranchTests(unittest.TestCase):
     def _arm(self, planner: _FakePlanner | None, *, connected: bool = True) -> URRobotArm:
         arm = _arm("curobo", connected=connected)
+        arm._conn.get_joint_positions.return_value = [0.0, -1.5, 1.5, 0.0, 1.5, 0.0]
         arm._curobo_ur = planner  # type: ignore[assignment]  # bypass the lazy builder
         return arm
 

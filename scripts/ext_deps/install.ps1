@@ -181,6 +181,14 @@ function Install-Curobo {
     & $python -m pip install --quiet 'cuda-core==1.1.0' | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "cuda-core pin failed (exit $LASTEXITCODE)" }
 
+    # warp-lang, pinned down for the same reason. cuRobo asks only for warp-lang>=0.10.0, so pip takes
+    # the newest, and MEASURED 2026-09-24 on Windows 11 with Smart App Control enforcing: the newest,
+    # 1.17.0, had its warp.dll refused at load (CodeIntegrity event 3033, WinError 4551), which stops
+    # the planner sidecar before it is ready, while the warp.dll of 1.16.0, 1.15.0 and 1.14.0 loaded.
+    # 1.16.0 sees an sm_120 GPU (RTX 5080) and plans. Step back a release if this one is refused too.
+    & $python -m pip install --quiet 'warp-lang==1.16.0' | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "warp-lang pin failed (exit $LASTEXITCODE)" }
+
     # The compiled backend is the normal case. It is built unless the operator opts out, unless it
     # is already there, or unless this machine has no C++ toolchain at all. Only the last of those
     # is a fallback, and it is an emergency one: see the warning it prints.

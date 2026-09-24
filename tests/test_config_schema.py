@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest
-from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -22,7 +21,6 @@ from src.config.schema.robot import (
     RobotConfig,
     RobotGraspingConfig,
     WorkspaceLimitsConfig,
-    RobotCalibrationConfig,
 )
 
 
@@ -287,50 +285,3 @@ class GraspingConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-class PoseBoxZFracValidationTests(unittest.TestCase):
-    """`calibration.pose_box_z_frac` must refuse the three ways it was silently wrong.
-
-    MEASURED 2026-08-09, the day after the field shipped: a typo'd key, an inverted band and
-    out-of-range fractions were ALL accepted. The typo is the worst -- `{"typo_source": [0.5, 0.9]}`
-    validates, the runner's `.get(marker)` returns None, the shipped default applies, and the operator's
-    setting has vanished without a word. That is the shape this repo already removed once as
-    worse-than-nothing (`quality_threshold_mm`, a key documenting a gate that did not exist), and it was
-    reintroduced in the very same file.
-    """
-
-    def test_the_valid_shipped_values_still_load(self) -> None:
-        for band in ({"ground_truth": (0.5, 0.9)}, {"aruco": (0.55, 0.75)},
-                     {"ground_truth": (0.5, 0.9), "aruco": (0.55, 0.75)}):
-            with self.subTest(band=band):
-                cfg = RobotCalibrationConfig(pose_box_z_frac=band)
-                self.assertEqual(cfg.pose_box_z_frac, band)
-
-    def test_an_unknown_marker_source_is_refused(self) -> None:
-        """The silent case: not looked up, so the default applies and the setting disappears."""
-        with self.assertRaises(ValueError) as ctx:
-            RobotCalibrationConfig(pose_box_z_frac={"typo_source": (0.5, 0.9)})
-        msg = str(ctx.exception)
-        self.assertIn("unknown marker source", msg)
-        self.assertIn("ground_truth", msg)      # the message must name what IS valid
-
-    def test_a_band_that_is_not_a_band_is_refused(self) -> None:
-        """Inverted or degenerate would give z_min >= z_max and the generator would sample nothing."""
-        for band in ((0.9, 0.5), (0.5, 0.5)):
-            with self.subTest(band=band), self.assertRaises(ValueError):
-                RobotCalibrationConfig(pose_box_z_frac={"ground_truth": band})
-
-    def test_values_outside_zero_to_one_are_refused(self) -> None:
-        """They are FRACTIONS of workspace_limits.z_max, not millimetres."""
-        for band in ((-1.0, 2.0), (0.0, 1.5), (-0.1, 0.9)):
-            with self.subTest(band=band), self.assertRaises(ValueError):
-                RobotCalibrationConfig(pose_box_z_frac={"ground_truth": band})
-
-    def test_the_valid_key_set_matches_the_runner_flag(self) -> None:
-        """A closed key set drifts the moment the runner grows a third --marker choice, and the drift
-        would be silent again. Pin them together."""
-        import src.willy_sim.run_eth_calibrate as runner
-
-        source = Path(runner.__file__).read_text(encoding="utf-8")
-        for marker in RobotCalibrationConfig.MARKER_SOURCES:
-            self.assertIn(f'"{marker}"', source, f"{marker!r} is not a --marker choice any more")

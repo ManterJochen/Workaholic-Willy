@@ -6,7 +6,7 @@ from typing import ClassVar, Literal
 
 from pydantic import Field, model_validator
 
-from .._base import StrictModel
+from .._base import ConfigPath, StrictModel
 
 
 class GraspingClosedLoopConfig(StrictModel):
@@ -534,7 +534,7 @@ class GraspingUncertaintyConfig(StrictModel):
     )
     # 1.01 = off-sentinel: the channel spread is bounded above by 1.0, so the gate never trips by default.
     channel_disagreement_threshold: float = Field(default=1.01, ge=0.0)
-    calibration_artifact_path: str | None = Field(default=None)
+    calibration_artifact_path: ConfigPath | None = Field(default=None)
     # Per-candidate uncertainty re-rank (the consumer of the corridor-risk producer). rerank_modes is
     # dense-only and separate from apply_modes (which includes "auto" and would crash the dense-only
     # carrier); default off + weight 0.0 is byte-identical, so enabling is observe-only until a positive
@@ -593,9 +593,10 @@ class GraspingSuccessModelConfig(StrictModel):
         Master switch. Defaults to :data:`False`, so the runtime never loads the
         artifact.
     artifact_dir
-        Path (absolute or relative to the config root) of the directory containing
-        ``model.json`` and ``manifest.json``. Defaults to the committed v1 artifact
-        under ``assets/models/success_probability/v1``.
+        Path of the directory containing ``model.json`` and ``manifest.json``: absolute,
+        relative to the config folder, or under ``${WILLY_PROJECT_ROOT}``, the repository
+        (:mod:`src.config.paths`). Defaults to the committed v1 artifact under the
+        repository's ``assets/models/success_probability/v1``.
     apply_modes
         Stable mode names the model may score in. Defaults to the four canonical
         modes; ``"easy"`` is included because easy pick rate is the
@@ -619,8 +620,9 @@ class GraspingSuccessModelConfig(StrictModel):
     """
 
     enabled: bool = Field(default=False)
-    artifact_dir: str = Field(
-        default="assets/models/success_probability/v1", min_length=1
+    artifact_dir: ConfigPath = Field(
+        default="${WILLY_PROJECT_ROOT}/assets/models/success_probability/v1", min_length=1,
+        validate_default=True,
     )
     apply_modes: tuple[str, ...] = Field(
         default=("easy", "auto", "dense_clutter", "dense_autonomous")
@@ -1640,7 +1642,7 @@ class GraspingDeepGeneratorConfig(StrictModel):
     0.8947 AUROC. Generator proposes, scorer ranks, and each is promoted on its own evidence.
     """
 
-    artifact_path: str | None = Field(
+    artifact_path: ConfigPath | None = Field(
         default=None,
         description=(
             "Path to the generator's `.pt`, written by "
@@ -1704,8 +1706,8 @@ class GraspingDeepRankerConfig(StrictModel):
             "Changes no ordering and no decision; adds deep_ranker_* telemetry keys."
         ),
     )
-    artifact_dir: str = Field(
-        default="assets/models/grasp_ranker/v1", min_length=1,
+    artifact_dir: ConfigPath = Field(
+        default="${WILLY_PROJECT_ROOT}/assets/models/grasp_ranker/v1", min_length=1, validate_default=True,
         description=(
             "Where the fitted ranker lives. The trees are gitignored and regenerated with "
             "`python -m datagen train-ranker`; the card beside them is committed."
@@ -1998,7 +2000,7 @@ class RobotGraspingConfig(StrictModel):
     #: tangential top-down close at any azimuth (0/4 against 4/4 radial). A UR5e absorbs both, so the
     #: default stays False and only a cell that needs it declares it (robot.ur3e.yaml does).
     isotropic_radial_closing: bool = Field(default=False)
-    record_log_path: str | None = Field(
+    record_log_path: ConfigPath | None = Field(
         default=None,
         description=(
             "Opt-in JSONL path for production GraspAttemptRecord logging. When set, "

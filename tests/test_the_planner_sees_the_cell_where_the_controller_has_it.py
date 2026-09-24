@@ -8,7 +8,10 @@ planned to the goal mirrored through the base axis and routed around a mirrored 
 ended before the arm drove it. The Isaac cell never met it: its world, its goals and its planner all sit in base_link.
 
 These pin the turn at the one place the UR glue talks to the planner, every channel through it, and the check that
-refuses a plan whose last configuration is not on its goal before the first waypoint moves.
+refuses a plan whose last configuration is not on its goal before the first waypoint moves. The UR driver no longer
+hands the planner a pose at all: it chooses the goal configuration and asks for a joint plan, whose numbers are the
+same in either base, so a goal can no longer be mirrored on the way in; the turn still stands for the world, the
+live scene and a pose anything else hands the turned client.
 """
 
 from __future__ import annotations
@@ -34,6 +37,7 @@ class _RecordingClient:
         self.dt = 0.0
         self._traj = traj if traj is not None else [[0.0] * 6]
         self.goal: "tuple[list[float], list[float]] | None" = None
+        self.joint_goal: "list[float] | None" = None
         self.cuboids: list[dict] = []
         self.meshes: list[dict] = []
         self.voxels: "dict[str, Any] | None" = None
@@ -47,6 +51,10 @@ class _RecordingClient:
 
     def plan(self, start: Any, pos_m: Any, quat_wxyz: Any) -> list[list[float]]:
         self.goal = (list(pos_m), list(quat_wxyz))
+        return self._traj
+
+    def plan_joint(self, start: Any, goal: Any) -> list[list[float]]:
+        self.joint_goal = list(goal)
         return self._traj
 
     def set_world(self, cuboids: Any, meshes: Any = None) -> int:
@@ -65,7 +73,7 @@ class _RecordingClient:
     def fk(self, joints: Any) -> tuple[list[float], list[float]]:
         return [0.5, 0.1, 0.3], [0.0, 0.0, 0.0, 1.0]
 
-    def check_joints(self, configs: Any) -> JointCheckVerdict:
+    def check_joints(self, configs: Any, **_: Any) -> JointCheckVerdict:
         return JointCheckVerdict(valid=True, first_invalid=None, checked=len(configs), reason="the fake accepts")
 
 
@@ -126,14 +134,21 @@ def _ur_planner(client, **kwargs):  # noqa: ANN001, ANN003, ANN202 - a stand-in 
     return CuroboUrPlanner(_Conn(), client_factory=lambda: client, **kwargs)
 
 
-def test_the_goal_reaches_the_planner_turned() -> None:
+def test_a_pose_handed_to_the_turned_client_reaches_the_planner_turned() -> None:
     client = _RecordingClient()
-    planner = _ur_planner(client)
-    planner.plan(_goal())
+    PlannerFrameClient(client).plan([0.0] * 6, [0.5, 0.1, 0.3], [1.0, 0.0, 0.0, 0.0])
     assert client.goal is not None
     pos_m, quat_wxyz = client.goal
     assert pos_m == pytest.approx([-0.5, -0.1, 0.3]), "the planner was handed the goal in the controller's frame"
     assert quat_wxyz == pytest.approx([0.0, 0.0, 0.0, 1.0])
+
+
+def test_a_joint_goal_reaches_the_planner_as_it_is() -> None:
+    """What the UR glue sends: the configuration the arm chose, the same numbers in either base."""
+    client = _RecordingClient()
+    _ur_planner(client).plan_joint([0.1, -1.2, 1.3, -0.4, 0.5, 0.6])
+    assert client.joint_goal == pytest.approx([0.1, -1.2, 1.3, -0.4, 0.5, 0.6])
+    assert client.goal is None, "a pose went to the planner"
 
 
 def test_a_declared_box_and_mesh_reach_the_planner_turned() -> None:
@@ -216,12 +231,21 @@ _MIRRORED = [math.pi, -1.5708, 1.5708, -1.5708, -1.5708, 0.0]
 
 
 class _Planner:
+    """Answers every joint goal with ``traj``; screens pass and straight lines come too close, so the move plans."""
+
     def __init__(self, traj: "list[list[float]]") -> None:
         self.traj = traj
         self.executed = False
+        self.last_refusal = None
 
-    def plan(self, pose: Any, **_: Any) -> list[list[float]]:
+    def plan_joint(self, goal: Any, **_: Any) -> list[list[float]]:
         return self.traj
+
+    def check_joint_path(self, samples: Any, *, refresh: bool = True, clearance_mm: float = 0.0) -> JointCheckVerdict:
+        count = len(list(samples))
+        if clearance_mm > 0.0:
+            return JointCheckVerdict(valid=False, first_invalid=0, checked=count, reason="the line grazes the tote")
+        return JointCheckVerdict(valid=True, first_invalid=None, checked=count, reason="the fake accepts")
 
     def execute(self, traj_ur: Any, pose: Any, **_: Any) -> Any:
         from src.robot.core import MotionCommand, MotionResult
@@ -256,15 +280,28 @@ def _flange_pose(q: "list[float]") -> Pose:
 
 
 def test_a_plan_that_ends_off_its_goal_is_refused_before_anything_moves() -> None:
+    """The end check, read on the controller's own kinematics, refuses a configuration a metre from the goal."""
+    goal = _flange_pose([0.0, -1.4, 1.6, -1.7, -1.5708, 0.0])
+    mirrored_end = [math.pi, -1.4, 1.6, -1.7, -1.5708, 0.0]
+    arm = _ur_arm(_Planner([_DOWN, mirrored_end]))
+
+    result = arm._plan_end_refusal(goal, mirrored_end, goal)
+
+    assert result is not None and result.status is MotionStatus.CONTROLLER_REJECTED
+    assert "from its goal" in (result.message or "")
+
+
+def test_a_plan_that_ends_off_the_configuration_asked_for_is_never_driven() -> None:
+    """Through the arm: the plan ends half a turn of the base from what it was asked, so it is not taken at all."""
     goal = _flange_pose([0.0, -1.4, 1.6, -1.7, -1.5708, 0.0])
     mirrored_end = [math.pi, -1.4, 1.6, -1.7, -1.5708, 0.0]
     planner = _Planner([_DOWN, mirrored_end])
     arm = _ur_arm(planner)
+    arm._gate_planned_config = lambda pose, joints: None  # the shipped box is not what this reads
 
     result = arm._drive_curobo(goal)
 
-    assert result.status is MotionStatus.CONTROLLER_REJECTED, result.message
-    assert "from its goal" in (result.message or "")
+    assert result.status is MotionStatus.TIMEOUT, result.message
     assert not planner.executed, "a plan that ends a metre from its goal was driven"
 
 

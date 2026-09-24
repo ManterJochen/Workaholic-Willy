@@ -116,3 +116,19 @@ class JointPositions:
     def from_list(cls, values: Iterable[float]) -> JointPositions:
         """Alias for ``JointPositions(values)``."""
         return cls(values)
+
+    @classmethod
+    def deg(cls, *degrees: float) -> JointPositions:
+        """The joints in DEGREES, one per axis, as a pendant shows them and ``--where`` prints them.
+
+            LOOK = JointPositions.deg(-90.0, -110.0, -100.0, -60.0, 90.0, 0.0)
+
+        Stored in radians like every other value: the unit is said once, here, and nothing downstream
+        has to guess it. A program that declares its look poses copies the numbers off the pendant or
+        off ``python -m src.robot.drivers.ur --where`` without converting them by hand.
+        """
+        return cls(np.radians(np.asarray(degrees, dtype=np.float64)))
+
+    def degrees(self) -> tuple[float, ...]:
+        """The joints in degrees, rounded to a hundredth, the way :meth:`deg` takes them."""
+        return tuple(round(float(v), 2) for v in np.degrees(self.values))

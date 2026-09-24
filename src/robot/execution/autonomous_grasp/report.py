@@ -27,6 +27,7 @@ from src.robot.grasping.uncertainty import UncertaintySnapshot
 from .config import EffectiveGraspingConfig, GraspBehaviorProfile, GraspMode
 
 if TYPE_CHECKING:
+    from src.geometry import Pose
     from src.robot.grasping.closed_loop.refinement import RefinementReport
     from src.robot.grasping.loop.pick_loop import CommitDecision
 
@@ -118,9 +119,20 @@ _PICK_TO_AUTONOMOUS: Mapping[PickOutcome, AutonomousGraspOutcome] = {
     # widened: at that level "the run did not complete because the cell stopped" is one fact, and
     # the PickOutcome underneath keeps the distinction for anyone who needs it.
     PickOutcome.CONTROLLER_NOT_OPERATIONAL: AutonomousGraspOutcome.CANCELLED,
+    # A hand that needs a person is what a gripper's raise was before the policy reported it: EXECUTION_FAILED, with
+    # the pick loop's outcome underneath (``AutonomousGraspReport.gripper_fault``).
+    PickOutcome.GRIPPER_FAULT: AutonomousGraspOutcome.EXECUTION_FAILED,
     PickOutcome.CAMERA_FRAME_REJECTED: AutonomousGraspOutcome.MISSING_CAMERA_FRAME,
     PickOutcome.NO_COMMIT_INSUFFICIENT_FUSION: AutonomousGraspOutcome.NO_COMMIT_INSUFFICIENT_FUSION,
 }
+
+
+def _pose_dict(pose: "Pose | None") -> Optional[dict[str, Any]]:
+    """A pose as plain data: its frame, its position in millimetres and its XYZW quaternion."""
+    if pose is None:
+        return None
+    return {"frame": pose.frame.value, "position_mm": [float(v) for v in pose.position_mm],
+            "quaternion_xyzw": [float(v) for v in pose.quaternion_xyzw]}
 
 
 def _ascii(text: str) -> str:
@@ -247,6 +259,10 @@ class AutonomousGraspReport:
     # raising it, with `outcome` EXECUTION_FAILED and no `pick_report`, and a campaign stops on it.
     # `None` on every pick that ended through its own path.
     fault: Optional[Exception] = None
+    #: The looks this attempt moved to before it perceived, in order, each as it reads (``home``, or the joints in
+    #: degrees): the last one is where it perceived from, or the one it did not reach. Empty when the pick perceived
+    #: from wherever the arm stood: a fixed camera's cell, or a pick handed no look (``src.robot.execution.looks``).
+    looks: tuple[str, ...] = ()
 
     @property
     def succeeded(self) -> bool:
@@ -269,6 +285,47 @@ class AutonomousGraspReport:
         if getattr(self.pick_report, "outcome", None) is stopped:
             return True
         return str(self.telemetry.get("low_level_outcome", "")) in (str(stopped), stopped.value)
+
+    @property
+    def gripper_fault(self) -> str:
+        """Why this pick ended on a hand that needs a person, or ``""``.
+
+        The pick loop names it ``GRIPPER_FAULT`` (``PolicyOutcome.GRIPPER_FAULT``): the gripper raised while it was
+        commanded, or a hand that toggles with no sensor would not start the pick, because it believed its jaws closed
+        and nobody at a terminal said otherwise. Read from ``pick_report``, whose last attempt carries the policy's
+        sentence, and on the two-scan path from ``telemetry['low_level_outcome']`` and ``telemetry['gripper_fault']``. Like
+        :attr:`controller_stopped` it is not a :attr:`fault`, and a campaign stops on it all the same: the next pick
+        would perceive again for a hand that still cannot start (owner's decision, 2026-09-24).
+        """
+        faulted = PickOutcome.GRIPPER_FAULT
+        if getattr(self.pick_report, "outcome", None) is faulted:
+            attempts = getattr(self.pick_report, "attempts", ()) or ()
+            said = getattr(attempts[-1], "motion_message", None) if attempts else None
+            return str(said or faulted.value)
+        if str(self.telemetry.get("low_level_outcome", "")) in (str(faulted), faulted.value):
+            return str(self.telemetry.get("gripper_fault") or faulted.value)
+        return ""
+
+    @property
+    def object_centre_mm(self) -> Optional[tuple[float, float, float]]:
+        """Where the object this pick went for was seen, BASE mm: the median of its mask's surface, as ``Locator`` says.
+
+        Read off the pick report, so :data:`None` where no candidate reached the arm, where the cell resolves no BASE,
+        and on the two-scan path, which carries no pick report.
+        """
+        value = getattr(self.pick_report, "object_centre_mm", None)
+        return value if isinstance(value, tuple) and len(value) == 3 else None
+
+    @property
+    def grasp_pose(self) -> "Pose | None":
+        """The pose the tool closed at, in BASE, on a pick that succeeded: the grasp waypoint that was judged and ran.
+
+        :data:`None` on every other outcome, and on the two-scan path, which carries no pick report.
+        """
+        from src.geometry import Pose  # noqa: PLC0415
+
+        value = getattr(self.pick_report, "grasp_pose", None)
+        return value if isinstance(value, Pose) else None
 
     @property
     def hold_measured(self) -> Optional[bool]:
@@ -319,6 +376,10 @@ class AutonomousGraspReport:
         attempts = getattr(self.pick_report, "attempts", ()) or ()
         if attempts and (reasons := getattr(attempts[-1], "reasons", ())):
             parts.append("reasons=" + ",".join(str(r) for r in reasons))
+        if refused := self.telemetry.get("look_refused"):
+            parts.append(_ascii(f"look {self.looks[-1] if self.looks else '?'} not reached: {refused}"))
+        elif self.looks:
+            parts.append(f"looked from {len(self.looks)}: " + "; ".join(self.looks))
         return "  ".join(parts)
 
     #: The optional layers, and the attribute that proves each one ran rather than being configured.
@@ -377,9 +438,9 @@ class AutonomousGraspReport:
         oversight.
 
         The failure line is :meth:`failure_summary`, not a second lookup, so the CLI and the
-        console give one answer. A pick that ended on a stopped controller (:attr:`controller_stopped`)
-        and a success the gripper did not measure (:attr:`hold_measured` :data:`False`) each add a line
-        saying so.
+        console give one answer. A pick that ended on a stopped controller (:attr:`controller_stopped`),
+        one that ended on a hand that needs a person (:attr:`gripper_fault`) and a success the gripper
+        did not measure (:attr:`hold_measured` :data:`False`) each add a line saying so.
 
         The camera line is printed on every attempt for the same reason as the layers line: how many
         typed motions a current camera world vouched for, and the weakest stamp, read through
@@ -393,10 +454,18 @@ class AutonomousGraspReport:
             lines.append(f"             {self.failure_summary()}")
         if self.controller_stopped:
             lines.append("  controller cannot move: a person clears the stop where the arm is visible, then runs again")
+        if self.gripper_fault:
+            lines.append(_ascii(f"  gripper    needs a person: {self.gripper_fault}"))
         if self.hold_measured is False:
             # A success the gripper did not measure reads here as one, not as a confirmed hold.
             lines.append("  hold       not measured: the gripper reports no hold, so this success is the close "
                          "command's word")
+        if self.looks:
+            lines.append(f"  looks      {'; '.join(self.looks)}")
+        if (centre := self.object_centre_mm) is not None:
+            lines.append("  object     centre ({:.1f}, {:.1f}, {:.1f}) mm BASE".format(*centre))
+        if (grasp := self.grasp_pose) is not None:
+            lines.append("  grasp      closed at ({:.1f}, {:.1f}, {:.1f}) mm BASE".format(*grasp.position_mm))
         if pick is not None:
             where = "simulated" if getattr(pick, "is_simulated", False) else "real"
             lines.append(
@@ -442,6 +511,7 @@ class AutonomousGraspReport:
             "succeeded": self.succeeded,
             "hold_measured": self.hold_measured,
             "controller_stopped": self.controller_stopped,
+            "gripper_fault": self.gripper_fault,
             "failure_summary": self.failure_summary(),
             "layers_that_ran": list(self.layers_that_ran()),
             "robot_vendor": getattr(pick, "robot_vendor", None),
@@ -456,6 +526,9 @@ class AutonomousGraspReport:
             "decision": self.decision.to_dict() if self.decision is not None else None,
             "recovery_actions": [dict(action) for action in self.recovery_actions],
             "telemetry": dict(self.telemetry),
+            "looks": list(self.looks),
+            "object_centre_mm": None if self.object_centre_mm is None else list(self.object_centre_mm),
+            "grasp_pose": _pose_dict(self.grasp_pose),
             "fault": (None if self.fault is None
                       else {"type": type(self.fault).__name__, "message": str(self.fault)}),
         }

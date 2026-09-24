@@ -129,12 +129,15 @@ class _Client:
     def set_world(self, cuboids, meshes=None):  # noqa: ANN001, ANN201
         return len(cuboids) if self.confirm_all else max(0, len(cuboids) - 1)
 
-    def check_joints(self, configs):  # noqa: ANN001, ANN201
+    def check_joints(self, configs, **asked):  # noqa: ANN001, ANN003, ANN201
         self.checked.append([[float(v) for v in c] for c in configs])
         return JointCheckVerdict(valid=True, first_invalid=None, checked=len(configs), reason="clear")
 
     def plan(self, start, pos_m, quat_wxyz):  # noqa: ANN001, ANN201
         return [list(start)]
+
+    def plan_joint(self, start, goal):  # noqa: ANN001, ANN201
+        return [list(start), list(goal)]
 
     def close(self) -> None:
         return None

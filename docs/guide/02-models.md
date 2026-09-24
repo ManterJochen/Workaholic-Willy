@@ -111,12 +111,15 @@ and `vlm-4b-fp8`. `--list` prints each with its approximate size, its pin and wh
 codes: `0` everything asked for is present, `1` at least one fetch failed, `2` an unknown key.
 
 **Two models check their directory before they load.** GroundingDINO raises `FileNotFoundError`
-naming the key, the configured path, the resolved path, and both ways out:
+naming the key, the path it looked at, how the config wrote it and the rule that placed it, and both
+ways out:
 
 ```
 FileNotFoundError: models.objectdetector.local is true and model_path is
-'assets/models/hf/detection/IDEA-Research--grounding-dino-tiny', but there is no such
-directory (resolved: ...).
+'<repo>/assets/models/hf/detection/IDEA-Research--grounding-dino-tiny', but there is no such
+directory (resolved: ...). The config gives it as
+${WILLY_PROJECT_ROOT}/assets/models/hf/detection/IDEA-Research--grounding-dino-tiny, and
+${WILLY_PROJECT_ROOT} is the repository, <repo>.
 Nothing is downloaded in local mode: that is the point of the flag.
 ```
 
@@ -184,7 +187,7 @@ pipeline:
     segmenter: sam2          # sam2 | oneformer
     vlm:
       model_id: "Qwen/Qwen3-VL-4B-Instruct"
-      model_path: "assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct"
+      model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct"
       local: true
       preload: false         # false = load on the first prompt that reaches the VLM; true = at cell build
       on_unavailable: refuse # refuse = reject the pick; degrade = fall back to the phrase grounder
@@ -261,8 +264,9 @@ source. The YAML comments describe each field. Three behaviours they do not:
 on which `grounding-dino-base` returns nothing at all, and a detector that grounds nothing is a cell
 that cannot pick. `grounding-dino-base` is the better one on dense clutter. On a scene with no
 detection, try the other checkpoint before lowering `threshold`. To switch, fetch `dino-base` and
-point `model_path` at `assets/models/hf/detection/IDEA-Research--grounding-dino-base`: with `local:
-true`, `model_id` is not read.
+point `model_path` at `${WILLY_PROJECT_ROOT}/assets/models/hf/detection/IDEA-Research--grounding-dino-base`
+(the repository, where the fetch writes; a relative path is read against the config folder,
+[01 section 2](01-configuration.md#2-what-the-loader-reads)): with `local: true`, `model_id` is not read.
 
 **`models.detector` and `models.segmenter_backend`** assemble a stack by hand, for a checkpoint the
 pipeline block does not name. They are read: `build_object_detector` and `build_segmenter` use them,
@@ -281,7 +285,7 @@ with the fetch that fixes it. The microphone keys (`samplerate`, `blocksize`, `c
 the cell PC's microphone for push to talk (`PushToTalkSource.from_config`) and for
 `Listener.from_config`, which no console route or cell verb opens. A tree that writes `chunk_duration`
 is refused as an unknown key. From a program:
-[`examples/real_robot/15_speak_a_command.py`](../../examples/real_robot/15_speak_a_command.py); the
+[`examples/real_robot/12_speak_a_command.py`](../../examples/real_robot/12_speak_a_command.py); the
 package is [`src/models/speech/README.md`](../../src/models/speech/README.md).
 
 **`handdetect` and `gesturedetect`** are standalone MediaPipe and are not on the grasp path. Nothing

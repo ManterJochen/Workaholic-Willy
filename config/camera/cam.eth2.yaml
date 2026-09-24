@@ -68,16 +68,17 @@ cameras:
       # values restate the default. Nothing under this profile writes one: that needs
       # `realsense.export_intrinsics`, and the cell takes its intrinsics off the device instead.
       calibration_paths:
-        base_dir: calibration/cam_left
+        base_dir: ../calibration/cam_left
 
       # This camera's CAMERA to BASE, measured against the robot by the eye-to-hand calibration
-      # (`python -m src.robot.execution.real_cell.calibrate --rig cam_left`, which prints this block).
+      # (`python -m src.robot.execution.real_cell.calibrate --rig cam_left --freedrive`, which prints
+      # this block).
       # A fixed camera: the artifact is one transform, and the resolver built from it never consults
       # the arm. The file is loaded when the cell is built, and one that does not load refuses the
       # build naming this key.
       extrinsics:
         mounting_mode: eye_to_hand
-        artifact_path: calibration/real/eth_cam_left.json
+        artifact_path: ../calibration/real/eth_cam_left.json
 
     # --- the second view ---
     - rig_id: cam_right
@@ -93,10 +94,10 @@ cameras:
           temporal: true
           hole_filling: false
       calibration_paths:
-        base_dir: calibration/cam_right
+        base_dir: ../calibration/cam_right
       extrinsics:
         mounting_mode: eye_to_hand
-        artifact_path: calibration/real/eth_cam_right.json
+        artifact_path: ../calibration/real/eth_cam_right.json
 
 # ============================================================================
 # Where the two cameras stand is not configured here.

@@ -199,10 +199,14 @@ class TheBatchCheckBranchTests(unittest.TestCase):
         """The names moved into ``_terms`` (S16), which is the point: one judgement, asked by three callers.
 
         So the scan follows them there rather than being deleted. The checker itself is built once at start,
-        before the judgement that uses it, because the ready gate cannot judge the retract without one.
+        before the judgement that uses it, because the ready gate cannot judge the retract without one. The world term
+        moved one step further, into ``_world_term``, which a straight line asks at a clearance; ``_terms`` calls it,
+        so the scan reads the two together.
         """
         terms = NL.join(_def_block(self.source, "_terms"))
         self.assertTrue(terms, "the sidecar has no _terms: nothing here judges a configuration")
+        self.assertIn("_world_term(", terms)
+        terms += NL + NL.join(_def_block(self.source, "_world_term"))
         for name in (
             "_planner.compute_kinematics(",
             ".get_bound(",

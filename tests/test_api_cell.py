@@ -257,6 +257,157 @@ class SubstitutedGripperTests(CellLifecycleTests):
 
 
 @unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
+class ARunOwnsTheCellTests(CellLifecycleTests):
+    """C2 of the review of 2026-09-24: Disconnect, Connect and Build did not look at the run.
+
+    A run lives on its own thread, and a disconnect left it alive: the pick in flight, blocked on a person answering
+    where a toggle's jaws stand, went on once the answer came, and the run then picked again on whatever arm and hand
+    a Connect had brought up in between. Now Disconnect stops the run before the cell comes down, and Connect and
+    Build are refused while that run's thread is still alive, so nothing of the old run can meet a reconnected cell.
+
+    The run's first pick stands in for a pick waiting on that question: it blocks until the test answers, and then
+    runs the real pick, which is where a resumed run would have moved.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        import threading
+
+        # The console's own grasp record log lives under the checkout's logs/; these runs write theirs into the
+        # scratch tree instead, which the cleanup removes.
+        self.cell.record_log_path = self.tmp.parent / "grasp_records.jsonl"
+        self.asked = threading.Event()
+        self.answered = threading.Event()
+        # A failing test must not leave the run's thread waiting on an answer nobody gives.
+        self.addCleanup(self.answered.set)
+        self.picks: list[dict] = []
+        self.reports: list[object] = []
+
+    def _running(self, picks: int = 3) -> dict:
+        """A connected cell and a run of ``picks`` picks whose first one waits on the person's answer."""
+        self._build()
+        self.assertEqual(
+            self.client.post("/v1/cell/connect", json={"token": self._token()}).status_code, 200
+        )
+        service = self.cell.session.service
+        real_pick = service.pick
+
+        def _asked_then_picked(**kwargs: object) -> object:
+            self.picks.append(dict(kwargs))
+            if len(self.picks) == 1:
+                self.asked.set()
+                self.answered.wait(timeout=20)  # the person at the server's terminal answers
+            report = real_pick(**kwargs)
+            self.reports.append(report)
+            return report
+
+        patcher = patch.object(service, "pick", side_effect=_asked_then_picked)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        started = self.client.post("/v1/pick", json={"picks": picks})
+        self.assertEqual(started.status_code, 202, started.text)
+        self.assertTrue(self.asked.wait(timeout=20), "the run's first pick never began")
+        return started.json()
+
+    def _ended(self, run_id: str) -> dict:
+        """The run once its thread has ended; the answer is given first, so a waiting pick returns."""
+        self.answered.set()
+        thread = self.cell.registry._threads.get(run_id)
+        if thread is not None:
+            thread.join(timeout=20)
+        body = self.client.get(f"/v1/runs/{run_id}").json()
+        self.assertNotEqual(body["state"], "running", "the run did not end once its pick returned")
+        return body
+
+    def test_disconnect_stops_the_run_before_the_arm_and_hand_come_down(self) -> None:
+        """Red before: the stop flag was never set, and the run picked three times, the last two on a cell the
+        operator had taken down."""
+        from src.robot.drivers.dummy.arm import DummyRobotArm
+
+        run = self._running(picks=3)
+        seen: list[bool] = []
+        real_disconnect = DummyRobotArm.disconnect
+
+        def _recording(arm: DummyRobotArm) -> None:
+            live = self.cell.registry.get(run["id"])
+            seen.append(bool(live is not None and live.stop_requested))
+            real_disconnect(arm)
+
+        with patch.object(DummyRobotArm, "disconnect", autospec=True, side_effect=_recording):
+            down = self.client.post("/v1/cell/disconnect")
+        self.assertEqual(down.status_code, 200, down.text)
+        self.assertEqual(down.json()["state"], "built")
+        self.assertEqual(seen, [True], "the arm came down before the run was told to stop")
+
+        ended = self._ended(run["id"])
+        self.assertEqual(len(self.picks), 1, "the run resumed after the disconnect and picked again")
+        self.assertEqual(ended["state"], "failed", ended)
+        self.assertTrue(ended["stop_requested"])
+        self.assertIn("disconnected", ended["error"])
+        # The pick that was waiting on the answer started nothing once it came: it met the stop first.
+        self.assertEqual(len(self.reports), 1)
+        self.assertTrue(self.reports[0].telemetry.get("cancelled_before_start"), self.reports[0])
+
+    def test_connect_is_refused_while_the_disconnected_run_is_still_alive(self) -> None:
+        """Red before: 200, and the old run's thread went on with the arm and hand this connect brought up."""
+        run = self._running()
+        self.assertEqual(self.client.post("/v1/cell/disconnect").status_code, 200)
+
+        refused = self.client.post("/v1/cell/connect", json={"token": self._token()})
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertEqual(refused.json()["code"], "run_active")
+        self.assertEqual(refused.json()["detail"]["run_id"], run["id"])
+        self.assertIn(run["id"], refused.json()["message"])
+        self.assertEqual(self.client.get("/v1/cell").json()["state"], "built", "the refused connect moved")
+
+        self._ended(run["id"])
+        self.assertEqual(len(self.picks), 1)
+        # ⭐ THE CONTROL: once the old run has ended, the cell connects as it always did.
+        again = self.client.post("/v1/cell/connect", json={"token": self._token()})
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertEqual(again.json()["state"], "connected")
+
+    def test_build_is_refused_while_the_disconnected_run_is_still_alive(self) -> None:
+        """Red before: the rebuild released the camera and the cell under the run's thread."""
+        run = self._running()
+        self.assertEqual(self.client.post("/v1/cell/disconnect").status_code, 200)
+        service = self.cell.session.service
+
+        refused = self.client.post("/v1/cell/build", params={"rehearse": True})
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertEqual(refused.json()["code"], "run_active")
+        self.assertEqual(refused.json()["detail"]["run_id"], run["id"])
+        self.assertIs(self.cell.session.service, service, "the refused build replaced the run's cell")
+
+        self._ended(run["id"])
+        self.assertEqual(self.client.post("/v1/cell/build", params={"rehearse": True}).status_code, 200)
+
+    def test_a_disconnect_with_no_run_disconnects_as_before(self) -> None:
+        """⭐ THE CONTROL: no run, nothing to stop; the cell comes down and connects again."""
+        self._build()
+        self.assertEqual(
+            self.client.post("/v1/cell/connect", json={"token": self._token()}).status_code, 200
+        )
+        self.assertEqual(self.client.post("/v1/cell/disconnect").json()["state"], "built")
+        self.assertEqual(
+            self.client.post("/v1/cell/connect", json={"token": self._token()}).status_code, 200
+        )
+
+    # The lifecycle cases are inherited machinery, not part of what this class is about.
+    test_a_fresh_console_has_built_nothing = None  # type: ignore[assignment]
+    test_a_preview_before_a_build_says_so_rather_than_inventing_one = None  # type: ignore[assignment]
+    test_building_touches_no_robot = None  # type: ignore[assignment]
+    test_the_whole_sequence_brings_the_cell_up_and_down = None  # type: ignore[assignment]
+    test_disconnect_is_idempotent = None  # type: ignore[assignment]
+    test_connect_without_a_token_is_refused = None  # type: ignore[assignment]
+    test_a_token_does_not_survive_a_config_change = None  # type: ignore[assignment]
+    test_a_token_is_single_use = None  # type: ignore[assignment]
+    test_a_preview_names_the_arm_and_gripper_it_was_issued_for = None  # type: ignore[assignment]
+    test_a_gripper_that_refuses_rolls_the_arm_back_and_frees_the_cell = None  # type: ignore[assignment]
+    test_rebuilding_under_a_live_connection_is_refused = None  # type: ignore[assignment]
+
+
+@unittest.skipIf(TestClient is None, "fastapi is unavailable; requirements.txt pins fastapi and httpx")
 class MotionWarningTests(unittest.TestCase):
     """What the preview warns about, derived from the BUILT gripper rather than from config text."""
 
@@ -333,33 +484,46 @@ class MotionWarningTests(unittest.TestCase):
             "this cell's driver does not actuate on connect, so there is nothing to warn about",
         )
 
-    def test_a_toggle_with_no_open_switch_is_told_to_stand_the_jaws_open(self) -> None:
-        """The one jaw cell whose connect depends on a person (review, 2026-09-23): the driver takes the jaws to
-        stand open and never pulses, so a closed start inverts every later command, and the console said nothing."""
+    def test_a_toggle_says_its_connect_asks_where_the_jaws_stand(self) -> None:
+        """The one jaw cell whose connect depends on a person (owner's decision, 2026-09-24): the driver asks at the
+        terminal where the jaws stand before anything moves, and a console with no terminal is refused."""
         from api.lifecycle import motion_warnings
         from src.config.schema.robot import RobotConfig
 
         config = RobotConfig.model_validate({"vendor": "ur", "gripper": {"vendor": "jaw_io"}})
 
-        class _BlindToggle:
+        class _Toggle:
             has_feedback = False
             _open_on_connect_without_feedback = False
-            _actuation = "single_toggle"
-            _open_confirm_pin = None
+            toggles_without_sensor = True
+            jaws_closed = False
+            edge_unknown = False
 
-        class _SensedToggle(_BlindToggle):
+            def jaws_open_for_a_pick(self) -> str:
+                return ""
+
+        class _SensedSolenoid(_Toggle):
             has_feedback = True
-            _open_confirm_pin = 1
+            toggles_without_sensor = False
 
-        blind = motion_warnings(config, _BlindToggle())
-        self.assertEqual(len(blind), 1)
-        self.assertIn("OPEN", blind[0].what)
-        self.assertIn("with a pulse before every connect", blind[0].precaution)
-        self.assertNotRegex(blind[0].precaution, r"(?<!never )by hand")
-        # ⭐ THE CONTROL: with an open switch the switch decides, and the usual feedback sentence applies.
-        sensed = motion_warnings(config, _SensedToggle())
+        toggle = motion_warnings(config, _Toggle())
+        self.assertEqual(len(toggle), 1)
+        for part in ("ASKS where the jaws stand", "terminal", "refused"):
+            self.assertIn(part, toggle[0].what)
+        self.assertIn("ONE PULSE", toggle[0].precaution)
+        # ⭐ THE CONTROL: a solenoid with switches keeps the feedback sentence.
+        sensed = motion_warnings(config, _SensedSolenoid())
         self.assertEqual(len(sensed), 1)
         self.assertIn("EMPTY", sensed[0].what)
+
+        class _AskingSolenoid(_SensedSolenoid):
+            asks_at_connect = True
+
+        # A solenoid that opted into the question says so first, and then what its feedback does.
+        asking = motion_warnings(config, _AskingSolenoid())
+        self.assertEqual(len(asking), 2)
+        self.assertIn("confirm_open_at_start", asking[0].what)
+        self.assertIn("EMPTY", asking[1].what)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1,9 +1,11 @@
 """Hardware-free unit tests for the real-UR cuRobo motion glue (``CuroboUrPlanner``).
 
 The cuRobo round-trip on a real robot + real GPU env is bucket-③ (not on CI). Here we
-inject a fake cuRobo client + a fake UR connection and lock the driver LOGIC: goal
-conversion (mm→m, XYZW→WXYZ), joint-order remap (planner ↔ UR), waypoint execution,
-and every fail-closed branch (no env / no plan / not connected / moveJ reject / raise).
+inject a fake cuRobo client + a fake UR connection and lock the driver LOGIC: the joint
+goal handed over unturned, joint-order remap (planner ↔ UR), waypoint execution, the
+clearance a straight line is judged at, and every fail-closed branch (no env / no plan /
+not connected / moveJ reject / raise). The glue asks for joint plans only: the arm chooses
+every goal configuration, and there is no Cartesian plan here for cuRobo to choose one in.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ class _FakeClient:
         self.world = None
         self.calls: list[str] = []
         self.checked: list[list[float]] | None = None
+        self.clearances: list[float | None] = []
         self._verdict = JointCheckVerdict(
             valid=True, first_invalid=None, checked=0, reason="the fake accepts"
         )
@@ -42,14 +45,15 @@ class _FakeClient:
             raise CuroboUnavailableError("no cuRobo env")
         self.started = True
 
-    def plan(self, start, pos_m, quat_wxyz):
-        self.calls.append("plan")
-        self.plan_args = (list(start), list(pos_m), list(quat_wxyz))
+    def plan_joint(self, start, goal):
+        self.calls.append("plan_joint")
+        self.plan_args = (list(start), list(goal))
         return self._traj
 
-    def check_joints(self, configs):
+    def check_joints(self, configs, **asked):
         self.calls.append("check_joints")
         self.checked = [list(c) for c in configs]
+        self.clearances.append(asked.get("clearance_mm"))
         return self._verdict
 
     def set_world(self, cuboids):
@@ -212,53 +216,59 @@ def test_a_camera_that_stays_silent_raises_logged_once_and_clears_the_guard() ->
     assert told == [()]
 
 
-def test_move_converts_goal_and_executes_waypoints() -> None:
+def test_a_joint_goal_goes_over_unturned_and_its_waypoints_execute_in_order() -> None:
     traj = [[0.0, 0.1, 0.2, 0.3, 0.4, 0.5], [0.6, 0.7, 0.8, 0.9, 1.0, 1.1]]
     client = _FakeClient(UR_ARM_JOINT_NAMES, traj)
     conn = _FakeConn([1, 2, 3, 4, 5, 6])
     planner = _planner(conn, client)
-    result = planner.execute(planner.plan(_pose()), _pose())
+    result = planner.execute(planner.plan_joint([0.6, 0.7, 0.8, 0.9, 1.0, 1.1]), _pose())
 
     assert result.status is MotionStatus.EXECUTED
-    # goal: mm→m and XYZW[0,0,0,1] → WXYZ[1,0,0,0], then into the planner's base, half a turn about Z from the
-    # controller's (Step 8f): this test pinned the goal unturned, which is the goal mirrored through the base axis.
-    start, pos_m, quat_wxyz = client.plan_args
-    assert pos_m == pytest.approx([-0.1, -0.2, 0.3])
-    assert quat_wxyz == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    # Joints are the same numbers in the planner's base, half a turn about Z from the controller's, as in the
+    # controller's: a joint goal is not turned, where a Cartesian one had to be.
+    start, goal = client.plan_args
+    assert goal == pytest.approx([0.6, 0.7, 0.8, 0.9, 1.0, 1.1])
     assert start == pytest.approx([1, 2, 3, 4, 5, 6])  # identity remap (names == UR order)
     # both waypoints executed via moveJ, in order.
     assert conn.moves == [pytest.approx(traj[0]), pytest.approx(traj[1])]
 
 
 def test_joint_order_remap_when_client_names_permuted() -> None:
-    # Planner reports joints in REVERSED UR order → start + traj must be remapped.
+    # Planner reports joints in REVERSED UR order → start, goal and traj must be remapped.
     permuted = list(reversed(UR_ARM_JOINT_NAMES))
     traj = [[10.0, 11.0, 12.0, 13.0, 14.0, 15.0]]  # in permuted (reversed) order
     client = _FakeClient(permuted, traj)
     conn = _FakeConn([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])  # UR order
     planner = _planner(conn, client)
-    result = planner.execute(planner.plan(_pose()), _pose())
+    result = planner.execute(planner.plan_joint([15.0, 14.0, 13.0, 12.0, 11.0, 10.0]), _pose())
 
     assert result.status is MotionStatus.EXECUTED
-    # start sent to the planner is the UR-order current joints reordered into planner (reversed) order.
-    start, _, _ = client.plan_args
+    # start and goal sent to the planner are UR-order joints reordered into planner (reversed) order.
+    start, goal = client.plan_args
     assert start == pytest.approx([5.0, 4.0, 3.0, 2.0, 1.0, 0.0])
+    assert goal == pytest.approx([10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
     # executed waypoint is the planner-order traj reordered back to UR order.
     assert conn.moves == [pytest.approx([15.0, 14.0, 13.0, 12.0, 11.0, 10.0])]
+
+
+def test_the_glue_asks_for_no_cartesian_plan() -> None:
+    """cuRobo handed a pose chooses the goal configuration itself; the glue has no way left to hand it one."""
+    assert not hasattr(CuroboUrPlanner, "plan")
+    assert not hasattr(CuroboUrPlanner, "plans_joint_goals")
 
 
 def test_fail_closed_when_env_unavailable() -> None:
     client = _FakeClient(UR_ARM_JOINT_NAMES, [], unavailable=True)
     conn = _FakeConn([0] * 6)
     with pytest.raises(CuroboUnavailableError):
-        _planner(conn, client).plan(_pose())
+        _planner(conn, client).plan_joint([0.1] * 6)
     assert conn.moves == []  # no blind motion
 
 
 def test_fail_closed_when_no_plan() -> None:
     client = _FakeClient(UR_ARM_JOINT_NAMES, None)  # cuRobo found nothing
     conn = _FakeConn([0] * 6)
-    assert not _planner(conn, client).plan(_pose())
+    assert not _planner(conn, client).plan_joint([0.1] * 6)
     assert conn.moves == []
 
 
@@ -281,7 +291,7 @@ def test_a_refused_plan_says_which_links_touched_and_still_fails_safe() -> None:
     planner = _planner(conn, client)
 
     with mock.patch.object(planner.logger, "warning") as warned:
-        planned = planner.plan(_pose())
+        planned = planner.plan_joint([0.1] * 6)
 
     assert not planned
     assert conn.moves == []
@@ -295,7 +305,7 @@ def test_a_client_that_names_no_refusal_is_the_planner_it_always_was() -> None:
     client = _FakeClient(UR_ARM_JOINT_NAMES, None)
     assert not hasattr(client, "last_refusal")
     planner = _planner(_FakeConn([0] * 6), client)
-    assert not planner.plan(_pose())
+    assert not planner.plan_joint([0.1] * 6)
     assert planner.last_refusal is None
 
 
@@ -304,6 +314,26 @@ def test_reject_when_movej_returns_false() -> None:
     conn = _FakeConn([0] * 6, move_ok=False)
     result = _planner(conn, client).execute([[0.0] * 6], _pose())
     assert result.status is MotionStatus.CONTROLLER_REJECTED
+
+
+def test_a_joint_move_is_named_as_one_in_what_execute_returns() -> None:
+    """The arm runs a planned joint move through the same execute; its result names the verb and the joints."""
+    from src.robot.core import JointPositions, MotionCommand
+
+    client = _FakeClient(UR_ARM_JOINT_NAMES, [[0] * 6])
+    conn = _FakeConn([0] * 6)
+    target = JointPositions([0.1] * 6)
+    result = _planner(conn, client).execute(
+        [[0.0] * 6, [0.1] * 6], command=MotionCommand.MOVE_JOINTS, target_joints=target,
+    )
+    assert result.status is MotionStatus.EXECUTED
+    assert result.command is MotionCommand.MOVE_JOINTS
+    assert result.target_joints is target and result.target_pose is None
+    assert conn.moves == [[0.0] * 6, [0.1] * 6]
+    refused = _planner(_FakeConn([0] * 6, move_ok=False), client).execute(
+        [[0.0] * 6], command=MotionCommand.MOVE_HOME, target_joints=target,
+    )
+    assert (refused.status, refused.command) == (MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_HOME)
 
 
 def test_connection_error_when_movej_raises() -> None:
@@ -325,7 +355,7 @@ def test_set_world_and_close() -> None:
 
 
 # --------------------------------------------------------------------------------------------
-# The joint path, checked by the same planner that plans the Cartesian ones.
+# The joint path, checked by the same planner that plans every move.
 # --------------------------------------------------------------------------------------------
 
 
@@ -348,8 +378,17 @@ def test_a_joint_path_is_checked_against_the_registered_world() -> None:
     assert client.checked == [[0.0] * 6, [0.1] * 6]
 
 
+def test_a_clearance_reaches_the_client_and_none_is_asked_the_way_it_always_was() -> None:
+    """A straight line is judged at a clearance; every other check is sent exactly as before, for older clients."""
+    client = _FakeClient(UR_ARM_JOINT_NAMES, [])
+    planner = _planner(_FakeConn([0.0] * 6), client)
+    planner.check_joint_path([[0.0] * 6], clearance_mm=10.0)
+    planner.check_joint_path([[0.0] * 6])
+    assert client.clearances == [10.0, None]
+
+
 def test_the_samples_are_remapped_into_planner_order() -> None:
-    """The same remap `plan` does, in the same direction, on every sample."""
+    """The same remap `plan_joint` does, in the same direction, on every sample."""
     permuted = list(reversed(UR_ARM_JOINT_NAMES))
     client = _FakeClient(permuted, [])
     conn = _FakeConn([0.0] * 6)
@@ -359,7 +398,7 @@ def test_the_samples_are_remapped_into_planner_order() -> None:
 
 
 def test_an_unavailable_env_raises_rather_than_answering() -> None:
-    """Fail closed, exactly as `plan` does: no verdict is better than a made up one."""
+    """Fail closed, exactly as `plan_joint` does: no verdict is better than a made up one."""
     client = _FakeClient(UR_ARM_JOINT_NAMES, [], unavailable=True)
     with pytest.raises(CuroboUnavailableError):
         _planner(_FakeConn([0.0] * 6), client).check_joint_path([[0.0] * 6])

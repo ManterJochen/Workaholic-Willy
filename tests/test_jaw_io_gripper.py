@@ -29,7 +29,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from src.config.schema.robot.robot_schema import GripperConfig, JawIOGripperConfig
+from src.config.schema.robot.robot_schema import GripperConfig, JawIOGripperConfig, VacuumGripperConfig
 from src.robot.core import Gripper, GripperVendor, RobotConnectionError, RobotError
 from src.robot.core.arm_capabilities import DigitalIOPort
 from src.robot.core.gripper import HoldEvidence, ObjectDetectingGripper
@@ -346,7 +346,7 @@ class _Timeline(FakeIO):
         return [event for event in self.events if event[0] != "sleep"]
 
 
-PULSE_S = 0.25
+PULSE_S, SETTLE_S = 0.25, 0.3
 HIGH, LOW = (f"out{CLOSE_PIN}", True), (f"out{CLOSE_PIN}", False)
 #: One flip: the pin low first (a flip is an EDGE, and an edge needs a low before it), the rising edge, the high
 #: held for pulse_s, and low again.
@@ -354,16 +354,33 @@ PULSE = [LOW, ("sleep", PULSE_S), HIGH, ("sleep", PULSE_S), LOW]
 WRITES = [LOW, HIGH, LOW]
 
 
-def _toggle(io: _Timeline, **kw) -> JawIOGripper:
-    """The owner's cell (2026-09-23): one tool output, and every pulse on it flips the jaws."""
+class Person:
+    """The person at the terminal: answers the driver's questions from a script, and keeps what was asked."""
+
+    def __init__(self, *answers: str) -> None:
+        self.answers = list(answers)
+        self.asked: list[str] = []
+
+    def __call__(self, question: str) -> str:
+        self.asked.append(question)
+        if not self.answers:
+            raise AssertionError(f"asked once more than scripted: {question!r}")
+        return self.answers.pop(0)
+
+
+def _toggle(io: _Timeline, *answers: str, **kw) -> JawIOGripper:
+    """The owner's cell (2026-09-24): one tool output, every pulse on it flips the jaws, nothing wired back.
+
+    ``answers`` is what the person types when asked where the jaws stand; Enter (open) by default, once per connect.
+    """
     return JawIOGripper(io, actuation="single_toggle", close_output_pin=CLOSE_PIN, pulse_s=PULSE_S,
-                        sleep=io.sleep, **kw)
+                        ask=Person(*(answers or ("",) * 4)), sleep=io.sleep, **kw)
 
 
 class SingleToggleTests(unittest.TestCase):
     """One output, and each pulse flips the jaws: the pin level says nothing, so WHEN to pulse is the logic.
 
-    Nothing is wired back here, which is the owner's cell: the driver can only trust what it last commanded.
+    Nothing is wired back, which is the owner's cell: the driver counts its own pulses from the person's answer.
     """
 
     def setUp(self) -> None:
@@ -371,176 +388,59 @@ class SingleToggleTests(unittest.TestCase):
         self.g = _toggle(self.io)
         self.g.connect()
 
-    def test_a_close_from_open_is_one_pulse_that_leaves_the_pin_low(self) -> None:
-        self.g.set_width_mm(0.0)
-        self.assertEqual(self.io.events[:5], PULSE)        # low, pulse_s, high, pulse_s, low: in that order
+    def test_a_close_from_open_is_one_pulse_that_leaves_the_pin_low_then_the_stroke(self) -> None:
+        self.g.set_closed(True)
+        self.assertEqual(self.io.events, [*PULSE, ("sleep", SETTLE_S)])   # the edge, then the jaws' travel time
         self.assertEqual(self.io.outputs_written(), WRITES)
         self.assertFalse(self.io.outputs[CLOSE_PIN])
         self.assertTrue(self.g.jaws_closed)
 
     def test_a_second_close_is_not_a_pulse(self) -> None:
         # A pulse on closed jaws OPENS them, so a repeated close must write nothing at all.
-        self.g.set_width_mm(0.0)
+        self.g.set_closed(True)
         self.io.events.clear()
-        self.g.set_width_mm(0.0)
-        self.assertEqual(self.io.outputs_written(), [])
+        self.g.set_closed(True)
+        self.assertEqual(self.io.events, [])
         self.assertTrue(self.g.jaws_closed)
 
     def test_an_open_after_a_close_is_one_pulse(self) -> None:
-        self.g.set_width_mm(0.0)
+        self.g.set_closed(True)
         self.io.events.clear()
-        self.g.set_width_mm(80.0)
-        # One pulse, then the jaws' travel time (close_settle_s, 0.3 by default): with no open switch nothing
-        # else says when they have opened, and a place must not back out of jaws still opening.
-        self.assertEqual(self.io.events, [*PULSE, ("sleep", 0.3)])
+        self.g.set_closed(False)
+        # One pulse, then the jaws' travel time: nothing else says when they have opened, and a place must not back
+        # out of jaws still opening.
+        self.assertEqual(self.io.events, [*PULSE, ("sleep", SETTLE_S)])
         self.assertFalse(self.g.jaws_closed)
 
     def test_an_open_on_open_jaws_is_not_a_pulse(self) -> None:
-        self.g.set_width_mm(80.0)
+        self.g.set_closed(False)
         self.assertEqual(self.io.events, [])
         self.assertFalse(self.g.jaws_closed)
 
-
-class SingleToggleSensorTests(unittest.TestCase):
-    """Where an end-stop switch is wired it says how the jaws stand, and a lost pulse stops mattering."""
-
-    def test_the_open_switch_wins_over_what_was_last_commanded(self) -> None:
-        io = _Timeline({OPEN_SW: True})
-        g = _toggle(io, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        g.connect()
-        # A pulse the driver lost track of closed the jaws: it still believes them open, and the
-        # switch says they are off the open stop. Pulsing on the belief would OPEN them.
-        io.inputs = {OPEN_SW: False}
-        g.set_width_mm(0.0)
-        self.assertEqual(io.outputs_written(), [])
-        self.assertTrue(g.jaws_closed)
-        g.set_width_mm(80.0)
-        self.assertEqual(io.outputs_written(), WRITES)
-
-    def test_a_lost_close_pulse_does_not_turn_the_next_open_into_a_close(self) -> None:
-        io = _Timeline({OPEN_SW: True})
-        g = _toggle(io, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        g.connect()
-        g.set_width_mm(0.0)                                 # pulsed, and the jaws never moved
-        self.assertEqual(io.outputs_written(), WRITES)
-        io.events.clear()
-        g.set_width_mm(80.0)                                # the switch still reads open
-        self.assertEqual(io.outputs_written(), [])
-
-    def test_the_reed_pair_wins_over_the_belief_too(self) -> None:
-        io = _Timeline({OPEN_SW: True})
-        g = _toggle(io, closed_confirm_input_pin=CLOSED_SW, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        g.connect()
-        io.inputs = {CLOSED_SW: True}                       # closed on nothing; the driver believes open
-        g.set_width_mm(0.0)
-        self.assertEqual(io.outputs_written(), [])
-        g.set_width_mm(80.0)
-        self.assertEqual(io.outputs_written(), WRITES)
-
-    def test_a_part_sensor_does_not_stop_a_close(self) -> None:
-        # A part-present sensor reads a part between OPEN jaws as well as between closed ones, and
-        # between open jaws is exactly where every close is commanded. It says nothing about how the
-        # jaws stand, so it must not suppress the pulse that closes them.
-        io = _Timeline()
-        g = _toggle(io, part_present_input_pin=PART_SW)
-        g.connect()
-        io.inputs = {PART_SW: True}
-        g.set_width_mm(0.0)
-        self.assertEqual(io.outputs_written(), WRITES)
-
-    def test_contradictory_switches_refuse_to_pulse(self) -> None:
-        io = _Timeline({OPEN_SW: True})
-        g = _toggle(io, closed_confirm_input_pin=CLOSED_SW, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        g.connect()
-        io.inputs = {CLOSED_SW: True, OPEN_SW: True}
+    def test_a_width_is_refused(self) -> None:
+        """A width read against closed_below_mm is how a grasp became an open on the owner's cell: a toggle takes none."""
         for width in (0.0, 80.0):
-            with self.subTest(width=width):
-                with self.assertRaises(RobotError) as caught:
-                    g.set_width_mm(width)
-                # Not a dropped link: the controller answered, and what it said is impossible.
-                self.assertNotIsInstance(caught.exception, RobotConnectionError)
-                self.assertIn("switch", str(caught.exception))
-        self.assertEqual(io.outputs_written(), [])
-        self.assertFalse(g.jaws_closed)                     # a refusal does not move the belief
+            with self.subTest(width=width), self.assertRaises(RobotError) as caught:
+                self.g.set_width_mm(width)
+            self.assertIn("set_closed", str(caught.exception))
+        self.assertEqual(self.io.events, [])
 
+    def test_it_says_it_toggles_without_a_sensor(self) -> None:
+        from src.robot.core.gripper import TogglesWithoutSensor, toggle_without_sensor_of
 
-class SingleToggleConnectTests(unittest.TestCase):
-    """connect() through a toggle: it pulses only where both switches prove the jaws closed on nothing."""
-
-    def test_without_feedback_connect_never_touches_the_output(self) -> None:
-        io = _Timeline()
-        g = _toggle(io)
-        g.connect()
-        self.assertEqual(io.events, [])
-        self.assertFalse(g.jaws_closed)                     # it starts from "open", which a person makes true
-
-    def test_jaws_the_switches_prove_closed_on_nothing_are_opened_with_one_pulse(self) -> None:
-        # Off the open stop AND on the closed stop: the jaws met, so nothing can be dropped. The only case a
-        # toggle pulses at connect; a lone closed switch is refused (SingleToggleRefusalTests).
-        io = _ToggleJaws(closed=True, open_switch=True, closed_switch=True)
-        g = _toggle(io, closed_confirm_input_pin=CLOSED_SW, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        g.connect()
-        self.assertEqual(io.outputs_written(), WRITES)
-        self.assertFalse(io.closed)
-        self.assertFalse(g.jaws_closed)
-
-    def test_a_connect_pulse_the_open_stop_never_answers_leaves_them_closed(self) -> None:
-        """⭐ THE CONTROL: the same pulse on jaws that do not move, and the switch, not the command, is believed."""
-        io = _Timeline({CLOSED_SW: True})
-        g = _toggle(io, closed_confirm_input_pin=CLOSED_SW, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        g.connect()
-        self.assertEqual(io.outputs_written(), WRITES)
-        self.assertTrue(g.jaws_closed)
-
-    def test_off_the_open_stop_with_no_proof_of_empty_is_refused(self) -> None:
-        """An open switch that does not read open is a held part or a switch that is not there, and both refuse.
-
-        Held and warned about until 2026-09-23. An unwired input reads low, which is exactly "off the open stop", so
-        the driver then believed every pair of jaws closed: each close was swallowed and each open pulsed, and every
-        report said EXECUTED (the owner's cell, diagnosed that day).
-        """
-        io = _Timeline({OPEN_SW: False})
-        g = _toggle(io, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        with self.assertRaises(RobotError) as caught:
-            g.connect()
-        self.assertNotIsInstance(caught.exception, RobotConnectionError)
-        for part in (f"input {OPEN_SW}", "not wired", "with a pulse"):
-            self.assertIn(part, str(caught.exception))
-        self.assertEqual(io.events, [])
-        self.assertFalse(g.is_connected)
-
-    def test_jaws_the_switch_reads_open_are_not_pulsed(self) -> None:
-        io = _Timeline({OPEN_SW: True})
-        g = _toggle(io, closed_confirm_input_pin=CLOSED_SW, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        g.connect()
-        self.assertEqual(io.events, [])
-
-    def test_a_reed_pair_between_the_stops_is_refused(self) -> None:
-        # A held part and a pair of switches nobody wired read the same: neither stop.
-        io = _Timeline({CLOSED_SW: False, OPEN_SW: False})
-        g = _toggle(io, closed_confirm_input_pin=CLOSED_SW, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        with self.assertRaises(RobotError):
-            g.connect()
-        self.assertEqual(io.events, [])
-        self.assertFalse(g.is_connected)
-
-    def test_contradictory_switches_at_connect_are_not_pulsed(self) -> None:
-        io = _Timeline({CLOSED_SW: True, OPEN_SW: True})
-        g = _toggle(io, closed_confirm_input_pin=CLOSED_SW, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        g.connect()
-        self.assertEqual(io.events, [])
+        self.assertIsInstance(self.g, TogglesWithoutSensor)
+        self.assertIs(toggle_without_sensor_of(self.g), self.g)
+        solenoid = JawIOGripper(FakeIO(), close_output_pin=CLOSE_PIN, sleep=lambda _s: None)
+        self.assertIsNone(toggle_without_sensor_of(solenoid), "a solenoid is told open, not asked")
 
 
 class _ToggleJaws(_Timeline):
-    """The owner's device, modelled: every rising edge on the close pin flips the jaws, and an open switch, where
-    one is wired, reads them. ``lose`` drops that many of the next edges, as an e-stop mid-pulse or a cable would."""
+    """The owner's device, modelled: every rising edge on the close pin flips the jaws. ``lose`` drops that many of the
+    next edges, as an e-stop mid-pulse or a cable would."""
 
-    def __init__(self, *, closed: bool = False, open_switch: bool = False, closed_switch: bool = False,
-                 lose: int = 0) -> None:
+    def __init__(self, *, closed: bool = False, lose: int = 0) -> None:
         super().__init__()
         self.closed = closed
-        self.open_switch = open_switch
-        self.closed_switch = closed_switch                  # reads the closed stop: jaws closed on nothing
         self.lose = lose
 
     def set_digital_output(self, pin, value, *, port=DigitalIOPort.STANDARD) -> None:
@@ -551,73 +451,44 @@ class _ToggleJaws(_Timeline):
         elif rising:
             self.closed = not self.closed
 
-    def get_digital_input(self, pin, *, port=DigitalIOPort.STANDARD) -> bool:
-        if self.open_switch and pin == OPEN_SW:
-            return not self.closed
-        if self.closed_switch and pin == CLOSED_SW:
-            return self.closed
-        return super().get_digital_input(pin, port=port)
-
 
 class SingleToggleReconnectTests(unittest.TestCase):
-    """The belief is set at EVERY connect, never carried over from before a disconnect (review, 2026-09-23).
+    """The count is set at EVERY connect from a person's answer, never carried over from before a disconnect.
 
-    The console keeps one gripper object across disconnect and connect, and a person may move the jaws in
-    between. Carried over, the belief of a cell that disconnected closed would turn the next "open" into a close
-    after the person had stood the jaws open, as the desk row tells them to.
+    The console keeps one gripper object across disconnect and connect, and a person may move the jaws in between.
     """
 
-    def test_a_reconnect_takes_the_jaws_to_stand_open_again(self) -> None:
+    def test_a_reconnect_asks_again_and_counts_from_the_answer(self) -> None:
         io = _ToggleJaws()
-        g = _toggle(io)
+        person = Person("", "")
+        g = JawIOGripper(io, actuation="single_toggle", close_output_pin=CLOSE_PIN, pulse_s=PULSE_S, ask=person,
+                         sleep=io.sleep)
         g.connect()
-        g.set_width_mm(0.0)
+        g.set_closed(True)
         g.disconnect()
         self.assertTrue(io.closed)
-        io.closed = False                                   # the person stands them open, as the desk says
-        g.connect()
+        io.closed = False                                   # someone opened them from the pendant in between
+        g.connect()                                         # ... and the person says so
+        self.assertEqual(2, len(person.asked))
         self.assertFalse(g.jaws_closed)
-        g.set_width_mm(80.0)
-        self.assertFalse(io.closed, "an open after a reconnect closed jaws a person had stood open")
-        g.set_width_mm(0.0)
+        g.set_closed(False)
+        self.assertFalse(io.closed, "an open after a reconnect closed jaws a person had said stood open")
+        g.set_closed(True)
         self.assertTrue(io.closed)
 
-    def test_the_old_carried_belief_is_the_defect_this_fixes(self) -> None:
-        """⭐ THE CONTROL: with the belief carried over, the same sequence closes the jaws on an open."""
+    def test_a_second_connect_while_connected_asks_nothing(self) -> None:
         io = _ToggleJaws()
-        g = _toggle(io)
+        person = Person("")
+        g = JawIOGripper(io, actuation="single_toggle", close_output_pin=CLOSE_PIN, ask=person, sleep=io.sleep)
         g.connect()
-        g.set_width_mm(0.0)
-        g.disconnect()
-        io.closed = False
-        g._connected = True                                 # a connect that keeps the old belief
-        g.set_width_mm(80.0)
-        self.assertTrue(io.closed)
-
-    def test_an_open_switch_sets_the_belief_at_a_reconnect(self) -> None:
-        io = _ToggleJaws(open_switch=True)
-        g = _toggle(io, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        g.connect()
-        g.set_width_mm(0.0)
-        g.disconnect()
-        io.closed = False
-        g.connect()
-        self.assertFalse(g.jaws_closed)
-
-    def test_a_part_at_connect_does_not_set_the_belief(self) -> None:
-        # A part-present sensor reads a part between OPEN jaws too, so at connect it says nothing about the jaws.
-        io = _ToggleJaws()
-        io.inputs = {PART_SW: True}
-        g = _toggle(io, part_present_input_pin=PART_SW)
-        g.connect()
-        self.assertEqual(io.events, [])
-        self.assertFalse(g.jaws_closed)
-        g.set_width_mm(0.0)
-        self.assertTrue(io.closed)
+        g.set_closed(True)
+        g.connect()                                         # idempotent: the count stands
+        self.assertEqual(1, len(person.asked))
+        self.assertTrue(g.jaws_closed)
 
 
 class SingleTogglePulseTests(unittest.TestCase):
-    """A flip is an edge: the pulse leaves the pin low whatever happens, and the belief moves at the edge."""
+    """A flip is an edge: the pulse leaves the pin low whatever happens, and the count moves at the edge."""
 
     def test_an_interrupted_pulse_drops_the_pin_and_keeps_the_flip(self) -> None:
         io = _ToggleJaws()
@@ -627,10 +498,11 @@ class SingleTogglePulseTests(unittest.TestCase):
             if io.outputs.get(CLOSE_PIN):
                 raise KeyboardInterrupt                     # Ctrl-C while the pin is high
 
-        g = JawIOGripper(io, actuation="single_toggle", close_output_pin=CLOSE_PIN, pulse_s=PULSE_S, sleep=sleep)
+        g = JawIOGripper(io, actuation="single_toggle", close_output_pin=CLOSE_PIN, pulse_s=PULSE_S,
+                         ask=Person(""), sleep=sleep)
         g.connect()
         with self.assertRaises(KeyboardInterrupt):
-            g.set_width_mm(0.0)
+            g.set_closed(True)
         self.assertFalse(io.outputs[CLOSE_PIN], "the pin was left high")
         self.assertTrue(io.closed)
         self.assertTrue(g.jaws_closed, "the edge flipped the jaws and the driver does not know it")
@@ -640,119 +512,39 @@ class SingleTogglePulseTests(unittest.TestCase):
         g = _toggle(io)
         g.connect()
         io.outputs[CLOSE_PIN] = True                        # a low write that never arrived
-        g.set_width_mm(0.0)
+        g.set_closed(True)
         self.assertTrue(io.closed)
         self.assertEqual(io.outputs_written(), WRITES)
+
+    def test_a_pin_left_high_is_dropped_at_connect(self) -> None:
+        io = _ToggleJaws()
+        g = _toggle(io)
+        io.outputs[CLOSE_PIN] = True                        # a low write that never arrived
+        with self.assertLogs(g.logger, level="WARNING"):
+            g.connect()
+        self.assertFalse(io.outputs[CLOSE_PIN])
+        self.assertFalse(io.closed, "a falling edge must not flip a device that flips on the rising one")
 
     def test_back_to_back_commands_leave_a_low_between_the_pulses(self) -> None:
         io = _ToggleJaws()
         g = _toggle(io)
         g.connect()
-        g.set_width_mm(0.0)
-        g.set_width_mm(80.0)
+        g.set_closed(True)
+        g.set_closed(False)
         self.assertFalse(io.closed)
         first_low_after_high = io.events.index(LOW, io.events.index(HIGH))
         second_high = io.events.index(HIGH, first_low_after_high)
         self.assertIn(("sleep", PULSE_S), io.events[first_low_after_high:second_high])
 
-    def test_a_lost_pulse_inverts_a_cell_with_no_open_switch(self) -> None:
-        """What the schema doc warns about, measured: the risk the owner takes without an open switch."""
+    def test_a_lost_pulse_inverts_the_count(self) -> None:
+        """The risk the owner takes with no sensor, measured: nothing notices a lost edge until a person looks."""
         io = _ToggleJaws(lose=1)
         g = _toggle(io)
         g.connect()
-        g.set_width_mm(0.0)                                 # the edge is lost: the jaws stay open
+        g.set_closed(True)                                  # the edge is lost: the jaws stay open
         self.assertFalse(io.closed)
-        g.set_width_mm(80.0)                                # the driver believes closed, pulses, and CLOSES them
+        g.set_closed(False)                                 # the driver believes closed, pulses, and CLOSES them
         self.assertTrue(io.closed)
-
-    def test_an_open_switch_makes_the_same_lost_pulse_harmless(self) -> None:
-        io = _ToggleJaws(open_switch=True, lose=1)
-        g = _toggle(io, open_confirm_input_pin=OPEN_SW, close_timeout_s=0.01)
-        g.connect()
-        g.set_width_mm(0.0)                                 # lost: still open, and the switch says so
-        g.set_width_mm(0.0)                                 # the next close is pulsed again
-        self.assertTrue(io.closed)
-        g.set_width_mm(80.0)
-        self.assertFalse(io.closed)
-
-
-class SingleToggleOpenWaitTests(unittest.TestCase):
-    """With an open switch an open pulse waits for the open stop, so a close right after is not read mid-stroke."""
-
-    def test_an_open_waits_for_the_open_stop(self) -> None:
-        io = _ToggleJaws(open_switch=True)
-        polls = {"n": 0}
-        travel = 3
-
-        def get(pin, *, port=DigitalIOPort.STANDARD) -> bool:
-            if pin == OPEN_SW and not io.closed:
-                polls["n"] += 1
-                return polls["n"] > travel                  # the stop is reached after a few polls
-            return _ToggleJaws.get_digital_input(io, pin, port=port)
-
-        io.get_digital_input = get                          # type: ignore[method-assign]
-        g = _toggle(io, open_confirm_input_pin=OPEN_SW, close_timeout_s=5.0)
-        io.closed = True
-        g._connected = True
-        g._closed = True
-        g.set_width_mm(80.0)
-        self.assertFalse(io.closed)
-        self.assertGreaterEqual(io.events.count(("sleep", 0.02)), travel - 1)
-        self.assertTrue(get(OPEN_SW))
-
-    def test_no_open_switch_means_no_wait(self) -> None:
-        io = _ToggleJaws(closed=True)
-        g = _toggle(io)
-        g.connect()
-        g._closed = True
-        g.set_width_mm(80.0)
-        self.assertNotIn(("sleep", 0.02), io.events)
-
-
-class SingleToggleReconcileTests(unittest.TestCase):
-    """With an open switch the belief follows what it measured after each flip (second review, 2026-09-23).
-
-    A lost edge left the belief where the command put it, while the switch had just measured otherwise, and a
-    part-present sensor, which sees a part between OPEN jaws too, then reported a grasp on jaws that never closed,
-    or a release of a part the jaws still held.
-    """
-
-    def _cell(self, io: "_ToggleJaws") -> JawIOGripper:
-        io.inputs = {PART_SW: True}                         # a part between the jaws, open or closed
-        return _toggle(io, open_confirm_input_pin=OPEN_SW, part_present_input_pin=PART_SW, close_timeout_s=0.01)
-
-    def test_a_lost_close_edge_reports_no_grasp(self) -> None:
-        io = _ToggleJaws(open_switch=True, lose=1)
-        g = self._cell(io)
-        g.connect()
-        g.set_width_mm(0.0)                                 # the edge is lost: the jaws never left the open stop
-        self.assertFalse(io.closed)
-        self.assertFalse(g.jaws_closed)
-        self.assertFalse(g.is_object_detected(), "a grasp reported on jaws that never closed")
-        self.assertIs(g.hold_evidence(), HoldEvidence.UNMEASURED)
-
-    def test_a_lost_open_edge_keeps_the_part_held(self) -> None:
-        io = _ToggleJaws(open_switch=True)
-        g = self._cell(io)
-        g.connect()
-        g.set_width_mm(0.0)
-        self.assertTrue(io.closed)
-        io.lose = 1
-        g.set_width_mm(80.0)                                # the edge is lost: the jaws still hold the part
-        self.assertTrue(io.closed)
-        self.assertTrue(g.jaws_closed, "a release reported while the jaws still hold the part")
-        self.assertIs(g.hold_evidence(), HoldEvidence.HELD)
-        self.assertEqual(g.get_width_mm(), g.min_width_mm)
-
-    def test_the_switch_that_answers_leaves_the_belief_alone(self) -> None:
-        """⭐ THE CONTROL: with no edge lost, the same cell closes and opens as commanded."""
-        io = _ToggleJaws(open_switch=True)
-        g = self._cell(io)
-        g.connect()
-        g.set_width_mm(0.0)
-        self.assertTrue(g.jaws_closed and io.closed)
-        g.set_width_mm(80.0)
-        self.assertFalse(g.jaws_closed or io.closed)
 
 
 class _ReplyLost(_ToggleJaws):
@@ -770,150 +562,197 @@ class _ReplyLost(_ToggleJaws):
 
 
 class SingleToggleUnknowableEdgeTests(unittest.TestCase):
-    """A high write that raised may have flipped the jaws: a cell with no open switch stops pulsing until a connect."""
+    """A high write that raised may have flipped the jaws: the driver stops pulsing until a person has said."""
 
     def test_a_failed_high_write_drops_the_pin_and_blocks_the_next_pulse(self) -> None:
         io = _ReplyLost()
         g = _toggle(io)
         g.connect()
         with self.assertRaises(RobotConnectionError):
-            g.set_width_mm(0.0)
+            g.set_closed(True)
         self.assertTrue(io.closed)                          # the edge reached the jaws
         self.assertFalse(io.outputs[CLOSE_PIN], "the pin was left high")
         writes = len(io.outputs_written())
         with self.assertRaises(RobotError) as caught:
-            g.set_width_mm(0.0)                             # a retry would flip the jaws back open
+            g.set_closed(True)                              # a retry would flip the jaws back open
         self.assertIn("unknowable", str(caught.exception))
-        self.assertIn("with a pulse", str(caught.exception))
-        self.assertNotRegex(str(caught.exception), r"(?<!never )by hand")
-        self.assertEqual(len(io.outputs_written()), writes, "a pulse was sent on an unknowable belief")
+        self.assertEqual(len(io.outputs_written()), writes, "a pulse was sent on an unknowable count")
         self.assertTrue(io.closed)
 
-    def test_a_connect_lifts_the_block(self) -> None:
+    def test_the_next_pick_asks_and_the_answer_lifts_the_block(self) -> None:
+        io = _ReplyLost()
+        person = Person("", "closed", "p")
+        g = JawIOGripper(io, actuation="single_toggle", close_output_pin=CLOSE_PIN, pulse_s=PULSE_S, ask=person,
+                         sleep=io.sleep)
+        g.connect()
+        with self.assertRaises(RobotConnectionError):
+            g.set_closed(True)
+        self.assertEqual("", g.jaws_open_for_a_pick())     # the person looked: closed, and chose one pulse
+        self.assertIn("failed on its high write", person.asked[1])
+        self.assertFalse(io.closed)
+        self.assertFalse(g.jaws_closed)
+
+    def test_an_unknowable_edge_is_said_at_disconnect(self) -> None:
         io = _ReplyLost()
         g = _toggle(io)
         g.connect()
         with self.assertRaises(RobotConnectionError):
-            g.set_width_mm(0.0)
-        io.closed = False                                   # a person stands the jaws open, as the refusal says
-        g.connect()
-        g.set_width_mm(0.0)
-        self.assertTrue(io.closed)
-        self.assertTrue(g.jaws_closed)
-
-
-class SingleToggleReconnectWarningTests(unittest.TestCase):
-    """The same instance reconnected after a disconnect that left the jaws closed says so above INFO."""
-
-    def test_a_reconnect_after_a_closed_disconnect_warns(self) -> None:
-        io = _ToggleJaws()
-        g = _toggle(io)
-        g.connect()
-        g.set_width_mm(0.0)
-        g.disconnect()
-        with self.assertLogs(g.logger, level="WARNING") as logs:
-            g.connect()
-        self.assertTrue(any("last took the jaws to stand CLOSED" in line for line in logs.output))
-
-    def test_a_reconnect_after_an_open_disconnect_does_not(self) -> None:
-        """⭐ THE CONTROL: the warning is about the closed case only."""
-        io = _ToggleJaws()
-        g = _toggle(io)
-        g.connect()
-        g.disconnect()
-        with self.assertNoLogs(g.logger, level="WARNING"):
-            g.connect()
-
-
-class _Travelling(_ToggleJaws):
-    """Jaws that take ``travel_reads`` reads of the open switch to arrive after a flip: off both stops meanwhile."""
-
-    def __init__(self, travel_reads: int, **kw) -> None:
-        super().__init__(open_switch=True, **kw)
-        self.travel_reads = travel_reads
-        self.pending = 0
-
-    def set_digital_output(self, pin, value, *, port=DigitalIOPort.STANDARD) -> None:
-        before = self.closed
-        super().set_digital_output(pin, value, port=port)
-        if self.closed != before:
-            self.pending = self.travel_reads
-
-    def get_digital_input(self, pin, *, port=DigitalIOPort.STANDARD) -> bool:
-        if pin == OPEN_SW and self.pending:
-            self.pending -= 1
-            return False
-        return super().get_digital_input(pin, port=port)
-
-
-class SingleToggleFailurePathTests(unittest.TestCase):
-    """The paths the third review demonstrated (2026-09-23): writes that raise after reaching the controller, and a
-    stroke interrupted before its wait finished."""
-
-    def test_an_unknowable_edge_is_said_at_disconnect_and_warned_at_connect(self) -> None:
-        io = _ReplyLost()
-        g = _toggle(io)
-        g.connect()
-        with self.assertRaises(RobotConnectionError):
-            g.set_width_mm(0.0)
+            g.set_closed(True)
         with self.assertLogs(g.logger, level="INFO") as logs:
             g.disconnect()
         self.assertTrue(any("UNKNOWN" in line for line in logs.output), "the disconnect said 'open'")
-        with self.assertLogs(g.logger, level="WARNING") as logs:
-            g.connect()
-        self.assertTrue(any("unknowable" in line for line in logs.output))
 
-    def test_a_second_connect_without_a_disconnect_does_not_claim_one(self) -> None:
+
+class _NeverHigh(_ToggleJaws):
+    """An output the controller accepts and never reports HIGH: a wrong bank, a reserved pin, a write that never reached
+    the pin. The device on it sees no edge either, so its jaws stay where they stood."""
+
+    def __init__(self, **kw) -> None:
+        super().__init__(lose=1_000, **kw)
+
+    def get_digital_output(self, pin, *, port=DigitalIOPort.STANDARD) -> bool:
+        return False
+
+
+class _Lagging(_ToggleJaws):
+    """The RTDE receive stream: after each write, the first ``lag`` reads still report the level before it (measured on
+    URSim 5.26.0, ``drivers/ur/io_bench.set_output``)."""
+
+    def __init__(self, *, lag: int, **kw) -> None:
+        super().__init__(**kw)
+        self.lag = lag
+        self.stale: dict[int, tuple[bool, int]] = {}
+
+    def set_digital_output(self, pin, value, *, port=DigitalIOPort.STANDARD) -> None:
+        before = bool(self.outputs.get(pin, False))
+        super().set_digital_output(pin, value, port=port)
+        self.stale[pin] = (before, self.lag)
+
+    def get_digital_output(self, pin, *, port=DigitalIOPort.STANDARD) -> bool:
+        before, left = self.stale.get(pin, (False, 0))
+        if left > 0:
+            self.stale[pin] = (before, left - 1)
+            return before
+        return bool(self.outputs.get(pin, False))
+
+
+def _after_the_high(io: _Timeline) -> list[tuple[str, object]]:
+    """What happened between the rising edge and the next write, the low."""
+    high = io.events.index(HIGH)
+    low = io.events.index(LOW, high)
+    return io.events[high + 1:low]
+
+
+class SingleTogglePulseIsReadBackTests(unittest.TestCase):
+    """⛔ Review of 2026-09-24 (D2). The count flipped as soon as the HIGH write returned, and a write that returns says
+    the command was accepted, not that the pin moved (``drivers/ur/io_bench.set_output`` reads back for exactly this
+    reason). The pin is read back until it reads HIGH, about a pulse and two 8 ms CB3 cycles and never under 50 ms,
+    and the count flips only then; a pin that never reads HIGH leaves the count unknowable and the next pick asks."""
+
+    def test_an_output_that_never_reads_high_is_refused_and_leaves_the_count_unknowable(self) -> None:
+        io = _NeverHigh()
+        g = _toggle(io)
+        g.connect()
+        with self.assertRaises(RobotError) as caught:
+            g.set_closed(True)
+        message = str(caught.exception)
+        for part in (f"tool output {CLOSE_PIN}", "never read HIGH", "nobody can say whether the jaws flipped"):
+            self.assertIn(part, message)
+        self.assertFalse(g.jaws_closed, "the count flipped on a pulse the pin never showed")
+        self.assertEqual(LOW, io.outputs_written()[-1], "the low was not attempted")
+        writes = len(io.outputs_written())
+        with self.assertRaises(RobotError):
+            g.set_closed(True)                              # nobody can say which way a pulse would move them now
+        self.assertEqual(writes, len(io.outputs_written()), "a pulse went out on an unknowable count")
+
+    def test_the_next_pick_asks_after_an_output_that_never_read_high(self) -> None:
+        io = _NeverHigh()
+        person = Person("", "open")
+        g = JawIOGripper(io, actuation="single_toggle", close_output_pin=CLOSE_PIN, pulse_s=PULSE_S, ask=person,
+                         sleep=io.sleep)
+        g.connect()
+        with self.assertRaises(RobotError):
+            g.set_closed(True)
+        self.assertEqual("", g.jaws_open_for_a_pick())
+        self.assertEqual(2, len(person.asked))
+        self.assertFalse(g.jaws_closed)
+
+    def test_the_read_back_waits_about_one_pulse_and_two_controller_cycles(self) -> None:
+        for pulse_s, bound_s in ((PULSE_S, PULSE_S + 0.016), (0.0, 0.05)):
+            with self.subTest(pulse_s=pulse_s):
+                io = _NeverHigh()
+                g = JawIOGripper(io, actuation="single_toggle", close_output_pin=CLOSE_PIN, pulse_s=pulse_s,
+                                 ask=Person(""), sleep=io.sleep)
+                g.connect()
+                with self.assertRaises(RobotError):
+                    g.set_closed(True)
+                waited = sum(float(s) for kind, s in _after_the_high(io) if kind == "sleep")  # type: ignore[arg-type]
+                self.assertGreaterEqual(waited, bound_s - 1e-9, "gave up before the controller could answer")
+                self.assertLess(waited, bound_s + 0.0081, "held the pin high long past the bound")
+
+    def test_a_read_back_that_lags_two_cycles_still_counts_the_flip(self) -> None:
+        """⭐ THE CONTROL: the stream reports the old level for a cycle or two, and the pulse is still one flip."""
+        io = _Lagging(lag=2)
+        g = _toggle(io)
+        g.connect()
+        io.events.clear()
+        g.set_closed(True)
+        self.assertTrue(io.closed)
+        self.assertTrue(g.jaws_closed)
+        between = _after_the_high(io)
+        self.assertEqual(("sleep", PULSE_S), between[-1], "the high was not held pulse_s once it read HIGH")
+        self.assertEqual(2, sum(1 for kind, _s in between[:-1] if kind == "sleep"))
+
+    def test_a_pin_that_reads_high_at_once_costs_no_wait(self) -> None:
+        """⭐ THE CONTROL: the timeline of one flip is unchanged where the read-back agrees at once."""
         io = _ToggleJaws()
         g = _toggle(io)
         g.connect()
-        g.set_width_mm(0.0)
-        with self.assertLogs(g.logger, level="WARNING") as logs:
-            g.connect()
-        self.assertFalse(any("disconnect" in line for line in logs.output))
+        io.events.clear()
+        g.set_closed(True)
+        self.assertEqual(io.events, [*PULSE, ("sleep", SETTLE_S)])
 
-    def test_the_open_switch_decides_the_grasp_evidence_after_a_failed_write(self) -> None:
-        io = _ReplyLost(open_switch=True)
-        io.lose_reply = False
-        io.inputs = {PART_SW: True}                         # a part between the jaws, open or closed
-        g = _toggle(io, open_confirm_input_pin=OPEN_SW, part_present_input_pin=PART_SW, close_timeout_s=0.01)
+
+class _CoilNeverHigh(FakeIO):
+    """A solenoid output the controller accepts and never reports HIGH."""
+
+    def get_digital_output(self, pin, *, port=DigitalIOPort.STANDARD) -> bool:
+        return False
+
+
+class SolenoidsAreReadBackTooTests(unittest.TestCase):
+    """The same read-back on a solenoid: a coil or a level that never reads back is refused rather than believed."""
+
+    def test_a_double_solenoid_coil_that_never_reads_high_is_refused_and_dropped(self) -> None:
+        io = _CoilNeverHigh()
+        g = JawIOGripper(io, actuation="double_solenoid", close_output_pin=CLOSE_PIN, open_output_pin=OPEN_PIN,
+                         pulse_s=0.1, sleep=lambda _s: None)
         g.connect()
-        g.set_width_mm(0.0)
-        io.lose_reply = True
-        with self.assertRaises(RobotConnectionError):
-            g.set_width_mm(80.0)                            # the release reached the jaws; its reply did not
-        self.assertFalse(io.closed)
-        self.assertFalse(g.is_object_detected(), "a grasp reported while the open switch reads open")
-        self.assertIs(g.hold_evidence(), HoldEvidence.UNMEASURED)
+        with self.assertRaises(RobotError) as caught:
+            g.set_closed(True)
+        self.assertIn(f"tool output {CLOSE_PIN}", str(caught.exception))
+        self.assertIn("never read HIGH", str(caught.exception))
+        self.assertEqual((CLOSE_PIN, False), io.writes[-1][:2], "the coil was left energised")
 
-    def test_an_interrupted_open_is_waited_out_before_the_next_decision(self) -> None:
-        io = _Travelling(travel_reads=5, closed=True)
-        interrupted = {"done": False}
+    def test_a_single_solenoid_level_that_never_reads_back_is_refused(self) -> None:
+        io = _CoilNeverHigh()
+        g = JawIOGripper(io, close_output_pin=CLOSE_PIN, sleep=lambda _s: None)
+        g.connect()
+        with self.assertRaises(RobotError) as caught:
+            g.set_closed(True)
+        self.assertIn("never read HIGH", str(caught.exception))
+        g.set_closed(False)                                 # LOW reads back LOW: an open is not refused
 
-        def sleep(seconds: float) -> None:
-            io.events.append(("sleep", seconds))
-            if seconds == 0.02 and not interrupted["done"]:
-                interrupted["done"] = True
-                raise KeyboardInterrupt                     # Ctrl-C while the jaws travel open
-
-        g = JawIOGripper(io, actuation="single_toggle", close_output_pin=CLOSE_PIN, pulse_s=PULSE_S,
-                         open_confirm_input_pin=OPEN_SW, close_timeout_s=5.0, sleep=sleep)
-        g._connected = True                                 # closed jaws, as a close in this session left them
-        g._closed = True
-        with self.assertRaises(KeyboardInterrupt):
-            g.set_width_mm(80.0)
-        g.set_width_mm(80.0)                                # the retry: the jaws are still travelling open
-        self.assertFalse(io.closed, "the retry pulsed opening jaws back closed")
-        self.assertEqual(io.outputs_written().count(HIGH), 1)
-
-    def test_a_pin_left_high_is_dropped_at_connect(self) -> None:
-        io = _ToggleJaws()
-        g = _toggle(io)
-        io.outputs[CLOSE_PIN] = True                        # a low write that never arrived
-        with self.assertLogs(g.logger, level="WARNING"):
-            g.connect()
-        self.assertFalse(io.outputs[CLOSE_PIN])
-        self.assertFalse(io.closed, "a falling edge must not flip a device that flips on the rising one")
+    def test_a_solenoid_whose_pins_read_back_is_unchanged(self) -> None:
+        """⭐ THE CONTROL."""
+        io = FakeIO()
+        g = JawIOGripper(io, actuation="double_solenoid", close_output_pin=CLOSE_PIN, open_output_pin=OPEN_PIN,
+                         sleep=lambda _s: None)
+        g.connect()
+        g.set_closed(True)
+        self.assertEqual([(OPEN_PIN, False), (CLOSE_PIN, True), (CLOSE_PIN, False)],
+                         [(pin, value) for pin, value, _port in io.writes])
+        self.assertTrue(g.jaws_closed)
 
 
 class TheDecisionIsInTheLogTests(unittest.TestCase):
@@ -928,42 +767,18 @@ class TheDecisionIsInTheLogTests(unittest.TestCase):
         g = _toggle(io)
         g.connect()
         with self.assertLogs(g.logger, level="INFO") as logs:
-            g.set_width_mm(0.0)
-            g.set_width_mm(0.0)
+            g.set_closed(True)
+            g.set_closed(True)
         text = "\n".join(logs.output)
         self.assertIn("actuating jaws CLOSED via single_toggle", text)
         self.assertIn("jaws already stand CLOSED: no pulse", text)
 
-
-class TheAdviceIsAPulseTests(unittest.TestCase):
-    """A toggle's jaws are stood open with a pulse, never by hand (owner cell, 2026-09-23).
-
-    A device that keeps its own flip state is not moved by a hand that pushes its jaws open: the next pulse then only
-    brings the device's state round, nothing visibly moves, and every command after it is inverted. That is the
-    leading explanation of the owner's cell closing at the tray. A pulse keeps the device and the jaws in step on
-    every kind of toggle, so it is the only advice the driver gives.
-    """
-
-    def test_the_connect_line_says_pulse(self) -> None:
+    def test_the_persons_answer_is_in_the_log(self) -> None:
         io = _ToggleJaws()
         g = _toggle(io)
-        with self.assertLogs(g.logger, level="INFO") as logs:
-            g.connect()
-        text = "\n".join(logs.output)
-        self.assertIn("with a pulse", text)
-        self.assertNotRegex(text, r"(?<!never )by hand")
-
-    def test_the_reconnect_warning_says_pulse(self) -> None:
-        io = _ToggleJaws()
-        g = _toggle(io)
-        g.connect()
-        g.set_width_mm(0.0)
-        g.disconnect()
         with self.assertLogs(g.logger, level="WARNING") as logs:
             g.connect()
-        text = "\n".join(logs.output)
-        self.assertIn("with a pulse", text)
-        self.assertNotRegex(text, r"(?<!never )by hand")
+        self.assertTrue(any("a person said the jaws on tool output 4 stand OPEN" in line for line in logs.output))
 
 
 class _Stroke(FakeIO):
@@ -1058,7 +873,7 @@ class TheWidthsMeanWhatTheyAreForTests(unittest.TestCase):
     """
 
     @staticmethod
-    def _cell(vendor: str = "jaw_io", **jaw: float) -> dict[str, object]:
+    def _cell(vendor: str = "jaw_io", **jaw: object) -> dict[str, object]:
         return {"vendor": vendor, "max_width_mm": 49.99, "min_width_mm": 5.0, "jaw_io": jaw}
 
     def test_a_threshold_at_or_above_the_opening_is_refused(self) -> None:
@@ -1084,6 +899,10 @@ class TheWidthsMeanWhatTheyAreForTests(unittest.TestCase):
     def test_the_block_is_inert_under_another_vendor(self) -> None:
         GripperConfig.model_validate(self._cell(vendor="robotiq", closed_below_mm=84.0))
 
+    def test_a_toggle_takes_no_width_so_the_band_does_not_apply(self) -> None:
+        """Owner's decision (2026-09-24): a single_toggle refuses a width, so no threshold can turn a verb round."""
+        GripperConfig.model_validate(self._cell(actuation="single_toggle", closed_below_mm=84.0))
+
 
 class SingleToggleRefusalTests(unittest.TestCase):
     """What a toggle cannot do, refused by the schema and again by the constructor reachable without it."""
@@ -1099,6 +918,7 @@ class SingleToggleRefusalTests(unittest.TestCase):
         cfg = JawIOGripperConfig.model_validate(
             {"actuation": "single_toggle", "close_output_pin": 0, "io_port": "tool"})
         self.assertEqual(cfg.actuation, "single_toggle")
+        self.assertIsNone(cfg.confirm_open_at_start, "None asks for a toggle")
 
     def test_the_schema_refuses_an_open_output_pin(self) -> None:
         # The one pin opens the jaws too, so a second one would never be driven.
@@ -1124,25 +944,121 @@ class SingleToggleRefusalTests(unittest.TestCase):
                          open_on_connect_without_feedback=True)
         self.assertIn("open_on_connect_without_feedback", str(caught.exception))
 
-    def test_the_schema_refuses_a_lone_closed_switch(self) -> None:
-        # Off its stop it only repeats the belief, so a lost pulse would be read back as a grasp.
-        message = self._schema_refusal(closed_confirm_input_pin=0)
-        for part in ("single_toggle", "closed_confirm_input_pin", "open_confirm_input_pin"):
-            self.assertIn(part, message)
-        JawIOGripperConfig.model_validate({"actuation": "single_toggle", "closed_confirm_input_pin": 0,
-                                           "open_confirm_input_pin": 1})    # both switches are fine
+    def test_the_schema_refuses_every_feedback_input(self) -> None:
+        # The toggle reads nothing back: an input is a wire nobody reads, and a cell that believes it is sensed is not.
+        for name in ("part_present_input_pin", "closed_confirm_input_pin", "open_confirm_input_pin"):
+            with self.subTest(input=name):
+                message = self._schema_refusal(**{name: 1})
+                for part in ("single_toggle", name, "reads no sensor"):
+                    self.assertIn(part, message)
 
-    def test_the_constructor_refuses_a_lone_closed_switch(self) -> None:
-        with self.assertRaises(ValueError) as caught:
-            JawIOGripper(FakeIO(), actuation="single_toggle", close_output_pin=CLOSE_PIN,
-                         closed_confirm_input_pin=CLOSED_SW)
-        self.assertIn("open_confirm_input_pin", str(caught.exception))
+    def test_the_constructor_refuses_every_feedback_input(self) -> None:
+        for name in ("part_present_input_pin", "closed_confirm_input_pin", "open_confirm_input_pin"):
+            with self.subTest(input=name), self.assertRaises(ValueError) as caught:
+                JawIOGripper(FakeIO(), actuation="single_toggle", close_output_pin=CLOSE_PIN, **{name: 1})
+            self.assertIn("reads no sensor", str(caught.exception))
+
+    def test_the_question_at_connect_cannot_be_switched_off(self) -> None:
+        """Owner's decision (2026-09-24): nothing else can tell a toggle where its jaws start."""
+        message = self._schema_refusal(confirm_open_at_start=False)
+        for part in ("single_toggle", "confirm_open_at_start", "always asks"):
+            self.assertIn(part, message)
+        with self.assertRaises(ValueError):
+            JawIOGripper(FakeIO(), actuation="single_toggle", close_output_pin=CLOSE_PIN, confirm_open_at_start=False)
+        JawIOGripperConfig.model_validate({"actuation": "single_toggle", "confirm_open_at_start": True})
+        JawIOGripperConfig.model_validate({"actuation": "single_solenoid", "confirm_open_at_start": False})
 
     def test_an_unknown_actuation_names_all_three(self) -> None:
         with self.assertRaises(ValueError) as caught:
             JawIOGripper(FakeIO(), actuation="hydraulic")
         for known in ("single_solenoid", "double_solenoid", "single_toggle"):
             self.assertIn(known, str(caught.exception))
+
+
+class TheToolBankHasTwoPinsEachWayTests(unittest.TestCase):
+    """⛔ Review of 2026-09-24 (D3). The pins were 0 to 7 whatever the bank, and the UR tool connector has digital outputs
+    0 and 1 and inputs 0 and 1 only (``drivers/ur/connection.py``): a tool pin above 1 loaded, and every write to it
+    went to a global id that is some other bank's pin, or none."""
+
+    def _refusal(self, model: type, **fields: object) -> str:
+        with self.assertRaises(ValidationError) as caught:
+            model.model_validate(fields)  # type: ignore[attr-defined]
+        (error,) = caught.exception.errors()
+        self.assertEqual(error["type"], "value_error")      # the validator's sentence, not a bound's
+        return str(error["msg"])
+
+    def test_a_jaw_output_above_1_on_the_tool_bank_is_refused(self) -> None:
+        cases = {
+            "close_output_pin": {"close_output_pin": 2},
+            "open_output_pin": {"actuation": "double_solenoid", "close_output_pin": 0, "open_output_pin": 2},
+        }
+        for name, fields in cases.items():
+            with self.subTest(pin=name):
+                message = self._refusal(JawIOGripperConfig, io_port="tool", **fields)
+                for part in (name, "tool", "0 and 1", "standard"):
+                    self.assertIn(part, message)
+
+    def test_a_jaw_input_above_1_on_the_tool_bank_is_refused(self) -> None:
+        for name in ("part_present_input_pin", "closed_confirm_input_pin", "open_confirm_input_pin"):
+            with self.subTest(pin=name):
+                message = self._refusal(JawIOGripperConfig, io_port="tool", **{name: 3})
+                for part in (name, "tool", "0 and 1"):
+                    self.assertIn(part, message)
+
+    def test_the_default_bank_is_the_tool_bank(self) -> None:
+        self.assertIn("close_output_pin", self._refusal(JawIOGripperConfig, close_output_pin=3))
+
+    def test_a_vacuum_on_the_tool_bank_is_held_to_the_same_pins(self) -> None:
+        for name in ("vacuum_output_pin", "blow_off_output_pin", "vacuum_ok_input_pin"):
+            with self.subTest(pin=name):
+                message = self._refusal(VacuumGripperConfig, io_port="tool", **{name: 2})
+                for part in (name, "tool", "0 and 1"):
+                    self.assertIn(part, message)
+
+    def test_the_same_pins_in_the_control_box_load(self) -> None:
+        """⭐ THE CONTROL: standard and configurable have eight of each, and the tool bank's own two load."""
+        for port in ("standard", "configurable"):
+            with self.subTest(io_port=port):
+                JawIOGripperConfig.model_validate({"io_port": port, "actuation": "double_solenoid",
+                                                   "close_output_pin": 6, "open_output_pin": 7,
+                                                   "closed_confirm_input_pin": 5})
+                VacuumGripperConfig.model_validate({"io_port": port, "vacuum_output_pin": 7, "vacuum_ok_input_pin": 5})
+        JawIOGripperConfig.model_validate({"io_port": "tool", "actuation": "double_solenoid", "close_output_pin": 0,
+                                           "open_output_pin": 1, "closed_confirm_input_pin": 0,
+                                           "open_confirm_input_pin": 1})
+        VacuumGripperConfig.model_validate({"io_port": "tool", "vacuum_output_pin": 1, "blow_off_output_pin": 0,
+                                            "vacuum_ok_input_pin": 1})
+
+
+class APulseLongEnoughToRegisterTests(unittest.TestCase):
+    """⛔ Review of 2026-09-24 (D3). ``pulse_s`` was only above zero, so a pulse of a millisecond loaded: shorter than one
+    8 ms CB3 controller cycle, it may never reach the pin, and a toggle then never flips while the count does. The load
+    refuses a pulse under 0.05 s, several controller cycles, wherever the pulse is what moves the jaws."""
+
+    def test_a_pulse_under_50_ms_is_refused_where_it_moves_the_jaws(self) -> None:
+        for actuation, extra in (("single_toggle", {}), ("double_solenoid", {"open_output_pin": 1})):
+            for pulse_s in (0.001, 0.049):
+                with self.subTest(actuation=actuation, pulse_s=pulse_s):
+                    with self.assertRaises(ValidationError) as caught:
+                        JawIOGripperConfig.model_validate({"actuation": actuation, "pulse_s": pulse_s, **extra})
+                    (error,) = caught.exception.errors()
+                    for part in ("pulse_s", "0.05", "controller cycle", actuation):
+                        self.assertIn(part, str(error["msg"]))
+
+    def test_50_ms_loads_and_a_single_solenoid_is_not_held_to_it(self) -> None:
+        """⭐ THE CONTROL: the floor itself, and a single solenoid, which holds a level and pulses nothing."""
+        JawIOGripperConfig.model_validate({"actuation": "single_toggle", "pulse_s": 0.05})
+        JawIOGripperConfig.model_validate({"actuation": "double_solenoid", "open_output_pin": 1, "pulse_s": 0.05})
+        JawIOGripperConfig.model_validate({"actuation": "single_solenoid", "pulse_s": 0.001})
+
+    def test_the_driver_built_directly_keeps_any_pulse(self) -> None:
+        """The floor is the load's: a driver built in a test with a zero pulse still pulses."""
+        io = _ToggleJaws()
+        g = JawIOGripper(io, actuation="single_toggle", close_output_pin=CLOSE_PIN, pulse_s=0.0, ask=Person(""),
+                         sleep=io.sleep)
+        g.connect()
+        g.set_closed(True)
+        self.assertTrue(io.closed)
 
 
 if __name__ == "__main__":  # pragma: no cover

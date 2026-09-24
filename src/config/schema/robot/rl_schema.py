@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from .._base import StrictModel
+from .._base import ConfigPath, StrictModel
 
 
 # RL optimisation extension layer, the contract surface. The schema accepts five
@@ -80,14 +80,14 @@ class RobotRLConfig(StrictModel):
         "rl_experimental",
     ] = Field(default="hybrid_ml")
     policy_id: str | None = Field(default=None, min_length=1)
-    artifact_path: str | None = Field(default=None, min_length=1)
+    artifact_path: ConfigPath | None = Field(default=None, min_length=1)
     # Optional per-policy artifact overrides for the shadow router; without one it loads the committed
     # baseline. StrictModel forbids extras, so shadow.py's
     # `getattr(rl_cfg, "<x>_artifact_path", None)` lookups resolve only for the fields declared here.
-    ranking_artifact_path: str | None = Field(default=None, min_length=1)
-    sequencing_artifact_path: str | None = Field(default=None, min_length=1)
-    perception_artifact_path: str | None = Field(default=None, min_length=1)
-    recovery_artifact_path: str | None = Field(default=None, min_length=1)
+    ranking_artifact_path: ConfigPath | None = Field(default=None, min_length=1)
+    sequencing_artifact_path: ConfigPath | None = Field(default=None, min_length=1)
+    perception_artifact_path: ConfigPath | None = Field(default=None, min_length=1)
+    recovery_artifact_path: ConfigPath | None = Field(default=None, min_length=1)
     experimental: RLExperimentalConfig = Field(
         default_factory=RLExperimentalConfig
     )

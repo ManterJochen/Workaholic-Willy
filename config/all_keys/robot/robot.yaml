@@ -68,6 +68,11 @@ robot:
     # [default: null]
     home_joint_positions: null
 
+    # The same home in DEGREES, one per joint. Give home_joint_positions or this, not both; the
+    # loaded config carries it in radians.
+    # [default: null]
+    home_joint_positions_deg: null
+
     # The cameras authored into the sim scene, keyed by YOUR name for each one. They are not rigs
     # of the camera section, so they declare no calibration in config and cannot be named in
     # `grasping.fusion.cameras`, which takes rig ids: `run_multiview_pick --calibrated` reads each
@@ -226,25 +231,6 @@ robot:
         # Which ArUco id from the configured dictionary (DICT_4X4_50) is generated onto the plate.
         # [default: 0]
         aruco_marker_id: 0
-
-      # Eye-in-hand look-at viewpoint pattern (hemisphere around the marker).
-      eih_viewpoints:
-
-        # Camera standoff distances in mm on the hemisphere the wrist camera is driven around during eye-in-
-        # hand calibration the list is a full cross product with elevations and azimuths, so 2 radii x 2
-        # elevations x 6 azimuths = 24 poses.
-        # [default: [235.0, 275.0]]
-        radii_mm: [235.0, 275.0]
-
-        # Elevation angles for the calibration hemisphere, measured FROM THE VERTICAL (0 = camera straight
-        # above the marker), default 16 and 30 degrees.
-        # [default: [16.0, 30.0]]
-        elevations_deg: [16.0, 30.0]
-
-        # Azimuth angles (degrees around the marker) for the calibration hemisphere; the default six at
-        # 60-degree spacing give an even ring.
-        # [default: [0.0, 60.0, 120.0, 180.0, 240.0, 300.0]]
-        azimuths_deg: [0.0, 60.0, 120.0, 180.0, 240.0, 300.0]
 
       # Pick/lift gate thresholds for the sim validation runners.
       gate:
@@ -419,7 +405,9 @@ robot:
     # Wiring + timing for a suction end-effector on the controller's digital I/O.
     vacuum:
 
-      # Output pin that switches the ejector / pump on.
+      # Output pin that switches the ejector / pump on. Every pin in this block is 0-7 on the standard and
+      # configurable banks, and 0 or 1 on the tool bank (the default io_port): the UR tool connector has
+      # two digital outputs and two inputs, and a tool pin above 1 is refused at load.
       # [default: 0]
       vacuum_output_pin: 0
 
@@ -457,15 +445,16 @@ robot:
       # ``double_solenoid`` TWO outputs, pulsed: one closes, the other opens, and the valve is bistable.
       # On power loss it HOLDS the part, which is the safer failure but the jaw state is then not
       # inferable from the outputs, so feedback pins matter more here. ``single_toggle`` ONE output,
-      # pulsed: every pulse flips the jaws. With no open switch the driver counts its own pulses and
-      # keeps the count between programs (logs/robot/state); a pulse it did not count (the pendant, a
-      # power cut) inverts it until a person declares where the jaws stand (python -m
-      # src.robot.drivers.ur --jaws-stand open --yes); ``open_confirm_input_pin`` lets a sensor decide.
+      # pulsed: every pulse flips the jaws, and NOTHING is read back (a feedback input is refused). The
+      # program asks at connect, before anything moves, whether the jaws stand open, and counts its own
+      # pulses from the answer; nothing is kept between programs. It takes no width.
       # [default: single_solenoid] [one of: single_solenoid | double_solenoid | single_toggle]
       actuation: single_solenoid
 
       # Output that closes the jaws. Held high while closed (single), pulsed (double), or the one pin
-      # a toggle pulses to close and to open.
+      # a toggle pulses to close and to open. Every pin in this block is 0-7 on the standard and
+      # configurable banks, and 0 or 1 on the tool bank (the default io_port): the UR tool connector has
+      # two digital outputs and two inputs, and a tool pin above 1 is refused at load.
       # [default: 0]
       close_output_pin: 0
 
@@ -477,7 +466,10 @@ robot:
 
       # Pulse length for ``double_solenoid`` and ``single_toggle``. A bistable valve latches, so the coil
       # is energised only long enough to throw it holding it high is what cooks the coil. A toggle's pin
-      # is also held low for ``pulse_s`` before each pulse, so one flip takes twice this.
+      # is also held low for ``pulse_s`` before each pulse, so one flip takes twice this. At least 0.05 s
+      # for both (refused below): several controller cycles, 8 ms each on a CB3, so the pulse reaches the
+      # device. The desk warns a toggle's pulse under 0.1 s ("toggle pulse"): measure it with
+      # ``--pulse PIN --for SECONDS``. Unused by ``single_solenoid``.
       # [default: 0.2]
       pulse_s: 0.2
 
@@ -504,16 +496,23 @@ robot:
       # The jaws' travel time, both ways. With no feedback pin wired it is the whole wait: there is nothing
       # to poll, so the driver can only wait. With one, a reading that also occurs mid-stroke is taken only
       # after it. An open with no open switch waits it too, so a place does not back out of opening jaws.
+      # A ``single_toggle`` waits it after every pulse.
       # [default: 0.3]
       close_settle_s: 0.3
 
-      # Commanded width at/below which the driver CLOSES.
+      # Commanded width at/below which the driver CLOSES. Unused by ``single_toggle``, which takes no width.
       # [default: 5.0]
       closed_below_mm: 5.0
 
       # What ``connect()`` does when NO feedback is wired, and it defaults to the cautious answer.
       # [default: false]
       open_on_connect_without_feedback: false
+
+      # Whether connecting ASKS a person, before anything moves, whether the jaws stand open. Closed is
+      # answered with one command that opens them, or an abort; with no terminal the connect is refused.
+      # null asks for ``single_toggle`` (which may not switch it off) and not for the solenoids.
+      # [default: null]
+      confirm_open_at_start: null
 
     # An OnRobot RG2 / RG6 reached over Modbus TCP through the OnRobot Compute Box.
     onrobot:
@@ -566,6 +565,14 @@ robot:
   # [default: null]
   home_joint_positions: null
 
+  # The same home in DEGREES, one per joint, as the pendant shows it and
+  # `python -m src.robot.drivers.ur --where` prints it: [-90.0, -100.0, -110.0, -60.0, 90.0, 0.0].
+  # Give home_joint_positions or this, not both: a cell profile layered over one that wrote the home
+  # in radians (ur5e, ur3e) writes home_joint_positions: "__null__" beside it. Read once at load:
+  # every consumer reads the home in radians from home_joint_positions, and this key reads null there.
+  # [default: null]
+  home_joint_positions_deg: null
+
   # Cartesian POSITION the robot can retreat to at operator request.
   safe_pose:
 
@@ -588,18 +595,10 @@ robot:
     # [default: 0.5]
     settle_time_s: 0.5
 
-    # Random orientation deviation (deg) when generating calibration poses.
-    # [default: 15.0]
-    orientation_spread_deg: 15.0
-
-    # Pose-generator retry budget per pose before giving up.
-    # [default: 200]
-    max_attempts_per_pose: 200
-
-    # ETH pose-generator z band PER MARKER SOURCE (``"ground_truth"`` / ``"aruco"``), as ``(lo, hi)``
-    # fractions of ``workspace_limits.z_max``.
-    # [default: null]
-    pose_box_z_frac: null
+    # How many counted samples a hand-guided calibration collects before it solves (``--freedrive``), unless the
+    # run says otherwise (``--samples``, ``SweepOptions(samples=)``).
+    # [default: 15]
+    freedrive_samples: 15
 
     # RMSE thresholds (mm) that classify a hand-eye calibration result.
     quality_bands_mm:
@@ -831,6 +830,24 @@ robot:
       # [default: 250.0]
       max_tcp_step_mm: 250.0
 
+    # How a cuRobo UR cell chooses the path of a move: the goal configuration nearest the arm on the branch it
+    # holds, the straight joint line there where it is clear, a cuRobo plan only where it is not.
+    planned_motion:
+
+      # How far, in mm, every configuration of a straight joint line has to stay from the planner's world (the
+      # declared cell and the camera's) before the line runs instead of a plan. A line that comes closer is
+      # planned around. 10 mm is the distance cuRobo's optimiser keeps its own plans from an obstacle, and the
+      # local guard's shipped self_collision.min_distance_mm. 0 judges a line at no penetration, as a plan is.
+      # [default: 10.0]
+      line_clearance_mm: 10.0
+
+      # How far, in degrees, any joint of a cuRobo plan may swing beyond the span between where it starts and
+      # where it ends. A plan past it is not run: the next nearest configuration is planned to, and with none
+      # left the move is refused naming the joint. It stops the plan that swings the base or a wrist the long
+      # way round with the cables on the arm.
+      # [default: 45.0]
+      max_detour_deg: 45.0
+
     # Post-Stop dwell + steady-state gating.
     dwell:
 
@@ -906,7 +923,7 @@ robot:
       #
       #   meshes:
       #     - name: tote                      # unique among every obstacle; duplicates collapse
-      #       path: assets/cell/tote.obj      # read by the planning sidecar, in its own process
+      #       path: meshes/tote.obj           # <config folder>/meshes/tote.obj, read by the planning sidecar
       #       center_mm: [500.0, 0.0, 0.0]    # where the mesh origin sits in the base frame
       #       yaw_deg: 0.0                    # rotation about base Z; a tote stands on a floor
       #       scale: 0.001                    # 0.001 for a mesh authored in millimetres
@@ -1415,8 +1432,8 @@ robot:
       enabled: false
 
       # Directory holding the trained success predictor's model.json and manifest.json.
-      # [default: assets/models/success_probability/v1]
-      artifact_dir: assets/models/success_probability/v1
+      # [default: ${WILLY_PROJECT_ROOT}/assets/models/success_probability/v1]
+      artifact_dir: "${WILLY_PROJECT_ROOT}/assets/models/success_probability/v1"
 
       # Named as the modes the predictor may score in, and it does bound ranking_blend_modes (the validator
       # requires the blend modes to be a subset).
@@ -1801,8 +1818,8 @@ robot:
       enabled: false
 
       # Where the fitted ranker lives
-      # [default: assets/models/grasp_ranker/v1]
-      artifact_dir: assets/models/grasp_ranker/v1
+      # [default: ${WILLY_PROJECT_ROOT}/assets/models/grasp_ranker/v1]
+      artifact_dir: "${WILLY_PROJECT_ROOT}/assets/models/grasp_ranker/v1"
 
       # Which feature contract to score under.
       # [default: held_jaw_v1]

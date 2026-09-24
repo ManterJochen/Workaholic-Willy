@@ -10,8 +10,10 @@ one joint vector and moves nothing, and asks the planner the arm builds (``_curo
   the arm's own configuration invalid;
 * (f2) on a second arm with no declared box, the same box turned half a turn about the base axis and
   handed to the planner's ``set_world`` leaves it valid;
-* (f3) on that arm, a plan to the flange raised 100 mm, commanded in the controller's frame, ends on
-  it: the DH flange of the plan's last configuration is within 1 mm and 0.1 degrees of the goal;
+* (f3) on that arm, a joint plan to the configuration nearest the arm of the flange raised 100 mm, solved in
+  the controller's frame as the driver solves it, ends on it: the DH flange of the plan's last configuration is
+  within 1 mm and 0.1 degrees of the goal. The UR driver never asks cuRobo for a Cartesian plan, so the goal a
+  plan is handed is joints, the same numbers in both bases, and this claim holds the joint remap both ways;
 * (f4) on that arm, a live scene field written in the controller's frame, the grid the cell reserves
   centred 150 mm along the controller's +X from the fingertips and inside an obstacle only in a
   200 mm cube around them, makes the configuration invalid through the glue, and the same field
@@ -24,10 +26,10 @@ either side of it, so a 90 mm cube centred there sits in the gap between them an
 correctly sees nothing; a 200 mm cube meets the fingers.
 
 Without the turn the claims measure: (f1) valid, the box in the fingers a metre away in the
-planner's frame; (f2) refused, the turned box on the hand; (f3) planned in 81 waypoints and ending
-1019.28 mm and 180 degrees from its goal, the flange sent to the goal mirrored through the base
-axis; (f4) valid, the field a metre away, in a run whose 90 mm cube also fit between the open
-fingers. That is the measurement the turn answers.
+planner's frame; (f2) refused, the turned box on the hand; (f3), when it was a Cartesian plan,
+planned in 81 waypoints and ending 1019.28 mm and 180 degrees from its goal, the flange sent to the
+goal mirrored through the base axis; (f4) valid, the field a metre away, in a run whose 90 mm cube
+also fit between the open fingers. That is the measurement the turn answers.
 
 Run from the repository root with the project venv, alone on the box (it starts the sidecar on the
 GPU)::
@@ -54,10 +56,9 @@ sys.path.insert(0, str(_ROOT))
 
 from src.config.schema.robot import RobotConfig  # noqa: E402
 from src.contracts import chosen  # noqa: E402
-from src.geometry import Frame, Pose  # noqa: E402
-from src.geometry.quaternion import from_rotation_matrix  # noqa: E402
 from src.robot.drivers.ur.arm import URRobotArm  # noqa: E402
 from src.robot.drivers.ur.planner_frame import PlannerFrameClient  # noqa: E402
+from src.robot.safety._ur_ik import nearest_goals, ur_flange_ik  # noqa: E402
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm  # noqa: E402
 from src.robot.safety.planning import CuroboUnavailableError  # noqa: E402
 from src.robot.safety.planning.reservation import PlannerReservation  # noqa: E402
@@ -180,9 +181,10 @@ def main(argv: "list[str] | None" = None) -> int:
             # (f3) first, on a world with nothing near the hand.
             goal = flange0.copy()
             goal[:3, 3] = flange0[:3, 3] - approach * _RAISE_MM
-            pose = Pose(position_mm=goal[:3, 3], quaternion_xyzw=from_rotation_matrix(goal[:3, :3]),
-                        frame=Frame.BASE, label="raised")
-            traj = planner.plan(pose)
+            lower, upper = arm._goal_joint_window()
+            solutions = ur_flange_ik(_ARM, goal, q6_if_singular=_DOWN_Q[-1]) or ()
+            nearest = nearest_goals(solutions, current=_DOWN_Q, lower=lower, upper=upper, velocity=1.0)
+            traj = planner.plan_joint(list(nearest[0].joints)) if nearest else None
             if not traj:
                 claims["f3_the_plan_ends_on_its_goal"] = {"planned": False}
             else:

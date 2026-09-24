@@ -6,7 +6,7 @@ streamer. A program that has already opened one `Camera` -- anything that hands 
 camera world, which is every camera-checked motion -- therefore could not ask where a hand is
 without either taking the cell's other devices away from it or opening one device twice, which is
 exactly what the camera owner exists to prevent. The capability shipped and no such program could
-reach it; `examples/real_robot/17` is the program.
+reach it; `examples/real_robot/13` is the program.
 
 The transform is the other half. `build_hand_finder_on_camera` composes nothing: a fixed rig's
 CAMERA to BASE is `RigCalibration.camera_to_base()`, one method with one answer, and a wrist rig is

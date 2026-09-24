@@ -114,7 +114,8 @@ _TABLE: tuple[_Case, ...] = (
     ),
     _Case(
         name="vacuum on a UR arm",
-        tree={**_UR, "gripper": {"vendor": "vacuum", "model": _HAND, "vacuum": {"vacuum_output_pin": 2}}},
+        tree={**_UR, "gripper": {"vendor": "vacuum", "model": _HAND,
+                                 "vacuum": {"vacuum_output_pin": 2, "io_port": "standard"}}},
         handle=None, gated=True,
         arm="URRobotArm", gripper="VacuumGripper",
         attributes={"_pin": 2}, io_is_arm=True,
@@ -135,7 +136,8 @@ _TABLE: tuple[_Case, ...] = (
     ),
     _Case(
         name="jaw_io on a UR arm",
-        tree={**_UR, "gripper": {"vendor": "jaw_io", "model": _HAND, "jaw_io": {"close_output_pin": 3}}},
+        tree={**_UR, "gripper": {"vendor": "jaw_io", "model": _HAND,
+                                 "jaw_io": {"close_output_pin": 3, "io_port": "standard"}}},
         handle=None, gated=True,
         arm="URRobotArm", gripper="JawIOGripper",
         attributes={"_close_pin": 3}, io_is_arm=True,

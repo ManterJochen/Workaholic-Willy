@@ -448,15 +448,10 @@ def _end_effector_wiring_row(robot_cfg: "RobotConfig") -> PreflightCheck:
             opens = f"open output {jaw.open_output_pin}"
         elif jaw.actuation == "single_toggle":
             opens = f"open by a second pulse on close output {jaw.close_output_pin}"
-            if jaw.open_confirm_input_pin is None:
-                # No open switch: the driver counts its own pulses and starts from its record of them.
-                fix = ("confirm physically: each pulse flips the jaws, and with no open_confirm_input_pin the "
-                       "driver starts from its own count of them (logs/robot/state); after moving them any other "
-                       "way, say where they stand: python -m src.robot.drivers.ur --jaws-stand open --yes")
-            else:
-                fix = ("confirm physically, pin by pin; the one output flips the jaws on every pulse, the "
-                       "open switch is what the driver decides each pulse by, and a connect it does not read open "
-                       "for is refused")
+            # Nothing is read back: the program counts its own pulses from a person's answer at connect.
+            fix = ("confirm physically: each pulse flips the jaws and nothing reads them back, so every program asks "
+                   "at its connect, before anything moves, whether they stand open, and counts its own pulses from "
+                   "the answer; run it from a terminal, and look at the jaws before you answer")
         else:
             opens = f"open by dropping close output {jaw.close_output_pin}"
         return PreflightCheck(
@@ -483,7 +478,7 @@ def _jaw_travel_time_row(robot_cfg: "RobotConfig") -> PreflightCheck | None:
     """Whether a jaw_io hand's travel time was measured where it is the only wait the driver has; None for other hands.
 
     With no feedback a close waits ``close_settle_s`` and nothing else, and with no open switch so does an open, which
-    a place backs out on a line right after. A toggle with an open switch still only waits on a close. The schema
+    a place backs out on a line right after; a toggle, which reads nothing, waits it after every pulse. The schema
     default, 0.3 s, is a small cylinder's stroke: a Hand-E on its I/O coupling takes up to about 2 s, so a default
     left standing lifts before the jaws have met the part and drags the part a place has just set down.
     """
@@ -495,8 +490,6 @@ def _jaw_travel_time_row(robot_cfg: "RobotConfig") -> PreflightCheck | None:
     name = "jaw travel time"
     if jaw.open_confirm_input_pin is None:
         ways = "both ways: a close and an open each wait it and nothing else"
-    elif jaw.actuation == "single_toggle":
-        ways = "on a close: a grasp waits it and nothing else before the arm lifts"
     else:
         return PreflightCheck(name, CheckStatus.OK, (
             f"close_settle_s {settle:.1f} s; the open switch says when the jaws stand open"))
@@ -508,6 +501,40 @@ def _jaw_travel_time_row(robot_cfg: "RobotConfig") -> PreflightCheck | None:
         f"wait {ways}. The arm moves on that long after the edge, whether the jaws have arrived or not",
         "time the full stroke, open and closed, at the coupling's preset, by stopwatch or video (a Hand-E can take "
         "about 2 s), and set close_settle_s to the longer with a margin; it must cover the stroke",
+    )
+
+
+#: Below this a toggle's pulse loads but is warned: several controller cycles reach the pin, and whether the device
+#: registers a pulse that short as a flip is a bench measurement nothing here makes.
+_TOGGLE_PULSE_WARN_S = 0.1
+
+
+def _toggle_pulse_row(robot_cfg: "RobotConfig") -> PreflightCheck | None:
+    """Whether a ``single_toggle``'s pulse is long enough to trust as one flip; None for every other hand.
+
+    The load refuses a pulse under 0.05 s, a handful of CB3 controller cycles. Between that and
+    0.1 s the controller does apply the pulse, and the driver reads it back HIGH and counts a
+    flip, but a device that needs longer to register it does not flip, and nothing on a toggle
+    notices: every command after it runs inverted until a person looks (review of 2026-09-24).
+    """
+    gripper = robot_cfg.gripper
+    if str(getattr(gripper.vendor, "value", gripper.vendor)).lower() != "jaw_io":
+        return None
+    jaw = gripper.jaw_io
+    if jaw.actuation != "single_toggle":
+        return None
+    pulse = float(jaw.pulse_s)
+    name = "toggle pulse"
+    if pulse >= _TOGGLE_PULSE_WARN_S:
+        return PreflightCheck(name, CheckStatus.OK, (
+            f"pulse_s {pulse:.2f} s on {jaw.io_port} output {jaw.close_output_pin}, each pulse one flip"))
+    return PreflightCheck(
+        name, CheckStatus.WARN,
+        f"robot.gripper.jaw_io.pulse_s is {pulse:.2f} s, under {_TOGGLE_PULSE_WARN_S} s: the controller applies it and "
+        "the program counts a flip, and a device that needs a longer pulse does not flip, which nothing on a toggle "
+        "notices; every command after it runs inverted",
+        f"measure it on the bench: `python -m src.robot.drivers.ur --profile NAME --pulse {jaw.close_output_pin} "
+        f"--for {pulse:.2f} --yes` must flip the jaws once, every time; if not, raise pulse_s (0.2 s is the default)",
     )
 
 
@@ -750,8 +777,8 @@ def run_config_preflight(
                 f"{key} is not declared, so the primary camera has no CAMERA->BASE transform",
                 "perception reports grasps in the CAMERA frame; without a resolver the driver refuses every "
                 "motion as INVALID_TARGET, which looks like a broken cell. Calibrate the camera (python -m "
-                f"src.robot.execution.real_cell.calibrate --rig {primary}) and paste the rig block it "
-                "prints (a wrist camera prints one too), or pass frame_resolver= in code",
+                f"src.robot.execution.real_cell.calibrate --rig {primary} --freedrive) and paste the rig "
+                "block it prints (a wrist camera prints one too), or pass frame_resolver= in code",
             ))
 
     # ---- the camera world ----------------------------------------------------------------------
@@ -998,5 +1025,8 @@ def run_config_preflight(
         travel = _jaw_travel_time_row(robot_cfg)
         if travel is not None:
             checks.append(travel)
+        pulse = _toggle_pulse_row(robot_cfg)
+        if pulse is not None:
+            checks.append(pulse)
 
     return PreflightReport(tuple(checks))

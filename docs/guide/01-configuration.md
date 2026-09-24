@@ -128,6 +128,42 @@ the `robot:` section of the YAML at that path before validation. It is unset by 
 `explain` and `decisions` attribute an overlaid value to the base file, so unset it before you trust
 an explanation.
 
+**A relative path in the tree is read against the tree's folder.** That is the directory the tree was
+loaded from, `config/` for the shipped tree and whatever `--data` or `load_tree(root=...)` names for
+yours. It is not the directory the program was started in, and not the subfolder of the file that
+writes the path: `camera/cam.yaml` writing `calibration/eih_wrist.json` names
+`<tree folder>/calibration/eih_wrist.json`. So a cell kept in its own folder, outside the repository,
+keeps its calibration beside its config and names it relatively:
+
+```yaml
+# D:/cells/line3/camera/cam.yaml, loaded with load_tree(root="D:/cells/line3")
+        extrinsics:
+          mounting_mode: eye_in_hand
+          artifact_path: calibration/eih_wrist.json    # D:/cells/line3/calibration/eih_wrist.json
+```
+
+| Written in a file | Read as |
+|---|---|
+| `calibration/eih_wrist.json` | `<tree folder>/calibration/eih_wrist.json` |
+| `../calibration/eih_wrist.json` | beside the tree folder; from the shipped `config/` that is the repository root |
+| `${WILLY_PROJECT_ROOT}/assets/models/hf/...` | in the repository, or in the folder the `WILLY_PROJECT_ROOT` variable names |
+| `D:/cells/shared/eih_wrist.json`, `~/cal/eih_wrist.json` | as written; `~` is your home folder |
+| nothing, the schema default | the repository's file (every path default is `${WILLY_PROJECT_ROOT}/...`) or no file |
+
+`${WILLY_PROJECT_ROOT}` is for what the repository holds rather than the cell: the model weights
+`scripts/model_weights/fetch.py` writes, the committed success model and ranker, the RL baselines. The
+shipped tree names those with it, so a copy of `config/` moved out of the repository still finds them,
+and names its cell data (`calibration/...`) with `../`, which from `config/` is the repository root.
+When you copy the tree out, rewrite those `../` paths to where the cell's files are now, relative to
+the new folder or absolute.
+
+The loaded config holds the absolute path, so `explain <key>` prints the file that will be opened
+above the line that wrote it. `${VAR}` substitution runs first, so a relative path a variable supplies
+is read against the tree's folder too: give such a variable an absolute path. A value given to
+`with_values` is read against the same folder as the same value in a file. A file that is not there is
+refused with the path as written, the path it was read as and this rule. The rule in full, and why it
+is applied once at load rather than by each reader: [`src/config/paths.py`](../../src/config/paths.py).
+
 ---
 
 ## 3. Profiles, overlays and the four worked cells
@@ -202,7 +238,10 @@ rules to remember:
 
 **`${ENV}`.** `${VAR}` and `${VAR:-default}` are substituted in the raw text before the YAML is parsed,
 so the result must still be valid YAML. Quote anything that could contain a `:` or a `#`. An unset
-variable with no default is an error that names the file.
+variable with no default is an error that names the file. `${WILLY_PROJECT_ROOT}` is the one name
+left in place: it is the path anchor of [section 2](#2-what-the-loader-reads), expanded in path keys
+only. Written in any other key it is refused with the key's name rather than carried along as text.
+It works quoted or unquoted, in block style and inside `{...}` and `[...]` alike.
 
 ---
 
@@ -370,7 +409,10 @@ cp -r config/grippers $CELL/
 python -m src.config --data $CELL
 ```
 
-Then edit `camera/cam.yaml` for the hardware you have. Rigs belong to
+Then edit `camera/cam.yaml` for the hardware you have. Its `base_dir: ../calibration/<rig>` lines were
+written for `config/`, where `..` is the repository; in the copy they point beside `$Cell`, so write
+them `calibration/<rig>` to keep the cell's calibration in its own folder ([section 2](#2-what-the-loader-reads)).
+The models' `${WILLY_PROJECT_ROOT}/...` paths stay as they are. Rigs belong to
 [03-calibration.md](03-calibration.md), models to [02-models.md](02-models.md). For a simulated cell,
 copy the `*.sim.yaml` overlays too. `robot:` is optional, so a green run here proves the perception
 half is sound before the robot half can confuse the diagnosis.
@@ -568,6 +610,8 @@ cameras from `robot.sim.cameras`. A green `cam.yaml` is not evidence that a came
 - Call `reload_config()` after editing a file in a running process.
 - Unset `WILLY_ADAPTATION_OVERLAY` before trusting an explanation.
 - A tree of your own that names a hand carries an unchanged copy of `grippers/`.
+- A relative path in the tree is read against the tree's folder, never the working directory; a
+  copied tree's `../` paths need rewriting, its `${WILLY_PROJECT_ROOT}` paths do not.
 - A green `python -m src.config` says nothing about the presets.
 
 **Adding a new field?** The rules are in [`src/config/README.md`](../../src/config/README.md): a

@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from .._base import StrictModel
+from .._base import ConfigPath, StrictModel
 
 
 class LimitsSafetyConfig(StrictModel):
@@ -165,7 +165,7 @@ class SelfCollisionSafetyConfig(StrictModel):
     planner_margin_mm: float | None = Field(default=None, ge=0.0, le=100.0)
     link_radii_mm: list[float] | None = Field(default=None)
     fixtures: list[FixtureBoxConfig] = Field(default_factory=list)
-    mesh_dir: str | None = Field(default=None)
+    mesh_dir: ConfigPath | None = Field(default=None)
 
     # Which bundled arm kinematics (DH) table supplies the per-link arm-vs-arm capsules. Under the
     # default ``None`` only a real ``vendor == "ur"`` arm gets arm-vs-arm capsules, keyed by its own
@@ -265,6 +265,34 @@ class MotionContinuitySafetyConfig(StrictModel):
     max_joint_step_deg: float = Field(default=45.0, gt=0.0, le=180.0)
     max_orientation_step_deg: float = Field(default=30.0, gt=0.0, le=180.0)
     max_tcp_step_mm: float = Field(default=250.0, gt=0.0, le=2000.0)
+
+
+class PlannedMotionSafetyConfig(StrictModel):
+    """How a cuRobo UR cell chooses the path of a move, and how far a planned path may wander.
+
+    A move goes to the configuration of its goal nearest the arm, on the branch the arm holds, and it runs the
+    straight joint line there wherever that line is clear; cuRobo plans only where it is not, and never chooses the
+    goal. Both keys bound that choice.
+
+    ``line_clearance_mm`` is how far every configuration of a straight joint line has to stay from the planner's
+    world, the declared cell and the camera's, before the line runs instead of a plan. A line that comes closer is
+    planned around rather than driven along: the camera sees obstacles that only the planner holds, and a line that
+    grazes one by a millimetre passes a check that asks only for no penetration. The default is 10 mm, the distance at
+    which cuRobo's own optimiser starts pushing its plans away from an obstacle (``optimizer_collision_activation_
+    distance`` at its default of 0.01 m, which the sidecar does not change), so a line is held to the clearance a plan
+    is shaped to keep; it is also the local guard's shipped ``self_collision.min_distance_mm``, so both authorities ask
+    a line for the same 10 mm. It is not a certified distance, and 0 judges a line at no penetration, which is how a
+    planned path is judged.
+
+    ``max_detour_deg`` is how far any joint of a cuRobo path may swing beyond the span between where it starts and
+    where it ends. A plan past it is not run: the next nearest configuration is planned to instead, and where none
+    is left the move is refused naming the joint. 45 degrees admits a plan that bends a joint around a bin wall and
+    refuses the plan that swings the base or a wrist the long way round, which is what twisted a cable-carrying arm on
+    the owner's cell (2026-09-24).
+    """
+
+    line_clearance_mm: float = Field(default=10.0, ge=0.0, le=100.0)
+    max_detour_deg: float = Field(default=45.0, gt=0.0, le=360.0)
 
 
 class DwellSafetyConfig(StrictModel):
@@ -370,9 +398,9 @@ class PlannerMeshConfig(StrictModel):
     #: collapses two obstacles into one.
     name: str = Field(min_length=1)
 
-    #: Mesh file the planning sidecar reads. Absolute, or relative to the working directory it runs
-    #: in, which is the repository root.
-    path: str = Field(min_length=1)
+    #: Mesh file the planning sidecar reads. A relative path is read against the config folder, as every
+    #: path in a tree is (:mod:`src.config.paths`), and reaches the sidecar absolute.
+    path: ConfigPath = Field(min_length=1)
 
     #: Where the mesh origin sits in the base frame, millimetres.
     center_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -555,6 +583,7 @@ class RobotSafetyConfig(StrictModel):
     * :attr:`joint_limits`: per-axis joint hard limits and margin.
     * :attr:`ik_quality`: IK-solution quality checks.
     * :attr:`motion_continuity`: step size between consecutive commanded targets.
+    * :attr:`planned_motion`: the straight line's clearance and the detour a cuRobo path may take.
     * :attr:`payload`: mass, CoG and inertia envelope.
     * :attr:`self_collision`: link-link and link-fixture collision.
     * :attr:`dwell`: post-Stop dwell and steady-state gating.
@@ -574,6 +603,7 @@ class RobotSafetyConfig(StrictModel):
     motion_continuity: MotionContinuitySafetyConfig = Field(
         default_factory=MotionContinuitySafetyConfig
     )
+    planned_motion: PlannedMotionSafetyConfig = Field(default_factory=PlannedMotionSafetyConfig)
     dwell: DwellSafetyConfig = Field(default_factory=DwellSafetyConfig)
     planning_world: PlanningWorldConfig = Field(default_factory=PlanningWorldConfig)
 

@@ -17,7 +17,6 @@ from src.config.schema.robot import (
     PlanningWorldConfig,
     SupportPlaneConfig,
 )
-from src.geometry import Frame, Pose
 from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES, CuroboUrPlanner
 from src.robot.safety.planning import CuroboUnavailableError
 from src.robot.safety.planning.world import (
@@ -197,11 +196,15 @@ class _FakeClient:
         self.worlds.append(list(cuboids))
         return len(cuboids) if self._confirm is None else self._confirm
 
-    def plan(self, start, pos_m, quat_wxyz):
+    def plan_joint(self, start, goal):
         return self._traj
 
     def close(self) -> None:
         pass
+
+
+#: A joint goal a move asks the planner for: what starts the client and registers the world before the plan.
+_GOAL = [0.1] * 6
 
 
 class _FakeConn:
@@ -220,15 +223,6 @@ class _FakeConn:
         return True
 
 
-def _pose() -> Pose:
-    return Pose(
-        position_mm=np.array([400.0, 0.0, 300.0], dtype=np.float64),
-        quaternion_xyzw=np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64),
-        frame=Frame.BASE,
-        label="tcp",
-    )
-
-
 def _cuboids(n: int = 2) -> list[dict]:
     cfg = PlanningWorldConfig(enabled=True, support_plane=_bench())
     return build_planner_cuboids(cfg, [_wall(f"w{i}", 100.0 * i) for i in range(n - 1)])
@@ -239,8 +233,8 @@ def test_the_world_is_registered_once_not_per_move() -> None:
     planner = CuroboUrPlanner(
         _FakeConn(), client_factory=lambda: client, world_cuboids=_cuboids()
     )
-    planner.plan(_pose())
-    planner.plan(_pose())
+    planner.plan_joint(_GOAL)
+    planner.plan_joint(_GOAL)
     assert len(client.worlds) == 1, "re-sending the world every move pays the cost for nothing"
     assert [c["name"] for c in client.worlds[0]] == ["support_plane", "w0"]
 
@@ -248,7 +242,7 @@ def test_the_world_is_registered_once_not_per_move() -> None:
 def test_no_declared_world_sends_nothing() -> None:
     """Byte-identical: the planner keeps the world it booted with."""
     client = _FakeClient([[0.0] * 6])
-    CuroboUrPlanner(_FakeConn(), client_factory=lambda: client).plan(_pose())
+    CuroboUrPlanner(_FakeConn(), client_factory=lambda: client).plan_joint(_GOAL)
     assert client.worlds == []
 
 
@@ -258,7 +252,7 @@ def test_a_partial_registration_refuses_to_plan() -> None:
         _FakeConn(), client_factory=lambda: client, world_cuboids=_cuboids(3)
     )
     with pytest.raises(CuroboUnavailableError, match="confirmed 1 of 3"):
-        planner.plan(_pose())
+        planner.plan_joint(_GOAL)
 
 
 def test_a_partial_registration_refuses_the_SECOND_move_too() -> None:
@@ -274,7 +268,7 @@ def test_a_partial_registration_refuses_the_SECOND_move_too() -> None:
     )
     for attempt in (1, 2):
         with pytest.raises(CuroboUnavailableError, match="confirmed 1 of 3"):
-            planner.plan(_pose())
+            planner.plan_joint(_GOAL)
         assert len(client.worlds) == attempt, "each refused move must try to register again"
 
 
@@ -286,7 +280,7 @@ def test_a_partial_registration_can_be_accepted_deliberately() -> None:
         world_cuboids=_cuboids(3),
         require_registration=False,
     )
-    assert planner.plan(_pose()) is not None
+    assert planner.plan_joint(_GOAL) is not None
 
 
 def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
@@ -324,7 +318,7 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
     arm = URRobotArm(config)
     arm._conn = _FakeConn()  # type: ignore[assignment]
     arm._curobo_client_factory = lambda: client  # type: ignore[assignment]
-    arm._curobo_ur_planner().plan(_pose())
+    arm._curobo_ur_planner().plan_joint(_GOAL)
 
     assert [c["name"] for c in client.worlds[0]] == ["support_plane", "bin_wall_left"]
 
@@ -334,7 +328,7 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
     arm_off = URRobotArm(off)
     arm_off._conn = _FakeConn()  # type: ignore[assignment]
     arm_off._curobo_client_factory = lambda: quiet  # type: ignore[assignment]
-    arm_off._curobo_ur_planner().plan(_pose())
+    arm_off._curobo_ur_planner().plan_joint(_GOAL)
     assert quiet.worlds == []
 
 
@@ -367,7 +361,7 @@ def test_an_injected_factory_still_gets_the_reservation() -> None:
     reservation = PlannerReservation(cuboid_slots=24, mesh_slots=1, voxel_grid="", sphere_slots=0)
     client = _ReservingClient([[0.0] * 6, [0.1] * 6])
 
-    CuroboUrPlanner(_FakeConn(), client_factory=lambda: client, reservation=reservation).plan(_pose())
+    CuroboUrPlanner(_FakeConn(), client_factory=lambda: client, reservation=reservation).plan_joint(_GOAL)
 
     assert client.events[:2] == ["reserve", "start"], client.events
     assert client.reservation == reservation
@@ -399,7 +393,7 @@ def test_a_declared_mesh_is_registered_without_a_live_world() -> None:
     arm._conn = _FakeConn()  # type: ignore[assignment]
     arm._curobo_client_factory = lambda: client  # type: ignore[assignment]
 
-    arm._curobo_ur_planner().plan(_pose())
+    arm._curobo_ur_planner().plan_joint(_GOAL)
 
     assert [m["name"] for m in client.meshes[0]] == ["tote"], "the declared mesh never reached the planner"
     assert [c["name"] for c in client.worlds[0]] == ["support_plane"]

@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.robot.drivers.sim.robot_models import ur_model_spec
@@ -62,12 +63,40 @@ def _finding(label: str, pos, model: str, max_reach_mm: float, shoulder_mm: floa
     return ReachFinding(label, (x, y, z), r, max_reach_mm, r <= max_reach_mm)
 
 
-def audit_reach(robot: "RobotConfig", *, margin_mm: float = 0.0) -> list[ReachFinding]:
+def _furthest_station(model: str, shoulder_mm: float,
+                      path: "str | Path | None") -> tuple[float, float, float] | None:
+    """The TCP position of the declared eye-in-hand station furthest from the shoulder, or ``None`` for none.
+
+    A joint station has no position before forward kinematics and is left out; a file that cannot be read is logged
+    and has no row.
+    """
+    from src.robot.execution.pose_provider import load_stations
+    from src.willy_sim.calibration.paths import STATIONS_DIR
+
+    source = Path(path) if path is not None else STATIONS_DIR / f"eih_{model}.json"
+    if not source.is_file():
+        return None
+    try:
+        stations = load_stations(source)
+    except (OSError, ValueError) as exc:
+        _LOGGER.warning("reach audit: the stations in %s were not read: %s", source, exc)
+        return None
+    points = [tuple(float(v) for v in station.position_mm) for station in stations
+              if hasattr(station, "position_mm")]
+    if not points:
+        return None
+    x, y, z = max(points, key=lambda p: math.sqrt(p[0] ** 2 + p[1] ** 2 + (p[2] - shoulder_mm) ** 2))
+    return (x, y, z)
+
+
+def audit_reach(robot: "RobotConfig", *, margin_mm: float = 0.0,
+                eih_stations: "str | Path | None" = None) -> list[ReachFinding]:
     """Measure every reach-critical configured point against ``sim.robot_model``'s working sphere.
 
     ``margin_mm`` shrinks the allowed sphere (a safety/dexterity margin: the arm is near-singular and has
     almost no orientation freedom at the very edge of its reach, so a "just barely inside" target is not
-    usefully reachable for a top-down grasp).
+    usefully reachable for a top-down grasp). ``eih_stations`` is the eye-in-hand stations file to measure,
+    the one declared for the model when unset; a model with none declared has no stations row.
     """
     model = robot.sim.robot_model
     spec = ur_model_spec(model)
@@ -80,24 +109,13 @@ def audit_reach(robot: "RobotConfig", *, margin_mm: float = 0.0) -> list[ReachFi
         _finding("scene_setup.marker", scene.marker.position_mm, model, limit, shoulder),
         _finding("safe_pose", (robot.safe_pose.x, robot.safe_pose.y, robot.safe_pose.z), model, limit, shoulder),
     ]
-    # The eye-in-hand calibration does not drive the arm to the marker. It drives it around a
-    # standoff sphere of camera viewpoints centred on the marker, and it is that sphere, not the
-    # marker, that has to be reachable: the viewpoints sit up to ``max(radii_mm)`` further out. The
-    # worst of them is the one pushed radially away from the base at the shallowest elevation, so
-    # that is the one checked. Conservative by design: it bounds the camera standoff while the tool
-    # rides closer in, so a "just out" verdict means expect rejected poses, not certainly zero.
-    vp = scene.eih_viewpoints
-    if vp.radii_mm and vp.elevations_deg:
-        mx, my, mz = (float(v) for v in scene.marker.position_mm)
-        horiz = math.hypot(mx, my)
-        ux, uy = (mx / horiz, my / horiz) if horiz > 1e-9 else (1.0, 0.0)   # outward, away from the base
-        r_max, el_min = max(vp.radii_mm), math.radians(min(vp.elevations_deg))
-        reach_out = r_max * math.cos(el_min)
-        out.append(_finding(
-            "scene_setup.eih_viewpoints (worst)",
-            (mx + ux * reach_out, my + uy * reach_out, mz + r_max * math.sin(el_min)),
-            model, limit, shoulder,
-        ))
+    # The eye-in-hand calibration does not drive the arm to the marker. It drives it to the declared stations
+    # round it, which stand up to a radius further out, so it is the stations that have to be reachable. The
+    # one furthest from the shoulder is checked: a stations file declared for another arm, or for a scene whose
+    # marker moved, shows here before an Isaac boot.
+    worst = _furthest_station(model, shoulder, eih_stations)
+    if worst is not None:
+        out.append(_finding("eih stations (worst)", worst, model, limit, shoulder))
 
     # The workspace box is a hard gate: the WorkspaceGuard rejects any target outside it, so its far
     # corners describe what the operator believes is usable. Only the worst corner is checked.

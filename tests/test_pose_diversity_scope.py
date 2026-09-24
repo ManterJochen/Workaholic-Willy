@@ -13,7 +13,7 @@ gripper, planner or calibration fault, which is the expensive kind of bug: it lo
 a sampling rule that leaked out of the calibration routine.
 
 The rule itself is sound where it belongs: `execution/pose_provider.py` builds its OWN local guard to
-keep auto-generated calibration poses spread out, and that is untouched.
+keep a calibration sweep's stations spread out, and that is untouched.
 """
 
 from __future__ import annotations
@@ -69,14 +69,26 @@ class DiversityIsNotOnTheMotionPathTests(unittest.TestCase):
                 self.assertRegex(inspect.getsource(getattr(cls, commanding)), r"guard\.is_inside_workspace\(")
                 self.assertNotRegex(inspect.getsource(cls), r"guard\.validate\(")
 
-    def test_calibration_pose_generation_keeps_its_own_diversity_guard(self) -> None:
-        """The rule is not deleted -- it is back where it belongs. pose_provider builds a LOCAL guard so
-        auto-generated calibration poses stay spread out."""
+    def test_the_calibration_station_screen_keeps_its_own_diversity_guard(self) -> None:
+        """The rule is not deleted -- it is back where it belongs. pose_provider builds a LOCAL guard per
+        sweep so the stations it commands stay spread out, and nothing generates a station any more (the
+        owner, 2026-09-24): the screen judges the stations somebody wrote down."""
+        from src.geometry import Pose
         from src.robot.execution import pose_provider
 
-        src = inspect.getsource(pose_provider)
-        self.assertIn("local_guard.validate(", src)
-        self.assertIn("local_guard.accept(", src)
+        box = RobotConfig().workspace_limits
+        x, y, z = (float(box.x_min + box.x_max) / 2, float(box.y_min + box.y_max) / 2, float(box.z_min + box.z_max) / 2)
+        station, near = Pose.tool_down(x, y, z, label="kept"), Pose.tool_down(x + 10.0, y, z, label="near")
+        shared = WorkspaceGuard(box, min_distance_mm=40.0, min_angle_deg=10.0)
+        provider = pose_provider.PoseProvider(shared)
+        screen = provider.screen()
+        self.assertIsNone(screen.refusal(station))
+        screen.keep(station)
+        refused = screen.refusal(near)
+        assert refused is not None
+        self.assertEqual(refused[0], "too_similar")
+        self.assertIsNone(provider.screen().refusal(near), "a second sweep starts with an empty history")
+        self.assertEqual(shared.accepted_poses, [], "the guard handed in is never the one that remembers")
 
 
 if __name__ == "__main__":

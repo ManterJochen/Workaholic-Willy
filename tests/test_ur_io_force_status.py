@@ -8,7 +8,7 @@ capability surface maps onto the right ``ur_rtde`` calls. No native ``ur_rtde`` 
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call, patch
 
 from src.config.schema.robot import RobotConfig
 from src.geometry import Frame
@@ -20,6 +20,7 @@ from src.robot.core import (
     SafetyMode,
     SupportsDigitalIO,
     SupportsForceTorque,
+    SupportsFreedrive,
     SupportsRobotStatus,
     Wrench,
 )
@@ -32,13 +33,14 @@ from src.robot.drivers.ur.connection import URConnection
 # against the REAL ur_rtde (create_autospec on the installed SDK) stays a bench task: the SDK is not a
 # test dependency and its Windows build is unreliable. Keep these lists in sync with the driver.
 _RECV_API = [
-    "disconnect", "getActualQ", "getActualTCPForce", "getActualTCPPose", "getDigitalInState",
-    "getDigitalOutState", "getRobotMode", "getSafetyMode", "getSafetyStatusBits",
+    "disconnect", "getActualQ", "getActualQd", "getActualTCPForce", "getActualTCPPose", "getDigitalInState",
+    "getDigitalOutState", "getPayload", "getPayloadCog", "getRobotMode", "getSafetyMode", "getSafetyStatusBits",
     "isEmergencyStopped", "isProtectiveStopped",
 ]
 _CTRL_API = [
-    "disconnect", "getForwardKinematics", "getInverseKinematics", "getJointTorques", "isSteady",
-    "moveJ", "moveL", "setPayload", "stopJ", "stopL", "stopScript",
+    "disconnect", "endTeachMode", "getForwardKinematics", "getInverseKinematics", "getJointTorques",
+    "isProgramRunning", "isSteady", "kickWatchdog", "moveJ", "moveL", "setPayload",
+    "setWatchdog", "stopJ", "stopL", "stopScript", "teachMode",
 ]
 _IO_API = [
     "disconnect", "setAnalogOutputCurrent", "setAnalogOutputVoltage", "setConfigurableDigitalOut",
@@ -149,6 +151,71 @@ class URConnectionCapabilityTests(unittest.TestCase):
         self.assertFalse(conn.unlock_protective_stop())
         self.assertEqual(conn.dashboard_safety_status(), "")
 
+    def test_hand_guiding_primitives_map_onto_teach_mode_and_the_watchdog(self) -> None:
+        conn, _io, recv, ctrl, _dash = self._conn()
+        ctrl.teachMode.return_value = True
+        ctrl.endTeachMode.return_value = True
+        ctrl.setWatchdog.return_value = True
+        ctrl.kickWatchdog.return_value = False
+        ctrl.isProgramRunning.return_value = True
+        recv.getActualQd.return_value = [0.0, 0.1, -0.2, 0.0, 0.0, 0.3]
+        self.assertTrue(conn.set_watchdog(5.0))
+        ctrl.setWatchdog.assert_called_once_with(5.0)
+        self.assertTrue(conn.teach_mode())
+        self.assertFalse(conn.kick_watchdog())
+        self.assertTrue(conn.end_teach_mode())
+        self.assertTrue(conn.is_program_running())
+        self.assertEqual(conn.get_joint_speeds(), [0.0, 0.1, -0.2, 0.0, 0.0, 0.3])
+        # freedriveMode is not in _CTRL_API on purpose: its script lines are $5.10-gated, a no-op on a CB3.
+        # reuploadScript neither: on the CB3 URSim it uploaded programs that never ran (restart_control_script).
+
+    def test_a_fresh_control_program_comes_from_a_new_control_interface(self) -> None:
+        conn, _io, recv, old, _dash = self._conn()
+        new = MagicMock(spec=_CTRL_API)
+        with patch.object(URConnection, "_open_control", return_value=new) as opened:
+            conn.restart_control_script()
+        self.assertEqual(old.method_calls, [call.stopScript(), call.disconnect()])
+        opened.assert_called_once_with()
+        self.assertIs(conn._ctrl, new)
+        self.assertIs(conn._recv, recv, "the receive side is not touched")
+        self.assertTrue(conn.is_connected)
+
+    def test_a_new_control_interface_that_does_not_come_up_closes_every_interface(self) -> None:
+        conn, io, recv, old, dash = self._conn()
+        old.stopScript.side_effect = RuntimeError("RTDE control script is not running!")
+        refused = RuntimeError("Failed to start RTDE")
+        with patch.object(URConnection, "_open_control", side_effect=refused), \
+                self.assertRaisesRegex(RuntimeError, "Failed to start RTDE"):
+            conn.restart_control_script()
+        old.disconnect.assert_called_once_with()
+        for interface in (recv, io, dash):
+            interface.disconnect.assert_called_once_with()
+        self.assertFalse(conn.is_connected, "a reconnect starts clean")
+
+    def test_ctrl_c_in_the_middle_of_a_restart_leaves_nothing_open(self) -> None:
+        conn, _io, recv, old, _dash = self._conn()
+        old.disconnect.side_effect = [KeyboardInterrupt, None]  # the Ctrl-C lands once
+        with patch.object(URConnection, "_open_control") as opened, self.assertRaises(KeyboardInterrupt):
+            conn.restart_control_script()
+        opened.assert_not_called()
+        self.assertEqual(old.stopScript.call_count, 2, "stopped, and stopped again by the teardown")
+        recv.disconnect.assert_called_once_with()
+        self.assertFalse(conn.is_connected)
+
+    def test_the_controller_payload_is_read_in_kilograms_and_millimetres(self) -> None:
+        conn, _io, recv, *_ = self._conn()
+        recv.getPayload.return_value = 1.9
+        recv.getPayloadCog.return_value = [0.001, -0.002, 0.06]
+        mass, cog = conn.get_payload()  # type: ignore[misc]
+        self.assertEqual(mass, 1.9)
+        for got, want in zip(cog, (1.0, -2.0, 60.0)):
+            self.assertAlmostEqual(got, want)
+
+    def test_a_payload_this_controller_does_not_publish_reads_none(self) -> None:
+        conn, _io, recv, *_ = self._conn()
+        recv.getPayload.side_effect = RuntimeError("unable to get state data for specified key: payload")
+        self.assertIsNone(conn.get_payload())
+
 
 # --------------------------------------------------------------------------- arm capabilities
 def _ur_arm() -> tuple[URRobotArm, MagicMock]:
@@ -167,6 +234,7 @@ class URArmCapabilityTests(unittest.TestCase):
         self.assertIsInstance(arm, SupportsDigitalIO)
         self.assertIsInstance(arm, SupportsForceTorque)
         self.assertIsInstance(arm, SupportsRobotStatus)
+        self.assertIsInstance(arm, SupportsFreedrive)
         # A plain object advertises none of them.
         self.assertNotIsInstance(object(), SupportsForceTorque)
 

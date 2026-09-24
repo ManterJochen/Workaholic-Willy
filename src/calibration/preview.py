@@ -22,6 +22,15 @@ It is display only. Nothing here commands motion, gates a sample or changes a po
   the window, not the console, and the preview says so once.
 * An error in the preview's thread switches the preview off with one printed line, and the sweep goes on.
 
+While a person guides the arm by hand (``src/robot/execution/hand_guiding.py``) the window is also the guide's view:
+:meth:`SweepPreview.guide` puts the guide's lines over the live frame (the way to the next target, the nearest counted
+pose, the count; red, with a red border, where the arm stands outside the cable window or the workspace box) with a
+closeness bar under it, and the live line says whether the board is seen, how far away, how tilted and how well it
+fits. Keys typed into the window while a guide shows are handed back through :meth:`SweepPreview.poll_key`: Enter or
+Space captures, ``s`` skips, ``q`` finishes; ESC and closing the window still close it, which finishes a run guided
+by hand (the session then holds the arm). The routine polls both from its own thread; the window's thread never calls
+the arm, and neither call waits.
+
 :func:`preview_unavailable` says why no window can be shown in this process, and :func:`annotate` is the drawing,
 pure and headless, so it is tested without a window.
 
@@ -75,6 +84,9 @@ _WAIT_MS = 30
 _RETRY_S = 1.0
 
 _FOOTER = "ESC closes this window only. The pendant stops the robot."
+#: The footer while a person guides the arm, where closing the window finishes the run.
+_GUIDE_FOOTER = ("Enter or Space captures, s skips, q finishes; ESC closes this window and finishes, the arm is held. "
+                 "The pendant stops the robot.")
 
 # Colours, BGR.
 _TONES = {
@@ -82,6 +94,9 @@ _TONES = {
     "rejected": (40, 40, 190),
     "judging": (30, 120, 170),
     "live": (120, 80, 30),
+    # A person guiding the arm: what to do next, and a boundary crossed, in a red nobody reads as a verdict.
+    "guide": (150, 90, 20),
+    "outside": (0, 0, 230),
 }
 _STRIP = (32, 32, 32)
 _TEXT = (240, 240, 240)
@@ -96,6 +111,10 @@ _PAD_PX = 8
 #: Wrapped rows one status line may take; the rest is cut with ``...``.
 _MAX_ROWS = 3
 _HISTORY_PX = 22
+_BAR_PX = 16
+#: Keys typed into the window while a guide shows, as ``poll_key`` hands them back: Enter (13 on Windows, 10 on a
+#: GTK HighGUI) and Space capture, ``s`` skips, ``q`` finishes.
+_GUIDE_KEYS = {13: "enter", 10: "enter", 32: "enter", ord("s"): "skip", ord("q"): "finish"}
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -159,6 +178,7 @@ def annotate(
     current: int = 0,
     scale: float = 1.0,
     axis_mm: float | None = None,
+    bar: float | None = None,
 ) -> np.ndarray:
     """``bgr`` with the target drawn on it, a status strip above and a row per pose below, as a new image.
 
@@ -169,15 +189,21 @@ def annotate(
     observation was made in, so its pixels land where they belong. ``lines`` are the status, the first on a band of
     ``tone`` (``counted``, ``rejected``, ``judging`` or ``live``), and a last line says that ESC closes the window only.
     ``history`` holds one entry per pose of the sweep (``True`` counted, ``False`` rejected, ``None`` not judged yet),
-    and pose ``current`` (1-based) is outlined. Text is ASCII: anything else is replaced.
+    and pose ``current`` (1-based) is outlined. ``bar``, from 0 to 1, adds a closeness bar under the frame: how near a
+    person guiding the arm is to the target. With ``tone`` ``outside`` the frame gets a red border. Text is ASCII:
+    anything else is replaced.
 
-    The result is as wide as ``bgr`` and taller by the strip and the row. An overlay that OpenCV refuses to draw is
+    The result is as wide as ``bgr`` and taller by the strip and the rows. An overlay that OpenCV refuses to draw is
     left out rather than raised.
     """
     image = _bgr_copy(bgr)
     if observation is not None:
         _draw_observation(image, observation, K, dist, float(scale), axis_mm)
+    if tone == "outside":
+        cv.rectangle(image, (0, 0), (image.shape[1] - 1, image.shape[0] - 1), _TONES["outside"], 8)
     parts = [_strip(image.shape[1], lines, tone), image]
+    if bar is not None:
+        parts.append(_bar_row(image.shape[1], float(bar)))
     if history:
         parts.append(_history_row(image.shape[1], history, current))
     return np.vstack(parts)
@@ -282,7 +308,7 @@ def _strip(width: int, lines: Sequence[str], tone: str) -> np.ndarray:
     rows: list[tuple[str, bool]] = []
     for number, line in enumerate(line for line in lines if line):
         rows += [(row, number == 0) for row in _wrap(line, usable)]
-    rows += [(row, False) for row in _wrap(_FOOTER, usable)]
+    rows += [(row, False) for row in _wrap(_GUIDE_FOOTER if tone in ("guide", "outside") else _FOOTER, usable)]
     height = _PAD_PX // 2 + _ROW_PX * len(rows) + _PAD_PX // 2
     strip = np.full((height, width, 3), _STRIP, dtype=np.uint8)
     banded = sum(1 for _, first in rows if first)
@@ -292,6 +318,18 @@ def _strip(width: int, lines: Sequence[str], tone: str) -> np.ndarray:
         baseline = _PAD_PX // 2 + _ROW_PX * (number + 1) - 6
         cv.putText(strip, row, (_PAD_PX, baseline), _FONT, _FONT_SCALE, _TEXT, 1, cv.LINE_AA)
     return strip
+
+
+def _bar_row(width: int, closeness: float) -> np.ndarray:
+    """How near the target a guided arm stands: a bar filled from the left, green once it is nearly there."""
+    row = np.full((_BAR_PX, width, 3), _STRIP, dtype=np.uint8)
+    share = min(1.0, max(0.0, closeness))
+    inner = max(1, width - 2 * _PAD_PX)
+    cv.rectangle(row, (_PAD_PX, 3), (_PAD_PX + inner, _BAR_PX - 4), _PENDING, 1)
+    if share > 0.0:
+        colour = _TONES["counted"] if share >= 0.9 else _TONES["guide"]
+        cv.rectangle(row, (_PAD_PX, 3), (_PAD_PX + int(round(inner * share)), _BAR_PX - 4), colour, -1)
+    return row
 
 
 def _history_row(width: int, history: Sequence[bool | None], current: int) -> np.ndarray:
@@ -333,14 +371,32 @@ def _line(event_type: str, data: Mapping[str, Any]) -> str:
 
 
 def _seen(observation: Any) -> str:
-    """What a frame showed of the target, in one line: what the pose rests on, or why there is none."""
+    """What a frame showed of the target, in one line: what the pose rests on and how tilted it is, or why there is
+    none. The corners and the reprojection error are the quality of the view, the tilt how obliquely the camera sees
+    the target's face (0 is face-on)."""
     if observation is None:
         return ""
-    if getattr(observation, "T_cam_to_target", None) is not None:
+    pose = getattr(observation, "T_cam_to_target", None)
+    if pose is not None:
         summary = observation.summary() if callable(getattr(observation, "summary", None)) else "target posed"
+        tilt = _tilt_deg(pose)
+        if tilt is not None:
+            summary += f", tilted {tilt:.0f} deg"
         hint = str(getattr(observation, "hint", "") or "")
         return f"in view: {summary}" + (f"; !! {hint}" if hint else "")
     return str(getattr(observation, "why_not", "") or "the target was not posed")
+
+
+def _tilt_deg(T_cam_to_target: Any) -> float | None:
+    """The angle between the camera's line of sight and the target's normal, in degrees; ``None`` for no pose."""
+    try:
+        normal = np.asarray(T_cam_to_target, dtype=np.float64)[:3, 2]
+        length = float(np.linalg.norm(normal))
+        if not length > 0.0:
+            return None
+        return float(np.degrees(np.arccos(min(1.0, abs(float(normal[2])) / length))))
+    except (IndexError, ValueError, TypeError):
+        return None
 
 
 @dataclass
@@ -414,6 +470,20 @@ class PreviewState:
         last = f"last verdict: {self.last_verdict}" if self.last_verdict and self.last_verdict != doing else ""
         return [f"LIVE, not judged  {doing}", seen, last, self.count_line()]
 
+    def guided_lines(self, guide: Sequence[str], observation: Any, error: str = "") -> list[str]:
+        """The strip over a live frame while a person guides the arm: the guide's lines first, then what the camera
+        sees now (``board not seen`` and why, where it sees none), then the last verdict."""
+        if error:
+            seen = f"live view: {error}"
+        elif observation is None:
+            seen = "live view: no detection yet"
+        elif getattr(observation, "T_cam_to_target", None) is None:
+            seen = f"board not seen: {_seen(observation)}"
+        else:
+            seen = _seen(observation)
+        last = f"last verdict: {self.last_verdict}" if self.last_verdict else ""
+        return [*guide, seen, last]
+
 
 # ---------------------------------------------------------------------------------------------------------------------
 # The window
@@ -484,6 +554,10 @@ class SweepPreview:
         self._max_width = int(max_width)
         self._pin_s = float(pin_s)
         self._queue: queue.Queue[Any] = queue.Queue(maxsize=max(1, int(queue_size)))
+        #: What a person guiding the arm is shown (``guide``), the latest only: lines, tone and closeness bar.
+        self._guiding: tuple[tuple[str, ...], str, float | None] = ((), "guide", None)
+        #: Keys typed into the window while a guide showed, and ``closed`` once the operator closed it.
+        self._keys: queue.SimpleQueue[str] = queue.SimpleQueue()
         self._gui = gui
         self._say = say if say is not None else _say
         self._stop = threading.Event()
@@ -542,6 +616,26 @@ class SweepPreview:
         except Exception as exc:  # noqa: BLE001 (display only: the pose is the estimator's whatever happens here)
             logger.debug("preview: judged frame not queued: %s", exc)
 
+    def guide(self, lines: Sequence[str], tone: str, bar: float | None = None) -> None:
+        """What the window shows while a person guides the arm (``hand_guiding.GuideView``); returns at once.
+
+        ``lines`` go over the live frame on a band of ``tone`` (``guide``, or ``outside``: red, with a red border),
+        with a closeness bar from 0 to 1 under it when ``bar`` is given. Empty ``lines`` give the window back to the
+        sweep's own strip. The latest call replaces the one before; nothing is queued.
+        """
+        shown = (tuple(_ascii(line) for line in lines if line), str(tone), None if bar is None else float(bar))
+        with self._lock:
+            self._guiding = shown
+
+    def poll_key(self) -> str | None:
+        """The next key typed into the window while a guide showed: ``enter`` (Enter or Space), ``skip`` (``s``),
+        ``finish`` (``q``), or ``closed`` once, after the operator closed the window (ESC or its close button).
+        ``None`` when there is none; never waits."""
+        try:
+            return self._keys.get_nowait()
+        except queue.Empty:
+            return None
+
     def close(self, timeout_s: float = 2.0) -> None:
         """Stop the thread and close the window, waiting at most ``timeout_s``. Idempotent, and it never raises.
 
@@ -592,7 +686,10 @@ class SweepPreview:
             line = f"preview off after {reason}; the sweep goes on"
             logger.warning("Sweep preview switched off: %s", reason)
         else:
-            line = f"preview closed ({reason}). The sweep goes on; the pendant stops the robot"
+            # A person guiding the arm reads the close as "finish" (hand_guiding); a sweep that drives itself goes on.
+            self._keys.put("closed")
+            line = (f"preview closed ({reason}). The sweep goes on, and a run guided by hand finishes and holds the "
+                    "arm; the pendant stops the robot")
             logger.info("Sweep preview closed: %s", reason)
         try:
             self._say(line)
@@ -608,6 +705,9 @@ class SweepPreview:
         live_error = ""
         next_live = 0.0
         opened = shown = told_ctrl_c = False
+        guiding: tuple[tuple[str, ...], str, float | None] = ((), "guide", None)
+        # A judged frame waits for its pose's verdict, and until one arrives its index follows the events.
+        open_verdict = False
         try:
             gui.namedWindow(self.title, getattr(gui, "WINDOW_AUTOSIZE", 1))
             opened = dirty = True
@@ -618,9 +718,23 @@ class SweepPreview:
                         # The judged frame follows its pose's move event in the queue, so the pose is the current one.
                         pinned = _Frame(item.image, item.observation, item.K, item.dist, item.scale, state.index)
                         pinned_until = now + self._pin_s
+                        open_verdict = True
                     else:
+                        index = item[1].get("index")
+                        if (pinned is not None and open_verdict and isinstance(index, int)
+                                and not isinstance(index, bool) and index != pinned.index):
+                            # A pose guided by hand has no move event before its frame, so the frame took the
+                            # previous pose's index; the events that follow it name its own.
+                            pinned = _Frame(pinned.image, pinned.observation, pinned.K, pinned.dist, pinned.scale,
+                                            index)
                         state.apply(*item)
+                        if item[0] in (_ACCEPTED, _REJECTED):
+                            open_verdict = False
                     dirty = True
+                with self._lock:
+                    now_guiding = self._guiding
+                if now_guiding != guiding:
+                    guiding, dirty = now_guiding, True
                 if pinned is not None and now >= pinned_until:
                     pinned, dirty = None, True
                 if (pinned is None and self._live_period_s is not None and now >= next_live
@@ -629,10 +743,12 @@ class SweepPreview:
                     next_live = now + (self._live_period_s if not live_error else _RETRY_S)
                     dirty = True
                 if dirty:
-                    gui.imshow(self.title, self._compose(state, pinned, live, live_error))
+                    gui.imshow(self.title, self._compose(state, pinned, live, live_error, guiding))
                     self.frames_shown += 1
                     shown, dirty = True, False
                 key = int(gui.waitKey(_WAIT_MS))
+                if key != -1 and guiding[0] and key & 0xFF in _GUIDE_KEYS:
+                    self._keys.put(_GUIDE_KEYS[key & 0xFF])
                 if key != -1 and key & 0xFF == _ESC:
                     self._switch_off("ESC")
                     break
@@ -688,8 +804,21 @@ class SweepPreview:
                 logger.debug("preview: no camera matrix: %s", exc)
         return self._K, self._dist
 
-    def _compose(self, state: PreviewState, pinned: _Frame | None, live: _Frame | None, live_error: str) -> np.ndarray:
+    def _compose(self, state: PreviewState, pinned: _Frame | None, live: _Frame | None, live_error: str,
+                 guiding: tuple[tuple[str, ...], str, float | None] = ((), "guide", None)) -> np.ndarray:
         history = state.history()
+        lines, tone, bar = guiding
+        if lines and pinned is None:
+            # A person guides the arm: the guide's lines over the live frame, or over black until one comes.
+            if live is None or live_error:
+                width = self._max_width if self._max_width > 0 else 960
+                waiting = live_error or ("waiting for the first frame" if self._live_period_s is not None else "")
+                return annotate(np.zeros((width * 9 // 16, width, 3), dtype=np.uint8),
+                                lines=state.guided_lines(lines, None, waiting), tone=tone, history=history,
+                                current=state.index, bar=bar)
+            return annotate(live.image, live.observation, live.K, live.dist,
+                            lines=state.guided_lines(lines, live.observation), tone=tone, history=history,
+                            current=state.index, scale=live.scale, axis_mm=self._axis_mm, bar=bar)
         if pinned is not None:
             return annotate(pinned.image, pinned.observation, pinned.K, pinned.dist,
                             lines=state.judged_lines(pinned.index, pinned.observation),

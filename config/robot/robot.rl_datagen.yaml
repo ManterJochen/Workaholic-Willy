@@ -105,7 +105,8 @@ robot:
   # nothing to rank.
   #
   # The two artifacts named here are not in the tree; `train-candidate-policy` and
-  # `train-ranking-policy` under `python -m src.robot.grasping.rl` write exactly those paths.
+  # `train-ranking-policy` under `python -m src.robot.grasping.rl` write exactly those paths, in
+  # the repository, which is what ${WILLY_PROJECT_ROOT} names.
   # Until they exist `maybe_build_shadow_router` warns once and returns None, so a pick logs no
   # candidate rows. They are the behaviour policy: they abstain rather than reorder, so the corpus
   # records what the deterministic stack chose.
@@ -121,5 +122,5 @@ robot:
   rl:
     mode: "rl_shadow"
     policy_id: "v2_candidate_baseline_v1"
-    artifact_path: "docs/baselines/rl_policies/v2_candidate_baseline_v1.json"
-    ranking_artifact_path: "docs/baselines/rl_policies/v3_ranking_baseline_v1.json"
+    artifact_path: "${WILLY_PROJECT_ROOT}/docs/baselines/rl_policies/v2_candidate_baseline_v1.json"
+    ranking_artifact_path: "${WILLY_PROJECT_ROOT}/docs/baselines/rl_policies/v3_ranking_baseline_v1.json"

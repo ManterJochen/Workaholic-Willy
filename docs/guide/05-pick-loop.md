@@ -16,7 +16,7 @@ print(run)                                                 # what happened, and 
 That runs on a laptop with no GPU, camera or robot, and it is
 [`examples/simulation/01_rehearse_a_pick.py`](../../examples/simulation/01_rehearse_a_pick.py). At a real
 cell the same campaign starts from `Cell.from_tree(load_tree())`
-([`examples/real_robot/13_pick_campaign.py`](../../examples/real_robot/13_pick_campaign.py)).
+([`examples/real_robot/11_pick_with_the_camera.py`](../../examples/real_robot/11_pick_with_the_camera.py)).
 
 This page traces the default pick stage by stage, says what each stage may refuse and where the telemetry
 record comes from, and lists which advanced layers exist, which are off, and what turns each one on. The
@@ -139,6 +139,13 @@ a close onto a wider part never reaches the gripper as an opening. `from_compone
 builds its own policy, which it does only with a `frame_resolver`. A policy you pass in keeps what you set,
 and `None` there leaves the jaws where the last close left them.
 
+A hand that toggles on one output with no sensor (`jaw_io` with `actuation: single_toggle`) is the
+exception: it is never pulsed before the arm moves, whatever `pre_open_width_mm` says, because a pulse
+there flips jaws nothing reads. It was asked at connect whether its jaws stand open, and the program
+counts its own pulses from that answer. A pick that starts with the jaws believed closed asks the same
+question again instead of pulsing, and with nobody at a terminal to answer, or an abort, it ends
+`GRIPPER_FAULT` before any motion ([06](06-grippers.md)).
+
 ## 3. The smallest working pick
 
 No GPU, no camera, no robot: the config-driven path on a dummy arm and dummy hand, with a synthetic one-box
@@ -259,6 +266,8 @@ with cell.connected() as live:
     for _ in range(20):
         report = live.service.pick()                  # re-perceives from scratch every time
         print(report)
+        if report.gripper_fault:
+            break                                     # the hand needs a person, not another try
         if report.outcome in EMPTY or report.outcome is Outcome.CANCELLED:
             break
         stuck = stuck + 1 if report.outcome in STUCK else 0
@@ -277,6 +286,13 @@ between attempts is a decision, not a missed grasp, and counting it as `EXECUTIO
 pick rate. A stopped or powered-down controller also reads `CANCELLED` at this level; the lower-level
 `report.pick_report.outcome` keeps `CONTROLLER_NOT_OPERATIONAL`, which belongs to the `PickOutcome`
 enumeration, not to this one.
+
+`PickOutcome.GRIPPER_FAULT` is the other state of the cell rather than of the grasp: a hand that needs a
+person. The gripper raised while it was commanded, or a hand that toggles with no sensor would not start
+the pick, because it believed its jaws closed and nobody at a terminal said otherwise, or a person
+aborted. At this level it reads `EXECUTION_FAILED`, and `report.gripper_fault` says why, so the loop above
+breaks on it rather than counting it as stuck. A `PickRun` campaign stops on it rather than perceiving
+again.
 
 ## 6. Grasp modes and presets
 
@@ -535,7 +551,14 @@ order:
 6. **Start in `easy`.** Its recovery allow-list is empty by construction, so it never produces recovery
    motion. `closed_loop` needs both a refiner and a verifier wired and refuses the pick otherwise, so it is
    not where a bring-up starts.
-7. **Re-measure after every change, and never carry a planner margin to a robot nobody measured it on.** A
+7. **Say where a wrist camera looks from.** A pick perceives from where the arm stands, and a wrist camera
+   sees what the arm points it at, so a campaign on a wrist camera first moves to a look before every pick:
+   `PickRun.from_cell(cell, ..., look=[JointPositions.deg(...), ...])`, joints in degrees read off the
+   pendant, tried in order until one finds something, or home when none is given. A fixed camera does not
+   move to look. `put_back=True` places each lifted part back where the tool closed on it, so one part
+   serves a whole campaign ([`examples/real_robot/11`](../../examples/real_robot/11_pick_with_the_camera.py),
+   [real_cell_first_pick.md](../runbooks/real_cell_first_pick.md), step 8).
+8. **Re-measure after every change, and never carry a planner margin to a robot nobody measured it on.** A
    thinner-linked arm reads as permanently self-colliding at a 10 mm margin and finds no plan at all. The UR
    family was measured at 4 mm, and a cuRobo cell starts its planner only with a committed evidence file
    for its margin ([04](04-robot-and-safety.md)).

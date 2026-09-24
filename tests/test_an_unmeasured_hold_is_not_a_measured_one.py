@@ -9,7 +9,7 @@ Four readers took the answers as measurements:
 * the grasp policy recorded ``object_detected=True`` on every close, so a campaign's successes read as parts held;
 * ``ObjectDetectingGripperVerifier`` passed every close as ``gripper_object_detected``;
 * ``WidthDeltaGripperVerifier`` read the 5.0 mm band against a 7.0 mm threshold and failed every close, held part or
-  not, as ``jaws_collapsed_to_minimum`` (example 18 turns verification on);
+  not, as ``jaws_collapsed_to_minimum`` (on a cell that turns verification on);
 * the policy attached the carried part 5.0 mm wide for a 40 mm grasp, so the planner lifted it about 34 mm too narrow.
 
 The robot's own hand verbs already read the hold evidence and the measured flag; these readers now do too. Each
@@ -33,7 +33,9 @@ from src.robot.grasping.closed_loop.verification import (
     WidthDeltaGripperVerifier,
 )
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy, PolicyOutcome
+from src.robot.grippers.jaw_io import JawIOGripper
 from tests.test_a_stopped_controller_moves_no_jaws import (
+    _IO,
     _Arm,
     _grasp,
     _pulses,
@@ -45,9 +47,19 @@ from tests.test_a_stopped_controller_moves_no_jaws import (
 _PART_PIN = 1
 
 
-def _closed_toggle(**wiring: Any) -> Any:
-    jaws = _toggle([], **wiring)
+def _closed_toggle() -> Any:
+    jaws = _toggle([])
     jaws.set_closed(True)
+    return jaws
+
+
+def _part_sensed(*, held: bool, closed: bool = False) -> Any:
+    """A solenoid jaw with a part-present input, which the owner's toggle cannot have: a toggle reads no sensor."""
+    jaws = JawIOGripper(_IO([], {_PART_PIN: held}), close_output_pin=0, part_present_input_pin=_PART_PIN,
+                        close_settle_s=0.0, min_width_mm=5.0, max_width_mm=49.99, sleep=lambda _s: None)
+    jaws.connect()
+    if closed:
+        jaws.set_closed(True)
     return jaws
 
 
@@ -60,7 +72,7 @@ def _context(gripper: Any, *, policy: "GraspVerificationPolicy | None" = None) -
 
 
 def _builder_verifier(**verification: Any) -> Any:
-    """The composite ``from_robot_config`` wires when ``robot.grasping.verification.enabled`` is on (example 18)."""
+    """The composite ``from_robot_config`` wires when ``robot.grasping.verification.enabled`` is on."""
     from src.config.schema.robot.grasping_schema import RobotGraspingConfig
     from src.robot.execution.autonomous_grasp.builders import build_closed_loop_actors
 
@@ -121,8 +133,8 @@ class ThePolicyRecordsWhatWasMeasuredTests(unittest.TestCase):
         self.assertIsNone(report.object_detected)
 
     def test_a_part_pin_is_a_measurement_both_ways(self) -> None:
-        held = _toggle([], part_pin=_PART_PIN, inputs={_PART_PIN: True})
-        empty = _toggle([], part_pin=_PART_PIN, inputs={_PART_PIN: False})
+        held = _part_sensed(held=True)
+        empty = _part_sensed(held=False)
 
         held_report = GraspExecutionPolicy(arm=_Arm([]), gripper=held).execute(_grasp())
         empty_report = GraspExecutionPolicy(arm=_Arm([]), gripper=empty).execute(_grasp())
@@ -221,8 +233,8 @@ class TheVerifiersJudgeOnlyWhatWasMeasuredTests(unittest.TestCase):
 
     def test_a_wired_part_pin_is_judged(self) -> None:
         policy = GraspVerificationPolicy(enabled=True, require_object_detected=True)
-        held = _closed_toggle(part_pin=_PART_PIN, inputs={_PART_PIN: True})
-        empty = _closed_toggle(part_pin=_PART_PIN, inputs={_PART_PIN: False})
+        held = _part_sensed(held=True, closed=True)
+        empty = _part_sensed(held=False, closed=True)
 
         self.assertIs(VerificationOutcome.PASSED,
                       ObjectDetectingGripperVerifier().verify(_context(held, policy=policy)).outcome)

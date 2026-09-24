@@ -5,7 +5,7 @@
 
     loaded = ConfigTree.from_directory().load()
     calibration = HandEyeCalibration.from_tree(loaded, rig_id="overhead", mode="eye_to_hand",
-                                               options=SweepOptions(marker_length_mm=39.7))
+                                               options=SweepOptions(freedrive=True, marker_length_mm=39.7))
     print(calibration.check().render())        # the config alone: builds nothing, opens nothing
     print(calibration.run(dry_run=True).render())   # builds the arm, opens the camera, moves nothing
     report = calibration.run()                 # this moves the robot
@@ -21,29 +21,28 @@ bands, and the rig block to paste. This class is that flow, so a Python caller b
 What happens, in order:
 
 1. ``check()`` reads the config only: the rig (configured, switched on, RGB-D), for an eye in hand sweep the
-   camera's body, a file of the caller's own stations when ``fixed_poses`` names one, and on a cuRobo UR cell that
-   declares its planner margin, the committed planner evidence the sweep's planner starts on. A refusal is a report,
-   never an exception.
+   camera's body, where the stations come from (a file or a list of the caller's own, ``fixed_poses``, or a person
+   guiding the arm, ``freedrive``; there is no generated sweep), and on a cuRobo UR cell that declares its planner
+   margin, the committed planner evidence the sweep's planner starts on. A refusal is a report, never an exception.
 2. ``run()`` checks again, then builds: the arm alone and one camera, opened. What the arm refuses (its safety
    attestation) and what world it plans against are on the build report, and ``on_built`` receives it before any
-   motion, so a caller can show it while there is still time to stop. ``dry_run=True`` stops here and gives the
-   camera back.
+   motion, so a caller can show it while there is still time to stop. A run guided by hand (``freedrive``, or
+   ``adjust`` at fixed stations) is refused here on an arm that offers no hand guiding (``SupportsFreedrive``).
+   ``dry_run=True`` stops here and gives the camera back.
 3. The sweep connects through ``Robot.connected()``: the cell lock first, then the arm, and no gripper. Every move
    declines the camera world for itself (``CalibrationRoutine``, one reason per mounting), because the sweep is what
    produces the transform a camera world needs. On the way out the arm comes down, the lock is given back, and then
    the camera. With ``SweepOptions(preview=...)`` a window beside the sweep shows the camera and each judged frame
    (``src/calibration/preview.py``); it opens once the arm is connected, closes before the camera is given back, and
-   is display only.
-   With ``SweepOptions(aim=MarkerAim(...))`` an eye in hand sweep aims the CAMERA at one marker lying flat at a
-   known place instead: it looks once from where the arm stands, estimates where the camera sits on the tool from that
-   view, and visits a cone of views round the marker, each rolling the camera about its line of sight, re-aiming the
-   views still to come from every view it sees the marker in (``camera_aim``, ``CalibrationRoutine.run_aimed``). A
-   heading that admits fewer views than the solve needs gives way to the one that admits the most, and the report's
-   ``heading`` line says so. A first look that sees no marker ends the run as ``SWEEP_FAILED`` with nothing moved
-   (``NotAimed``), and the report says what to do.
+   draws only. While a person guides the arm it also shows the way to the next target and the boundaries, and
+   takes Enter, ``s`` and ``q`` as the console does (``hand_guiding``).
 4. The solve's carrier is written into ``out_dir``: ``eth_<rig>.json`` (CAMERA to BASE) or ``eih_<rig>.json``
    (CAMERA to TOOL, with the flange to TCP record when the tool frame is declared ``willy`` or ``polyscope``). The
-   dataset is written during the sweep, before the solve, so a solve that fails still leaves the samples.
+   dataset is written during the sweep, before the solve, so a solve that fails still leaves the samples, and each
+   counted sample's frame lands in ``<mode>_<rig>_images``. A run guided by hand also writes
+   ``<mode>_<rig>_stations.json``, one joint station per counted pose, which ``fixed_poses`` replays without hands;
+   when that is the very file ``fixed_poses`` names, it is never written over, and the stations go to
+   ``<mode>_<rig>_stations.adjusted.json`` beside it.
 
 Writing is part of ``run()`` and not a separate ``save()``: an artifact a caller forgot to save is the silence the
 CLI's exit code 2 exists to prevent, and the report says what was written and where.
@@ -76,7 +75,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.core.camera_world import CameraWorldStamp
     from src.robot.events import RobotCalibrationEventListener
     from src.robot.execution.calibration import PoseVerdict
-    from src.robot.execution.camera_aim import HeadingChoice, MarkerAim, MountEstimate
+    from src.robot.execution.hand_guiding import OperatorConsole
     from src.robot.execution.lifecycle import ConnectStage, TeardownReport
     from src.robot.execution.pose_provider import JointStation
     from src.robot.execution.robot import Robot
@@ -100,13 +99,8 @@ logger = logging.getLogger(__name__)
 #: Where the artifact and the dataset land unless the options say otherwise. The sim runners write the same layout,
 #: so a cell brought up in sim and then on hardware keeps one place to look.
 DEFAULT_OUT_DIR = "calibration/real"
-#: How many generated TCP poses a sweep visits unless the options say otherwise, as in sim.
-DEFAULT_POSES = 22
 #: The ArUco id a sweep poses unless the options or the mode's ``camera.hand_eye`` block say otherwise.
 DEFAULT_MARKER_ID = 0
-#: The narrowest orientation spread a fiducial sweep runs with, 30 degrees as in the sim runner. A planar ArUco seen
-#: near frontally has an IPPE flip ambiguity that ruins the AX=XB rotation.
-_MIN_SPREAD_DEG = 30.0
 
 _BANNERS = {
     "config": "=== 1. CONFIG ===",
@@ -114,6 +108,8 @@ _BANNERS = {
     "sweep": "=== 3. SWEEP === the robot moves now, keep hands clear",
     "result": "=== 4. RESULT ===",
 }
+#: The sweep banner of a run nothing moves in by itself.
+_BY_HAND_BANNER = "=== 3. SWEEP === guided by hand: the arm moves only when you move it"
 
 
 class CalibrationStage(StrEnum):
@@ -142,8 +138,8 @@ class CalibrationOutcome(StrEnum):
     CELL_BUSY = "cell_busy"
     #: The connect refused and rolled itself back.
     CONNECT_FAILED = "connect_failed"
-    #: The sweep raised. Reported once the arm is down. An aimed sweep whose first look could not be aimed from ends
-    #: here too, as ``NotAimed``, with nothing moved.
+    #: The sweep raised. Reported once the arm is down. A run guided by hand whose payload was not confirmed ends here
+    #: too, as ``HandGuidingRefused``, with nothing freed.
     SWEEP_FAILED = "sweep_failed"
     #: The solve produced no carrier. Nothing was written, and the camera keeps its previous calibration.
     NO_ARTIFACT = "no_artifact"
@@ -187,37 +183,38 @@ class SweepOptions:
     ``unmodelled_wrist_body`` is the reason an eye in hand sweep may run while its camera's body cannot be placed
     yet; it is printed and logged, and the sweep then runs with no body in the planner and the guard.
 
-    ``fixed_poses`` replaces the automatic sweep with a caller-chosen one, run in the order given: a list of
-    ``Pose`` (BASE) the caller already planned and ``JointStation``, or a path to a JSON file of them
-    (URPose-shaped or ``Pose``-shaped records, and joint stations ``{"joints_deg": [...]}`` or
-    ``{"joints_rad": [...]}``, six values from the base to the last wrist joint; see ``pose_provider``). ``check()``
-    reads and checks the file, counts its stations and its joint stations, and names each leg between two joint
-    stations that turns a joint more than half a turn. A joint station runs as one judged joint move, and before
-    it moves the grasp centre the arm's forward kinematics puts at its joints must lie inside the workspace box and
-    differ enough from the stations before it; so must every pose of a file. A station that does not is reported
-    with its reason and never moved to. Set, ``poses`` (the auto-generated count) is not read: nothing is generated
-    when the caller supplies its own stations.
+    Where the stations come from, one of two ways; nothing is generated, and a sweep that names neither is refused at
+    ``check()``:
 
-    ``aim`` aims an eye in hand sweep's CAMERA at one marker lying flat, face up, at a known place in BASE (a
-    ``MarkerAim``): the sweep looks once from where the arm stands, estimates from that view where the camera sits on
-    the tool, and visits the aim's views round the marker from its distance, each tilting the tool as little as it can
-    from tool-down with the aim's ``closing_axis`` and rolling the camera about its line of sight by the view's roll,
-    ordered by joint travel and screened against the workspace box, the arm's reach and its joint window. Where the
-    aim's ``closing_axis`` admits fewer views than the solve needs, the sweep keeps the one of ``-y``, ``y``, ``x``,
-    ``-x`` that admits the most, and the report says which. Every view it sees the marker in refines the estimate and
-    re-aims the views still to come. A first look that sees no marker refuses the run with nothing moved, unless the
-    aim states a mount to aim from. It needs one marker as the target (a board's pose is at its corner, not where the
-    aim looks), and it replaces ``poses`` and cannot be combined with ``fixed_poses``.
+    ``fixed_poses`` are the caller's own stations, run in the order given: a list of ``Pose`` (BASE) the caller
+    already planned and ``JointStation``, or a path to a JSON file of them (URPose-shaped or ``Pose``-shaped records,
+    and joint stations ``{"joints_deg": [...]}`` or ``{"joints_rad": [...]}``, six values from the base to the last
+    wrist joint; see ``pose_provider``). ``check()`` reads and checks the file and counts its stations and its joint
+    stations. A joint station runs as one judged joint move, and before it moves the grasp centre the arm's forward
+    kinematics puts at its joints must lie inside the workspace box and differ enough from the stations before it;
+    so must every pose of a file. A station that does not is reported with its reason and never moved to.
+    ``adjust`` frees the arm at each fixed station it reached so a person can fine-tune the view by hand, captures on
+    Enter, and asks for the hands off the arm and counts down before the next automatic move.
+
+    ``freedrive`` lets a person guide the arm to each pose instead: nothing moves by itself. The console and the
+    preview ask for a pose where the camera sees the board, Enter captures once the arm stands still, and the run ends
+    at ``samples`` counted (the tree's ``robot.calibration.freedrive_samples``, 15) or when the person finishes. With
+    ``fixed_poses`` beside it, those stations are targets the preview shows the way to and are never moved to.
+
+    Both ways by hand need an arm that offers hand guiding and are refused at the build on one that does not; both
+    show the controller payload and ask whether it is right before the arm is first freed; and both write each pose
+    counted by hand to ``<mode>_<rig>_stations.json`` in ``out_dir``, which ``fixed_poses`` replays without hands.
+    The file ``fixed_poses`` names is never written over: when it is that file, the stations go to
+    ``<mode>_<rig>_stations.adjusted.json`` beside it, and the console says so before anything moves.
 
     ``preview`` opens a window beside the sweep: the camera's view while the arm moves, each judged frame with the
     target drawn on it, and whether its pose counted and why not. ``True`` opens it wherever a window can show, and
     the build says why when it cannot. ``"auto"`` opens it only where a window can show and stdout is a terminal, and
     says nothing otherwise, so a piped or captured run prints what it printed before. ``False`` or unset opens none.
-    ``WILLY_NO_PREVIEW`` set keeps it off whatever this says. It is display only: closing it closes the window, and
-    the pendant stops the robot.
+    ``WILLY_NO_PREVIEW`` set keeps it off whatever this says. It draws only: closing it closes the window (and
+    finishes a run guided by hand, which holds the arm), and the pendant stops the robot.
     """
 
-    poses: Maybe[int] = UNSET
     marker_length_mm: Maybe[float] = UNSET
     marker_id: Maybe[int] = UNSET
     dict_name: Maybe[str] = UNSET
@@ -226,7 +223,9 @@ class SweepOptions:
     fixed_poses: "Maybe[Sequence[Pose | JointStation] | str | Path]" = UNSET
     target: Maybe[Any] = UNSET
     preview: "Maybe[bool | Literal['auto']]" = UNSET
-    aim: "Maybe[MarkerAim]" = UNSET
+    freedrive: Maybe[bool] = UNSET
+    adjust: Maybe[bool] = UNSET
+    samples: Maybe[int] = UNSET
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,20 +241,21 @@ class CalibrationCheck:
     marker_length_mm: float = 0.0
     marker_id: int = 0
     dict_name: str = ""
+    #: How many stations the sweep visits, or for a run guided throughout by hand how many samples it collects.
     poses: int = 0
     #: Where the artifact will be written.
     artifact_path: str = ""
     #: A target that is not one marker, in one line (``charuco 7x5, square 30.0 mm, ...``). Empty for a marker, which
     #: the ``marker`` line describes.
     target: str = ""
-    #: The file the caller's own stations were read from. Empty for generated poses and for a list.
+    #: The file the caller's own stations were read from. Empty for a list and for none.
     poses_file: str = ""
     #: How many of the caller's own stations are joint stations.
     joint_stations: int = 0
-    #: One sentence per leg between two neighbouring joint stations that turns a joint more than half a turn.
-    hops: tuple[str, ...] = ()
-    #: An aimed sweep's aim in one line (``MarkerAim.line``). Empty for any other sweep.
-    aim: str = ""
+    #: ``"freedrive"`` for a run guided throughout by hand, ``"adjust"`` for fixed stations adjusted by hand, else empty.
+    by_hand: str = ""
+    #: For a run guided throughout by hand, how many of the caller's stations it shows the way to.
+    targets: int = 0
 
     @property
     def ok(self) -> bool:
@@ -264,6 +264,10 @@ class CalibrationCheck:
     def __str__(self) -> str:
         """What ``print()`` shows: the text :meth:`render` returns."""
         return self.render()
+
+    def sweep_banner(self) -> str:
+        """The sweep stage's heading: the robot moves by itself, or only when a person moves it."""
+        return _BY_HAND_BANNER if self.by_hand == "freedrive" else CalibrationStage.SWEEP.banner()
 
     def render(self) -> str:
         """The config stage as the CLI prints it. ASCII, no trailing newline, no arguments."""
@@ -276,19 +280,20 @@ class CalibrationCheck:
             f"  board      {self.target}" if self.target else
             f"  marker     {self.marker_length_mm:.1f} mm, id {self.marker_id}, {self.dict_name}",
             f"  poses      {self._poses_line()}",
-            *(_ascii(f"  !! {hop}") for hop in self.hops),
             f"  artifact   {self.artifact_path}",
         ))
 
     def _poses_line(self) -> str:
-        """How many stations the sweep visits, where they come from, and how many are joint stations."""
-        if self.aim:
-            return _ascii(f"{self.poses}, {self.aim}")
-        if self.poses < 0:
-            return "custom, from a JSON file"
+        """How many stations the sweep visits and where they come from, or how many samples a person guides to."""
+        where = f" of {self.poses_file}" if self.poses_file else ""
+        if self.by_hand == "freedrive":
+            toward = f", toward the {self.targets} stations{where}" if self.targets else ""
+            return _ascii(f"{self.poses} guided by hand{toward}")
         line = f"{self.poses} from {self.poses_file}" if self.poses_file else str(self.poses)
         if self.joint_stations:
             line += f", {self.joint_stations} of them joint stations"
+        if self.by_hand == "adjust":
+            line += ", each adjusted by hand"
         return _ascii(line)
 
     def to_dict(self) -> dict[str, Any]:
@@ -307,8 +312,8 @@ class CalibrationCheck:
             "target": self.target,
             "poses_file": self.poses_file,
             "joint_stations": self.joint_stations,
-            "hops": list(self.hops),
-            "aim": self.aim,
+            "by_hand": self.by_hand,
+            "targets": self.targets,
         }
 
 
@@ -415,13 +420,9 @@ class CalibrationRunReport:
     #: Each pose the sweep visited, in order: counted, or why not. Empty when the routine kept none, and the summary
     #: then prints no table.
     pose_log: "tuple[PoseVerdict, ...]" = ()
-    #: For an aimed sweep, each estimate of where the camera sits on the tool that its stations were aimed from, in
-    #: order: the first look's, then each refinement. Empty for any other sweep.
-    aim_estimates: "tuple[MountEstimate, ...]" = ()
-    #: For an aimed sweep, the heading its stations kept and why: the aim's, or the one that admitted the most views
-    #: where the aim's admitted fewer than the solve needs. ``None`` for any other sweep, and for one that stopped
-    #: before its stations were aimed.
-    aim_heading: "HeadingChoice | None" = None
+    #: The stations file a run guided by hand wrote, one joint station per counted pose, which ``fixed_poses``
+    #: replays without hands. Empty when none was written.
+    stations_path: str = ""
 
     @property
     def exit_code(self) -> int:
@@ -458,13 +459,12 @@ class CalibrationRunReport:
             lines.append(self.teardown.render())
         if outcome is CalibrationOutcome.SWEEP_FAILED:
             lines.append(f"[sweep] FAILED: {self.failure}")
-            lines += self._aim_lines()
             lines += self._pose_lines()
+            lines += self._stations_lines()
             return "\n".join(lines)
         lines += [
             "",
             CalibrationStage.RESULT.banner(),
-            *self._aim_lines(),
             *self._pose_lines(),
             f"  accepted samples  {self._accepted()}",
             f"  AX=XB rmse        {self.rmse_mm or 0.0:.4f} mm (max {self.max_error_mm or 0.0:.4f}) -> {self.quality}",
@@ -480,6 +480,7 @@ class CalibrationRunReport:
         lines += [
             f"  written           {self.artifact_path}",
             f"  dataset           {self.dataset_path}",
+            *self._stations_lines(),
             "",
             "Paste this into the camera section so the camera reaches the pick path. Until its rig",
             "declares it, the cell has no CAMERA->BASE for this camera:",
@@ -487,23 +488,16 @@ class CalibrationRunReport:
         return "\n".join(lines)
 
     def _accepted(self) -> str:
-        """Accepted against the poses the sweep ran: the pose log's count, else the generated count."""
+        """Accepted against the poses the sweep ran: the pose log's count, else the stations the check counted."""
         run = len(self.pose_log) if self.pose_log else self.check.poses
-        if run < 0:
-            return f"{self.accepted_samples}, of the poses in a JSON file"
         return f"{self.accepted_samples}/{run}"
 
-    def _aim_lines(self) -> list[str]:
-        """What an aimed sweep aimed from: the first look's estimate and, where views refined it, the last one; then
-        the heading its stations kept."""
-        lines: list[str] = []
-        if self.aim_estimates:
-            lines.append(_ascii(f"  aimed from        {self.aim_estimates[0].line()}"))
-            if len(self.aim_estimates) > 1:
-                lines.append(_ascii(f"  re-aimed from     {self.aim_estimates[-1].line()}"))
-        if self.aim_heading is not None:
-            lines.append(_ascii(f"  heading           {self.aim_heading.line()}"))
-        return lines
+    def _stations_lines(self) -> list[str]:
+        """Where the stations counted by hand went, and how to run them again without hands."""
+        if not self.stations_path:
+            return []
+        return [_ascii(f"  stations          {self.stations_path}"),
+                _ascii(f"                    replay without hands: --fixed-poses {self.stations_path}")]
 
     def _pose_lines(self) -> list[str]:
         """The per-pose table: each pose's index, label and verdict, and why it did not count."""
@@ -531,7 +525,7 @@ class CalibrationRunReport:
         if self.build is not None:
             lines += ["", CalibrationStage.BUILD.banner(), self.build.render()]
         if self.swept:
-            lines += ["", CalibrationStage.SWEEP.banner()]
+            lines += ["", self.check.sweep_banner()]
         tail = self.summary()
         if tail:
             lines.append(tail)
@@ -562,8 +556,7 @@ class CalibrationRunReport:
             "rig_block": self.rig_block,
             "camera_worlds": [stamp.to_dict() for stamp in self.camera_worlds],
             "pose_log": [verdict.to_dict() for verdict in self.pose_log],
-            "aim_estimates": [_estimate_dict(estimate) for estimate in self.aim_estimates],
-            "aim_heading": self.aim_heading.to_dict() if self.aim_heading is not None else None,
+            "stations_path": self.stations_path,
         }
 
 
@@ -621,7 +614,8 @@ class HandEyeCalibration:
     mode: MountingMode
     #: The mode's ``camera.hand_eye`` block: the thresholds the sweep's poses and samples are held to.
     settings: Any
-    poses: int
+    #: How many samples a run guided throughout by hand collects (``SweepOptions.samples``).
+    samples: int
     marker_length_mm: float
     marker_id: int
     dict_name: str
@@ -637,13 +631,17 @@ class HandEyeCalibration:
     #: target named in full, which states them itself.
     overrides: tuple[str, ...] = ()
     unmodelled_wrist_body: str | None = None
-    #: A caller's own stations, replacing the automatic sweep: a list of Pose (BASE) and JointStation, or a path to
-    #: a JSON file of them. None runs the automatic sweep, as every mode did before this existed.
+    #: A caller's own stations: a list of Pose (BASE) and JointStation, or a path to a JSON file of them. For a run
+    #: guided throughout by hand, the targets it shows the way to. None names none.
     fixed_poses: "Sequence[Pose | JointStation] | str | Path | None" = field(default=None, repr=False)
     #: The preview window: ``True``, ``"auto"`` or ``False`` (see ``SweepOptions.preview``). Off unless asked for.
     preview: "bool | Literal['auto']" = False
-    #: An eye in hand sweep aimed at one marker (``SweepOptions.aim``), or None.
-    aim: "MarkerAim | None" = field(default=None, repr=False)
+    #: A run guided throughout by hand (``SweepOptions.freedrive``).
+    freedrive: bool = False
+    #: Fixed stations, each adjusted by hand once the arm reached it (``SweepOptions.adjust``).
+    adjust: bool = False
+    #: Where a person guiding the arm reads and types. None is the terminal.
+    console: "OperatorConsole | None" = field(default=None, repr=False)
     #: The config tree the sections came from. None is the repository's tree.
     data_dir: "str | Path | None" = None
     #: A robot built by the caller. ``UNSET``: the arm alone is built at ``run()`` from the robot section.
@@ -668,6 +666,7 @@ class HandEyeCalibration:
         announce: "Callable[[ConnectStage], None] | None" = None,
         on_event: "RobotCalibrationEventListener | None" = None,
         on_built: "Callable[[CalibrationBuild], None] | None" = None,
+        console: "OperatorConsole | None" = None,
     ) -> "HandEyeCalibration":
         """The sweep a loaded tree describes for ``rig_id``: both sections and the directory come from one tree.
 
@@ -680,7 +679,7 @@ class HandEyeCalibration:
         # A tree that loaded with no robot block describes no sweep: the loader's own sentence, as a ConfigError.
         _ = loaded.robot
         return cls.from_config(loaded.app_config, rig_id=rig_id, mode=mode, options=options, data_dir=loaded.root,
-                               announce=announce, on_event=on_event, on_built=on_built)
+                               announce=announce, on_event=on_event, on_built=on_built, console=console)
 
     @classmethod
     def from_config(
@@ -689,6 +688,7 @@ class HandEyeCalibration:
         announce: "Callable[[ConnectStage], None] | None" = None,
         on_event: "RobotCalibrationEventListener | None" = None,
         on_built: "Callable[[CalibrationBuild], None] | None" = None,
+        console: "OperatorConsole | None" = None,
     ) -> "HandEyeCalibration":
         """The sweep a validated config describes for ``rig_id``.
 
@@ -699,7 +699,7 @@ class HandEyeCalibration:
         """
         return cls.from_parts(robot_config=app_config.robot, camera_config=app_config.camera, rig_id=rig_id,
                               mode=mode, options=options, data_dir=data_dir,
-                              announce=announce, on_event=on_event, on_built=on_built)
+                              announce=announce, on_event=on_event, on_built=on_built, console=console)
 
     @classmethod
     def from_parts(
@@ -709,6 +709,7 @@ class HandEyeCalibration:
         announce: "Callable[[ConnectStage], None] | None" = None,
         on_event: "RobotCalibrationEventListener | None" = None,
         on_built: "Callable[[CalibrationBuild], None] | None" = None,
+        console: "OperatorConsole | None" = None,
     ) -> "HandEyeCalibration":
         """A sweep over parts the caller built, or over the sections to build them from at ``run()``.
 
@@ -718,10 +719,13 @@ class HandEyeCalibration:
         the tree the arm keeps (``arm.config``). ``camera`` is an owner of the rig to calibrate; ``run()`` opens it
         when it is closed and gives back only what it opened. Without one, ``camera_config`` and ``rig_id`` name the
         rig. ``settings`` left unset is the mode's ``camera.hand_eye`` block, or the schema's default block when the
-        camera section has none.
+        camera section has none. ``console`` is where a person guiding the arm reads and types, the terminal when
+        unset.
 
         A missing part raises ``ValueError``: that is a call that cannot describe a sweep, not a refusal.
         """
+        from src.robot.execution.calibration import DEFAULT_FREEDRIVE_SAMPLES
+
         selected = MountingMode(mode)
         tree: Any = robot_config if chosen(robot_config) else (
             getattr(robot.arm, "config", None) if chosen(robot) else None)
@@ -749,11 +753,14 @@ class HandEyeCalibration:
         whole, whole_from = (chosen_options.target, "options") if chosen(chosen_options.target) else (
             (tree_target, "tree") if tree_target is not None and marker is block else (None, ""))
         block_id = getattr(marker, "marker_id", DEFAULT_MARKER_ID)
+        tree_samples = getattr(getattr(tree, "calibration", None), "freedrive_samples", UNSET)
         return cls(
             rig_id=rig,
             mode=selected,
             settings=block,
-            poses=int(resolve("poses", chosen_options.poses, DEFAULT_POSES)),
+            samples=int(resolve("samples", chosen_options.samples,
+                                tree_samples if isinstance(tree_samples, int) else UNSET,
+                                DEFAULT_FREEDRIVE_SAMPLES)),
             marker_length_mm=float(resolve("marker_length_mm", chosen_options.marker_length_mm,
                                            marker.marker_length_mm)),
             marker_id=int(resolve("marker_id", chosen_options.marker_id,
@@ -772,7 +779,9 @@ class HandEyeCalibration:
             # default once and types cleanly.
             fixed_poses=resolve("fixed_poses", chosen_options.fixed_poses, None),
             preview=_preview_setting(chosen_options.preview),
-            aim=resolve("aim", chosen_options.aim, None),
+            freedrive=bool(resolve("freedrive", chosen_options.freedrive, False)),
+            adjust=bool(resolve("adjust", chosen_options.adjust, False)),
+            console=console,
             data_dir=data_dir,
             robot=robot,
             camera=camera,
@@ -835,7 +844,7 @@ class HandEyeCalibration:
         target, refusal = self._resolved_target()
         if refusal is not None:
             return _Staged(CalibrationCheck(rig_id=self.rig_id, mode=self.mode, refusal=refusal))
-        refusal = self._aim_refusal(target)
+        refusal = self._way_refusal()
         if refusal is not None:
             return _Staged(CalibrationCheck(rig_id=self.rig_id, mode=self.mode, refusal=refusal))
         stations, refusal = self._own_stations()
@@ -846,43 +855,41 @@ class HandEyeCalibration:
             return _Staged(CalibrationCheck(rig_id=self.rig_id, mode=self.mode, refusal=refusal))
         prefix = "eth" if self.mode is MountingMode.EYE_TO_HAND else "eih"
         from src.calibration.targets import describe_target
-        from src.robot.execution.pose_provider import JointStation, joint_hops
+        from src.robot.execution.pose_provider import JointStation
 
         one_marker = target.kind == "aruco"
-        poses = self.poses if stations is None else len(stations)
-        if self.aim is not None:
-            poses = len(self.aim.views)
+        listed = list(stations or ())
         return _Staged(CalibrationCheck(
             rig_id=str(rig.rig_id), mode=self.mode, rig_source=str(rig.source), vendor=f"{self.sections.robot.vendor}",
             marker_length_mm=float(target.marker_length_mm), marker_id=int(target.marker_id) if one_marker else -1,
-            dict_name=str(target.aruco_dict_name), poses=poses, aim=self.aim.line() if self.aim is not None else "",
+            dict_name=str(target.aruco_dict_name), poses=self.samples if self.freedrive else len(listed),
             artifact_path=f"{self.out_dir}/{prefix}_{rig.rig_id}.json",
             target="" if one_marker else describe_target(target),
             poses_file=str(self.fixed_poses) if isinstance(self.fixed_poses, (str, Path)) else "",
-            joint_stations=0 if stations is None else sum(isinstance(one, JointStation) for one in stations),
-            hops=() if stations is None else tuple(joint_hops(stations)),
+            joint_stations=sum(isinstance(one, JointStation) for one in listed),
+            by_hand="freedrive" if self.freedrive else "adjust" if self.adjust else "",
+            targets=len(listed) if self.freedrive else 0,
         ), rig=rig, wrist=wrist, target=target)
 
-    def _aim_refusal(self, target: Any) -> str | None:
-        """Why ``SweepOptions.aim`` cannot run here, or ``None``: it aims a wrist camera at one marker, and it replaces
-        the stations, so it is refused for a fixed camera, beside ``fixed_poses``, and for a target that is not one
-        marker."""
-        if self.aim is None:
-            return None
-        from src.robot.execution.camera_aim import MarkerAim
+    def _way_refusal(self) -> str | None:
+        """Why the stations cannot come from where the options say, or ``None``.
 
-        if not isinstance(self.aim, MarkerAim):
-            return f"SweepOptions.aim is a MarkerAim, not {type(self.aim).__name__}"
-        if self.mode is not MountingMode.EYE_IN_HAND:
-            return ("SweepOptions.aim aims a camera on the tool at a marker, and this sweep is eye_to_hand: a fixed "
-                    "camera does not move with the arm. Sweep it with generated poses or fixed_poses")
-        if self.fixed_poses is not None:
-            return ("SweepOptions.aim and fixed_poses both name the stations; an aimed sweep builds its own after the "
-                    "first look, so give one of them")
-        if getattr(target, "kind", None) != "aruco":
-            return ("SweepOptions.aim aims the camera at one marker's centre, and this target is a "
-                    f"{getattr(target, 'kind', 'board')} board, whose pose is at its corner: name one ArUco marker "
-                    "(target 'aruco:ID:SIZE_MM[:DICT]'), or sweep the board with fixed_poses")
+        There is no generated sweep: the stations are the caller's (``fixed_poses``) or a person guides the arm
+        (``freedrive``). ``adjust`` works on fixed stations and is refused without them and beside ``freedrive``, which
+        guides the arm throughout. A freedrive run needs at least one sample.
+        """
+        if self.freedrive and self.adjust:
+            return ("freedrive and adjust both hand the arm to a person: freedrive guides it to every pose, adjust fine-"
+                    "tunes each fixed station the arm drove to. Give one of them")
+        if self.adjust and self.fixed_poses is None:
+            return ("adjust fine-tunes fixed stations by hand, and none were given: name them with fixed_poses "
+                    "(--fixed-poses PATH), or guide the arm to every pose with freedrive (--freedrive)")
+        if not self.freedrive and self.fixed_poses is None:
+            return ("a sweep needs its stations and none were named: fixed_poses (--fixed-poses PATH, a JSON file of "
+                    "poses and joint stations) visits yours, and freedrive (--freedrive) lets you guide the arm to each "
+                    "pose by hand. Nothing generates stations")
+        if self.freedrive and self.samples < 1:
+            return f"a run guided by hand collects at least one sample, not {self.samples}"
         return None
 
     def _planner_evidence_refusal(self) -> str | None:
@@ -913,7 +920,7 @@ class HandEyeCalibration:
                 f"{refused or 'no evidence admits this cell'}")
 
     def _own_stations(self) -> "tuple[list[Any] | None, str | None]":
-        """``(stations, None)`` for the caller's own stations, ``(None, None)`` for a generated sweep, or ``(None, why)``.
+        """``(stations, None)`` for the caller's own stations, ``(None, None)`` for none, or ``(None, why)``.
 
         A file is read and every record checked here (``pose_provider.load_stations``), so ``--check`` refuses a
         file the sweep would refuse, and a list may hold only ``Pose`` and ``JointStation``. Neither is screened
@@ -933,7 +940,8 @@ class HandEyeCalibration:
                 return None, f"fixed_poses: {exc}"
         stations = list(fixed)
         if not stations:
-            return None, "fixed_poses is an empty list, and a sweep of no stations solves nothing; leave it unset to sweep"
+            return None, ("fixed_poses is an empty list, and a sweep of no stations solves nothing; name some, or "
+                          "guide the arm by hand with freedrive")
         for index, station in enumerate(stations):
             if not isinstance(station, (Pose, JointStation)):
                 return None, (f"fixed_poses[{index}] is a {type(station).__name__}; a station is a Pose (BASE) or a "
@@ -1005,12 +1013,15 @@ class HandEyeCalibration:
             from src.calibration.targets import estimator_for
             from src.camera.orchestration.camera import Camera
             from src.robot.execution.calibration import CalibrationRoutine
+            from src.robot.execution.hand_guiding import HandGuide
             from src.robot.execution.robot import Robot
 
             # The arm through the builder a pick run uses, so the arm-vendor readiness gate runs first. No gripper: a
             # sweep beside a board needs no activation stroke, and a gripper this tree cannot build is not a reason to
             # refuse calibrating a camera.
             robot = self.robot if chosen(self.robot) else Robot.from_config(self.sections.robot, gripper=None)
+            # A run by hand needs an arm a person can guide: refused before the camera is opened.
+            self._refuse_without_hand_guiding(robot.arm)
             # One camera, through the camera noun. A sweep that claimed every configured camera would fight the
             # console for devices it does not need, and a rig the console holds refuses here naming the holder.
             if chosen(self.camera):
@@ -1030,12 +1041,15 @@ class HandEyeCalibration:
             preview, preview_line = self._preview(handle, target, rig.rig_id)
             if preview is not None:
                 marker_source.on_observation = preview.observe
+            # A person guiding the arm reads and types in the console and in the preview, which draws what the
+            # routine hands it and passes keys back; neither calls the arm.
             routine = CalibrationRoutine(
                 arm=robot.arm, marker_source=marker_source, eth_calibrator=self._calibrator(),
                 workspace_limits=self.sections.robot.workspace_limits, eth_settings=self.settings,
                 rig_id=rig.rig_id, marker_id=int(target.marker_id) if target.kind == "aruco" else -1,
                 settle_time_s=self.sections.robot.calibration.settle_time_s,
                 calibration_mode=self.mode, on_event=_fan_out(preview, self.on_event),
+                hand_guide=HandGuide(self.console, preview), images_dir=self._stem(rig.rig_id, "images"),
             )
             intrinsics = handle.get_intrinsics() is not None
             safety = robot.safety()
@@ -1070,6 +1084,49 @@ class HandEyeCalibration:
         )
         return build, parts
 
+    def _refuse_without_hand_guiding(self, arm: Any) -> None:
+        """Raise ``HandGuidingRefused`` where a run by hand meets an arm a person cannot guide."""
+        if not (self.freedrive or self.adjust):
+            return
+        from src.robot.core.freedrive import SupportsFreedrive
+        from src.robot.execution.hand_guiding import HandGuidingRefused
+
+        if isinstance(arm, SupportsFreedrive):
+            return
+        what = "freedrive guides the arm to every pose" if self.freedrive else "adjust frees the arm at each station"
+        raise HandGuidingRefused(
+            f"{what} by hand, and {type(arm).__name__} offers no hand guiding (SupportsFreedrive; the UR teach mode "
+            "is one). This arm has fixed stations only: run them without adjust (--fixed-poses PATH)")
+
+    def _stem(self, rig_id: str, what: str) -> str:
+        """A file of this run in ``out_dir``: ``<mode>_<rig>_<what>``."""
+        return f"{self.out_dir}/{self.mode.value}_{rig_id}_{what}"
+
+    def _by_hand_stations(self, rig_id: str, routine: Any) -> str | None:
+        """Where a run by hand writes the stations it counts, ``None`` for a run nobody guides.
+
+        ``<mode>_<rig>_stations.json``, unless that is the file ``fixed_poses`` names: the file 09 and 10 suggest
+        replaying with ``adjust`` is exactly the one this run writes by default, and a run begins its stations file
+        afresh, so a replay finished partway would leave one station of the many it was given. The file read is
+        never written over (``stations_file_to_write``): the stations go to ``<mode>_<rig>_stations.adjusted.json``
+        beside it, and the guide's console says so before anything moves.
+        """
+        if not (self.freedrive or self.adjust):
+            return None
+        from src.robot.execution.calibration import stations_file_to_write
+
+        wanted = self._stem(rig_id, "stations.json")
+        read_from = self.fixed_poses if isinstance(self.fixed_poses, (str, Path)) else None
+        save_to = stations_file_to_write(read_from, wanted)
+        if save_to != wanted:
+            said = (f"{read_from} is the file the stations were read from, so it is not written over: the stations "
+                    f"counted by hand go to {save_to}")
+            logger.warning("%s.", said)
+            guide = getattr(routine, "hand_guide", None)
+            if guide is not None:
+                guide.console.say(f"{said}.")
+        return save_to
+
     def _preview(self, handle: Any, target: Any, rig_id: str) -> "tuple[Any, str]":
         """The sweep's preview and the build's line about it: ``(None, "")`` when none was asked for.
 
@@ -1094,17 +1151,14 @@ class HandEyeCalibration:
         except Exception as exc:  # noqa: BLE001 (display only: the sweep runs without it)
             logger.warning("No sweep preview: %s: %s", type(exc).__name__, exc)
             return None, "" if self.preview == "auto" else f"off: {type(exc).__name__}: {exc}"
-        return preview, (f"window {preview.title!r} opens with the sweep; closing it closes the window only, "
-                         "the pendant stops the robot")
+        closing = ("closing it finishes the run and holds the arm" if self.freedrive or self.adjust
+                   else "closing it closes the window only")
+        return preview, f"window {preview.title!r} opens with the sweep; {closing}, the pendant stops the robot"
 
     def _sweep(self, check: CalibrationCheck, build: CalibrationBuild, parts: _Parts) -> CalibrationRunReport:
         """Connect through ``Robot.connected()``, sweep, solve, and write. The camera is given back last."""
-        import numpy as np
-
-        from src.robot.execution.camera_aim import HeadingChoice, reach_of
         from src.robot.execution.cell_lock import CellBusy
 
-        calibration = self.sections.robot.calibration
         failure: Exception | None = None
         result: Any = None
         record: Any = UNSET
@@ -1119,35 +1173,25 @@ class HandEyeCalibration:
                     parts.preview.start()
                 try:
                     Path(self.out_dir).mkdir(parents=True, exist_ok=True)
-                    dataset_path = f"{self.out_dir}/{self.mode.value}_{check.rig_id}_dataset.json"
-                    if self.aim is not None:
-                        # Aimed at the marker from a first look, and re-aimed as it is seen. The arm's reach and
-                        # joint window, and the box less the margin its gate keeps, screen the views before any is
-                        # commanded; every one commanded is judged by the arm as any move.
-                        result = parts.routine.run_aimed(
-                            self.aim, dataset_save_path=dataset_path, reach=reach_of(parts.robot.arm),
-                            margin_mm=_workspace_margin_mm(self.sections.robot))
-                    elif self.fixed_poses is not None:
-                        # The caller's own stations, in their order: a path is a JSON file of them, screened station
-                        # by station; anything else a list of Pose and JointStation.
-                        if isinstance(self.fixed_poses, (str, Path)):
-                            result = parts.routine.run_from_json(self.fixed_poses, dataset_save_path=dataset_path)
-                        else:
-                            result = parts.routine.run_with_poses(
-                                list(self.fixed_poses), dataset_save_path=dataset_path)
+                    dataset_path = self._stem(check.rig_id, "dataset.json")
+                    by_hand = self._by_hand_stations(check.rig_id, parts.routine)
+                    # The caller's own stations, in their order: a path is a JSON file of them, screened station by
+                    # station; anything else a list of Pose and JointStation. For a run guided throughout by hand
+                    # they are targets, never moved to.
+                    stations = self._own_stations()[0]
+                    if self.freedrive:
+                        result = parts.routine.run_freedrive(stations, samples=self.samples,
+                                                             dataset_save_path=dataset_path,
+                                                             stations_save_path=by_hand)
+                    elif isinstance(self.fixed_poses, (str, Path)):
+                        result = parts.routine.run_from_json(self.fixed_poses, dataset_save_path=dataset_path,
+                                                             adjust=self.adjust, stations_save_path=by_hand)
                     else:
-                        result = parts.routine.run_auto(
-                            self.poses,
-                            # Tool down, so a board lying face up on the table faces a fixed camera.
-                            base_orientation=[float(np.pi), 0.0, 0.0],
-                            orientation_spread_deg=max(_MIN_SPREAD_DEG, float(calibration.orientation_spread_deg)),
-                            max_attempts_per_pose=calibration.max_attempts_per_pose,
-                            seed=0,
-                            dataset_save_path=dataset_path,
-                        )
+                        result = parts.routine.run_with_poses(stations or [], dataset_save_path=dataset_path,
+                                                              adjust=self.adjust, stations_save_path=by_hand)
                     # While the arm is still connected: on a polyscope cell the frame is known only then.
                     record = _flange_to_tcp_record(self.sections.robot, parts.robot.arm)
-                except Exception as exc:  # noqa: BLE001 (reported once the arm is down; NotAimed moved nothing)
+                except Exception as exc:  # noqa: BLE001 (reported once the arm is down)
                     failure = exc
         except CellBusy as exc:
             # Another process holds this controller, and nothing was commanded.
@@ -1162,13 +1206,13 @@ class HandEyeCalibration:
             parts.give_back()
         teardown = live.teardown
         if failure is not None:
-            # The poses the sweep visited before it raised, a solve refused for too few samples included.
-            aimed = getattr(parts.routine, "aimed", None)
+            # The poses the sweep visited before it raised, a solve refused for too few samples included, and the
+            # stations counted by hand so far, which a replay can run again: only stations this run recorded, never
+            # a file an earlier run left at the same path.
             return CalibrationRunReport(check=check, outcome=CalibrationOutcome.SWEEP_FAILED, build=build,
                                         failure=f"{type(failure).__name__}: {failure}", teardown=teardown,
                                         pose_log=tuple(getattr(parts.routine, "pose_log", ())),
-                                        aim_estimates=tuple(getattr(aimed, "estimates", ())),
-                                        aim_heading=_heading(getattr(aimed, "heading", None), HeadingChoice))
+                                        stations_path=_written(getattr(parts.routine, "stations_written", None)))
         transform = result.transform
         solved = CalibrationRunReport(
             check=check, outcome=CalibrationOutcome.NO_ARTIFACT, build=build, teardown=teardown,
@@ -1177,8 +1221,7 @@ class HandEyeCalibration:
             transform_mm=_rows(transform.to_matrix()) if transform is not None else None,
             dataset_path=result.dataset_path, camera_worlds=tuple(result.camera_worlds),
             pose_log=tuple(getattr(result, "pose_log", ())),
-            aim_estimates=tuple(getattr(result, "aim_estimates", ())),
-            aim_heading=_heading(getattr(result, "aim_heading", None), HeadingChoice),
+            stations_path=str(getattr(result, "stations_path", None) or ""),
         )
         # Both modes: an eye in hand solve with no Transform must not reach a write of nothing. With no carrier
         # nothing is written and the camera keeps whatever calibration it had.
@@ -1187,9 +1230,11 @@ class HandEyeCalibration:
             return solved
         written = self._write(result, check.rig_id, record)
         kept = record if chosen(record) and self.mode is MountingMode.EYE_IN_HAND else None
+        # The block names the file absolute: pasted into a tree, a relative path is read against the config
+        # folder (src.config.paths), not against the directory this sweep ran in.
         return dataclasses.replace(
             solved, outcome=CalibrationOutcome.WRITTEN, artifact_path=str(written), flange_to_tcp=kept,
-            rig_block=_rig_block(check.rig_id, self.mode.value, str(written)),
+            rig_block=_rig_block(check.rig_id, self.mode.value, str(Path(written).absolute())),
         )
 
     # --- helpers -----------------------------------------------------------------------------
@@ -1249,9 +1294,7 @@ def render_sweep_event(event_type: str, data: Mapping[str, Any]) -> str:
     need = data.get("min_samples")
     if event_type == RobotCalibrationEvent.MOVING_TO_POSE:
         needed = f", need {need}" if isinstance(need, int) else ""
-        hop = data.get("hop")
-        line = f"{head}  moving, {data.get('accepted', 0)} counted so far{needed}"
-        return _ascii(f"{line}; !! {hop}" if hop else line)
+        return _ascii(f"{head}  moving, {data.get('accepted', 0)} counted so far{needed}")
     if event_type == RobotCalibrationEvent.MARKER_DETECTED:
         parts: list[str] = []
         if data.get("n_points"):
@@ -1296,27 +1339,9 @@ def _preview_setting(value: Any) -> "bool | Literal['auto']":
     raise ValueError(f"SweepOptions.preview is True, False or 'auto', not {value!r}")
 
 
-def _workspace_margin_mm(robot_cfg: Any) -> float:
-    """How far inside the workspace box the arm's gate keeps a TCP (``safety.limits.workspace_margin_mm``), 0 unread."""
-    margin = getattr(getattr(getattr(robot_cfg, "safety", None), "limits", None), "workspace_margin_mm", 0.0)
-    return float(margin) if isinstance(margin, (int, float)) and not isinstance(margin, bool) else 0.0
-
-
-def _heading(value: Any, kind: type) -> Any:
-    """``value`` where it is a heading choice, ``None`` otherwise: a routine that kept none says nothing about one."""
-    return value if isinstance(value, kind) else None
-
-
-def _estimate_dict(estimate: Any) -> dict[str, Any]:
-    """An aim estimate as plain data."""
-    return {
-        "camera_in_tool_mm": [list(row) for row in estimate.camera_in_tool],
-        "source": estimate.source,
-        "views": estimate.views,
-        "marker_mm": list(estimate.marker_mm) if estimate.marker_mm is not None else None,
-        "rms_mm": estimate.rms_mm,
-        "rms_deg": estimate.rms_deg,
-    }
+def _written(path: Any) -> str:
+    """``path`` where a file was written there, else ``""``."""
+    return str(path) if path and Path(str(path)).is_file() else ""
 
 
 def _is_terminal(stream: Any) -> bool:

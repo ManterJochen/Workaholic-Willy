@@ -28,7 +28,10 @@ _BENCH = "unit double: a bench with no cameras"
 
 
 class _WidthsOnly:
-    """The same toggle, seen through a gripper that takes widths alone: no ``set_closed`` to say what a verb means."""
+    """A two-state jaw seen through a gripper that takes widths alone: no ``set_closed`` to say what a verb means.
+
+    It wraps a single solenoid, not the toggle: a toggle refuses every width (owner's decision, 2026-09-24).
+    """
 
     def __init__(self, inner: JawIOGripper) -> None:
         self._inner = inner
@@ -45,8 +48,9 @@ def _robot(*, widths_only: bool = False, **jaw: float) -> tuple[Robot, _Log, Fak
     arm.connect()
     io = FakeIO()
     widths = {"min_width_mm": 5.0, "max_width_mm": 49.99, "closed_below_mm": 49.0, **jaw}
-    gripper = JawIOGripper(io, actuation="single_toggle", close_output_pin=CLOSE_PIN, pulse_s=0.0,
-                           close_settle_s=0.0, sleep=lambda _s: None, **widths)
+    gripper = JawIOGripper(io, actuation="single_solenoid" if widths_only else "single_toggle",
+                           close_output_pin=CLOSE_PIN, pulse_s=0.0, close_settle_s=0.0, ask=lambda _q: "",
+                           sleep=lambda _s: None, **widths)
     gripper.connect()
     hand: Any = _WidthsOnly(gripper) if widths_only else gripper
     return Robot.from_parts(arm=arm, gripper=hand, lock_key=None), log, io

@@ -194,16 +194,19 @@ robot:
 #    than let that happen. The calibration is declared on the camera's rig, in the camera
 #    section, and the primary camera's resolver is built from it whatever `fusion.enabled` says.
 #
-#    Run the calibration, which moves the robot:
-#      python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --check
-#      python -m src.robot.execution.real_cell.calibrate --rig realsense_d435
+#    Run the calibration: you guide the arm by hand to each pose (--freedrive), or it drives
+#    to stations of your own (--fixed-poses stations.json); nothing generates a pose:
+#      python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --freedrive --check
+#      python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --freedrive
 #    then paste the block it prints into `camera/cam.yaml`, on that rig. It names what the
-#    calibration wrote, by default under `calibration/real`:
+#    calibration wrote, by default under `calibration/real` of the directory it ran in, as an
+#    absolute path. Written relative instead, a path in this tree is read against the config
+#    folder, so for a run from the repository root that is `../calibration/real`:
 #
 #     - rig_id: realsense_d435
 #       extrinsics:
 #         mounting_mode: eye_to_hand
-#         artifact_path: "calibration/real/eth_realsense_d435.json"
+#         artifact_path: "../calibration/real/eth_realsense_d435.json"
 #
 #    The calibrate `--check` above validates the config and the rig, not this block. What reads
 #    it is `python -m src.robot.execution.real_cell --check`, and that does not open the file,

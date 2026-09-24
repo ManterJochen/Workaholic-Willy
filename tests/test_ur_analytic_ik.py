@@ -7,7 +7,9 @@ configuration the pose came from is among them, and the singular poses (wrist 2 
 elbow, the wrist centre on the shoulder's cylinder) return solutions rather than raising.
 
 The turn rule is pinned beside it: a joint goes on its full turn nearest the arm inside a window, and a solution
-with a joint that has no turn inside is left out rather than clipped.
+with a joint that has no turn inside is left out rather than clipped. And the branch: which of the eight ways of
+holding the arm a configuration is in, read by the closed form's own three choices, so the arm can prefer the one it
+holds, and a configuration at a branch point (the UR10 CB3's candle-straight home is at all three) is on both sides.
 """
 
 from __future__ import annotations
@@ -18,11 +20,14 @@ import unittest
 import numpy as np
 
 from src.robot.safety._ur_ik import (
+    BRANCH_POINT_TOL_RAD,
     IK_SOLUTION_TOL_MM,
     IK_SOLUTION_TOL_RAD,
     NearestGoal,
+    URBranch,
     nearest_goals,
     nearest_turn,
+    ur_branch,
     ur_flange_ik,
 )
 from src.robot.safety._ur_kinematics import UR_DH_TABLES_M, ur_link_transforms_mm
@@ -239,6 +244,74 @@ class TheNearestGoalsTests(unittest.TestCase):
         for velocity in (0.0, -1.0, float("nan")):
             with self.subTest(velocity=velocity), self.assertRaises(ValueError):
                 nearest_goals([(0.0,) * 6], current=[0.0] * 6, lower=self._LOW, upper=self._HIGH, velocity=velocity)
+
+
+class TheBranchTests(unittest.TestCase):
+    """``ur_branch`` reads the three choices ``ur_flange_ik`` makes, in the order it makes them."""
+
+    #: The order the closed form returns a general pose's eight solutions in: shoulder, then wrist 2, then elbow.
+    _ORDER = [(s, w, e) for s in (1, -1) for w in (1, -1) for e in (1, -1)]
+
+    def test_each_of_the_eight_solutions_reads_the_branch_it_was_solved_on_on_every_model(self) -> None:
+        rng = np.random.default_rng(29)
+        for model in UR_DH_TABLES_M:
+            checked = 0
+            while checked < 20:
+                q = rng.uniform(-math.pi, math.pi, 6)
+                if not _clear_of_singularities(model, q):
+                    continue
+                solutions = ur_flange_ik(model, _flange(model, q))
+                assert solutions is not None
+                if len(solutions) != 8:
+                    continue
+                checked += 1
+                with self.subTest(model=model, q=[round(float(v), 3) for v in q]):
+                    read = [ur_branch(model, s) for s in solutions]
+                    self.assertEqual([URBranch(*signs) for signs in self._ORDER], read)
+
+    def test_a_full_turn_of_any_joint_is_the_same_branch(self) -> None:
+        q = [0.3, -1.4, 1.4, -1.6, -1.5, 0.2]
+        held = ur_branch("ur10", q)
+        for axis in range(6):
+            for turn in (-2.0 * math.pi, 2.0 * math.pi):
+                turned = list(q)
+                turned[axis] += turn
+                with self.subTest(axis=axis, turn=turn):
+                    self.assertEqual(held, ur_branch("ur10", turned))
+
+    def test_the_candle_straight_home_is_at_every_branch_point_and_agrees_with_every_branch(self) -> None:
+        candle = [0.0, -math.pi / 2.0, 0.0, -math.pi / 2.0, 0.0, 0.0]
+        home = ur_branch("ur10", candle)
+        self.assertEqual(URBranch(0, 0, 0), home)
+        assert home is not None
+        for signs in self._ORDER:
+            self.assertTrue(home.agrees_with(URBranch(*signs)))
+        # Encoder noise either side of it reads the same: this is what the tolerance is for.
+        for noise in (-1e-5, 1e-5):
+            self.assertEqual(URBranch(0, 0, 0), ur_branch("ur10", [v + noise for v in candle]))
+        self.assertIn("+/-", home.render())
+
+    def test_a_joint_just_past_the_tolerance_takes_a_side(self) -> None:
+        q = [0.3, -1.4, 1.4, -1.6, 0.0, 0.2]
+        for wrist, side in ((BRANCH_POINT_TOL_RAD * 1.5, 1), (-BRANCH_POINT_TOL_RAD * 1.5, -1),
+                            (BRANCH_POINT_TOL_RAD * 0.5, 0), (math.pi - BRANCH_POINT_TOL_RAD * 0.5, 0)):
+            with self.subTest(wrist=wrist):
+                branch = ur_branch("ur10", [*q[:4], wrist, q[5]])
+                assert branch is not None
+                self.assertEqual(side, branch.wrist)
+
+    def test_agreement_is_the_same_side_or_a_branch_point_on_every_one_of_the_three(self) -> None:
+        self.assertTrue(URBranch(1, -1, 1).agrees_with(URBranch(1, -1, 1)))
+        self.assertTrue(URBranch(1, 0, 1).agrees_with(URBranch(1, -1, 1)))
+        self.assertFalse(URBranch(1, -1, 1).agrees_with(URBranch(1, 1, 1)))
+        self.assertFalse(URBranch(-1, -1, 1).agrees_with(URBranch(1, -1, 1)))
+        self.assertEqual("shoulder +, wrist 2 -, elbow +", URBranch(1, -1, 1).render())
+
+    def test_no_table_is_none_and_a_bad_configuration_is_refused(self) -> None:
+        self.assertIsNone(ur_branch("kuka_kr6", [0.0] * 6))
+        for joints in ([0.0] * 5, [0.0, 0.0, float("nan"), 0.0, 0.0, 0.0]):
+            with self.subTest(joints=joints), self.assertRaises(ValueError):
+                ur_branch("ur10", joints)
 
 
 if __name__ == "__main__":

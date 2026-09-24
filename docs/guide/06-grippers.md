@@ -230,7 +230,13 @@ that only pays off if the numbers are cheap to measure.
 python -m src.robot.drivers.ur --read                         # read every pin, change nothing
 python -m src.robot.drivers.ur --watch 0 --for 15             # trip a sensor by hand, see it
 python -m src.robot.drivers.ur --measure 4=1 --watch 0 --yes  # the number you came for
+python -m src.robot.drivers.ur --where                        # the joints as JointPositions.deg(...), and the TCP
 ```
+
+Name your cell with `--profile NAME` or `WILLY_PROFILE`. Without either the bench loads the base tree,
+which names a Robotiq and no I/O hand, and every refusal prints the profile chain it read so that is
+visible at once. `--where` prints a line to paste into a program, for a look pose for instance:
+`JointPositions.deg(-45.0, -100.2, -110.0, -60.0, 90.0, 0.0)`.
 
 `--measure` drives an output, times how long the watched input takes to answer, and prints the milliseconds
 that become `close_settle_s` and `engage_timeout_s`. It never moves the arm. Run it a few times and
@@ -241,8 +247,11 @@ Every write is gated behind `--yes`, and in a non-interactive shell the gate ref
 prompt that reads end-of-file and takes the default is how an unattended script drives a coil nobody
 authorised. From Python the gate is a required `confirm` argument with no default (section 6).
 
-Take `--port` seriously. Standard output 4 is in the control cabinet; tool output 4 is on the wrist. A
-tool-mounted gripper is usually on `tool`, which both config blocks default to.
+Take `--port` seriously. Standard output 4 is in the control cabinet; the wrist has no tool output 4. A
+tool-mounted gripper is usually on `tool`, which both config blocks default to, and the UR tool connector
+has two digital outputs and two inputs, 0 and 1 each: with `io_port: tool` the load refuses any pin above 1
+in `jaw_io` and in `vacuum`. A pin number measured in the control box needs `io_port: standard` or
+`configurable`.
 
 ### What `connect()` does depends on your wiring
 
@@ -253,47 +262,91 @@ tool-mounted gripper is usually on `tool`, which both config blocks default to.
 | end-stop switches wired | reads them; **opens only on an empty reading**, holds a detected part and warns so a person decides |
 | no switches, `open_on_connect_without_feedback: true` | **opens unconditionally**, and anything held is dropped (refused for `single_toggle`) |
 | no switches, flag off | does not actuate at all |
-| `single_toggle`, no `open_confirm_input_pin` | never pulses, and **starts from its record** of its own pulses (`logs/robot/state`); refuses to pulse while the record says a pulse was not seen to finish, and takes the jaws to stand open only where there is no record at all |
-| `single_toggle` with `open_confirm_input_pin` | reads the switches: no pulse where they read open, one pulse where both prove the jaws **closed on nothing**, and **refuses to connect** otherwise |
+| `confirm_open_at_start: true` on a solenoid | first **asks** whether the jaws stand open, as a toggle does, then the row above that fits |
+| `single_toggle` | **asks** whether the jaws stand open, before anything moves; closed is answered with one pulse to open them or an abort; with no terminal the connect is refused |
 
-`single_toggle` is one output where every pulse flips the jaws. The pin level says nothing about
-them, so without an open switch the driver counts its own pulses and writes the count down after
-every one, one record per controller, bank and pin under `logs/robot/state` (`WILLY_JAW_STATE_DIR`
-moves it). The next program starts from it, so a program that ended with the jaws closed no longer
-inverts the one after it. A pulse the count never saw still inverts every later command: one lost
-to an e-stop or a cable, the pendant's I/O tab, a power cut mid stroke. An open switch makes that
-harmless, if `close_timeout_s` is longer than the full stroke: a switch that has not answered by then
-reads as a lost pulse. A closed switch alone is refused. Measure the pulse the device needs with
-`python -m src.robot.drivers.ur --pulse 0 --for 0.2 --yes`: one call must flip the jaws once.
+### A single toggle asks where its jaws stand
 
-That bench pulse is one the driver does not count either. So once it is confirmed, and before the
-edge, the bench marks the toggle's record, as it does for `--set` and `--measure` on that pin, and the
-next program refuses to pulse until a person has looked at the jaws and said where they stand:
+`single_toggle` is one output where every pulse flips the jaws, and nothing is read back: the schema
+refuses a feedback input on it, and `confirm_open_at_start: false`. The owner's Hand-E on the Robotiq
+I/O Coupling is one. So the program counts its own pulses, and only a person can say where the count
+starts. The gripper's connect, which a program makes once at its start after the arm connects and
+before anything moves, asks at the terminal:
 
-```bash
-python -m src.robot.drivers.ur --profile <cell> --jaws-stand open --yes   # or closed: what you saw
-python -m src.robot.drivers.ur --profile <cell> --jaws open --yes         # moves them through the count
+```text
+The jaws of the single_toggle hand on tool output 0: every pulse flips them and nothing reads them back, ...
+Look at them. Do they stand OPEN? [Enter or 'open' = open, 'closed' = closed]:
+They stand CLOSED. [p] open them now with one pulse on tool output 0, which releases anything between them; [a] abort:
 ```
 
-Declare after anything that moved the jaws behind the driver's back, and move them afterwards with
-`--jaws open` (or `closed`), which pulses only where the count says they stand the other way and
-records the pulse. Never move them by hand. A device that keeps its own flip state is not moved by a
-hand pushing its jaws open: its next pulse only brings that state round, nothing visibly moves, and
-every command after it is inverted, so a pick closes nothing and the place closes at the tray.
-An open switch that does not read open at connect refuses the connect, because a held part and a switch
-nobody wired read the same, and the second would swallow every close.
+Enter or `open` starts the count open. `closed` offers `p`, one pulse there and then, after which the
+stroke (`close_settle_s`) is waited out, or `a`, which refuses the connect and rolls the arm back.
+With no terminal, and no question handed to the driver (`JawIOGripper(..., ask=...)`), the connect is
+refused in one line. Nothing is kept between programs: the next one asks again, so a pulse from the
+pendant's I/O tab or a bench `--pulse` between programs costs nothing.
+
+Only a key pressed after a question is shown answers it. Before each question at the terminal the
+console's typeahead is discarded: an Enter pressed while the models loaded, or meant as push-to-talk in
+examples 12 and 13, used to answer the connect question unseen, and with the jaws really closed every
+command after it ran inverted. A question handed in with `ask=` owns its input and is not drained. The
+hand counts as connected only once the answer is in and any pulse it chose has gone out: while the
+question waits, every command is refused, and a disconnect from another thread refuses the connect.
+
+From there every pulse flips the count, whatever verb sent it:
+
+| Verb | Pulses |
+|---|---|
+| a pick, before the arm moves | **none**, whatever `pre_open_mm` says; where the count says closed (a pick with no place before it) or cannot say, the pick asks again, and with nobody to ask it is refused before any motion |
+| a pick, at the part | exactly one, then `close_settle_s` |
+| a place or a release | one where the count says closed, then `close_settle_s`; none where it says open, and the report says `already open` |
+
+At a pick start the question takes a word, not Enter:
+
+```text
+Look at them. Do they stand OPEN? [type 'open' or 'closed'; Enter alone is no answer here]:
+```
+
+The program already believes the jaws stand closed there, so an empty line is asked again ("An empty
+line is no answer here."), and three answers that are none of the choices refuse the pick. A question
+whose connection changed while it waited, a disconnect or a reconnect from another thread, is refused
+without a pulse, and its answer is not acted on.
+
+The count flips only once the pin has read back HIGH, not when the write returns: a write the
+controller accepted says nothing about the pin (a wrong bank, a reserved pin). The driver reads the
+output back every 8 ms, one CB3 cycle, for about `pulse_s` and two cycles, 50 ms at least. A pin that
+never reads HIGH flips nothing, the low is still sent, and the command raises, naming the bank and the
+pin: the output never read HIGH, so nobody can say whether the jaws flipped. No further pulse goes out
+until the next pick's question,
+or the next connect's, has a person say where the jaws stand. A pin that still reads HIGH before a pulse
+would give no edge, so nothing is sent. The solenoids read their writes back the same way and raise
+where a level or a coil never shows.
+
+A toggle takes no width: `set_width_mm` is refused, the hand verbs and the pick loop say open or close,
+and the load does not ask `closed_below_mm` to sit between the widths. Nothing measures the jaws, so a
+pick counts as grasped and its report says `hold not checked (no sensor)`, with no millimetres.
+
+A pulse the count never saw inverts every later command: one lost to an e-stop or a cable, a power cut
+mid stroke. Nothing on this wiring can notice it; the next program's question is where a person puts it
+right. Measure the pulse the device needs with
+`python -m src.robot.drivers.ur --profile NAME --pulse 0 --for 0.2 --yes`: one call must flip the jaws
+once. The load refuses a `pulse_s` under 0.05 s for `single_toggle` and `double_solenoid`, several
+controller cycles, and the desk warns (`toggle pulse`) while a toggle's is under 0.1 s. `--jaws open`
+(or `closed`) moves them through the driver, which asks the question first. Never move them by hand: a
+device that keeps its own flip state is not moved by a hand pushing its jaws open.
+
+### The travel time
 
 Where no switch is read, `close_settle_s` is the only wait there is, on a close and on an open: the
 arm moves on that long after the edge, whether the jaws have arrived or not. Its schema default,
 0.3 s, is a small cylinder's stroke, and a Hand-E on its I/O coupling can take about 2 s. Time the
-full stroke both ways, with `--measure` where an input answers it (then declare, as after any bench
-pulse on the toggle's pin) or by stopwatch or video, and set `close_settle_s` to the longer, with a
-margin. The desk warns (`jaw travel time`) while it is still the default.
+full stroke both ways, with `--measure` where an input answers it or by stopwatch or video, and set
+`close_settle_s` to the longer, with a margin. The desk warns (`jaw travel time`) while it is still the
+default.
 
-**`closed_below_mm` reads only the widths you send yourself.** A digital-I/O jaw closes at or below it
+**`closed_below_mm` reads only the widths you send yourself.** A solenoid jaw closes at or below it
 and opens above it when it is given a width (`set_width_mm`). The hand verbs (`pick`, `place`, `grasp`,
 `release`) and the pick loop tell `jaw_io` open or close by what they mean instead, so no width turns a
-verb round. The load refuses a value at or above `max_width_mm` or below `min_width_mm`.
+verb round. For a solenoid the load refuses a value at or above `max_width_mm` or below `min_width_mm`.
 
 `vacuum` differs on purpose: it asserts off on connect, because releasing a latched cup is cheap, while
 opening jaws that hold a rigid part drops it wherever the arm stands. Its `disconnect()` never raises,
@@ -374,7 +427,7 @@ On a cell whose cameras are handed in, `Robot.from_tree(tree, cameras=[camera])`
 every motion plans against the live world, and a declined motion is refused there. Pass the target's
 `SegmentationOffer` as `keep_out=` (a `Locator` result's `keep_out(i)` gives one), and the part is held out
 of the planner world through every motion of the pick
-([`examples/real_robot/11_locate_and_pick.py`](../../examples/real_robot/11_locate_and_pick.py)). The report
+([`examples/real_robot/13_speak_pick_and_hand_handover.py`](../../examples/real_robot/13_speak_pick_and_hand_handover.py)). The report
 carries the camera-world stamp of each motion, the line reading taken before the first one, and the hand
 report.
 

@@ -11,8 +11,10 @@ part_width_mm = 40.0  # measure the part you will hold; the close aims 1 mm unde
 
 # Nothing here moves the arm, so no camera world is asked for. The fingers move: keep hands clear.
 # Connecting takes the lock, the arm, then the hand, and a hand may sweep its fingers as it activates.
+# A hand that toggles on one output with no sensor (jaw_io single_toggle) asks here, in this terminal,
+# whether its jaws stand open, and counts its own pulses from your answer.
 with robot.connected():
-    print(robot.release())  # open to the hand's full width
+    print(robot.release())  # open to the hand's full width; a toggle already open says so and sends nothing
     input("Place the part between the open fingers, step back, and press Enter: ")
     print(robot.grasp(part_width_mm - 1.0))
     hold = robot.is_holding()  # reads the hand again and commands nothing
@@ -24,6 +26,7 @@ with robot.connected():
 #   EMPTY       the fingers reached the width they were sent to, so nothing is between them
 #   UNMEASURED  nothing could say: no sensor, fingers still travelling, or a driver that cannot tell
 # A close that measured EMPTY reports NOTHING_HELD. A release that still measures a part reports
-# RELEASE_NOT_CONFIRMED, and the arm keeps modelling the part it carries.
+# RELEASE_NOT_CONFIRMED, and the arm keeps modelling the part it carries. A toggle hand reports no
+# width at all and says "hold not checked (no sensor)": nothing on it can measure either.
 if hold is HoldEvidence.UNMEASURED:
     print("this hand measures no hold: GRASPED above is what was commanded, not what was felt")

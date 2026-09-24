@@ -2,10 +2,11 @@
 
 Drives the vendor-neutral :class:`src.robot.execution.CalibrationRoutine`, the same loop real
 hardware uses: move, settle, read FK, detect the marker, add the sample, solve AX=XB. The marker
-source is injected by the sim (a ground-truth prim pose or a rendered-ArUco PnP solve) and the
-look-at viewpoints aim the wrist camera at the calibration marker. Every scene, prim and
-calibration value comes from the sim config, the ``config`` tree under the ``sim`` profile; nothing
-is hardcoded here. The recovered ``T_cam_to_tool`` is validated against the empirical ground-truth
+source is injected by the sim (a ground-truth prim pose or a rendered-ArUco PnP solve), and the
+stations are the ones declared for the robot model (``calibration/stations/eih_<model>.json``, TCP
+poses whose wrist camera looks at the scene marker from a ring of views, or ``--stations PATH``).
+Every scene, prim and calibration value comes from the sim config, the ``config`` tree under the
+``sim`` profile, and the stations from their file; nothing is generated here. The recovered ``T_cam_to_tool`` is validated against the empirical ground-truth
 oracle and persisted alongside the schema-versioned dataset and a typed transform dict.
 
 Run with Isaac's bundled python:
@@ -66,12 +67,18 @@ def sim_aruco_target(block, key: str):
 
 def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id: str = "wrist",
               data_dir: str | None = None, save_dir: str = DEFAULT_SAVE_DIR,
-              cell_kwargs: dict | None = None):
-    """Run the eye-in-hand calibration end-to-end via CalibrationRoutine. Returns a dict report."""
+              cell_kwargs: dict | None = None, stations: str | None = None):
+    """Run the eye-in-hand calibration end-to-end via CalibrationRoutine. Returns a dict report.
+
+    ``stations`` is a stations file of the caller's; left unset, the one declared for the cell's robot model. The
+    shipped ones look at the scene marker through the wrist mount the sim authors; a scene whose marker or camera
+    mount moved needs stations of its own.
+    """
     from src.calibration.eye_hand.types import MountingMode
     from src.calibration.quality import classify_rmse
     from src.robot.execution import CalibrationRoutine
     from src.robot.execution.hand_eye import print_sweep_progress
+    from src.robot.execution.pose_provider import load_stations
 
     cfg = load_sim_config(data_dir)
     he = cfg.camera.hand_eye.eye_in_hand          # marker length + dict + sample thresholds
@@ -118,9 +125,9 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
         ArucoMarkerPoseSource,
         GroundTruthMarkerPoseSource,
         MarkerPoseSource,
-        generate_hemisphere_viewpoints,
         transform_delta,
     )
+    from src.willy_sim.calibration.paths import declared_stations
 
     print("\n========== EIH CALIBRATION (CalibrationRoutine) ==========", flush=True)
     # 1) initial empirical oracle (camera must see the table here). The camera world is declined for
@@ -147,15 +154,11 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
         camera_id, marker, sim.robot_model, save_dir, fit_rmse,
     )
 
-    # 2) look-at viewpoints around the marker (from config).
-    vp = scene.eih_viewpoints
-    marker_pos_mm = np.asarray(scene.marker.position_mm, dtype=np.float64)
-    viewpoints = generate_hemisphere_viewpoints(
-        marker_pos_mm, oracle,
-        radii_mm=vp.radii_mm, elevations_deg=vp.elevations_deg, azimuths_deg=vp.azimuths_deg,
-    )
-    tcp_poses = [v.tcp_pose for v in viewpoints]
-    print(f"planned {len(tcp_poses)} viewpoints around marker {np.round(marker_pos_mm, 1)}", flush=True)
+    # 2) the declared stations that look at the marker.
+    stations_path = declared_stations("eih", sim.robot_model, stations)
+    tcp_poses = load_stations(stations_path)
+    print(f"{len(tcp_poses)} declared stations from {stations_path}, around marker "
+          f"{np.round(np.asarray(scene.marker.position_mm, dtype=np.float64), 1)}", flush=True)
 
     # 3) marker source (swappable perception seam) wrapped as a render-pumping MarkerPoseProvider.
     src: MarkerPoseSource
@@ -274,10 +277,13 @@ def main() -> None:
     ap.add_argument("--camera", type=str, default="wrist",
                     help="camera id for the keyed typed artifact eih_<camera>.json (rig_id).")
     ap.add_argument("--data-dir", type=str, default=None, help="override the sim config tree")
+    ap.add_argument("--stations", type=str, default=None, metavar="PATH",
+                    help="a stations file to sweep (poses or joint stations, see pose_provider); default: the one "
+                         "declared for the robot model, calibration/stations/eih_<model>.json")
     add_cell_arguments(ap)   # --robot-model / --profile (artifacts namespace per robot)
     args = ap.parse_args()
     calibrate(headless=not (args.gui or args.no_headless), marker=args.marker, camera_id=args.camera,
-              data_dir=args.data_dir, cell_kwargs=cell_profile_kwargs(args))
+              data_dir=args.data_dir, cell_kwargs=cell_profile_kwargs(args), stations=args.stations)
 
 
 if __name__ == "__main__":

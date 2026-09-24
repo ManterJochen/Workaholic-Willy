@@ -71,15 +71,16 @@ Validate the tree, then open the device without moving anything:
 
 ```bash
 python -m src.config
-python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --dry-run
+python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --freedrive --dry-run
 ```
 
-`--dry-run` runs the arm-vendor readiness gate, builds the arm alone with no gripper, opens exactly
-that one rig through its `Camera` owner, and prints the arm, the cell lock the sweep will take,
-whether the camera answered with intrinsics, and what the arm's safety pipeline refuses. Then it
-stops, before any motion and without taking the lock. On a host without the arm vendor's SDK it
-refuses at the build, as a pick run on the same tree does. For the detector and segmenter on
-real frames with no robot:
+`--freedrive` names one of the two ways to give the sweep its poses (section 5); every run names
+one, a dry run included. `--dry-run` runs the arm-vendor readiness gate, builds the arm alone with no
+gripper, opens exactly that one rig through its `Camera` owner, and prints the arm, the cell lock the
+sweep will take, whether the camera answered with intrinsics, and what the arm's safety pipeline
+refuses. Then it stops, before any motion and without taking the lock. On a host without the arm
+vendor's SDK it refuses at the build, as a pick run on the same tree does. For the detector and
+segmenter on real frames with no robot:
 
 ```bash
 python -m src.robot.perception --prompt "a red cube" --rig realsense_d435
@@ -105,12 +106,12 @@ dictionary, the edges and, for a marker, its id must match the configuration exa
   even number of rows: read in the other layout it shows its markers and no corners, and the sweep
   says `legacy_pattern` on every such pose.
 - Mount it flat and rigid. A board that flexes or shifts ruins every sample after it moves.
-- Eye-to-hand: fix it to the tool so it cannot move relative to the TCP, and so it faces the camera
-  all through the sweep. The poses are tool-down with at least 30 degrees of spread, so a board
-  bolted flat to a downward-pointing flange can end up facing away from an overhead camera. Jog the
-  extremes first.
+- Eye-to-hand: fix it to the tool so it cannot move relative to the TCP. It has to face the camera
+  at every pose: guided by hand you turn it toward the camera as you go, and fixed poses have to
+  turn it themselves (a board bolted flat to a flange that points down shows an overhead camera its
+  face, and any other camera its edge; section 5).
 - Eye-in-hand: fix the board in the workspace where the wrist camera can see it from many
-  viewpoints.
+  viewpoints, near enough the middle of the arm's reach that you can walk the camera round it.
 - Diffuse light, no glare, steady exposure, marker in focus and fully in frame.
 
 Rotational diversity is not a nicety. `BaseEyeHandCalibrator._assert_ready` in
@@ -168,13 +169,16 @@ YAML alone. The Isaac runners render one ArUco marker, so they refuse a board `t
 sentence.
 
 `robot.calibration` in [`config/robot/robot.yaml`](../config/robot/robot.yaml) holds `settle_time_s`
-(0.5 s), `orientation_spread_deg` (15.0), `max_attempts_per_pose` (200) and `quality_bands_mm`. The
-runner raises the spread to at least 30 degrees on its own, because a planar ArUco viewed
-near-frontally has an IPPE flip ambiguity that wrecks the AX=XB rotation.
+(0.5 s), `freedrive_samples` (15, how many counted poses end a run guided by hand) and
+`quality_bands_mm`. Nothing there shapes a pose, because nothing generates one: the poses are written
+down, taught, or guided by hand (section 5). Tilt them: a planar ArUco viewed near-frontally has an
+IPPE flip ambiguity that wrecks the AX=XB rotation, so views 20 to 40 degrees off face-on count for
+more than views straight on, and the preview shows each view's tilt while you guide the arm.
 
-`robot.workspace_limits` decides where the arm goes. `PoseProvider.generate` samples positions
-inside that box and the workspace guard gates every pose. Shrink the box to a region that is safe and
-where the marker stays visible before you run a sweep.
+`robot.workspace_limits` decides where a station may be: the screen skips a station of a file whose
+grasp centre lies outside it, the arm's own gate refuses a pose outside it, and while you guide the arm
+a pose outside it turns the preview red and is not captured. Shrink the box to a region that is safe
+and where the marker stays visible before you run.
 
 **Until the sweep has run, the rig has no `extrinsics` block at all.** Not a block with an empty
 `artifact_path`, which the tree refuses to load, and so every program with it, the sweep included; and
@@ -247,11 +251,22 @@ camera. Write `bracket: null` only for a camera held by nothing the planner has 
 sweep has run, the rig's `extrinsics` block also needs `record_tolerance_mm` and `record_tolerance_deg`
 (section 5), because the body is placed from the flange to TCP the calibration recorded.
 
-## 5. Rehearse, then run the sweep
+## 5. Rehearse, then collect the samples
+
+Nothing generates a calibration pose. There are two ways to give the sweep its poses, and each run
+names one:
+
+- **By hand** (`--freedrive`): you move the arm to each pose yourself, and nothing moves by itself.
+  It needs an arm that offers hand guiding (`SupportsFreedrive`; on a UR, its teach mode).
+- **Fixed stations** (`--fixed-poses stations.json`): the arm drives to stations somebody wrote down,
+  taught on the pendant, or guided the arm to in an earlier run. `--adjust` frees the arm at each
+  station it reached, so you fine-tune the view by hand before it is captured.
+
+A run that names neither is refused at `--check`. Both mountings take both ways.
 
 ```bash
-python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --check
-python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --dry-run
+python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --freedrive --check
+python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --freedrive --dry-run
 ```
 
 `--check` validates the configuration and the rig and touches no hardware. On a cuRobo UR cell that
@@ -263,47 +278,164 @@ is one such combination, and so is a declared `safety.planning_world.payload.len
 16 attach slots and needs a file measured with them (`_a16`), where `payload.enabled: false` plans on the
 committed `_a0` file. An undeclared margin is left to `real_cell --check`, which blocks on it with its own
 fix, so run that first. `--dry-run` builds the arm and opens that one camera, then stops before any
-motion; it starts no planner either. Neither moves the robot. Both use the
-rig id you declared in section 2, so on a tree that has no such rig they refuse by name and list the
-rigs that do exist. The same check, dry run and sweep from Python are
-[`examples/real_robot/07_calibrate_a_fixed_camera.py`](../examples/real_robot/07_calibrate_a_fixed_camera.py),
-whose last call is the sweep.
+motion; it starts no planner either, and an arm that offers no hand guiding is refused there for
+`--freedrive` and `--adjust`. Neither moves the robot. Both use the rig id you declared in section 2,
+so on a tree that has no such rig they refuse by name and list the rigs that do exist. The same check,
+dry run and run from Python are
+[`examples/real_robot/07_calibrate_a_fixed_camera.py`](../examples/real_robot/07_calibrate_a_fixed_camera.py)
+(by hand) and [`08`](../examples/real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py) (fixed
+poses) for a fixed camera, and [`09`](../examples/real_robot/09_calibrate_a_wrist_camera.py) (by hand) and
+[`10`](../examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py) (fixed stations, adjusted)
+for a wrist camera.
 
-The sweep does move. Clear the cell, keep hands out, keep the emergency stop in reach.
+Either way the run takes the cell lock before the arm is commanded. That is the lock a pick run and
+the operator console take for the same controller, so while either holds the cell the run exits `1`
+and names the holder: end the console's session first. Then it connects the arm alone. No gripper is
+built or activated, so a Robotiq does not run its activation stroke beside the board. On the way out
+the arm comes down and the lock is given back before the camera is, and the teardown is printed.
+
+Per pose: settle, read the actual TCP pose with `arm.get_tcp_pose()`, grab a frame, detect the target,
+offer the pair to the calibrator. A sample is kept only if it beats `min_distance_mm` or `min_angle`
+against every stored sample, and a missing marker drops it too. The frame of every counted sample is
+written beside the dataset, to `<out>/<mode>_<rig>_images/`.
+
+### By hand: `--freedrive`
 
 ```bash
-python -m src.robot.execution.real_cell.calibrate \
-    --rig realsense_d435 --mode eye_to_hand --poses 22 --marker-length-mm 49.6
+python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --mode eye_to_hand --freedrive \
+    --marker-length-mm 49.6
 ```
 
-It takes the cell lock before the arm is commanded. That is the lock a pick run and the operator
-console take for the same controller, so while either holds the cell the sweep exits `1` and names
-the holder: end the console's session first. Then it connects the arm alone. No gripper is built or
-activated, so a Robotiq does not run its activation stroke beside the board. On the way out the arm
-comes down and the lock is given back before the camera is, and the teardown is printed.
+1. **The payload first.** Before the arm is first freed, the console shows the payload the controller
+   compensates for (its mass and centre of gravity) and asks `Is this payload right (hand + camera +
+   bracket)? Enter = yes`. A wrong payload makes a freed arm sink or rise in your hands, so anything
+   but Enter stops the run with nothing freed: set the payload on the pendant (Installation, Payload)
+   and run again. An arm that cannot report its payload says so and still asks. This is asked once.
+2. **Move the arm, then Enter.** The console, the preview window's banner and the terminal bell call
+   you to move the arm by hand to a pose where the camera sees the board. Press Enter in the console,
+   or Enter or Space in the preview window. `s` skips a target, `q` (or ESC in the window) finishes.
+3. **Stillness, then the capture.** After Enter the arm has to stand still, its fastest joint below
+   about 1 deg/s for half a second; an arm still moving after five seconds is not captured, and the
+   console says so. Then the arm is held (teach mode ends), settles, its TCP is read, one frame is
+   judged, the verdict is printed with its reason, and the arm is freed again for the next pose.
+4. **It ends** at `--samples` counted (the tree's `robot.calibration.freedrive_samples`, 15), or when
+   you finish. The solve then runs as for any sweep.
 
-Per pose: move, settle, read the actual TCP pose with `arm.get_tcp_pose()`, grab a frame, detect the
-target, offer the pair to the calibrator. A sample is kept only if it beats `min_distance_mm` or
-`min_angle` against every stored sample, and a refused move or a missing marker drops it too. A
-wait for the arm to settle that ends with the arm still moving is waited once more, and after a
-second one the pose is skipped as `not_steady` with no frame taken. Every move declines the camera
-world, because the sweep is what produces the transform a camera world needs: on a cuRobo cell each
-move's result says `DECLINED` with the mounting's reason, where an undeclined move is refused before
-planning with `MISSING`.
+While the arm is free, the preview shows the live camera with what it sees of the board (the corners
+found, the reprojection error in pixels, the distance and the tilt of the board's face against the line
+of sight), whether the pose the arm stands at would count by the calibrator's diversity rule and how
+far the nearest counted pose is, and the count against the target. With `--fixed-poses stations.json`
+beside `--freedrive`, the file's stations are targets and are never moved to: the preview shows the
+way to the current one in the tool's own terms (millimetres along the tool's x, y and z, and degrees
+about them), with a bar that fills as you close in, and moves on to the next after each counted
+capture.
 
-The generated poses run in bearing order round the base, `atan2(y, x)`, starting at the end nearer
-where the tool stands, rather than in the order they were drawn. In the order drawn, the base swings
-back and forth across the box: on a 22-pose sweep planned with cuRobo on a UR10 descriptor (the
-calibration chain's GPU probe, not a physical arm), the joints travelled 188.8 and 201.2 rad in the
-order drawn and 77.1 and 80.0 rad in bearing order. The poses themselves are the same.
+**The boundaries are shown, never enforced.** Every sample is checked against the cable window (the
+joint-limit guard's window, half a turn either side of home on a cell that sets
+`safety.joint_limits.within_half_turn_of_home`, less its margin) and the workspace box. Outside, the
+preview turns red with a sentence that names the joint, its angle and the allowed range, or the box
+face and how far past it the TCP stands, and Enter does not capture there. The arm is never held,
+locked or stopped because of a boundary: an arm that locks while a person pushes it is how a hand gets
+caught. Guide it back inside.
 
-A refused move skips its pose and the sweep goes on, when nothing moved: a planner or a gate said
-no. The sweep stops at a pose, commands nothing after it, keeps the samples it has in the dataset
-and exits `3` naming the pose, when the arm may stand somewhere nobody judged or cannot be commanded
-at all: a move that ended `connection_error`, a `controller_rejected` whose message says the command
-had been sent (a protective stop in the middle of a move reads like this), or any failed move after
-which the controller reports a protective or emergency stop. Clear the cause at the pendant and run
-the sweep again.
+**Leaving always holds the arm.** Finishing, Ctrl-C in the console, an error in the run and closing
+the preview window all end the hand guiding, and ending it holds the arm where it stands. If the
+Python process itself dies, the driver's watchdog locks the arm: the software reads the arm 50 times a
+second while it is free, and that reading is what keeps the watchdog fed. The arm does not drive by
+itself anywhere in this flow.
+
+Every pose you count is also written to `<out>/<mode>_<rig>_stations.json`, one joint station per pose
+(its joints in degrees, and the TCP it stood at as a note), as it is taken. The report prints that path
+with `replay without hands: --fixed-poses <path>`: the next calibration can drive to exactly those
+poses without anybody at the arm, or with `--adjust` to fine-tune them again. A run that replays the
+very file it would write never overwrites it: it writes `<out>/<mode>_<rig>_stations.adjusted.json`
+beside it and says so, so a run stopped with `q` after one station cannot cost you the stations you
+taught. A run that counted nothing names no stations file at all, even where an older one lies.
+
+### Fixed stations: `--fixed-poses`, and `--adjust`
+
+`SweepOptions(fixed_poses="stations.json")`, or `--fixed-poses stations.json` on the command line,
+runs the stations a JSON file lists, in the order it lists them. The file is a list, and each record
+is one of:
+
+```json
+[
+  {"label": "look_0", "joints_deg": [160.9, -105.2, 130.6, -115.4, -90.0, -19.1]},
+  {"label": "look_1", "joints_rad": [2.887, -1.541, 2.042, -1.742, -1.655, -0.241]},
+  {"label": "look_2", "x": 500.0, "y": -140.0, "z": 320.0, "rx": -1.6997, "ry": 2.2968, "rz": 0.4804}
+]
+```
+
+A pose is millimetres and an axis-angle rotation in radians in the robot's base frame, as the pendant
+shows a TCP pose, and the arm plans to it as to any pose. A joint station is six joint angles from the
+base to the last wrist joint (on a UR the pendant's order: base, shoulder, elbow, wrist 1, wrist 2,
+wrist 3), in degrees or in radians, as its key says; a hand-guided run's file adds `tcp_pose`, a note
+that is never run. Teach a station on the pendant and copy its joint angles, or guide the arm once with
+`--freedrive` and replay its file: the arm then goes to exactly that configuration, whichever way a
+planner would have solved the pose. [`examples/real_robot/eih_fixed_stations.json`](../examples/real_robot/eih_fixed_stations.json)
+mixes both kinds as a template of the format; its numbers were solved for a bare flange on one arm
+model and taught on no cell, so teach your own. From Python a list works too: a `Pose` or a
+`JointStation` per station, as example 08 aims its poses so the flange board faces the camera.
+
+`--check` reads the file and checks every record before anything is built: one unit key, no pose keys
+beside it, six finite numbers, and units that can be what the key says. A `joints_rad` value beyond
+one full turn (2 pi) is refused as probably degrees, a `joints_deg` value beyond 360 as beyond any
+joint, and a `joints_deg` record whose every value lies within 2 pi as probably radians. Nothing
+rewrites a value. The config stage then says how many stations the file holds and how many are joint
+stations:
+
+```text
+  poses      6 from stations.json, 4 of them joint stations
+```
+
+At the cell, each station is screened as the sweep reaches it, before it moves. A joint move does not
+pass the workspace box, so for a joint station the sweep reads where its joints put the grasp centre
+from the arm's own forward kinematics (on a UR, the controller's, with the tool frame, as the home gate
+reads home) and boxes that. A station whose grasp centre lies outside `workspace_limits`, or within
+both `min_distance_mm` and `min_angle` of a station kept before it, is reported with its label and
+reason (`outside_workspace`, `too_similar`) and never moved to; so is a pose of the file, and so is a
+joint station whose grasp centre the arm cannot place (`not_boxed`). A joint station that passes is
+sent as one joint move to the joints written; the arm takes each joint the full turn nearest where it
+stands inside its cable window, and judges that move as it judges any joint move, so the move that was
+judged is the move that runs. The first leg starts wherever the arm stands, so start from home.
+
+**This moves the robot.** Clear the cell, keep hands out, keep the emergency stop in reach.
+
+```bash
+python -m src.robot.execution.real_cell.calibrate --rig wrist --mode eye_in_hand \
+    --fixed-poses stations.json --adjust
+```
+
+**`--adjust`** stops at every station the arm reached and frees it: the payload is confirmed once
+before the first move, as above, and then at each station the console, the banner and the bell ask
+you to adjust the arm by hand until the view is right and press Enter. The stillness gate, the red
+boundaries, `s` (skip this station) and `q` (finish here) work as in `--freedrive`, and the station is
+judged where you left it. **Before the arm drives by itself again**, the console asks `Hands off the
+arm - Enter to continue (q finishes here)`. Only Enter (or `y`) lets it go on; `q` finishes there,
+and any other answer (`n`, `stop`, `wait`) is refused and asked again, never taken as a yes. It then
+counts down `3`, `2`, `1` on the console and in the window (`the arm moves by itself in 3 s (q
+finishes, Ctrl-C stops)`), and keeps listening while it counts: `q` in the console or the window, ESC,
+or closing the window finishes before anything moves, any other key stops the countdown and asks
+again, and Ctrl-C in the console stops the program. Ctrl-C typed into the window reaches no program,
+and the window says so. The first move of a run is not preceded by it, because
+nobody has touched the arm yet; a routine that was hand-guided earlier asks it before its first move
+too, whichever sweep runs next. Every station counted this way is written to
+`<out>/<mode>_<rig>_stations.json` as it stood after your adjustment (or to the `.adjusted.json`
+beside it when you replay that very file), so the next run replays the adjusted stations.
+
+Without `--adjust` the stations run without hands, on any arm, hand guiding or not.
+
+### What the run prints
+
+A refused move skips its pose and the sweep goes on, when nothing moved: a planner or a gate said no.
+The sweep stops at a pose, commands nothing after it, keeps the samples it has in the dataset and exits
+`3` naming the pose, when the arm may stand somewhere nobody judged or cannot be commanded at all: a
+move that ended `connection_error`, a `controller_rejected` whose message says the command had been
+sent (a protective stop in the middle of a move reads like this), or any failed move after which the
+controller reports a protective or emergency stop. Clear the cause at the pendant and run again. Every
+move declines the camera world, because the sweep is what produces the transform a camera world needs:
+on a cuRobo cell each move's result says `DECLINED` with the mounting's reason, where an undeclined move
+is refused before planning with `MISSING`.
 
 Each pose prints as it happens, and the result stage lists every pose again:
 
@@ -316,9 +448,10 @@ Each pose prints as it happens, and the result stage lists every pose again:
   pose  6/22 'look_5'  REJECTED move_rejected: workspace_rejected: ...
 ```
 
-A missing target says what the camera did see: no marker of the dictionary, another id, markers of
-another dictionary, or a board with too few corners. From Python the same lines come from
-`on_event=print_sweep_progress` (`from willy import print_sweep_progress`), as examples 07 to 10 do.
+A capture by hand prints the same lines without the `moving` one, numbered by capture. A missing target
+says what the camera did see: no marker of the dictionary, another id, markers of another dictionary,
+or a board with too few corners. From Python the same lines come from `on_event=print_sweep_progress`
+(`from willy import print_sweep_progress`), as examples 07 to 10 do.
 
 ### The preview window
 
@@ -327,7 +460,9 @@ live view, labelled `LIVE, not judged`, with whatever of the target is in view d
 pose is judged, the window pins the frame the sweep judged for 1.5 seconds. It draws the markers
 with their ids, a board's chessboard corners and the target's axes. Above the frame, a band says
 `COUNTED` in green or `REJECTED` in red, with the reason the console prints. A row of boxes along
-the bottom shows every pose of the sweep: green, red, or grey for not judged yet.
+the bottom shows every pose of the sweep: green, red, or grey for not judged yet. While you guide
+the arm it is also the guide's window, as described above: the way to the target, the live view of
+the board, and red outside a boundary.
 
 It opens with the sweep, once the arm is connected, and closes before the camera is given back.
 `--check` and `--dry-run` open no window. By default it opens only where three things hold: OpenCV
@@ -338,17 +473,20 @@ exactly what it printed before. `--preview` asks for the window by name, and the
 `WILLY_NO_PREVIEW=1` in the environment, keeps it shut. From Python it is
 `SweepOptions(preview="auto")`, as examples 07 to 10 do. The library opens no window unless asked.
 
-**The window is not a stop.** Pressing ESC or closing it closes the window, and the sweep goes on:
-the pendant stops the robot. On Windows, Ctrl+C typed while the window has the focus reaches the
-window, not the console. It does not stop the program either, and the preview says so once. To stop
-the program, click into the console first; to stop the robot, use the pendant.
+**The window is not a stop.** Pressing ESC or closing it closes the window, and a sweep that drives
+itself goes on: the pendant stops the robot. A run guided by hand finishes at its next prompt instead,
+and the arm is held. On Windows, Ctrl+C typed while the window has the focus reaches the window, not
+the console. It does not stop the program either, and the preview says so once. To stop the program,
+click into the console first; to stop the robot, use the pendant.
 
-The preview is display only. Its live frames come through the same camera owner as the sweep's own
-grabs, at most five a second. It poses them with an estimator of its own, and nothing it sees reaches
-the calibrator. The pose that counts is the one the sweep judged. A live grab can delay the judged
-grab by at most one frame. If the window fails, the preview switches off with one printed line and
-the sweep goes on. The window has been opened, drawn and closed on Windows with a synthetic camera.
-It has not run on Linux or beside a physical camera.
+The preview draws only. Its live frames come through the same camera owner as the sweep's own grabs,
+at most five a second. It poses them with an estimator of its own, and nothing it sees reaches the
+calibrator. The pose that counts is the one the sweep judged. A live grab can delay the judged grab by
+at most one frame. The window's thread never calls the arm: keys typed into it are handed to the run,
+which reads them on its own thread between two readings of the arm. If the window fails, the preview
+switches off with one printed line and the run goes on, with the console alone. The window has been
+opened, drawn and closed on Windows with a synthetic camera. It has not run on Linux or beside a
+physical camera.
 
 **On a UR, `get_tcp_pose()` is the controller's reported actual TCP, not a pose this code derives.**
 So the TCP offset configured in PolyScope determines every `A_i` the solver sees. Get that offset
@@ -356,148 +494,7 @@ wrong on the bench and the calibration converges cleanly onto the wrong answer: 
 healthy because it is internally consistent, and nothing downstream can tell. Verify the offset on
 the controller before the first pose, not after a bad result.
 
-### When the generated sweep sees nothing
-
-The generated poses are tool down, varying yaw and a small orientation spread about it, which is
-the right shape for a camera looking down on a board that lies flat. It is the wrong shape twice.
-A WRIST camera carried over a board on the table photographs the table beside it from anywhere but
-straight overhead, and a board bolted to the FLANGE shows a fixed camera an edge once the arm is
-off to one side. Yaw cannot fix either, because yaw about the vertical never tips anything toward
-anything. The sweep then collects too few samples and the failure looks like a solver problem.
-
-Aim the poses instead of tilting them. `Pose.aimed_at(x, y, z, target_mm=...)` points the tool's +Z
-at a point you name, so a ring of stations around a board all see it, and
-`SweepOptions(fixed_poses=[...])` runs exactly those poses in order through the same check, dry run
-and sweep. That suits a wrist camera that looks along the tool axis.
-[`examples/real_robot/08`](../examples/real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py)
-turns the flange board to face a fixed camera, and for that case you have to say roughly where the
-camera hangs, which is what the sweep is about to measure: a tape measure is accurate enough,
-because the aim only has to bring the board into frame. A wrist camera tilted off the tool axis, or
-on a bracket beside the hand, does not look where the tool points: aim the camera itself, as the next
-section and [`examples/real_robot/10`](../examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py)
-do.
-
-The aim is not a reachability claim. The arm's guards still judge every pose, and the run reports
-per pose whether the target was actually decoded, and if not, why; a station that saw nothing is a
-station to move. The preview window shows what that station saw.
-
-On a ring of aimed poses, pass `closing_axis="tangential"` (or `"radial"`) to `Pose.aimed_at`, as
-example 10's comment says. By default the roll follows the camera's bearing round the board: computed
-with `Pose` for a six-station ring round a board at (500, 0, 0) mm (the ring example 10 built before
-it aimed the camera), the tool's heading changes by 90 degrees from station to station and covers 270
-degrees, and wrist 3 has to follow it. With `"tangential"` the roll follows the base
-instead, and the same ring's headings stay within a 37 degree band. Planned with cuRobo on a UR10
-descriptor (the calibration chain's GPU probe, not a physical arm), the default ring took 5 of its 6
-legs the long way round, 58.4 rad of joint travel, and the tangential ring 11.8 rad.
-
-### A camera tilted beside the hand: aim the camera, not the tool
-
-`SweepOptions(aim=MarkerAim(marker_mm=(x, y, z)))`, or `--aim-at=x,y,z` with `--mode eye_in_hand`,
-aims the CAMERA at one marker lying flat, face up, at that point in the base frame (millimetres; a few
-centimetres of error is enough to aim, and the solve measures nothing from it). It needs one ArUco
-marker as the target, named in full for one run with `--board aruco:ID:SIZE_MM[:DICT]` or
-`SweepOptions(target=...)`; a ChArUco board is refused, because its pose sits at its corner and not
-where the aim looks. [`examples/real_robot/10`](../examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py)
-is this flow with a 150 mm `DICT_4X4_100` marker, id 50, at (-130, -700, 50) mm. What it does, in
-order (`src/robot/execution/camera_aim.py`, `CalibrationRoutine.run_aimed`):
-
-1. **One look, nothing moved.** Once the arm is connected, with the preview open, it waits for the
-   arm to report steady, reads the TCP and takes one judged frame where the arm stands. So stand the
-   arm first where the camera sees the marker, about the aim's distance from it and from one side
-   rather than from straight above. A look that sees no marker ends the run with nothing moved, exit
-   `3`, and the report says `NotAimed: ... Jog the arm ... then run this again`. The preview opens
-   only with the sweep, so to watch the camera while you jog, build the cell in the operator console
-   (`python -m api --profile <your cell>`, then Build; a build opens the cameras and moves nothing):
-   its camera view, `GET /v1/camera` ([`api/viewfinder.py`](../api/viewfinder.py)), is a frame taken
-   now, polled about six times a second. Stop the console before the sweep, which opens the camera
-   itself. [`examples/real_robot/06`](../examples/real_robot/06_open_a_camera.py) takes one frame,
-   where a still is enough.
-2. **Where the camera sits on the tool, from that one view.** The marker's normal is base +Z and the
-   line of sight runs to its centre; two such direction pairs fix the camera's rotation in the tool
-   frame, taking the camera to stand at the flange at first, and the view then fixes its position. One
-   view cannot tell where round the marker's vertical the camera stands, so the estimate takes the
-   place nearest the flange: a camera whose bracket runs the way it looks is estimated within 1 to 3
-   degrees, and one 80 mm to the side of that line is off by 11 to 13 degrees. What an aimed station
-   inherits is much less, because that error is one the look itself cannot see: measured on synthetic
-   geometry (2026-09-23), every station of the 17 rolled default views missed the marker by at most 1.1
-   degrees for the first camera and 3.7 in the worst case tried (the marker stated 28 mm from where it
-   lies), and by at most 1.2 after one more view. The colour image of a D415 is 69 by 42 degrees.
-3. **Seventeen views round the marker** (`DEFAULT_VIEWS`): the camera `distance_mm` from it (500 by
-   default), at the elevation and azimuth it has with the tool pointing down and at offsets of -12 to
-   +30 degrees in elevation and up to 60 in azimuth from there: a ring of seven, five higher, three
-   lower and two steep. Each station tilts the tool as little as it can from `Pose.tool_down` with the
-   aim's heading (`closing_axis`, `--closing-axis`), and then rolls the camera about its own line of
-   sight by 0, +45 or -45 degrees, the three in turn down the list: the camera stands where it stood,
-   the marker stays where it was in the image, and the image turns about it. On a camera tilted 45
-   degrees no station tilts more than about 41 degrees from its heading, and with the roll the tool
-   stands at most 41 degrees from straight down (31 with the heading kept). The roll is what lets
-   AX=XB measure the camera's turn about its own axis. With the heading kept, every turn between two
-   views is about an axis across the line of sight, and over every pair of the 17 the weakest axis of
-   those turns carried 1/70 of the strongest, 6 degrees from the optical axis. Measured on synthetic
-   geometry (2026-09-23; the owner's marker, a camera 70 mm out and 45 degrees toward the tool's +X, the
-   UR10 box less 20 mm, its reach and a half-turn window about an elbow-up home; each view's marker
-   pose disturbed by 0.5 degrees and 1 mm, depth by 0.4 %; 40 seeds), a point 500 mm down the optical
-   axis landed 5.0 mm off at the median (7.8 at the 90th percentile) with the heading kept, and 2.0
-   (4.7) rolled; at half that noise 2.5 (3.9) against 1.0 (2.4), at twice it 8.9 (12.8) against 4.0
-   (9.2). The Hand-E leaves about 5 mm a side on a 40 mm part. A roll the screen refuses gives way to
-   the view unrolled, so a roll never costs a view. The first set of eleven (offsets up to 15 and 40
-   degrees, no roll) counted fewer samples: with PnP-like noise on the synthetic camera, 8.3 and 9.0
-   on average from the two homes below against 11.7 and 15.0 for the seventeen with the heading kept,
-   and the solve's rotation error fell from about 1.1 to 0.6-0.8 degrees. Pass `MarkerAim(views=...)`
-   for a set of your own: `(elevation, azimuth)` or `(elevation, azimuth, roll)`, in degrees.
-4. **A heading that admits the views.** Which way the camera is tilted on the tool decides where it
-   has to stand to look at the marker. Under a heading written for a camera tilted toward the tool's
-   +X, one tilted toward -X looks away from the marker and has to stand beyond it: for the owner's
-   marker, 40 mm inside the box's edge at y -700, all 17 views then fall outside the box and nothing
-   moves. So before any station, the sweep counts the views the aim's `closing_axis` admits after the
-   screen below. Where that is fewer than the solve's `min_samples`, it counts them for `-y`, `y`, `x`
-   and `-x` too and keeps the one that admits the most, the one asked for winning a tie. The log and the
-   result stage's `heading` line say which, with every count: `heading 'y', not the '-y' asked: '-y'
-   admits 0 of the 17 views, fewer than the 6 the solve needs; 'y' admits the most (-y 0, y 17, x 10,
-   -x 11)`. A heading that admits enough is kept, even where another would admit more. Where none admits
-   enough, the sweep still moves to what it can reach, and the solve's refusal of too few samples comes
-   with every heading's count on that line. The viewing pose of examples 11, 13 and 18 falls back the
-   same way where its heading admits no view, and says so; write the heading this sweep kept into
-   their `CLOSING_AXIS` and they keep it without a word.
-5. **Screened before anything is commanded.** A view whose TCP or flange lies outside
-   `workspace_limits` less `safety.limits.workspace_margin_mm` (the margin the arm's own gate keeps),
-   whose flange no joint configuration reaches, or whose every configuration lies outside the joint
-   window the arm chooses a goal within (half a turn either side of home on a cell that sets
-   `safety.joint_limits.within_half_turn_of_home`, so a cable along the arm is never wound further), is
-   reported with its reason (`outside_workspace`, `out_of_reach`, `outside_joint_window`,
-   `too_tilted`) and never moved to. The rest are ordered by joint travel from where the arm stands,
-   each next the one the arm's nearest-goal choice reaches with the smallest turn. That needs the
-   arm's kinematic model and tool frame (a UR); without them they are ordered by the tool's travel.
-6. **Re-aimed as it sees.** Every view the marker is posed in refines the estimate (a small
-   least-squares fit over every view so far, the marker held flat, its measured position a weak prior)
-   and re-aims the views still to come. A refinement the views contradict, a marker that moved or does
-   not lie flat, is not taken and says so in the log.
-
-Measured on 2026-09-23 with the real UR10 driver and the real cuRobo sidecar on this repository's GPU
-PC (a Hand-E on the shipped 20 mm plate, a `willy` tool frame 156.2 mm along the flange, a 4 mm planner
-margin, the half-turn window about a home at the first look), a simulated controller that stands
-where each `moveJ` puts it, and a synthetic camera 70 mm out and 45 degrees toward the tool's +X
-looking at the owner's marker: from an elbow-up home 9 of the 11 views ran, in 20 `moveJ` and 15.5 rad
-of joint travel; from an elbow-down home 10 of 11, in 40.8 rad. The views that did not run were
-lower-ring views: every configuration near them folds the forearm onto wrist 2 in the planner's model,
-and cuRobo's own choice then ended outside the window (refused, `joint_limit_rejected`) or found no
-collision-free plan (`timeout`). On the synthetic frames the solve returned the mount exactly. No
-physical arm or camera was involved. Expect a view or two of the lower ring to be refused on a cell
-whose marker lies near the edge of the arm's reach; the shipped `min_samples` of 6 leaves room for
-that, and the refused view is reported with its reason.
-
-Every station is still a pose the arm plans and judges as it moves; nothing here makes a move that
-was not judged. The first look is not a sample. The result stage prints what the stations were aimed
-from (`aimed from` the first look, `re-aimed from` the last refinement) and the heading they kept
-(`heading`), and the pose table lists every view: counted, or why not.
-
-Which way the camera is tilted on the tool is not guessed. To aim from a mount you state when the
-first look sees nothing, pass `MarkerAim(..., mount_if_unseen=nominal_camera_in_tool(45.0,
-toward="+x", offset_mm=(x, y, z)))`: the optical axis turned 45 degrees from the tool's +Z toward the
-tool's +X, the axis the jaws close along, which on a `closing_axis="-y"` pose is base -Y. `"-x"` tilts
-it the other way, `"+y"` and `"-y"` toward the tool's other axis. The first station that sees the
-marker replaces the stated mount with its own estimate. The heading (item 4) is counted from the stated
-mount as it would be from a look.
+### The artifact
 
 Plan well above `min_samples`. The runner writes `eth_<rig_id>.json` (or `eih_<rig_id>.json`) plus
 the sample dataset under `calibration/real` unless `--out` says otherwise, and prints the rig block
@@ -517,59 +514,11 @@ Exit codes: `0` done, `1` configuration or build refused, the cell held by anoth
 connect refused, `2` it ran but wrote no artifact, `3` the sweep raised or stopped at a pose. Exit `2`
 is loud on purpose, because the cell then keeps whatever calibration it had.
 
-### Stations from a file, and stations as joint angles
-
-`SweepOptions(fixed_poses="stations.json")`, or `--fixed-poses stations.json` on the command line,
-runs the stations a JSON file lists, in the order it lists them. The file is a list, and each
-record is one of:
-
-```json
-[
-  {"label": "look_0", "joints_deg": [160.9, -105.2, 130.6, -115.4, -90.0, -19.1]},
-  {"label": "look_1", "joints_rad": [2.887, -1.541, 2.042, -1.742, -1.655, -0.241]},
-  {"label": "look_2", "x": 500.0, "y": -140.0, "z": 320.0, "rx": -1.6997, "ry": 2.2968, "rz": 0.4804}
-]
-```
-
-A pose is millimetres and an axis-angle rotation in radians in the robot's base frame, as the pendant
-shows a TCP pose, and the arm plans to it as to any pose. A joint station is six joint angles from
-the base to the last wrist joint (on a UR the pendant's order: base, shoulder, elbow, wrist 1,
-wrist 2, wrist 3), in degrees or in radians, as its key says. Teach a station on the pendant and
-copy its joint angles: the arm then goes to exactly that configuration, whichever way a planner
-would have solved the pose. [`examples/real_robot/eih_fixed_stations.json`](../examples/real_robot/eih_fixed_stations.json)
-mixes both. Its numbers are that six-station ring, solved for a bare flange on one arm model: teach your
-own. On a cell that keeps every joint within half a turn of home
-(`safety.joint_limits.within_half_turn_of_home`, which the UR10 profile turns on), a taught station must
-lie inside that window, less the guard's margin: the file's `look_2`, its base at 181.7 degrees, does for
-a home whose base faces the same way (near 180 degrees) and not for the default home (base at 0), where
-its move is refused naming the window.
-
-`--check` reads the file and checks every record before anything is built: one unit key, no pose
-keys beside it, six finite numbers, and units that can be what the key says. A `joints_rad` value
-beyond one full turn (2 pi) is refused as probably degrees, a `joints_deg` value beyond 360 as
-beyond any joint, and a `joints_deg` record whose every value lies within 2 pi as probably radians.
-Nothing rewrites a value. The config stage then says how many stations the file holds and how many
-are joint stations, and names each pair of neighbouring joint stations between which a joint turns
-more than half a turn (the same angle a full turn away would be nearer, and the station still runs as
-written):
-
-```text
-  poses      6 from stations.json, 4 of them joint stations
-  !! 'look_1' to 'look_2': wrist 3 turns +270 deg, more than half a turn; it runs as written, the long way round
-```
-
-At the cell, each station is screened as the sweep reaches it, before it moves. A joint move does not
-pass the workspace box, so for a joint station the sweep reads where its joints put the grasp centre
-from the arm's own forward kinematics (on a UR, the controller's, with the tool frame, as the home
-gate reads home) and boxes that. A station whose grasp centre lies outside `workspace_limits`, or
-within both `min_distance_mm` and `min_angle` of a station kept before it, is reported with its
-label and reason (`outside_workspace`, `too_similar`) and never moved to; so is a pose of the file,
-and so is a joint station whose grasp centre the arm cannot place (`not_boxed`).
-A joint station that passes is sent as one joint move to exactly the joints written. On a cuRobo UR
-that move is the straight joint line from where the arm stands, judged by the path guard and by the
-planner, and then run as one `moveJ` along that line, so the move that was judged is the move that
-runs. It is not routed round an obstacle: a line either of them refuses skips the station. The first
-leg starts wherever the arm stands, so start the sweep from home.
+**How far the ways by hand are proven.** The console, the stillness gate, the boundaries, the
+countdown and the stations file are exercised against a scripted arm in the offline suite. The teach
+mode behind them, its watchdog and the payload read are the UR driver's; none of it has run beside a
+physical arm yet, so hold the first hand-guided run to a slow, deliberate pace with the pendant in
+reach.
 
 ## 6. Read the residual honestly
 
@@ -621,8 +570,13 @@ camera:
         # ... the rest of the rig from section 2
         extrinsics:
           mounting_mode: eye_to_hand
-          artifact_path: calibration/real/eth_realsense_d435.json
+          artifact_path: ../calibration/real/eth_realsense_d435.json
 ```
+
+A relative path in a config file resolves against the tree's folder, not the folder you run from, so
+from the shipped `config/` the repository's `calibration/real` is `../calibration/real/`. The block the
+calibration command prints names the file by its absolute path, which works from any tree; see
+[Configuration](guide/01-configuration.md) for how a copied tree rewrites its `../` paths.
 
 That alone gives a one-camera cell its `CAMERA->BASE`. The primary rig's `extrinsics` is read
 whether or not `grasping.fusion.enabled` is on, and it is what the real-cell preflight's
@@ -642,7 +596,7 @@ calibration command prints as comments:
 ```yaml
         extrinsics:
           mounting_mode: eye_in_hand
-          artifact_path: calibration/real/eih_wrist.json
+          artifact_path: ../calibration/real/eih_wrist.json
           # shutter_motion_tolerance_mm: <measure: how far the tool may travel while a frame is taken>
           # shutter_motion_tolerance_deg: <measure: how far the tool may turn while a frame is taken>
           # record_tolerance_mm: <measure, when the rig declares a body: how far the connect derives the tool frame apart>
@@ -737,8 +691,8 @@ Aim at a known object and measure where the TCP actually lands.
 | Every pick misses by the same offset in the same direction | the extrinsic itself | recalibrate, re-measuring the board first |
 | Picks miss randomly | detector or depth, not calibration | run the perception exerciser on real frames |
 | Residual is `marginal` or `poor` | marker size, flexing mount, motion blur, too few tilts, wrong dictionary | fix the physical cause, do not add poses to average it away |
-| Far fewer accepted samples than poses | marker not found, or poses too similar | read the per-pose lines: `marker_not_found` says what the camera saw, `sample_rejected` names the stored pose it is too close to. The preview window shows the judged frames. Check lighting and framing, widen the pose spread |
-| Solve refuses with "two independent axes" | the sweep only rotated about one axis | raise `orientation_spread_deg` above 30 and tilt in more directions. The runner floors it at 30, so a smaller value changes nothing |
+| Far fewer accepted samples than poses | marker not found, or poses too similar | read the per-pose lines: `marker_not_found` says what the camera saw, `sample_rejected` names the stored pose it is too close to. The preview window shows the judged frames, and while you guide the arm whether a pose is new enough. Check lighting and framing, spread the poses further |
+| Solve refuses with "two independent axes" | the poses only rotated about one axis | tilt the tool about more directions: guiding by hand, turn the wrist between poses as well as moving it; in a stations file, add stations tilted another way |
 | Cell refuses every motion, or still behaves single-view | the primary rig declares no `extrinsics`, or `fusion.enabled` still false | section 7, then `real_cell --check` |
 | Cell refuses to build once a rig is calibrated | a cuRobo cell with a calibrated RGB-D rig and `safety.planning_world` off or incomplete | section 7, then `real_cell --check` and its `camera world` row |
 

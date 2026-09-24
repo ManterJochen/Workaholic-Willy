@@ -17,8 +17,8 @@ cell = Cell.from_tree(load_tree(), motion=motion)      # the cell WILLY_PROFILE 
 print(motion.to_dict())
 ```
 
-[`examples/real_robot/14_your_own_pick_motion.py`](../../../../examples/real_robot/14_your_own_pick_motion.py)
-runs a pick with it. Everything else here is internal: the pick service and the pick loop call it.
+[`examples/real_robot/11_pick_with_the_camera.py`](../../../../examples/real_robot/11_pick_with_the_camera.py)
+runs a campaign of picks with it. Everything else here is internal: the pick service and the pick loop call it.
 
 ## The nouns
 
@@ -40,7 +40,9 @@ The policy first reads what the arm keeps of a straight line (`KeepsLines`). An 
 planned move to the standoff, one line down to the grasp, and line lifts. An arm that keeps none is
 refused before the jaws open. An arm that does not say drives the interpolated waypoints.
 `PolicyReport.line_motion` carries the reading. The jaws open before the approach, close at the grasp,
-and the close is verified before the lift.
+and the close is verified before the lift. A hand that toggles with no sensor (`core.gripper.TogglesWithoutSensor`)
+is never pulsed before the approach: it is asked whether its jaws stand open, and asks a person where it
+believes them closed; at the grasp it gets one close, and nothing verifies it.
 
 | `PolicyOutcome` | Means | Moved |
 | --- | --- | --- |
@@ -49,6 +51,7 @@ and the close is verified before the lift.
 | `MOTION_FAILED` | a move raised or was refused; the report carries the status and the message | partly |
 | `CAMERA_FRAME_REJECTED` | a camera-frame grasp reached a policy that requires BASE | no |
 | `APPROACH_PATH_BLOCKED` | every ranked candidate's approach or lift sweep hit the scene cloud | no |
+| `GRIPPER_FAULT` | the gripper raised (the report carries it, never a raise out of `execute`), or a toggle hand would not start | no, or up to the close |
 
 ## Did the hand really hold it
 

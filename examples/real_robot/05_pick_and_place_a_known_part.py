@@ -16,18 +16,21 @@ tray = Pose.tool_down(300.0, -250.0, 140.0)
 part_width_mm = 40.0
 
 # No camera is handed in, so there is no camera world and each verb says why it moves without one.
-# 11_locate_and_pick.py hands the robot its cameras instead, and holds the located part out of the
-# world it plans against.
+# 13_speak_pick_and_hand_handover.py hands the robot its camera instead, and holds the located part
+# out of the world it plans against.
 bench = "a known part on a clear table, no camera"
 
 with robot.connected():
     # Open, a planned move to 80 mm above the part along its approach, a straight line in, a close
-    # to 1 mm under the width, and the line back out.
+    # to 1 mm under the width, and the line back out. A hand that toggles on one output with no sensor
+    # is never pulsed before the arm moves: it asked at connect where its jaws stand, and asks again
+    # here where it believes them closed. It closes with one pulse at the part.
     picked = robot.pick(part, part_width_mm, decline=bench)
     print(picked)
     # When the hand measured its fingers close on nothing, the pick reports NOTHING_HELD: it opened
     # the hand, backed out to where the line began, and left nothing to place.
     if picked.ok:
         # The same approach to the tray, an open, and the line back out. When the hand still measures
-        # the part after opening, the place reports RELEASE_NOT_CONFIRMED and the arm stays put.
+        # the part after opening, the place reports RELEASE_NOT_CONFIRMED and the arm stays put. A toggle
+        # opens with one pulse, and says "already open" with none where its count says they stand open.
         print(robot.place(tray, decline=bench))

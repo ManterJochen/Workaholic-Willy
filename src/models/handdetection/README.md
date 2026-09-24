@@ -58,7 +58,7 @@ opened twice is what the camera owner exists to prevent. It composes no transfor
 rig's CAMERA to BASE is `RigCalibration.camera_to_base()`, one method with one answer; a WRIST rig is
 refused by name, because turning its CAMERA to TOOL into a base position needs the pose the arm stood
 at when the shutter opened, and that composition belongs to `Locator`.
-[`examples/real_robot/17`](../../../examples/real_robot/17_speak_pick_and_hand_handover.py) brings a
+[`examples/real_robot/13`](../../../examples/real_robot/13_speak_pick_and_hand_handover.py) brings a
 picked part to the hand it finds.
 
 ## What it refuses

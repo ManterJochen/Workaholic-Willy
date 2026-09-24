@@ -1,7 +1,7 @@
 """Speak what to pick, let a person confirm it, and pick what was confirmed.
 
 Run it at the cell, under the cell's profile, at a terminal where a person can answer:
-    WILLY_PROFILE=<your cell> python examples/real_robot/15_speak_a_command.py
+    WILLY_PROFILE=<your cell> python examples/real_robot/12_speak_a_command.py
 """
 
 import threading

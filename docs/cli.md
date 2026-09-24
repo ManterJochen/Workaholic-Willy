@@ -27,7 +27,9 @@ above, and 2 on bad arguments.
 | `python -m src.config --profile <your cell>,<layer>` | chains one more layer on top; a layer no file carries is refused, never skipped | [cell_bringup](runbooks/cell_bringup.md) |
 
 To try a value without editing your tree, copy the tree and pass `--data <copy>`; a value that contradicts
-another file (a width beside a named hand, say) is refused naming both places. From Python,
+another file (a width beside a named hand, say) is refused naming both places. A relative path in the
+copy is read against the copy's folder, so the shipped `../calibration/...` paths then point beside the
+copy ([01-configuration.md section 2](guide/01-configuration.md#2-what-the-loader-reads)). From Python,
 `LoadedTree.with_values` changes a value in memory.
 
 ### The desk check
@@ -48,7 +50,7 @@ the cell connected and the campaign did not pass its rule, and 3 when a fault of
 | command | what it does | runbook |
 |---|---|---|
 | `python scripts/checks/cell_bringup.py --live` | connects the arm alone under the cell lock, reads its pose back and holds it against the workspace box; no motion. Exit 0 it stands inside its box, 1 it disagrees with its configuration, 2 there is nothing to connect to | [cell_bringup](runbooks/cell_bringup.md), [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
-| `python -m src.robot.drivers.ur --read` | reads a gripper's pins on the UR controller's digital I/O; never moves the arm, and every write (`--set`, `--pulse`, `--measure`) needs `--yes` | [hande_gripper_bringup](runbooks/hande_gripper_bringup.md) |
+| `python -m src.robot.drivers.ur --read` | the bench for a gripper on the UR controller's digital I/O; never moves the arm. `--read` and `--watch PIN` read pins. Every write (`--set`, `--pulse`, `--measure`, and `--jaws open` or `--jaws closed`, which moves the configured `jaw_io` hand through its driver, a single toggle asking first where its jaws stand) needs `--yes`, or a typed `yes` at a terminal. `--where` is read-only: it prints the arm's joints as a `JointPositions.deg(...)` line to paste as a look pose, and the TCP in mm and degrees | [hande_gripper_bringup](runbooks/hande_gripper_bringup.md) |
 
 ### The camera
 
@@ -56,7 +58,7 @@ the cell connected and the campaign did not pass its rule, and 3 when a fault of
 |---|---|---|
 | `python -m src.config explain camera.cameras.primary_rig_id` | which rig the cell opens, where that was set, and the rigs it could name instead | |
 | `python -m src.config explain camera.cameras.rigs` | every rig as it validated: its source, whether it is enabled, and `extrinsics`, its declared calibration (`None` is uncalibrated) | |
-| `python -m src.robot.execution.real_cell.calibrate --rig <rig id> --check` | the refusals a named rig meets (unknown, switched off, no depth), from configuration alone | [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
+| `python -m src.robot.execution.real_cell.calibrate --rig <rig id> --freedrive --check` | the refusals a named rig meets (unknown, switched off, no depth), from configuration alone | [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
 | `python -m src.robot.perception --rig <rig id> --warmup 10` | opens the rig, grabs, detects and segments, then prints the lens matrix and the depth holes inside every mask; needs the camera and the model weights, no robot | [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
 | `python -m src.robot.perception --prompt "<phrase>"` | the same, grounding one prompt on the primary rig | [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
 
@@ -69,10 +71,10 @@ and 3 when the sweep raised. Every line below is used by
 
 | command | what it does |
 |---|---|
-| `python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --check` | validates the configuration and the rig; touches no hardware |
-| `python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --dry-run` | builds the arm and opens that one camera, then stops before any motion |
-| `python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --poses 22 --marker-length-mm <measured>` | Moves the arm through the sweep for a fixed camera; writes `eth_<rig id>.json` and prints the rig block to paste |
-| `python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_in_hand --poses 22` | Moves the arm through the sweep for a wrist camera; writes `eih_<rig id>.json`, and `--unmodelled-wrist-body "<reason>"` sweeps a camera whose body cannot be placed yet |
+| `python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --freedrive --check` | validates the configuration and the rig; touches no hardware. A run names its stations or is guided by hand: without `--freedrive` or `--fixed-poses` it is refused |
+| `python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --freedrive --dry-run` | builds the arm and opens that one camera, then stops before any motion; an arm that offers no hand guiding is refused here |
+| `python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_to_hand --freedrive --marker-length-mm <measured>` | You move the arm by hand to each pose where the camera sees the board and press Enter; nothing moves by itself. Shows the controller payload for confirmation first, ends at `--samples` (15) or `q`, writes `eth_<rig id>.json`, the stations it counted (`eye_to_hand_<rig id>_stations.json`) and the rig block to paste |
+| `python -m src.robot.execution.real_cell.calibrate --rig <rig id> --mode eye_in_hand --fixed-poses <stations.json> --adjust` | Moves the arm to each of your stations, frees it there to be fine-tuned by hand, and asks for your hands off and counts down before each next move; writes `eih_<rig id>.json`. Without `--adjust` the stations run without hands, on any arm. `--unmodelled-wrist-body "<reason>"` sweeps a camera whose body cannot be placed yet |
 
 ### Picks
 

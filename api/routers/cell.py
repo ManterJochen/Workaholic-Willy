@@ -10,6 +10,11 @@ finger travel, and a vacuum cup asserts its ejector and drops whatever it holds.
 reachable by a stray curl, a replayed request and a reloaded tab, so requiring a token that a preview
 issued for this configuration means a connect cannot happen without something having read what it
 would do.
+
+A run is the other thing these routes answer to. It lives on its own thread and outlives the request
+that started it, so taking the cell down under it and bringing it up again would hand the old run a
+new arm. Disconnect stops the run before the cell comes down, and Connect and Build are refused while
+its thread is still alive.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from api.cell import Console, console
+from api.cell import Console, RunLocked, console
 from api.constants import API_LOG_DIR, ROUTER_CELL_LOG_FILE
 from api.lifecycle import CellState, CellTransitionError, ConnectRefused
 from api.schemas import (
@@ -57,6 +62,34 @@ def _refuse(error: CellTransitionError) -> HTTPException:
         status_code=_STATUS.get(error.reason, 409),
         detail={"code": str(error.reason), "message": str(error), "detail": {}},
     )
+
+
+def _refuse_while_a_run_is_alive(cell: Console, what: str, would: str) -> None:
+    """Refuse ``what`` while a run's thread still holds the cell: 409 ``run_active``, as a config write is refused.
+
+    A run lives on its own thread and ends only when that thread does, a Disconnect or a Stop notwithstanding: both set
+    a flag it reads, neither can pull it out of a motion or out of a pick waiting on a person's answer. Until it has
+    ended, a Connect would hand it a live arm and hand to go on with, and a Build would take the cell and its camera
+    from under it. So both wait for ``active_run_id`` to clear, which ``RunRegistry`` does as the thread's last act,
+    and never queue: the operator re-submits once the run has ended.
+    """
+    try:
+        cell.require_idle()
+    except RunLocked as locked:
+        logger.warning("%s refused: run %s is still active.", what.capitalize(), locked.run_id)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "run_active",
+                "message": (
+                    f"run {locked.run_id} is still active, so {what} is refused: {would}. A Disconnect or a Stop "
+                    f"ends it once the pick in flight returns, and a pick waiting on a question at the server's "
+                    f"terminal returns once someone answers there; the run does not go on after it. Try again when "
+                    f"GET /v1/runs/{locked.run_id} no longer says running; this is not a queue."
+                ),
+                "detail": {"run_id": locked.run_id},
+            },
+        ) from locked
 
 
 def _render(cell: Console) -> CellOut:
@@ -112,7 +145,13 @@ def post_build(
     ``rehearse=true`` builds the desk scene instead of opening a camera and loading models, which is how
     the whole console stays playable with no hardware attached. Not cheap otherwise: a real build takes
     tens of seconds while the detector and segmenter load onto the GPU.
+
+    Refused while a run is active, before anything is released: a build takes the cell down and closes its camera
+    first, and a run that outlived a Disconnect still has its thread in that cell.
     """
+    _refuse_while_a_run_is_alive(
+        cell, "a build", "a build takes the cell down and closes its camera under that run's thread"
+    )
     try:
         cell.build(rehearse=rehearse)
     except CellTransitionError as error:
@@ -162,9 +201,16 @@ def post_connect(cell: Annotated[Console, Depends(console)], body: ConnectIn) ->
 
     The cross-process lock is taken before the arm, so a cell already owned by the CLI runner is
     refused without a single command reaching the controller.
+
+    And a run still active is refused before either: a run that outlived a Disconnect keeps its thread,
+    and a connect now would hand that thread a live arm and hand to go on with, the jaws' question
+    included, on a count a person had not answered for this connect.
     """
     from src.robot.execution.cell_lock import CellBusy, CellLock
 
+    _refuse_while_a_run_is_alive(
+        cell, "a connect", "its thread would go on with the arm and the hand this connect brings up"
+    )
     key = cell.lock_key()
     lock = CellLock(key, owner="operator console") if key else None
     if lock is not None:
@@ -250,8 +296,23 @@ def post_disconnect(cell: Annotated[Console, Depends(console)]) -> CellOut:
 
     Idempotent: disconnecting an already-disconnected cell is a no-op rather than an error, because the
     one thing an operator must always be able to do is put the cell down.
+
+    An active run is stopped FIRST, and the order is the guarantee. Its flag is set before the arm and
+    the hand come down, so whatever of the run returns next meets the stop before it starts anything
+    new: ``pick()`` will not begin on it, the pick loop begins no attempt on it (the first one of a pick
+    that was waiting on a person's answer at its start included), and the run begins no next pick.
+    What is already inside an attempt meets a disconnected arm. The run keeps the console's run lock
+    until its thread ends, and Connect and Build refuse while it does, so the old run never meets a
+    reconnected cell. The disconnect is never held up by it: putting the cell down does not wait on a
+    run.
     """
-    cell.session.disconnect()
+    try:
+        cell.registry.abandon(
+            "the cell was disconnected from the console while the run was active, so the run stops and nothing "
+            "of it starts again. Look at the arm and the jaws before you connect: a part may still be held."
+        )
+    finally:
+        cell.session.disconnect()
     return _render(cell)
 
 

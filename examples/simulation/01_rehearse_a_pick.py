@@ -26,4 +26,4 @@ if run.last is not None:
 # At a real cell the same campaign starts from the tree WILLY_PROFILE names and from what to pick:
 #     cell = Cell.from_tree(load_tree(), prompt="<what to pick>")
 # There the cell's own arm, its planner and guard, its cameras and the detector take the dummy's
-# place, and connecting is itself motion. examples/real_robot/13_pick_campaign.py runs it.
+# place, and connecting is itself motion. examples/real_robot/11_pick_with_the_camera.py runs it.

@@ -30,7 +30,9 @@ robot:
   grasping:
     calculator: deep
     deep_generator:
-      artifact_path: logs/dl/models/my_arm/set_grasp_generator_v1.pt
+      # A relative path is read against the config folder; the anchor names the repository, whose
+      # logs/ the trainer writes to when run from the repository root (src/config/paths.py).
+      artifact_path: "${WILLY_PROJECT_ROOT}/logs/dl/models/my_arm/set_grasp_generator_v1.pt"
 ```
 
 The corpus comes from [datagen/](../../../../datagen/README.md), and the whole route from a CAD export

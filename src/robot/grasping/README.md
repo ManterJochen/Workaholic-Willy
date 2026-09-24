@@ -21,7 +21,7 @@ if best is not None:
 the support height come from the tree. `Scene.from_cloud(cloud_base_mm, support_height_mm=0.0)` needs no
 tree and plans for the library's default jaw. Run it at a desk with
 [grasps_for_a_cloud.py](../../../examples/offline/grasping/grasps_for_a_cloud.py); a camera supplies the
-cloud in [11_locate_and_pick.py](../../../examples/real_robot/11_locate_and_pick.py).
+cloud in [13_speak_pick_and_hand_handover.py](../../../examples/real_robot/13_speak_pick_and_hand_handover.py).
 
 ## Usage
 
@@ -29,7 +29,7 @@ cloud in [11_locate_and_pick.py](../../../examples/real_robot/11_locate_and_pick
 | --- | --- | --- |
 | an object's cloud in the base frame | `Scene.from_robot_config(tree.robot, cloud).grasps()` | [grasps_for_a_cloud.py](../../../examples/offline/grasping/grasps_for_a_cloud.py) |
 | a mask, a depth image, a camera matrix | `build_calculator(tree.robot, data_dir=tree.root, camera_matrix=K)` | [generation/](generation/README.md) |
-| a cell and a prompt | `PickRun.from_cell(Cell.from_tree(tree, prompt=...), ...)` | [13_pick_campaign.py](../../../examples/real_robot/13_pick_campaign.py) |
+| a cell and a prompt | `PickRun.from_cell(Cell.from_tree(tree, prompt=...), ...)` | [11_pick_with_the_camera.py](../../../examples/real_robot/11_pick_with_the_camera.py) |
 
 A whole pick, from the camera to the record of the attempt:
 

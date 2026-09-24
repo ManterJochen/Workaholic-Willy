@@ -159,10 +159,12 @@ class SpeechModelMissing(FileNotFoundError):
     """
 
     def __init__(self, *, key: str, path: str, kind: str, fetch: str) -> None:
+        from src.config.paths import path_note  # noqa: PLC0415 (this module is stdlib only at import)
+
         self.key = key
         self.path = path
         super().__init__(
-            f"{key} is {path!r}, but there is no such {kind} (resolved: {Path(path).resolve()}). "
+            f"{key} is {path!r}, but there is no such {kind} (resolved: {Path(path).resolve()}).{path_note(path)} "
             f"Nothing is downloaded on its own; {fetch}."
         )
 

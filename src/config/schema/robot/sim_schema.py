@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Sequence
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from .._base import StrictModel
 
@@ -83,16 +85,6 @@ class SimMarkerConfig(StrictModel):
     aruco_marker_id: int = Field(default=0, ge=0)
 
 
-class SimViewpointConfig(StrictModel):
-    """Eye-in-hand look-at viewpoint pattern (hemisphere around the marker)."""
-
-    radii_mm: list[float] = Field(default_factory=lambda: [235.0, 275.0])
-    elevations_deg: list[float] = Field(default_factory=lambda: [16.0, 30.0])
-    azimuths_deg: list[float] = Field(
-        default_factory=lambda: [0.0, 60.0, 120.0, 180.0, 240.0, 300.0]
-    )
-
-
 class SimGateConfig(StrictModel):
     """Pick/lift gate thresholds for the sim validation runners."""
 
@@ -107,7 +99,6 @@ class SimSceneConfig(StrictModel):
     objects: list[SimObjectConfig] = Field(default_factory=list)  # multi-object clutter; empty -> [object]
     table: SimTableConfig = Field(default_factory=SimTableConfig)
     marker: SimMarkerConfig = Field(default_factory=SimMarkerConfig)
-    eih_viewpoints: SimViewpointConfig = Field(default_factory=SimViewpointConfig)
     gate: SimGateConfig = Field(default_factory=SimGateConfig)
     render_warmup_steps: int = Field(default=20, ge=0)
 
@@ -131,6 +122,9 @@ class SimConfig(StrictModel):
     robot_prim_path: str | None = None
     gripper_prim_path: str | None = None
     home_joint_positions: list[float] | None = None
+    #: The same home in degrees, as ``robot.home_joint_positions_deg`` takes it; exactly one of the two may be given,
+    #: and the loaded config carries it in radians in ``home_joint_positions``.
+    home_joint_positions_deg: list[float] | None = None
     cameras: dict[str, SimCameraSchema] = Field(default_factory=dict)
     step_dt_s: float = Field(default=1.0 / 60.0, gt=0.0, le=1.0)
     settle_timeout_s: float = Field(default=5.0, gt=0.0, le=120.0)
@@ -161,3 +155,35 @@ class SimConfig(StrictModel):
         if v not in UR_MODEL_KEYS:
             raise ValueError(f"unknown robot_model {v!r}; supported: {list(UR_MODEL_KEYS)}")
         return v
+
+    @model_validator(mode="after")
+    def _home_in_degrees_loads_as_radians(self) -> "SimConfig":
+        """``home_joint_positions_deg`` becomes ``home_joint_positions`` in radians; both at once is refused."""
+        home = home_in_radians(self.home_joint_positions, self.home_joint_positions_deg, "robot.sim.home_joint_positions")
+        if self.home_joint_positions_deg is not None:
+            object.__setattr__(self, "home_joint_positions", None if home is None else list(home))
+            object.__setattr__(self, "home_joint_positions_deg", None)
+            # Stated as the radians it now is, so what the model says was set matches what it holds.
+            stated = (self.model_fields_set - {"home_joint_positions_deg"}) | {"home_joint_positions"}
+            object.__setattr__(self, "__pydantic_fields_set__", stated)
+        return self
+
+
+def home_in_radians(
+    radians: "Sequence[float] | None", degrees: "Sequence[float] | None", key: str,
+) -> "tuple[float, ...] | None":
+    """A home joint configuration in radians, from ``key`` in radians or from ``key``_deg in degrees.
+
+    The owner writes a home off the pendant, which shows degrees, and every consumer reads radians: the UR driver's
+    home verb, the joint window centred on it, the sim arm. So a config says which unit it wrote, and the loaded config
+    carries radians alone, as it always did. Both keys at once are refused rather than one silently winning: they
+    would be two homes, and which one the arm goes to must not depend on a precedence nobody reads.
+    """
+    if degrees is None:
+        return None if radians is None else tuple(float(v) for v in radians)
+    if radians is not None:
+        raise ValueError(
+            f"{key} and {key}_deg are both set: give the home once, in radians under {key} or in degrees under "
+            f"{key}_deg, so there is one home for the arm to go to. A profile layered over one that wrote the "
+            f"other unit resets that key in its own file with \"__null__\"")
+    return tuple(math.radians(float(v)) for v in degrees)

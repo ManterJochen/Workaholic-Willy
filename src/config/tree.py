@@ -224,8 +224,9 @@ class LoadedTree:
     @property
     def root(self) -> Path:
         """The directory this tree was read from, resolved: the repository's `config/` when none
-        was named. Every `data_dir=` downstream takes it, and the registry checks read `grippers/`
-        and `cameras/` from it."""
+        was named. Every `data_dir=` downstream takes it, the registry checks read `grippers/`
+        and `cameras/` from it, and every relative path the tree holds was read against it
+        (`src.config.paths`), so the validated sections carry absolute paths."""
         return self.tree.root
 
     @property
@@ -280,7 +281,9 @@ class LoadedTree:
 
         The values this tree already holds stay, and a key given again, a key inside it or a block
         holding it takes the new value. A mapping value merges key by key; a list, an empty
-        mapping and a scalar replace; `None` sets `None`. A key that is not a dotted string, or a
+        mapping and a scalar replace; `None` sets `None`. A relative path given here is read against
+        this tree's folder, as the same value written in a layer would be (`src.config.paths`), so
+        a path a program computed goes in absolute. A key that is not a dotted string, or a
         model object given as a value, is a programmer error and raises `ValueError` or
         `TypeError`.
 

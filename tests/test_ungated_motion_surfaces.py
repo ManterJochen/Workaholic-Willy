@@ -278,18 +278,16 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
         arm = self._curobo_arm(SafetyPreflight([guard]))
         self.enterContext(arm.without_camera_world(_DECLINED))
         planner = MagicMock()
-        planner.plan.return_value = [[0.0] * 6, [0.1] * 6]
+        planner.plan_joint.side_effect = lambda goal, **_: [[0.0] * 6, list(goal)]
         arm._curobo_ur = planner
-        # The goal is where the plan ends: the UR driver refuses a plan off its goal before any gate (Step 8f).
         arm.move(pose_where_it_ends(arm, [0.1] * 6))
         self.assertGreaterEqual(guard.calls, 1, "the workspace guard never saw the planned move")
 
     def test_a_refusal_stops_the_move_before_execution(self) -> None:
         arm = self._curobo_arm(SafetyPreflight([_RefusingGuard("workspace")]))
         planner = MagicMock()
-        planner.plan.return_value = [[0.0] * 6, [0.1] * 6]
+        planner.plan_joint.side_effect = lambda goal, **_: [[0.0] * 6, list(goal)]
         arm._curobo_ur = planner
-        # The goal is where the plan ends: the UR driver refuses a plan off its goal before any gate (Step 8f).
         arm.move(pose_where_it_ends(arm, [0.1] * 6))
         planner.execute.assert_not_called()
 
@@ -307,10 +305,19 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
         self.enterContext(arm.without_camera_world(_DECLINED))
         planner = MagicMock()
         final = [0.2, -1.1, 1.0, -0.5, 1.4, 0.3]
-        planner.plan.return_value = [[0.0] * 6, final]
+        returned: list[list[float]] = []
+
+        def plan_joint(goal, **_):
+            # cuRobo ends a plan on its goal to within its tolerance, not bit for bit: its own last configuration.
+            end = [float(v) + 5e-5 for v in goal]
+            returned.append(end)
+            return [[0.0] * 6, end]
+
+        planner.plan_joint.side_effect = plan_joint
         arm._curobo_ur = planner
         arm.move(pose_where_it_ends(arm, final))
-        self.assertEqual(seen["joints"], final)
+        self.assertTrue(returned, "nothing was planned, so the gate on a plan's end was never reached")
+        self.assertEqual(seen["joints"], returned[-1])
         self.assertTrue(seen["pose"], "and a pose, or the box cannot be applied at all")
 
 

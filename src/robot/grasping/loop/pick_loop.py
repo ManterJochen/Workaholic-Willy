@@ -272,6 +272,11 @@ class PickOutcome(str, Enum):
     # failure"), which reads exactly like a bad grasp unless the driver is asked: get_robot_status
     # reports the stop and raise_if_stopped raises on it.
     CONTROLLER_NOT_OPERATIONAL = "controller_not_operational"
+    # The gripper raised while it was commanded, or a hand that toggles with no sensor would not start
+    # the pick (``PolicyOutcome.GRIPPER_FAULT``): it believed its jaws closed and nobody at a terminal
+    # said otherwise, or a person aborted. Not EXECUTION_FAILED, for the reason above: the grasp did not
+    # fail, the hand needs a person, and a campaign stops on it rather than perceiving again.
+    GRIPPER_FAULT = "gripper_fault"
 
 
 def _motion_fields(report: "PolicyReport | None") -> dict[str, str | None]:
@@ -318,7 +323,7 @@ class PickAttempt:
     reasons: tuple[GraspFailureReason, ...]
     score: float
     # "executed", "object_not_detected", "camera_frame_rejected",
-    # "approach_path_blocked" or "execution_failed" from _map_policy_outcome;
+    # "approach_path_blocked", "gripper_fault" or "execution_failed" from _map_policy_outcome;
     # "rescan", "relocate" or "exhausted" from _decide_action;
     # "commit_refused_reobserve" and "commit_refused_exhausted" from the commit
     # gate; "controller_not_operational" when the controller cannot move.
@@ -402,6 +407,10 @@ class PickReport:
     # and ``reason`` naming the skip path, so downstream telemetry can
     # distinguish "no gate configured" from "gate ran and approved".
     commit_decision: "CommitDecision | None" = None
+    #: Where the object this pick went for was seen, in BASE millimetres: the median of its mask's surface, the pixels
+    #: behind a depth step left out, as ``Locator`` places an object. ``None`` when no candidate reached the arm, when
+    #: the cell resolves no CAMERA to BASE, or when the mask saw no depth.
+    target_centre_mm: "tuple[float, float, float] | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +810,8 @@ class BinPickingOrchestrator:
 
     _viewpoints_visited: list[Pose] = field(default_factory=list, init=False, repr=False)
     _last_policy_report: PolicyReport | None = field(default=None, init=False, repr=False)
+    #: The objects the last ranking iterated, for where the chosen one was seen (``PickReport.target_centre_mm``).
+    _last_scene_objects: tuple[Any, ...] = field(default=(), init=False, repr=False)
     _resolved_sampling_mode: GraspSamplingMode = field(
         default=GraspSamplingMode.AUTO, init=False, repr=False
     )
@@ -1043,6 +1054,36 @@ class BinPickingOrchestrator:
                         float(along.max() - along.min()), _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM)
                     return None
         return base_points
+
+    def _target_centre_base_mm(
+        self, frame: PerceptionFrame, target_index: int | None,
+    ) -> tuple[float, float, float] | None:
+        """Where the chosen object was seen, BASE mm, or ``None``: the median of its mask's surface, as ``Locator`` says it.
+
+        From the object the ranking chose (``_last_scene_objects``), with that camera's own depth, intrinsics and
+        CAMERA to BASE. The primary camera's measured surface (``surface_depth_map``) is preferred over the grasp
+        path's depth, which a producer may flatten to the object's top face plus a penetration. A cell with no CAMERA
+        to BASE says nothing: its object would be placed in the camera's frame and called BASE.
+        """
+        from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps  # noqa: PLC0415
+        from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
+
+        scene = self._last_scene_objects
+        if self._pending_camera_to_base is None or target_index is None or not 0 <= target_index < len(scene):
+            return None
+        chosen_object = scene[target_index]
+        surface_depth = getattr(frame, "surface_depth_map", None)
+        depth = chosen_object.depth_map if chosen_object.promoted or surface_depth is None else surface_depth
+        try:
+            mask = np.asarray(chosen_object.segmentation.mask).astype(bool)
+            surface = mask & ~pixels_behind_depth_steps(mask, depth)
+            points = to_base_mm(surface, depth, chosen_object.intrinsics, chosen_object.camera_to_base)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if points.shape[0] == 0:
+            return None
+        centre = np.median(points, axis=0)
+        return float(centre[0]), float(centre[1]), float(centre[2])
 
     def run(self) -> PickReport:
         """Execute the loop and return a :class:`PickReport`.
@@ -1379,6 +1420,8 @@ class BinPickingOrchestrator:
                 score=float(best_result.top_score),
                 position_mm=_grasp_position_mm(best_result),
             )
+            # Read before the arm moves, off the frame the grasp was synthesised in.
+            target_centre = self._target_centre_base_mm(frame, target_index)
             policy_report = self._execute(best_result)
             self._last_policy_report = policy_report
             # Map the PolicyOutcome to its action label and PickOutcome via _map_policy_outcome.
@@ -1444,6 +1487,7 @@ class BinPickingOrchestrator:
                 uncertainty_rerank_telemetry=uncertainty_rerank_telemetry,
                 fusion_telemetry=self._fusion_telemetry_or_none(),
                 commit_decision=last_commit_decision,
+                target_centre_mm=target_centre,
             )
 
         return PickReport(
@@ -1624,6 +1668,9 @@ class BinPickingOrchestrator:
         if outcome is PolicyOutcome.APPROACH_PATH_BLOCKED:
             # Every candidate's approach/retreat sweep hit a neighbour: refused, no motion.
             return "approach_path_blocked", PickOutcome.APPROACH_PATH_BLOCKED
+        if outcome is PolicyOutcome.GRIPPER_FAULT:
+            # The hand needs a person; the policy's report carries why, and the attempt copies it.
+            return "gripper_fault", PickOutcome.GRIPPER_FAULT
         return "execution_failed", PickOutcome.EXECUTION_FAILED
 
     def _maybe_run_ranking_shadow(
@@ -2422,6 +2469,7 @@ class BinPickingOrchestrator:
         # segmentation of the primary frame, in the primary's order, so the loop below runs on
         # exactly the list it ran on before scene objects existed.
         scene = self._scene_objects(frame, camera_to_base, fused_scene)
+        self._last_scene_objects = tuple(scene)
         # Neighbour masks stay the primary frame's, deliberately. They are the clutter around a
         # target in the frame the grasp is synthesised in, and a mask from another camera is in
         # another camera's pixels: handing it to the dense sampler would place clutter by index into

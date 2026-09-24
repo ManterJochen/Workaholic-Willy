@@ -49,10 +49,12 @@ approach is clear.
 
 `PickOutcome` is the typed end: `EXECUTED`, `RESCANNED_EXHAUSTED`, `RELOCATED_EXHAUSTED`, `NO_PERCEPTION`,
 `ABORTED`, `CANCELLED`, `OBJECT_NOT_DETECTED`, `EXECUTION_FAILED`, `CAMERA_FRAME_REJECTED`,
-`NO_COMMIT_INSUFFICIENT_FUSION`, `APPROACH_PATH_BLOCKED`, `CONTROLLER_NOT_OPERATIONAL`. `CANCELLED` is an
-operator's stop between attempts, kept apart from `ABORTED` so a stop button never counts as a failed
-execution. `CONTROLLER_NOT_OPERATIONAL` stops the loop retrying into a controller that has
-protective-stopped.
+`NO_COMMIT_INSUFFICIENT_FUSION`, `APPROACH_PATH_BLOCKED`, `CONTROLLER_NOT_OPERATIONAL`, `GRIPPER_FAULT`.
+`CANCELLED` is an operator's stop between attempts, kept apart from `ABORTED` so a stop button never counts
+as a failed execution. `CONTROLLER_NOT_OPERATIONAL` stops the loop retrying into a controller that has
+protective-stopped. `GRIPPER_FAULT` is a hand that needs a person: a gripper that raised while it was
+commanded, or a toggle with no sensor that would not start on jaws it believes closed; a campaign stops on
+it.
 
 ## Progress
 
@@ -92,6 +94,7 @@ other, and with a target label the choice is made before ordering is asked.
 | `NO_COMMIT_INSUFFICIENT_FUSION` | the commit gate found too little multi-view evidence and the re-look budget is spent | add a view, or leave the gate off |
 | `APPROACH_PATH_BLOCKED` | every ranked candidate's approach sweep hits the scene cloud | clear the scene or re-perceive |
 | `CONTROLLER_NOT_OPERATIONAL` | the controller is stopped or powered off | a person clears the stop |
+| `GRIPPER_FAULT` | the gripper raised, or a toggle hand believes its jaws closed and nobody at a terminal said otherwise | look at the hand, run from a terminal |
 | `RuntimeError` | a configured fused camera delivered no frame and `on_camera_unavailable` is `refuse` | see [`multiview/`](../multiview/README.md) |
 
 ## Status

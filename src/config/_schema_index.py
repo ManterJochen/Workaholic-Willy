@@ -22,6 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .paths import is_config_path_field, resolve_config_path
+
 __all__ = [
     "SchemaField",
     "alias_for",
@@ -284,6 +286,10 @@ def field_default(path: str, fallback: Any = None) -> Any:
         default = field.get_default(call_default_factory=True)
     except TypeError:  # older pydantic signature
         default = field.get_default()
+    if isinstance(default, str) and is_config_path_field(field):
+        # A path default is anchored at the repository and validated, so the loaded value is the
+        # expanded path: compared unexpanded, every tree would read as having decided it.
+        default = resolve_config_path(default, None)
     return fallback if default is None and not field.is_required() and fallback is not None else default
 
 

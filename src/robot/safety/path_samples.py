@@ -25,6 +25,9 @@ waits and not about the size of a checker's request, which is a separate number 
 it returns is a shorter list of legs that a caller then samples and judges like any other: the chords it
 draws are new legs, and nothing about them has been looked at until that caller looks.
 
+:func:`span_overshoot_rad` judges nothing about collisions. It says how far each joint of a path swings past
+the span between where the joint starts and where it ends, which is how a caller bounds a planner's detour.
+
 Pure functions over numpy, no config, no logger, no planner: what a caller does with the samples is the
 caller's business, and the same samples serve the cuRobo batch check and the exact mesh gate.
 """
@@ -53,6 +56,7 @@ __all__ = [
     "joint_path_samples",
     "line_samples",
     "simplify_joint_path",
+    "span_overshoot_rad",
     "waypoint_path_samples",
 ]
 
@@ -380,3 +384,34 @@ def simplify_joint_path(
             spans.append((first, worst_at))
             spans.append((worst_at, last))
     return tuple(config for config, kept in zip(configs, keep) if kept)
+
+
+def span_overshoot_rad(waypoints: "Sequence[Sequence[float]]") -> tuple[float, ...]:
+    """How far each joint of a path swings beyond the span between where it starts and where it ends, in radians.
+
+    Joint ``j`` of a path from ``waypoints[0]`` to ``waypoints[-1]`` has to cover ``[min(start_j, goal_j),
+    max(start_j, goal_j)]`` and nothing more; whatever a waypoint puts it past either end is a detour. A straight
+    joint line overshoots by exactly 0 on every joint, and so does any path whose joints only ever move towards their
+    goal. A planner that routes the base the long way round a bin, or winds a wrist a turn to unwind it again, shows
+    here as a number a caller can hold against a cap.
+
+    Waypoints alone, because the legs between them are straight joint lines whose every configuration lies between
+    their two ends: a path's overshoot is its waypoints' overshoot, and a subset of them that keeps both ends overshoots
+    no further. Nothing is judged about collisions. An empty path overshoots nothing and has no joints.
+    """
+    configs = [_finite_config(w, name=f"waypoint {index}") for index, w in enumerate(waypoints)]
+    if not configs:
+        return ()
+    joints = len(configs[0])
+    for index, config in enumerate(configs):
+        if len(config) != joints:
+            raise ValueError(
+                f"waypoint {index} has {len(config)} joints and waypoint 0 has {joints}: a path between two arms is "
+                f"not a path"
+            )
+    first, last = configs[0], configs[-1]
+    overshoot = []
+    for joint in range(joints):
+        low, high = min(first[joint], last[joint]), max(first[joint], last[joint])
+        overshoot.append(max(max(low - config[joint], config[joint] - high, 0.0) for config in configs))
+    return tuple(overshoot)

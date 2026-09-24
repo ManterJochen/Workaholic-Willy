@@ -126,8 +126,9 @@ class EveryUrVerbRefusesTests(unittest.TestCase):
         arm._conn = MagicMock()
         arm._conn.is_connected = True
         arm._conn.moveJ.return_value = True
+        arm._conn.get_joint_positions.return_value = _JOINTS.tolist()
         arm._home_refusal = lambda joints: None  # type: ignore[method-assign]
-        arm._judge_joint_move = lambda joints, command: None  # type: ignore[method-assign]
+        arm._judge_joint_move = lambda joints, command: (joints, None, None)  # type: ignore[method-assign]
         arm._judge_linear_move = lambda pose, command: None  # type: ignore[method-assign]
         arm._motion.move_to = lambda *a, **k: True  # type: ignore[method-assign]
         with arm.without_camera_world("bench check, no cameras mounted"):

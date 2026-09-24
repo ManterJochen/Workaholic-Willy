@@ -84,7 +84,7 @@ The hand verbs read these two, never the command echoed back.
 |---|---|---|
 | `robotiq` | gOBJ: fingers stalled on something, or reached their target | measured |
 | `onrobot` | the grip-detected bit of the status word | measured |
-| `jaw_io` | the reed switches or a part sensor, where wired | commanded |
+| `jaw_io` | the reed switches or a part sensor, where wired; nothing on a `single_toggle` | commanded; none on a `single_toggle` |
 | `vacuum` | the vacuum switch, where wired | commanded |
 | simulated suction | the physical bond in Isaac | commanded |
 | `IsaacGripper` | nothing | measured outside mock mode |
@@ -93,20 +93,37 @@ The hand verbs read these two, never the command echoed back.
 Connecting differs on purpose. `vacuum` switches suction off at connect, because releasing a cup left
 latched is cheap. A `jaw_io` hand left closed may hold a rigid part, so it opens only when feedback says
 it is empty, holds and warns when feedback says a part is there, and does not move at all with no
-feedback wired, unless `open_on_connect_without_feedback` is set. A `single_toggle` cannot assert a
-state at all and never pulses at connect. With no open switch it counts its own pulses and keeps the
-count on disk between programs ([`jaw_toggle_state.py`](jaw_toggle_state.py), `logs/robot/state`), so
-the next program starts where the last one left the jaws; measured on a CB3 URSim, a program that
-ended closed used to invert the next one, which then closed at the pre-open and opened at the part. A
-pulse nobody counted (the pendant's I/O tab, a bench `--pulse`, a power cut mid stroke) still inverts
-it, so after one a person looks and says where the jaws stand:
-`python -m src.robot.drivers.ur --profile <cell> --jaws-stand open --yes`. A pulse the record saw start
-and not finish makes the driver refuse to pulse until then. `--jaws open|closed` drives the jaws
-through the driver and its count. With an open switch that does not read open, its connect is refused.
+feedback wired, unless `open_on_connect_without_feedback` is set, or asks a person first where it opted
+into `confirm_open_at_start`.
+
+A `single_toggle` (the owner's Hand-E on the Robotiq I/O Coupling, one tool output, no feedback) reads
+no sensor at all, and a feedback input on it is refused. Every pulse flips its jaws, so the program
+counts its own pulses from where a person says they stand: its `connect()`, once per program start
+and before anything moves, asks at the terminal whether the jaws stand open (Enter or `open` = open),
+and a person who says closed chooses one pulse to open them or an abort. With no terminal and no
+`ask=` handed in, the connect is refused. The hand counts as connected only once the answer is in, so
+nothing can command it while the question waits. Nothing is kept between programs. It is a
+`core.gripper.TogglesWithoutSensor`, which is how the pick code knows, without importing this package,
+to send no pulse before the arm moves (it asks `jaws_open_for_a_pick()`, which asks the person again
+where the count says closed or cannot say, and there takes only the word `open` or `closed`: an empty
+line is asked again), exactly one at the part and one at a release that finds the jaws closed. It takes
+no width (`set_width_mm` is refused), and a pick with it counts as grasped with the hold not checked,
+because there is no sensor. The bench's `--jaws open|closed` drives the jaws through the driver, which
+asks first.
+
+At the terminal the console's typeahead is discarded before each question (`msvcrt` on Windows,
+`termios.tcflush` on POSIX), so an Enter pressed earlier cannot answer it; an `ask=` handed in is not
+drained. A question whose connection changed while it waited (a disconnect or another connect) is
+refused without a pulse. Every write is read back (`get_digital_output`, every 8 ms for about `pulse_s`
+and two controller cycles, 50 ms at least): a toggle's count flips only once its pin reads HIGH, and a
+pin that never does raises and leaves the count unknowable until a person says where the jaws stand; a
+solenoid raises where its level or coil never shows. The config refuses a `pulse_s` under 0.05 s for
+`single_toggle` and `double_solenoid`, and a pin above 1 on `io_port: tool`, which has outputs 0-1 and
+inputs 0-1 (`jaw_io` and `vacuum` alike).
 
 The hand verbs (`pick`, `place`, `grasp`, `release`) and the pick loop tell `jaw_io` open or close by
-intent (`OpensAndCloses.set_closed`), so `closed_below_mm` cannot turn a verb round; it only reads the
-widths a caller sends through `set_width_mm` itself. Both touch the controller's I/O at connect, so the arm connects first; `Robot` does that for
+intent (`OpensAndCloses.set_closed`), so `closed_below_mm` cannot turn a verb round; on a solenoid it
+only reads the widths a caller sends through `set_width_mm` itself. Both touch the controller's I/O at connect, so the arm connects first; `Robot` does that for
 you.
 
 ## The simulated grippers

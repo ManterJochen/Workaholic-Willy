@@ -6,9 +6,10 @@
 objectdetector:
 
   # Where GroundingDINO's weights are loaded from when `local: true` a directory of HF model files on this
-  # box, no download.
+  # box, no download. ${WILLY_PROJECT_ROOT} is the repository, where the fetch writes; a relative
+  # path is read against the config folder.
   # [REQUIRED - no default]
-  model_path: assets/models/hf/detection/IDEA-Research--grounding-dino-tiny
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/detection/IDEA-Research--grounding-dino-tiny"
 
   # If `local: true`, this is ignored and the model is loaded from `model_path`. If `local: false`, this
   # specifies the HF Hub id to download the model from.
@@ -63,7 +64,7 @@ rtdetr:
   # Local directory for the RT-DETR closed-set detector's weights when `local: true`; ignored when false
   # (then `model_id`, e.g. PekingU/rtdetr_r50vd, is fetched).
   # [REQUIRED - no default]
-  model_path: assets/models/hf/detection/PekingU--rtdetr_r50vd
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/detection/PekingU--rtdetr_r50vd"
 
   # Model identifier for fetching the RT-DETR weights from the Hub if `local` is false.
   # [default: null]
@@ -132,7 +133,7 @@ pipeline:
 
       # A local directory for the Qwen3-VL checkpoint.
       # [default: null] [DIFFERS from the default]
-      model_path: assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct
+      model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct"
 
       # Passes `local_files_only=True` to the VLM's processor and model loads, so nothing is downloaded on
       # first use.

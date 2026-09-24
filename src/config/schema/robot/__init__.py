@@ -38,7 +38,6 @@ from .robot_schema import (
     SimObjectConfig,
     SimSceneConfig,
     SimTableConfig,
-    SimViewpointConfig,
     URConfig,
     WorkspaceLimitsConfig,
 )
@@ -83,7 +82,6 @@ __all__ = [
     "SimObjectConfig",
     "SimSceneConfig",
     "SimTableConfig",
-    "SimViewpointConfig",
     "URConfig",
     "WorkspaceLimitsConfig",
 ]

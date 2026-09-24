@@ -17,13 +17,13 @@ print(report)                                              # outcome, candidates
 
 At a real cell `Cell.from_tree(load_tree(), prompt="a red cube")` builds the same service with the
 cell's cameras, models and planner, and
-[13_pick_campaign.py](../../../../examples/real_robot/13_pick_campaign.py) runs a campaign of them.
+[11_pick_with_the_camera.py](../../../../examples/real_robot/11_pick_with_the_camera.py) runs a campaign of them.
 
 ## The nouns
 
 | Noun | Built by | Verb | Returns |
 | --- | --- | --- | --- |
-| `AutonomousGraspService` | `Cell.build()`, `build_real_cell(robot_cfg, prompt=)`, `from_robot_config`, `from_components` | `pick(mode=None)` | `AutonomousGraspReport` |
+| `AutonomousGraspService` | `Cell.build()`, `build_real_cell(robot_cfg, prompt=)`, `from_robot_config`, `from_components` | `pick(mode=None, look=...)`, `put_back(report)` | `AutonomousGraspReport`, `HandlingReport` |
 | `GraspMode` | `resolve_grasp_mode(value)`, or `Cell(..., mode=)` at the build | | `easy`, `auto`, `dense_clutter`, `closed_loop`, `dense_autonomous` |
 | `PickPrompt` | `PickPrompt.from_text(text)` | `service.set_prompt(text)` | the prompt it replaced |
 
@@ -34,9 +34,17 @@ never the sampler the service was built with -- so the mode a cell RUNS IN is ch
 comes back `MODE_NOT_AVAILABLE`.
 [`simulation/06`](../../../../examples/simulation/06_grasp_modes_and_what_each_needs.py) prints
 every mode, what each one locks and which of them this cell can run; `willy` exports the service,
-the report, the outcome, `GraspMode` and `PickPrompt`, and
-[`real_robot/18`](../../../../examples/real_robot/18_clear_a_bin_with_recovery.py) drives the
-service directly to clear a bin.
+the report, the outcome, `GraspMode` and `PickPrompt`. A loop of your own calls `service.pick()` in
+it, inside `with cell.connected():`, and reads `report.outcome` and `report.layers_that_ran()` off
+each attempt.
+
+`pick(look=...)` moves the arm to each look in turn (a `JointPositions`, `"home"`, or a list of
+them, [looks.py](../looks.py)) and perceives there, until a look finds something; nothing is said
+to the hand before a look, and a look the arm does not reach ends the attempt with nothing
+perceived. Without `look=` the pick perceives from where the arm stands, and `PickRun` hands a
+wrist camera `"home"`. The report names the looks tried, where the object's seen surface is
+centred in BASE (`object_centre_mm`) and the pose the tool closed at (`grasp_pose`), both `None` on
+the two-scan path. `put_back(report)` places a lifted part back at that pose through `Robot.place`.
 
 `set_prompt` changes what the next picks look for (the phrase every camera grounds, the labels the
 detector's words map onto, and the label filter) with no camera reopened and no model reloaded:

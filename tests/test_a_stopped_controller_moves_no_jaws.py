@@ -1,7 +1,8 @@
 """A controller that cannot move is asked before the jaws are told anything, and a campaign stops on it.
 
-Owner-cell audit, reproduced with fakes on 2026-09-23 (scratchpad ``pick_exec/pstop_campaign.py``). Example 13 on the
-owner's toggle Hand-E (``jaw_io`` single_toggle on tool DO0, no feedback) protective-stops during a lift. The pick loop
+Owner-cell audit, reproduced with fakes on 2026-09-23 (scratchpad ``pick_exec/pstop_campaign.py``). The campaign example
+(13 then, 11 now) on the owner's toggle Hand-E (``jaw_io`` single_toggle on tool DO0, no feedback) protective-stops
+during a lift. The pick loop
 names that ``CONTROLLER_NOT_OPERATIONAL`` and the service reports it CANCELLED with no fault, so ``PickRun`` started the
 next run. That run's ``GraspExecutionPolicy`` detached the part and pulsed DO0 before its first motion asked the
 controller anything, and a toggle's pulse opens the jaws: the part dropped from wherever the arm had stopped, likely
@@ -66,15 +67,24 @@ class _IO:
         return None
 
 
-def _toggle(events: list[Any], *, closed: bool = False, part_pin: "int | None" = None,
-            inputs: "dict[int, bool] | None" = None) -> JawIOGripper:
+def _always_open(_question: str) -> str:
+    """A person at the terminal who answers every "do the jaws stand open?" with the word: open.
+
+    The word and not Enter, because a pick-start re-ask takes no empty line (``jaw_io``), and this
+    person answers every question the same way.
+    """
+    return "open"
+
+
+def _toggle(events: list[Any], *, closed: bool = False) -> JawIOGripper:
     """The owner's hand: a Hand-E on the I/O coupling, single_toggle on tool DO0, no feedback, 49.99 / 5.0 mm.
 
-    ``part_pin`` wires a part-present input, which the owner's cell does not have, reading ``inputs``.
+    It asks at connect, and at a pick that starts on jaws it believes closed, where they stand; the person answers
+    open every time.
     """
-    jaws = JawIOGripper(_IO(events, inputs), actuation="single_toggle", close_output_pin=0, pulse_s=0.0,
-                        close_settle_s=0.0, min_width_mm=5.0, max_width_mm=49.99, closed_below_mm=49.0,
-                        part_present_input_pin=part_pin, sleep=lambda _s: None)
+    jaws = JawIOGripper(_IO(events), actuation="single_toggle", close_output_pin=0, pulse_s=0.0,
+                        close_settle_s=0.0, min_width_mm=5.0, max_width_mm=49.99, ask=_always_open,
+                        sleep=lambda _s: None)
     jaws.connect()
     if closed:
         jaws.set_closed(True)  # closed on the part the previous run lifted
@@ -468,6 +478,137 @@ def two_scan_service(arm: Any, jaws: Any, *, verifier: Any = None, verification_
         verification_policy=verification_policy or GraspVerificationPolicy(enabled=True),
         verifier=verifier or NoOpVerifier(),
     )
+
+
+# ---------------------------------------------------------------------------------------------------
+# The pick service asks the controller before it asks the hand
+# ---------------------------------------------------------------------------------------------------
+
+
+class _Person:
+    """The person at the terminal: answers ``answers`` in turn, and every question lands on ``asked``.
+
+    A question nobody scripted is answered with end of input, which the driver takes as an abort, so it ends the pick
+    rather than pulsing, and is still on ``asked`` for the test to fail on.
+    """
+
+    def __init__(self, *answers: str) -> None:
+        self.answers = list(answers)
+        self.asked: list[str] = []
+
+    def __call__(self, question: str) -> str:
+        self.asked.append(question)
+        if not self.answers:
+            raise EOFError
+        return self.answers.pop(0)
+
+
+def _toggle_counting_closed(events: list[Any], person: _Person) -> JawIOGripper:
+    """The owner's hand with its count CLOSED on the part a previous pick lifted and nothing placed, ``person`` at the
+    terminal. The connect's question is answered open and taken off ``person.asked``, so a test reads only what the
+    pick asked; the close after it is taken off ``events``."""
+    jaws = JawIOGripper(_IO(events), actuation="single_toggle", close_output_pin=0, pulse_s=0.0, close_settle_s=0.0,
+                        min_width_mm=5.0, max_width_mm=49.99, ask=person, sleep=lambda _s: None)
+    person.answers.insert(0, "")
+    jaws.connect()
+    jaws.set_closed(True)
+    events.clear()
+    person.asked.clear()
+    return jaws
+
+
+class ThePickServiceAsksTheControllerBeforeTheHandTests(unittest.TestCase):
+    """``AutonomousGraspService.pick`` asks the controller before a toggle is asked where its jaws stand.
+
+    Found auditing the owner's toggle cell (2026-09-24): the service asked the hand first (``_hand_refusal``), so on an
+    arm still protective-stopped with the count closed the person was asked, and a 'p' pulsed DO0 on the stopped arm,
+    dropping the part from wherever the lift had stopped. ``Robot.pick`` asks the controller first and refuses with
+    nothing asked. Each test says what the code before this change did.
+    """
+
+    def test_a_protective_stop_with_the_count_closed_asks_nobody_pulses_nothing_and_stops(self) -> None:
+        """Red before: two questions, a pulse on DO0 on the stopped arm, and only then the controller."""
+        from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome
+
+        events: list[Any] = []
+        person = _Person("closed", "p")
+        jaws = _toggle_counting_closed(events, person)
+        arm = _Arm(events, statuses=(_PROTECTIVE,))
+
+        report = _service(arm, jaws).pick()
+
+        self.assertEqual([], person.asked, "the person was asked on a stopped controller")
+        self.assertEqual(0, _pulses(events), "a pulse on the stopped arm dropped the part")
+        self.assertEqual(["status"], events, "something but the controller was asked before the refusal")
+        self.assertIs(AutonomousGraspOutcome.CANCELLED, report.outcome, report.render())
+        self.assertTrue(report.controller_stopped)
+        self.assertTrue(report.to_dict()["controller_stopped"])
+        self.assertIsNone(report.fault)
+        self.assertIsNone(report.pick_report, "a pick ran on a stopped controller")
+        self.assertEqual("", report.gripper_fault)
+        self.assertEqual("before_start", report.telemetry["stage"])
+        self.assertIn("protective_stop=True", report.telemetry["controller"])
+        self.assertIn("controller cannot move", report.render())
+        self.assertTrue(jaws.jaws_closed, "the count moved with no pulse")
+
+    def test_a_status_read_that_raises_ends_the_pick_with_nothing_asked(self) -> None:
+        """Red before: two questions and a pulse, then the policy's own read raised and the pick ended on a fault."""
+        from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome
+
+        events: list[Any] = []
+        person = _Person("closed", "p")
+        jaws = _toggle_counting_closed(events, person)
+        arm = _Arm(events)
+
+        def _link_down() -> RobotStatus:
+            raise RuntimeError("Not connected: call connect() first.")
+
+        arm.get_robot_status = _link_down  # type: ignore[method-assign]
+
+        report = _service(arm, jaws).pick()
+
+        self.assertEqual([], person.asked)
+        self.assertEqual([], events)
+        self.assertIs(AutonomousGraspOutcome.CANCELLED, report.outcome, report.render())
+        self.assertTrue(report.controller_stopped, "a campaign would go on past a controller nobody can read")
+        self.assertIn("could not be read", report.telemetry["controller"])
+        self.assertIn("RuntimeError", report.telemetry["controller"])
+        self.assertTrue(jaws.jaws_closed)
+
+    def test_a_campaign_on_the_stopped_arm_stops_at_its_first_pick_with_nothing_asked(self) -> None:
+        """Red before: the first pick asked the person and pulsed; the campaign stopped only after that."""
+        from src.robot.execution.pick_run import PickOutcome, PickRun, Recording
+
+        events: list[Any] = []
+        person = _Person("closed", "p")
+        jaws = _toggle_counting_closed(events, person)
+        service = _Counted(_service(_Arm(events, statuses=(_PROTECTIVE,)), jaws))
+
+        run = PickRun.from_service(service, runs=3, recording=Recording.off()).execute()
+
+        self.assertEqual(([], 0), (person.asked, _pulses(events)), "the person was asked, or DO0 pulsed, on the stop")
+        self.assertEqual(1, service.picks)
+        self.assertEqual([PickOutcome.RAISED, PickOutcome.CANCELLED, PickOutcome.CANCELLED],
+                         [a.outcome for a in run.attempts], run.render())
+        self.assertIn("the controller cannot move", run.attempts[0].detail)
+        self.assertEqual(3, run.exit_code)
+        last = run.last
+        self.assertEqual("before_start", last.telemetry["stage"])
+        self.assertIn("protective_stop=True", last.telemetry["controller"])
+
+    def test_a_running_controller_is_asked_before_the_person_whose_pulse_comes_before_any_motion(self) -> None:
+        """Red before: the person was asked and DO0 pulsed before the controller was asked anything."""
+        events: list[Any] = []
+        person = _Person("closed", "p")
+        jaws = _toggle_counting_closed(events, person)
+
+        report = _service(_Arm(events), jaws).pick()
+
+        self.assertTrue(report.succeeded, report.render())
+        self.assertEqual("status", events[0], "the person's pulse came before the controller was asked")
+        self.assertEqual(2, len(person.asked), "where the jaws stand, then pulse or abort")
+        self.assertEqual(2, _pulses(events), "the person's open, then the close at the part")
+        self.assertLess(events.index(("DO", 0, True)), events.index("move"), "the person's pulse came after a motion")
 
 
 # ---------------------------------------------------------------------------------------------------

@@ -43,7 +43,6 @@ re-blessing.
 
 from __future__ import annotations
 
-import hashlib
 import os
 
 import pytest
@@ -101,20 +100,3 @@ def pytest_collection_modifyitems(
                 )
             )
         )
-
-
-@pytest.fixture(scope="session")
-def _jaw_state_root(tmp_path_factory: pytest.TempPathFactory) -> "os.PathLike[str]":
-    return tmp_path_factory.mktemp("jaw_state")
-
-
-@pytest.fixture(autouse=True)
-def _jaw_toggle_records_stay_in_the_test(_jaw_state_root, request: pytest.FixtureRequest,
-                                         monkeypatch: pytest.MonkeyPatch) -> None:
-    """A single-toggle gripper keeps its count of its own pulses on disk (``src/robot/grippers/jaw_toggle_state.py``).
-
-    Every test gets a directory of its own, so no test starts from jaws another test left closed and none writes into
-    the record of the cell this checkout drives.
-    """
-    key = hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:16]
-    monkeypatch.setenv("WILLY_JAW_STATE_DIR", os.path.join(os.fspath(_jaw_state_root), key))

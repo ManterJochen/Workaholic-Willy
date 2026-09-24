@@ -413,8 +413,9 @@ class TheCameraSectionCarriesARigCalibrationTests(_ScratchTree):
         camera = load_camera_section(self.root, profile=None)
         rig = next(r for r in camera.cameras.rigs if r.rig_id == "realsense_d435")
         assert rig.extrinsics is not None
+        # Written relative, read against the tree's folder (src/config/paths.py).
         self.assertEqual((rig.extrinsics.mounting_mode, rig.extrinsics.artifact_path),
-                         ("eye_to_hand", "calibration/eth_realsense_d435.json"))
+                         ("eye_to_hand", (self.root.resolve() / "calibration/eth_realsense_d435.json").as_posix()))
 
 
 if __name__ == "__main__":

@@ -46,7 +46,7 @@ name that no example imports.
 | `LoadedTree` | A validated tree: `ok`, `.robot`, `explain(key)`, `decisions()`, `with_values({...})` | `real_robot/01_load_your_cell.py` |
 | `ConfigTree` | Where the YAML lives and which layers apply; `ConfigTree.from_directory(...).load()` | what `load_tree` calls |
 | `ConfigError` | The refusal of a tree that did not load, raised when something asks it for a robot | any `from_tree` |
-| `load_speech_section` | `models.stt` alone, so speech loads without a camera, a robot or a detector | `real_robot/15_speak_a_command.py` |
+| `load_speech_section` | `models.stt` alone, so speech loads without a camera, a robot or a detector | `real_robot/12_speak_a_command.py` |
 
 ### Poses and frames, in millimetres
 
@@ -68,7 +68,7 @@ name that no example imports.
 | `HandlingReport` | What `pick()` or `place()` commanded, what stood behind each motion, and what the hand did | `real_robot/05_pick_and_place_a_known_part.py` |
 | `HandlingOutcome` | How a pick or a place ended; `NOTHING_HELD` means the fingers closed on nothing | `HandlingReport.outcome` |
 | `HoldEvidence` | What the hand measured after its last command: `HELD`, `EMPTY` or `UNMEASURED` | `real_robot/04_open_and_close_the_hand.py` |
-| `JointPositions` | An immutable joint configuration, in radians | `offline/safety/self_collision_backend.py` |
+| `JointPositions` | An immutable joint configuration, in radians; `JointPositions.deg(...)` takes degrees, as the pendant shows them | `real_robot/11_pick_with_the_camera.py` |
 | `SafetyPreflight` | The ordered fail-closed guards; `SafetyPreflight.from_tree(tree)` builds a cell's own at a desk | `offline/safety/gate_the_whole_path.py` |
 | `create_arm` | The arm driver registered for a vendor, built and not connected | `offline/safety/gate_the_whole_path.py` |
 
@@ -76,18 +76,19 @@ name that no example imports.
 
 | Name | What it is | Shown in |
 |---|---|---|
-| `Cell` | Cameras, perception, the grasp stack, the arm and the hand: `preflight()`, `build()`, `connected()`; `mode=` picks the grasp mode | `real_robot/13_pick_campaign.py` |
-| `AutonomousGraspService` | What `Cell.build()` returns: one attempt per `pick()`, `set_prompt()`, `enable_record_logging()` | `real_robot/18_clear_a_bin_with_recovery.py` |
+| `Cell` | Cameras, perception, the grasp stack, the arm and the hand: `preflight()`, `build()`, `connected()`; `mode=` picks the grasp mode | `real_robot/11_pick_with_the_camera.py` |
+| `AutonomousGraspService` | What `Cell.build()` returns: one attempt per `pick()` (`look=` where it looks from), `put_back(report)`, `set_prompt()`, `enable_record_logging()` | `cell.service` in `real_robot/11_pick_with_the_camera.py` |
 | `AutonomousGraspReport` | What one pick did: outcome, mode, the profile in effect, and the layers that actually ran | `simulation/06_grasp_modes_and_what_each_needs.py` |
-| `AutonomousGraspOutcome` | How a pick ended: `SUCCEEDED`, `NO_TARGET`, `NO_VALID_GRASP`, `MODE_NOT_AVAILABLE`, ... | `real_robot/18_clear_a_bin_with_recovery.py` |
+| `AutonomousGraspOutcome` | How a pick ended: `SUCCEEDED`, `NO_TARGET`, `NO_VALID_GRASP`, `MODE_NOT_AVAILABLE`, ... | `AutonomousGraspReport.outcome` |
 | `GraspMode` | `easy`, `auto`, `dense_clutter`, `closed_loop`, `dense_autonomous`; chosen when the service is built | `simulation/06_grasp_modes_and_what_each_needs.py` |
-| `PickPrompt` | What every camera grounds, the labels it maps onto and the filter; `service.set_prompt(text)` | `real_robot/18_clear_a_bin_with_recovery.py` |
-| `PickRun` | N picks against one cell under one connect: `PickRun.from_cell(cell, runs=...).execute()` | `real_robot/13_pick_campaign.py` |
-| `PickRunReport` | What a campaign did, whether it passed its rule, and how the cell came down; `exit_code` | `real_robot/13_pick_campaign.py` |
-| `PassRule` | When a campaign passes: a `fraction` of attempts, and `confirm=` for a check of your own | `real_robot/13_pick_campaign.py` |
-| `Recording` | Where a campaign appends one attempt record per line: `Recording.to_file(path)` or `Recording.off()` | `real_robot/13_pick_campaign.py` |
+| `PickPrompt` | What every camera grounds, the labels it maps onto and the filter; `service.set_prompt(text)` | `PickRun.from_cell(cell, prompt=...)` |
+| `PickRun` | N picks against one cell under one connect: `PickRun.from_cell(cell, runs=...).execute()`; `look=` the joints each pick looks from, `put_back=True` to put each part back | `real_robot/11_pick_with_the_camera.py` |
+| `PickAttempt` | One pick of a campaign as `on_attempt` gets it: the outcome, the looks tried, `object_mm` (where the object was seen, BASE), `grasp_pose` (where the tool closed) and the put back | `real_robot/11_pick_with_the_camera.py` |
+| `PickRunReport` | What a campaign did, whether it passed its rule, and how the cell came down; `exit_code` | `real_robot/11_pick_with_the_camera.py` |
+| `PassRule` | When a campaign passes: a `fraction` of attempts, and `confirm=` for a check of your own | `real_robot/11_pick_with_the_camera.py` |
+| `Recording` | Where a campaign appends one attempt record per line: `Recording.to_file(path)` or `Recording.off()` | `real_robot/11_pick_with_the_camera.py` |
 | `RecordLog` | A record log read back into KPIs, with the audit that says whether they rest on anything | `simulation/05_measure_a_campaign.py` |
-| `GraspMotion` | What a caller may choose about how a pick moves; a field left unset keeps the service's own | `real_robot/14_your_own_pick_motion.py` |
+| `GraspMotion` | What a caller may choose about how a pick moves; a field left unset keeps the service's own | `real_robot/11_pick_with_the_camera.py` |
 | `PlannerStart` | One cell's planner, started and stopped at a desk with no controller | `cell.start_planner()` in `real_robot/02_check_the_cell_at_a_desk.py` |
 
 ### What a build or a connect refuses with
@@ -106,20 +107,16 @@ name that no example imports.
 | Name | What it is | Shown in |
 |---|---|---|
 | `Camera` | The owner of one rig's device, used as `with Camera.from_tree(tree) as camera:`; `grab()`; `rig_id=` names another | `real_robot/06_open_a_camera.py` |
-| `CameraWorldPlan` | Which rigs feed the live planner world and, one line each, why the others do not; opens nothing | `real_robot/19_a_cell_with_several_cameras.py` |
+| `CameraWorldPlan` | Which rigs feed the live planner world and, one line each, why the others do not; opens nothing | `real_robot/14_a_cell_with_several_cameras.py` |
 | `RGBDFrame` | Colour (BGR uint8) and depth (uint16 millimetres) from one grab | `real_robot/06_open_a_camera.py` |
 | `CameraRefused` | Raised when the camera section cannot give a rig: not configured, switched off, or no depth | `Camera.from_tree(tree)` |
 | `RigCalibrationError` | Raised by `camera.calibration()` when the declared calibration does not load, such as a block written before the sweep that writes its artifact; `RigNotCalibrated` is one of these | `real_robot/06_open_a_camera.py` |
 | `RigNotCalibrated` | Raised when a rig is asked for its calibration and declares none | `camera.calibration()` |
-| `HandEyeCalibration` | One camera calibrated against its robot: `check()` at a desk, `run()` at the cell | `real_robot/07_calibrate_a_fixed_camera.py` |
-| `SweepOptions` | What a caller may choose about one calibration sweep; unset takes the tree's value | `real_robot/09_calibrate_a_wrist_camera.py` |
+| `HandEyeCalibration` | One camera calibrated against its robot: `check()` at a desk, `run()` at the cell; the stations are your own (`fixed_poses`) or you guide the arm to each pose by hand (`freedrive`) | `real_robot/07_calibrate_a_fixed_camera.py` |
+| `SweepOptions` | What a caller may choose about one calibration sweep: `fixed_poses`, `freedrive`, `adjust` (fine-tune each fixed station by hand), `samples`, the target and the preview; unset takes the tree's value | `real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py` |
 | `print_sweep_progress` | A sweep's `on_event`: one line per pose as it happens, where the arm goes, what the camera saw, and whether the pose counted or why not | `real_robot/07_calibrate_a_fixed_camera.py` |
-| `MarkerAim` | A wrist-camera sweep aimed at one marker lying flat at a known place: `SweepOptions(aim=MarkerAim(marker_mm=...))` looks once, estimates where the camera sits on the tool, and visits views round the marker, re-aimed as it sees it | `real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py` |
-| `nominal_camera_in_tool` | A camera mount stated by hand, a tilt toward a named tool axis: what `MarkerAim(mount_if_unseen=...)` aims from when the first look sees no marker | `real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py` |
-| `viewing_pose` | Where a calibrated wrist camera looks at the work from before a locate: the tool pose that puts the camera a set distance from a work point, the tool's heading kept, screened against the arm's box, reach and joint window; a fixed camera needs none | `real_robot/11_locate_and_pick.py` |
-| `ViewingPose` | What `viewing_pose` found: `pose` to hand to `robot.move`, `None` for a fixed camera, and `ok` False with the reason for a wrist camera that has none | `real_robot/13_pick_campaign.py` |
-| `Locator` | An open camera and a perception backend that place what they see in the robot's base frame | `real_robot/11_locate_and_pick.py` |
-| `Located` | What one frame located: `objects`, `scene(i, robot)` for grasps, `keep_out(i)` for the planner | `real_robot/11_locate_and_pick.py` |
+| `Locator` | An open camera and a perception backend that place what they see in the robot's base frame | `real_robot/13_speak_pick_and_hand_handover.py` |
+| `Located` | What one frame located: `objects`, `scene(i, robot)` for grasps, `keep_out(i)` for the planner | `real_robot/13_speak_pick_and_hand_handover.py` |
 | `LocatorRefused` | Raised when a locator cannot place what its camera sees, before it grabs or on a frame | `Locator.from_tree(...)`, `locate()` |
 
 ### Hands seen by a camera
@@ -131,9 +128,9 @@ it needs a FIXED camera, and refuses a wrist rig rather than composing a transfo
 
 | Name | What it is | Shown in |
 |---|---|---|
-| `build_hand_finder_on_camera` | Where a hand is in MILLIMETRES in the base frame, over a camera you already hold open; `find_hand()` | `real_robot/17_speak_pick_and_hand_handover.py` |
-| `build_gesture_recognizer` | Thumbs up or down, with the palm centre from the same pass; `observe(frame_bgr)` | `real_robot/20_a_thumbs_up_before_it_moves.py` |
-| `HandGesture` | What a reading may be: `THUMB_UP`, `THUMB_DOWN`, `OTHER`, `NONE`; the last two are not the same | `real_robot/20_a_thumbs_up_before_it_moves.py` |
+| `build_hand_finder_on_camera` | Where a hand is in MILLIMETRES in the base frame, over a camera you already hold open; `find_hand()` | `real_robot/13_speak_pick_and_hand_handover.py` |
+| `build_gesture_recognizer` | Thumbs up or down, with the palm centre from the same pass; `observe(frame_bgr)` | [`src/models/handdetection/`](../src/models/handdetection/README.md) |
+| `HandGesture` | What a reading may be: `THUMB_UP`, `THUMB_DOWN`, `OTHER`, `NONE`; the last two are not the same | `build_gesture_recognizer(...).observe(frame)` |
 | `build_palm_detector` | Where hands are in a colour frame, in pixels, with no gesture; `observe(frame_bgr)` | [`src/models/handdetection/`](../src/models/handdetection/README.md) |
 
 ### Grasps, and the stacks a desk can evaluate without a robot
@@ -152,11 +149,11 @@ it needs a FIXED camera, and refuses a wrist rig rather than composing a transfo
 
 | Name | What it is | Shown in |
 |---|---|---|
-| `shared_speech` | The process's one speech holder, which every caller shares | `real_robot/15_speak_a_command.py` |
-| `TalkButton` | A talk switch pressed and released in software | `real_robot/15_speak_a_command.py` |
-| `PushToTalkSource` | The microphone, serving audio only while the talk switch is held | `real_robot/15_speak_a_command.py` |
-| `TerminalConfirmer` | Asks the person at the terminal whether the heard words become the prompt | `real_robot/15_speak_a_command.py` |
-| `Confirmation` | Whether a person let proposed words become a prompt, and which words | `real_robot/15_speak_a_command.py` |
+| `shared_speech` | The process's one speech holder, which every caller shares | `real_robot/12_speak_a_command.py` |
+| `TalkButton` | A talk switch pressed and released in software | `real_robot/12_speak_a_command.py` |
+| `PushToTalkSource` | The microphone, serving audio only while the talk switch is held | `real_robot/12_speak_a_command.py` |
+| `TerminalConfirmer` | Asks the person at the terminal whether the heard words become the prompt | `real_robot/12_speak_a_command.py` |
+| `Confirmation` | Whether a person let proposed words become a prompt, and which words | `real_robot/12_speak_a_command.py` |
 | `Listener` | A voice stream cut into utterances; `listen()` | [`src/models/speech/`](../src/models/speech/README.md) |
 
 ### Isaac Sim, under Isaac's own interpreter

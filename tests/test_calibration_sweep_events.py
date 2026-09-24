@@ -55,6 +55,8 @@ from tests.test_robot_boundaries import _inverse, _synthetic_eye_to_hand_data
 
 _WIDE = WorkspaceLimitsConfig(x_min=-2000.0, x_max=2000.0, y_min=-2000.0, y_max=2000.0, z_min=-2000.0, z_max=2000.0)
 _BOARD = "charuco:7x5:30:22"
+#: The stations a sweep of these tests names: nothing generates one, so a sweep that names none is refused.
+_STATIONS = [Pose.tool_down(400.0, 0.0, 350.0, label="down_0"), Pose.tool_down(420.0, 60.0, 380.0, label="down_1")]
 
 
 class _Arm:
@@ -317,15 +319,14 @@ _LOG = (
 
 class TheReportListsEveryPoseTests(unittest.TestCase):
 
-    def test_a_json_sweep_reports_the_poses_it_ran_not_minus_one(self) -> None:
-        """Red before: `accepted samples  5/-1` for poses read from a JSON file."""
-        report = CalibrationRunReport(check=_check(poses=-1), outcome=CalibrationOutcome.NO_ARTIFACT,
+    def test_the_count_is_against_the_poses_the_sweep_ran_else_the_stations_it_named(self) -> None:
+        """Red before: `accepted samples  5/-1` for poses read from a JSON file. The check now counts every file."""
+        report = CalibrationRunReport(check=_check(poses=6), outcome=CalibrationOutcome.NO_ARTIFACT,
                                       accepted_samples=1, pose_log=_LOG)
         self.assertIn("  accepted samples  1/3\n", report.summary())
-        self.assertNotIn("/-1", report.summary())
-        without_log = CalibrationRunReport(check=_check(poses=-1), outcome=CalibrationOutcome.NO_ARTIFACT,
+        without_log = CalibrationRunReport(check=_check(poses=6), outcome=CalibrationOutcome.NO_ARTIFACT,
                                            accepted_samples=5)
-        self.assertIn("  accepted samples  5, of the poses in a JSON file\n", without_log.summary())
+        self.assertIn("  accepted samples  5/6\n", without_log.summary())
 
     def test_the_result_stage_lists_every_pose(self) -> None:
         report = CalibrationRunReport(check=_check(), outcome=CalibrationOutcome.NO_ARTIFACT, accepted_samples=1,
@@ -374,6 +375,7 @@ def _app(hand_eye: Any = None) -> SimpleNamespace:
 
 
 def _noun(hand_eye: Any = None, **options: Any) -> HandEyeCalibration:
+    options.setdefault("fixed_poses", _STATIONS)
     return HandEyeCalibration.from_config(_app(hand_eye), rig_id="overhead", mode="eye_to_hand",
                                           options=SweepOptions(**options))
 
@@ -483,7 +485,7 @@ class TheBuildPosesTheCheckedTargetTests(unittest.TestCase):
         calibration = HandEyeCalibration.from_parts(
             robot=Robot.from_parts(arm=DummyRobotArm(), gripper=None, lock_key=None), camera=camera,
             robot_config=RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "10.253.253.41"}}),
-            mode="eye_to_hand", options=SweepOptions(**options))
+            mode="eye_to_hand", options=SweepOptions(fixed_poses=_STATIONS, **options))
         build, parts = calibration._build(calibration._stage())  # noqa: SLF001
         self.assertTrue(build.ok, build.refusal)
         self.addCleanup(parts.give_back)
@@ -506,15 +508,15 @@ class TheBuildPosesTheCheckedTargetTests(unittest.TestCase):
 class TheSweepReportsItsPosesTests(unittest.TestCase):
     """The noun hands the routine's pose log to the report, on a solve and on a sweep that raised."""
 
-    def _run(self, run_auto: Any) -> CalibrationRunReport:
+    def _run(self, sweep: Any) -> CalibrationRunReport:
         camera = Camera.from_rig(_rgbd_rig("overhead"), streamer=_Streamer())
         self.addCleanup(camera.release)
         out = self.enterContext(tempfile.TemporaryDirectory())
         calibration = HandEyeCalibration.from_parts(
             robot=Robot.from_parts(arm=DummyRobotArm(), gripper=None, lock_key=None), camera=camera,
             robot_config=RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "10.253.253.41"}}),
-            mode="eye_to_hand", options=SweepOptions(out_dir=out))
-        with patch.object(CalibrationRoutine, "run_auto", autospec=True, side_effect=run_auto):
+            mode="eye_to_hand", options=SweepOptions(out_dir=out, fixed_poses=_STATIONS))
+        with patch.object(CalibrationRoutine, "run_with_poses", autospec=True, side_effect=sweep):
             return calibration.run()
 
     def test_a_sweep_that_raised_still_lists_its_poses(self) -> None:
@@ -548,7 +550,7 @@ class TheCliNamesTheTargetTests(unittest.TestCase):
         printed = io.StringIO()
         with patch.object(calibrate, "_load", return_value=_app(hand_eye)), redirect_stdout(printed):
             try:
-                code: Any = calibrate.main(["--rig", "overhead", "--check", *argv])
+                code: Any = calibrate.main(["--rig", "overhead", "--check", "--freedrive", *argv])
             except SystemExit as exc:
                 code = f"exit {exc.code}"
         return code, printed.getvalue()

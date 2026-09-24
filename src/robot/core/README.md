@@ -48,9 +48,11 @@ Opt-in capabilities are Protocols a driver implements only where the hardware of
 caller checks with `isinstance` and falls back: `SupportsDigitalIO`, `SupportsForceTorque` (a
 `Wrench`), `SupportsRobotStatus` (a `RobotStatus`, and recovery from a protective stop), `KeepsLines`
 (what `move(pose, linear=True)` keeps of the line: `CHECKED`, `CONTROLLER_LINE`, `TELEPORT` or
-`NOT_KEPT`) and `CarriesPayload` on the arm; `ObjectDetectingGripper`, `StoppableGripper`,
-`ReportsHoldEvidence` (`HELD`, `EMPTY` or `UNMEASURED`) and `MeasuresWidth` on the hand. A gate
-written against a capability no attached driver implements does nothing, by design.
+`NOT_KEPT`), `CarriesPayload` and `SupportsFreedrive` (a `FreedriveSession` a person moves the arm
+in, read as `FreedriveSample`, with every motion verb refused while it is open) on the arm;
+`ObjectDetectingGripper`, `StoppableGripper`, `ReportsHoldEvidence` (`HELD`, `EMPTY` or `UNMEASURED`)
+and `MeasuresWidth` on the hand. A gate written against a capability no attached driver implements
+does nothing, by design.
 
 ## What a motion ends as
 

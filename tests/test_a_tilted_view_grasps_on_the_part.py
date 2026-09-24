@@ -10,7 +10,7 @@ a 40 mm cube: the jaws closed behind the part, which this sensorless jaw cannot 
 The scene is ray-cast rather than rendered: a 40 mm cube on a table at z = 0, a pinhole with the D415 colour
 intrinsics at 1280x720 (fx 925), 500 mm from the cube, depth shifted down by one or two rows (the far edge is at
 the top of the image), the base frame read 3 mm high, 1 mm Gaussian depth noise and whole-millimetre depth as the
-D415 streams it. The same seeds run through the Located path the owner's example 11 uses and through the cell
+D415 streams it. The same seeds run through the Located path example 13 uses and through the cell
 path's calculator.
 """
 
@@ -88,7 +88,7 @@ def _off_the_centre(position_mm: np.ndarray, closing_axis: np.ndarray) -> tuple[
     return float(np.linalg.norm(offset - along * axis)), abs(along)
 
 
-# --------------------------------------------------------------------------- the Located path, as example 11 runs it
+# --------------------------------------------------------------------------- the Located path, as example 13 runs it
 
 
 @dataclass(frozen=True)

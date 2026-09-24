@@ -2,9 +2,11 @@
 # reads `model_path` from disk and downloads nothing, and `python scripts/model_weights/fetch.py
 # dino-tiny` writes exactly that directory. `local: false` pulls `model_id` from the Hub instead,
 # which is the same weights without the guarantee that deleting this checkout deletes them.
-# `threshold` is the confidence a box must clear.
+# `threshold` is the confidence a box must clear. ${WILLY_PROJECT_ROOT} is the repository, where
+# the fetch writes, so every model path here holds wherever this config folder lives; a relative
+# path would be read against the config folder.
 objectdetector:
-  model_path: "assets/models/hf/detection/IDEA-Research--grounding-dino-tiny"
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/detection/IDEA-Research--grounding-dino-tiny"
   model_id: "IDEA-Research/grounding-dino-tiny"
   threshold: 0.4
   local: True
@@ -63,7 +65,7 @@ pipeline:
       # rather than the Hub for the same reason as every other block here: a download that
       # lands in the user profile outlives the checkout. This route is off by default, so
       # nothing needs those 9 GB until `backend` above says vlm.
-      model_path: "assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct"
+      model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct"
       local: true
       preload: false          # false = load on the first prompt that reaches the VLM; true = at
                               # cell build, except under router.enabled, where the route is lazy
@@ -85,7 +87,7 @@ pipeline:
 # refused. `python scripts/model_weights/fetch.py rtdetr` writes `model_path`, 0.2 GB, and then
 # nothing about this block reaches the network at run time.
 rtdetr:
-  model_path: "assets/models/hf/detection/PekingU--rtdetr_r50vd"
+  model_path: "${WILLY_PROJECT_ROOT}/assets/models/hf/detection/PekingU--rtdetr_r50vd"
   model_id: "PekingU/rtdetr_r50vd"
   threshold: 0.4
   local: true

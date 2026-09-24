@@ -1,8 +1,9 @@
 """Eye-to-hand overhead-camera calibration runner for Isaac.
 
 The fixed overhead camera is calibrated against a marker carried on the moving tool: the arm is
-driven through diverse, workspace-gated poses (``PoseProvider`` via
-``CalibrationRoutine.run_auto``), the overhead camera observes the tool marker at each pose, and
+driven through the declared stations for its robot model (``calibration/stations/eth_<model>.json``,
+tool-down poses tilted up to 30 degrees in a column under the camera, or ``--stations PATH``) with
+``CalibrationRoutine.run_with_poses``, the overhead camera observes the tool marker at each pose, and
 ``EyeToHandCalibrator`` solves ``T_cam_to_base`` through AX=XB. The result is validated against the
 empirical CV-optical overhead extrinsic fitted by ``camera_to_base_ground_truth``, not against the
 hand-built ``handles.camera_to_base``, and saved as a schema-versioned ``Extrinsics`` artifact.
@@ -75,16 +76,13 @@ def _resolve_eth_camera(cell, sim, camera_id: str):
 
 
 def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id: str = "overhead",
-              data_dir: str | None = None, n_poses: int = 22, save_dir: str = DEFAULT_SAVE_DIR,
-              cell_kwargs: dict | None = None,
-              # Pose-box levers. The defaults reproduce the shipped behaviour exactly, so they are
-              # experiment handles for a cell whose arm cannot work the default box, not policy.
-              z_frac: tuple[float, float] | None = None,    # z band as a fraction of z_max
-              #   None means (0.55, 0.75) for aruco, which keeps the marker in the narrow overhead
-              #   FOV, and the full range for ground_truth, which reads FK and never sees an image.
-              xy_mm: float = 50.0,                          # aruco: +-half-extent under the camera
-              reach_frac: float = 0.0):                     # >0: also clip the box to this share of reach
+              data_dir: str | None = None, save_dir: str = DEFAULT_SAVE_DIR,
+              cell_kwargs: dict | None = None, stations: str | None = None):
     """Run the eye-to-hand calibration for one named camera end-to-end via CalibrationRoutine.
+
+    ``stations`` is a stations file of the caller's; left unset, the one declared for the cell's robot model
+    (``declared_stations``). The shipped ones stand in a column under the overhead camera, which keeps the tool
+    marker inside its narrow view for the ``aruco`` source; the ``ground_truth`` source reads FK and runs them too.
 
     ``camera_id`` names the camera (``overhead`` = the built-in overhead; any other = a fixed camera
     from ``robot.sim.cameras``). The artifact is saved keyed by camera id (``eth_<camera>.json``,
@@ -100,6 +98,8 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     from src.calibration.serialization import save_extrinsics
     from src.robot.execution import CalibrationRoutine
     from src.robot.execution.hand_eye import print_sweep_progress
+    from src.robot.execution.pose_provider import load_stations
+    from src.willy_sim.calibration.paths import declared_stations
     from src.willy_sim.run_eih_calibrate import sim_aruco_target
 
     # The shared boot prefix, with no fixed marker: the eye-to-hand marker rides the tool.
@@ -143,9 +143,11 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
         overhead.set_clipping_range(0.05, 1.0e6)
     except Exception:  # noqa: BLE001
         pass
+    stations_path = declared_stations("eth", sim.robot_model, stations)
+    planned = load_stations(stations_path)
     _LOG.info(
-        "ETH calibration starting: camera=%s marker=%s n_poses=%d robot=%s save_dir=%s",
-        camera_id, marker, n_poses, sim.robot_model, save_dir,
+        "ETH calibration starting: camera=%s marker=%s stations=%d from %s robot=%s save_dir=%s",
+        camera_id, marker, len(planned), stations_path, sim.robot_model, save_dir,
     )
     overhead_oracle: Transform | None = None
     for attempt in range(6):
@@ -198,69 +200,20 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     else:
         raise SystemExit(f"unknown marker source {marker!r}")
 
-    # ArUco needs the tool marker to stay inside the narrow overhead FOV, about 167 mm across at the
-    # marker height, so tighten the pose box around the workspace centre. The ground-truth source
-    # works over the full box.
-    #
-    # The box is derived from the cell, not hardcoded: a +-50 mm column directly under the camera in
-    # the upper part of the reachable z, which on the UR5e evaluates to x 400-500, y +-50,
-    # z 330-450. It has to be derived because those values lie wholly outside a UR3e's box
-    # (x_max 400, z_max 320), where a hardcoded box would collect zero samples.
-    ws = cell.robot.workspace_limits
-    if marker == "aruco":
-        ccfg = sim.cameras.get(camera_id) or sim.cameras.get("overhead")
-        cam_pos = ccfg.position_mm if ccfg is not None else None   # Optional in the schema
-        cx, cy = (float(cam_pos[0]), float(cam_pos[1])) if cam_pos is not None else (450.0, 0.0)
-        ws = ws.model_copy(update={
-            "x_min": max(ws.x_min, cx - xy_mm), "x_max": min(ws.x_max, cx + xy_mm),
-            "y_min": max(ws.y_min, cy - xy_mm), "y_max": min(ws.y_max, cy + xy_mm),
-        })
-    # precedence: --z-frac (experiment) > robot.calibration.pose_box_z_frac (the cell states its own
-    # arm property) > the shipped per-marker default.
-    band = (z_frac or (cal.pose_box_z_frac or {}).get(marker)
-            or ((0.55, 0.75) if marker == "aruco" else (0.0, 1.0)))
-    if band != (0.0, 1.0):
-        ws = ws.model_copy(update={"z_min": band[0] * ws.z_max, "z_max": band[1] * ws.z_max})
-    if reach_frac > 0.0:
-        # Clip the box to the arm's dexterous sphere. The ground-truth run samples the raw workspace
-        # box, and on a UR3e, whose box corner sits at 96% of reach, poses come back status=timeout
-        # on the near-singular failure this cell already documents for its park pose, leaving too
-        # few samples to solve. Off by default (reach_frac=0), which leaves the UR5e path untouched.
-        from src.willy_sim.harness.reach import shoulder_height_mm, ur_model_spec
-
-        shoulder = shoulder_height_mm(sim.robot_model)
-        limit = ur_model_spec(sim.robot_model).max_reach_mm * reach_frac
-        # worst |z - shoulder| over the band decides how much x/y the sphere still allows
-        dz = max(abs(ws.z_min - shoulder), abs(ws.z_max - shoulder))
-        half = float(np.sqrt(max(0.0, limit * limit - dz * dz)))
-        ws = ws.model_copy(update={
-            "x_min": max(ws.x_min, -half), "x_max": min(ws.x_max, half),
-            "y_min": max(ws.y_min, -half), "y_max": min(ws.y_max, half),
-        })
-    if marker == "aruco" or reach_frac > 0.0 or band != (0.0, 1.0):
-        print(f"[eth] pose box (marker={marker}, derived from camera {camera_id!r} + cell box"
-              f"{f', reach<={reach_frac:.0%}' if reach_frac > 0 else ''}): "
-              f"x[{ws.x_min:.0f}..{ws.x_max:.0f}] y[{ws.y_min:.0f}..{ws.y_max:.0f}] "
-              f"z[{ws.z_min:.0f}..{ws.z_max:.0f}]", flush=True)
-
     routine = CalibrationRoutine(
         arm=arm, marker_source=marker_source,
-        workspace_limits=ws, eth_settings=he,
+        workspace_limits=cell.robot.workspace_limits, eth_settings=he,
         marker_id=sim.scene_setup.marker.aruco_marker_id,
         settle_time_s=cal.settle_time_s,
         calibration_mode=MountingMode.EYE_TO_HAND,
         on_event=print_sweep_progress,
     )
-    # ArUco needs oblique views to break the planar-marker IPPE flip ambiguity that ruins the AX=XB
-    # rotation when the overhead sees the up-facing marker near-frontally. The ground-truth source
-    # is exact, so a small spread is enough for it.
-    spread = 30.0 if marker == "aruco" else cal.orientation_spread_deg
+    # The stations tilt the tool up to 30 degrees off tool-down: ArUco needs oblique views to break the
+    # planar-marker IPPE flip ambiguity that ruins the AX=XB rotation when the overhead sees the up-facing
+    # marker near-frontally. They run as given, each judged by the arm's gates when it moves.
     Path(save_dir).mkdir(parents=True, exist_ok=True)
-    result = routine.run_auto(
-        n_poses, base_orientation=[float(np.pi), 0.0, 0.0],  # tool down, so the marker faces the cam
-        orientation_spread_deg=spread,
-        max_attempts_per_pose=cal.max_attempts_per_pose, seed=0,
-        dataset_save_path=f"{save_dir}/eth_{camera_id}_dataset_{marker}.json",
+    result = routine.run_with_poses(
+        planned, dataset_save_path=f"{save_dir}/eth_{camera_id}_dataset_{marker}.json",
     )
 
     from src.willy_sim.calibration.hand_eye import transform_delta
@@ -289,7 +242,7 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     _log_result(
         "ETH %s/%s solved: %d/%d samples accepted, rmse=%.4f mm max_error=%.4f mm quality=%s, "
         "vs oracle dt=%.3f mm dr=%.3f deg -> gate(<%.0f mm, <1.5 deg, good+)=%s",
-        camera_id, marker, result.num_samples, n_poses, result.rmse_mm, result.max_error_mm, quality,
+        camera_id, marker, result.num_samples, len(planned), result.rmse_mm, result.max_error_mm, quality,
         d_t, d_r, gate_mm, "PASS" if ok else "CHECK: the artifact below is saved anyway",
     )
 
@@ -323,20 +276,14 @@ def main() -> None:
     ap.add_argument("--camera", type=str, default="overhead",
                     help="camera id to calibrate: 'overhead' (built-in) or a robot.sim.cameras key "
                          "(authored fixed from its position+aim). Saved as eth_<camera>.json.")
-    ap.add_argument("--n-poses", type=int, default=22)
     ap.add_argument("--data-dir", type=str, default=None)
-    ap.add_argument("--z-frac", type=str, default=None,
-                    help="pose-box z band as LO,HI fractions of workspace z_max (default = shipped per marker)")
-    ap.add_argument("--xy-mm", type=float, default=50.0,
-                    help="aruco pose-box +-half-extent under the camera, mm (default = shipped)")
-    ap.add_argument("--reach-frac", type=float, default=0.0,
-                    help="clip the pose box to this share of the arm's reach (0 = off, = shipped)")
+    ap.add_argument("--stations", type=str, default=None, metavar="PATH",
+                    help="a stations file to sweep (poses or joint stations, see pose_provider); default: the one "
+                         "declared for the robot model, calibration/stations/eth_<model>.json")
     add_cell_arguments(ap)   # --robot-model / --profile (artifacts namespace per robot)
     args = ap.parse_args()
     calibrate(headless=not (args.gui or args.no_headless), marker=args.marker, camera_id=args.camera,
-              n_poses=args.n_poses, data_dir=args.data_dir, cell_kwargs=cell_profile_kwargs(args),
-              z_frac=(tuple(float(v) for v in args.z_frac.split(",")) if args.z_frac else None),  # type: ignore[arg-type]
-              xy_mm=args.xy_mm, reach_frac=args.reach_frac)
+              data_dir=args.data_dir, cell_kwargs=cell_profile_kwargs(args), stations=args.stations)
 
 
 if __name__ == "__main__":

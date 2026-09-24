@@ -143,13 +143,9 @@ robot:
     # steady signal where it has one, slept otherwise.
     settle_time_s: 0.5
 
-    # Half-amplitude in degrees of the random per-axis perturbation added around the tool-down
-    # base orientation when calibration poses are generated. Wider means more diverse poses.
-    orientation_spread_deg: 15.0
-
-    # How many random samples the pose generator may reject per pose before it raises. Raising it
-    # helps a narrow workspace; a generator that still gives up wants a wider box, not more tries.
-    max_attempts_per_pose: 200
+    # How many counted samples a calibration guided by hand collects before it solves
+    # (`calibrate --freedrive`); `--samples` sets it for one run, and `q` finishes earlier.
+    freedrive_samples: 15
 
     # RMSE bands in mm that label a hand-eye calibration result, each an inclusive upper bound and
     # strictly increasing. They label the result and do not gate it: the extrinsics are saved
@@ -214,6 +210,19 @@ robot:
       max_joint_step_deg: 45.0
       max_orientation_step_deg: 30.0
       max_tcp_step_mm: 250.0
+
+    # How a cuRobo UR cell chooses the path of a move (motion_planner "curobo"). A move goes to the
+    # configuration of its goal nearest the arm on the branch the arm holds, and runs the straight joint
+    # line there wherever that line is clear; cuRobo plans only where it is not, and never chooses the goal.
+    # line_clearance_mm is how far every configuration of such a line has to stay from the planner's
+    # world, the declared cell and the camera's, before it runs instead of a plan: 10 mm is the distance
+    # cuRobo's own optimiser keeps its plans from an obstacle, and the self_collision.min_distance_mm the
+    # local guard holds. max_detour_deg is how far any joint of a cuRobo plan may swing beyond the span
+    # between where it starts and where it ends; a plan past it is not run, the next configuration is
+    # planned to instead, and with none left the move is refused naming the joint.
+    planned_motion:
+      line_clearance_mm: 10.0
+      max_detour_deg: 45.0
 
     # Mass / CoG / inertia envelope of the mounted tool plus payload. ``mass_kg`` is what is
     # mounted now, ``max_mass_kg`` is the absolute upper bound the guard refuses to set regardless,
@@ -332,8 +341,9 @@ robot:
       include_fixtures: true
       # Geometry the planner routes around as the shape it is rather than as a box. The case that
       # pays for itself is a container: as a box a tote is solid, so a cell that declares one can
-      # never reach into it; as a mesh it keeps its hollow. The sidecar reads the file itself, so
-      # the path has to be one that process can open, and anything trimesh loads works.
+      # never reach into it; as a mesh it keeps its hollow. The sidecar reads the file itself, and
+      # anything trimesh loads works. A relative path is read against this config folder, as every
+      # path in the tree is, and reaches the sidecar absolute.
       #
       # The guards cannot read a mesh. Geometry declared here is known to the planner and to
       # nothing else, so where the shape must also be enforced, declare the parts that matter as
@@ -341,7 +351,7 @@ robot:
       #
       #   meshes:
       #     - name: tote
-      #       path: assets/cell/tote.obj
+      #       path: meshes/tote.obj           # <config folder>/meshes/tote.obj
       #       center_mm: [500.0, 0.0, 0.0]
       #       yaw_deg: 0.0
       #       scale: 0.001                  # a mesh authored in millimetres
@@ -485,8 +495,9 @@ robot:
     deep_ranker:
       enabled: false
       # Where the fitted ranker lives. The card beside the trees is committed, the trees are not;
-      # regenerate them with `python -m datagen train-ranker`.
-      artifact_dir: assets/models/grasp_ranker/v1
+      # regenerate them with `python -m datagen train-ranker`. ${WILLY_PROJECT_ROOT} is the
+      # repository, where that writes, so the path holds wherever this config folder lives.
+      artifact_dir: "${WILLY_PROJECT_ROOT}/assets/models/grasp_ranker/v1"
       # Which feature contract to score under. It must match the artifact: the scorer refuses a
       # mismatch rather than scoring a vector the model was never fitted on. `held_jaw_v1` predicts
       # whether a shake could not pull the object out; `valid_jaw_v1`, shipped beside it, predicts

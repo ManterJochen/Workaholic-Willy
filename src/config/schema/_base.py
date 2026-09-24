@@ -9,14 +9,20 @@ invariants across the whole tree:
   component can mutate what another one reads. Configs are built once at
   startup and treated as values, not as state.
 
-Use :class:`StrictModel` for every new config class.
+Use :class:`StrictModel` for every new config class, and :data:`ConfigPath` for every field that
+names a file or a folder (:mod:`src.config.paths` states how such a path is read).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator
+
+# The type of every field that names a file or a folder: a relative path in a tree is read against the
+# tree's folder. Re-exported here so a schema module takes it from where it takes `StrictModel`.
+from ..paths import ConfigPath as ConfigPath
+from ..paths import anchor_outside_a_path, is_config_path_field
 
 
 class StrictModel(BaseModel):
@@ -25,6 +31,9 @@ class StrictModel(BaseModel):
     Carries the ``extra="forbid"`` and ``frozen=True`` invariants the module
     docstring describes. A subclass may opt out of either by overriding
     ``model_config``, and must state in a comment why.
+
+    A third invariant holds for every subclass: ``${WILLY_PROJECT_ROOT}`` is read in a
+    :data:`ConfigPath` field and refused in every other one (the validator below).
     """
 
     model_config = ConfigDict(
@@ -33,6 +42,30 @@ class StrictModel(BaseModel):
         populate_by_name=True,
         str_strip_whitespace=True,
     )
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def _project_root_anchor_only_in_a_path(cls, value: Any, info: ValidationInfo) -> Any:
+        """Refuse ``${WILLY_PROJECT_ROOT}`` in a field that is not typed :data:`ConfigPath`.
+
+        The loader leaves the anchor in the text for the path rule, which only a path field applies, so
+        in any other field it would reach the reader as the literal ``${WILLY_PROJECT_ROOT}/...``:
+        measured 2026-09-24, ``robot.sim.assets_root: "${WILLY_PROJECT_ROOT}/isaac_assets"`` loaded
+        and held that text, the asset root Isaac would be handed. Here, on the base, so every model is
+        held to it whichever door built it, a tree load or a model built in code. A path field has
+        already turned the anchor into the repository by the time this runs; it is skipped by type all
+        the same, so the rule does not depend on the order pydantic runs the two in. The refusal is a
+        ``ValueError``, which
+        the loader reports with the key, its file and its line. :mod:`src.config.paths` says why the
+        anchor is refused here rather than expanded.
+        """
+        refusal = anchor_outside_a_path(value)
+        if refusal is None:
+            return value
+        field = cls.model_fields.get(info.field_name or "")
+        if field is not None and is_config_path_field(field):
+            return value
+        raise ValueError(refusal)
 
 
 # ---------------------------------------------------------------------------

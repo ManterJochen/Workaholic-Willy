@@ -427,7 +427,10 @@ class Robot:
         ``width_mm`` minus ``squeeze_mm``, and drives a line back to the standoff. A close that measures
         nothing opens again and backs out. ``keep_out`` is held in the arm's live world through every
         motion. A refused motion, and a camera that could not vouch for the cell, end the pick with
-        nothing commanded after it, as an outcome.
+        nothing commanded after it, as an outcome. A hand that toggles with no sensor (a ``jaw_io``
+        single_toggle) is never pulsed before the arm moves, whatever ``pre_open_mm`` says: it is asked
+        whether its jaws stand open, asks a person where it believes them closed, and is closed with
+        one pulse at the part.
 
         ``decline`` is the reason these motions need no camera world. ``camera_world=CameraWorldDecline(...)``
         is the same decline as an object, kept as an alias; passing both is a ``TypeError``.

@@ -30,9 +30,12 @@ robot:
   rl:
     mode: rl_shadow
     policy_id: v2_candidate_baseline_v1
-    artifact_path: docs/baselines/rl_policies/v2_candidate_baseline_v1.json
-    ranking_artifact_path: docs/baselines/rl_policies/v3_ranking_baseline_v1.json
+    artifact_path: "${WILLY_PROJECT_ROOT}/docs/baselines/rl_policies/v2_candidate_baseline_v1.json"
+    ranking_artifact_path: "${WILLY_PROJECT_ROOT}/docs/baselines/rl_policies/v3_ranking_baseline_v1.json"
 ```
+
+`${WILLY_PROJECT_ROOT}` is the repository; a relative path in the tree would be read against the
+config folder ([`src/config/paths.py`](../../../config/paths.py)).
 
 ## The modes
 

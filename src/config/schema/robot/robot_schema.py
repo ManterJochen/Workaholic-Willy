@@ -20,7 +20,7 @@ from .sim_schema import (
     SimObjectConfig,
     SimSceneConfig,
     SimTableConfig,
-    SimViewpointConfig,
+    home_in_radians,
 )
 from .calibration_schema import RobotCalibrationConfig, RobotCalibrationQualityBandsMm
 
@@ -134,7 +134,6 @@ __all__ = [
     "SimObjectConfig",
     "SimSceneConfig",
     "SimTableConfig",
-    "SimViewpointConfig",
     "URConfig",
     "OnRobotGripperConfig",
     "VacuumGripperConfig",
@@ -184,6 +183,36 @@ class WorkspaceLimitsConfig(StrictModel):
         return self
 
 
+#: How many digital pins the UR tool connector has each way: outputs 0 and 1, inputs 0 and 1. The standard and
+#: configurable banks in the control box have 0 to 7 (``src/robot/drivers/ur/connection.py``, which reads the tool
+#: bank back at global ids 16 and 17).
+_TOOL_BANK_PINS = 2
+
+#: The shortest pulse the load accepts where a pulse is what moves the jaws (``single_toggle``, ``double_solenoid``):
+#: several controller cycles, 8 ms each on a CB3. The driver built directly takes any pulse; this floor is the config's.
+_MIN_PULSE_S = 0.05
+
+
+def _refuse_pins_the_tool_bank_lacks(block: str, io_port: str, pins: "dict[str, int | None]") -> None:
+    """Refuse a pin on ``io_port: tool`` that the UR tool connector does not have: it has pins 0 and 1 each way.
+
+    The fields allow 0 to 7 because the standard and configurable banks have eight pins each,
+    and ``tool`` is the default bank, so a pin number measured in the control box and left on
+    the default loaded, and every write to it was a pin the wrist does not have (review of
+    2026-09-24). Refused at load, rather than at the first write of a program already moving.
+    """
+    if io_port != "tool":
+        return
+    for name, pin in pins.items():
+        if pin is not None and pin >= _TOOL_BANK_PINS:
+            kind = "outputs" if "output" in name else "inputs"
+            raise ValueError(
+                f"gripper.{block}: `{name}: {pin}` is on io_port 'tool', and the UR tool connector has digital "
+                f"{kind} 0 and 1 only (src/robot/drivers/ur/connection.py), so {pin} is no pin on that bank. Use 0 "
+                "or 1, or set io_port to 'standard' or 'configurable' if the wire lands in the control box."
+            )
+
+
 class VacuumGripperConfig(StrictModel):
     """Wiring and timing for a suction end-effector on the controller's digital I/O.
 
@@ -193,7 +222,8 @@ class VacuumGripperConfig(StrictModel):
     (tool I/O, pin 0, no switch) and are not a claim about any particular cell.
     """
 
-    #: Output pin that switches the ejector or pump on.
+    #: Output pin that switches the ejector or pump on. Every pin here is 0 to 7 on the standard and
+    #: configurable banks, and 0 or 1 on the tool bank, the default, which has two pins each way.
     vacuum_output_pin: int = Field(default=0, ge=0, le=7)
     #: Optional output pulsed on release. Residual vacuum holds a light part on the cup after the
     #: ejector stops, so the part lets go somewhere unintended; this pulse pushes it off where it
@@ -211,6 +241,15 @@ class VacuumGripperConfig(StrictModel):
     #: Commanded width at/below which the driver engages vacuum. Mirrors the simulated cup so the
     #: two interpret the width-based Gripper Protocol identically.
     vacuum_on_below_mm: float = Field(default=5.0, gt=0.0)
+
+    @model_validator(mode="after")
+    def _check_tool_bank_pins(self) -> "VacuumGripperConfig":
+        _refuse_pins_the_tool_bank_lacks("vacuum", self.io_port, {
+            "vacuum_output_pin": self.vacuum_output_pin,
+            "blow_off_output_pin": self.blow_off_output_pin,
+            "vacuum_ok_input_pin": self.vacuum_ok_input_pin,
+        })
+        return self
 
 
 class JawIOGripperConfig(StrictModel):
@@ -236,19 +275,16 @@ class JawIOGripperConfig(StrictModel):
     #: inferable from the outputs, so feedback pins matter more here.
     #:
     #: ``single_toggle``: one pulsed output, where every pulse of ``pulse_s`` flips the jaws, closed
-    #: to open and back. The pin level says nothing about the jaws, so the driver pulses only when
-    #: they stand the other way from the request. With no open switch it counts its own pulses and
-    #: keeps the count on disk between programs (``logs/robot/state``), so a program that ended with
-    #: the jaws closed no longer inverts the next one; a pulse nobody counted (the pendant's I/O tab,
-    #: a power cut mid stroke) still does, and a person then says where the jaws stand:
-    #: ``python -m src.robot.drivers.ur --jaws-stand open --yes``. A pulse started and not seen to
-    #: finish makes the driver refuse to pulse until then. Wiring ``open_confirm_input_pin`` lets a
-    #: sensor decide instead; a closed switch alone is refused, because off its stop it can only
-    #: repeat what was last commanded.
+    #: to open and back, and nothing is read back (a feedback input is refused). The program counts
+    #: its own pulses from where a person says the jaws stand when the gripper connects, before
+    #: anything moves; nothing is kept between programs. It pulses only where its count says the
+    #: jaws stand the other way from the request, never before the arm moves at the start of a pick,
+    #: and it takes no width: ``closed_below_mm`` does not apply to it.
     actuation: Literal["single_solenoid", "double_solenoid", "single_toggle"] = "single_solenoid"
     #: Output that closes the jaws: held high while closed under ``single_solenoid``, pulsed
     #: under ``double_solenoid``, and under ``single_toggle`` the one pin, pulsed to close and to
-    #: open.
+    #: open. Every pin here is 0 to 7 on the standard and configurable banks, and 0 or 1 on the
+    #: tool bank, the default, which has two pins each way.
     close_output_pin: int = Field(default=0, ge=0, le=7)
     #: Output that opens the jaws. Required for ``double_solenoid``; unused (and must stay unset)
     #: for ``single_solenoid``, where "open" is simply dropping ``close_output_pin``, and for
@@ -258,7 +294,9 @@ class JawIOGripperConfig(StrictModel):
     #: coil is energised only long enough to throw it; holding it high is what cooks the coil. A
     #: toggle flips once per pulse, so the pulse must be long enough for it to register, and its
     #: pin is also held low for ``pulse_s`` before each pulse, since a flip is an edge, so one flip
-    #: takes twice this.
+    #: takes twice this. At least 0.05 s for both, several controller cycles (8 ms each on a
+    #: CB3): the controller applies an output once a cycle, so a shorter pulse may never reach the
+    #: device. Unused by ``single_solenoid``, which holds a level.
     pulse_s: float = Field(default=0.2, gt=0.0, le=5.0)
     #: Optional input from a dedicated part-present sensor. The simplest feedback: one pin, read
     #: directly.
@@ -274,17 +312,16 @@ class JawIOGripperConfig(StrictModel):
     #: Which I/O bank the pins live on. A tool-mounted gripper is usually on the tool block.
     io_port: Literal["standard", "configurable", "tool"] = "tool"
     #: How long to wait for the jaws to reach a settled state after a close. A timeout is a missed
-    #: grasp, not a fault; the verification stage decides, exactly as for suction. For a
-    #: ``single_toggle`` with an open switch it is also how long an open pulse waits for the open
-    #: stop, and a switch that has not answered by then is taken as a lost pulse, so set it above
-    #: the full stroke.
+    #: grasp, not a fault; the verification stage decides, exactly as for suction.
     close_timeout_s: float = Field(default=1.0, gt=0.0, le=30.0)
     #: The jaws' travel time, both ways. With no feedback pin wired it is the whole wait: there is nothing to poll,
     #: so the driver can only wait. With one, a reading that also occurs mid-stroke is taken only after it. An open
-    #: with no open switch waits it too, so a place does not back out of jaws still opening.
+    #: with no open switch waits it too, so a place does not back out of jaws still opening. A ``single_toggle``
+    #: waits it after every pulse, and after the pulse a person asks for at connect.
     close_settle_s: float = Field(default=0.3, ge=0.0, le=10.0)
     #: Commanded width at/below which the driver closes. Mirrors ``vacuum_on_below_mm`` so both I/O
-    #: end-effectors interpret the width-based Protocol identically.
+    #: end-effectors interpret the width-based Protocol identically. Unused by ``single_toggle``,
+    #: which refuses a width.
     closed_below_mm: float = Field(default=5.0, gt=0.0)
     #: What ``connect()`` does when no feedback is wired. The default, False, is not to actuate.
     #:
@@ -295,6 +332,12 @@ class JawIOGripperConfig(StrictModel):
     #: connect, accepting that a held part is released. Refused for ``single_toggle``, which cannot
     #: assert a state, only flip one.
     open_on_connect_without_feedback: bool = False
+    #: Whether connecting asks a person, before anything moves, whether the jaws stand open. Closed
+    #: is answered with one command that opens them, or an abort that refuses the connect, and with
+    #: no terminal to ask at the connect is refused. ``None``, the default, asks for
+    #: ``single_toggle``, which nothing else can tell where its jaws stand, and not for the
+    #: solenoids; ``true`` asks for a solenoid too. ``false`` is refused for ``single_toggle``.
+    confirm_open_at_start: bool | None = None
 
     @model_validator(mode="after")
     def _check_actuation_pins(self) -> "JawIOGripperConfig":
@@ -323,24 +366,49 @@ class JawIOGripperConfig(StrictModel):
             raise ValueError(
                 "gripper.jaw_io: actuation 'single_toggle' cannot assert 'open' on connect: every pulse "
                 "flips the jaws, so a pulse on jaws that already stand open would close them. Remove "
-                "`open_on_connect_without_feedback`; connect() pulses only where both end-stop "
-                "switches prove the jaws closed on nothing."
+                "`open_on_connect_without_feedback`; connect() asks a person where the jaws stand instead."
             )
-        # Off its stop a lone closed switch can only repeat what was last commanded, so a lost pulse
-        # would be read back as a grasp and the next pulse would flip the jaws the wrong way.
-        if (self.actuation == "single_toggle" and self.closed_confirm_input_pin is not None
-                and self.open_confirm_input_pin is None):
-            raise ValueError(
-                "gripper.jaw_io: actuation 'single_toggle' with `closed_confirm_input_pin` and no "
-                "`open_confirm_input_pin`: off the closed stop that switch only repeats what was last "
-                "commanded, so a lost pulse would be read back as a grasp. Wire `open_confirm_input_pin` "
-                "too, or neither."
-            )
+        # A toggle reads nothing back: the program counts its pulses from where a person said the jaws
+        # stood, so an input is a wire nobody reads, and a cell that believes it is sensed is not.
+        if self.actuation == "single_toggle":
+            wired = [name for name in ("part_present_input_pin", "closed_confirm_input_pin", "open_confirm_input_pin")
+                     if getattr(self, name) is not None]
+            if wired:
+                raise ValueError(
+                    f"gripper.jaw_io: actuation 'single_toggle' reads no sensor, so `{wired[0]}` would be a wire "
+                    "nobody reads: the program counts its own pulses from where a person said the jaws stood at "
+                    "connect. Remove it, or set actuation to 'single_solenoid' or 'double_solenoid' if the valve "
+                    "really holds a level or has two coils."
+                )
+            if self.confirm_open_at_start is False:
+                raise ValueError(
+                    "gripper.jaw_io: actuation 'single_toggle' always asks at connect where its jaws stand: nothing "
+                    "else can tell the program, and a count started from a wrong guess inverts every command after "
+                    "it. Remove `confirm_open_at_start: false`."
+                )
         pins = [self.close_output_pin, self.open_output_pin]
         if self.open_output_pin is not None and self.close_output_pin == self.open_output_pin:
             raise ValueError(
                 f"gripper.jaw_io: close_output_pin and open_output_pin are both {pins[0]}; one pin "
                 "cannot drive both coils."
+            )
+        _refuse_pins_the_tool_bank_lacks("jaw_io", self.io_port, {
+            "close_output_pin": self.close_output_pin,
+            "open_output_pin": self.open_output_pin,
+            "part_present_input_pin": self.part_present_input_pin,
+            "closed_confirm_input_pin": self.closed_confirm_input_pin,
+            "open_confirm_input_pin": self.open_confirm_input_pin,
+        })
+        # Where a pulse is what moves the jaws, a pulse of a controller cycle or two may never reach the device, or
+        # reach it too short to register, while a toggle's program counts it as a flip (review of 2026-09-24).
+        if self.actuation in ("single_toggle", "double_solenoid") and self.pulse_s < _MIN_PULSE_S:
+            raise ValueError(
+                f"gripper.jaw_io: `pulse_s: {self.pulse_s}` is shorter than {_MIN_PULSE_S} s, the shortest pulse the "
+                f"load accepts for actuation '{self.actuation}', where the pulse is what moves the jaws: the "
+                "controller applies an output once per controller cycle (8 ms on a CB3) and reports it back a cycle "
+                "or two later, so a pulse of a few cycles may never reach the device, or reach it too short to "
+                f"register. Set pulse_s to at least {_MIN_PULSE_S}, and measure the pulse the device needs with "
+                "`python -m src.robot.drivers.ur --pulse PIN --for SECONDS --yes`: one call must flip the jaws once."
             )
         return self
 
@@ -536,8 +604,8 @@ class GripperConfig(StrictModel):
         # and a pick's pre-open command max_width_mm and a grasp commands at least min_width_mm, so a threshold outside
         # that band makes every release close the jaws, or leaves no grasp that closes them. With 84, the 2F-85's
         # number, on a Hand-E's 49.99 a pick closes the jaws at its pre-open, the symptom the owner's toggle cell
-        # reported on 2026-09-23.
-        if self.vendor == "jaw_io":
+        # reported on 2026-09-23. A single_toggle takes no width at all, so the band does not apply to it.
+        if self.vendor == "jaw_io" and self.jaw_io.actuation != "single_toggle":
             below = self.jaw_io.closed_below_mm
             if below >= self.max_width_mm:
                 raise ValueError(
@@ -582,6 +650,10 @@ class RobotConfig(StrictModel):
     #: on any other arm gives its own value, or its first motion leaves the declared workspace.
     #: ``sim.home_joint_positions`` is the sim-side twin of this field.
     home_joint_positions: tuple[float, ...] | None = None
+    #: The same home in DEGREES, as the pendant shows it and ``python -m src.robot.drivers.ur --where`` prints it.
+    #: Exactly one of the two may be given. Read once, at load: the loaded config carries the home in radians in
+    #: ``home_joint_positions`` and ``None`` here, so every consumer reads the one unit it always read.
+    home_joint_positions_deg: tuple[float, ...] | None = None
 
     safe_pose: SafePoseConfig = Field(default_factory=SafePoseConfig)
     calibration: RobotCalibrationConfig = Field(default_factory=RobotCalibrationConfig)
@@ -591,6 +663,21 @@ class RobotConfig(StrictModel):
     # run no RL at all and preserve production behaviour byte-identically. RL-active modes are
     # schema-gated and runtime-rejected; see src/robot/grasping/rl.
     rl: RobotRLConfig = Field(default_factory=RobotRLConfig)
+
+    @model_validator(mode="after")
+    def _home_in_degrees_loads_as_radians(self) -> "RobotConfig":
+        """``home_joint_positions_deg`` becomes ``home_joint_positions`` in radians; both at once is refused.
+
+        First among the validators, so every rule after it reads the home in the unit it always read.
+        """
+        home = home_in_radians(self.home_joint_positions, self.home_joint_positions_deg, "robot.home_joint_positions")
+        if self.home_joint_positions_deg is not None:
+            object.__setattr__(self, "home_joint_positions", home)
+            object.__setattr__(self, "home_joint_positions_deg", None)
+            # Stated as the radians it now is, so what the model says was set matches what it holds.
+            stated = (self.model_fields_set - {"home_joint_positions_deg"}) | {"home_joint_positions"}
+            object.__setattr__(self, "__pydantic_fields_set__", stated)
+        return self
 
     @model_validator(mode="after")
     def _check_self_collision_model_matches_sim_robot(self) -> "RobotConfig":

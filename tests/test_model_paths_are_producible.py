@@ -11,6 +11,10 @@ The check asks the fetch script, it does not keep a copy of the answer. A list o
 written here would be a second declaration of the layout, maintained by whoever remembers this file
 exists. `Weights.local_dir` computes where a model lands, so the config is compared against the thing
 that puts it there.
+
+The loader reads a path against the config folder, and the shipped tree names the weights under
+``${WILLY_PROJECT_ROOT}``, the repository (``src/config/paths.py``), so the loaded value is the absolute
+path of the file, compared as such.
 """
 
 from __future__ import annotations
@@ -85,7 +89,7 @@ class EveryLocalPathIsWhereTheFetchPutsItTests(unittest.TestCase):
             if not local or not model_id or model_id not in by_id:
                 continue
             with self.subTest(block=name):
-                expected = by_id[model_id].local_dir(root).relative_to(_REPO).as_posix()
+                expected = by_id[model_id].local_dir(root).as_posix()
                 self.assertEqual(
                     Path(path).as_posix(), expected,
                     f"{name} is local: true at a path the fetch script does not produce",
@@ -100,20 +104,20 @@ class EveryLocalPathIsWhereTheFetchPutsItTests(unittest.TestCase):
         entry = next(f for f in PACKAGED_FILES if f.key == "silero-vad")
         self.assertEqual(
             Path(stt.vad_model_path).as_posix(),
-            entry.local_path(weights_root()).relative_to(_REPO).as_posix(),
+            entry.local_path(weights_root()).as_posix(),
             "models.stt.vad_model_path is not the file `fetch.py silero-vad` writes",
         )
 
     def test_every_local_path_is_inside_the_weights_root(self) -> None:
         """The whole point of the location: deleting the repository takes the weights with it. A
         path outside it is a download that survives, which is what this move was for."""
-        root = weights_root().relative_to(_REPO).as_posix()
+        root = weights_root().as_posix()
         for name, _model_id, path, local in _blocks():
             if not local or not path:
                 continue
             with self.subTest(block=name):
                 self.assertTrue(
-                    Path(path).as_posix().startswith(root),
+                    Path(path).as_posix().startswith(f"{root}/"),
                     f"{name} is local: true outside {root}, so a repo delete leaves it behind",
                 )
 

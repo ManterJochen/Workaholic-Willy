@@ -15,7 +15,7 @@ raise SystemExit(verdict.exit_code)     # 0 passes, 1 refused, 2 unreadable
 ```
 
 A campaign writes such a log with `PickRun.from_cell(..., recording=Recording.to_file("picks.jsonl"))`
-([13_pick_campaign.py](../../../../examples/real_robot/13_pick_campaign.py)), and a cell writes one
+([11_pick_with_the_camera.py](../../../../examples/real_robot/11_pick_with_the_camera.py)), and a cell writes one
 when `robot.grasping.record_log_path` is set. The same from a shell:
 
 ```bash

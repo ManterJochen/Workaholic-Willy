@@ -42,6 +42,30 @@ the only one that can be asked whether it is holding something, because the Robo
 driver exposes no detection capability and ``WidthDeltaGripperVerifier`` needs a
 travelling jaw to measure.
 
+A ``single_toggle`` is the exception, and the owner's cell (2026-09-24): a Hand-E on the
+Robotiq I/O Coupling, one tool output, 24 V, where every short pulse flips the jaws and
+nothing is wired back. It reads no sensor at all (a feedback pin is refused), takes no
+width (``set_width_mm`` is refused; the verbs say open or close through ``set_closed``),
+and counts its own pulses from where a person said the jaws stood when it connected:
+
+* :meth:`JawIOGripper.connect` asks, once, before anything moves, whether the jaws stand
+  open, and Enter answers open there. Closed is answered with one pulse to open them, or an
+  abort. With no terminal and no question handed in, the connect is refused. The hand counts
+  as connected, and its count starts, only once the answer is in.
+* Every pulse flips the count, whatever verb sent it, and a pulse is sent only where the
+  count says the jaws stand the other way from the request. The count flips only once the
+  pin has read back HIGH; a pin that never does leaves the count unknowable, and the next
+  pick asks.
+* A pick never pulses before the arm moves; it asks :meth:`JawIOGripper.jaws_open_for_a_pick`,
+  which asks the person again where the count says closed. There an empty line is no answer:
+  only the word ``open`` or ``closed`` is.
+
+At the terminal, what was typed before a question is discarded before it is asked, so a
+stray Enter (examples 12 and 13 use Enter as push-to-talk) cannot answer it unseen. A
+question whose connection changed while it waited, a disconnect or another connect from
+another thread, is refused without a pulse. Nothing is kept between programs: the next
+program asks again.
+
 Status is bucket 3: this has never touched a real gripper. The I/O calls it makes are
 the ones the UR driver already exposes. What is unverified is the wiring, meaning the
 pin numbers, which port block, whether the reed switches are active-high, whether the
@@ -53,23 +77,86 @@ bring-up is a matter of measuring numbers rather than editing this file.
 
 from __future__ import annotations
 
-import os
+import importlib
+import itertools
+import sys
+import threading
 import time
 from enum import StrEnum
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from src.robot.core import RobotConnectionError, RobotError
 from src.robot.core.arm_capabilities import DigitalIOPort, SupportsDigitalIO
 from src.robot.core.gripper import HoldEvidence
 
 from ..constants import JAW_IO_GRIPPER_LOG_FILE, create_robot_logger
-from . import jaw_toggle_state
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot.robot_schema import GripperConfig
 
-__all__ = ["JawIOGripper", "JawState"]
+__all__ = ["JawIOGripper", "JawQuestion", "JawState"]
+
+#: The seam a person answers through: it is shown one question and returns what was typed, exactly as ``input``
+#: does. The default where stdin is a terminal is ``input``, with the console's typeahead discarded before each
+#: question (:func:`_drain_typeahead`). A test or a console hands in its own, which is never drained.
+JawQuestion = Callable[[str], str]
+
+#: How often an answer that is none of the choices is asked again before the question counts as unanswered.
+_ASKS = 3
+
+#: How often an output is read back after a write: one CB3 controller cycle, 125 Hz. The output goes out over RTDE
+#: and its state comes back on the receive stream, so a read straight after a write reports the level before it
+#: (measured on URSim 5.26.0, ``drivers/ur/io_bench.set_output``).
+_READ_BACK_POLL_S = 0.008
+#: The shortest a read-back waits, whatever the pulse: several controller cycles. A driver built directly, as the
+#: tests build it, may pulse for 0 s; the config refuses a pulse under 0.05 s.
+_READ_BACK_FLOOR_S = 0.05
+#: The most keys one drain discards: a key held down repeats, and a drain must end.
+_TYPEAHEAD_LIMIT = 4096
+
+
+def _drain_typeahead(stdin: Any = None) -> int:
+    """Discard what was typed at the console before a question is asked; how many keys were discarded, where countable.
+
+    The question is read with the builtin ``input``, and ``input`` reads whatever waits in the
+    console's input queue, typed before anybody asked. An Enter pressed while the models loaded
+    (examples 12 and 13 use Enter as push-to-talk) answered the connect question unseen, and
+    with the jaws really closed the count started OPEN and every command after it ran inverted
+    (review of 2026-09-24, reproduced on a real Windows console). So the queue is emptied first,
+    and only a key pressed after the question is shown can answer it.
+
+    ``stdin`` is ``sys.stdin`` unless handed in. Only a stdin with a descriptor that is a terminal
+    is drained: a pipe or a replaced stdin holds answers somebody meant, and no console. On
+    Windows each waiting key is read off with ``msvcrt`` and counted; on POSIX the terminal's
+    input queue is flushed (``termios.tcflush``, ``TCIFLUSH``), which counts nothing and returns
+    0. A console that cannot be drained is asked as it stands: never raises.
+    """
+    stream = sys.stdin if stdin is None else stdin
+    try:
+        fd = int(stream.fileno())
+        if not stream.isatty():
+            return 0
+    except (AttributeError, OSError, TypeError, ValueError):
+        # No descriptor (a StringIO, a closed or replaced stdin): nothing typed at a console waits in it.
+        return 0
+    try:
+        keyboard: Any = importlib.import_module("msvcrt")
+    except ImportError:
+        keyboard = None
+    try:
+        if keyboard is not None:
+            drained = 0
+            while drained < _TYPEAHEAD_LIMIT and keyboard.kbhit():
+                keyboard.getwch()
+                drained += 1
+            return drained
+        terminal: Any = importlib.import_module("termios")
+        terminal.tcflush(fd, terminal.TCIFLUSH)
+    except Exception:
+        # A console handle gone, a terminal that refuses the flush: the question is asked as it stands, which is no
+        # worse than before the drain existed, and a drain must never be why a question is not asked.
+        return 0
+    return 0
 
 
 class JawState(StrEnum):
@@ -103,6 +190,19 @@ class JawIOGripper:
     ``disconnect()`` reflect whether the I/O source is usable rather than owning a
     socket. The lifecycle consequence is the same as for suction: the arm must be
     connected before the gripper is.
+
+    ``confirm_open_at_start`` is whether :meth:`connect` asks a person where the jaws
+    stand: ``None``, the default, asks for a ``single_toggle`` and not otherwise, and
+    ``False`` is refused for a toggle. ``ask`` is how the question reaches the person
+    (:data:`JawQuestion`); ``None`` asks at the terminal where stdin is one, through
+    ``input``, with the console's typeahead discarded first.
+
+    One lock holds a question and the pulse it leads to together: :meth:`connect`,
+    :meth:`set_closed` and :meth:`jaws_open_for_a_pick` take it, so a command from another
+    thread waits while a person is being asked, and never pulses in between. :meth:`disconnect`
+    does not take it, because a teardown must never wait on a person; it ends the connection
+    instead, and a question that finds its connection changed when its answer comes back is
+    refused without a pulse.
     """
 
     def __init__(
@@ -122,9 +222,10 @@ class JawIOGripper:
         close_settle_s: float = 0.3,
         closed_below_mm: float = 5.0,
         open_on_connect_without_feedback: bool = False,
+        confirm_open_at_start: bool | None = None,
         min_width_mm: float = 0.0,
         max_width_mm: float = 85.0,
-        state_file: "str | Path | None" = None,
+        ask: "JawQuestion | None" = None,
         sleep: Any = time.sleep,
     ) -> None:
         if not isinstance(io, SupportsDigitalIO):
@@ -155,34 +256,37 @@ class JawIOGripper:
                 "JawIOGripper: actuation 'single_solenoid' opens by dropping close_output_pin, so "
                 "open_output_pin is never driven. Drop it, or use 'double_solenoid'."
             )
-        if actuation == "single_toggle" and open_output_pin is not None:
-            # The schema's refusal, repeated for the same reason as the one above: a toggle
-            # opens by pulsing close_output_pin again, so a second pin is a wire nobody drives.
-            raise ValueError(
-                "JawIOGripper: actuation 'single_toggle' opens by a second pulse on "
-                "close_output_pin, so open_output_pin is never driven. Drop it, or use "
-                "'double_solenoid'."
-            )
-        if actuation == "single_toggle" and open_on_connect_without_feedback:
-            # A toggle can only flip the jaws, and a pulse on jaws that already stand open
-            # closes them. This refuses as the schema does, because the constructor is
-            # reachable without the schema.
-            raise ValueError(
-                "JawIOGripper: actuation 'single_toggle' cannot assert 'open' on connect: every "
-                "pulse flips the jaws, so one on jaws already open would close them. Drop "
-                "open_on_connect_without_feedback."
-            )
-        if (actuation == "single_toggle" and closed_confirm_input_pin is not None
-                and open_confirm_input_pin is None):
-            # Off its stop a lone closed switch can only repeat what was last commanded
-            # (_read_state), so a lost pulse would be read back as a grasp and the next
-            # pulse would flip the jaws the wrong way.
-            raise ValueError(
-                "JawIOGripper: actuation 'single_toggle' with closed_confirm_input_pin and no "
-                "open_confirm_input_pin: off the closed stop that switch only repeats what was "
-                "last commanded, so a lost pulse would be read back as a grasp. Wire "
-                "open_confirm_input_pin too, or neither."
-            )
+        if actuation == "single_toggle":
+            # Every refusal below is the schema's, repeated because the constructor is reachable without it.
+            if open_output_pin is not None:
+                raise ValueError(
+                    "JawIOGripper: actuation 'single_toggle' opens by a second pulse on "
+                    "close_output_pin, so open_output_pin is never driven. Drop it, or use "
+                    "'double_solenoid'."
+                )
+            if open_on_connect_without_feedback:
+                raise ValueError(
+                    "JawIOGripper: actuation 'single_toggle' cannot assert 'open' on connect: every "
+                    "pulse flips the jaws, so one on jaws already open would close them. Drop "
+                    "open_on_connect_without_feedback."
+                )
+            wired = [pin for pin in (part_present_input_pin, closed_confirm_input_pin, open_confirm_input_pin)
+                     if pin is not None]
+            if wired:
+                # The toggle reads nothing back: the program counts its pulses from where a person said the jaws
+                # stood, so an input here is a wire nobody reads, and a cell that believes it is sensed is not.
+                raise ValueError(
+                    f"JawIOGripper: actuation 'single_toggle' reads no sensor, so input {wired[0]} would be a "
+                    "wire nobody reads: the program counts its own pulses from where a person said the jaws "
+                    "stood at connect. Drop the input, or drive a valve that reads one as 'single_solenoid' or "
+                    "'double_solenoid'."
+                )
+            if confirm_open_at_start is False:
+                raise ValueError(
+                    "JawIOGripper: actuation 'single_toggle' always asks at connect where its jaws stand: "
+                    "nothing else can tell the program, and a count started from a wrong guess inverts every "
+                    "command after it. Drop confirm_open_at_start: false."
+                )
         if open_output_pin is not None and int(open_output_pin) == int(close_output_pin):
             raise ValueError(
                 f"JawIOGripper: close_output_pin and open_output_pin are both {close_output_pin}; "
@@ -205,35 +309,36 @@ class JawIOGripper:
         self._close_settle_s = float(close_settle_s)
         self._closed_below_mm = float(closed_below_mm)
         self._open_on_connect_without_feedback = bool(open_on_connect_without_feedback)
+        self._asks_at_start = actuation == "single_toggle" or bool(confirm_open_at_start)
         if config is not None:
             min_width_mm, max_width_mm = float(config.min_width_mm), float(config.max_width_mm)
         self._min_width_mm = float(min_width_mm)
         self._max_width_mm = float(max_width_mm)
+        self._ask = ask
         self._sleep = sleep
+        # True only once a connect has finished, its question answered: a hand still being asked about is not
+        # connected, so nothing can command it (review of 2026-09-24, a race found in the console).
         self._connected = False
+        # A question and the pulse it leads to, held together (see the class docstring). Reentrant, because the
+        # person's answer may come from code that connects or commands on the same thread.
+        self._lock = threading.RLock()
+        # Which connection a question was asked on: a new one at every connect and every disconnect, so a question
+        # whose answer comes back to a different one is refused rather than acted on.
+        self._generations = itertools.count(1)
+        self._generation = 0
         # What the driver last commanded, not what the jaws are doing. It is kept apart
         # from the sensed state on purpose: conflating the two is how a gripper reports
         # a grasp it never made. A single_toggle has no level to command, so for it this
-        # is the driver's belief about where the jaws stand: moved at each pulse's edge,
-        # reset at every connect, and set from the open switch where one is wired and
-        # measured otherwise.
+        # is the program's count of its own pulses: set from a person's answer at every
+        # connect, and flipped at each pulse's edge.
         self._closed = False
         # A toggle pulse whose high write failed, so whether the jaws flipped is
-        # unknowable. A cell with no open switch refuses to pulse again until a connect
-        # resets the belief.
+        # unknowable. The driver refuses to pulse again until a person has said where the
+        # jaws stand, at the next pick's question or the next connect's.
         self._edge_unknown = False
-        # A toggle's open pulse whose wait for the open stop did not finish, because an
-        # exception came mid-stroke. The next decision waits the stroke out first, or it
-        # would read travelling jaws as closed and pulse them back.
-        self._awaiting_open = False
-        # Where a toggle's count of its own pulses is kept between programs
-        # (jaw_toggle_state). None keeps it in memory only, as before, which a driver
-        # built directly gets; the cell's builder names a file per controller, bank and pin.
-        self._state_file = (Path(state_file) if state_file is not None and actuation == "single_toggle"
-                            else None)
-        # The record says a pulse was started and not seen to finish: nobody knows where
-        # the jaws stand until a person has looked and declared it (declare_jaws).
-        self._record_in_flight = False
+        # Every command sent to the jaws since this driver was built, connects included; read
+        # through `commands_sent`.
+        self._commands_sent = 0
         self.logger = create_robot_logger("JawIOGripper", JAW_IO_GRIPPER_LOG_FILE)
 
     # --- state ------------------------------------------------------------
@@ -267,13 +372,56 @@ class JawIOGripper:
         """Whether the jaws are currently commanded closed, the driver's view and not the sensors.
 
         For a ``single_toggle``, which commands flips rather than levels, this is the
-        driver's belief about where they stand (see ``_closed``).
+        program's count of its own pulses (see ``_closed``).
         """
         return self._closed
+
+    @property
+    def commands_sent(self) -> int:
+        """How many commands this driver has sent the jaws since it was built, the ones a connect sent included.
+
+        One per toggle pulse and one per solenoid actuation, counted once its commanding write
+        (the rising edge, the level, the coil) has been tried: a write that raised may still have
+        reached the controller, so the count never says less went out than may have. Never reset,
+        not even by a connect: a caller that wants what one call sent reads it before and after.
+        The bench's ``--jaws`` reads it so its summary says what went out across the connect and
+        the command, and never "nothing was pulsed" where a connect's question sent a pulse.
+        """
+        return self._commands_sent
+
+    @property
+    def toggles_without_sensor(self) -> bool:
+        """``True`` for a ``single_toggle``: every command is a pulse that flips the jaws, and nothing reads them."""
+        return self._actuation == "single_toggle"
+
+    @property
+    def edge_unknown(self) -> bool:
+        """``True`` once a pulse's high write failed or never read back: nobody can say whether the jaws flipped.
+
+        Until a person says where the jaws stand again (the connect's question, or a pick-start re-ask), every
+        pulse is refused. A caller that must never block on that question, such as a console run's thread,
+        reads this and stops instead of asking.
+        """
+        return self._edge_unknown
+
+    @property
+    def asks_at_connect(self) -> bool:
+        """Whether :meth:`connect` asks a person where the jaws stand: a ``single_toggle`` always, a solenoid opted in."""
+        return self._asks_at_start
 
     # --- lifecycle --------------------------------------------------------
     def connect(self) -> None:
         """Adopt the arm's I/O and reach a safe state without blindly dropping a workpiece.
+
+        This is the call that asks a person where the jaws stand, where one is asked:
+        ``connect_cell`` (``src/robot/execution/lifecycle.py``) makes it when a program
+        brings its cell up (``Robot.connected()``, ``Cell.connected()``; the bench's
+        ``--jaws`` makes it itself), once, after the arm connects and before anything
+        moves, and a refusal here rolls the arm back. A second call while connected does nothing; a call that
+        raised left nothing connected, and the next one asks again. The hand counts as connected only
+        once the question is answered and anything it chose has been sent: while it waits,
+        :attr:`is_connected` is ``False`` and every command is refused, so no other thread can pulse
+        jaws the count has not started on. A disconnect while it waits refuses the connect.
 
         The rule differs from the suction driver's on purpose. Suction asserts off on
         connect, because releasing a cup that was left latched is cheap. A jaw gripper
@@ -288,15 +436,34 @@ class JawIOGripper:
           behaviour instead.
 
         Nothing here commands motion in the held case, so a cell that boots holding a
-        part stays exactly as the last run left it.
-
-        A ``single_toggle`` connects by its own rule, :meth:`_connect_toggle`: every
-        pulse flips its jaws, so it cannot assert a state.
+        part stays exactly as the last run left it. A ``single_toggle`` connects by its own
+        rule, :meth:`_connect_toggle`, and a solenoid that opted into
+        ``confirm_open_at_start`` asks first too: an answer of closed opens it only where
+        the person chooses that, and an abort refuses the connect.
         """
-        self._connected = True
-        if self._actuation == "single_toggle":
-            self._connect_toggle()
-            return
+        with self._lock:
+            if self._connected:
+                return
+            self._generation = generation = next(self._generations)
+            # A connect that raises sets nothing: it never marked the hand connected, so the next one starts again,
+            # question included.
+            if self._actuation == "single_toggle":
+                self._connect_toggle()
+            else:
+                self._connect_solenoid()
+            if self._generation != generation:
+                # Past the question, which checks this itself: a disconnect came while the pulse the person chose, or
+                # its stroke, ran. Marking the hand connected now would undo that disconnect.
+                raise RobotError(
+                    f"JawIOGripper: not connecting: the hand on {self._where_pin()} was disconnected while its connect "
+                    "ran. Connect again, and it asks again where the jaws stand."
+                )
+            self._connected = True
+
+    def _connect_solenoid(self) -> None:
+        """A solenoid's connect, by the rule :meth:`connect` states; it asks first where it opted in."""
+        if self._asks_at_start:
+            self._refuse_unless_open("this cell asks where they stand before anything moves (confirm_open_at_start)")
         state = self._read_state()
         if state is JawState.HOLDING:
             self.logger.warning(
@@ -334,19 +501,20 @@ class JawIOGripper:
         :meth:`.vacuum.VacuumGripper.disconnect`, which releases on the way out.
         Dropping a held part during teardown, which is often an error path, is how a
         workpiece ends up on the floor of a cell nobody is watching. Releasing is an
-        explicit ``set_width_mm`` call, so a caller that wants it asks for it.
+        explicit ``set_closed(False)`` call, so a caller that wants it asks for it.
+
+        It takes no lock, so it never waits on a person: it ends the connection, and a question
+        still waiting on this one finds that when its answer comes back and pulses nothing.
         """
         self._connected = False
+        self._generation = next(self._generations)
         # This says what was left behind, because the driver deliberately does not
         # release: a cell found holding a part next morning is explained by this line.
-        left = ("UNKNOWN, the last pulse failed on its high write" if self._edge_unknown
+        left = ("UNKNOWN, the last pulse failed on its high write or never read HIGH" if self._edge_unknown
                 else "CLOSED" if self._closed else "open")
-        if self._actuation == "single_toggle" and (self._closed or self._edge_unknown):
-            # A toggle left closed is where the next program starts inverted, unless it reads
-            # the record; said at warning level so the line is there when that program misbehaves.
-            kept = (f"recorded in {self._state_file}, and the next program starts from it" if self._state_file
-                    else "nothing records it, and the next program will take them to stand OPEN")
-            self.logger.warning("disconnected without releasing (jaws left %s); %s", left, kept)
+        if self._actuation == "single_toggle":
+            self.logger.info("disconnected without releasing (jaws left %s); the next connect asks where they "
+                             "stand", left)
             return
         self.logger.info("disconnected without releasing (jaws left %s)", left)
 
@@ -365,8 +533,18 @@ class JawIOGripper:
         because commanding the valve and driving away immediately is how a cell drops
         parts: a cylinder needs travel time, and on this hardware that time is the only
         thing standing between commanded and gripped.
+
+        Refused for a ``single_toggle``, which takes no width: a width read against a
+        threshold is how a grasp became an open on the owner's cell (2026-09-23), and a
+        toggle has nothing to measure it against. Its verbs say open or close through
+        :meth:`set_closed`.
         """
         self._require_connected("set_width_mm")
+        if self._actuation == "single_toggle":
+            raise RobotError(
+                f"JawIOGripper: a single_toggle takes no width ({float(width_mm)} mm was sent): every pulse flips "
+                "the jaws and nothing measures them. Say open or close with set_closed(), as the hand verbs do."
+            )
         self.set_closed(float(width_mm) <= self._closed_below_mm)
 
     def set_closed(self, closed: bool) -> None:
@@ -376,41 +554,54 @@ class JawIOGripper:
         is an open (owner's cell, 2026-09-23). A verb that knows what it means, a pick's
         pre-open, its grasp, a release, says it here instead, so no width can turn it round.
         A close waits for the jaws exactly as a closing width does.
+
+        A ``single_toggle`` sends one pulse where its count says the jaws stand the other
+        way, and then waits ``close_settle_s``, the stroke, whichever way it went. Where they
+        already stand there it sends nothing and says so in the log.
+
+        It holds the lock, so it waits while a person is being asked where the jaws stand.
         """
-        self._require_connected("set_closed")
-        close = bool(closed)
-        was_closed = self._closed
-        self._actuate(close=close)
-        if close:
-            self._await_close()
+        with self._lock:
+            self._require_connected("set_closed")
+            close = bool(closed)
             if self._actuation == "single_toggle":
-                self._settle_toggle_close()
-        elif was_closed and not self._closed and self._open_confirm_pin is None:
-            # The jaws travel the same stroke open as closed, and with no open switch the travel time is the only
-            # wait there is. Without it a place returned the moment the valve was told, and the arm backed out of a
-            # Hand-E that takes up to about 2 s to open, dragging the part it had just set down (owner's cell,
-            # 2026-09-23).
-            self._sleep(self._close_settle_s)
+                if self._toggle(close):
+                    self._sleep(self._close_settle_s)
+                return
+            was_closed = self._closed
+            self._actuate(close=close)
+            if close:
+                self._await_close()
+            elif was_closed and self._open_confirm_pin is None:
+                # The jaws travel the same stroke open as closed, and with no open switch the travel time is the only
+                # wait there is. Without it a place returned the moment the valve was told, and the arm backed out of
+                # a Hand-E that takes up to about 2 s to open, dragging the part it had just set down (owner's cell,
+                # 2026-09-23).
+                self._sleep(self._close_settle_s)
 
-    def declare_jaws(self, *, closed: bool) -> None:
-        """A person looked at a toggle's jaws and says where they stand; the driver and its record take it.
+    def jaws_open_for_a_pick(self) -> str:
+        """Before a pick moves the arm: ``""`` where the jaws stand open, else why the pick must not start.
 
-        The way out after a pulse nobody counted (the pendant's I/O tab, a power cut mid
-        stroke) and after a record that says a pulse was started and not seen to finish.
-        Nothing is pulsed. Refused for a toggle with an open switch, which reads the jaws
-        itself, and for the solenoids, which command a level rather than a flip.
+        ``TogglesWithoutSensor``: a pick on a toggle never pulses before the arm moves. Where
+        the count says open this answers at once. Where it says closed (a pick with no place
+        before it) or cannot say (a pulse whose high write failed, or whose pin never read
+        HIGH), it asks the person again, as :meth:`connect` does, and a person who answers
+        closed may choose one pulse to open them now. Here an empty line is no answer: the
+        program already believes something else, so only the word ``open`` or ``closed`` is,
+        and an Enter meant for something else is asked again. With nobody to ask, the pick is
+        refused. A question whose connection changed while it waited is refused without a
+        pulse. Every other actuation answers ``""``: its pick opens the jaws by command.
         """
-        if self._actuation != "single_toggle" or self._open_confirm_pin is not None:
-            raise RobotError(
-                "JawIOGripper.declare_jaws: only a single_toggle with no open switch keeps a count of "
-                "its own pulses; this one reads or commands where its jaws stand."
-            )
-        self._closed = bool(closed)
-        self._edge_unknown = False
-        self._record_in_flight = False
-        if self._state_file is not None:
-            jaw_toggle_state.declare(self._state_file, closed=bool(closed))
-        self.logger.warning("jaws declared %s by a person; nothing pulsed", "CLOSED" if closed else "OPEN")
+        with self._lock:
+            self._require_connected("jaws_open_for_a_pick")
+            if self._actuation != "single_toggle" or not (self._closed or self._edge_unknown):
+                return ""
+            why = ("a pick starts with them open, and the last pulse failed on its high write or its pin never read "
+                   "HIGH, so nobody can say which way it moved them" if self._edge_unknown else
+                   "a pick starts with them open, and the program believes they stand CLOSED: its last command "
+                   "closed them")
+            refused = self._where_the_jaws_stand(why, at_connect=False)
+            return f"not starting the pick: {refused}" if refused else ""
 
     def get_width_mm(self) -> float:
         """Reported opening: the closed band while closed, the open band while open.
@@ -433,7 +624,7 @@ class JawIOGripper:
         driver takes without a switch.
         """
         self._require_connected("is_object_detected")
-        if not self._closed_for_evidence():
+        if not self._closed:
             # Open jaws can hold nothing, and the reed pair reads as between the end
             # stops during travel, which would otherwise look exactly like a grasp.
             return False
@@ -448,14 +639,13 @@ class JawIOGripper:
         """The wired feedback as evidence, never the command.
 
         UNMEASURED while the jaws are commanded open, whatever a part pin reads, because open
-        jaws hold nothing and the reeds read between the stops during travel; for a
-        ``single_toggle`` with an open switch, while that switch reads open
-        (``_closed_for_evidence``). Closed, a part pin that reads high is HELD and low is
-        EMPTY. With no part pin, ``JawState.HOLDING`` is HELD, ``JawState.CLOSED_EMPTY`` is
-        EMPTY, and any other reed state, or no reeds at all, is UNMEASURED.
+        jaws hold nothing and the reeds read between the stops during travel. Closed, a part
+        pin that reads high is HELD and low is EMPTY. With no part pin, ``JawState.HOLDING``
+        is HELD, ``JawState.CLOSED_EMPTY`` is EMPTY, and any other reed state, or no reeds at
+        all, is UNMEASURED: a ``single_toggle``, which reads nothing, is always UNMEASURED.
         """
         self._require_connected("hold_evidence")
-        if not self._closed_for_evidence():
+        if not self._closed:
             return HoldEvidence.UNMEASURED
         if self._part_pin is not None:
             held = bool(self._io.get_digital_input(self._part_pin, port=self._port))
@@ -466,20 +656,6 @@ class JawIOGripper:
         if state is JawState.CLOSED_EMPTY:
             return HoldEvidence.EMPTY
         return HoldEvidence.UNMEASURED
-
-    def _closed_for_evidence(self) -> bool:
-        """Whether the jaws count as closed for the grasp evidence.
-
-        This is what was commanded, except on a toggle with an open switch. A toggle's
-        belief can lag its jaws, after a lost edge or a write that raised after reaching
-        the controller, and a part-present sensor reads a part between open jaws too. So
-        on a toggle the open switch, where wired, is read instead: open jaws hold nothing,
-        whatever the belief says. The solenoids assert a level or a coil and keep the
-        commanded state, as before.
-        """
-        if self._actuation == "single_toggle" and self._open_confirm_pin is not None:
-            return not bool(self._io.get_digital_input(self._open_confirm_pin, port=self._port))
-        return self._closed
 
     def read_jaw_state(self) -> JawState:
         """The sensed jaw state, for operators and bring-up. Not part of any Protocol."""
@@ -492,156 +668,152 @@ class JawIOGripper:
             raise RobotConnectionError(f"JawIOGripper.{what} requires connect() first.")
 
     def _actuate(self, *, close: bool) -> None:
-        """Drive the valve. A single solenoid holds a level; a double one pulses the right coil;
-        a toggle pulses its one pin only when the jaws stand the other way from the request."""
+        """Drive a solenoid valve: a single one holds a level, a double one pulses the right coil.
+
+        Each commanding write is read back, as the toggle's is (:meth:`_reads_back`): a level
+        or a coil that never reads back is refused with a :class:`RobotError` rather than
+        believed. ``_closed`` is what was last commanded, set once the commanding write has
+        returned, because the next command sets its own level or coil whatever this one did,
+        so a solenoid has no count to invert; the raise is what says the pin never showed it.
+        A double solenoid's coil is dropped whatever happens once it has been driven.
+        """
         # Info, not debug: the robot logger keeps info, and whether a command drove the jaws at
         # all is the first thing a cell whose jaws did the wrong thing asks of its log (owner's
         # cell, 2026-09-23).
         self.logger.info("actuating jaws %s via %s", "CLOSED" if close else "OPEN", self._actuation)
         if self._actuation == "single_solenoid":
+            self._commands_sent += 1
             self._io.set_digital_output(self._close_pin, bool(close), port=self._port)
-        elif self._actuation == "single_toggle":
-            # Every pulse flips the jaws whatever they are doing, so a pulse sent on a wrong
-            # idea of where they stand moves them the wrong way. It is never held high: one
-            # pulse is one flip.
-            if self._toggle_stands_closed() != bool(close):
-                self._pulse_toggle(close=bool(close))
-                if not close and not self._await_open():
-                    # The open switch measured that the jaws never reached the open stop,
-                    # after a lost pulse or a stroke longer than close_timeout_s. Believing
-                    # them open would report a held part as released.
-                    self._closed = True
-                    return
-            else:
-                self.logger.info("jaws already stand %s: no pulse", "CLOSED" if close else "OPEN")
-        else:
-            # A bistable valve latches, so the coil is energised only long enough to
-            # throw it; holding it high is what cooks the coil. The opposite coil is
-            # dropped first so both are never energised together, which on a real valve
-            # stalls the spool.
-            pin = self._close_pin if close else self._open_pin
-            other = self._open_pin if close else self._close_pin
-            assert pin is not None and other is not None  # narrowed by the constructor's refusal
-            self._io.set_digital_output(other, False, port=self._port)
+            self._closed = bool(close)
+            if not self._reads_back(self._close_pin, bool(close)):
+                raise RobotError(self._never_read(self._close_pin, bool(close), "the jaws may not have moved"))
+            return
+        # A bistable valve latches, so the coil is energised only long enough to
+        # throw it; holding it high is what cooks the coil. The opposite coil is
+        # dropped first so both are never energised together, which on a real valve
+        # stalls the spool.
+        pin = self._close_pin if close else self._open_pin
+        other = self._open_pin if close else self._close_pin
+        assert pin is not None and other is not None  # narrowed by the constructor's refusal
+        self._io.set_digital_output(other, False, port=self._port)
+        self._commands_sent += 1
+        try:
             self._io.set_digital_output(pin, True, port=self._port)
+            self._closed = bool(close)
+            if not self._reads_back(pin, True):
+                raise RobotError(self._never_read(pin, True, "the valve may not have thrown"))
             self._sleep(self._pulse_s)
+        finally:
+            # An interrupt or a coil that never read back must not leave it energised: that is what cooks it.
             self._io.set_digital_output(pin, False, port=self._port)
-        self._closed = bool(close)
 
-    def _pulse_toggle(self, *, close: bool) -> None:
+    def _reads_back(self, pin: int, level: bool) -> bool:
+        """Whether output ``pin`` reads ``level`` within :meth:`_read_back_s`, read once per controller cycle.
+
+        A write that returns says the controller accepted the command, not that the pin moved: a
+        wrong bank, a pin the controller reserves and a write that never reached the pin all look
+        like success from here, which is why ``drivers/ur/io_bench.set_output`` reads back too.
+        The state comes back on the RTDE receive stream a cycle or two after the write, so a first
+        read that disagrees is read again every :data:`_READ_BACK_POLL_S` until the bound. The
+        bound counts the waits asked of ``sleep``, so a test's sleep drives it exactly and a real
+        one waits at least that long. A pin that agrees at once costs no wait.
+        """
+        bound = self._read_back_s()
+        waited = 0.0
+        while bool(self._io.get_digital_output(pin, port=self._port)) != level:
+            if waited >= bound:
+                return False
+            step = min(_READ_BACK_POLL_S, bound - waited)
+            self._sleep(step)
+            waited += step
+        return True
+
+    def _read_back_s(self) -> float:
+        """How long a write is read back before it counts as never shown: a pulse and two cycles, 50 ms at least."""
+        return max(_READ_BACK_FLOOR_S, self._pulse_s + 2 * _READ_BACK_POLL_S)
+
+    def _never_read(self, pin: int, level: bool, consequence: str) -> str:
+        """The refusal for an output that never read back ``level``, naming the bank and the pin as the pendant does."""
+        said = "HIGH" if level else "LOW"
+        return (
+            f"JawIOGripper: {self._port.value} output {pin} was set {said} and the output never read {said} within "
+            f"{self._read_back_s():.3f} s, so {consequence}. A wrong bank (io_port), a pin the controller reserves, "
+            "or a write that never reached the pin reads so; check the pin on the pendant's I/O tab."
+        )
+
+    def _toggle(self, close: bool) -> bool:
+        """A toggle's command: one pulse where the count says the jaws stand the other way; whether it pulsed.
+
+        Every pulse flips the jaws whatever they are doing, so a pulse sent on a wrong count
+        moves them the wrong way. After a pulse whose high write failed, or whose pin never
+        read HIGH, nobody can say which way the next one would move them, so this refuses until
+        a person has said.
+        """
+        self.logger.info("actuating jaws %s via single_toggle", "CLOSED" if close else "OPEN")
+        if self._edge_unknown:
+            raise RobotError(
+                f"JawIOGripper: the last pulse on {self._where_pin()} failed on its high write, which may still have "
+                "reached the controller, or its pin never read HIGH, so whether the jaws flipped is unknowable and "
+                "the next pulse could move them either way. Not pulsing: the next pick asks where they stand, or "
+                "connect again."
+            )
+        if self._closed == close:
+            self.logger.info("jaws already stand %s: no pulse", "CLOSED" if close else "OPEN")
+            return False
+        self._pulse_toggle()
+        return True
+
+    def _pulse_toggle(self) -> None:
         """One flip: the pin low for ``pulse_s``, the rising edge, high for ``pulse_s``, then low.
 
         The low comes first because a flip is an edge. A pin left high by a pulse whose
         low write failed, or two commands back to back, would otherwise give the device no
-        edge while the driver believed in a flip. The belief moves at the edge, before the
-        high is waited out, so an interrupt after it, such as Ctrl-C or a dropped link on
-        the low write, leaves the driver agreeing with the jaws. Once the high write has
+        edge while the driver believed in a flip. So the low is read back before the high
+        is sent: a pin that still reads HIGH would give no edge, and nothing is sent.
+
+        The count flips at the edge, and the edge is the pin read back HIGH, not the high
+        write returning: a write that returns says the controller accepted it, not that the
+        pin moved (:meth:`_reads_back`, review of 2026-09-24). A pin that never reads HIGH
+        within :meth:`_read_back_s` flips nothing, leaves ``_edge_unknown`` set and raises,
+        so the next pick asks where the jaws stand. Once read HIGH the count flips before
+        the high is waited out, so an interrupt after it, such as Ctrl-C or a dropped link
+        on the low write, leaves the count agreeing with the jaws. Once the high write has
         been tried, the ``finally`` attempts the low, as the bench's own pulse does
         (``drivers/ur/io_bench.pulse_output``). A high write that raises may still have
         reached the controller with its reply lost, so whether the jaws flipped is
-        unknowable: ``_edge_unknown`` stays set, and a cell with no open switch refuses
-        its next pulse until a connect.
+        unknowable: ``_edge_unknown`` stays set, and the driver refuses its next pulse
+        until a person has said where the jaws stand.
         """
-        self._io.set_digital_output(self._close_pin, False, port=self._port)
+        pin = self._close_pin
+        self._io.set_digital_output(pin, False, port=self._port)
         self._sleep(self._pulse_s)
-        # The record says "on the way" before the edge and where the jaws stand after it, so a
-        # program that dies between the two leaves the next one refusing rather than guessing.
-        self._record(pulse_toward=close)
+        if not self._reads_back(pin, False):
+            # Nothing high was sent, so the count still agrees with the jaws: this pulse would only have had no edge.
+            raise RobotError(self._never_read(pin, False, (
+                "a pulse now would have no rising edge to flip the jaws on. Not pulsing, and nothing was sent: the "
+                "count stands")))
         self._edge_unknown = True
+        self._commands_sent += 1
         try:
-            self._io.set_digital_output(self._close_pin, True, port=self._port)
-            self._closed = close
+            self._io.set_digital_output(pin, True, port=self._port)
+            if not self._reads_back(pin, True):
+                raise RobotError(self._never_read(pin, True, (
+                    "nobody can say whether the jaws flipped. The pulse is not counted: the next pick asks where they "
+                    "stand, or connect again")))
+            self._closed = not self._closed
             self._edge_unknown = False
-            self._record(stands_closed=close)
-            self._awaiting_open = not close and self._open_confirm_pin is not None
             self._sleep(self._pulse_s)
         finally:
-            self._io.set_digital_output(self._close_pin, False, port=self._port)
-
-    def _record(self, *, pulse_toward: "bool | None" = None, stands_closed: "bool | None" = None) -> None:
-        """Write the toggle's record, if it keeps one. A failed write is logged and does not stop the pulse.
-
-        The jaws move whether or not the file could be written, and this program's own count stays right; what a
-        failed write costs is the next program's start, which is what the error says.
-        """
-        if self._state_file is None:
-            return
-        by = f"pid {os.getpid()}"
-        try:
-            if pulse_toward is not None:
-                jaw_toggle_state.record_pulse_started(self._state_file, toward_closed=pulse_toward, by=by)
-            if stands_closed is not None:
-                jaw_toggle_state.record_stands(self._state_file, closed=stands_closed, by=by)
-        except OSError as exc:
-            self.logger.error(
-                "could not write the toggle record %s (%s): the next program may start from a stale record. "
-                "Declare the jaws before running it if it does not open them as expected.", self._state_file, exc,
-            )
-
-    def _await_open(self) -> bool:
-        """After a toggle's open pulse, wait for the open switch; whether the jaws got there.
-
-        A close commanded while the jaws are still travelling open would read as not open
-        and be swallowed, and the jaws would then finish opening under a driver that
-        believes them closed. With no open switch there is nothing to wait on, and nothing
-        measured otherwise, so this answers True; the next pulse's leading low is the gap.
-        A timeout is logged and answered False: the switch measured that the jaws never
-        got there. A lost pulse and a stroke longer than ``close_timeout_s`` cannot be told
-        apart, so the timeout must be longer than the stroke.
-        """
-        if self._open_confirm_pin is None:
-            return True
-        started = time.monotonic()
-        deadline = started + self._close_timeout_s
-        while not bool(self._io.get_digital_input(self._open_confirm_pin, port=self._port)):
-            if time.monotonic() >= deadline:
-                self._awaiting_open = False
-                self.logger.warning(
-                    "jaws did not reach the open stop within %.2f s after the toggle's open pulse "
-                    "(a lost pulse, or a stroke longer than close_timeout_s); taking them to "
-                    "stand CLOSED",
-                    self._close_timeout_s,
-                )
-                return False
-            self._sleep(0.02)
-        self._awaiting_open = False
-        self.logger.info("jaws reached the open stop after %.3f s", time.monotonic() - started)
-        return True
-
-    def _settle_toggle_close(self) -> None:
-        """After a toggle's close and its wait, follow an open switch that still reads open.
-
-        It measured that the jaws never left, after a lost pulse or a stroke longer than
-        the wait. Believing them closed would let a part-present sensor, which also sees a
-        part between open jaws, report a grasp on jaws that never moved, so the belief
-        follows the switch.
-        """
-        if self._open_confirm_pin is None:
-            return
-        if bool(self._io.get_digital_input(self._open_confirm_pin, port=self._port)):
-            self.logger.warning(
-                "jaws still read the open stop after the toggle's close pulse (a lost pulse, or "
-                "a stroke longer than close_timeout_s); taking them to stand OPEN, no grasp "
-                "is reported",
-            )
-            self._closed = False
+            self._io.set_digital_output(pin, False, port=self._port)
 
     def _connect_toggle(self) -> None:
-        """A toggle's connect, which sets the belief on every connect.
+        """A toggle's connect: a pin left high is dropped, then a person says where the jaws stand.
 
-        The belief is never carried over from before a disconnect, because a person may
-        have moved the jaws in between. With no open switch the jaws are taken to stand
-        open and nothing is pulsed: every later pulse flips them from there, which is why
-        the desk row says to stand them open with a pulse before connecting. With one, the
-        switch decides. Open means no pulse. Closed, with the closed switch proving them
-        empty, means one pulse opens them. Both switches active is warned about and never
-        pulsed on. Anything else, off the open stop with no proof of empty, is refused
-        (2026-09-23): a pulse there could drop a part wherever the arm is standing, and a
-        switch that is not wired reads exactly that, after which every close would be
-        swallowed and every open would close the jaws, each reported as done.
+        The count is never carried over from before, a disconnect or another program,
+        because a person or the pendant may have moved the jaws in between; only a person
+        looking at them can start it, and it starts only once the answer is in. A refusal
+        leaves the gripper disconnected, and ``connect_cell`` rolls the arm back.
         """
-        left_closed, unknowable = self._closed, self._edge_unknown
-        self._closed, self._edge_unknown = False, False
         if bool(self._io.get_digital_output(self._close_pin, port=self._port)):
             # A pulse whose low write failed left the pin high. The device flips on the
             # rising edge, since a pulse is power on, so the low moves nothing, and without
@@ -651,155 +823,142 @@ class JawIOGripper:
                 "connect(): close pin=%s was still HIGH from an interrupted pulse; set it LOW",
                 self._close_pin,
             )
-        if self._open_confirm_pin is None:
-            record = jaw_toggle_state.load(self._state_file) if self._state_file is not None else None
-            if record is not None:
-                self._start_from_record(record)
-                return
-            if unknowable or left_closed:
-                # The same instance, connected again: disconnect never releases, and only a
-                # person can have opened the jaws since. This is said at warning level,
-                # because if nobody did, every command from here is inverted and nothing on
-                # this wiring can notice.
-                why = (
-                    "the last pulse failed on its high write, so where the jaws stand is unknowable"
-                    if unknowable else "the driver last took the jaws to stand CLOSED"
-                )
-                self.logger.warning(
-                    "connect(): single_toggle with no open switch, and %s. Taking them to stand "
-                    "OPEN: if they stand closed, every open and close from here is inverted. If "
-                    "they do, %s before running.", why, self._open_with_a_pulse(),
-                )
-            self.logger.info(
-                "connect(): single_toggle on %s close pin=%s with no open switch; taking the jaws "
-                "to stand OPEN and not pulsing. Stand them open with a pulse before connecting, "
-                "never by hand: every later pulse flips them from here, and a device that keeps "
-                "its own flip state is not moved by a hand.", self._port.value, self._close_pin,
-            )
-            return
-        if self._awaiting_open:
-            self._await_open()  # an open interrupted mid-stroke finishes before the read
-        state = self._read_state()
-        if state is JawState.OPEN:
-            self.logger.info(
-                "connected on %s: single_toggle on close pin=%s; jaws read open -> no pulse",
-                self._port.value, self._close_pin,
-            )
-            return
-        if state is JawState.CONTRADICTORY:
-            self.logger.warning(
-                "connect(): both end-stop switches read active, which is mechanically impossible; "
-                "check the wiring / sensors. not pulsing on an unreadable state.",
-            )
-            return
-        self._closed = True
-        if state is JawState.CLOSED_EMPTY:
+        self._refuse_unless_open("every pulse flips them and nothing reads them back, so only a person can say where "
+                                 "the program's count of its pulses starts")
+        self.logger.info("connected on %s: single_toggle on close pin=%s; the jaws stand OPEN, and the program "
+                         "counts its pulses from here", self._port.value, self._close_pin)
+
+    def _refuse_unless_open(self, reason: str) -> None:
+        """At connect: ask where the jaws stand, and refuse the connect unless they stand open by the end of it."""
+        refused = self._where_the_jaws_stand(reason, at_connect=True)
+        if refused:
+            raise RobotError(f"JawIOGripper: not connecting: {refused}")
+
+    def _where_the_jaws_stand(self, reason: str, *, at_connect: bool) -> str:
+        """Ask a person whether the jaws stand open; ``""`` where they do by the end, else the one-line refusal.
+
+        ``reason`` says why the question is asked, in the question and in a refusal. ``open``:
+        they stand open, and the count starts there. ``closed``: the person chooses ``p``, one
+        command now that opens them (a single pulse on a toggle, which releases whatever is
+        between them), and the stroke is waited out, or ``a``, which aborts. Nothing moves
+        without that choice. An answer that is none of these is asked again, and after
+        :data:`_ASKS` of them, or at end of input, nothing is taken for granted: the answer is
+        an abort.
+
+        Enter answers open only ``at_connect``, the owner's agreed answer at program start. At a
+        pick start the program already believes the jaws stand closed, or cannot say, so an
+        empty line there, which an Enter meant for something else also gives, is no answer: only
+        the word is, and the question says so.
+
+        The answer is acted on only where the connection it was asked on still stands when it
+        comes back: a disconnect or another connect meanwhile (another thread, which the lock
+        does not hold off a disconnect) makes it an answer about a count nobody keeps any more,
+        and it is refused with nothing sent.
+        """
+        where = self._where_pin()
+        ask = self._question()
+        if ask is None:
+            return (f"nobody can be asked where the jaws on {where} stand ({reason}): stdin is not a terminal and "
+                    "no question was handed to the gripper; run it from a terminal")
+        asked_on = (self._generation, self._connected)
+        if at_connect:
+            question = (f"\nThe jaws of the {self._actuation} hand on {where}: {reason}.\n"
+                        "Look at them. Do they stand OPEN? [Enter or 'open' = open, 'closed' = closed]: ")
+            choices = {"": "open", "o": "open", "open": "open", "c": "closed", "closed": "closed"}
+        else:
+            question = (f"\nThe jaws of the {self._actuation} hand on {where}: {reason}.\n"
+                        "Look at them. Do they stand OPEN? [type 'open' or 'closed'; Enter alone is no answer here]: ")
+            choices = {"o": "open", "open": "open", "c": "closed", "closed": "closed"}
+        answer = self._answer(ask, question, choices)
+        changed = self._changed_while_asked(asked_on, reason)
+        if changed:
+            return changed
+        if answer == "open":
+            self._closed, self._edge_unknown = False, False
+            self.logger.warning("a person said the jaws on %s stand OPEN (%s)", where, reason)
+            return ""
+        if answer is None:
+            return f"no answer said where the jaws on {where} stand ({reason})"
+        choice = self._answer(ask, (f"They stand CLOSED. [p] open them now with {self._how_it_opens()}, which "
+                                    "releases anything between them; [a] abort: "),
+                              {"p": "pulse", "pulse": "pulse", "a": "abort", "abort": "abort"})
+        changed = self._changed_while_asked(asked_on, reason)
+        if changed:
+            return changed
+        if choice != "pulse":
+            self.logger.warning("a person said the jaws on %s stand CLOSED and did not open them (%s)", where, reason)
+            return f"a person said the jaws on {where} stand CLOSED and chose not to open them"
+        self.logger.warning("a person said the jaws on %s stand CLOSED and had them opened (%s)", where, reason)
+        self._closed, self._edge_unknown = True, False
+        if self._actuation == "single_toggle":
+            self._toggle(False)
+        else:
             self._actuate(close=False)
-            self.logger.info(
-                "connected on %s: single_toggle on close pin=%s; jaws read closed on nothing -> "
-                "one pulse sent, %s", self._port.value, self._close_pin,
-                "and they stand CLOSED still" if self._closed else "and they reached the open stop",
-            )
-            return
-        self._connected = False
-        raise RobotError(
-            f"JawIOGripper: the single_toggle's open switch, input {self._open_confirm_pin} on "
-            f"{self._port.value}, does not read open, and nothing proves the jaws empty "
-            f"({state.value}). Either they hold a part, and a pulse here would drop it wherever "
-            f"the arm stands, or they stand open and the switch is not wired or reads inverted, "
-            f"and then every close would be swallowed and every open would close them. Not "
-            f"connecting: {self._open_with_a_pulse()}, check that input "
-            f"{self._open_confirm_pin} reads high with the jaws open, and connect again."
-        )
+        self._sleep(self._close_settle_s)
+        return ""
 
-    def _start_from_record(self, record: "jaw_toggle_state.ToggleRecord") -> None:
-        """A toggle with no open switch connects from where its record says the jaws stand.
+    def _changed_while_asked(self, asked_on: "tuple[int, bool]", reason: str) -> str:
+        """``""`` where the connection a question was asked on still stands, else the refusal that pulses nothing."""
+        if (self._generation, self._connected) == asked_on:
+            return ""
+        where = self._where_pin()
+        self.logger.warning("the connection of the hand on %s changed while the question waited (%s); its answer is "
+                            "not acted on and nothing was sent", where, reason)
+        return (f"the connection of the hand on {where} changed while the question waited (a disconnect or another "
+                "connect came meanwhile), so its answer is about a count nobody keeps any more; nothing was sent")
 
-        The record is this driver's own count of its pulses, carried from the last program, so a
-        program that ended with the jaws closed no longer hands the next one an inverted count. A
-        record of a pulse that was started and not seen to finish says nothing about the jaws, and
-        the first pulse is then refused until a person declares where they stand.
+    def _answer(self, ask: "JawQuestion", question: str, choices: "dict[str, str]") -> "str | None":
+        """What the person chose among ``choices``, asked up to :data:`_ASKS` times; ``None`` for no clear answer.
+
+        An answer that is none of the choices, an empty line included where Enter is not one, is
+        asked again with the question it answered, prefixed with why.
         """
-        self._record_in_flight = record.in_flight
-        self._closed = record.closed and not record.in_flight
-        declare = self._declare_command()
-        if record.in_flight:
-            self.logger.warning(
-                "connect(): single_toggle with no open switch, and its record %s says %s. Where the jaws stand "
-                "is unknown, and the first pulse is refused until a person has looked and declared it: %s",
-                self._state_file, record.describe(), declare,
-            )
-            return
-        if record.closed:
-            self.logger.warning(
-                "connect(): single_toggle with no open switch; its record says %s. Taking them to stand CLOSED, "
-                "so the next open pulses once. If anyone has moved them since (the pendant's I/O tab, a power cut "
-                "mid stroke), declare where they stand before running: %s", record.describe(), declare,
-            )
-            return
-        self.logger.info("connect(): single_toggle with no open switch; its record says %s", record.describe())
+        asking = question
+        for _ in range(_ASKS):
+            try:
+                said = str(ask(asking)).strip().lower()
+            except EOFError:
+                return None
+            if said in choices:
+                return choices[said]
+            why = "An empty line is no answer here." if not said else f"'{said}' is none of the choices."
+            asking = f"{why} {question.lstrip()}"
+        return None
 
-    def _declare_command(self) -> str:
-        """The command a person runs after looking at the jaws, said wherever the driver needs a declaration."""
-        return (f"python -m src.robot.drivers.ur --profile <cell> --port {self._port.value} "
-                f"--jaws-stand open (or closed) --yes")
+    def _question(self) -> "JawQuestion | None":
+        """The seam the person answers through: the one handed in, else the terminal where stdin is one."""
+        if self._ask is not None:
+            return self._ask
+        try:
+            interactive = sys.stdin is not None and sys.stdin.isatty()
+        except (AttributeError, ValueError):  # a closed or replaced stdin
+            interactive = False
+        return self._ask_at_the_terminal if interactive else None
 
-    def _open_with_a_pulse(self) -> str:
-        """How a toggle's jaws are stood open, said wherever the driver asks for it: a bench pulse.
+    def _ask_at_the_terminal(self, question: str) -> str:
+        """The terminal's question: what was typed before it is discarded (:func:`_drain_typeahead`), then ``input``.
 
-        Never by hand. A device that keeps its own flip state is not moved by a hand that
-        pushes its jaws open: its next pulse only brings that state round, nothing visibly
-        moves, and every command after it is inverted, which is the leading explanation of
-        the owner's cell closing at the tray (2026-09-23). A pulse keeps the device and the
-        jaws in step on every kind of toggle.
+        Every question at the terminal is drained, the follow-up included, so only a key pressed
+        after a question is shown answers it. A question handed in (``ask=``) owns its input and
+        is never drained.
         """
-        return (f"open them with a pulse, never by hand (python -m src.robot.drivers.ur --profile "
-                f"<cell> --port {self._port.value} --pulse {self._close_pin} --for {self._pulse_s} "
-                f"--yes, once per flip, until one visibly opens them, then declare it: python -m "
-                f"src.robot.drivers.ur --profile <cell> --port {self._port.value} --jaws-stand open --yes)")
+        drained = _drain_typeahead()
+        if drained:
+            self.logger.warning("discarded %d key(s) typed at the console before the question about the jaws on %s: "
+                                "only a key pressed after it answers it", drained, self._where_pin())
+        return input(question)
 
-    def _toggle_stands_closed(self) -> bool:
-        """Whether the jaws stand closed, for a toggle deciding whether to pulse.
+    def _where_pin(self) -> str:
+        """The bank and pin the jaws are driven on, as a person reads it on the pendant: ``tool output 0``."""
+        return f"{self._port.value} output {self._close_pin}"
 
-        The open switch says how the jaws stand where it is wired, and then it wins over
-        the belief, which is what makes a lost pulse harmless. A lone closed switch cannot
-        say it off its stop and is refused at construction. A part-present sensor does not
-        say it either: it reads a part between open jaws as well as between closed ones,
-        and between open jaws is where every close is commanded. With no open switch the
-        driver can only trust what it last commanded, and it refuses when even that is
-        unknowable, after a pulse whose high write failed. Both switches active raises
-        rather than pulsing on a state nobody can read.
-        """
-        if self._open_confirm_pin is None:
-            if self._record_in_flight:
-                raise RobotError(
-                    f"JawIOGripper: the toggle's record {self._state_file} says a pulse was started and not seen "
-                    "to finish, so where the jaws stand is unknown and a pulse could move them either way. Not "
-                    f"pulsing: look at the jaws and declare where they stand ({self._declare_command()}), then run "
-                    "again."
-                )
-            if self._edge_unknown:
-                raise RobotError(
-                    "JawIOGripper: the last toggle pulse failed on its high write, which may "
-                    "still have reached the controller, so whether the jaws flipped is unknowable "
-                    "and the next pulse could move them either way. Not pulsing: look at the jaws, "
-                    f"{self._open_with_a_pulse()} if they stand closed, and connect again."
-                )
-            return self._closed
-        if self._awaiting_open:
-            self._await_open()  # an open interrupted mid-stroke: travelling jaws read as closed
-        state = self._read_state()
-        if state is JawState.CONTRADICTORY:
-            raise RobotError(
-                "JawIOGripper: both end-stop switches read active, which is mechanically "
-                "impossible, so nothing says how the jaws stand and a pulse could flip them either "
-                "way. Not pulsing: check the wiring and the sensors."
-            )
-        if state is JawState.UNKNOWN:
-            # With a switch wired, only a lone open switch answers UNKNOWN, and only off its
-            # stop. Not open is all a toggle needs, and it is the switch saying it.
-            return True
-        return state is not JawState.OPEN
+    def _how_it_opens(self) -> str:
+        """The one command that opens the jaws, named for the question."""
+        if self._actuation == "single_toggle":
+            return f"one pulse on {self._where_pin()}"
+        if self._actuation == "double_solenoid":
+            return f"a pulse on {self._port.value} output {self._open_pin}"
+        return f"{self._where_pin()} set low"
 
     def _read_state(self) -> JawState:
         """Classify the jaws from whichever inputs are wired. Never raises, never guesses."""

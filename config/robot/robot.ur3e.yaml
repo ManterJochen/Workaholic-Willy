@@ -80,25 +80,20 @@ robot:
       object: { position_mm: [350.0, 0.0, 25.0] }
       table:  { position_mm: [350.0, 0.0, -200.0] }
       # Marker placement is decided by where the wrist camera has to stand, not by the marker.
-      # The eye-in-hand routine holds the camera 235 to 275 mm (`radii_mm`) off the marker and
-      # looks back at it, so what has to fit is a ring of poses around the marker rather than one
-      # offset from it: the camera stands 80 to 158 mm out horizontally and 193 to 258 mm above,
-      # turning with each of the six azimuths, and the tool rides a little closer in. At the UR5e
-      # cell's (450, -150) that ring reaches x = 608 mm, r = 631 mm about the shoulder, outside
-      # this cell's `workspace_limits` and past its 500 mm sphere, and every viewpoint comes
-      # back `workspace_rejected` or `ik_failed` while the marker itself is perfectly reachable.
-      # Moved in to (150, -40) the whole hemisphere fits: the reach audit puts its worst viewpoint
-      # at r = 417 mm, 83.4% of reach, inside the 85% ceiling the header names.
-      #
-      # The elevations are 20 and 35 deg against the schema default of 16 and 30: that widens
-      # the tool-orientation spread from 60 deg to 70 deg, which is what conditions the AX=XB
-      # hand-eye solve. The radii and azimuths are unchanged.
+      # The eye-in-hand stations hold the camera 235 to 275 mm off the marker and look back at
+      # it, so what has to fit is a ring of poses around the marker rather than one offset from
+      # it. At the UR5e cell's (450, -150) that ring reaches x = 608 mm, r = 631 mm about the
+      # shoulder, outside this cell's `workspace_limits` and past its 500 mm sphere, and every
+      # station comes back `workspace_rejected` or `ik_failed` while the marker itself is
+      # perfectly reachable. Moved in to (150, -40) the whole ring fits. The stations this
+      # placement was chosen for are declared in `src/willy_sim/calibration/stations/eih_ur3e.json`
+      # (elevations 20 and 35 deg, which widen the tool-orientation spread that conditions the
+      # AX=XB solve), and the reach audit measures them: a marker moved here needs them moved too.
       #
       # A candidate placement can be checked offline against the workspace box and the reach
       # sphere, but that check models neither IK nor motion success. It says whether a placement
       # is possible at all; it does not rank two placements that are both possible.
       marker: { position_mm: [150.0, -40.0, 6.0] }          # r = 213 mm (43%)
-      eih_viewpoints: { radii_mm: [235.0, 275.0], elevations_deg: [20.0, 35.0], azimuths_deg: [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] }
 
   # The Cartesian box the WorkspaceGuard admits targets in, re-anchored so the whole box is
   # reachable: the far top corner (400, +/-200, 320) is r = 478 mm, 96% of reach. A box that
@@ -134,27 +129,6 @@ robot:
     x: 300.0
     y: -170.0
     z: 280.0
-
-  calibration:
-    # The z band the eye-to-hand pose generator samples, as a fraction of
-    # `workspace_limits.z_max` and keyed by marker source. A UR3e reaches only the upper part
-    # of its own box, so sampling the full range spends most poses on configurations that come
-    # back status=timeout and collects too few samples to solve the hand-eye transform; the
-    # 0.5 to 0.9 band below solves it exactly. A UR5e reaches the full box and needs no entry
-    # here.
-    #
-    # `ground_truth` only, deliberately. The pose box is the sampler's range and not a filter,
-    # so moving a bound re-draws every pose: the two sources land on unrelated pose sets, and a
-    # band that helps one wrecks the other. This band applied to `aruco` leaves that source with
-    # almost nothing to solve from.
-    #
-    # No `aruco` entry is set, because no band is validated for this arm, so that source keeps
-    # its shipped 0.55-0.75 default. The lever there is physical rather than configured: a UR3e
-    # cannot hold the board as high, so its overhead camera sees the marker from about 790 mm
-    # against a UR5e's 610 mm, and camera height and board size are what fix it.
-    # `run_eth_calibrate --z-frac LO,HI` overrides this band for a single run.
-    pose_box_z_frac:
-      ground_truth: [0.5, 0.9]
 
   # When a silhouette is near-isotropic its principal axis is degenerate, so the jaw closes
   # along the radial direction from base to grasp instead of following that noise. It is a

@@ -57,10 +57,12 @@ class GroundingDinoObjectDetector:
         # misconfiguration instead of at weights that are not where config says they are. The
         # shipped `model_path` does not exist in a fresh checkout.
         if self.local and not Path(source).is_dir():
+            from src.config.paths import path_note
+
             raise FileNotFoundError(
                 f"models.objectdetector.local is true and model_path is {source!r}, but there is no "
-                f"such directory (resolved: {Path(source).resolve()}). Nothing is downloaded in local "
-                f"mode: that is the point of the flag. So either put the model files there, or "
+                f"such directory (resolved: {Path(source).resolve()}).{path_note(source)} Nothing is "
+                f"downloaded in local mode: that is the point of the flag. So either put the model files there, or "
                 f"set local: false and models.objectdetector.model_id to a Hub id "
                 f"(e.g. 'IDEA-Research/grounding-dino-base'), which uses the cache and downloads once."
             )

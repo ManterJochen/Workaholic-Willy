@@ -1,7 +1,7 @@
 """Sim-native hand-eye calibration for the Isaac validation platform.
 
 Drives the real eye-hand calibrators (``EyeInHandCalibrator`` and ``EyeToHandCalibrator`` in
-``src.calibration.eye_hand``) inside Isaac: the arm is moved through diverse, reachable
+``src.calibration.eye_hand``) inside Isaac: the arm is moved through declared, diverse, reachable
 viewpoints, a ``(T_base_to_tool, T_cam_to_marker)`` sample is recorded per view, AX=XB is solved,
 and the result is validated against the empirical ground-truth oracle
 (:func:`src.willy_sim.scene.camera_to_tcp_ground_truth`).
@@ -14,14 +14,19 @@ The pieces are separated so they swap freely:
   :class:`ArucoMarkerPoseSource` solves the pose from a rendered board, which is genuine
   perception. Both yield the same
   :class:`~src.calibration.eye_hand.dataset.EyeHandSample`.
-* :func:`generate_hemisphere_viewpoints` produces diverse poses that look at the marker from many
-  angles, rotating the wrist about at least 2 axes as the AX=XB observability check requires,
-  expressed as TCP targets through the camera-on-tool transform, oracle or rough.
+* :func:`~src.willy_sim.calibration.paths.declared_stations` names the stations file a sim sweep runs. The stations are declared, one
+  file per mounting and robot model under ``stations/``, never generated: ``eih_<model>.json``
+  holds TCP poses whose wrist camera looks at the scene marker from a ring of distances,
+  elevations and azimuths (rotating the wrist about at least 2 axes, as the AX=XB observability
+  check requires), and ``eth_<model>.json`` tool-down poses tilted up to 30 degrees in a column
+  under the overhead camera. They were frozen from the generators this repository used to carry,
+  the eye-in-hand ring through the wrist mount the sim authors in place of the runtime oracle;
+  an Isaac run has not been repeated on them since.
 
 The collection and AX=XB loop itself is not here: it is the vendor-neutral
 :class:`src.robot.execution.CalibrationRoutine`, which the sim runner drives through its
 injected ``marker_source`` seam (one of the :class:`MarkerPoseSource` implementations below) and
-``run_with_poses`` (the look-at viewpoints from :func:`generate_hemisphere_viewpoints`).
+``run_with_poses`` over the declared stations.
 
 ``isaacsim`` is not imported at module top: the arm, camera and session are injected, and marker
 prims are read through a lazily-imported wrapper. The module therefore imports on a machine with
@@ -30,13 +35,12 @@ no Isaac installed, and the pure-math helpers run there.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Optional, Protocol, runtime_checkable
 
 import numpy as np
 
-from src.geometry import Frame, Pose, Transform
+from src.geometry import Frame, Transform
 from src.geometry.matrix import invert_homogeneous
 from src.utility.log_cfg import create_logger
 
@@ -53,9 +57,6 @@ __all__ = [
     "MarkerPoseSource",
     "GroundTruthMarkerPoseSource",
     "ArucoMarkerPoseSource",
-    "CalibrationViewpoint",
-    "look_at_world_matrix",
-    "generate_hemisphere_viewpoints",
     "transform_delta",
 ]
 
@@ -141,8 +142,9 @@ class ArucoMarkerPoseSource:
         )
         corners, ids, _ = detector.detectMarkers(gray)
         if ids is None:
-            # Expected on a hemisphere sweep at grazing angles or out of frame, so this is logged at
-            # debug rather than warning: the sweep over-generates views by design.
+            # Expected at a station that sees the marker at a grazing angle or not at all, so this is
+            # logged at debug rather than warning: the routine rejects that station as marker_not_found
+            # and says so in its own per-pose line.
             _LOG.debug("no ArUco marker detected in this view (%s)", self.dict_name)
             return None
         id_list = ids.ravel().tolist()
@@ -197,114 +199,6 @@ def _pose_wxyz_to_matrix_mm(pos_m: np.ndarray, quat_wxyz: np.ndarray) -> np.ndar
     mat[:3, :3] = rot
     mat[:3, 3] = np.asarray(pos_m, dtype=np.float64).reshape(3) * 1000.0
     return mat
-
-
-# ---------------------------------------------------------------------------
-# Viewpoint generation
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class CalibrationViewpoint:
-    """A planned calibration view: the TCP target plus where the camera should look."""
-
-    tcp_pose: Pose            # Frame.BASE TCP target to move the arm to
-    cam_pos_mm: np.ndarray    # intended camera position in base (for diagnostics)
-
-
-def look_at_world_matrix(
-    cam_pos_mm: np.ndarray,
-    target_mm: np.ndarray,
-    up_hint: Sequence[float] = (0.0, 0.0, 1.0),
-) -> np.ndarray:
-    """4x4 ``CAMERA -> BASE`` pose whose optical +Z (forward) points at ``target_mm``.
-
-    Forward +Z into the scene is the property this function exists for and the only one its caller
-    uses: :func:`generate_hemisphere_viewpoints` aims the optical axis at a marker, and the marker
-    is then found by detection, not by projection.
-
-    Do not use this to project world points to pixels. The X and Y axes here are rolled 180 deg
-    from the image-right and image-down convention, so a projection through this matrix lands every
-    point at ``(W - u, H - v)``: a perfectly consistent, perfectly wrong answer that looks like a
-    permuted label set. The roll is harmless for aiming, since any roll still points the axis at
-    the target, and it is left exactly as it is because it feeds the wrist poses the eye-in-hand
-    calibration depends on. Project with the CV optical convention instead: +Z forward, +X
-    image-right, +Y image-down.
-
-    The returned matrix's columns are the camera axes in base; its translation is ``cam_pos_mm``.
-    """
-    cam = np.asarray(cam_pos_mm, dtype=np.float64).reshape(3)
-    tgt = np.asarray(target_mm, dtype=np.float64).reshape(3)
-    up = np.asarray(up_hint, dtype=np.float64).reshape(3)
-    z = tgt - cam  # CV optical +Z points toward the target
-    nz = np.linalg.norm(z)
-    if nz < 1e-9:
-        raise ValueError("look_at_world_matrix: camera coincides with target")
-    z = z / nz
-    x = np.cross(up, z)
-    if np.linalg.norm(x) < 1e-9:  # up parallel to z, so pick another up axis
-        x = np.cross(np.array([1.0, 0.0, 0.0]), z)
-        if np.linalg.norm(x) < 1e-9:
-            x = np.cross(np.array([0.0, 1.0, 0.0]), z)
-    x = x / np.linalg.norm(x)
-    y = np.cross(z, x)
-    mat = np.eye(4, dtype=np.float64)
-    mat[:3, :3] = np.column_stack([x, y, z])
-    mat[:3, 3] = cam
-    return mat
-
-
-def generate_hemisphere_viewpoints(
-    marker_pos_mm: Sequence[float] | np.ndarray,
-    t_cam_to_tool: Transform,
-    *,
-    radii_mm: Sequence[float] = (235.0, 275.0),
-    elevations_deg: Sequence[float] = (16.0, 30.0),
-    azimuths_deg: Sequence[float] = (0.0, 60.0, 120.0, 180.0, 240.0, 300.0),
-    up_hint: Sequence[float] = (1.0, 0.0, 0.0),
-) -> list[CalibrationViewpoint]:
-    """Diverse TCP viewpoints whose wrist camera looks at the marker from many angles.
-
-    For each (radius, elevation, azimuth) the camera is placed on a hemisphere above the marker,
-    its optical axis is aimed at the marker (:func:`look_at_world_matrix`), and the TCP target is
-    backed out through ``base_T_tool = base_T_cam @ inv(T_cam_to_tool)``, the inverse of the
-    EyeInHandFrameResolver composition. Varying azimuth and elevation rotates the wrist about at
-    least 2 independent axes, which the AX=XB observability check (``_assert_ready``) requires.
-    Reachability is filtered later by the collector, which attempts the move. ``elevation`` is
-    measured from the vertical, so 0 is straight above.
-    """
-    marker = np.asarray(marker_pos_mm, dtype=np.float64).reshape(3)
-    # T_cam_to_tool.to_matrix() = tool_T_cam (maps cam->tool); its inverse maps tool->cam, so
-    # base_T_tool = base_T_cam @ inv(tool_T_cam), the inverse of the resolver's compose.
-    cam_t_tool = invert_homogeneous(np.asarray(t_cam_to_tool.to_matrix(), dtype=np.float64))
-    views: list[CalibrationViewpoint] = []
-    for r in radii_mm:
-        for el in elevations_deg:
-            el_rad = np.radians(el)
-            for az in azimuths_deg:
-                az_rad = np.radians(az)
-                direction = np.array(
-                    [
-                        np.sin(el_rad) * np.cos(az_rad),
-                        np.sin(el_rad) * np.sin(az_rad),
-                        np.cos(el_rad),
-                    ],
-                    dtype=np.float64,
-                )
-                cam_pos = marker + r * direction
-                base_t_cam = look_at_world_matrix(cam_pos, marker, up_hint)
-                base_t_tool = base_t_cam @ cam_t_tool
-                pose = Pose.from_matrix(base_t_tool, frame=Frame.BASE, label=f"cal-r{int(r)}-el{int(el)}-az{int(az)}")
-                views.append(CalibrationViewpoint(tcp_pose=pose, cam_pos_mm=cam_pos))
-    # The planned count, against which the collector's accepted count is read. AX=XB needs rotation
-    # about >= 2 independent axes, so the elevation by azimuth spread is the observability claim.
-    _LOG.info(
-        "generated %d calibration viewpoint(s) around marker %s: radii=%s mm elevations=%s deg "
-        "azimuths=%s deg",
-        len(views), np.round(marker, 1).tolist(), list(radii_mm), list(elevations_deg),
-        list(azimuths_deg),
-    )
-    return views
 
 
 # ---------------------------------------------------------------------------

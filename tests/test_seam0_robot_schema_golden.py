@@ -26,6 +26,7 @@ from pathlib import Path
 
 from src.config import load_config, reload_config
 from src.config.loader import set_active_profile
+from src.config.paths import repository_root
 from src.config.schema.robot import RobotConfig
 
 _DIR = Path(__file__).resolve().parent / "data" / "seam0_robot_schema"
@@ -40,17 +41,30 @@ def _schema_blob() -> str:
     return json.dumps(RobotConfig.model_json_schema(), indent=2, sort_keys=True) + "\n"
 
 
+def _machine_free(blob: str) -> str:
+    """The loaded tree with the checkout's own location written as ``<repo>``.
+
+    A path in a tree is read against the config folder, and ``${WILLY_PROJECT_ROOT}`` is the
+    repository, so the loaded config holds absolute paths (``src/config/paths.py``). Where this
+    checkout sits is not a property of the tree, and a golden that pinned it would fail in every
+    other checkout, CI included.
+    """
+    for root in sorted({repository_root().as_posix(), _SIM_DATA_DIR.parent.as_posix()}, key=len, reverse=True):
+        blob = blob.replace(root, "<repo>")
+    return blob
+
+
 def _data_blob() -> str:
     reload_config()  # loader is lru_cached by (root, profile) — clear before each load
     set_active_profile(None)
-    return load_config(None).model_dump_json(indent=2) + "\n"
+    return _machine_free(load_config(None).model_dump_json(indent=2) + "\n")
 
 
 def _data_sim_blob() -> str:
     reload_config()
     set_active_profile("sim")
     try:
-        return load_config(str(_SIM_DATA_DIR)).model_dump_json(indent=2) + "\n"
+        return _machine_free(load_config(str(_SIM_DATA_DIR)).model_dump_json(indent=2) + "\n")
     finally:
         set_active_profile(None)
 

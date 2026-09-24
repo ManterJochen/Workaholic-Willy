@@ -43,12 +43,12 @@
           "min_pairs": 10,
           "max_pairs": 40,
           "calibration_paths": {
-            "base_dir": "calibration/webcam_main",
-            "stereo_map_file": "calibration/webcam_main/stereoMap.xml",
-            "left_images_dir": "calibration/webcam_main/left",
-            "right_images_dir": "calibration/webcam_main/right",
-            "left_images_glob": "calibration/webcam_main/left/*.png",
-            "right_images_glob": "calibration/webcam_main/right/*.png"
+            "base_dir": "<repo>/calibration/webcam_main",
+            "stereo_map_file": "<repo>/calibration/webcam_main/stereoMap.xml",
+            "left_images_dir": "<repo>/calibration/webcam_main/left",
+            "right_images_dir": "<repo>/calibration/webcam_main/right",
+            "left_images_glob": "<repo>/calibration/webcam_main/left/*.png",
+            "right_images_glob": "<repo>/calibration/webcam_main/right/*.png"
           }
         },
         {
@@ -87,12 +87,12 @@
           "min_pairs": 10,
           "max_pairs": 40,
           "calibration_paths": {
-            "base_dir": "calibration/stereo_dev0",
-            "stereo_map_file": "calibration/stereo_dev0/stereoMap.xml",
-            "left_images_dir": "calibration/stereo_dev0/left",
-            "right_images_dir": "calibration/stereo_dev0/right",
-            "left_images_glob": "calibration/stereo_dev0/left/*.png",
-            "right_images_glob": "calibration/stereo_dev0/right/*.png"
+            "base_dir": "<repo>/calibration/stereo_dev0",
+            "stereo_map_file": "<repo>/calibration/stereo_dev0/stereoMap.xml",
+            "left_images_dir": "<repo>/calibration/stereo_dev0/left",
+            "right_images_dir": "<repo>/calibration/stereo_dev0/right",
+            "left_images_glob": "<repo>/calibration/stereo_dev0/left/*.png",
+            "right_images_glob": "<repo>/calibration/stereo_dev0/right/*.png"
           }
         },
         {
@@ -131,12 +131,12 @@
           "min_pairs": 10,
           "max_pairs": 40,
           "calibration_paths": {
-            "base_dir": "calibration/stereo_dev3",
-            "stereo_map_file": "calibration/stereo_dev3/stereoMap.xml",
-            "left_images_dir": "calibration/stereo_dev3/left",
-            "right_images_dir": "calibration/stereo_dev3/right",
-            "left_images_glob": "calibration/stereo_dev3/left/*.png",
-            "right_images_glob": "calibration/stereo_dev3/right/*.png"
+            "base_dir": "<repo>/calibration/stereo_dev3",
+            "stereo_map_file": "<repo>/calibration/stereo_dev3/stereoMap.xml",
+            "left_images_dir": "<repo>/calibration/stereo_dev3/left",
+            "right_images_dir": "<repo>/calibration/stereo_dev3/right",
+            "left_images_glob": "<repo>/calibration/stereo_dev3/left/*.png",
+            "right_images_glob": "<repo>/calibration/stereo_dev3/right/*.png"
           }
         },
         {
@@ -184,8 +184,8 @@
             }
           },
           "calibration_paths": {
-            "base_dir": "calibration/realsense_d435",
-            "intrinsics_file": "calibration/realsense_d435/intrinsics.json"
+            "base_dir": "<repo>/calibration/realsense_d435",
+            "intrinsics_file": "<repo>/calibration/realsense_d435/intrinsics.json"
           }
         }
       ]
@@ -237,7 +237,7 @@
   },
   "models": {
     "objectdetector": {
-      "model_path": "assets/models/hf/detection/IDEA-Research--grounding-dino-tiny",
+      "model_path": "<repo>/assets/models/hf/detection/IDEA-Research--grounding-dino-tiny",
       "model_id": "IDEA-Research/grounding-dino-tiny",
       "threshold": 0.2,
       "local": true,
@@ -250,7 +250,7 @@
       }
     },
     "segmenter": {
-      "model_path": "assets/models/hf/segmentation/facebook--sam2-hiera-large",
+      "model_path": "<repo>/assets/models/hf/segmentation/facebook--sam2-hiera-large",
       "model_id": "facebook/sam2-hiera-large",
       "local": true,
       "optim": {
@@ -263,8 +263,8 @@
     },
     "stt": {
       "model_id": "openai/whisper-large-v3-turbo",
-      "model_path": "assets/models/hf/speech/openai--whisper-large-v3-turbo",
-      "vad_model_path": "assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit",
+      "model_path": "<repo>/assets/models/hf/speech/openai--whisper-large-v3-turbo",
+      "vad_model_path": "<repo>/assets/models/hf/speech/silero-vad-6.2.1/silero_vad.jit",
       "samplerate": 16000,
       "blocksize": 8000,
       "channels": 1,
@@ -281,7 +281,7 @@
       }
     },
     "handdetect": {
-      "model_path": "assets/models/hf/mediapipe/hand_landmarker.task",
+      "model_path": "<repo>/assets/models/hf/mediapipe/hand_landmarker.task",
       "max_hands": 2,
       "threshold": 0.5,
       "tracking_threshold": 0.5,
@@ -290,7 +290,7 @@
       "min_depth_samples": 20
     },
     "gesturedetect": {
-      "model_path": "assets/models/hf/mediapipe/gesture_recognizer.task",
+      "model_path": "<repo>/assets/models/hf/mediapipe/gesture_recognizer.task",
       "max_hands": 2,
       "threshold": 0.5,
       "tracking_threshold": 0.5,
@@ -300,7 +300,7 @@
     "detector": "groundingdino",
     "segmenter_backend": "sam2",
     "rtdetr": {
-      "model_path": "assets/models/hf/detection/PekingU--rtdetr_r50vd",
+      "model_path": "<repo>/assets/models/hf/detection/PekingU--rtdetr_r50vd",
       "model_id": "PekingU/rtdetr_r50vd",
       "threshold": 0.4,
       "local": true,
@@ -313,7 +313,7 @@
       }
     },
     "oneformer": {
-      "model_path": "assets/models/hf/segmentation/shi-labs--oneformer_coco_swin_large",
+      "model_path": "<repo>/assets/models/hf/segmentation/shi-labs--oneformer_coco_swin_large",
       "model_id": "shi-labs/oneformer_coco_swin_large",
       "local": true,
       "task": "instance",
@@ -332,7 +332,7 @@
         "segmenter": "sam2",
         "vlm": {
           "model_id": "Qwen/Qwen3-VL-4B-Instruct",
-          "model_path": "assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct",
+          "model_path": "<repo>/assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct",
           "local": true,
           "preload": false,
           "on_unavailable": "refuse"
@@ -371,6 +371,7 @@
         0.0,
         0.0
       ],
+      "home_joint_positions_deg": null,
       "cameras": {
         "overhead": {
           "prim_path": "/World/Cameras/Overhead",
@@ -528,24 +529,6 @@
           "aruco_plate_size_mm": 72.0,
           "aruco_marker_id": 0
         },
-        "eih_viewpoints": {
-          "radii_mm": [
-            235.0,
-            275.0
-          ],
-          "elevations_deg": [
-            16.0,
-            30.0
-          ],
-          "azimuths_deg": [
-            0.0,
-            60.0,
-            120.0,
-            180.0,
-            240.0,
-            300.0
-          ]
-        },
         "gate": {
           "lift_threshold_mm": 50.0,
           "pass_fraction": 0.8
@@ -607,7 +590,8 @@
         "close_timeout_s": 1.0,
         "close_settle_s": 0.3,
         "closed_below_mm": 5.0,
-        "open_on_connect_without_feedback": false
+        "open_on_connect_without_feedback": false,
+        "confirm_open_at_start": null
       },
       "onrobot": {
         "host": "192.168.1.1",
@@ -633,6 +617,7 @@
       }
     },
     "home_joint_positions": null,
+    "home_joint_positions_deg": null,
     "safe_pose": {
       "x": 450.0,
       "y": -300.0,
@@ -640,9 +625,7 @@
     },
     "calibration": {
       "settle_time_s": 0.5,
-      "orientation_spread_deg": 15.0,
-      "max_attempts_per_pose": 200,
-      "pose_box_z_frac": null,
+      "freedrive_samples": 15,
       "quality_bands_mm": {
         "excellent": 1.0,
         "good": 2.5,
@@ -720,6 +703,10 @@
         "max_joint_step_deg": 180.0,
         "max_orientation_step_deg": 180.0,
         "max_tcp_step_mm": 1000.0
+      },
+      "planned_motion": {
+        "line_clearance_mm": 10.0,
+        "max_detour_deg": 45.0
       },
       "dwell": {
         "require_steady_before_motion": false,
@@ -883,7 +870,7 @@
       },
       "success_model": {
         "enabled": false,
-        "artifact_dir": "assets/models/success_probability/v1",
+        "artifact_dir": "<repo>/assets/models/success_probability/v1",
         "apply_modes": [
           "easy",
           "auto",
@@ -998,7 +985,7 @@
       },
       "deep_ranker": {
         "enabled": false,
-        "artifact_dir": "assets/models/grasp_ranker/v1",
+        "artifact_dir": "<repo>/assets/models/grasp_ranker/v1",
         "spec": "held_jaw_v1"
       },
       "support": {

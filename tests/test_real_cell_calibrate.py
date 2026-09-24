@@ -124,7 +124,7 @@ class CheckTouchesNothingTests(unittest.TestCase):
 
         with mock.patch.object(calibrate, "_load", return_value=cfg), \
              mock.patch("src.robot.drivers.create_arm", side_effect=explode):
-            code = calibrate.main(["--rig", "overhead", "--check"])
+            code = calibrate.main(["--rig", "overhead", "--freedrive", "--check"])
         self.assertEqual(code, calibrate._EXIT_OK)
 
     def test_the_exploding_arm_factory_IS_reached_without_check(self) -> None:
@@ -145,7 +145,7 @@ class CheckTouchesNothingTests(unittest.TestCase):
         patched_gate = mock.patch("src.robot.drivers.doctor.require_arm_vendor_ready")
         patched_arm = mock.patch("src.robot.drivers.create_arm", explode)
         with patched_load, patched_gate, patched_arm:
-            code = calibrate.main(["--rig", "overhead", "--dry-run"])
+            code = calibrate.main(["--rig", "overhead", "--freedrive", "--dry-run"])
         self.assertEqual(code, calibrate._EXIT_CONFIG)
         explode.assert_called_once()
 
@@ -157,7 +157,7 @@ class CheckTouchesNothingTests(unittest.TestCase):
         cfg.camera = _CameraCfg([_real_rgbd("overhead").model_copy(update={"enabled": False})])
         cfg.camera.hand_eye = _hand_eye()
         with mock.patch.object(calibrate, "_load", return_value=cfg):
-            code = calibrate.main(["--rig", "overhead", "--check"])
+            code = calibrate.main(["--rig", "overhead", "--freedrive", "--check"])
         self.assertEqual(code, calibrate._EXIT_CONFIG)
 
     def test_an_unknown_rig_exits_CONFIG_not_ERROR(self) -> None:
@@ -166,7 +166,7 @@ class CheckTouchesNothingTests(unittest.TestCase):
         cfg = mock.Mock()
         cfg.camera = _CameraCfg([_real_rgbd("overhead")])
         with mock.patch.object(calibrate, "_load", return_value=cfg):
-            self.assertEqual(calibrate.main(["--rig", "nope", "--check"]),
+            self.assertEqual(calibrate.main(["--rig", "nope", "--freedrive", "--check"]),
                              calibrate._EXIT_CONFIG)
 
 

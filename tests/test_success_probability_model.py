@@ -533,9 +533,11 @@ class SuccessModelConfigTests(unittest.TestCase):
         cfg = RobotGraspingConfig()
         self.assertIsInstance(cfg.success_model, GraspingSuccessModelConfig)
         self.assertFalse(cfg.success_model.enabled)
+        # The default names the committed artifact in the repository, wherever the tree lives
+        # (src/config/paths.py), so it is the absolute path of that directory.
         self.assertEqual(
             cfg.success_model.artifact_dir,
-            "assets/models/success_probability/v1",
+            (REPO_ROOT / "assets/models/success_probability/v1").as_posix(),
         )
         self.assertEqual(
             cfg.success_model.apply_modes,

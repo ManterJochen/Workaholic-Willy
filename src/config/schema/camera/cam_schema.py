@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import AliasChoices, Field, model_validator
 
+from ...paths import PROJECT_ROOT_ANCHOR
 from .._base import StrictModel
 from .shared_schema import (
     ArucoDictName,
@@ -18,15 +19,19 @@ from .shared_schema import (
 
 
 def _ensure_calib_paths(data: Any, rig_id_fallback: str = "unknown") -> Any:
-    """Auto-fill ``calibration_paths.base_dir`` from ``rig_id`` if missing."""
+    """Auto-fill ``calibration_paths.base_dir`` from ``rig_id`` if missing.
+
+    A default nobody wrote, so it names the repository's ``calibration/<rig_id>`` wherever the tree
+    lives, as every path default does (:mod:`src.config.paths`).
+    """
     if not isinstance(data, dict):
         return data
     rig_id = data.get("rig_id", rig_id_fallback)
     cp = data.get("calibration_paths")
     if cp is None:
-        data["calibration_paths"] = {"base_dir": f"calibration/{rig_id}"}
+        data["calibration_paths"] = {"base_dir": f"{PROJECT_ROOT_ANCHOR}/calibration/{rig_id}"}
     elif isinstance(cp, dict):
-        cp.setdefault("base_dir", f"calibration/{rig_id}")
+        cp.setdefault("base_dir", f"{PROJECT_ROOT_ANCHOR}/calibration/{rig_id}")
     return data
 
 

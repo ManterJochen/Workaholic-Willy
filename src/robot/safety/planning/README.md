@@ -136,8 +136,16 @@ pose before, are among the ones thrown away. A fixed camera grabs once.
 
 `check_js` judges a whole joint path in one request: up to 1000 configurations, each against the joint
 limits, the robot itself and the world the planner holds, with an attached payload counted. A sample
-passes when no sphere penetrates; that is not a kept clearance. A longer path is split across requests
-and never thinned.
+passes when no sphere penetrates; that is not a kept clearance. A request may name one instead
+(`clearance_m`, up to 0.1 m): the world is then judged at that clearance, the reply says the clearance it
+judged at, and the client refuses a reply that does not. The UR driver asks it of a straight joint line
+it would run instead of a plan (`safety.planned_motion.line_clearance_mm`), because nothing shaped that
+line to keep clear. A longer path is split across requests and never thinned.
+
+Every plan starts from the same seed, so the same request in the same world gets the same plan, and the
+graph planner seeds its roadmaps from the start and the goal alone: cuRobo's shipped config links both
+through the retract, which the sidecar switches off (`_curobo_plan_policy.py`). The UR driver asks only
+for joint plans (`plan_js`); the pose plan remains for the Isaac driver.
 
 ```bash
 python scripts/curobo/probe_live_world.py

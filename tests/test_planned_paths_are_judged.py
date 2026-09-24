@@ -63,7 +63,11 @@ def _pose() -> Pose:
 
 
 class _FakePlanner:
-    """Hands back a fixed trajectory and records whether anybody asked it to execute one."""
+    """Hands back a fixed trajectory and records whether anybody asked it to execute one.
+
+    The trajectory ends on the configuration it is asked for, as a cuRobo joint plan does, and every straight line
+    the arm would run instead of a plan comes too close to the double's world: this file judges plans.
+    """
 
     def __init__(self, trajectory: list[list[float]]) -> None:
         self._trajectory = trajectory
@@ -74,14 +78,17 @@ class _FakePlanner:
         """Where the trajectory ends: the one goal a real planner would have handed it back for (Step 8f)."""
         return list(self._trajectory[-1])
 
-    def plan(self, pose: Pose) -> list[list[float]]:
-        return self._trajectory
+    def plan_joint(self, goal: object, *, refresh: bool = True, **_: object) -> list[list[float]]:
+        return [*self._trajectory[:-1], [float(v) for v in goal]]  # type: ignore[attr-defined]
 
-    def check_joint_path(self, samples: object, *, refresh: bool = True) -> object:
-        """The planner's half of the path judge. This file is about the local half, so the double accepts."""
+    def check_joint_path(self, samples: object, *, refresh: bool = True, clearance_mm: float = 0.0) -> object:
+        """The planner's half of the path judge. This file is about the local half, so the double accepts a plan."""
         from src.robot.safety.planning import JointCheckVerdict
 
-        return JointCheckVerdict(valid=True, first_invalid=None, checked=len(list(samples)), reason="the double accepts")
+        count = len(list(samples))  # type: ignore[call-overload]
+        if clearance_mm > 0.0:
+            return JointCheckVerdict(valid=False, first_invalid=0, checked=count, reason="the line grazes the tote")
+        return JointCheckVerdict(valid=True, first_invalid=None, checked=count, reason="the double accepts")
 
     def execute(
         self, traj: object, pose: Pose, *, vel: object = None, acc: object = None
@@ -96,11 +103,11 @@ class MotionCommandStub:
     MOVE_TO = MotionCommand.MOVE_TO
 
 
-def _curobo_arm(trajectory: list[list[float]]) -> tuple[URRobotArm, _FakePlanner]:
+def _curobo_arm(trajectory: list[list[float]], *, max_detour_deg: float = 45.0) -> tuple[URRobotArm, _FakePlanner]:
     config = RobotConfig.model_validate({
         "vendor": "ur",
         "ur": {"motion_planner": "curobo"},
-        "safety": {"payload": {"enforce": False}},
+        "safety": {"payload": {"enforce": False}, "planned_motion": {"max_detour_deg": max_detour_deg}},
         "gripper": {"model": "robotiq_2f85"},
         # The configurations here were chosen for what the exact meshes say about them, and they put the flange
         # outside the shipped box; the box is not what this file is about.
@@ -184,7 +191,9 @@ class ALongPathIsJudgedRatherThanRefusedTests(unittest.TestCase):
     def test_a_move_that_sweeps_the_cell_twice_is_judged_and_refused_for_its_content(self) -> None:
         if not _mesh_backend_available():
             pytest.skip("no exact mesh backend on this box")
-        arm, planner = _curobo_arm([_FAR, _FOLDED, _FAR])
+        # A plan that swings the base out to the fold and back: the detour bound would refuse it before the path gate
+        # saw it (tests/test_the_nearest_goal_is_planned.py), and it is the path gate this file reads.
+        arm, planner = _curobo_arm([_FAR, _FOLDED, _FAR], max_detour_deg=360.0)
         self.enterContext(arm.without_camera_world(_DECLINED))
         result = arm.move(pose_where_it_ends(arm, planner.goal_end))
         self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, result.status)
@@ -198,6 +207,8 @@ class ALongPathIsJudgedRatherThanRefusedTests(unittest.TestCase):
             pytest.skip("no exact mesh backend on this box")
         arm, planner = _curobo_arm([_NEAR_CLEAR, _FOLDED])
         self.enterContext(arm.without_camera_world(_DECLINED))
+        # The fold is where this plan ends, and the endpoint gate would refuse it before it was planned to.
+        arm._gate_planned_config = lambda pose, joints: None  # type: ignore[assignment, misc]
         self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, arm.move(pose_where_it_ends(arm, planner.goal_end)).status)
 
     def test_the_backstop_still_exists_and_still_refuses(self) -> None:

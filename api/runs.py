@@ -12,6 +12,20 @@ halfway. The event history is what makes that survivable for the UI.
 Stop is not kill. ``stop()`` sets a flag the pick loop reads between attempts. It never interrupts a
 motion in flight: this process has no safe way to do that, and the thing that does is the red button
 on the wall.
+
+A run ends early where a campaign does (``PickRun``, ``src/robot/execution/pick_run.py``): on a fault
+of the cell, and on the two things a pick reports rather than raises, a controller that cannot move and
+a hand that needs a person. Each ends it FAILED with the reason in ``error``, because the next pick
+would meet the same stopped arm or the same hand. And each pick looks from where a campaign's does:
+from home on a wrist camera, from where the arm stands on a fixed one.
+
+Two stops a campaign does not need, because a campaign runs in a terminal and a run does not. A run
+never asks a person anything: on a hand that toggles with no sensor, a pick that starts on jaws the
+program believes closed asks where they stand, and from a run's thread that question goes to the
+server's terminal, which nobody watching the console sees and Stop cannot reach. A console run sets
+none of its parts down, so the run ends FAILED before such a pick instead (``_why_no_pick_starts``).
+And a Disconnect stops the run before the cell comes down (:meth:`RunRegistry.abandon`); the run keeps
+the console's run lock until its thread ends, and Connect and Build refuse while it does.
 """
 
 from __future__ import annotations
@@ -56,7 +70,10 @@ class RunState(StrEnum):
     FINISHED = "finished"
     #: An operator asked it to stop; it ended after the attempt that was running.
     CANCELLED = "cancelled"
-    #: The run raised. The cell may need attention.
+    #: The run raised, or a pick reported a cell that needs a person (a controller that cannot move,
+    #: a hand that needs one), or the next pick would have had to ask one (a toggle's jaws believed
+    #: closed), or the cell was disconnected under it. The cell may need attention; ``Run.error`` says
+    #: why.
     FAILED = "failed"
 
 
@@ -154,10 +171,14 @@ class Run:
     attempted: int = 0
     #: Per-pick outcome strings, in order. The typed reason surface, not free text.
     outcomes: list[str] = field(default_factory=list)
-    #: Set when the run raised.
+    #: Set when the run raised, or ended on a pick that reported a cell that needs a person.
     error: str = ""
     #: Set when an operator asked the run to stop.
     stop_requested: bool = False
+    #: Set when the cell was taken down under the run (a Disconnect): why nothing of it may go on. Not a field of
+    #: :meth:`to_dict`: it reaches the operator as :attr:`error` when the run ends, which is the one place a UI reads
+    #: why a run stopped.
+    abandoned: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -270,6 +291,40 @@ class RunRegistry:
         )
         return True
 
+    def abandon(self, because: str) -> Run | None:
+        """Stop the active run because the cell is coming down under it; the run it stopped, or ``None``.
+
+        Called by Disconnect BEFORE the arm and the hand come down (``api/routers/cell.py``), which is what makes the
+        order hold: by the time the hardware is gone the run's flag is set, so whatever of the run returns next meets
+        the stop before it starts anything new. ``pick()`` refuses to begin on it, the pick loop begins no attempt on
+        it (the first one of a pick that was waiting on a person's answer at its start included), and this run loop
+        begins no next pick. The run ends FAILED with ``because`` as its error, not CANCELLED: nobody pressed Stop,
+        and the cell went down with the run in it, so the operator is sent to the arm and the jaws, not to the next
+        prompt.
+
+        Not a kill, as :meth:`stop` is not: what is already inside an attempt meets the disconnected arm. And the run
+        keeps the console's run lock until its thread has ended, which is the other half of the guarantee: Connect and
+        Build refuse while it is held, so the old run can never go on with an arm or a hand a later Connect brings up.
+        """
+        with self._lock:
+            run = self.active()
+            if run is None:
+                return None
+            run.stop_requested = True
+            run.abandoned = because
+        logger.warning(
+            "Run %s abandoned (%d/%d done): %s The pick in flight finishes against a disconnected cell; the run "
+            "keeps the console's run lock until its thread ends.",
+            run.id, run.succeeded, run.requested_picks, because,
+        )
+        self.hub.publish(
+            run.id, "run_stop_requested", severity=Severity.WARN,
+            human=(f"The cell is being disconnected, so the run stops: {because} Nothing of it starts again; a pick "
+                   f"in flight meets the disconnected arm."),
+            reason=because,
+        )
+        return run
+
     def _drive(self, console: Any, run: Run) -> None:
         """The run body. Everything it can raise is caught: a dead thread must still close its stream."""
         service = console.session.service
@@ -303,10 +358,28 @@ class RunRegistry:
             if run.prompt.strip():
                 previous_prompt = service.set_prompt(run.prompt)
 
+            # Asked once, as `PickRun` asks it: whether a camera sits on the wrist does not change
+            # between two picks. A wrist camera sees what the arm points it at, so each pick looks from
+            # the arm's home first; before this the console handed no look, and a wrist camera
+            # perceived from wherever the last pick had left the arm. A service handed no look is
+            # called as it always was, so a fixed camera, and a service that takes none, still runs.
+            look = _look_for(service)
+
+            # Why the run ended before its last pick although nothing raised; "" while it has not.
+            stopped_by = ""
             for _ in range(run.requested_picks):
                 if run.stop_requested:
                     break
-                report = service.pick()
+                # Before every pick, the first included: a toggle hand the program believes CLOSED, or whose last
+                # pulse nobody can place, would have `pick()` ask a person where the jaws stand. From this thread that
+                # question goes to the SERVER's terminal, where nobody watching the console sees it, Stop cannot
+                # reach `input()`, and a 'p' typed later drops the part wherever the arm then stands. A console run
+                # never releases what it lifted, so on a toggle every pick after a success would ask. The run ends
+                # here instead, as the other stops end it.
+                stopped_by = _why_no_pick_starts(service)
+                if stopped_by:
+                    break
+                report = service.pick() if look is None else service.pick(look=look)
                 fault = getattr(report, "fault", None)
                 if fault is not None:
                     # A fault of the cell still ends the run: the next pick would meet the same dead
@@ -333,10 +406,39 @@ class RunRegistry:
                     ),
                     outcome=outcome, succeeded=ok, reason=report.failure_summary(),
                 )
-            run.state = RunState.CANCELLED if run.stop_requested else RunState.FINISHED
+                # After the pick is counted and said: it ran, and its outcome is part of the run's
+                # record. What ends the run is that the next pick must not start.
+                stopped_by = _why_the_run_stops(report)
+                if stopped_by:
+                    break
+            if run.abandoned:
+                # The cell went down with the run in it. That is the reason the operator must read first; what the
+                # last pick said, where it said anything, follows it.
+                stopped_by = (f"{run.abandoned} The last pick also said: {stopped_by}" if stopped_by
+                              else run.abandoned)
+            if stopped_by:
+                # FAILED, not CANCELLED: nobody asked for this stop, the cell needs a person, and a run
+                # that read as finished or cancelled would send the operator to the next prompt instead
+                # of to the arm. Whatever a stop request said, this is what the operator must read.
+                run.state = RunState.FAILED
+                run.error = stopped_by
+                logger.error(
+                    "Run %s FAILED after pick %d/%d: %s",
+                    run.id, run.attempted, run.requested_picks, stopped_by,
+                )
+                hub.publish(
+                    run.id, "run_error", severity=Severity.ERROR,
+                    human=f"The run stopped: {stopped_by}", error=stopped_by,
+                )
+            else:
+                run.state = RunState.CANCELLED if run.stop_requested else RunState.FINISHED
         except BaseException as exc:  # noqa: BLE001 (the stream must close whatever happened)
             run.state = RunState.FAILED
             run.error = f"{type(exc).__name__}: {exc}"
+            if run.abandoned:
+                # A pick in flight when the cell went down usually raises on the arm that went away; the disconnect
+                # is why, and the raise is how it showed.
+                run.error = f"{run.abandoned} The pick in flight then raised {run.error}"
             # With the traceback: this thread is the only place it exists. The envelope published
             # below carries the one-line reason to the browser and nothing carries the stack, so
             # without this a run that dies in the library leaves the operator a sentence and no
@@ -390,6 +492,102 @@ class RunRegistry:
                 ),
                 **run.to_dict(),
             )
+
+
+def _look_for(service: Any) -> Any:
+    """What every pick of a console run looks from: home on a wrist camera, else ``None``, no look at all.
+
+    The rule ``PickRun._looks_for`` keeps for a campaign that names no look of its own
+    (``src/robot/execution/pick_run.py``), and the console names none: a wrist camera sees what the
+    arm points it at, so it looks from the arm's configured home (``src.robot.execution.looks.HOME``);
+    a fixed camera perceives from where the arm stands. ``is True``, so a double that answers every
+    attribute is not read as a wrist camera, and a service that does not say is asked as it always was.
+
+    Imported here, not at the top: the console imports this module to start, and the look vocabulary
+    brings the motion layer with it.
+    """
+    from src.robot.execution.looks import HOME  # noqa: PLC0415
+
+    return HOME if getattr(service, "perceives_from_the_wrist", False) is True else None
+
+
+def _why_the_run_stops(report: Any) -> str:
+    """Why a pick's report ends the run although it raised nothing; ``""`` where the next pick may start.
+
+    The rule ``PickRun`` keeps for a campaign (``src/robot/execution/pick_run.py``), in its words, so
+    the console and a program stop on the same reports and say them alike. A fault of the cell is not
+    here: the run loop raises it. Two more things a pick reports rather than raises:
+
+    * a controller that cannot move (``controller_stopped``): a protective or emergency stop, or a
+      power-off. The pick ends CANCELLED with no fault, and the next pick would perceive, and on a
+      toggle pulse the jaws, for an arm a person has to walk up to;
+    * a hand that needs a person (``gripper_fault``): a gripper that raised, whose jaws nobody can now
+      name, or a toggle that would not start a pick on jaws it believes closed with nobody at a
+      terminal. The pick ends EXECUTION_FAILED with no fault, and the next one meets the same hand.
+
+    ``is True`` and a non-empty string, as ``PickRun`` reads them, so a double that answers every
+    attribute stops nothing.
+    """
+    if getattr(report, "controller_stopped", False) is True:
+        return (
+            "the controller cannot move (a protective or emergency stop, or a power-off), so the run "
+            "stops; a person clears the stop where the arm is visible: "
+            + str(report.failure_summary())
+        )
+    hand = getattr(report, "gripper_fault", "")
+    if isinstance(hand, str) and hand:
+        return f"the gripper needs a person, so the run stops: {hand}"
+    return ""
+
+
+#: How a console operator gets a toggle's count back to OPEN: the one question a person answers about the jaws is the
+#: one a Connect asks, at program start, before anything moves (the owner's rule), and it offers the pulse that opens
+#: them. The console has no release of its own to offer.
+_HOW_THE_JAWS_COME_BACK = (
+    "The program's count says OPEN again only once a person has said so: Disconnect and Connect the cell before that "
+    "run; the connect asks where the jaws stand, and 'closed' offers one pulse to open them. A run started from the "
+    "console never asks at the server's terminal, where nobody watching the console sees the question and Stop "
+    "cannot reach it."
+)
+
+
+def _why_no_pick_starts(service: Any) -> str:
+    """Why the next pick of a console run must not start on this cell's hand; ``""`` where it may.
+
+    Only a hand that toggles with no sensor is asked (``toggle_without_sensor_of``, which reads
+    ``toggles_without_sensor is True``, so a double that answers every attribute is not taken for one), the hand
+    ``pick()`` itself asks: the orchestrator's gripper. Two beliefs stop the run before ``pick()`` is called, because in
+    both ``pick()`` would ask a person where the jaws stand (``jaws_open_for_a_pick``), and from a run's thread that
+    question goes to the server's terminal:
+
+    * the program believes the jaws stand CLOSED: its last command closed them, on the part the last pick lifted,
+      which a console run never sets down;
+    * the last pulse failed on its high write, so nobody can say which way it moved them.
+
+    Fail closed: anything but a plain ``False`` from ``jaws_closed``, and anything but a plain ``False`` from
+    ``edge_unknown`` (``TogglesWithoutSensor``), stops the run, so neither is ever asked about from this thread.
+
+    Imported here, not at the top, as :func:`_look_for` imports: the console imports this module to start.
+    """
+    from src.robot.core.gripper import toggle_without_sensor_of  # noqa: PLC0415
+
+    orchestrator = getattr(getattr(service, "runtime", None), "orchestrator", None)
+    toggle = toggle_without_sensor_of(getattr(orchestrator, "gripper", None))
+    if toggle is None:
+        return ""
+    if getattr(toggle, "edge_unknown", True) is not False:
+        return (
+            "the gripper needs a person, so the run stops: the last pulse on the jaws (a toggle hand with no sensor) "
+            "failed on its high write, so nobody can say where they stand. Look at them, release or place any part "
+            f"they hold, then start a new run. {_HOW_THE_JAWS_COME_BACK}"
+        )
+    if toggle.jaws_closed is not False:
+        return (
+            "the gripper needs a person, so the run stops: the jaws still hold the last part (a toggle hand with no "
+            "sensor): release or place it, then start a new run. The program believes they stand CLOSED, and a "
+            f"console run never sets its part down. {_HOW_THE_JAWS_COME_BACK}"
+        )
+    return ""
 
 
 def _payload(event: "PickProgress") -> dict[str, Any]:
