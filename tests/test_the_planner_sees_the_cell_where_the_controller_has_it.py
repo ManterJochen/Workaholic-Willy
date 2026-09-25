@@ -305,6 +305,25 @@ def test_a_plan_that_ends_off_the_configuration_asked_for_is_never_driven() -> N
     assert not planner.executed, "a plan that ends a metre from its goal was driven"
 
 
+def test_a_refused_plan_end_is_never_dropped_by_an_endpoint_gate_that_passes() -> None:
+    """A refusal is a falsy ``MotionResult`` (``__bool__`` is ``ok``), so ``end_check or endpoint_gate`` dropped the end
+    check's refusal and drove the plan wherever the endpoint gate passed (found porting 85f082b to dev, 2026-09-25)."""
+    from src.robot.core import MotionCommand, MotionResult
+
+    q_goal = [0.0, -1.4, 1.6, -1.7, -1.5708, 0.0]
+    planner = _Planner([_DOWN, q_goal])
+    arm = _ur_arm(planner)
+    arm._gate_planned_config = lambda pose, joints: None  # the endpoint gate passes
+    arm._plan_end_refusal = lambda goal, end, pose: MotionResult.failed(  # type: ignore[method-assign]
+        MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, message="the plan ends 1019.3 mm from its goal")
+
+    result = arm._drive_curobo(_flange_pose(q_goal))
+
+    assert result.status is MotionStatus.CONTROLLER_REJECTED, result.message
+    assert "from its goal" in (result.message or "")
+    assert not planner.executed, "a plan the end check refused was driven"
+
+
 def test_a_plan_that_ends_on_its_goal_passes_the_end_check() -> None:
     """The control, green before and after: a plan landing on its goal is not refused by the end check."""
     q_goal = [0.1, -1.4, 1.5, -1.6, -1.5, 0.2]

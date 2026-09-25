@@ -1464,8 +1464,11 @@ class URRobotArm(RobotArm):
                 # so the box applies as well as the joint limits, self-collision and payload. The continuity guards
                 # stay skipped, as in the sim: cuRobo owns a plan's continuity, and a wrap from +pi to -pi is not a
                 # blind interpolator teleporting. Cheap, and the plan's legs are judged after.
-                refused = (self._plan_end_refusal(goal, trajectory[-1], pose)
-                           or self._gate_planned_config(pose, JointPositions(trajectory[-1])))
+                # Two statements, not ``a or b``: a refusal is a MotionResult, which is falsy when it is not ok, so
+                # ``or`` dropped the end check's refusal whenever the endpoint gate passed.
+                refused = self._plan_end_refusal(goal, trajectory[-1], pose)
+                if refused is None:
+                    refused = self._gate_planned_config(pose, JointPositions(trajectory[-1]))
                 if refused is not None:
                     return refused
                 waypoints, refused = self._judged_waypoints(
