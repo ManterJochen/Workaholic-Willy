@@ -17,6 +17,10 @@ The registry holds live owners only. An owner that no longer exists holds no cla
 raised past its release and was dropped does not leave the next build meeting `CameraBusy` for an
 object nobody can reach. Releasing is still what gives the device itself back.
 
+A frame to look at is not a frame to measure with. `Camera.peek` hands a camera window
+(``src/camera/live_view.py``) a colour image through the device's display path, which leaves every
+measuring grab as it would have been without the window: see its docstring for why and how.
+
 `FrameProvider` is the multi-rig catalogue for stereo capture and hand detection, and opens every rig
 through an owner of this class, so a catalogue and a `Camera` never both hold one device.
 
@@ -30,7 +34,10 @@ import logging
 import threading
 import time
 import weakref
+from time import monotonic as _monotonic
 from typing import TYPE_CHECKING, Any, Literal
+
+import numpy as np
 
 from src.config.schema.camera import (
     RGBDDeviceRigConfig,
@@ -46,8 +53,6 @@ from src.contracts import UNSET, Maybe, chosen
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from types import TracebackType
 
-    import numpy as np
-
     from src.camera.orchestration.frame_provider import RigHandle
     from src.camera.setup.image_taking.frames import AnyFrame
 
@@ -59,18 +64,27 @@ DeviceKey = tuple[str, "int | str | None"]
 RefusalReason = Literal["unknown", "disabled", "not_rgbd"]
 
 __all__ = [
+    "PEEK_QUIET_S",
     "AnyStreamer",
     "Camera",
     "CameraBusy",
     "CameraNotOpen",
     "CameraRefused",
     "CameraRigConfig",
+    "PeekFrame",
     "create_streamer",
     "device_keys",
     "select_rig",
 ]
 
 logger = logging.getLogger(__name__)
+
+#: How long after a measuring grab, and after a notice that the camera moved, the owner hands out no frame to look at
+#: (:meth:`Camera.peek`), in seconds; three frame periods where the rig streams slower than ten a second. Longer than
+#: the pause the RealSense driver still counts as one burst of back-to-back grabs (``_PAUSE_S``, 0.25 s), so a look
+#: never lands inside a burst: between a planning world's notice, its warm-ups and the grab it keeps, or between a pick
+#: frame's warm-ups and its grab.
+PEEK_QUIET_S = 0.3
 
 _REGISTRY_LOCK = threading.Lock()
 #: The open owners, by the device keys they hold. Weak, so an owner that no longer exists holds no
@@ -103,6 +117,18 @@ class CameraRefused(ValueError):
 
 class CameraNotOpen(RuntimeError):
     """A grab or a lens read on an owner whose device is not open."""
+
+
+@dataclasses.dataclass(frozen=True, slots=True, eq=False)
+class PeekFrame:
+    """A colour image taken for a person to look at (:meth:`Camera.peek`), never one to measure with.
+
+    ``color`` is BGR, a copy the device no longer holds: the left eye of a stereo rig, and no depth at all.
+    ``captured_at_s`` is the host time read just before the device was asked for it, as a grab's stamp is.
+    """
+
+    color: np.ndarray
+    captured_at_s: float
 
 
 def device_keys(rig: CameraRigConfig) -> tuple[DeviceKey, ...]:
@@ -197,6 +223,9 @@ class Camera:
         self._keys = device_keys(rig)
         self._lock = threading.Lock()
         self._open = False
+        #: Until when, on the monotonic clock, no frame is handed out to look at: the quiet after the last measuring
+        #: grab or notice that the camera moved (:meth:`peek`).
+        self._quiet_until = float("-inf")
 
     @classmethod
     def from_rig(cls, rig: CameraRigConfig, *, streamer: Maybe[Any] = UNSET) -> Camera:
@@ -305,11 +334,17 @@ class Camera:
 
     def grab(self) -> AnyFrame:
         """One frame, taken under the rig's lock and stamped with the host time read just before the
-        grab."""
+        grab.
+
+        Every grab is a measuring one, and it keeps the rig quiet for display frames for a while
+        after it (:meth:`peek`)."""
         with self._lock:
             self._require_open()
             captured_at_s = time.time()
-            frame = self._streamer.grab()
+            try:
+                frame = self._streamer.grab()
+            finally:
+                self._quiet_until = _monotonic() + self._quiet_s()
         return _stamped(frame, captured_at_s)
 
     def camera_moved(self) -> None:
@@ -319,14 +354,68 @@ class Camera:
         depth it saw in them; on a camera the arm carries, those frames were taken at the pose before the move. This
         drops that history. A caller that moved the camera calls it before the next grab: the planning world after
         every move of the arm. Taken under the rig's lock, so it never lands inside a grab, and a no-op on a device
-        that keeps no history and on an owner that is not open.
+        that keeps no history and on an owner that is not open. The measuring grabs that follow it are due, so no
+        frame is handed out to look at for a while (:meth:`peek`).
         """
         with self._lock:
             if not self._open:
                 return
+            self._quiet_until = _monotonic() + self._quiet_s()
             moved = getattr(self._streamer, "camera_moved", None)
             if callable(moved):
                 moved()
+
+    def peek(self) -> PeekFrame | None:
+        """A colour image for a person to look at, never one to measure with; ``None`` while the rig measures.
+
+        What a camera window takes (``src/camera/live_view.py``), built so that a window changes nothing the grabs of
+        the planning world, the pick perception or a calibration rely on:
+
+        * The device is read through its display path where it has one (``peek()`` on the streamer; a RealSense
+          polls the newest colour image and runs no filter and no alignment on it, and does not touch its pause
+          clock), so a RealSense's temporal filter holds the frames the measuring grabs handed it and nothing else,
+          and a carried camera still drops that history after a pause between two grabs, however many frames were
+          looked at in it. A device that keeps no history (no ``camera_moved``) is read with a plain grab, which then
+          feeds nothing. A device that keeps a history and offers no display path is refused with ``RuntimeError``,
+          untouched: looking at it would change what it measures.
+        * It never waits for the rig: while a measuring grab holds the lock it answers ``None`` at once. And it
+          answers ``None`` for :data:`PEEK_QUIET_S` (three frame periods on a slow rig) after every measuring grab and
+          every :meth:`camera_moved`, so a look never lands inside a burst of grabs. A measuring grab can therefore
+          wait behind at most one look, begun before its burst, for as long as the look holds the lock: a poll and a
+          copy on a RealSense, a frame period on a device read with a grab. A look can take the frameset the device
+          held, and the grab after it then waits for the next one, which is at least as new.
+        * A grab's stamp stays the host time read just before its own device read, and a look carries a stamp of its
+          own (:class:`PeekFrame`), which marks no measuring frame.
+        * ``None`` also where the device has no new image to give. An owner that is not open is refused with
+          :class:`CameraNotOpen` before its device is touched, as a grab is.
+        """
+        if not self._lock.acquire(blocking=False):
+            return None  # a measuring grab holds the rig: it goes first, and the window looks again later
+        try:
+            self._require_open()
+            if _monotonic() < self._quiet_until:
+                return None
+            display = getattr(self._streamer, "peek", None)
+            captured_at_s = time.time()
+            if callable(display):
+                colour = display()
+            elif callable(getattr(self._streamer, "camera_moved", None)):
+                raise RuntimeError(
+                    f"rig {self.rig_id!r} keeps a history its grabs feed (camera_moved) and offers no display frame "
+                    "(peek), so a window would change what it measures: nothing is shown from it")
+            else:
+                colour = _colour_of(self._streamer.grab())
+        finally:
+            self._lock.release()
+        if colour is None:
+            return None
+        return PeekFrame(color=np.array(colour, copy=True), captured_at_s=captured_at_s)
+
+    def _quiet_s(self) -> float:
+        """How long no frame is handed out to look at after a measuring grab (:data:`PEEK_QUIET_S`)."""
+        fps = getattr(self._rig, "fps", 0)
+        frames = 3.0 / float(fps) if isinstance(fps, (int, float)) and fps > 0 else 0.0
+        return max(PEEK_QUIET_S, frames)
 
     def get_intrinsics(self) -> np.ndarray | None:
         """The camera matrix the device reports, or None where the rig has no single pinhole matrix."""
@@ -407,3 +496,11 @@ def _stamped(frame: Any, captured_at_s: float) -> Any:
     if dataclasses.is_dataclass(frame) and not isinstance(frame, type) and hasattr(frame, "captured_at_s"):
         return dataclasses.replace(frame, captured_at_s=captured_at_s)
     return frame
+
+
+def _colour_of(frame: Any) -> Any:
+    """The image of a frame a person looks at: an RGB-D frame's colour, a stereo pair's left eye, or the frame."""
+    colour = getattr(frame, "color", None)
+    if colour is None:
+        colour = getattr(frame, "left", None)
+    return frame if colour is None else colour

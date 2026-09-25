@@ -18,7 +18,7 @@ for obj in objects:
 
 Images go in as OpenCV BGR arrays; each wrapper swaps to RGB itself, so do not swap before calling.
 The same calls run in [resolve_perception_stack.py](../../examples/offline/perception/resolve_perception_stack.py),
-and a located pick at a cell in [13_speak_pick_and_hand_handover.py](../../examples/real_robot/13_speak_pick_and_hand_handover.py).
+and a located pick at a cell in [15_speak_pick_and_hand_handover.py](../../examples/real_robot/15_speak_pick_and_hand_handover.py).
 `python -m src.robot.perception --rig <rig id>` runs detection and segmentation on a live camera
 ([docs/cli.md](../../docs/cli.md)).
 

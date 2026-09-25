@@ -20,7 +20,7 @@ connected and the campaign did not pass its rule; `3` a fault of the cell stoppe
 
 The same steps from Python are
 [02_check_the_cell_at_a_desk.py](../../../../examples/real_robot/02_check_the_cell_at_a_desk.py) and
-[11_pick_with_the_camera.py](../../../../examples/real_robot/11_pick_with_the_camera.py):
+[12_pick_with_the_camera.py](../../../../examples/real_robot/12_pick_with_the_camera.py):
 
 ```python
 from willy import Cell, load_tree
@@ -137,7 +137,7 @@ are [07](../../../../examples/real_robot/07_calibrate_a_fixed_camera.py) to
 | `--marker-length-mm` | the printed edge (the mode's `camera.hand_eye` block); a wrong one scales every sample and still converges |
 | `--dict`, `--marker-id` | the ArUco dictionary (the mode's `camera.hand_eye` block) and the marker id (0) |
 | `--out` | where the artifact, the dataset, the counted frames and a hand-guided run's stations file go (`calibration/real`) |
-| `--unmodelled-wrist-body "<reason>"` | sweeps a wrist camera whose body cannot be placed yet, with no body in the planner and the guard |
+| `--unmodelled-wrist-body "<reason>"` | moves the arm without a wrist camera's declared body while it cannot be placed yet (not calibrated, its artifact missing, or its flange to TCP record missing or stale): the camera an `eye_in_hand` sweep calibrates, and in either mode any other wrist camera the tree declares on the arm; that camera then has no body in the planner and the guard, and the build says so. A refusal gives this flag first, labelled `For THIS sweep`. Not needed for a wrist rig declared with no `body`, the camera an `eye_in_hand` sweep calibrates included, which refuses no sweep |
 
 `--freedrive` and `--adjust` need an arm that offers hand guiding (on a UR, teach mode); the build
 refuses them on any other. Before the arm is first freed, the controller payload is shown and has to
@@ -149,8 +149,19 @@ overwriting the stations you taught.
 
 The sweep builds the arm alone (no hand, so no activation stroke beside the board), takes the same
 cell lock as `real_cell` and the console, and declines the camera world on every move, because it
-produces the transform that world is built from. A rig switched off is refused at `--check`, naming
-the key. An eye in hand sweep records the flange to TCP the arm applied while it swept, when
+produces the transform that world is built from. Whichever camera it calibrates, the arm carries every
+wrist camera body the tree declares, placed as `Robot.from_tree` places it, and `--check` and the build
+name them on a `wrist cameras` line; a declared body that cannot be placed yet refuses the sweep at
+`--check` unless `--unmodelled-wrist-body` says why, and an `eye_to_hand` sweep on a tree that declares
+no wrist camera sweeps as before. A wrist rig declared with no `body` at all (the bracket not
+measured yet), switched on or off, refuses no sweep and needs no reason, the `eye_in_hand` sweep of
+that camera itself included: nothing is carried for it, and `--check` and the build print `!! wrist camera '<id>' is declared on the arm
+without a body: the planner and the guard do not know it is there during this sweep`, which is
+logged. That is for calibration only: `real_cell` and `Robot.from_tree` still refuse an enabled one.
+The rig being calibrated is another matter when switched off: it is refused at `--check`, naming the
+key.
+
+An eye in hand sweep records the flange to TCP the arm applied while it swept, when
 `robot.gripper.tool_frame.source` is `willy` or `polyscope`; on an `undeclared` frame the cell and the
 `Locator` refuse the artifact for a wrist camera.
 

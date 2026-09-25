@@ -23,7 +23,7 @@ with Camera.from_tree(tree) as camera:                   # the cell's primary ca
 
 A fixed camera ignores `tool_pose`; a wrist camera needs it, because its frame is placed by where the
 tool stood at the shutter. The same program at a cell is
-[`examples/real_robot/13_speak_pick_and_hand_handover.py`](../../../examples/real_robot/13_speak_pick_and_hand_handover.py), with a spoken prompt. Prove
+[`examples/real_robot/15_speak_pick_and_hand_handover.py`](../../../examples/real_robot/15_speak_pick_and_hand_handover.py), with a spoken prompt. Prove
 the camera and the models at a desk before a robot is involved:
 
 ```bash
@@ -40,8 +40,9 @@ weights, no robot, and exits 0 after the frame or 1 with one sentence for an unk
 
 | Noun | Built by | Verb | Returns |
 |---|---|---|---|
-| `Locator` | `from_tree(tree, camera=, tool_pose=)`, `from_config(robot, models, camera=)`, `from_parts(camera=, backend=)` | `locate(prompt)` | `Located` |
-| `Located` | `locator.locate(prompt)` | `scene(i, robot_config)`, `keep_out(i)` | object i as a grasp `Scene` with the others as obstacles; what the planner leaves out to reach it |
+| `Locator` | `from_tree(tree, camera=, tool_pose=)`, `for_cameras(tree, cameras, tool_pose=)` (one per camera over one backend: the models load once for the cell), `from_config(robot, models, camera=)`, `from_parts(camera=, backend=)` | `locate(prompt)` | `Located` |
+| `Located` | `locator.locate(prompt)` | `scene(i, robot_config)`, `keep_out(i)`, `set_down(i, grasp=, part_bottom_mm=)` | object i as a grasp `Scene` with the others as obstacles; what the planner leaves out to reach it; where a held part is set down on it |
+| `SetDown` | `located.set_down(i, grasp=, part_bottom_mm=scene.declared_support_height_mm, air_mm=5.0)` | `pose`, `reason` | the place pose over the middle of object i's top: its top (95th percentile of the seen surface), plus the part's hang below the grasp, plus the air; `pose` is `None`, with the `reason`, where it cannot be measured |
 | `LocatedObject` | an entry of `located.objects` | | label, score, box, mask, points in BASE and their per-axis median centre |
 | `RealSenseVisionPerceptionSource` | `RealSenseVisionPerceptionSource(streamer=, backend=, prompt=)` | `acquire()` | one `PerceptionFrame` for the pick loop |
 
@@ -55,6 +56,14 @@ inside the mask, and on a camera tilted 45 degrees that table lies 40 mm behind 
 stays as segmented, and `keep_out(i)` holds all of it out of the planner world. `scene(i, robot_config)`
 plans with the hand `grasping.gripper_geometry` describes and on the support the pick loop would use,
 raised to the object's own lowest point when its surface reaches down to what it stands on.
+
+A set-down measures the held part's hang below the grasp from `scene.declared_support_height_mm`, the
+table (or container floor) the cell declares, and not from `scene.support_height_mm`. The planned support
+is raised to the part's lowest *seen* point, which stands above its real base wherever the camera missed
+the part's foot, and a hang measured from there brings the part down into the target by that much (8 mm
+unseen pressed it 3 mm in, 12 mm pressed it 7 mm in). The declared support is a lower bound on where the part
+stood, so every error goes to more air. The cost is a larger drop for a part taken off a raised block (a 30 mm
+block: 35 mm instead of 5). A caller that knows where the part stood passes that as `part_bottom_mm`.
 
 ### The source a pick perceives through
 
@@ -142,7 +151,7 @@ camera on a desk, pointed at the real parts, through the exerciser above.
 
 | File | Holds |
 |---|---|
-| [`locator.py`](locator.py) | `Locator`, `Located`, `LocatedObject`, `LocatedOrientation`, `LocatorRefused` |
+| [`locator.py`](locator.py) | `Locator`, `Located`, `LocatedObject`, `LocatedOrientation`, `LocatorRefused`, `SetDown` |
 | [`realsense_source.py`](realsense_source.py) | `RealSenseVisionPerceptionSource`, the live camera source of a real cell |
 | [`mask_completion.py`](mask_completion.py) | the three mask fill policies and the measurement behind the default |
 | [`viewfinder.py`](viewfinder.py) | `ColourPeekable`, `peek_color_of`, `colour_source_kind`, `COLOUR_SOURCE_KINDS` |

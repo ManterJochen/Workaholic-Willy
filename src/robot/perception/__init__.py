@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from .realsense_source import RealSenseVisionPerceptionSource
 
 if TYPE_CHECKING:  # pragma: no cover (typing only; at run time __getattr__ resolves them)
-    from .locator import Located, LocatedObject, LocatedOrientation, Locator, LocatorRefused
+    from .locator import Located, LocatedObject, LocatedOrientation, Locator, LocatorRefused, SetDown
 
 #: Public name -> the module that defines it, imported on first use.
 _LAZY: dict[str, str] = {
@@ -31,6 +31,7 @@ _LAZY: dict[str, str] = {
     "LocatedOrientation": "src.robot.perception.locator",
     "Locator": "src.robot.perception.locator",
     "LocatorRefused": "src.robot.perception.locator",
+    "SetDown": "src.robot.perception.locator",
 }
 
 

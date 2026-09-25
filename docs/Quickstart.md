@@ -261,7 +261,7 @@ python -m src.robot.grasping.replay --baseline-report         # regenerate docs/
 Record logging is opt-in. Set `robot.grasping.record_log_path` and the cell writes one record per
 attempt, stamped with the robot vendor and model; leave it unset and nothing is written, which the
 preflight reports as a warning. From Python, `Recording.to_file(...)` does the same for one campaign
-([`examples/real_robot/11_pick_with_the_camera.py`](../examples/real_robot/11_pick_with_the_camera.py)).
+([`examples/real_robot/12_pick_with_the_camera.py`](../examples/real_robot/12_pick_with_the_camera.py)).
 
 ## Isaac Sim
 

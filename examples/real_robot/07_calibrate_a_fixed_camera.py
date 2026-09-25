@@ -18,6 +18,9 @@ from willy import HandEyeCalibration, SweepOptions, load_tree, print_sweep_progr
 # samples= is how many counted poses end the run (robot.calibration.freedrive_samples, 15, unless you
 # say); q finishes earlier. preview="auto" opens the window where one can show: the camera, whether it
 # sees the board, how far and how tilted, whether the pose is new enough to count, and the count.
+# A wrist camera your tree declares rides on the arm here too, its body in the planner and the guard;
+# not calibrated yet, it refuses the check until 09 calibrates it or unmodelled_wrist_body= says why.
+# One declared with no body yet refuses nothing: the check and the build name it on a !! line.
 options = SweepOptions(freedrive=True, samples=15, preview="auto")
 calibration = HandEyeCalibration.from_tree(
     load_tree(), rig_id="overhead", mode="eye_to_hand", options=options,

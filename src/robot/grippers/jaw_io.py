@@ -61,7 +61,7 @@ and counts its own pulses from where a person said the jaws stood when it connec
   only the word ``open`` or ``closed`` is.
 
 At the terminal, what was typed before a question is discarded before it is asked, so a
-stray Enter (examples 12 and 13 use Enter as push-to-talk) cannot answer it unseen. A
+stray Enter (examples 14 and 15 use Enter as push-to-talk) cannot answer it unseen. A
 question whose connection changed while it waited, a disconnect or another connect from
 another thread, is refused without a pulse. Nothing is kept between programs: the next
 program asks again.
@@ -120,7 +120,7 @@ def _drain_typeahead(stdin: Any = None) -> int:
 
     The question is read with the builtin ``input``, and ``input`` reads whatever waits in the
     console's input queue, typed before anybody asked. An Enter pressed while the models loaded
-    (examples 12 and 13 use Enter as push-to-talk) answered the connect question unseen, and
+    (examples 14 and 15 use Enter as push-to-talk) answered the connect question unseen, and
     with the jaws really closed the count started OPEN and every command after it ran inverted
     (review of 2026-09-24, reproduced on a real Windows console). So the queue is emptied first,
     and only a key pressed after the question is shown can answer it.

@@ -185,22 +185,64 @@ and where the marker stays visible before you run.
 not a block naming the file the sweep will write, which loads but makes `camera.calibration()` and every
 camera world refuse until that file exists. Without the block the rig is simply uncalibrated: the camera
 opens ([`examples/real_robot/06`](../examples/real_robot/06_open_a_camera.py) says so), the sweep runs,
-and the sweep prints the block to paste in (section 5). One exception to "the sweep runs": a wrist
-camera on a cell that reads geometry (a cuRobo planner, or the exact-mesh self-collision guard) must
-declare its `body` first (the next subsection), and with no calibration yet to place that body from, its first sweep also
-takes `--unmodelled-wrist-body "<reason>"`
-([`examples/real_robot/09`](../examples/real_robot/09_calibrate_a_wrist_camera.py) does). The sweep's
-`--check` names whichever is missing before the arm moves. A wrist block that already holds measured tolerances is
+and the sweep prints the block to paste in (section 5). One thing to add for a wrist camera on a cell
+that reads geometry (a cuRobo planner, or the exact-mesh self-collision guard): declare its `body`
+before its first sweep (the next subsection), and with no calibration yet to place that body from, that
+first sweep also takes `--unmodelled-wrist-body "<reason>"`
+([`examples/real_robot/09`](../examples/real_robot/09_calibrate_a_wrist_camera.py) does). The same
+holds for a fixed camera swept while that wrist camera hangs on the arm: every sweep, `eye_to_hand`
+included, carries every wrist camera body the tree declares, so a fixed camera swept before the wrist
+camera is calibrated also takes `--unmodelled-wrist-body "<reason>"` once that camera declares its body
+(a wrist rig with no body yet needs no reason and is named on a warning line, next subsection). The sweep's
+`--check` names whichever is missing before the arm moves. Swept with no body at all, the wrist camera
+itself still calibrates, named on that warning line, but while it is switched on with no body no pick
+runs on the cell (`Robot.from_tree`, the real cell). A wrist block that already holds measured tolerances is
 commented out rather than deleted, and after the sweep only its `artifact_path` changes.
 
 ### A wrist camera's body, and a bracket beside the gripper
 
 The planner and the guard see a wrist camera only through its rig's `body`: the housing of a camera
 model from [`config/cameras/`](../config/cameras/), a bracket, and a margin. A cuRobo cell refuses to
-sweep an enabled `eye_in_hand` rig without one, because the camera and its bracket would be parts of the
-arm that no collision model sees. `--unmodelled-wrist-body` does not stand in for it: that reason lets a
-declared body that nothing can place yet (no calibration) sweep without it, and a rig with no body is
-refused whatever it says. Every key is in
+build the arm a pick moves while an enabled `eye_in_hand` rig has none, because the camera and its
+bracket would be parts of the arm that no collision model sees. A sweep only warns about it (below),
+the camera an `eye_in_hand` sweep calibrates included. `--unmodelled-wrist-body` does not stand in
+for a body: that reason lets the sweep run without a declared body that nothing can place yet (no
+calibration), and a rig with no body needs no reason.
+
+Every sweep carries these bodies, whichever camera it calibrates: an `eye_to_hand` sweep of a fixed
+camera hands the arm every wrist camera body the tree declares, placed from its calibration exactly
+as `Robot.from_tree` places it, before the arm moves, and so does an `eye_in_hand` sweep for every
+wrist camera besides the one it calibrates. `--check` and the build print them on a
+`wrist cameras` line. The rules are `Robot.from_tree`'s: a body that is placed is carried, whether its
+camera is switched on or not; a declared body that cannot be placed yet (no calibration, an artifact
+that does not load, or a stale flange to TCP record) refuses the sweep at `--check`, unless
+`--unmodelled-wrist-body "<reason>"` says why the arm may move without it, and then the line says
+`NOT carried` and the build prints a `!!` line naming the camera and the reason, which is logged too;
+a camera model the registry does not hold is refused whatever the reason says. The refusal gives the
+flag for the sweep you are running first, labelled `For THIS sweep (--rig <id>)`; a second
+`--unmodelled-wrist-body` after it belongs to the separate command that calibrates the wrist camera.
+
+One rule is the sweep's own, for calibration only: a wrist rig declared with no `body` at all
+(`eye_in_hand` extrinsics, the bracket not measured yet), switched on or off, refuses no sweep of
+another camera, `eye_to_hand` or `eye_in_hand`, over fixed stations or guided by hand, and needs no
+reason. Neither does the camera an `eye_in_hand` sweep calibrates when it declares no body, even
+before it has extrinsics (switched on, as every camera being calibrated must be). Nothing is carried for such a camera, and `--check` and the build print one
+line naming it, which is logged:
+
+```text
+  !! wrist camera 'wrist' is declared on the arm without a body: the planner and the guard do not know it is there during this sweep
+```
+
+The arm then moves beside a camera no collision model sees, so keep the stations clear of it. A pick
+still refuses an enabled wrist rig without a body (`Robot.from_tree`, the real cell), so declare it
+before the first pick. A rig with neither a `body` nor `eye_in_hand` extrinsics is not known to hang
+on the arm, and no line names it unless an `eye_in_hand` sweep calibrates it (above). An `eye_to_hand`
+sweep on a tree that declares no wrist camera (no rig with a `body` or with `eye_in_hand` extrinsics),
+and any sweep on a cell that reads no geometry, runs exactly as before: no body, no refusal, no new
+line. With a camera on the wrist, the usual order is that camera first
+([`examples/real_robot/09`](../examples/real_robot/09_calibrate_a_wrist_camera.py) or
+[`10`](../examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py)), then the fixed
+cameras, which then need no reason. Every key is in
 [`config/all_keys/camera/cam.yaml`](../config/all_keys/camera/cam.yaml), whose example names a D435 and
 a guessed bracket; do not copy those two.
 

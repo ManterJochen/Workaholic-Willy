@@ -24,6 +24,11 @@ records no flange to TCP or records another one, is refused with :class:`WristBo
 arm before the camera is calibrated (the calibration sweep, ``Robot.from_tree``) takes a stated reason instead, and
 the rig is then listed as moved without its body (:attr:`WristBodies.unmodelled`) rather than left out in silence. No
 reason excuses a rig that declares no body, or a camera the registry does not stand for.
+
+The calibration sweep alone asks this only of the rigs that declare a body: a wrist rig declared without one refuses
+no sweep, its own eye_in_hand sweep included (a switched-off rig being calibrated is still refused for being off),
+and the sweep names it on a warning line instead (``hand_eye``, the owner's decisions of 2026-09-25). Every other
+door keeps the rules above.
 """
 
 from __future__ import annotations

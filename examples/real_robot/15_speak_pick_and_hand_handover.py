@@ -1,6 +1,6 @@
 """Speak what to pick, pick it by camera, then bring it to where the person's hand actually is.
 
-Speech is 12's; the pick is the camera's, as in 11, taken one step at a time here: a Locator places what
+Speech is 14's; the pick is the camera's, as in 12, taken one step at a time here: a Locator places what
 the camera sees in BASE, the scene of the part gives its grasps, and robot.pick runs the best one. The
 hand-over needs no written pose and no force reading: the camera locates the open hand, and seeing it IS the signal.
 
@@ -8,7 +8,7 @@ The hand comes back in BASE millimetres through the camera's own calibration, so
 a wrist rig's artifact is CAMERA to TOOL, and the builder refuses it rather than composing one of its own.
 
 Run it at the cell, under its profile, once that camera is calibrated (07-10):
-    WILLY_PROFILE=<your cell> python examples/real_robot/13_speak_pick_and_hand_handover.py
+    WILLY_PROFILE=<your cell> python examples/real_robot/15_speak_pick_and_hand_handover.py
 """
 
 import threading
@@ -28,7 +28,7 @@ def release_on_enter() -> None:
     button.release()
 
 
-with PushToTalkSource.from_config(config=speech, switch=button) as microphone:  # 12, verbatim
+with PushToTalkSource.from_config(config=speech, switch=button) as microphone:  # 14, verbatim
     input("Press Enter, say what to pick, then press Enter again. ")
     button.press()
     threading.Thread(target=release_on_enter, daemon=True).start()

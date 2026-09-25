@@ -212,5 +212,53 @@ class ACameraThatFindsNothingIsNotAFaultTests(unittest.TestCase):
         self.assertEqual(2, orch._fusion_geometry_telemetry["cameras_grounded_nothing"])
 
 
+class AStandDownLeavesNoCountOfTheLastPickTests(unittest.TestCase):
+    """The telemetry describes THIS pick, so a pick that stood down early carries no count of the one before.
+
+    ⛔ It did. `_fused_scene` stamped its counters only once it reached the rig, so a pick that stood down
+    before it (fusion off, no multi-camera source, no CAMERA->BASE) kept the dict of the last pick that
+    fused, and the service turned it into that record's `fused_view_count` (found by the review of
+    2026-09-24 that added `fused_views` to the attempt).
+    """
+
+    def _fused_once(self) -> BinPickingOrchestrator:
+        orch = _orchestrator(
+            MappedCameraRig({"left": _Camera(), "right": _Camera()}),
+            configured_camera_ids=("left", "right"),
+            fusion_geometry_config=FusionGeometryConfig(enabled=True),
+        )
+        orch._fused_scene(_frame(), _IDENTITY)
+        self.assertTrue(orch._fusion_geometry_telemetry, "the first pick fused and stamped its counters")
+        return orch
+
+    def test_a_pick_with_no_camera_to_base_carries_no_count_of_the_last(self) -> None:
+        orch = self._fused_once()
+
+        with self.assertLogs(_LOGGER, level="WARNING"):
+            self.assertIsNone(orch._fused_scene(_frame(), None))
+
+        self.assertEqual({}, orch._fusion_geometry_telemetry)
+
+    def test_a_pick_with_fusion_switched_off_carries_no_count_of_the_last(self) -> None:
+        orch = self._fused_once()
+        orch.fusion_geometry_config = FusionGeometryConfig(enabled=False)
+
+        self.assertIsNone(orch._fused_scene(_frame(), _IDENTITY))
+
+        self.assertEqual({}, orch._fusion_geometry_telemetry)
+
+    def test_a_pick_that_stands_down_keeps_no_other_camera_view_of_the_last(self) -> None:
+        """⛔ The views the scene builder promotes objects from (``promote_unmatched``) were set only where fusion ran,
+        so a pick that stood down kept the last fused pick's views, and an object from another moment could be promoted
+        into this one's scene and grasped (review of 2026-09-24, outside the fused-views change)."""
+        orch = self._fused_once()
+        self.assertTrue(orch._last_other_views, "the first pick fused and kept the other camera's view")
+
+        with self.assertLogs(_LOGGER, level="WARNING"):
+            self.assertIsNone(orch._fused_scene(_frame(), None))
+
+        self.assertEqual((), orch._last_other_views)
+
+
 if __name__ == "__main__":
     unittest.main()

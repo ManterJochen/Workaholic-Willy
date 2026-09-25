@@ -3,19 +3,22 @@ back where it was grasped after every lift, so one part serves the whole campaig
 a record of every attempt, and a picture of what the camera saw and gripped.
 
 Each pick moves the arm to the first look below and perceives there, going on to the next look when it finds nothing.
-Leave look= out and a wrist camera looks from the configured home, while a fixed camera does not move to look.
+Leave look= out and a wrist camera looks from the configured home, while a fixed camera does not move to look. With
+SHOW_CAMERAS every camera of the cell shows live in a window of its own, each attempt's grasp overlay pinned on the
+primary camera's.
 
 Run it at the cell, under the cell's profile, once its camera is calibrated (07-10):
-    WILLY_PROFILE=<your cell> python examples/real_robot/11_pick_with_the_camera.py
+    WILLY_PROFILE=<your cell> python examples/real_robot/12_pick_with_the_camera.py
 """
 
 from pathlib import Path
 
-from willy import Cell, GraspMotion, JointPositions, PassRule, PickAttempt, PickRun, Recording, load_tree
+from willy import Cell, GraspMotion, JointPositions, LiveView, PassRule, PickAttempt, PickRun, Recording, load_tree
+
+SHOW_CAMERAS = True  # False: no camera windows
 
 # Where the camera looks from, tried in order. Degrees, one per joint, as the pendant shows them: FILL THESE IN from
-# your own cell. Stand the arm where the camera sees the work, then read the joints off with
-#     python -m src.robot.drivers.ur --where
+# your own cell. Guide the arm by hand to where the camera sees the work and paste the lines 11 prints.
 LOOK = [
     JointPositions.deg(-90.0, -100.0, -110.0, -60.0, 90.0, 0.0),
     JointPositions.deg(-70.0, -100.0, -110.0, -60.0, 90.0, 0.0),
@@ -45,22 +48,22 @@ def _each_attempt(attempt: PickAttempt) -> None:
         (debug_dir / f"attempt_{attempt.index:03d}_{attempt.outcome.value}.png").write_bytes(png)
 
 
-campaign = PickRun.from_cell(
-    cell,
-    runs=5,
-    prompt="a red cube",  # what every camera grounds, for this campaign only
-    look=LOOK,
-    put_back=True,  # a part that does not go back stops the campaign: no pick starts with a part in the hand
-    recording=Recording.to_file("logs/picks.jsonl"),  # one attempt record per line: positions, scores, outcome
-    # Four of five must succeed; the default rule is every one. Without a sensor in the hand a success is the close
-    # command's word, and the report says so; confirm= takes a check of your own on each attempt.
-    rule=PassRule(fraction=0.8),
-    on_attempt=_each_attempt,
-)
-
 # One connect around every pick, because connecting is itself motion. The cell comes down whatever happened, and a
-# refused build or connect is on the report, not raised.
-report = campaign.execute()
+# refused build or connect is on the report, not raised. The camera windows close as the block ends.
+with LiveView(show=SHOW_CAMERAS) as view:
+    report = PickRun.from_cell(
+        cell,
+        runs=5,
+        prompt="a red cube",  # what every camera grounds, for this campaign only
+        look=LOOK,
+        put_back=True,  # a part that does not go back stops the campaign: no pick starts with a part in the hand
+        recording=Recording.to_file("logs/picks.jsonl"),  # one attempt record per line: positions, scores, outcome
+        # Four of five must succeed; the default rule is every one. Without a sensor in the hand a success is the
+        # close command's word, and the report says so; confirm= takes a check of your own on each attempt.
+        rule=PassRule(fraction=0.8),
+        on_attempt=_each_attempt,
+        view=view,  # every camera of the cell, each attempt's grasp overlay pinned on the primary camera's window
+    ).execute()
 print(report)
 print(f"debug overlays written to {debug_dir}/")
 raise SystemExit(report.exit_code)

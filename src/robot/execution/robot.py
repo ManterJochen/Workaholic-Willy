@@ -163,7 +163,8 @@ class Robot:
 
         A robot section holds no camera section, so the arm carries only the bodies of the cameras handed
         in. A robot that moves beside a wrist camera it was not handed is built with :meth:`from_tree`,
-        which reads them all; the calibration sweep builds its arm here and hands it the body itself.
+        which reads them all; the calibration sweep builds its arm here and hands it every body the tree
+        declares itself, for either mounting (``hand_eye``).
         """
         arm = resolve_arm(robot_config, arm=None)
         hand = None if chosen(gripper) else build_gripper(robot_config, arm=arm)
@@ -441,15 +442,23 @@ class Robot:
 
     def place(
         self, pose: Pose, *, standoff_mm: float = 80.0, decline: "Maybe[str]" = UNSET,
-        camera_world: "Maybe[CameraWorldDecline]" = UNSET,
+        camera_world: "Maybe[CameraWorldDecline]" = UNSET, keep_out: "Maybe[SegmentationOffer]" = UNSET,
     ) -> "_handling.HandlingReport":
         """Place the held part at ``pose``: a planned move to the standoff, a line in, :meth:`release`, a line out.
 
         The same refusals, the same outcomes and the same ``decline`` as :meth:`pick`. A release the
-        gripper does not confirm leaves the arm where it stands.
+        gripper does not confirm leaves the arm where it stands, and nothing opens before the line in
+        has arrived. ``keep_out`` is what the part is set down on, held out of the arm's live world
+        from before the first motion to after the last, the release between them, as :meth:`pick`
+        holds its own: a part set down onto something a camera located comes within the line
+        clearance of it, and the world would refuse the line in.
+
+            set_down = located.set_down(0, grasp=best.pose(), part_bottom_mm=scene.declared_support_height_mm)
+            if set_down.pose is not None:
+                robot.place(set_down.pose, keep_out=located.keep_out(0))
         """
         return _handling.place(self, pose, standoff_mm=standoff_mm,
-                               camera_world=_motion.decline_of(decline, camera_world))
+                               camera_world=_motion.decline_of(decline, camera_world), keep_out=keep_out)
 
     def is_holding(self) -> HoldEvidence:
         """What the gripper measured about a hold, commanding nothing; UNMEASURED where nothing can say."""

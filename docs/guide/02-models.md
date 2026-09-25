@@ -285,7 +285,7 @@ with the fetch that fixes it. The microphone keys (`samplerate`, `blocksize`, `c
 the cell PC's microphone for push to talk (`PushToTalkSource.from_config`) and for
 `Listener.from_config`, which no console route or cell verb opens. A tree that writes `chunk_duration`
 is refused as an unknown key. From a program:
-[`examples/real_robot/12_speak_a_command.py`](../../examples/real_robot/12_speak_a_command.py); the
+[`examples/real_robot/14_speak_a_command.py`](../../examples/real_robot/14_speak_a_command.py); the
 package is [`src/models/speech/README.md`](../../src/models/speech/README.md).
 
 **`handdetect` and `gesturedetect`** are standalone MediaPipe and are not on the grasp path. Nothing

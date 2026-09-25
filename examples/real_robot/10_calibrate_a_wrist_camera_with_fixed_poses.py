@@ -10,7 +10,8 @@ q there (console or window) or ESC finishes, and Ctrl-C in the console stops the
 adjust needs an arm that offers hand guiding; without adjust any arm runs the file.
 
 Before you run it: declare the camera's body on the rig (docs/calibration-setup.md, section 4, has a camera on a
-bracket beside the gripper), and fix the board where every station sees it. Then, at the cell:
+bracket beside the gripper; without one the sweep still runs and names it on a !! line, but no pick runs while it
+is switched on), and fix the board where every station sees it. Then, at the cell:
     WILLY_PROFILE=<your cell> python examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py
 """
 

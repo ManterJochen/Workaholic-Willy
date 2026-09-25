@@ -33,6 +33,9 @@ fixed_poses = [
 # Or read them from disk: SweepOptions(fixed_poses="examples/real_robot/eth_fixed_poses.json"), a
 # template of tool-down poses, or the file 07 wrote: "calibration/real/eye_to_hand_overhead_stations.json".
 # adjust=True frees the arm at each station for you to fine-tune it by hand (10 shows it).
+# The arm drives itself carrying every wrist camera body your tree declares; one not calibrated yet
+# refuses the check until 09 calibrates it or SweepOptions(unmodelled_wrist_body="<why>") says why.
+# One declared with no body yet refuses nothing: the check and the build name it on a !! line.
 options = SweepOptions(fixed_poses=fixed_poses, preview="auto")
 calibration = HandEyeCalibration.from_tree(load_tree(), rig_id="overhead", mode="eye_to_hand",
                                            options=options, on_event=print_sweep_progress)

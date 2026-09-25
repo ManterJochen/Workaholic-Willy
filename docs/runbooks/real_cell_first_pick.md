@@ -273,7 +273,7 @@ sees whatever that is: after a connect, where the last program left the arm; in 
 retreat 100 mm above the last grasp, which for a camera tilted 45 degrees on the wrist is nearer
 than a D415 measures and is turned by that grasp's yaw. So every pick of a wrist cell first moves
 the arm to a look pose: joint positions the program declares, in degrees, tried in order until one
-finds something (`examples/real_robot/11`):
+finds something (`examples/real_robot/12`):
 
 ```python
 LOOK = [JointPositions.deg(-90.0, -100.0, -110.0, -60.0, 90.0, 0.0),   # your own, off --where

@@ -15,7 +15,7 @@ part = Pose.tool_down(450.0, 100.0, 120.0)
 tray = Pose.tool_down(300.0, -250.0, 140.0, yaw_deg=90.0)
 
 # A desk has no camera, so every motion declines the camera world and says why. At a cell,
-# examples/real_robot/13_speak_pick_and_hand_handover.py hands the robot its cameras instead.
+# examples/real_robot/15_speak_pick_and_hand_handover.py hands the robot its cameras instead.
 with robot.connected() as live, robot.without_camera_world("desk run, a dummy arm and no camera"):
     print(robot.home())
     print(robot.move(above))

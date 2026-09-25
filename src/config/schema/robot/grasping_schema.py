@@ -1151,10 +1151,14 @@ class FusionCameraConfig(StrictModel):
 class FusionGeometryConfig(StrictModel):
     """Fuse each object's surface across the fixed cameras and feed that to the grasp generator.
 
-    A separate switch from ``fusion.enabled``: that one turns on the voxel-occupancy substrate,
-    which is shadow-only, emitting telemetry no grasping path consumes. This one changes the grasp
-    candidates themselves, since every camera that can identify an object contributes its view of
-    that object's surface and the generator plans on the union.
+    A separate switch from ``fusion.enabled``, but not an independent one. ``fusion.enabled`` turns
+    on the voxel-occupancy substrate, which is shadow-only and emits telemetry no grasping path
+    consumes, AND it is what builds the other cameras' CAMERA to BASE resolvers
+    (``build_config_frame_resolvers`` returns none while it is off). With ``fusion.enabled`` false
+    every second view is dropped at the pick with a warning, so geometry fusion needs both switches
+    on (``CameraFusionPlan`` checks it). This one changes the grasp candidates themselves, since
+    every camera that can identify an object contributes its view of that object's surface and the
+    generator plans on the union.
 
     A candidate is accepted or rejected on its closing axis, the closing axis comes from the
     object's silhouette, and one depth view sees one side of an object while an antipodal grasp
@@ -1170,7 +1174,8 @@ class FusionGeometryConfig(StrictModel):
         default=False,
         description=(
             "Top-level switch. False (default) = the generator sees one view per object, exactly as "
-            "before: byte-identical. Independent of ``fusion.enabled`` (the shadow voxel substrate)."
+            "before: byte-identical. Needs ``fusion.enabled`` too: that switch also builds the other "
+            "cameras' CAMERA to BASE resolvers, without which every second view is dropped."
         ),
     )
     metric: Literal["overlap", "box_iou", "centroid"] = Field(

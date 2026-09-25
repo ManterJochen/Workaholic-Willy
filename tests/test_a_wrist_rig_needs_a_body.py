@@ -195,9 +195,12 @@ class TheCalibrationSweepTests(unittest.TestCase):
 
         return _wrist_body_for_sweep(wrist_cell(), rig, data_dir=data_dir, reason=reason)
 
-    def test_a_wrist_rig_without_a_body_is_not_swept(self) -> None:
-        _, refusal = self._sweep(wrist_rig(body=False))
-        self.assertIn("the camera's housing would be invisible to the planner and the guard during the sweep", refusal)
+    def test_a_wrist_rig_without_a_body_is_swept_and_carries_nothing(self) -> None:
+        """The owner's decision of 2026-09-25, for calibration only: a wrist rig whose bracket is not measured yet is
+        swept eye in hand; nothing is carried for it, and the sweep's warning line names it (tests/
+        test_every_calibration_sweep_carries_the_wrist_bodies_its_tree_declares.py). The pick path still refuses it
+        (the tests above)."""
+        self.assertEqual(self._sweep(wrist_rig(body=False)), (None, None))
 
     def test_a_body_nothing_places_is_swept_only_with_a_reason(self) -> None:
         _, refusal = self._sweep(wrist_rig(calibrated=False))

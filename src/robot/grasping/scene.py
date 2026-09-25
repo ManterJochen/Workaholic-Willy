@@ -29,7 +29,7 @@ it did not do.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
@@ -192,6 +192,32 @@ class Scene:
     floor_margin_mm: "Maybe[float]" = UNSET
     #: How far every footprint face is pushed outward, millimetres. Unset leaves the primitive's own.
     inflate_mm: "Maybe[float]" = UNSET
+    #: What :attr:`declared_support_height_mm` reads: set by :meth:`from_robot_config`, ``None`` where the caller's
+    #: ``support_height_mm`` is the only support stated.
+    _declared_support_mm: "float | None" = field(default=None, repr=False)
+
+    @property
+    def declared_support_height_mm(self) -> float:
+        """The support the cell DECLARES, in BASE millimetres: a lower bound on what the part stands on.
+
+        :attr:`support_height_mm` is what the grasps are planned on. :meth:`from_robot_config` resolves it from the
+        declared height (the container floor where ``grasping.support.container.floor_height_mm`` is given, the table
+        ``grasping.support.height_mm`` otherwise) raised to the target's lowest SEEN point, and never lowers it. That
+        point is the part's base only where the camera saw down to it: an occluder in front, a mask that stops short,
+        or a tilted view that misses the foot of the near face leave it above the base by as much as they hid. So the
+        planned support is an UPPER bound on the part's base, and this is the LOWER one: no part stands below the
+        surface it is declared on.
+
+        A held part's hang below the grasp is measured from here (``Located.set_down(i, grasp=, part_bottom_mm=
+        scene.declared_support_height_mm)``), so what the camera missed of the part's foot goes to more air when it is
+        set down, never into what it is set down on. The cost: a part taken off a raised block, or off another part,
+        hangs lower than that and drops the block's height further. A caller that knows where the part stood passes
+        that instead.
+
+        From a bare cloud (:meth:`from_cloud`) it is the ``support_height_mm`` the caller stated. Read-only; along the
+        support normal, as :attr:`support_height_mm` is, which on a level table is BASE Z.
+        """
+        return float(self.support_height_mm if self._declared_support_mm is None else self._declared_support_mm)
 
     @classmethod
     def from_cloud(
@@ -248,7 +274,8 @@ class Scene:
         * The support is ``resolve_support_plane`` over the declared height (or the container floor),
           raised to the target's own lowest point when the cloud reaches 25 mm along the support
           normal and ``refine_from_target`` is on. That is the pick loop's rule, so a part standing on
-          another part is planned on what it stands on. It never lowers the declared height.
+          another part is planned on what it stands on. It never lowers the declared height, which the scene
+          keeps as :attr:`declared_support_height_mm`, the lower bound a set-down measures a part's hang from.
         * The floor is :data:`SUPPORT_READ_ERROR_MM` over the support, so a table that reads a few
           millimetres high through hand-eye or depth error is the table here too, and not the start of
           the part. Not ``safety.planning_world.perceived.plane_clearance_mm``: that is measured from
@@ -271,7 +298,7 @@ class Scene:
             target_clouds_base_mm=([target] if _has_seen_the_support(target, support.normal) else None),
             refine_from_target=bool(support.refine_from_target),
         )
-        return cls.from_cloud(
+        scene = cls.from_cloud(
             target,
             support_height_mm=resolution.height_mm,
             obstacle_points_base_mm=obstacle_points_base_mm,
@@ -280,6 +307,7 @@ class Scene:
             floor_margin_mm=SUPPORT_READ_ERROR_MM,
             inflate_mm=float(robot_config.grasping.geometry.inflate_mm),
         )
+        return replace(scene, _declared_support_mm=float(resolution.declared_mm))
 
     def grasps(
         self,

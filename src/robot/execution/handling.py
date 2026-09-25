@@ -31,7 +31,9 @@ the standoff, a line down to the pose, the hand verb, which asks the controller 
 the standoff, each move carrying the caller's decline, each preceded by the arm's own steady gate where its tree asks for
 one (``safety.dwell``). A refused motion ends the verb with nothing commanded after it, and so does a camera that could
 not vouch for the cell, as its own outcome rather than a raise. A pick holds its keep-out offer in the arm's live world
-from before the detach to after its last motion, and forgets it on any exit.
+from before the detach to after its last motion, and forgets it on any exit. A place holds its own, what the part is set
+down on, from before its first motion to after its last, the release between them, and forgets it on any exit: the part
+comes down to within the line clearance of what a camera located under it (owner's example 13, 2026-09-24).
 
 The module imports nothing above ``robot.core`` but its sibling :mod:`~src.robot.execution.motion`, which imports
 nothing above it either, and connects nothing: the verbs run inside ``Robot.connected()``.
@@ -513,9 +515,10 @@ def place(
     *,
     standoff_mm: float = 80.0,
     camera_world: Maybe[CameraWorldDecline] = UNSET,
+    keep_out: Maybe[SegmentationOffer] = UNSET,
 ) -> HandlingReport:
     """Place the held part at ``pose``: standoff, a line in, release, a line out unless the release is not confirmed."""
-    return _Handling(robot, HandlingVerb.PLACE, pose, standoff_mm, camera_world).place()
+    return _Handling(robot, HandlingVerb.PLACE, pose, standoff_mm, camera_world).place(keep_out=keep_out)
 
 
 class _Refused(Exception):
@@ -559,7 +562,7 @@ class _Handling:
         except _Refused as ended:
             return ended.report
 
-    def place(self) -> HandlingReport:
+    def place(self, *, keep_out: Maybe[SegmentationOffer]) -> HandlingReport:
         refused = self._refusal()
         if refused is not None:
             return refused
@@ -568,22 +571,31 @@ class _Handling:
             self.gripper, float(self.gripper.max_width_mm), close=False, what="the place's release to")
         if why:
             return self._report(HandlingOutcome.REFUSED, message=why)
+        # What the part is set down on is held out of the world from here, after every refusal and before the first
+        # motion, to after the line out: the part comes down to within the line clearance of it, and a world that
+        # still held it would refuse the line in. The offer is forgotten on every exit, a refused motion included.
+        scope: AbstractContextManager[Any] = keeping_out(self.arm, keep_out) if chosen(keep_out) else nullcontext()
         try:
-            standoff = self._standoff()
-            self._move(standoff, linear=False)
-            self._move(self.pose, linear=True)
-            hand = release(self.robot)
-            if hand.outcome is HandOutcome.GRIPPER_FAULT:
-                return self._report(HandlingOutcome.GRIPPER_FAULT, hand=hand, message=hand.error)
-            if hand.outcome is HandOutcome.RELEASE_NOT_CONFIRMED:
-                return self._report(HandlingOutcome.RELEASE_NOT_CONFIRMED, hand=hand, message=(
-                    "the gripper still measures a part after opening, so the arm stays where it stands"))
-            if hand.outcome is not HandOutcome.RELEASED:
-                return self._report(HandlingOutcome.REFUSED, hand=hand, message=hand.error)
-            self._move(standoff, linear=True)
-            return self._report(HandlingOutcome.EXECUTED, hand=hand)
+            with scope as held:
+                self.keep_out_held = bool(getattr(held, "world_wired", False))
+                return self._place_body()
         except _Refused as ended:
             return ended.report
+
+    def _place_body(self) -> HandlingReport:
+        standoff = self._standoff()
+        self._move(standoff, linear=False)
+        self._move(self.pose, linear=True)
+        hand = release(self.robot)
+        if hand.outcome is HandOutcome.GRIPPER_FAULT:
+            return self._report(HandlingOutcome.GRIPPER_FAULT, hand=hand, message=hand.error)
+        if hand.outcome is HandOutcome.RELEASE_NOT_CONFIRMED:
+            return self._report(HandlingOutcome.RELEASE_NOT_CONFIRMED, hand=hand, message=(
+                "the gripper still measures a part after opening, so the arm stays where it stands"))
+        if hand.outcome is not HandOutcome.RELEASED:
+            return self._report(HandlingOutcome.REFUSED, hand=hand, message=hand.error)
+        self._move(standoff, linear=True)
+        return self._report(HandlingOutcome.EXECUTED, hand=hand)
 
     def _pick_body(self, *, width_mm: float, squeeze_mm: float, pre_open_mm: "Maybe[float | None]") -> HandlingReport:
         opening = float(self.gripper.max_width_mm) if not chosen(pre_open_mm) else pre_open_mm

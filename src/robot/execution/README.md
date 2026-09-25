@@ -33,7 +33,7 @@ world, so each motion says why it needs none: `without_camera_world(reason)` for
 on one verb. The command line over `Cell` and `PickRun` is `python -m src.robot.execution.real_cell`
 ([real_cell/](real_cell/README.md)). The examples bring a cell up in order, from
 [03_connect_and_move.py](../../../examples/real_robot/03_connect_and_move.py) to
-[11_pick_with_the_camera.py](../../../examples/real_robot/11_pick_with_the_camera.py), and
+[12_pick_with_the_camera.py](../../../examples/real_robot/12_pick_with_the_camera.py), and
 [01_rehearse_a_pick.py](../../../examples/simulation/01_rehearse_a_pick.py) runs a campaign at a
 desk on a dummy arm.
 
@@ -120,9 +120,12 @@ a pick.
 | `cell_lock.py` | `CellLock`, `CellBusy`: one owner per controller, shared with the operator console |
 | `robot_parts.py` | the arm and the hand a robot section describes, with the readiness gate and every substitution |
 | `camera_world_wiring.py` | which cameras feed a cell's live planner world, `CameraWorldRequired` |
+| `camera_fusion.py` | `CameraFusionPlan`: which cameras a cell fuses into each object's cloud before it grasps, or what it is missing to |
 | `wrist_bodies.py` | the wrist cameras an arm carries, `WristBodyRequired` |
 | `planner_start.py` | `PlannerStart`: a cuRobo planner started and stopped at a desk |
 | `hand_eye.py`, `calibration.py` | `HandEyeCalibration`, and the `CalibrationRoutine` that sweeps and solves `AX=XB` |
+| `hand_guiding.py` | the console, the stillness gate, the payload question and the red boundaries of a hand-guided arm, `HandGuidingRefused` |
+| `teach.py` | `teach_poses`: joint poses taught by guiding the arm by hand, printed to paste and kept in `logs/taught_poses.json` |
 | `pose_provider.py` | workspace-checked and diversity-checked TCP poses for a sweep |
 | `ik_service.py` | reachability through the live controller; `URAnalyticIKService` needs `ur_ikfast`, which is not on PyPI |
 | `runtime_pick.py` | `RuntimePickService`, one open-loop attempt and its `PickSessionReport` |

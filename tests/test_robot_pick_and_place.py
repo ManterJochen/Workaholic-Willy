@@ -4,7 +4,8 @@ Before any command a pick or a place refuses a robot that cannot hold, a closed 
 the arm's own motion would be refused for, and an arm that keeps no line or does not say. Every motion carries the
 caller's decline and waits for the arm's own steady gate where its tree asks for one. A refused motion ends the verb
 with nothing commanded after it, a close that measures nothing opens and backs out, and a release the gripper does not
-confirm stays where it stands. A pick holds its keep-out offer through every motion.
+confirm stays where it stands. A pick holds its keep-out offer through every motion, and a place holds its own through
+its motions and its release, and for nothing else.
 
 Every cuRobo double here states its camera world at the call site.
 """
@@ -291,6 +292,151 @@ class AMotionThatFailsEndsTheVerbTests(unittest.TestCase):
         self.assertEqual([True, True, True], arm.held_at_motion)
         self.assertEqual(1, world.forgets)
         self.assertFalse(world.holding)
+
+
+class _WatchingHand(_LoggedHand):
+    """The logged hand, noting at each command whether the arm's world held an offer right then."""
+
+    def __init__(self, log: _Log, world: Any, **kwargs: Any) -> None:
+        super().__init__(log, **kwargs)
+        self.world = world
+        self.held_at_command: list[bool] = []
+
+    def set_width_mm(self, width_mm: float, *, speed: float | None = None, force: float | None = None) -> None:
+        self.held_at_command.append(bool(self.world.holding))
+        super().set_width_mm(width_mm, speed=speed, force=force)
+
+
+def _placing_robot(log: _Log, world: Any, *, hold: HoldEvidence = HoldEvidence.EMPTY, **arm_kwargs: Any) -> Robot:
+    """A robot whose arm carries ``world`` and whose hand notes whether it was held at each command."""
+    arm = _RecordingArm(log, world=world, **arm_kwargs)
+    arm.connect()
+    return Robot.from_parts(arm=arm, gripper=_WatchingHand(log, world, hold=hold, width_mm=39.0), lock_key=None)
+
+
+def _plate_offer() -> Any:
+    """What ``located.keep_out(i)`` hands a place: the target's surface in BASE, dated by its shutter."""
+    from src.robot.core.keep_out import SegmentationOffer
+
+    return SegmentationOffer(captured_at_s=time.time(), target_points_base_mm=np.array([[400.0, 0.0, 60.0]]),
+                             target_label="plate")
+
+
+class APlaceHoldsItsKeepOutTests(unittest.TestCase):
+    """A place onto something a camera located holds that target out of the world, as a pick holds its part.
+
+    Held from before the place's first motion to after its last, the release between them, and forgotten on every
+    exit; never before the place moved, and never for the motions around it.
+    """
+
+    def test_a_place_holds_its_keep_out_for_its_motions_and_its_release(self) -> None:
+        from tests.test_keep_out_path import _HoldingWorld
+
+        handling = _handling()
+        log = _Log()
+        world = _HoldingWorld()
+        robot = _placing_robot(log, world)
+
+        report = robot.place(_pose(), keep_out=_plate_offer())
+
+        self.assertIs(handling.HandlingOutcome.EXECUTED, report.outcome, report.render())
+        self.assertTrue(report.keep_out_held)
+        self.assertIn("held out of the planner world", report.render())
+        arm, hand = robot.arm, robot.gripper
+        assert isinstance(arm, _RecordingArm) and isinstance(hand, _WatchingHand)
+        self.assertEqual([True, True, True], arm.held_at_motion)
+        self.assertEqual([True], hand.held_at_command, "the release ran with the target back in the world")
+        self.assertEqual(1, len(world.offers))
+        self.assertIs(True, world.offers[0]["hold"])
+        self.assertEqual("plate", world.offers[0]["target_label"])
+        self.assertEqual(1, world.forgets)
+        self.assertFalse(world.holding)
+
+    def test_the_target_is_out_only_around_the_place(self) -> None:
+        from tests.test_keep_out_path import _HoldingWorld
+
+        log = _Log()
+        world = _HoldingWorld()
+        robot = _placing_robot(log, world, hold=HoldEvidence.HELD)
+
+        self.assertTrue(robot.pick(_pose(), 40.0).ok)
+        robot.gripper.hold = HoldEvidence.EMPTY  # type: ignore[union-attr]  # the part left the jaws at the target
+        self.assertTrue(robot.place(_pose(x=300.0), keep_out=_plate_offer()).ok)
+        self.assertTrue(robot.move(_pose(x=300.0, z=250.0)).ok)
+
+        arm = robot.arm
+        assert isinstance(arm, _RecordingArm)
+        self.assertEqual([False, False, False, True, True, True, False], arm.held_at_motion)
+        self.assertEqual(1, world.forgets)
+
+    def test_a_place_refused_before_it_moves_offers_nothing(self) -> None:
+        from tests.test_keep_out_path import _HoldingWorld
+
+        handling = _handling()
+        world = _HoldingWorld()
+        robot = _placing_robot(_Log(), world)
+        camera_pose = Pose(position_mm=np.zeros(3), quaternion_xyzw=np.array([0.0, 0.0, 0.0, 1.0]), frame=Frame.CAMERA)
+
+        report = robot.place(camera_pose, keep_out=_plate_offer())
+
+        self.assertIs(handling.HandlingOutcome.REFUSED, report.outcome)
+        self.assertFalse(report.keep_out_held)
+        self.assertEqual(([], 0), (world.offers, world.forgets))
+
+    def test_a_refused_line_in_releases_nothing_and_gives_the_target_back(self) -> None:
+        from tests.test_keep_out_path import _HoldingWorld
+
+        handling = _handling()
+        log = _Log()
+        world = _HoldingWorld()
+        robot = _placing_robot(log, world, refuse_linear=True)
+
+        report = robot.place(_pose(), keep_out=_plate_offer())
+
+        self.assertIs(handling.HandlingOutcome.MOTION_REFUSED, report.outcome, report.render())
+        self.assertEqual([], [entry for entry in log.entries if entry[0] == "set_width"], "the hand opened")
+        self.assertEqual(1, world.forgets)
+        self.assertFalse(world.holding)
+
+    def test_a_camera_that_cannot_vouch_mid_place_gives_the_target_back(self) -> None:
+        from tests.test_keep_out_path import _HoldingWorld
+
+        handling = _handling()
+        log = _Log()
+        world = _HoldingWorld()
+        robot = _placing_robot(log, world, raise_on=1)
+
+        report = robot.place(_pose(), keep_out=_plate_offer())
+
+        self.assertIs(handling.HandlingOutcome.CAMERA_WORLD_UNAVAILABLE, report.outcome, report.render())
+        self.assertEqual(2, len(report.poses), "the standoff and the line in the camera stopped")
+        self.assertEqual([], [entry for entry in log.entries if entry[0] == "set_width"], "the hand opened")
+        self.assertEqual(1, world.forgets)
+        self.assertFalse(world.holding)
+
+    def test_a_place_with_no_keep_out_offers_nothing_and_an_arm_with_no_world_opens_an_empty_scope(self) -> None:
+        from tests.test_keep_out_path import _HoldingWorld
+
+        world = _HoldingWorld()
+        plain = _placing_robot(_Log(), world).place(_pose())
+        self.assertTrue(plain.ok, plain.render())
+        self.assertFalse(plain.keep_out_held)
+        self.assertEqual(([], 0), (world.offers, world.forgets))
+
+        no_world = _robot(_Log(), hold=HoldEvidence.EMPTY).place(_pose(), keep_out=_plate_offer())
+        self.assertTrue(no_world.ok, no_world.render())
+        self.assertFalse(no_world.keep_out_held)
+
+    def test_keep_out_is_a_keyword_of_place_as_it_is_of_pick(self) -> None:
+        import inspect
+
+        from src.contracts import UNSET
+
+        for name in ("pick", "place"):
+            with self.subTest(name):
+                parameter = inspect.signature(getattr(Robot, name)).parameters["keep_out"]
+                self.assertIs(inspect.Parameter.KEYWORD_ONLY, parameter.kind)
+                self.assertIs(UNSET, parameter.default)
 
 
 class LinesTheArmCannotKeepTests(unittest.TestCase):

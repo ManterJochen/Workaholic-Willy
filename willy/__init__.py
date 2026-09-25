@@ -39,6 +39,9 @@ _HOME: dict[str, str] = {
     "JointPositions": "src.robot.core",
     "SafetyPreflight": "src.robot.safety",
     "create_arm": "src.robot.drivers",
+    # Joint poses taught by guiding the arm by hand, and what refuses hand guiding.
+    "HandGuidingRefused": "src.robot.execution.hand_guiding",
+    "teach_poses": "src.robot.execution.teach",
     # The whole cell and its pick service.
     "Cell": "src.robot.execution.cell",
     "AutonomousGraspOutcome": "src.robot.execution.autonomous_grasp.report",
@@ -55,6 +58,7 @@ _HOME: dict[str, str] = {
     "RecordLog": "src.robot.grasping.replay.runs",
     "Recording": "src.robot.execution.pick_run",
     # What a build or a connect refuses with.
+    "CameraFusionPlan": "src.robot.execution.camera_fusion",
     "CameraWorldPlan": "src.robot.execution.camera_world_wiring",
     "CameraWorldRequired": "src.robot.execution.camera_world_wiring",
     "CellBusy": "src.robot.execution.cell_lock",
@@ -66,9 +70,11 @@ _HOME: dict[str, str] = {
     "Camera": "src.camera",
     "CameraRefused": "src.camera",
     "HandEyeCalibration": "src.robot.execution.hand_eye",
+    "LiveView": "src.camera.live_view",
     "Located": "src.robot.perception.locator",
     "Locator": "src.robot.perception.locator",
     "LocatorRefused": "src.robot.perception.locator",
+    "SetDown": "src.robot.perception.locator",
     "RGBDFrame": "src.camera",
     "RigCalibrationError": "src.camera",
     "RigNotCalibrated": "src.camera",
@@ -136,6 +142,7 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.config.loader import ConfigError, load_speech_section
     from src.config.tree import ConfigTree, LoadedTree, load_tree
     from src.camera import Camera, CameraRefused, RGBDFrame, RigCalibrationError, RigNotCalibrated
+    from src.camera.live_view import LiveView
     from src.geometry import Frame, Pose
     from src.models.handdetection import (
         HandGesture, build_gesture_recognizer, build_hand_finder_on_camera, build_palm_detector)
@@ -153,16 +160,19 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.robot.execution.autonomous_grasp.report import (
         AutonomousGraspOutcome, AutonomousGraspReport)
     from src.robot.execution.autonomous_grasp.service import AutonomousGraspService
+    from src.robot.execution.camera_fusion import CameraFusionPlan
     from src.robot.execution.camera_world_wiring import CameraWorldPlan, CameraWorldRequired
     from src.robot.execution.cell import Cell, CellNotBuilt
     from src.robot.execution.cell_lock import CellBusy
     from src.robot.execution.hand_eye import HandEyeCalibration, SweepOptions, print_sweep_progress
+    from src.robot.execution.hand_guiding import HandGuidingRefused
     from src.robot.execution.handling import HandlingOutcome, HandlingReport, HandOutcome, HandReport
     from src.robot.execution.lifecycle import NoRealGripper
     from src.robot.execution.motion import MotionOutcome, MotionReport
     from src.robot.execution.pick_run import PassRule, PickAttempt, PickRun, PickRunReport, Recording
     from src.robot.execution.planner_start import PlannerStart
     from src.robot.execution.robot import LockKeyRequired, Robot
+    from src.robot.execution.teach import teach_poses
     from src.robot.execution.wrist_bodies import WristBodyRequired
     from src.robot.grasping.calculator_factory import build_calculator, preflight_calculator
     from src.robot.grasping.deep.foreign.service import PublicCorpus
@@ -172,7 +182,7 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.robot.grasping.replay.runs import RecordLog
     from src.robot.grasping.scene import Scene
     from src.robot.grasping.suction import synthesize_suction_grasps
-    from src.robot.perception.locator import Located, Locator, LocatorRefused
+    from src.robot.perception.locator import Located, Locator, LocatorRefused, SetDown
     from src.robot.safety import SafetyPreflight
     from src.robot.safety.planning.stack import MotionStack
     from src.willy_sim.run_eih_demo import record_demo

@@ -16,7 +16,7 @@ print(run)                                                 # what happened, and 
 That runs on a laptop with no GPU, camera or robot, and it is
 [`examples/simulation/01_rehearse_a_pick.py`](../../examples/simulation/01_rehearse_a_pick.py). At a real
 cell the same campaign starts from `Cell.from_tree(load_tree())`
-([`examples/real_robot/11_pick_with_the_camera.py`](../../examples/real_robot/11_pick_with_the_camera.py)).
+([`examples/real_robot/12_pick_with_the_camera.py`](../../examples/real_robot/12_pick_with_the_camera.py)).
 
 This page traces the default pick stage by stage, says what each stage may refuse and where the telemetry
 record comes from, and lists which advanced layers exist, which are off, and what turns each one on. The
@@ -556,7 +556,7 @@ order:
    `PickRun.from_cell(cell, ..., look=[JointPositions.deg(...), ...])`, joints in degrees read off the
    pendant, tried in order until one finds something, or home when none is given. A fixed camera does not
    move to look. `put_back=True` places each lifted part back where the tool closed on it, so one part
-   serves a whole campaign ([`examples/real_robot/11`](../../examples/real_robot/11_pick_with_the_camera.py),
+   serves a whole campaign ([`examples/real_robot/12`](../../examples/real_robot/12_pick_with_the_camera.py),
    [real_cell_first_pick.md](../runbooks/real_cell_first_pick.md), step 8).
 8. **Re-measure after every change, and never carry a planner margin to a robot nobody measured it on.** A
    thinner-linked arm reads as permanently self-colliding at a 10 mm margin and finds no plan at all. The UR

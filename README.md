@@ -71,9 +71,12 @@ the simulation and offline examples name the tree they read in the file.
 3. **Run [`examples/real_robot/`](examples/README.md) in order.** 01 loads your tree and 02 is the desk
    check; neither moves anything. 03 connects and moves, 04 and 05 use the hand, 06 opens the camera,
    07 to 10 calibrate a fixed and a wrist camera, the arm moved by hand in freedrive or through fixed
-   poses of your own, 11 runs a campaign of camera picks on one part with your own pick motion, look
-   poses and the part put back after every lift, 12 takes a spoken command, 13 hands the picked part
-   to where the camera sees a person's hand, and 14 wires a cell with several cameras.
+   poses of your own, 11 teaches poses by guiding the arm by hand, 12 runs a campaign of camera picks
+   on one part with your own pick motion, look poses and the part put back after every lift, 13 picks
+   an object and sets it down on a target the camera found, with no coordinate in the program, 14
+   takes a spoken command, 15 hands the picked part to where the camera sees a person's hand, 16 wires
+   a cell with several cameras, and 17 plans each grasp on an object's surfaces fused from several
+   fixed cameras.
 4. **Follow the runbooks at the bench.** [cell_bringup.md](docs/runbooks/cell_bringup.md) takes any
    robot from its profile to a connected arm, with URSim for a UR.
    [your_own_gripper.md](docs/runbooks/your_own_gripper.md) fits a hand the repository never shipped,

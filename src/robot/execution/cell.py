@@ -300,6 +300,22 @@ class Cell:
         return Robot.from_parts(arm=self.arm, gripper=self.gripper, robot_config=self.robot_config)
 
     @property
+    def cameras(self) -> tuple[Any, ...]:
+        """The camera owners this cell's build opened, each once: the primary first (the camera every grasp is
+        synthesised in), then the fused ones, then those the live planner world opened for itself. Requires a build.
+
+            cell.build()
+            with LiveView(cell.cameras) as view:   # a window per camera of the cell
+                ...
+
+        Read-only: nothing is opened, closed or read here, and the owners stay the build's, given back when the cell
+        comes down (``connected()``'s way out). A rehearsal opens no camera and names none.
+        """
+        from src.robot.execution.lifecycle import service_cameras  # noqa: PLC0415
+
+        return service_cameras(self._require_built("cameras"))
+
+    @property
     def vendor(self) -> str:
         raw = getattr(self.robot_config, "vendor", "")
         return str(getattr(raw, "value", raw))

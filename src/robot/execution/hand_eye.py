@@ -13,17 +13,21 @@
     raise SystemExit(report.exit_code)
 
 A correct sweep needs the arm built alone through ``Robot.from_config(robot_config, gripper=None)`` so the
-readiness gate runs, one camera through its ``Camera`` owner, the cell lock through ``Robot.connected()``, the wrist
-body handed to the arm before it moves, the flange to TCP record read while the arm is connected, the tree's quality
-bands, and the rig block to paste. This class is that flow, so a Python caller builds it rather than copying it, and
-``python -m src.robot.execution.real_cell.calibrate`` is a caller of it.
+readiness gate runs, one camera through its ``Camera`` owner, the cell lock through ``Robot.connected()``, every wrist
+body the tree declares handed to the arm before it moves, whichever camera is swept, the flange to TCP record read
+while the arm is connected, the tree's quality bands, and the rig block to paste. This class is that flow, so a
+Python caller builds it rather than copying it, and ``python -m src.robot.execution.real_cell.calibrate`` is a caller
+of it.
 
 What happens, in order:
 
 1. ``check()`` reads the config only: the rig (configured, switched on, RGB-D), for an eye in hand sweep the
-   camera's body, where the stations come from (a file or a list of the caller's own, ``fixed_poses``, or a person
-   guiding the arm, ``freedrive``; there is no generated sweep), and on a cuRobo UR cell that declares its planner
-   margin, the committed planner evidence the sweep's planner starts on. A refusal is a report, never an exception.
+   camera's body, for either mounting the body of every other wrist camera the tree declares (the arm carries it
+   whichever camera is swept; a tree that declares none reads nothing, and a wrist rig declared without a body is
+   named on one warning line and refuses nothing), where the stations come from (a file or a list of the caller's
+   own, ``fixed_poses``, or a person guiding the arm, ``freedrive``; there is no generated sweep), and on a cuRobo UR
+   cell that declares its planner margin, the committed planner evidence the sweep's planner starts on. A refusal is
+   a report, never an exception.
 2. ``run()`` checks again, then builds: the arm alone and one camera, opened. What the arm refuses (its safety
    attestation) and what world it plans against are on the build report, and ``on_built`` receives it before any
    motion, so a caller can show it while there is still time to stop. A run guided by hand (``freedrive``, or
@@ -180,8 +184,12 @@ class SweepOptions:
     a mapping, or an ``ArucoTargetConfig`` / ``CharucoTargetConfig``. It is validated by the config schema at
     ``check()``, and it cannot be combined with the three single-marker options. A dictionary it leaves out is the
     block's.
-    ``unmodelled_wrist_body`` is the reason an eye in hand sweep may run while its camera's body cannot be placed
-    yet; it is printed and logged, and the sweep then runs with no body in the planner and the guard.
+    ``unmodelled_wrist_body`` is the reason a sweep may run while a wrist camera's declared body cannot be placed yet
+    (no calibration, one that does not load, no record or a stale one): the camera an eye in hand sweep calibrates,
+    and any wrist camera the tree declares on the arm, for either mounting. It is printed and logged, and the sweep
+    then runs with no body for that camera in the planner and the guard. It is read only for such a body: a wrist
+    rig declared with no body at all, the one an eye in hand sweep calibrates included, needs none, and is named on
+    a warning line instead.
 
     Where the stations come from, one of two ways; nothing is generated, and a sweep that names neither is refused at
     ``check()``:
@@ -256,6 +264,15 @@ class CalibrationCheck:
     by_hand: str = ""
     #: For a run guided throughout by hand, how many of the caller's stations it shows the way to.
     targets: int = 0
+    #: The wrist cameras the arm carries during the sweep, as ``WristBodies.render()`` says it: carried, or moved
+    #: without and why. Every wrist camera the tree declares, and beside them the one an eye in hand sweep calibrates.
+    #: Empty where the tree declares no wrist camera other than that one, on a cell that reads no geometry, and for a
+    #: camera handed in without its section.
+    wrist: str = ""
+    #: The warning for the wrist rigs the tree declares on the arm without a body, the one an eye in hand sweep
+    #: calibrates included: nothing is carried for them, and the sentence names them. Empty when there are none,
+    #: and on a cell that reads no geometry; a camera handed in without its section names only itself here.
+    without_body: str = ""
 
     @property
     def ok(self) -> bool:
@@ -277,6 +294,8 @@ class CalibrationCheck:
             f"  rig        {self.rig_id!r} ({self.rig_source})",
             f"  mode       {self.mode.value}",
             f"  arm        {self.vendor}",
+            *((f"  {self.wrist}",) if self.wrist else ()),
+            *((f"  !! {self.without_body}",) if self.without_body else ()),
             f"  board      {self.target}" if self.target else
             f"  marker     {self.marker_length_mm:.1f} mm, id {self.marker_id}, {self.dict_name}",
             f"  poses      {self._poses_line()}",
@@ -314,6 +333,8 @@ class CalibrationCheck:
             "joint_stations": self.joint_stations,
             "by_hand": self.by_hand,
             "targets": self.targets,
+            "wrist": self.wrist,
+            "without_body": self.without_body,
         }
 
 
@@ -334,9 +355,15 @@ class CalibrationBuild:
     safety: "SafetyAttestation | None" = None
     #: What world the arm plans against, as ``Robot.camera_world_line()`` says it.
     camera_world: str = ""
-    #: The wrist body handed to the arm, as ``WristBodies.line()`` says it. Empty when none.
+    #: The wrist bodies the arm carries, as ``WristBodies.line()`` says it: the camera an eye in hand sweep
+    #: calibrates, and every other wrist camera the tree declares, for either mounting, beside any a robot handed in
+    #: already held. Empty when none was read.
     wrist: str = ""
-    #: The decline of an eye in hand sweep that runs without its camera's body. Empty when none.
+    #: The check's warning for the wrist rigs declared on the arm without a body, repeated where the arm is built and
+    #: logged. Empty when none.
+    without_body: str = ""
+    #: The decline of a sweep that moves the arm without a wrist camera's body: the camera an eye in hand sweep
+    #: calibrates, or a wrist camera on the arm whose body cannot be placed yet. Empty when none.
     unmodelled: str = ""
     #: What the sweep's preview window will do, or why it will not open when it was asked for by name. Empty when
     #: none was asked for, and for ``"auto"`` where no window can show.
@@ -367,6 +394,8 @@ class CalibrationBuild:
             lines.append(f"  {self.camera_world}; this sweep declines for itself")
             if self.wrist:
                 lines.append(f"  {self.wrist}")
+            if self.without_body:
+                lines.append(f"  !! {self.without_body}")
             if self.unmodelled:
                 lines.append(f"  !! {self.unmodelled}")
         if self.refusal:
@@ -385,6 +414,7 @@ class CalibrationBuild:
             "safety": self.safety.to_dict() if self.safety is not None else None,
             "camera_world": self.camera_world,
             "wrist": self.wrist,
+            "without_body": self.without_body,
             "unmodelled": self.unmodelled,
             "preview": self.preview,
         }
@@ -574,7 +604,10 @@ class _Staged:
 
     check: CalibrationCheck
     rig: Any = None
+    #: The body of the camera an eye in hand sweep calibrates, ``None`` when none is read or it is swept without one.
     wrist: Any = None
+    #: Every other wrist camera the tree declares on the arm, for either mounting; ``None`` when none is read.
+    carried: Any = None
     #: The validated target: an ``ArucoTargetConfig`` or a ``CharucoTargetConfig``.
     target: Any = None
 
@@ -722,6 +755,20 @@ class HandEyeCalibration:
         camera section has none. ``console`` is where a person guiding the arm reads and types, the terminal when
         unset.
 
+        The wrist bodies the arm carries are read from ``camera_config``, the tree's camera section. A ``camera``
+        handed in without it reads no other wrist camera: an owner holds its own rig and no section, and a robot
+        from ``Robot.from_config`` holds none either, so there is nothing to read them from, and guessing would read
+        another tree. Pass ``camera_config=`` beside ``camera`` to carry every wrist body the tree declares; without
+        it only the body of the camera an eye in hand sweep calibrates is read, from the owner's rig. A robot that
+        ``Robot.from_tree`` built carries every declared body already, but without ``camera_config`` a wrist rig
+        of its tree declared with no body gets no ``!!`` line here: pass the section to have it named.
+
+        A ``robot`` that already holds bodies (``Robot.wrist_bodies``, and what its arm's guard holds, so a second
+        sweep of the same robot counts the first one's) is handed only those it does not hold, equal field by field,
+        and nothing at all when it holds them all or there is nothing to carry: an exact mesh guard that is built
+        refuses any hand-over, an empty one included. A body it does not hold is handed beside the ones it does, and
+        an arm that can no longer take one refuses the build.
+
         A missing part raises ``ValueError``: that is a call that cannot describe a sweep, not a refusal.
         """
         from src.robot.execution.calibration import DEFAULT_FREEDRIVE_SAMPLES
@@ -827,7 +874,8 @@ class HandEyeCalibration:
     # --- the stages --------------------------------------------------------------------------
 
     def _stage(self) -> _Staged:
-        """The config stage: the rig, the wrist body of an eye in hand sweep, and a robot that cannot sweep."""
+        """The config stage: the rig, the wrist body of an eye in hand sweep, every other wrist body the tree declares,
+        and a robot that cannot sweep."""
         section = _one_rig(self.camera.rig) if chosen(self.camera) else self.sections.camera
         rig, refusal = _select_rig(section, self.rig_id)
         if refusal is not None:
@@ -838,6 +886,11 @@ class HandEyeCalibration:
                                                    reason=self.unmodelled_wrist_body)
             if refusal is not None:
                 return _Staged(CalibrationCheck(rig_id=self.rig_id, mode=self.mode, refusal=refusal))
+        carried, bodiless, refusal = _declared_wrist_bodies(self.sections.robot, self.sections.camera, rig,
+                                                            mode=self.mode, data_dir=self.data_dir,
+                                                            reason=self.unmodelled_wrist_body)
+        if refusal is not None:
+            return _Staged(CalibrationCheck(rig_id=self.rig_id, mode=self.mode, refusal=refusal))
         refusal = self._robot_refusal()
         if refusal is not None:
             return _Staged(CalibrationCheck(rig_id=self.rig_id, mode=self.mode, refusal=refusal))
@@ -869,7 +922,9 @@ class HandEyeCalibration:
             joint_stations=sum(isinstance(one, JointStation) for one in listed),
             by_hand="freedrive" if self.freedrive else "adjust" if self.adjust else "",
             targets=len(listed) if self.freedrive else 0,
-        ), rig=rig, wrist=wrist, target=target)
+            wrist=_together(wrist, carried).render() if carried is not None else "",
+            without_body=_without_body(bodiless),
+        ), rig=rig, wrist=wrist, carried=carried, target=target)
 
     def _way_refusal(self) -> str | None:
         """Why the stations cannot come from where the options say, or ``None``.
@@ -1063,24 +1118,40 @@ class HandEyeCalibration:
         parts = _Parts(robot=robot, routine=routine, handle=handle, owned=owned, preview=preview)
         gripper = ("none, the sweep connects the arm alone" if robot.gripper is None
                    else type(robot.gripper).__name__)
-        wrist_line = unmodelled = refusal = ""
-        # The camera on the arm: placed from its previous calibration and handed to the arm before it moves, or swept
-        # without a body because the caller said why, which is logged like a decline.
-        if staged.wrist is not None:
+        wrist_line = refusal = ""
+        # The cameras on the arm: the one an eye in hand sweep calibrates and every other one the tree declares, each
+        # placed from its calibration and handed to the arm before it moves, or moved without a body because the
+        # caller said why, which is logged like a decline. A tree that declares none hands nothing over, and a robot
+        # handed in is handed only the bodies it does not hold yet.
+        carried = _together(staged.wrist, staged.carried)
+        if carried is not None:
             try:
-                staged.wrist.hand_to(robot.arm)
+                wrist_line = _hand_over(carried, robot)
             except Exception as exc:  # noqa: BLE001 (an arm that cannot hold the camera does not sweep)
                 refusal = f"{type(exc).__name__}: {exc}"
-            else:
-                wrist_line = staged.wrist.line()
-        elif self.mode is MountingMode.EYE_IN_HAND and self.unmodelled_wrist_body:
-            unmodelled = (f"wrist camera {rig.rig_id!r} swept without its body in the planner and the guard: "
-                          f"{self.unmodelled_wrist_body.strip()}")
+        # A wrist rig declared without a body: carried by nobody, named once here as the check named it, and logged.
+        without_body = staged.check.without_body
+        if without_body:
+            logger.warning(without_body)
+        declines: list[str] = []
+        # A swept camera that declares no body is already named on the warning line; a reason adds nothing to it.
+        named = bool(without_body) and getattr(rig, "body", None) is None
+        if (staged.wrist is None and self.mode is MountingMode.EYE_IN_HAND and self.unmodelled_wrist_body
+                and not named):
+            declines.append(f"wrist camera {rig.rig_id!r} swept without its body in the planner and the guard: "
+                            f"{self.unmodelled_wrist_body.strip()}")
+        if staged.carried is not None and staged.carried.unmodelled:
+            names = ", ".join(repr(rig_id) for rig_id, _ in staged.carried.unmodelled)
+            which = (f"wrist camera {names} rides on the arm without its body" if len(staged.carried.unmodelled) == 1
+                     else f"wrist cameras {names} ride on the arm without their bodies")
+            declines.append(f"{which} in the planner and the guard: {staged.carried.unmodelled_reason}")
+        unmodelled = "; ".join(declines)
+        if unmodelled:
             logger.warning(unmodelled)
         build = CalibrationBuild(
             refusal=refusal, arm=type(robot.arm).__name__, gripper=gripper, lock_key=robot.lock_key,
             camera=repr(handle), intrinsics=intrinsics, safety=safety, camera_world=camera_world,
-            wrist=wrist_line, unmodelled=unmodelled, preview=preview_line,
+            wrist=wrist_line, without_body=without_body, unmodelled=unmodelled, preview=preview_line,
         )
         return build, parts
 
@@ -1507,9 +1578,11 @@ def _flange_to_tcp_record(robot_cfg: Any, arm: Any) -> Any:
 def _wrist_body_for_sweep(robot_cfg: Any, rig: Any, *, data_dir: Any, reason: "str | None") -> Any:
     """``(bodies, refusal)`` for an eye in hand sweep of ``rig``.
 
-    On a cell that reads geometry, a rig without a body is refused, and so is a body the registry cannot stand for,
-    whatever the reason. A body that cannot be placed yet is refused unless ``reason`` says why the sweep may run
-    without it, and the sweep then runs with no wrist body. On any other cell nothing is read.
+    On a cell that reads geometry, a body the registry cannot stand for is refused, whatever the reason. A body that
+    cannot be placed yet is refused unless ``reason`` says why the sweep may run without it, and the sweep then runs
+    with no wrist body. A rig that declares no body at all refuses nothing (the owner's decision of 2026-09-25, for
+    calibration only): nothing is carried for it, and :func:`_declared_wrist_bodies` names it on the sweep's one
+    warning line. On any other cell nothing is read.
     """
     from src.calibration.rig_calibration import RigArtifactMissing
     from src.config.cameras import load_camera, tree_camera_refusal
@@ -1522,11 +1595,9 @@ def _wrist_body_for_sweep(robot_cfg: Any, rig: Any, *, data_dir: Any, reason: "s
     if reader is None:
         return None, None
     if getattr(rig, "body", None) is None:
-        return None, (f"{key} is swept eye_in_hand and declares no body, and this cell reads geometry ({reader}): the "
-                      f"camera's housing would be invisible to the planner and the guard during the sweep. Declare "
-                      f"{key}.body: the camera model, a margin_mm and the bracket as a box in the colour optical frame "
-                      "(docs/calibration-setup.md, section 4, has a D415 on a bracket beside the gripper; every key "
-                      "is in config/all_keys/camera/cam.yaml)")
+        # Swept without its housing in the planner and the guard; the sweep's `!!` line says so
+        # (`_declared_wrist_bodies`), and declaring the body (docs/calibration-setup.md, section 4) carries it.
+        return None, None
     registry = tree_camera_refusal(rig.body.model, data_dir=data_dir)
     if registry is None:
         try:
@@ -1548,3 +1619,132 @@ def _wrist_body_for_sweep(robot_cfg: Any, rig: Any, *, data_dir: Any, reason: "s
         # rstrip: the refusal it wraps may end on a full stop of its own, and ".." reads as a typo.
         return None, (f"{said.rstrip('.')}. To sweep this camera before its body can be placed, say why: "
                       '--unmodelled-wrist-body "<reason>"')
+
+
+def _declared_wrist_bodies(
+    robot_cfg: Any, camera_cfg: Any, swept: Any, *, mode: MountingMode, data_dir: Any, reason: "str | None",
+) -> "tuple[Any, tuple[str, ...], str | None]":
+    """``(bodies, bodiless, refusal)`` for the wrist cameras the tree declares on the arm a sweep drives.
+
+    A camera the arm carries hangs on it whichever camera is swept, so every sweep carries the bodies the tree's
+    camera section declares, resolved as ``Robot.from_tree`` resolves them (``WristBodies.from_config``, one rig at a
+    time, so a refusal names its camera). ``bodies`` is ``None`` where none is read. The camera an eye in hand sweep
+    calibrates is left to :func:`_wrist_body_for_sweep` when it declares a body, and named in ``bodiless`` when it
+    declares none. Nothing else is read, and the sweep is what it was, for a camera handed in without its section,
+    on a cell that reads no geometry, and on a tree that declares no other camera on the arm (no rig with a ``body``
+    or ``eye_in_hand`` extrinsics).
+
+    ``bodiless`` names the wrist rigs (``eye_in_hand`` extrinsics) declared without a body, switched on or off, and
+    the camera an eye in hand sweep calibrates when it declares none. The owner's decisions of 2026-09-25, for
+    calibration only: such a rig refuses no sweep, its own eye in hand sweep included (a switched-off rig being
+    calibrated is refused by ``_select_rig`` before this runs), nothing is carried for it, and the check and the
+    build name it on one warning line; ``Robot.from_tree`` and the pick path still refuse an enabled one. A declared body that cannot be placed yet refuses the sweep unless ``reason`` says why the arm may
+    move without it, and no reason excuses a camera the registry does not stand for.
+    """
+    from src.robot.execution.wrist_bodies import WristBodies, WristBodyRequired, WristBodyUnplaced
+    from src.robot.safety.planning.hand import wrist_body_reader
+
+    if wrist_body_reader(robot_cfg) is None:
+        return None, (), None
+    own = ((str(swept.rig_id),)
+           if mode is MountingMode.EYE_IN_HAND and swept is not None and getattr(swept, "body", None) is None else ())
+    if not chosen(camera_cfg):
+        return None, own, None
+    rigs = [rig for rig in getattr(getattr(camera_cfg, "cameras", None), "rigs", None) or ()
+            if not (mode is MountingMode.EYE_IN_HAND and str(rig.rig_id) == str(swept.rig_id))]
+    bodiless = own + tuple(str(rig.rig_id) for rig in rigs
+                           if _on_the_arm(rig) and getattr(rig, "body", None) is None)
+    declared = [rig for rig in rigs if getattr(rig, "body", None) is not None]
+    if not declared:
+        return None, bodiless, None
+    resolved: list[Any] = []
+    for rig in declared:
+        try:
+            resolved.append(WristBodies.from_config(robot_cfg, _one_rig(rig), data_dir=data_dir,
+                                                    unmodelled_reason=reason if reason else UNSET))
+        except WristBodyUnplaced as exc:
+            return None, bodiless, _unplaced_refusal(exc, rig_id=str(rig.rig_id), swept=str(swept.rig_id), mode=mode)
+        except WristBodyRequired as exc:
+            return None, bodiless, str(exc)
+    return WristBodies(
+        bodies=tuple(body for one in resolved for body in one.bodies), reader=resolved[0].reader,
+        unmodelled=tuple(row for one in resolved for row in one.unmodelled),
+        unmodelled_reason=next((one.unmodelled_reason for one in resolved if one.unmodelled_reason), ""),
+    ), bodiless, None
+
+
+def _unplaced_refusal(exc: Exception, *, rig_id: str, swept: str, mode: MountingMode) -> str:
+    """The refusal of a sweep that moves the arm carrying ``rig_id``, whose declared body cannot be placed yet.
+
+    This sweep's own flag first, labelled with the rig it runs for, and then why the body cannot be placed, which for
+    a camera with no calibration names the separate command that calibrates it, with a flag of its own.
+    """
+    return (f"this {mode.value} sweep of {swept!r} moves the arm that carries wrist camera {rig_id!r}, whose declared "
+            f"body cannot be placed yet. For THIS sweep (--rig {swept}), say why the arm may move without that body: "
+            f'--unmodelled-wrist-body "<reason>". Why the body of {rig_id!r} cannot be placed: {exc}')
+
+
+def _without_body(rig_ids: "tuple[str, ...]") -> str:
+    """The one warning for the wrist rigs declared on the arm without a body, or ``""`` for none. ASCII."""
+    if not rig_ids:
+        return ""
+    names = ", ".join(repr(rig_id) for rig_id in rig_ids)
+    said = (f"wrist camera {names} is declared on the arm without a body: the planner and the guard do not know it "
+            "is there during this sweep" if len(rig_ids) == 1 else
+            f"wrist cameras {names} are declared on the arm without a body: the planner and the guard do not know "
+            "they are there during this sweep")
+    return _ascii(said)
+
+
+def _hand_over(carried: Any, robot: Any) -> str:
+    """Hand ``carried`` to the robot's arm, less the bodies it already holds, and say what the arm carries.
+
+    ``Robot.wrist_bodies`` is what the robot handed its arm when it was built: every body its tree declares for a
+    robot ``Robot.from_tree`` built, ``None`` for the arm the sweep builds itself. A body equal field by field to one
+    it holds is not handed again, because an arm whose exact mesh guard or planner is built refuses any hand-over, the
+    same bodies included. Anything else is handed beside the bodies the arm holds, replacing one of the same camera,
+    and an arm that can no longer take it raises: the build fails closed.
+    """
+    held = _held_by_the_arm(robot)
+    links = {body.link_name for body in carried.bodies}
+    kept = tuple(body for body in held if getattr(body, "link_name", None) not in links)
+    on_the_arm = dataclasses.replace(carried, bodies=kept + tuple(carried.bodies))
+    # Only a body the arm does not hold yet is handed. Handing nothing new, the empty tuple included (every declared
+    # body excused by a reason), would still be a hand-over, and an arm whose guard is built refuses every one
+    # (verification of 2026-09-25: a from_tree robot with its guard built, or one robot swept twice, was refused).
+    if any(body not in held for body in carried.bodies):
+        on_the_arm.hand_to(robot.arm)
+    return on_the_arm.line()
+
+
+def _held_by_the_arm(robot: Any) -> tuple[Any, ...]:
+    """The wrist bodies the robot's arm holds now: the robot's record from its build, and what its guard holds.
+
+    ``Robot.wrist_bodies`` is set once, when the robot is built, so a sweep's own hand-over is not in it; the arm's
+    self-collision guard is (``SafetyPreflight.wrist_bodies``), so a robot swept a second time is not handed the same
+    bodies again. A guard that cannot be read adds nothing.
+    """
+    held_by = getattr(robot, "wrist_bodies", None)
+    held = list(held_by.bodies) if held_by is not None else []
+    preflight = getattr(getattr(robot, "arm", None), "safety_preflight", None)
+    reader = getattr(preflight, "wrist_bodies", None)
+    if callable(reader):
+        try:
+            held.extend(body for body in reader(robot.arm) if body not in held)
+        except Exception as exc:  # noqa: BLE001 (a guard that cannot be read adds nothing; the record stands)
+            logger.debug("hand-eye: the arm's guard gave no wrist bodies: %s", exc)
+    return tuple(held)
+
+
+def _on_the_arm(rig: Any) -> bool:
+    """Whether the tree declares ``rig`` a camera the arm carries: it declares a body, or eye_in_hand extrinsics."""
+    extrinsics = getattr(rig, "extrinsics", None)
+    return getattr(rig, "body", None) is not None or getattr(extrinsics, "mounting_mode", None) == "eye_in_hand"
+
+
+def _together(own: Any, others: Any) -> Any:
+    """The bodies an eye in hand sweep's own camera and the tree's other wrist cameras make, as one ``WristBodies``;
+    ``None`` when neither was read. The others say which cameras the arm moves without."""
+    if own is None or others is None:
+        return others if own is None else own
+    return dataclasses.replace(others, bodies=tuple(own.bodies) + tuple(others.bodies))

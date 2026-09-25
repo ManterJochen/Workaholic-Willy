@@ -35,10 +35,18 @@ a look the program declares, or home when it declares none (`src.robot.execution
 camera does not move. And ``put_back``: a part lifted is put back where it was grasped, so one part
 serves a whole campaign; a part that could not be put back stops the campaign, because the next pick
 would start with it in the hand.
+
+And one more, the same day: ``view``, a `LiveView` (``src/camera/live_view.py``), shows every camera the
+cell's build opened, one window each, while the campaign runs. The campaign renders the grasp overlay on
+every pick (the service's debug image, put back as it was afterwards), pins each attempt's overlay on the
+primary camera's window with the attempt's outcome, and says that outcome on every window. It is display
+only: a window closed, or a view that raises, changes nothing the campaign does, and the view reads the
+cameras through their display path, which changes nothing the picks measure.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
@@ -60,6 +68,8 @@ __all__ = [
     "PickRunReport",
     "Recording",
 ]
+
+logger = logging.getLogger(__name__)
 
 #: The outcome string a service reports for a pick that worked. Compared as a string:
 #: `AutonomousGraspOutcome` lives one layer up, and importing it here to compare an enum member
@@ -182,6 +192,14 @@ class PickAttempt:
     #: How the part went back where it was grasped, on a campaign that puts it back (`PickRun.put_back`). `None`
     #: where nothing was put back.
     put_back: "HandlingReport | None" = None
+    #: The cameras whose views of the object this attempt went for were fused into the one cloud its grasp was planned
+    #: on, the camera the grasp is synthesised in first, as rig ids (the service report's `fused_views`). Empty where
+    #: that cloud came from one camera: fusion off, no second camera delivered, or none identified that object; never
+    #: one camera alone.
+    fused_views: tuple[str, ...] = ()
+    #: How many objects of the frame that grasp was planned in gained a second camera's surface, the object it went for
+    #: or not (the service report's `fused_objects`); 0 where none did.
+    fused_objects: int = 0
 
     @property
     def passed(self) -> bool:
@@ -206,6 +224,13 @@ class PickAttempt:
             lines.append("    object seen at ({:.1f}, {:.1f}, {:.1f}) mm BASE".format(*self.object_mm))
         if self.grasp_pose is not None:
             lines.append("    grasp closed at ({:.1f}, {:.1f}, {:.1f}) mm BASE".format(*self.grasp_pose.position_mm))
+        # Only where a second camera added surface to something, so a single-view campaign prints as it always did.
+        # Rig ids are the tree's words, escaped to keep the campaign's text ASCII.
+        if self.fused_views:
+            views = " + ".join(self.fused_views).encode("ascii", "backslashreplace").decode("ascii")
+            lines.append(f"    fused views: {views} ({self.fused_objects} object(s) fused in that frame)")
+        elif self.fused_objects:
+            lines.append(f"    planned from one view ({self.fused_objects} other object(s) fused in that frame)")
         if self.put_back is not None:
             lines.append(f"    put back: {self.put_back.outcome.value}"
                          + ("" if self.put_back.ok else f", {self.put_back.message or 'see the place report'}"))
@@ -224,6 +249,8 @@ class PickAttempt:
                 "quaternion_xyzw": [float(v) for v in self.grasp_pose.quaternion_xyzw]},
             "looks": list(self.looks),
             "put_back": None if self.put_back is None else self.put_back.outcome.value,
+            "fused_views": list(self.fused_views),
+            "fused_objects": self.fused_objects,
         }
 
 
@@ -416,6 +443,12 @@ class PickRun:
     #: Put each lifted part back where it was grasped (`service.put_back`), so one part serves the
     #: whole campaign. A part that does not go back stops the campaign.
     put_back: bool = False
+    #: The cameras' windows (a `LiveView`), or None. Given one, the campaign hands it every camera the
+    #: cell's build opened (``watch``) and starts it, renders the grasp overlay on every pick, pins each
+    #: attempt's new overlay on the primary camera's window with the attempt's outcome (``show_image``)
+    #: and says that outcome on every window (``note``). The caller closes it, after the campaign:
+    #: ``with LiveView(show=...) as view:``. Display only: a view that raises changes nothing here.
+    view: Any = None
 
     # --- two doors -----------------------------------------------------------------------------
 
@@ -434,13 +467,15 @@ class PickRun:
         on_attempt: "Callable[[PickAttempt], None] | None" = None,
         look: "Maybe[Look]" = UNSET,
         put_back: bool = False,
+        view: Any = None,
     ) -> "PickRun":
         """A cell this campaign will build, connect, drive and take down.
 
         The connect happens once, outside the loop. Connecting is motion: a Robotiq activation
         sweeps the full finger travel and a vacuum cup asserts its ejector immediately. Ten
         campaigns of one are not one campaign of ten. A look list that names nothing raises here,
-        before any cell is built.
+        before any cell is built. ``view`` (a `LiveView`) shows every camera the build opened and
+        each attempt's grasp overlay; see the field.
         """
         return cls(
             cell=cell,
@@ -454,6 +489,7 @@ class PickRun:
             on_attempt=on_attempt,
             look=_checked_looks(look),
             put_back=bool(put_back),
+            view=view,
         )
 
     @classmethod
@@ -470,11 +506,13 @@ class PickRun:
         on_attempt: "Callable[[PickAttempt], None] | None" = None,
         look: "Maybe[Look]" = UNSET,
         put_back: bool = False,
+        view: Any = None,
     ) -> "PickRun":
         """An already-connected service. The caller owns the connect and the teardown.
 
         `teardown` stays `None` on the report: this factory did not bring the cell up and must not
-        claim to know how it came down.
+        claim to know how it came down. ``view`` shows the service's cameras and each attempt's
+        grasp overlay, as `from_cell`'s does.
         """
         return cls(
             service=service,
@@ -487,6 +525,7 @@ class PickRun:
             on_attempt=on_attempt,
             look=_checked_looks(look),
             put_back=bool(put_back),
+            view=view,
         )
 
     # --- the verb ------------------------------------------------------------------------------
@@ -582,6 +621,8 @@ class PickRun:
         # Asked once: whether a camera sits on the wrist does not change between two picks. A service
         # handed no look is called as it always was, so a service that takes none still runs.
         look = self._looks_for(service)
+        # The cameras' windows, where the caller handed a view: every camera of the cell, the overlay rendered.
+        shown = None if self.view is None else _OnTheView(self.view, service)
         try:
             for index in range(self.runs):
                 if self.should_cancel is not None and self.should_cancel():
@@ -590,6 +631,7 @@ class PickRun:
                         for i in range(index, self.runs)
                     )
                     break
+                before = None if shown is None else shown.overlay(service)
                 try:
                     report_i = service.pick() if look is None else service.pick(look=look)
                 except Exception as exc:  # noqa: BLE001 (the campaign stops, the cell still comes down)
@@ -624,6 +666,8 @@ class PickRun:
                         PickAttempt(index=index, outcome=PickOutcome.RAISED, detail=stopped_by)
                     )
                     self._announce(attempts[-1])
+                    if shown is not None:
+                        shown.attempt(service, attempts[-1], before)
                     attempts.extend(
                         PickAttempt(index=i, outcome=PickOutcome.CANCELLED)
                         for i in range(index + 1, self.runs)
@@ -655,6 +699,8 @@ class PickRun:
                     )
                 )
                 self._announce(attempts[-1])
+                if shown is not None:
+                    shown.attempt(service, attempts[-1], before)
                 if not_back:
                     error = (f"the part of run {index} was not put back ({not_back}), so no further pick starts "
                              "with it in the hand")
@@ -674,11 +720,72 @@ class PickRun:
                 service.set_prompt(previous_prompt)
             if self.recording.enabled:
                 service.enable_record_logging(None)
+            if shown is not None:
+                shown.done(service)
 
         return PickRunReport(
             requested=self.runs, attempts=tuple(attempts), rule=self.rule,
             recording=self.recording, teardown=teardown, last=last, error=error,
         )
+
+
+class _OnTheView:
+    """What a campaign shows on its view: the cell's cameras, and each attempt's grasp overlay on the primary's window.
+
+    Built at the start of the loop: every camera the service holds (the primary first, as `Cell.cameras` names them)
+    is handed to the view and the view started, and the service's grasp overlay is switched on. After each attempt the
+    overlay it rendered, if it rendered a new one, is pinned on the primary camera's window, the camera every grasp
+    is synthesised in, with the attempt's outcome as its caption, and the outcome is said on every window. At the end
+    the overlay switch is put back as the campaign found it. Every call on the view is guarded: it is display only,
+    and one that raises changes nothing the campaign does.
+    """
+
+    __slots__ = ("_primary", "_rendering", "_view")
+
+    def __init__(self, view: Any, service: Any) -> None:
+        from src.robot.execution.lifecycle import service_cameras  # noqa: PLC0415
+
+        self._view = view
+        cameras = service_cameras(service)
+        self._primary: str | None = str(cameras[0].rig_id) if cameras else None
+        was = getattr(service, "debug_image_rendering_enabled", None)
+        self._rendering: bool | None = was if isinstance(was, bool) else None
+        if cameras:
+            _quietly(view, "watch", *cameras)
+        _quietly(view, "start")
+        _quietly(service, "enable_debug_image_rendering", True)
+
+    @staticmethod
+    def overlay(service: Any) -> Any:
+        """The grasp overlay the service holds now, to tell the one an attempt renders from it."""
+        return getattr(service, "last_debug_image_png", None)
+
+    def attempt(self, service: Any, attempt: PickAttempt, before: Any) -> None:
+        """Pin the attempt's new overlay on the primary camera's window, and say the attempt's outcome on every one."""
+        caption = f"run {attempt.index}: {attempt.reported or attempt.outcome.value}" + (
+            f", {attempt.detail}" if attempt.detail else "")
+        overlay = self.overlay(service)
+        # A render is a new object. One the attempt did not replace (it never reached the grasp calculator) is the
+        # attempt's before, and pinned under this attempt's outcome it would show a grasp this attempt never chose.
+        if isinstance(overlay, (bytes, bytearray)) and overlay and overlay is not before:
+            _quietly(self._view, "show_image", self._primary, overlay, caption, ok=attempt.passed)
+        _quietly(self._view, "note", caption)
+
+    def done(self, service: Any) -> None:
+        """Put the service's overlay switch back as the campaign found it, where the service said how that was."""
+        if self._rendering is not None:
+            _quietly(service, "enable_debug_image_rendering", self._rendering)
+
+
+def _quietly(target: Any, method: str, *args: Any, **keywords: Any) -> None:
+    """``target.<method>(...)``, for display only: a target that lacks it, or raises, changes nothing; it is logged."""
+    call = getattr(target, method, None)
+    if not callable(call):
+        return
+    try:
+        call(*args, **keywords)
+    except Exception as exc:  # noqa: BLE001 (a window is never a reason to stop a campaign)
+        logger.debug("pick run: %s.%s raised %s: %s", type(target).__name__, method, type(exc).__name__, exc)
 
 
 def _checked_looks(look: "Maybe[Look]") -> "tuple[LookPose, ...]":
@@ -689,18 +796,25 @@ def _checked_looks(look: "Maybe[Look]") -> "tuple[LookPose, ...]":
 
 
 def _what_the_attempt_saw(report: Any) -> dict[str, Any]:
-    """Where the service says the object was, where the tool closed and where it looked from, as `PickAttempt` keeps them.
+    """Where the service says the object was, where the tool closed, where it looked from and which cameras its grasp
+    was planned from, as `PickAttempt` keeps them.
 
     Each only where the service says it in the type it promises, so a service that does not say, or a double that
-    answers every attribute, leaves the attempt as it was.
+    answers every attribute, leaves the attempt as it was. Fused views are two or more names or none: one camera alone
+    is not a fusion.
     """
     from src.geometry import Pose  # noqa: PLC0415
 
     centre = getattr(report, "object_centre_mm", None)
     grasp = getattr(report, "grasp_pose", None)
     looks = getattr(report, "looks", ())
+    fused = getattr(report, "fused_views", ())
+    count = getattr(report, "fused_objects", 0)
     return {
         "object_mm": centre if isinstance(centre, tuple) and len(centre) == 3 else None,
         "grasp_pose": grasp if isinstance(grasp, Pose) else None,
         "looks": looks if isinstance(looks, tuple) and all(isinstance(v, str) for v in looks) else (),
+        "fused_views": (fused if isinstance(fused, tuple) and len(fused) > 1 and all(isinstance(v, str) for v in fused)
+                        else ()),
+        "fused_objects": count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 0,
     }

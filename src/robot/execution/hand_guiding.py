@@ -1,11 +1,12 @@
 """Hand guiding for a calibration: a person moves the arm, the software watches and captures on Enter.
 
-The hand-guided calibration (``CalibrationRoutine.run_freedrive``) and the adjust step of fixed stations
-(``run_with_poses(adjust=True)``) both hand the arm to a person through the vendor capability
-:class:`~src.robot.core.freedrive.SupportsFreedrive`. What they share lives here:
+The hand-guided calibration (``CalibrationRoutine.run_freedrive``), the adjust step of fixed stations
+(``run_with_poses(adjust=True)``) and poses taught by hand (:mod:`.teach`) all hand the arm to a person through the
+vendor capability :class:`~src.robot.core.freedrive.SupportsFreedrive`. What they share lives here:
 
 * :class:`HandGuide` runs the console side. ``confirm_payload`` shows the payload the controller compensates for
-  and asks once whether it is right, before anything is freed. ``wait`` polls the session's samples at
+  and asks once whether it is right, before anything is freed. ``ask`` puts one question while the arm holds and
+  returns the line typed (a taught pose's name). ``wait`` polls the session's samples at
   :data:`RATE_HZ` (which keeps the vendor's crash watchdog fed) until a person presses Enter, in the console or in
   the preview window, and then passes the stillness gate. ``hands_off`` asks for the hands off the arm and counts
   down before the arm drives by itself again; only a yes starts the countdown, and the console and the preview are
@@ -337,6 +338,17 @@ class HandGuide:
                 "the controller payload was not confirmed, so the arm was not freed: set the payload of the hand, the "
                 "camera and its bracket on the pendant (Installation, Payload) and run this again")
         self.payload_confirmed = True
+
+    def ask(self, question: str) -> str:
+        """``question`` on the console (and in the preview), then the line the person types, as typed.
+
+        What was typed before the question is forgotten first, so an Enter meant for the last prompt does not answer
+        this one. Enter in the preview answers ``""``; ``q`` there, or a preview that was closed, answers ``"q"``;
+        input that has ended answers :data:`EOF` (and one that ended before the question raises
+        :class:`HandGuidingRefused`). Ask only while the arm holds: nothing samples a session while a question waits,
+        and a free arm is sampled by :meth:`wait` alone, which is what keeps the vendor's watchdog fed.
+        """
+        return self._ask(question)
 
     # --- while a person guides the arm ----------------------------------------------------------------------
 

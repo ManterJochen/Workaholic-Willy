@@ -309,6 +309,51 @@ class PreviewStateTests(unittest.TestCase):
         state.apply(_MOVING, {"index": 4, "total": 22, "label": "look_3", "accepted": 3})
         self.assertEqual(state.judged_lines(4, None)[0], "JUDGED  pose 4/22 'look_3'  judging")
 
+    def test_a_guide_over_a_window_that_detects_nothing_says_nothing_about_a_detection(self) -> None:
+        """The wart of the teaching window (owner, 2026-09-24): a preview built with no estimator said "live view: no
+        detection yet" under every guide, where no detection ever comes."""
+        state = PreviewState()
+        self.assertIn("live view: no detection yet", state.guided_lines(["MOVE THE ARM"], None))
+        quiet = state.guided_lines(["MOVE THE ARM"], None, detecting=False)
+        self.assertEqual([line for line in quiet if line], ["MOVE THE ARM"])
+        self.assertIn("live view: RuntimeError: gone", state.guided_lines(["x"], None, "RuntimeError: gone",
+                                                                          detecting=False))
+
+    def test_a_preview_with_no_estimator_draws_no_detection_line_under_the_guide(self) -> None:
+        preview, _ = _preview(estimator=None)
+        drawn: list[list[str]] = []
+
+        def spy(*_args: Any, **keywords: Any) -> np.ndarray:
+            drawn.append(list(keywords["lines"]))
+            return np.zeros((2, 2, 3), dtype=np.uint8)
+
+        live = preview_module._Frame(np.zeros((12, 16, 3), dtype=np.uint8), None, None, None, 1.0)
+        with patch.object(preview_module, "annotate", spy):
+            preview._compose(PreviewState(), None, live, "", (("MOVE THE ARM",), "guide", None))
+        self.assertEqual([line for line in drawn[0] if line], ["MOVE THE ARM"])
+
+
+class TheFooterTests(unittest.TestCase):
+
+    def _written(self, **keywords: Any) -> list[str]:
+        texts: list[str] = []
+        real = preview_module.cv.putText
+
+        def spy(image: Any, text: str, *args: Any) -> Any:
+            texts.append(text)
+            return real(image, text, *args)
+
+        with patch.object(preview_module.cv, "putText", spy):
+            annotate(np.zeros((40, 900, 3), dtype=np.uint8), lines=["status"], **keywords)
+        return texts
+
+    def test_the_sweeps_footer_is_kept_unless_a_caller_names_its_own(self) -> None:
+        # The rows under the status line, joined back where the width wrapped them.
+        self.assertEqual(" ".join(self._written()[1:]), preview_module._FOOTER)
+        self.assertEqual(" ".join(self._written(tone="guide")[1:]), preview_module._GUIDE_FOOTER)
+        self.assertEqual(" ".join(self._written(footer="Closing it closes every camera window.")[1:]),
+                         "Closing it closes every camera window.")
+
 
 # ---------------------------------------------------------------------------------------------------------------------
 # SweepPreview: the sweep enqueues, one thread draws

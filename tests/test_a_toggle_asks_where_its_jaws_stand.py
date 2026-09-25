@@ -301,7 +301,7 @@ class _Termios:
 
 class TheTypeaheadIsDrainedBeforeTheQuestionTests(unittest.TestCase):
     """⛔ Review of 2026-09-24 (D1). The question was read with the builtin ``input`` straight off the console, so an
-    Enter typed while the models loaded (examples 12 and 13 use Enter as push-to-talk) answered it unseen: with the jaws
+    Enter typed while the models loaded (examples 14 and 15 use Enter as push-to-talk) answered it unseen: with the jaws
     really closed the count started OPEN and every command after it ran inverted, reproduced on a real Windows
     console. What was typed before a question is discarded before it is asked, wherever the terminal is asked."""
 

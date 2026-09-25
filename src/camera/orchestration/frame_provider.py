@@ -12,6 +12,7 @@ from src.camera.orchestration.camera import (
     AnyStreamer,
     Camera,
     CameraRigConfig,
+    PeekFrame,
     create_streamer,
 )
 from src.camera.setup.image_taking.frames import AnyFrame, StereoFrame
@@ -311,6 +312,10 @@ class RigHandle:
     def grab(self) -> AnyFrame:
         """One frame from this rig."""
         return self.camera.grab()
+
+    def peek(self) -> "PeekFrame | None":
+        """A colour image of this rig to look at, never to measure with (see `Camera.peek`)."""
+        return self.camera.peek()
 
     def get_intrinsics(self) -> "np.ndarray | None":
         """This rig's camera matrix, or ``None`` where the rig has no single pinhole matrix."""

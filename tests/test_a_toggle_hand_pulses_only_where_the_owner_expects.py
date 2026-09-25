@@ -74,7 +74,7 @@ _BENCH = "a known part on a clear table, no camera"
 #: Example 05's part and tray.
 _PART = Pose.tool_down(450.0, 100.0, 120.0, yaw_deg=90.0)
 _TRAY = Pose.tool_down(300.0, -250.0, 140.0)
-#: Example 11: its looks, its motion (60 mm above the grasp, a 5 mm squeeze, a 100 mm lift), and where the scripted part
+#: Example 12: its looks, its motion (60 mm above the grasp, a 5 mm squeeze, a 100 mm lift), and where the scripted part
 #: is grasped, BASE mm.
 _LOOK = [LOOK_A, LOOK_B]
 _MOTION = GraspMotion(standoff_mm=60.0, close_squeeze_mm=5.0, retreat_mm=100.0)
@@ -384,7 +384,7 @@ class _Watched:
 
 
 def _service(cell: _Cell, sees: "tuple[bool, ...]" = (True,)) -> AutonomousGraspService:
-    """Example 11's pick service on the owner's cell: a wrist camera, its motion, the toggle hand."""
+    """Example 12's pick service on the owner's cell: a wrist camera, its motion, the toggle hand."""
     wrist = EyeInHandFrameResolver(t_cam_to_tool=Transform.from_matrix(np.eye(4), from_frame=Frame.CAMERA,
                                                                        to_frame=Frame.TOOL))
     return AutonomousGraspService.from_components(
@@ -394,7 +394,7 @@ def _service(cell: _Cell, sees: "tuple[bool, ...]" = (True,)) -> AutonomousGrasp
 
 
 def _campaign(cell: _Cell, service: Any, runs: int, **keywords: Any) -> PickRunReport:
-    """Example 11's campaign: the program's looks, and each lifted part put back where it was grasped."""
+    """Example 12's campaign: the program's looks, and each lifted part put back where it was grasped."""
     return PickRun.from_service(_Watched(service, cell), runs=runs, recording=Recording.off(), look=_LOOK,
                                 put_back=True, **keywords).execute()
 
@@ -671,7 +671,7 @@ class Example05PicksAndPlacesAKnownPartTests(unittest.TestCase):
         self.assertFalse(cell.hand_e.closed)
 
 
-class Example11CampaignTests(unittest.TestCase):
+class Example12CampaignTests(unittest.TestCase):
     def test_three_runs_from_the_looks_each_pulse_once_at_the_part_and_once_at_the_put_back(self) -> None:
         cell = _cell("")
         with _cell_connected(cell):

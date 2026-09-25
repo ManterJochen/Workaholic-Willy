@@ -21,6 +21,7 @@ connected for calibration takes the lock and keeps the order a cell connected fo
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import TracebackType
@@ -39,6 +40,7 @@ __all__ = [
     "disconnect_cell",
     "no_real_gripper_reason",
     "release_perception",
+    "service_cameras",
 ]
 
 logger = create_robot_logger("ConnectedCell", ROBOT_LOG_FILE)
@@ -165,6 +167,35 @@ def release_perception(service: Any) -> StepOutcome:
             )
             outcome = StepOutcome.FAILED
     return outcome
+
+
+def service_cameras(service: Any) -> tuple[Any, ...]:
+    """The camera owners a built service holds, each once: the primary first, then the fused ones, then those the
+    planner world opened for itself. The three slots :func:`release_perception` gives back, read and not closed.
+
+    Duck-typed as that function is, so this module loads no camera code: an owner is what a RealSense source's
+    ``streamer.camera`` is, or what ``planner_world_cameras`` holds, and it answers ``rig_id`` with a string and has a
+    ``peek`` to look through. A rehearsal's source holds none, and a double that answers every attribute holds none
+    either. Nothing is opened, closed or read.
+    """
+    orchestrator = getattr(getattr(service, "runtime", None), "orchestrator", None)
+    found: list[Any] = []
+
+    def keep(camera: Any) -> None:
+        if (isinstance(getattr(camera, "rig_id", None), str) and callable(getattr(camera, "peek", None))
+                and all(camera is not held for held in found)):
+            found.append(camera)
+
+    keep(getattr(getattr(getattr(orchestrator, "perception", None), "streamer", None), "camera", None))
+    fused = getattr(getattr(orchestrator, "multi_camera_perception", None), "sources", None)
+    if isinstance(fused, Mapping):
+        for source in fused.values():
+            keep(getattr(getattr(source, "streamer", None), "camera", None))
+    opened = getattr(getattr(orchestrator, "planner_world_cameras", None), "cameras", None)
+    if isinstance(opened, (tuple, list)):
+        for camera in opened:
+            keep(camera)
+    return tuple(found)
 
 
 def no_real_gripper_reason(substitution: Any) -> str:

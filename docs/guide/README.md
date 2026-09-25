@@ -108,7 +108,7 @@ Two consequences worth carrying between guides:
   real-cell runner requires every attempt to succeed and takes the pick service's word for each, which
   is why it prints its rule beside its verdict. From Python, `PassRule(fraction=..., confirm=...)` sets
   another fraction and a check of your own on each attempt
-  ([`examples/real_robot/11_pick_with_the_camera.py`](../../examples/real_robot/11_pick_with_the_camera.py)).
+  ([`examples/real_robot/12_pick_with_the_camera.py`](../../examples/real_robot/12_pick_with_the_camera.py)).
 - **A failing run says little about why.** Each runner prints one line per pick, `succeeded`,
   `lift_mm` and `passed`, and then a gate line. `run_m2_pick` adds a reason beside its rate: each run
   that did not pick, with the report's failure summary and the motion's message. Attributing a

@@ -17,7 +17,7 @@ cell = Cell.from_tree(load_tree(), motion=motion)      # the cell WILLY_PROFILE 
 print(motion.to_dict())
 ```
 
-[`examples/real_robot/11_pick_with_the_camera.py`](../../../../examples/real_robot/11_pick_with_the_camera.py)
+[`examples/real_robot/12_pick_with_the_camera.py`](../../../../examples/real_robot/12_pick_with_the_camera.py)
 runs a campaign of picks with it. Everything else here is internal: the pick service and the pick loop call it.
 
 ## The nouns

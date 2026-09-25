@@ -15,7 +15,7 @@ A calibrated rig's world is mandatory. Once a rig declares its calibration on a 
 build that produced no world is refused instead of planning blind (`CameraWorldRequired`).
 
 Run it at the cell, under the cell's profile, once its cameras are calibrated (07-10):
-    WILLY_PROFILE=<your cell> python examples/real_robot/14_a_cell_with_several_cameras.py
+    WILLY_PROFILE=<your cell> python examples/real_robot/16_a_cell_with_several_cameras.py
 """
 
 from willy import Camera, CameraWorldPlan, Pose, Robot, load_tree
@@ -37,7 +37,7 @@ print(plan)
 if plan.refusal() is not None:
     raise SystemExit(plan.refusal())
 if not plan.rig_ids:
-    raise SystemExit("no camera feeds a world on this cell; 14 is about the cells that have one")
+    raise SystemExit("no camera feeds a world on this cell; 16 is about the cells that have one")
 
 # One owner per rig, opened in the plan's order: the primary first, then the rest. ExitStack is not
 # needed for two, and a `with` per camera is what a reader can follow; for a variable number, nest

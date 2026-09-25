@@ -22,7 +22,7 @@ if turn.ok:
     print(confirmation)                            # confirmation.confirmed is the prompt, or None
 ```
 
-The whole chain to a pick is [12_speak_a_command.py](../../../examples/real_robot/12_speak_a_command.py).
+The whole chain to a pick is [14_speak_a_command.py](../../../examples/real_robot/14_speak_a_command.py).
 The operator console serves the same engine: `POST /v1/voice/transcribe` proposes an uploaded recording,
 `POST /v1/voice/talk` presses or releases the console's talk switch, and `POST /v1/voice/listen` records
 one push-to-talk turn at the cell PC and proposes it ([api/README.md](../../../api/README.md)).

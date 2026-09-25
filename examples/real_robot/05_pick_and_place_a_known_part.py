@@ -16,7 +16,7 @@ tray = Pose.tool_down(300.0, -250.0, 140.0)
 part_width_mm = 40.0
 
 # No camera is handed in, so there is no camera world and each verb says why it moves without one.
-# 13_speak_pick_and_hand_handover.py hands the robot its camera instead, and holds the located part
+# 15_speak_pick_and_hand_handover.py hands the robot its camera instead, and holds the located part
 # out of the world it plans against.
 bench = "a known part on a clear table, no camera"
 

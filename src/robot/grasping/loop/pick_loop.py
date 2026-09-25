@@ -34,6 +34,7 @@ from typing import (
     Mapping,
     Protocol,
     Sequence,
+    TypedDict,
     runtime_checkable,
 )
 
@@ -351,6 +352,29 @@ class PickAttempt:
     # the stamp said nothing.
     camera_world: str | None = None
     camera_world_reason: str | None = None
+    # Which cameras' surfaces of this attempt's target were fused into the one cloud its grasps were
+    # generated from, the camera the grasp is synthesised in first (`grasping.fusion.geometry`).
+    # Empty whenever that cloud came from one camera: fusion off or standing down, no second camera
+    # delivered, none identified the target, or an external target cloud replaced the fused one.
+    # Never one camera alone, and never the same camera twice.
+    #
+    # Not the frame telemetry's `fused_views`, which lists every other camera that segmented
+    # anything, matched or not. Copied onto the attempt for the reason the motion fields are: the
+    # fused scene is rebuilt every frame, so an earlier attempt's answer is gone by the end.
+    fused_views: tuple[str, ...] = ()
+    # How many objects of the frame this attempt ranked gained a second camera's surface, the
+    # target or not; 0 when none did or no frame was ranked.
+    fused_objects: int = 0
+
+
+class _FusionFields(TypedDict):
+    """The two fusion fields of a `PickAttempt`, as `BinPickingOrchestrator._fusion_of` gives them.
+
+    Typed by name so they spread into an attempt beside `_motion_fields`, whose values are strings.
+    """
+
+    fused_views: tuple[str, ...]
+    fused_objects: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -852,6 +876,12 @@ class BinPickingOrchestrator:
     #: The other cameras' views from this pick's `_fused_scene`, so the scene object list is built
     #: from the same observation rather than from a second one taken moments later.
     _last_other_views: tuple = field(default=(), init=False, repr=False)
+    #: Per ranked frame: the cameras behind each object's fused cloud, by scene index, for the objects
+    #: whose fused cloud reached the generator (`PickAttempt.fused_views`), and how many objects of the
+    #: frame had one (`PickAttempt.fused_objects`). Emptied at the top of every pick and every ranking,
+    #: so a frame that fused nothing never reports the frame before it.
+    _fused_views_by_object: "dict[int, tuple[str, ...]]" = field(default_factory=dict, init=False, repr=False)
+    _fused_objects_in_frame: int = field(default=0, init=False, repr=False)
     # (config key, BASE points). The walls are fixed geometry; rebuilding them every attempt would
     # be waste in the one path that runs on every pick.
     _container_wall_cache: "tuple[tuple, np.ndarray] | None" = field(
@@ -1085,6 +1115,16 @@ class BinPickingOrchestrator:
         centre = np.median(points, axis=0)
         return float(centre[0]), float(centre[1]), float(centre[2])
 
+    def _fusion_of(self, target_index: int | None) -> _FusionFields:
+        """What the last ranked frame fused, as a `PickAttempt` keeps it: the target's cameras and the frame's count.
+
+        The views are the ones recorded where the target's fused cloud was handed to the generator, so a target whose
+        cloud came from one camera, or never reached the generator, names none; the count is the frame's, whichever
+        object the attempt went for.
+        """
+        views = self._fused_views_by_object.get(target_index, ()) if target_index is not None else ()
+        return {"fused_views": views, "fused_objects": self._fused_objects_in_frame}
+
     def run(self) -> PickReport:
         """Execute the loop and return a :class:`PickReport`.
 
@@ -1133,6 +1173,8 @@ class BinPickingOrchestrator:
         # declarations for what each slot carries).
         self._commit_reobserve_count = 0
         self._pending_camera_to_base = None
+        self._fused_views_by_object = {}
+        self._fused_objects_in_frame = 0
         self._ranking_telemetry = None
         self._candidate_log = None
         self._behavior_candidate_id = None
@@ -1234,6 +1276,7 @@ class BinPickingOrchestrator:
                         score=0.0,
                         action=action,
                         ordering_decision=ordering_decision,
+                        **self._fusion_of(target_index),
                     )
                 )
                 if action == "rescan":
@@ -1376,6 +1419,7 @@ class BinPickingOrchestrator:
                             score=best_result.top_score,
                             action="commit_refused_reobserve",
                             ordering_decision=ordering_decision,
+                            **self._fusion_of(target_index),
                         )
                     )
                     # Relocate to a diverse viewpoint before the next capture so the fused
@@ -1400,6 +1444,7 @@ class BinPickingOrchestrator:
                         score=best_result.top_score,
                         action="commit_refused_exhausted",
                         ordering_decision=ordering_decision,
+                        **self._fusion_of(target_index),
                     )
                 )
                 return PickReport(
@@ -1422,6 +1467,7 @@ class BinPickingOrchestrator:
             )
             # Read before the arm moves, off the frame the grasp was synthesised in.
             target_centre = self._target_centre_base_mm(frame, target_index)
+            fused_for_target = self._fusion_of(target_index)
             policy_report = self._execute(best_result)
             self._last_policy_report = policy_report
             # Map the PolicyOutcome to its action label and PickOutcome via _map_policy_outcome.
@@ -1471,6 +1517,7 @@ class BinPickingOrchestrator:
                     action=attempt_action,
                     ordering_decision=ordering_decision,
                     **_motion_fields(policy_report),
+                    **fused_for_target,
                 )
             )
             return PickReport(
@@ -2048,6 +2095,13 @@ class BinPickingOrchestrator:
         than which were configured.
         """
 
+        # The counters describe THIS pick. Cleared before any stand-down below, or a pick that stands
+        # down early keeps the dict of the last pick that fused, and the service turns it into this
+        # record's `fused_view_count` (review of 2026-09-24). The other cameras' views go the same
+        # way: the scene builder promotes objects from them (`promote_unmatched`), and views kept
+        # from the last pick that fused would bring an object seen at another moment into this scene.
+        self._fusion_geometry_telemetry = {}
+        self._last_other_views = ()
         config = self.fusion_geometry_config
         if config is None or not bool(config.enabled):
             return None
@@ -2437,6 +2491,10 @@ class BinPickingOrchestrator:
         ``argmax(top_score)`` path runs verbatim and the returned
         decision is ``None``.
         """
+        # What this frame fuses, said by this frame alone: emptied before anything below can raise or
+        # stand down, and filled where a fused cloud is handed to the generator.
+        self._fused_views_by_object = {}
+        self._fused_objects_in_frame = 0
         camera_to_base: Transform | None = None
         if self.frame_resolver is not None:
             camera_to_base = self.frame_resolver.camera_to_base_for_frame(
@@ -2470,6 +2528,11 @@ class BinPickingOrchestrator:
         # exactly the list it ran on before scene objects existed.
         scene = self._scene_objects(frame, camera_to_base, fused_scene)
         self._last_scene_objects = tuple(scene)
+        if fused_scene is not None:
+            # Objects whose cloud really holds two cameras, which is not `fused_scene.objects_fused`: that
+            # counts the primary's objects alone and would count a camera fused with its own copy.
+            self._fused_objects_in_frame = sum(
+                1 for index, obj in enumerate(scene) if _views_behind(obj, index, fused_scene))
         # Neighbour masks stay the primary frame's, deliberately. They are the clutter around a
         # target in the frame the grasp is synthesised in, and a mask from another camera is in
         # another camera's pixels: handing it to the dense sampler would place clutter by index into
@@ -2565,6 +2628,9 @@ class BinPickingOrchestrator:
                 object_cloud = obj.fused_cloud_base_mm
                 if object_cloud is not None and object_cloud.size:
                     extra_kwargs["geometry_points_base_mm"] = object_cloud
+                    # Named here and nowhere else: this is the line the fused cloud reaches the
+                    # generator on, so an object is said to be planned on cameras only when it was.
+                    self._fused_views_by_object[idx] = _views_behind(obj, idx, fused_scene)
             if self.gripper_model is not None:
                 extra_kwargs["gripper_model"] = self.gripper_model
             if self.corridor_config is not None:
@@ -2799,6 +2865,36 @@ def _stamp(result: "GraspResult", payload: dict) -> None:
     existing = getattr(result, "telemetry", None)
     if isinstance(existing, dict):
         existing.update(payload)
+
+
+def _views_behind(obj: Any, index: int, fused_scene: Any) -> tuple[str, ...]:
+    """The cameras whose surfaces make up ``obj``'s fused cloud, the camera it is grasped from first; ``()`` for one.
+
+    Read the way each cloud was built. A primary object's cloud is its own surface plus every other camera's blob the
+    association assigned to it (`fuse_scene_clouds`), so those cameras are read off the associations, in view order.
+    A promoted object's cloud is its cluster's members (`build_scene_objects`), whose cameras
+    `SceneObject.views_used` already names, the owner first. A camera named twice counts once, so a rig that lists the
+    primary fuses nothing onto it; fewer than two cameras is one view and reads as empty. A primary with no id in the
+    rig is named ``primary``.
+
+    Never raises: this is what a report says, and it runs in the ranking of every fused frame, so a shape it does not
+    know names nothing rather than ending a pick.
+    """
+    cloud = getattr(obj, "fused_cloud_base_mm", None)
+    if cloud is None or not np.asarray(cloud).size:
+        return ()
+    if getattr(obj, "promoted", False):
+        named = getattr(obj, "views_used", ())
+        views = [str(view) for view in named] if isinstance(named, (tuple, list)) else []
+    else:
+        views = [str(getattr(obj, "camera_id", "") or "primary")]
+        associations = getattr(fused_scene, "associations", ())
+        for association in associations if isinstance(associations, (tuple, list)) else ():
+            assignment = getattr(association, "assignment", ())
+            if isinstance(assignment, (tuple, list)) and index < len(assignment) and assignment[index] is not None:
+                views.append(str(getattr(association, "view", "")))
+    distinct = tuple(dict.fromkeys(view for view in views if view))
+    return distinct if len(distinct) > 1 else ()
 
 
 def _grasp_position_mm(result: "GraspResult") -> tuple[float, float, float] | None:

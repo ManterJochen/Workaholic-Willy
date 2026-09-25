@@ -34,6 +34,11 @@ the arm, and neither call waits.
 :func:`preview_unavailable` says why no window can be shown in this process, and :func:`annotate` is the drawing,
 pure and headless, so it is tested without a window.
 
+What any window beside a running program needs, whatever it shows, is :class:`WindowThread`: the one thread that
+makes every HighGUI call, the program's side that never waits, the guide's keys, and a close that closes the window
+and nothing else. The sweep's window is one; the cell's live view (``src/camera/live_view.py``), one window per
+camera, is the other.
+
 Measured on Windows (Win32 HighGUI, OpenCV 4.13) with a synthetic frame source: the window opens, draws and closes
 from the preview's thread. Not run on Linux, and never beside a physical camera or controller.
 """
@@ -58,6 +63,7 @@ __all__ = [
     "NO_PREVIEW_ENV",
     "PreviewState",
     "SweepPreview",
+    "WindowThread",
     "annotate",
     "preview_unavailable",
 ]
@@ -179,6 +185,7 @@ def annotate(
     scale: float = 1.0,
     axis_mm: float | None = None,
     bar: float | None = None,
+    footer: str | None = None,
 ) -> np.ndarray:
     """``bgr`` with the target drawn on it, a status strip above and a row per pose below, as a new image.
 
@@ -190,7 +197,8 @@ def annotate(
     ``tone`` (``counted``, ``rejected``, ``judging`` or ``live``), and a last line says that ESC closes the window only.
     ``history`` holds one entry per pose of the sweep (``True`` counted, ``False`` rejected, ``None`` not judged yet),
     and pose ``current`` (1-based) is outlined. ``bar``, from 0 to 1, adds a closeness bar under the frame: how near a
-    person guiding the arm is to the target. With ``tone`` ``outside`` the frame gets a red border. Text is ASCII:
+    person guiding the arm is to the target. With ``tone`` ``outside`` the frame gets a red border. ``footer`` takes
+    the place of that last line, for a window whose close means something else (the live view's). Text is ASCII:
     anything else is replaced.
 
     The result is as wide as ``bgr`` and taller by the strip and the rows. An overlay that OpenCV refuses to draw is
@@ -201,7 +209,7 @@ def annotate(
         _draw_observation(image, observation, K, dist, float(scale), axis_mm)
     if tone == "outside":
         cv.rectangle(image, (0, 0), (image.shape[1] - 1, image.shape[0] - 1), _TONES["outside"], 8)
-    parts = [_strip(image.shape[1], lines, tone), image]
+    parts = [_strip(image.shape[1], lines, tone, footer), image]
     if bar is not None:
         parts.append(_bar_row(image.shape[1], float(bar)))
     if history:
@@ -302,13 +310,18 @@ def _wrap(text: str, width_px: int) -> list[str]:
     return rows
 
 
-def _strip(width: int, lines: Sequence[str], tone: str) -> np.ndarray:
-    """The status above the frame: the first line on a band of ``tone``, the rest and the footer on grey."""
+def _strip(width: int, lines: Sequence[str], tone: str, footer: str | None = None) -> np.ndarray:
+    """The status above the frame: the first line on a band of ``tone``, the rest and the footer on grey.
+
+    ``footer`` is the last line; ``None`` is the sweep's own, which says what a close does while a guide shows.
+    """
     usable = max(40, width - 2 * _PAD_PX)
     rows: list[tuple[str, bool]] = []
     for number, line in enumerate(line for line in lines if line):
         rows += [(row, number == 0) for row in _wrap(line, usable)]
-    rows += [(row, False) for row in _wrap(_GUIDE_FOOTER if tone in ("guide", "outside") else _FOOTER, usable)]
+    if footer is None:
+        footer = _GUIDE_FOOTER if tone in ("guide", "outside") else _FOOTER
+    rows += [(row, False) for row in _wrap(footer, usable)]
     height = _PAD_PX // 2 + _ROW_PX * len(rows) + _PAD_PX // 2
     strip = np.full((height, width, 3), _STRIP, dtype=np.uint8)
     banded = sum(1 for _, first in rows if first)
@@ -470,11 +483,18 @@ class PreviewState:
         last = f"last verdict: {self.last_verdict}" if self.last_verdict and self.last_verdict != doing else ""
         return [f"LIVE, not judged  {doing}", seen, last, self.count_line()]
 
-    def guided_lines(self, guide: Sequence[str], observation: Any, error: str = "") -> list[str]:
+    def guided_lines(self, guide: Sequence[str], observation: Any, error: str = "", *,
+                     detecting: bool = True) -> list[str]:
         """The strip over a live frame while a person guides the arm: the guide's lines first, then what the camera
-        sees now (``board not seen`` and why, where it sees none), then the last verdict."""
+        sees now (``board not seen`` and why, where it sees none), then the last verdict.
+
+        ``detecting`` false is a window with no target to find (a preview built with no estimator): it says nothing
+        about a detection that never comes, only why there is no live frame where there is none.
+        """
         if error:
             seen = f"live view: {error}"
+        elif not detecting:
+            seen = ""
         elif observation is None:
             seen = "live view: no detection yet"
         elif getattr(observation, "T_cam_to_target", None) is None:
@@ -512,22 +532,178 @@ def _say(line: str) -> None:
     print(f"  {_ascii(line)}", flush=True)
 
 
-class SweepPreview:
+class WindowThread:
+    """What a window beside a running program needs, whatever it shows: one daemon thread of its own that makes every
+    HighGUI call, a program's side that only hands things over and never waits, the keys a person guiding the arm
+    types into it, and a close that closes the window and nothing else.
+
+    :class:`SweepPreview` is one, and the cell's live view (``src/camera/live_view.py``, one window per camera) is the
+    other. A subclass draws in :meth:`_run`, on the thread :meth:`start` starts, hands every key the window gets to
+    :meth:`_key`, and calls :meth:`_switch_off` when the operator closed it or a GUI call failed; what the printed
+    line then says is its own (:meth:`_off_line`, :meth:`_closed_line`, :meth:`_ctrl_c_line`). :meth:`guide` and
+    :meth:`poll_key` are the ``GuideView`` hand guiding reads (``src/robot/execution/hand_guiding.py``): both return at
+    once, and the window's thread never calls the arm.
+
+    Building one touches no window: :meth:`start` opens it on its own thread, and :meth:`close` stops it. ``gui``
+    stands in for ``cv2`` and ``say`` for the printed line a switch-off gets.
+    """
+
+    #: What the log calls the window.
+    _NAME = "window"
+    #: What its thread is called.
+    _THREAD = "willy-window"
+
+    def __init__(self, *, gui: Any = None, say: Callable[[str], None] | None = None) -> None:
+        #: What a person guiding the arm is shown (``guide``), the latest only: lines, tone and closeness bar.
+        self._guiding: tuple[tuple[str, ...], str, float | None] = ((), "guide", None)
+        #: Keys typed into the window while a guide showed, and ``closed`` once the operator closed it.
+        self._keys: queue.SimpleQueue[str] = queue.SimpleQueue()
+        self._gui = gui
+        self._say = say if say is not None else _say
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        #: Ctrl+C typed into the window is said once.
+        self._told_ctrl_c = False
+        #: Why the window switched itself off before it was closed: the operator closed it, or an error. Empty
+        #: while it shows, and after a plain :meth:`close`.
+        self.off = ""
+        self.frames_shown = 0
+
+    @property
+    def running(self) -> bool:
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
+    def start(self) -> None:
+        """Open the window on its own thread. Idempotent, and it never raises: a window that cannot start is off, and
+        the program beside it goes on."""
+        with self._lock:
+            if self._thread is not None or self._stop.is_set():
+                return
+            thread = threading.Thread(target=self._run, name=self._THREAD, daemon=True)
+            try:
+                thread.start()
+            except Exception as exc:  # noqa: BLE001 (a window is never a reason to stop what it shows)
+                self._stop.set()
+                self._switch_off(f"its thread did not start: {type(exc).__name__}: {exc}", error=True)
+                return
+            self._thread = thread
+
+    def guide(self, lines: Sequence[str], tone: str, bar: float | None = None) -> None:
+        """What the window shows while a person guides the arm (``hand_guiding.GuideView``); returns at once.
+
+        ``lines`` go over the live frame on a band of ``tone`` (``guide``, or ``outside``: red, with a red border),
+        with a closeness bar from 0 to 1 under it when ``bar`` is given. Empty ``lines`` give the window back to its
+        own strip. The latest call replaces the one before; nothing is queued.
+        """
+        shown = (tuple(_ascii(line) for line in lines if line), str(tone), None if bar is None else float(bar))
+        with self._lock:
+            self._guiding = shown
+
+    def poll_key(self) -> str | None:
+        """The next key typed into the window while a guide showed: ``enter`` (Enter or Space), ``skip`` (``s``),
+        ``finish`` (``q``), or ``closed`` once, after the operator closed the window (ESC or its close button).
+        ``None`` when there is none; never waits."""
+        try:
+            return self._keys.get_nowait()
+        except queue.Empty:
+            return None
+
+    def close(self, timeout_s: float = 2.0) -> None:
+        """Stop the thread and close the window, waiting at most ``timeout_s``. Idempotent, and it never raises.
+
+        The program calls it before the camera is given back, so no live grab meets a closed camera: the thread takes
+        no new grab once it is asked to stop. A thread stuck in a GUI call past the timeout is left behind as a
+        daemon, and the process does not wait for it.
+        """
+        try:
+            with self._lock:
+                self._stop.set()
+                thread = self._thread
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(max(0.0, float(timeout_s)))
+                if thread.is_alive():
+                    logger.warning("The %s did not close within %.1f s; its thread is left behind.", self._NAME,
+                                   timeout_s)
+            self._closed()
+        except Exception as exc:  # noqa: BLE001 (closing a window must not stop the teardown it is part of)
+            logger.warning("Closing the %s raised %s: %s", self._NAME, type(exc).__name__, exc)
+
+    def _closed(self) -> None:
+        """What a close gives up once the thread is gone; nothing here."""
+
+    # --- the window's thread ------------------------------------------------------------------------------------
+
+    def _run(self) -> None:  # pragma: no cover (every window draws its own)
+        raise NotImplementedError
+
+    def _key(self, key: int, guiding: bool) -> bool:
+        """Hand on a key the window's thread read: a guide's key to :meth:`poll_key` while a guide shows, Ctrl+C said
+        once. ``True`` for ESC, which closes the window."""
+        if key == -1:
+            return False
+        code = key & 0xFF
+        if guiding and code in _GUIDE_KEYS:
+            self._keys.put(_GUIDE_KEYS[code])
+        if code == _ESC:
+            return True
+        if code == _CTRL_C and not self._told_ctrl_c:
+            self._told_ctrl_c = True
+            try:
+                self._say(self._ctrl_c_line())
+            except Exception:  # noqa: BLE001 (nothing left to tell)
+                pass
+        return False
+
+    def _switch_off(self, reason: str, *, error: bool = False) -> None:
+        self.off = reason
+        if error:
+            line = self._off_line(reason)
+            logger.warning("%s switched off: %s", self._NAME.capitalize(), reason)
+        else:
+            # A person guiding the arm reads the close as "finish" (hand_guiding); a program that drives itself goes on.
+            self._keys.put("closed")
+            line = self._closed_line(reason)
+            logger.info("%s closed: %s", self._NAME.capitalize(), reason)
+        try:
+            self._say(line)
+        except Exception:  # noqa: BLE001 (nothing left to tell)
+            pass
+
+    def _off_line(self, reason: str) -> str:
+        """What is printed when an error switched the window off."""
+        return f"{self._NAME} off after {reason}"
+
+    def _closed_line(self, reason: str) -> str:
+        """What is printed when the operator closed the window."""
+        return f"{self._NAME} closed ({reason}); the pendant stops the robot"
+
+    def _ctrl_c_line(self) -> str:
+        """What is printed, once, when Ctrl+C was typed into the window, where it reaches no program."""
+        return ("Ctrl+C went to the window, not to the console. The pendant stops the robot; Ctrl+C in the console "
+                "stops the program")
+
+
+class SweepPreview(WindowThread):
     """A window beside a sweep, owned by one daemon thread that makes every HighGUI call.
 
     ``handle`` is what the sweep's marker source reads (a ``RigHandle``, anything with ``grab()``,
     ``get_intrinsics()`` and ``get_distortion()``); live frames come through it and through nothing else.
     ``estimator`` poses the target in live frames and must be the preview's own: the single-marker estimator keeps a
     grey buffer between frames, so one shared with the sweep would be read by two threads. ``None`` shows live frames
-    without a detection. ``describe`` words an event as the console does. ``live_hz`` is capped at
-    :data:`MAX_LIVE_HZ`, and 0 takes no live frames. A judged frame stays pinned for ``pin_s`` seconds, or until the
-    next one. ``gui`` stands in for ``cv2`` and ``say`` for the one printed line a switch-off gets.
+    without a detection, and says nothing about one. ``describe`` words an event as the console does. ``live_hz`` is
+    capped at :data:`MAX_LIVE_HZ`, and 0 takes no live frames. A judged frame stays pinned for ``pin_s`` seconds, or
+    until the next one. ``gui`` stands in for ``cv2`` and ``say`` for the one printed line a switch-off gets.
 
     Building it touches no window and no camera. :meth:`start` opens the window on the preview's thread, and
     :meth:`close` stops it; the sweep starts it once the arm is connected and closes it before the camera is given
     back. :meth:`observe` is the marker source's ``on_observation`` hook and the instance is an event listener; both
     return at once and never raise.
     """
+
+    _NAME = "sweep preview"
+    _THREAD = "sweep-preview"
 
     def __init__(
         self,
@@ -544,6 +720,7 @@ class SweepPreview:
         gui: Any = None,
         say: Callable[[str], None] | None = None,
     ) -> None:
+        super().__init__(gui=gui, say=say)
         self._handle = handle
         self.title = _ascii(title)
         self._estimator = estimator
@@ -554,46 +731,13 @@ class SweepPreview:
         self._max_width = int(max_width)
         self._pin_s = float(pin_s)
         self._queue: queue.Queue[Any] = queue.Queue(maxsize=max(1, int(queue_size)))
-        #: What a person guiding the arm is shown (``guide``), the latest only: lines, tone and closeness bar.
-        self._guiding: tuple[tuple[str, ...], str, float | None] = ((), "guide", None)
-        #: Keys typed into the window while a guide showed, and ``closed`` once the operator closed it.
-        self._keys: queue.SimpleQueue[str] = queue.SimpleQueue()
-        self._gui = gui
-        self._say = say if say is not None else _say
-        self._stop = threading.Event()
-        self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
         self._K: np.ndarray | None = None
         self._dist: np.ndarray | None = None
-        #: Why the preview switched itself off before it was closed: the operator closed it, or an error. Empty
-        #: while it shows, and after a plain :meth:`close`.
-        self.off = ""
         #: Items the queue dropped because it was full, oldest first.
         self.dropped = 0
         self.live_grabs = 0
-        self.frames_shown = 0
-
-    @property
-    def running(self) -> bool:
-        thread = self._thread
-        return thread is not None and thread.is_alive()
 
     # --- the sweep's side: enqueue and return -------------------------------------------------------------------
-
-    def start(self) -> None:
-        """Open the window on the preview's own thread. Idempotent, and it never raises: a preview that cannot start
-        is off, and the sweep goes on."""
-        with self._lock:
-            if self._thread is not None or self._stop.is_set():
-                return
-            thread = threading.Thread(target=self._run, name="sweep-preview", daemon=True)
-            try:
-                thread.start()
-            except Exception as exc:  # noqa: BLE001 (a preview is never a reason to stop a sweep)
-                self._stop.set()
-                self._switch_off(f"its thread did not start: {type(exc).__name__}: {exc}", error=True)
-                return
-            self._thread = thread
 
     def __call__(self, event_type: str, data: Mapping[str, Any]) -> None:
         """The sweep's event listener: queues the event for the window."""
@@ -616,45 +760,8 @@ class SweepPreview:
         except Exception as exc:  # noqa: BLE001 (display only: the pose is the estimator's whatever happens here)
             logger.debug("preview: judged frame not queued: %s", exc)
 
-    def guide(self, lines: Sequence[str], tone: str, bar: float | None = None) -> None:
-        """What the window shows while a person guides the arm (``hand_guiding.GuideView``); returns at once.
-
-        ``lines`` go over the live frame on a band of ``tone`` (``guide``, or ``outside``: red, with a red border),
-        with a closeness bar from 0 to 1 under it when ``bar`` is given. Empty ``lines`` give the window back to the
-        sweep's own strip. The latest call replaces the one before; nothing is queued.
-        """
-        shown = (tuple(_ascii(line) for line in lines if line), str(tone), None if bar is None else float(bar))
-        with self._lock:
-            self._guiding = shown
-
-    def poll_key(self) -> str | None:
-        """The next key typed into the window while a guide showed: ``enter`` (Enter or Space), ``skip`` (``s``),
-        ``finish`` (``q``), or ``closed`` once, after the operator closed the window (ESC or its close button).
-        ``None`` when there is none; never waits."""
-        try:
-            return self._keys.get_nowait()
-        except queue.Empty:
-            return None
-
-    def close(self, timeout_s: float = 2.0) -> None:
-        """Stop the thread and close the window, waiting at most ``timeout_s``. Idempotent, and it never raises.
-
-        The sweep calls it before the camera is given back, so no live grab meets a closed camera: the thread takes
-        no new grab once it is asked to stop. A thread stuck in a GUI call past the timeout is left behind as a
-        daemon, and the process does not wait for it.
-        """
-        try:
-            with self._lock:
-                self._stop.set()
-                thread = self._thread
-            if thread is not None and thread is not threading.current_thread():
-                thread.join(max(0.0, float(timeout_s)))
-                if thread.is_alive():
-                    logger.warning("The sweep preview did not close within %.1f s; its thread is left behind.",
-                                   timeout_s)
-            self._drain()
-        except Exception as exc:  # noqa: BLE001 (closing a window must not stop the teardown it is part of)
-            logger.warning("Closing the sweep preview raised %s: %s", type(exc).__name__, exc)
+    def _closed(self) -> None:
+        self._drain()
 
     def _offer(self, item: Any) -> None:
         """Put without waiting. When the queue is full its oldest item goes first, so the sweep never blocks here."""
@@ -680,21 +787,16 @@ class SweepPreview:
 
     # --- the window's thread ------------------------------------------------------------------------------------
 
-    def _switch_off(self, reason: str, *, error: bool = False) -> None:
-        self.off = reason
-        if error:
-            line = f"preview off after {reason}; the sweep goes on"
-            logger.warning("Sweep preview switched off: %s", reason)
-        else:
-            # A person guiding the arm reads the close as "finish" (hand_guiding); a sweep that drives itself goes on.
-            self._keys.put("closed")
-            line = (f"preview closed ({reason}). The sweep goes on, and a run guided by hand finishes and holds the "
-                    "arm; the pendant stops the robot")
-            logger.info("Sweep preview closed: %s", reason)
-        try:
-            self._say(line)
-        except Exception:  # noqa: BLE001 (nothing left to tell)
-            pass
+    def _off_line(self, reason: str) -> str:
+        return f"preview off after {reason}; the sweep goes on"
+
+    def _closed_line(self, reason: str) -> str:
+        return (f"preview closed ({reason}). The sweep goes on, and a run guided by hand finishes and holds the "
+                "arm; the pendant stops the robot")
+
+    def _ctrl_c_line(self) -> str:
+        return ("Ctrl+C went to the preview window, not to the console, and the sweep goes on. "
+                "The pendant stops the robot; Ctrl+C in the console stops the program")
 
     def _run(self) -> None:
         gui = self._gui if self._gui is not None else _highgui()
@@ -704,7 +806,7 @@ class SweepPreview:
         live: _Frame | None = None
         live_error = ""
         next_live = 0.0
-        opened = shown = told_ctrl_c = False
+        opened = shown = False
         guiding: tuple[tuple[str, ...], str, float | None] = ((), "guide", None)
         # A judged frame waits for its pose's verdict, and until one arrives its index follows the events.
         open_verdict = False
@@ -746,16 +848,9 @@ class SweepPreview:
                     gui.imshow(self.title, self._compose(state, pinned, live, live_error, guiding))
                     self.frames_shown += 1
                     shown, dirty = True, False
-                key = int(gui.waitKey(_WAIT_MS))
-                if key != -1 and guiding[0] and key & 0xFF in _GUIDE_KEYS:
-                    self._keys.put(_GUIDE_KEYS[key & 0xFF])
-                if key != -1 and key & 0xFF == _ESC:
+                if self._key(int(gui.waitKey(_WAIT_MS)), bool(guiding[0])):
                     self._switch_off("ESC")
                     break
-                if key != -1 and key & 0xFF == _CTRL_C and not told_ctrl_c:
-                    told_ctrl_c = True
-                    self._say("Ctrl+C went to the preview window, not to the console, and the sweep goes on. "
-                              "The pendant stops the robot; Ctrl+C in the console stops the program")
                 if shown and float(gui.getWindowProperty(self.title, getattr(gui, "WND_PROP_VISIBLE", 4))) < 1:
                     self._switch_off("its window was closed")
                     break
@@ -808,17 +903,19 @@ class SweepPreview:
                  guiding: tuple[tuple[str, ...], str, float | None] = ((), "guide", None)) -> np.ndarray:
         history = state.history()
         lines, tone, bar = guiding
+        # A preview with no estimator finds nothing in a live frame, so its guide says nothing about a detection.
+        detecting = self._estimator is not None
         if lines and pinned is None:
             # A person guides the arm: the guide's lines over the live frame, or over black until one comes.
             if live is None or live_error:
                 width = self._max_width if self._max_width > 0 else 960
                 waiting = live_error or ("waiting for the first frame" if self._live_period_s is not None else "")
                 return annotate(np.zeros((width * 9 // 16, width, 3), dtype=np.uint8),
-                                lines=state.guided_lines(lines, None, waiting), tone=tone, history=history,
-                                current=state.index, bar=bar)
+                                lines=state.guided_lines(lines, None, waiting, detecting=detecting), tone=tone,
+                                history=history, current=state.index, bar=bar)
             return annotate(live.image, live.observation, live.K, live.dist,
-                            lines=state.guided_lines(lines, live.observation), tone=tone, history=history,
-                            current=state.index, scale=live.scale, axis_mm=self._axis_mm, bar=bar)
+                            lines=state.guided_lines(lines, live.observation, detecting=detecting), tone=tone,
+                            history=history, current=state.index, scale=live.scale, axis_mm=self._axis_mm, bar=bar)
         if pinned is not None:
             return annotate(pinned.image, pinned.observation, pinned.K, pinned.dist,
                             lines=state.judged_lines(pinned.index, pinned.observation),

@@ -37,12 +37,19 @@ evidence for a gate that ships off.
 
 | | Config key | What it is | At run time |
 | --- | --- | --- | --- |
-| Geometry fusion | `fusion.geometry.enabled` | per-object BASE clouds fused across cameras, fed to the generator | reaches the pick loop when on |
+| Geometry fusion | `fusion.geometry.enabled`, and `fusion.enabled` | per-object BASE clouds fused across cameras, fed to the generator | reaches the pick loop when both are on |
 | Voxel substrate | `fusion.enabled` | a bounded BASE occupancy grid, accumulated within one pick | read only by the commit gate |
 
 Both ship `false`. The commit gate reads the grid through `SceneFusion.corridor_evidence` only when
 `fusion.commit_policy.enabled` is true, which it is not by default; with the gate off the grid is
 written and never consulted.
+
+The two switches are not independent. `fusion.enabled` is also what builds the other cameras' CAMERA to
+BASE resolvers, so geometry fusion with `fusion.enabled` off drops every second view at the pick with a
+warning and plans single-view. Turn both on. `CameraFusionPlan.from_tree(tree)`
+(`src/robot/execution/camera_fusion.py`) reads a tree without opening anything and says in one sentence
+what a cell is missing to fuse; [`examples/real_robot/17_pick_with_fused_cameras.py`](../../../../examples/real_robot/17_pick_with_fused_cameras.py)
+asks it before it builds the cell.
 
 ## Which blob is the same object
 

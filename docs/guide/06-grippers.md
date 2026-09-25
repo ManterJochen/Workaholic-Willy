@@ -287,7 +287,7 @@ pendant's I/O tab or a bench `--pulse` between programs costs nothing.
 
 Only a key pressed after a question is shown answers it. Before each question at the terminal the
 console's typeahead is discarded: an Enter pressed while the models loaded, or meant as push-to-talk in
-examples 12 and 13, used to answer the connect question unseen, and with the jaws really closed every
+examples 14 and 15, used to answer the connect question unseen, and with the jaws really closed every
 command after it ran inverted. A question handed in with `ask=` owns its input and is not drained. The
 hand counts as connected only once the answer is in and any pulse it chose has gone out: while the
 question waits, every command is refused, and a disconnect from another thread refuses the connect.
@@ -427,7 +427,10 @@ On a cell whose cameras are handed in, `Robot.from_tree(tree, cameras=[camera])`
 every motion plans against the live world, and a declined motion is refused there. Pass the target's
 `SegmentationOffer` as `keep_out=` (a `Locator` result's `keep_out(i)` gives one), and the part is held out
 of the planner world through every motion of the pick
-([`examples/real_robot/13_speak_pick_and_hand_handover.py`](../../examples/real_robot/13_speak_pick_and_hand_handover.py)). The report
+([`examples/real_robot/15_speak_pick_and_hand_handover.py`](../../examples/real_robot/15_speak_pick_and_hand_handover.py)).
+`robot.place(pose, keep_out=...)` does the same for a target a camera located: the target is held out from
+the place's first motion through the release to the line out, so the held part can come down onto it
+([`examples/real_robot/13_pick_and_place_with_the_camera.py`](../../examples/real_robot/13_pick_and_place_with_the_camera.py)). The report
 carries the camera-world stamp of each motion, the line reading taken before the first one, and the hand
 report.
 

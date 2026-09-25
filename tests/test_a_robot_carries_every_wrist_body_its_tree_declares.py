@@ -2,7 +2,7 @@
 
 The audit of 2026-09-23 found that ``Robot.from_tree(tree)`` with no camera handed in carried no D415 body: the
 planner, the exact guard and the self filter planned the UR10 and the Hand-E without the housing or the bracket,
-while ``Cell`` and ``PlannerStart`` read the same camera section and carried it. Examples 03, 04, 05 and 16, and any
+while ``Cell`` and ``PlannerStart`` read the same camera section and carried it. Examples 03, 04 and 05, the force hand-over example of that day, and any
 recovery script after the wrist calibration, took that door. A camera that is not open still hangs on the arm, so the
 body is read from the tree's camera section, not from the cameras handed in.
 

@@ -435,6 +435,33 @@ class RealSenseRGBDStreamer:
             return
         self._filters[self._temporal_at] = self._import_rs().temporal_filter()
 
+    def peek(self) -> np.ndarray | None:
+        """The newest colour image the pipeline holds, copied, for a person to look at; ``None`` when it holds none.
+
+        The display path a camera window reads (``Camera.peek``), which changes nothing a grab measures:
+
+        * The frameset is taken with ``poll_for_frames``, which never waits, and only its colour is read. The colour
+          stream is what the alignment aligns depth to, so it is the image a grab would have shown.
+        * No filter runs on it and no alignment, so the temporal filter's history holds the frames :meth:`grab`
+          handed it and nothing else: a frame looked at after :meth:`camera_moved`, still from the pose before the
+          move, never fills a hole of the pose after it.
+        * The pause clock is not touched, so a carried camera still drops its history when the pause between two
+          grabs says it moved, however many frames were looked at in that pause.
+        * Taking the frameset means the next grab waits for the next one, at most a frame period, and gets a frame
+          at least as new as it would have.
+
+        Copied, because the colour is a view of the device's buffer and a view kept by a window would hold it.
+        """
+        if self._pipeline is None:
+            raise RuntimeError("Device is not open. Call open() first.")
+        frameset = self._pipeline.poll_for_frames()
+        if not frameset:
+            return None
+        color_frame = frameset.get_color_frame()
+        if not color_frame:
+            return None
+        return np.array(np.asanyarray(color_frame.get_data()), copy=True)
+
     def _pause_s(self) -> float:
         return max(self._PAUSE_S, self._PAUSE_FRAMES / float(self.fps))
 

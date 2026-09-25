@@ -57,6 +57,19 @@ the arm-vendor readiness gate, builds the arm, opens the camera and prints what 
 pipeline refuses, but takes no lock and never commands a motion. Run both before the first live
 sweep.
 
+Every sweep, of a fixed camera or a wrist camera, carries the body of every wrist camera the tree
+declares on the arm (`camera.cameras.rigs[<id>].body`), placed from its calibration exactly as
+`Robot.from_tree` places it, and `--check` and the build name them. A declared body that cannot be
+placed yet (its camera is not calibrated) refuses the sweep at `--check`, unless
+`--unmodelled-wrist-body "<reason>"` says why the arm may move without it; the sweep then says which
+camera it moves without. A wrist rig declared with no body at all (the bracket is not measured yet),
+switched on or off, refuses no sweep, and needs no reason; neither does the camera an eye_in_hand
+sweep calibrates, which must be switched on. Nothing is carried for such a camera, and on a cell that
+reads geometry `--check` and the build print one `!!` line naming it, which is logged. This holds for
+calibration only: a pick still refuses an enabled wrist rig without a body. An eye_to_hand sweep on a
+tree that declares no wrist camera, and any sweep on a cell that reads no geometry, runs as it did,
+with no new line.
+
 A refused move skips its pose. The sweep stops at a pose, and exits 3 naming it, where the
 controller cannot be reached, refused a move it had been sent, or reports a protective or
 emergency stop, rather than trying every pose after it.
@@ -193,9 +206,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--profile", default=None, help="WILLY_PROFILE chain for this run")
     ap.add_argument("--data-dir", default=None, help="override the config tree root")
     ap.add_argument("--unmodelled-wrist-body", dest="unmodelled_wrist_body", default=UNSET, metavar="REASON",
-                    help="sweep a wrist camera whose declared body cannot be placed yet (no calibration, no record, "
-                         "or a stale one), without its body in the planner and the guard, and say why. Printed and "
-                         "logged; refused without a reason")
+                    help="move the arm without a wrist camera's declared body while that body cannot be placed yet "
+                         "(no calibration, no record, or a stale one), and say why: the camera an eye_in_hand sweep "
+                         "calibrates, and in either mode any other wrist camera the tree declares on the arm. That "
+                         "camera then has no body in the planner and the guard. Printed and logged; without it such "
+                         "a body refuses the sweep at --check. Not needed for a wrist rig declared with no body at "
+                         "all, the camera an eye_in_hand sweep calibrates included, which --check names on a "
+                         "warning line")
     ap.add_argument("--preview", action=argparse.BooleanOptionalAction, default=None,
                     help="a window beside the sweep: the camera while the arm moves, each judged frame with the "
                          "target drawn on it, and whether the pose counted. Default: open where OpenCV has a GUI, a "

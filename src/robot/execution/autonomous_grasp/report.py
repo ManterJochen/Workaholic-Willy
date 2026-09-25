@@ -328,6 +328,33 @@ class AutonomousGraspReport:
         return value if isinstance(value, Pose) else None
 
     @property
+    def fused_views(self) -> tuple[str, ...]:
+        """The cameras whose views of the object this pick went for were fused into the one cloud its grasps were
+        planned on, the camera the grasp is synthesised in first, as rig ids: ``("cam_left", "cam_right")``.
+
+        Empty where that cloud came from one camera: geometry fusion off or standing down, no second camera delivered,
+        or none identified that object. Never one camera alone. Read off the pick report's last attempt, the one the
+        pick ended on (``PickAttempt.fused_views`` of the pick loop), so empty on the two-scan path, which carries no
+        pick report.
+        """
+        value = getattr(self._last_loop_attempt(), "fused_views", ())
+        if isinstance(value, tuple) and len(value) > 1 and all(isinstance(view, str) for view in value):
+            return value
+        return ()
+
+    @property
+    def fused_objects(self) -> int:
+        """How many objects of the frame this pick was planned in gained a second camera's surface, the object it went
+        for or not; 0 where none did. Read as :attr:`fused_views` is."""
+        value = getattr(self._last_loop_attempt(), "fused_objects", 0)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+    def _last_loop_attempt(self) -> Any:
+        """The pick loop's last attempt on this pick, or ``None``: only a pick report's tuple of attempts is read."""
+        attempts = getattr(self.pick_report, "attempts", ())
+        return attempts[-1] if isinstance(attempts, tuple) and attempts else None
+
+    @property
     def hold_measured(self) -> Optional[bool]:
         """For a pick that succeeded with a gripper, whether the gripper measured the hold; :data:`None` otherwise.
 
@@ -446,6 +473,11 @@ class AutonomousGraspReport:
         typed motions a current camera world vouched for, and the weakest stamp, read through
         :func:`~src.robot.grasping.motion.execution_policy.weakest_camera_world`. When no typed
         motion was commanded it says so rather than going missing.
+
+        The fused line is not: it is printed only where a second camera added surface to an object of
+        the frame the pick was planned in, naming the cameras behind this object's cloud
+        (:attr:`fused_views`) or saying that this object was not one of them, so a single-view pick
+        prints as it always did.
         """
         pick = self.pick_report
         head = f"  outcome    {str(self.outcome).upper():<28} mode={self.mode}"
@@ -466,6 +498,12 @@ class AutonomousGraspReport:
             lines.append("  object     centre ({:.1f}, {:.1f}, {:.1f}) mm BASE".format(*centre))
         if (grasp := self.grasp_pose) is not None:
             lines.append("  grasp      closed at ({:.1f}, {:.1f}, {:.1f}) mm BASE".format(*grasp.position_mm))
+        # Only where a second camera added surface to something, so a single-view pick prints as it always did.
+        if self.fused_views:
+            lines.append(_ascii(f"  fused      {' + '.join(self.fused_views)}; "
+                                f"{self.fused_objects} object(s) fused in its frame"))
+        elif self.fused_objects:
+            lines.append(f"  fused      not this object; {self.fused_objects} other object(s) in its frame")
         if pick is not None:
             where = "simulated" if getattr(pick, "is_simulated", False) else "real"
             lines.append(
@@ -529,6 +567,8 @@ class AutonomousGraspReport:
             "looks": list(self.looks),
             "object_centre_mm": None if self.object_centre_mm is None else list(self.object_centre_mm),
             "grasp_pose": _pose_dict(self.grasp_pose),
+            "fused_views": list(self.fused_views),
+            "fused_objects": self.fused_objects,
             "fault": (None if self.fault is None
                       else {"type": type(self.fault).__name__, "message": str(self.fault)}),
         }

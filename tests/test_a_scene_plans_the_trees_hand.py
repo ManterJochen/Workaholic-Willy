@@ -2,7 +2,7 @@
 
 ``Located.scene(i, tree.robot)`` is how example 13 goes from a located part to ``robot.pick``, and it reaches
 ``Scene.from_robot_config``. That door built its jaw from the stroke alone, so every finger number fell back to
-``ParallelJawGripperModel()``, a 2F-85, while the cell path (``Cell``, example 11) builds the jaw from ``grasping.gripper_geometry``.
+``ParallelJawGripperModel()``, a 2F-85, while the cell path (``Cell``, example 12) builds the jaw from ``grasping.gripper_geometry``.
 On the owner's Robotiq Hand-E a vertical approach then needed the anchor 62.4 mm above the table instead of 25.9 mm:
 a 40 mm cube got only 90-degree side approaches 36 mm up, where the 75 mm housing reaches below the table, and a
 30 mm part got no grasp at all. The door also planned on the declared table where the pick loop raises it to the

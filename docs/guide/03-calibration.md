@@ -24,7 +24,23 @@ is a fixed camera and
 a wrist camera; from fixed stations,
 [`08_calibrate_a_fixed_camera_with_fixed_poses.py`](../../examples/real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py)
 and
-[`10_calibrate_a_wrist_camera_with_fixed_poses.py`](../../examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py). The command line is `python -m src.robot.execution.real_cell.calibrate`
+[`10_calibrate_a_wrist_camera_with_fixed_poses.py`](../../examples/real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py).
+
+Whichever camera a sweep calibrates, the arm it drives carries every wrist camera body the tree
+declares (`camera.cameras.rigs[<id>].body`), placed from that camera's calibration as
+`Robot.from_tree` places it, so a fixed camera swept over stations the arm drives to itself plans with
+the camera on the wrist and its bracket. `check()` and the build print them on a `wrist cameras`
+line. A body that cannot be placed yet, because its camera is not calibrated, refuses `check()` unless
+`SweepOptions(unmodelled_wrist_body="<reason>")` (`--unmodelled-wrist-body` on the command line) says
+why the arm may move without it, and the report then names the camera it moves without. A wrist rig
+declared with no `body` at all (its bracket not measured yet), switched on or off, refuses no sweep,
+and neither does the camera an eye-in-hand sweep calibrates when it declares none (that one switched
+on, as every camera being calibrated must be): nothing is carried for it, and `check()` and the build
+name it on one `!!` warning line, which is logged (section 4.4). That holds for calibration only;
+`Robot.from_tree` and a pick still refuse an enabled one. A camera an eye-in-hand sweep calibrates
+that does declare its body needs that reason on its first sweep, because nothing can place its body
+before it. An eye-to-hand sweep on a tree that declares no wrist camera sweeps as it always did.
+The command line is `python -m src.robot.execution.real_cell.calibrate`
 ([docs/cli.md](../cli.md)); in simulation it is `run_eth_calibrate` and `run_eih_calibrate`. The bench
 session (print the board, run the sweep, wire the artifact in) is
 [docs/calibration-setup.md](../calibration-setup.md). The package references are
@@ -384,6 +400,27 @@ Two things to carry away:
   `perceived.enabled`, with the primary rig among the calibrated ones, or remove the rig's
   `extrinsics` while it is not used. `build_real_cell` refuses before a camera opens, and
   `real_cell --check` blocks on its `camera world` row ([04](04-robot-and-safety.md)).
+- `[config] REFUSED: this eye_to_hand sweep of '<rig>' moves the arm that carries wrist camera '<wrist rig>', whose declared body cannot be placed yet. For THIS sweep (--rig <rig>), say why the arm may move without that body: --unmodelled-wrist-body "<reason>". Why the body of '<wrist rig>' cannot be placed: ...`
+
+  A sweep on a cell whose arm carries a wrist camera with a declared `body` that nothing can place
+  yet. What follows `cannot be placed:` says why: the rig declares no calibration (it then names the
+  separate `--mode eye_in_hand` command that calibrates that camera, with a flag of its own), its
+  artifact does not load, it records no flange to TCP, or it records one this cell no longer applies
+  (`camera.cameras.rigs['<wrist rig>'] was calibrated against a flange to TCP ...`); each of them is
+  excused the same way. An `eye_in_hand` sweep is refused the same way for another wrist camera it
+  does not calibrate, starting `this eye_in_hand sweep of '<rig>'`. Calibrate that wrist camera
+  first, or add the flag the refusal gives first, `--unmodelled-wrist-body "<reason>"`, to this
+  command: the sweep then moves without that body, saying so on its `wrist cameras` line
+  (`NOT carried`) and on a `!!` line of the build, which is logged.
+
+  A wrist rig declared with no `body` at all (`eye_in_hand` extrinsics, the bracket not measured
+  yet), switched on or off, is deliberately not refused by any sweep, eye to hand or eye in hand of
+  another camera, over fixed stations or guided by hand. Neither is the camera an `eye_in_hand`
+  sweep calibrates when it declares no body. Nothing is carried for such a camera, it needs no
+  reason, and the check and the build print one line, which is logged:
+  `!! wrist camera '<wrist rig>' is declared on the arm without a body: the planner and the guard do not know it is there during this sweep`.
+  That is for calibration only: `Robot.from_tree`, and with it every pick, still refuses an enabled
+  one (`WristBodyRequired`).
 - `PickOutcome.CAMERA_FRAME_REJECTED`, at pick time
 
   A valid candidate existed, but in the camera frame, while `require_base_frame_grasp` was on. The
