@@ -1446,7 +1446,19 @@ class URRobotArm(RobotArm):
                 if planned >= self._NEAREST_GOALS_PLANNED:
                     break
                 planned += 1
-                trajectory, why, start = self._planned(planner, candidate.joints, name=names[candidate])
+                try:
+                    trajectory, why, start = self._planned(planner, candidate.joints, name=names[candidate])
+                except CuroboUnavailableError:
+                    raise  # a RuntimeError too, and the caller's to type as the planner lost
+                except (RobotConnectionError, RuntimeError, OSError) as exc:
+                    # The plan reads where the arm stands again, and a transport that fails there raises what the read
+                    # at the start of the route turns into a typed result.
+                    return MotionResult.failed(
+                        MotionStatus.CONNECTION_ERROR, MotionCommand.MOVE_TO, target_pose=pose,
+                        message=(f"the controller's joint positions could not be read to plan to {names[candidate]} "
+                                 f"({type(exc).__name__}: {exc}); nothing was sent"),
+                        exception=exc,
+                    )
                 if start is not None:
                     return self._start_refusal(start, MotionCommand.MOVE_TO, target_pose=pose)
                 if trajectory is None:
@@ -1620,9 +1632,12 @@ class URRobotArm(RobotArm):
         every sample stops the arm at every sample. The plan is shortened first to the fewest of its own
         waypoints whose legs stay within the path gate's step of it, in the gate's own metric
         (:func:`~src.robot.safety.path_samples.simplify_joint_path`); on 12 measured UR10 plans 8 became one
-        ``moveJ``. The chords it draws are legs nobody judged, so the shortened list is judged whole, by the local
-        path gate and by the planner, before it may run. Where either refuses, the plan as cuRobo returned it is
-        judged by both instead, and where that is refused too the move is.
+        ``moveJ``. The chords it draws are straight joint lines nobody planned, as the direct line is, so the
+        shortened list is judged whole, by the local path gate and by the planner at
+        ``safety.planned_motion.line_clearance_mm``, before it may run (found porting 85f082b to dev, 2026-09-25:
+        judged at no contact, a plan that barely bends came back from the shortening as the very line refused at the
+        clearance, and ran). Where either refuses, the plan as cuRobo returned it is judged by both at no contact, as
+        cuRobo validated it, and where that is refused too the move is.
 
         What is returned is the very list that passed, and the caller hands it to ``execute`` unchanged: the
         legs judged are the legs run. The detour bound is read on it once more, although a subset of a plan's own
@@ -1644,7 +1659,7 @@ class URRobotArm(RobotArm):
                 shortened = None
             if shortened is not None and len(shortened) < len(traj_ur):
                 refused = self._judge_legs(planner, shortened, command=command, target_pose=target_pose,
-                                           target_joints=target_joints)
+                                           target_joints=target_joints, clearance_mm=self._line_clearance_mm())
                 if refused is None:
                     running = shortened
                 else:
@@ -2442,6 +2457,15 @@ class URRobotArm(RobotArm):
             return target, None, MotionResult.failed(
                 MotionStatus.CONTROLLER_REJECTED, command, target_joints=target,
                 message=f"cuRobo planner unavailable: {exc}", exception=exc,
+            )
+        except (RobotConnectionError, RuntimeError, OSError) as exc:
+            # The plan reads where the arm stands again, and a transport that fails there raises what the read above
+            # turns into a typed result.
+            return target, None, MotionResult.failed(
+                MotionStatus.CONNECTION_ERROR, command, target_joints=target,
+                message=(f"the controller's joint positions could not be read to plan around the straight line "
+                         f"({type(exc).__name__}: {exc}); nothing was sent"),
+                exception=exc,
             )
         if planned_refusal is not None:
             return target, None, planned_refusal

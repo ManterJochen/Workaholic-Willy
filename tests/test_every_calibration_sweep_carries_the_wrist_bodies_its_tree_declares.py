@@ -302,6 +302,48 @@ class ATreeWithNoWristCameraSweepsAsBeforeTests(_Sweeps):
         self.assertEqual(check.wrist, "")
 
 
+class AReasonExcusesOnlyABodyNothingCanPlaceTests(_Sweeps):
+    """A reason stands in for a calibration, never for a body that is placed and does not cover its camera (E14).
+
+    ⛔ Review of 2026-09-25: the eye in hand sweep's own body caught every ``WristBodyRequired`` behind its reason, so
+    a camera whose sphere fill leaves a hole was swept with no body at all once a reason was given (examples 09 and
+    10 always give one), and without a reason its refusal pointed at ``--unmodelled-wrist-body``, which cannot help.
+    The same body on any other rig was refused either way.
+    """
+
+    _HOLE = "the sphere fill leaves the housing's corner 4.0 mm uncovered"
+
+    def _checked(self, *, rig_id: str, mode: str, reason: Any) -> Any:
+        from unittest.mock import patch
+
+        from src.robot.safety.planning.body_link import WristBody
+
+        with patch.object(WristBody, "cover_refusal", return_value=self._HOLE):
+            return self._sweep(self._app(self._wrist()), rig_id=rig_id, mode=mode, reason=reason).check()
+
+    def test_the_swept_cameras_body_with_a_hole_is_refused_whatever_the_reason(self) -> None:
+        for reason in (None, _REASON):
+            with self.subTest(reason=reason):
+                check = self._checked(rig_id="wrist", mode="eye_in_hand", reason=reason)
+                self.assertFalse(check.ok, check.render())
+                self.assertIn(self._HOLE, check.refusal)
+                self.assertNotIn("--unmodelled-wrist-body", check.refusal)
+
+    def test_another_rigs_body_with_a_hole_is_refused_whatever_the_reason_as_before(self) -> None:
+        for reason in (None, _REASON):
+            with self.subTest(reason=reason):
+                check = self._checked(rig_id="overhead", mode="eye_to_hand", reason=reason)
+                self.assertFalse(check.ok, check.render())
+                self.assertIn(self._HOLE, check.refusal)
+
+    def test_a_body_nothing_places_yet_is_still_excused_by_a_reason(self) -> None:
+        excused = self._sweep(self._app(self._wrist(calibrated=False)), rig_id="wrist", mode="eye_in_hand",
+                              reason=_REASON).check()
+        self.assertTrue(excused.ok, excused.refusal)
+        refused = self._sweep(self._app(self._wrist(calibrated=False)), rig_id="wrist", mode="eye_in_hand").check()
+        self.assertIn('--unmodelled-wrist-body "<reason>"', refused.refusal)
+
+
 class AWristCameraSweepKeepsItsOwnHandlingTests(_Sweeps):
 
     def test_an_eye_in_hand_sweep_carries_its_own_placed_body_as_before(self) -> None:
@@ -576,6 +618,27 @@ class ARobotHandedInThatCarriesTheBodiesTests(_Sweeps):
         self.assertIs(report.outcome, CalibrationOutcome.BUILD_REFUSED, report.render())
         assert report.build is not None
         self.assertIn(_GUARD_BUILT, report.build.refusal)
+
+    def test_a_body_the_guard_no_longer_holds_is_handed_again_though_the_build_record_names_it(self) -> None:
+        """⛔ Review of 2026-09-25: the robot's record of its bodies is set once, when it is built, and counted as held
+        beside what the guard holds. A sweep that replaced the body (a new calibration, another margin) left the
+        record naming the old one, so a later sweep that carries the old body again handed nothing: the planner and
+        the guard kept the replaced body while the build said the other."""
+        app = self._app(self._wrist())
+        robot = self._robot(app)
+        self.assertEqual(self._margins(robot), [5.0])
+        wider = self._app(self._wrist(margin_mm=9.0))
+        first = self._run(robot, wider.camera)
+        self.assertIs(first.outcome, CalibrationOutcome.DRY_RUN, first.render())
+        self.assertEqual(self._margins(robot), [9.0], "the guard is not built, so the wider body was handed")
+        second = self._run(robot, app.camera)
+        self.assertIs(second.outcome, CalibrationOutcome.DRY_RUN, second.render())
+        self.assertEqual(self._margins(robot), [5.0], "the body the tree declares now is the one the arm holds")
+
+    @staticmethod
+    def _margins(robot: Robot) -> list[float]:
+        assert isinstance(robot.arm, URRobotArm)
+        return [body.margin_mm for body in robot.arm._preflight.wrist_bodies(robot.arm)]  # type: ignore[attr-defined]  # noqa: SLF001
 
 
 class ACameraHandedInWithoutItsSectionTests(_Sweeps):

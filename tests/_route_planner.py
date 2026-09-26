@@ -6,7 +6,8 @@ which questions reach the planner, in what order and at what clearance, and whic
 double answers each question from a rule a test sets, and keeps the calls in order so a test reads the decision:
 
 * ``screen(config)``: the planner's verdict on one configuration, a goal it screens (default: clear);
-* ``line_clear(start, end)``: its verdict on a straight line judged at a clearance (default: clear);
+* ``line_clear(start, end)``: its verdict at a clearance on a list that runs straight from ``start`` to ``end``
+  (default: clear); a list that bends away from that line clears, as a plan around what sits on the line does;
 * ``answer(goal)``: the trajectory ``plan_joint`` returns, ``None`` for no plan (default: 21 waypoints on the line).
 
 Every check is recorded as ``("check", configs, refresh, clearance_mm)``, every plan as ``("plan_joint", goal,
@@ -30,6 +31,20 @@ def line(start: "list[float] | tuple[float, ...]", end: "list[float] | tuple[flo
         out.append([a + (b - a) * index / (count - 1) for a, b in zip(start, end)])
     out.append(list(end))
     return out
+
+
+def _straight(configs: "list[tuple[float, ...]]", tol: float = 1e-9) -> bool:
+    """Whether every configuration lies on the straight joint line from the first to the last."""
+    start, end = configs[0], configs[-1]
+    span = [b - a for a, b in zip(start, end)]
+    axis = max(range(len(span)), key=lambda i: abs(span[i]))
+    if abs(span[axis]) <= tol:
+        return all(max(abs(v - a) for v, a in zip(c, start)) <= tol for c in configs)
+    for config in configs:
+        t = (config[axis] - start[axis]) / span[axis]
+        if max(abs(v - (a + t * d)) for v, a, d in zip(config, start, span)) > tol:
+            return False
+    return True
 
 
 class RoutePlanner:
@@ -60,7 +75,7 @@ class RoutePlanner:
         self.calls.append(("check", configs, refresh, float(clearance_mm)))
         if len(configs) == 1 and not self.screen(configs[0]):
             return JointCheckVerdict(valid=False, first_invalid=0, checked=1, reason="the double refuses this goal")
-        if clearance_mm > 0.0 and not self.line_clear(configs[0], configs[-1]):
+        if clearance_mm > 0.0 and _straight(configs) and not self.line_clear(configs[0], configs[-1]):
             return JointCheckVerdict(valid=False, first_invalid=len(configs) // 2, checked=len(configs),
                                      reason="the double's line comes too close", refusal=self.refusal_on_a_line)
         return JointCheckVerdict(valid=True, first_invalid=None, checked=len(configs), reason="the double accepts")

@@ -194,6 +194,38 @@ class TheStartQuestionTests(unittest.TestCase):
         jaws.connect()                                      # connected: nothing is asked twice
         self.assertEqual(3, len(person.asked))
 
+    def test_no_clear_answer_to_the_pulse_is_said_as_that_and_not_as_a_choice(self) -> None:
+        """Found porting 85f082b to dev, 2026-09-25: the jaws said closed, and the [p]/[a] question got no clear answer,
+        three wrong ones or the end of input. Nothing was pulsed, rightly, but the refusal and the log said the person
+        chose not to open them."""
+
+        def ended(*answers: str) -> Any:
+            person = Person(*answers)
+
+            def ask(question: str) -> str:
+                if not person.answers:
+                    raise EOFError
+                return person(question)
+
+            return ask
+
+        for label, ask in (("three wrong answers", Person("closed", "x", "y", "z")),
+                           ("the end of input", ended("closed"))):
+            with self.subTest(label):
+                events: list[Any] = []
+                jaws = _toggle(events, ask)
+                with self.assertLogs(jaws.logger, level="WARNING") as logs, self.assertRaises(RobotError) as caught:
+                    jaws.connect()
+                self.assertIn("gave no clear answer to whether to open them", str(caught.exception))
+                self.assertNotIn("chose", str(caught.exception))
+                self.assertFalse(any("chose" in line for line in logs.output), logs.output)
+                self.assertEqual(0, _pulses(events))
+        # THE CONTROL: an abort is a choice, and says so.
+        jaws = _toggle([], Person("closed", "a"))
+        with self.assertRaises(RobotError) as caught:
+            jaws.connect()
+        self.assertIn("chose not to open them", str(caught.exception))
+
     def test_answers_that_are_none_of_the_choices_are_an_abort(self) -> None:
         events: list[Any] = []
         person = Person("maybe", "dunno", "?")

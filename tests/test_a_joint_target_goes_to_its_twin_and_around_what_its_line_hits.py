@@ -155,6 +155,58 @@ class TheLineAndThePlanTests(unittest.TestCase):
         np.testing.assert_allclose(execute[3].values, _THERE, atol=0.0)
         arm._conn.moveJ.assert_not_called()  # every waypoint went through the planner glue's execute
 
+    def test_a_plan_that_shortens_back_into_the_refused_line_runs_as_cuRobo_returned_it(self) -> None:
+        """Found porting 85f082b to dev, 2026-09-25: cuRobo's plan barely bends, and shortened it is the line refused
+        at the clearance. Judged at that clearance it is refused again, and the plan runs as cuRobo returned it, at no
+        contact. Before, the shortened list was judged at no contact, passed, and the refused line ran."""
+        planner = RoutePlanner(here=_HERE)
+        planner.line_clear = lambda start, end: False
+        dense = line(_HERE, _THERE, 21)
+        planner.answer = lambda goal: [list(w) for w in dense]
+        arm = _arm(planner)
+        with arm.without_camera_world(_DECLINED):
+            result = arm.move_to_joints(JointPositions(_THERE))
+        self.assertTrue(result.ok, result.message)
+        (execute,) = planner.named("execute")
+        self.assertEqual(21, len(execute[1]), "the plan ran shortened into the line the planner refused")
+        self.assertEqual([10.0, 10.0, 0.0], [c[3] for c in planner.named("check") if len(c[1]) > 1])
+
+    def test_a_transport_lost_while_cuRobo_plans_is_a_typed_connection_error(self) -> None:
+        """Found porting 85f082b to dev, 2026-09-25: ``plan_joint`` reads where the arm stands again, and a transport
+        that fails there raised out of the verb instead of the typed result the first read gives."""
+        for error in (RuntimeError("RTDE receive interface stopped"), OSError("connection reset")):
+            with self.subTest(type(error).__name__):
+                planner = RoutePlanner(here=_HERE)
+                planner.line_clear = lambda start, end: False
+
+                def lost(goal: Any, error: Exception = error) -> Any:
+                    raise error
+
+                planner.answer = lost
+                arm = _arm(planner)
+                with arm.without_camera_world(_DECLINED):
+                    result = arm.move_to_joints(JointPositions(_THERE))
+                self.assertIs(MotionStatus.CONNECTION_ERROR, result.status, result.message)
+                self.assertIn("nothing was sent", result.message or "")
+                self.assertEqual([], planner.named("execute"))
+                arm._conn.moveJ.assert_not_called()
+
+    def test_a_planner_lost_while_it_plans_is_still_the_planner_unavailable(self) -> None:
+        """⭐ THE CONTROL: ``CuroboUnavailableError`` is a ``RuntimeError``, and the transport catch does not take it."""
+        planner = RoutePlanner(here=_HERE)
+        planner.line_clear = lambda start, end: False
+
+        def gone(goal: Any) -> Any:
+            raise CuroboUnavailableError("the sidecar exited")
+
+        planner.answer = gone
+        arm = _arm(planner)
+        with arm.without_camera_world(_DECLINED):
+            result = arm.move_to_joints(JointPositions(_THERE))
+        self.assertIs(MotionStatus.CONTROLLER_REJECTED, result.status, result.message)
+        self.assertIn("cuRobo planner unavailable", result.message or "")
+        arm._conn.moveJ.assert_not_called()
+
     def test_home_is_planned_around_too_and_reads_move_home(self) -> None:
         planner = RoutePlanner(here=_HERE)
         planner.line_clear = lambda start, end: False

@@ -107,8 +107,10 @@ around it to the same target under the same detour bound.
 
 A plan then meets the plan-end check and the endpoint gate, is shortened to the fewest of its own
 waypoints whose legs stay within the path gate's step, and runs as one `moveJ` per kept waypoint once
-the path gate and the planner have both passed those legs. Where either refuses, the plan as cuRobo
-returned it is judged by both and runs instead. Every move logs how its route was chosen (a direct
+the path gate and the planner at `line_clearance_mm` have both passed those legs, which are straight
+lines nobody planned. Where either refuses, the plan as cuRobo returned it is judged by both at no
+contact, as cuRobo validated it, and runs instead. A transport that fails while cuRobo plans, which
+reads the joints again, is `CONNECTION_ERROR` and nothing is sent. Every move logs how its route was chosen (a direct
 line, a cuRobo plan to which goal, a branch change, a turned joint), how many waypoints cuRobo returned
 and how many ran, and each joint's total and largest turn in degrees on what ran, and warns when a
 joint turns more than half a turn past what its end needs.

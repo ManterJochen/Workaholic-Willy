@@ -163,6 +163,28 @@ class ALineStaysOnItsBranchTests(unittest.TestCase):
         self.assertEqual([], client.checked)
 
 
+class ALineNoPathCanBeJudgedOnIsRefusedTests(unittest.TestCase):
+    """Found porting to dev, 2026-09-25, and live in prod: on a preflight that samples no path the line handed the gate
+    no waypoints, the gate answers an empty path with ``None`` before it can say why no path is judged, and ``or``
+    then drove the line to its end unjudged. Handed where the arm stands, the gate refuses and says why."""
+
+    def test_a_preflight_with_no_path_guard_refuses_the_line_and_drives_nothing(self) -> None:
+        from src.robot.core import MotionStatus
+        from src.robot.safety.preflight import SafetyPreflight, no_path_guard_refusal
+
+        arm, client, _ = _arm()
+        arm._preflight = SafetyPreflight([])
+        arm._drive_to_target = MagicMock()  # type: ignore[method-assign]
+
+        result = arm._drive_checked_line(_pose(400.0))
+
+        arm._drive_to_target.assert_not_called()  # type: ignore[attr-defined]
+        arm._drive_joints.assert_not_called()  # type: ignore[attr-defined]
+        self.assertIs(MotionStatus.UNSUPPORTED, result.status, result.message)
+        self.assertIn(no_path_guard_refusal(), result.message or "")
+        self.assertEqual([], client.checked)
+
+
 class TheSimLineIsJudgedFilledAndWalkedAsSampledTests(unittest.TestCase):
     """The sim walks each sample in turn, so between two of them it runs the joint line, whose sum |dq| * r can
     exceed the bound the gate is told threefold. The gate judges that line at the line's own step, and the walk

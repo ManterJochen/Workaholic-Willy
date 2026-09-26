@@ -37,7 +37,7 @@ from src.robot.drivers.ur.curobo_motion import PLANNER_JOINT_ENVELOPE_RAD, UR_AR
 from src.robot.safety._ur_ik import nearest_goals, ur_branch, ur_flange_ik
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm
 from src.robot.safety.path_samples import span_overshoot_rad
-from src.robot.safety.planning import StateRefusal, StateRefusalKind, StateWhere
+from src.robot.safety.planning import CuroboUnavailableError, StateRefusal, StateRefusalKind, StateWhere
 from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
 from tests._route_planner import RoutePlanner, line
 
@@ -224,8 +224,10 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
         (asked,) = planner.named("plan_joint")
         np.testing.assert_allclose(asked[1], _THERE, atol=1e-6)
         self.assertIs(False, asked[2], "the plan refreshed the world the line and the screens were judged in")
-        # The plan is a straight 21-waypoint line, which the arm shortens to its two ends and judges again.
-        self.assertEqual(2, len(planner.named("execute")[0][1]))
+        # The plan is a straight 21-waypoint line. Shortened to its two ends it is the line refused at the clearance,
+        # and judged at that clearance it is refused again, so the plan runs as cuRobo returned it (found porting
+        # 85f082b to dev, 2026-09-25; before, it ran as the refused line).
+        self.assertEqual(21, len(planner.named("execute")[0][1]))
 
     def test_a_line_the_local_gate_refuses_is_planned_around(self) -> None:
         planner = RoutePlanner(here=_HERE)
@@ -241,7 +243,9 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
         result = _move(arm, _THERE)
         self.assertTrue(result.ok, result.message)
         self.assertEqual(1, len(planner.named("plan_joint")))
-        self.assertEqual([], planner.lines(), "a line the local gate refused was still sent to the planner")
+        before = planner.calls[:planner.calls.index(planner.named("plan_joint")[0])]
+        self.assertEqual([], [c for c in before if c[0] == "check" and c[3] > 0.0],
+                         "a line the local gate refused was still sent to the planner")
 
     def test_every_line_is_tried_before_any_plan(self) -> None:
         """Out of a candle-straight home every goal is on the arm's branch; each is lined before any is planned."""
@@ -302,6 +306,39 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
         said = "\n".join(logs.output)
         self.assertIn("did not plan", said)
         self.assertIn("the straight line to goal 1 of", said)
+        self.assertEqual([], planner.named("execute"))
+
+    def test_a_transport_lost_while_cuRobo_plans_is_a_typed_connection_error(self) -> None:
+        """Found porting 85f082b to dev, 2026-09-25: ``plan_joint`` reads where the arm stands again, and a transport
+        that fails there raised out of ``move`` instead of the typed result the first read gives."""
+        for error in (RuntimeError("RTDE receive interface stopped"), OSError("connection reset")):
+            with self.subTest(type(error).__name__):
+                planner = RoutePlanner(here=_HERE)
+                planner.line_clear = lambda start, end: False
+
+                def lost(goal: Any, error: Exception = error) -> Any:
+                    raise error
+
+                planner.answer = lost
+                arm = _arm(planner)
+                result = _move(arm, _THERE)
+                self.assertIs(MotionStatus.CONNECTION_ERROR, result.status, result.message)
+                self.assertIn("nothing was sent", result.message or "")
+                self.assertEqual([], planner.named("execute"))
+                arm._conn.moveJ.assert_not_called()
+
+    def test_a_planner_lost_while_it_plans_is_still_the_planner_unavailable(self) -> None:
+        """⭐ THE CONTROL: ``CuroboUnavailableError`` is a ``RuntimeError``, and the transport catch does not take it."""
+        planner = RoutePlanner(here=_HERE)
+        planner.line_clear = lambda start, end: False
+
+        def gone(goal: Any) -> Any:
+            raise CuroboUnavailableError("the sidecar exited")
+
+        planner.answer = gone
+        result = _move(_arm(planner), _THERE)
+        self.assertIs(MotionStatus.CONTROLLER_REJECTED, result.status, result.message)
+        self.assertIn("cuRobo planner unavailable", result.message or "")
         self.assertEqual([], planner.named("execute"))
 
     def test_a_start_the_planner_refuses_stops_the_search_and_is_reported_typed(self) -> None:

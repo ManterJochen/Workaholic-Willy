@@ -159,7 +159,7 @@ _WITH_CLEARANCE = _PREAMBLE + textwrap.dedent("""
         reply = {"success": True, "valid": first is None, "first_invalid": first, "checked": len(flags),
                  "clearance_m": clearance}
         if first is not None and clearance > 0.0:
-            reply["refusal"] = {"where": "start", "kind": "world", "joints": req["joints"][first],
+            reply["refusal"] = {"where": "path", "kind": "world", "joints": req["joints"][first],
                                 "clearance_mm": clearance * 1000.0}
         emit(reply, req.get("id"))
 """)

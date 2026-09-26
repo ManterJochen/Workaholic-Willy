@@ -2089,9 +2089,17 @@ class IsaacRobotArm(RobotArm):
         step_mm = self._preflight.path_step_mm
         radii = self._preflight.joint_radii_mm(self)
         if step_mm is None or radii is None:
-            return self._preflight.gate_planned_path(
-                [], arm=self, command=MotionCommand.MOVE_TO,
-            ) or self._drive_to_target(pose, self._resolve_ik(pose))
+            # Handed no waypoints the gate answers None before it can say why no path of this arm is judged, and
+            # ``gate or drive`` then drove the line unjudged (found porting to dev, 2026-09-25). Handed where the arm
+            # stands it refuses, as it does every path here; and were it ever to pass one, the line still does not run.
+            standing = [float(v) for v in self.get_joint_positions().tolist()]
+            refused = self._preflight.gate_planned_path([standing], arm=self, command=MotionCommand.MOVE_TO)
+            if refused is not None:
+                return refused
+            return MotionResult.failed(
+                MotionStatus.UNSUPPORTED, MotionCommand.MOVE_TO, target_pose=pose,
+                message="no path of this arm can be judged sample by sample, so the checked line does not run",
+            )
         try:
             samples = line_samples(
                 self.get_tcp_pose(), pose, reach_mm=max(radii), max_step_mm=step_mm,

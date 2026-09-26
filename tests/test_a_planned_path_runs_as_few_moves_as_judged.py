@@ -263,7 +263,22 @@ class JudgedIsExecutedTests(unittest.TestCase):
         self.assertEqual(list(expected), check[1])
         self.assertIs(False, check[2], "the planner refreshed its world after the gate had judged against it")
         self.assertEqual(["plan", "check", "execute"], [call[0] for call in planner.calls])
-        self.assertEqual(0.0, check[3], "a plan's legs are judged at no clearance, as cuRobo validated them")
+        self.assertEqual(10.0, check[3], "a shortened list's chords are lines nobody planned, judged at the line "
+                                         "clearance (found porting 85f082b to dev, 2026-09-25)")
+
+    def test_the_plan_as_cuRobo_returned_it_is_judged_at_no_clearance(self) -> None:
+        """Where the shortened list is refused, the plan as returned is judged as cuRobo validated it: at no contact."""
+        dense = _line(_HERE, _THERE, 41)
+        planner = _Planner(dense, verdicts=[_refused("a chord grazes the tote")])
+        arm, _ = _arm(planner)
+        self.assertTrue(self._move(arm, _THERE).ok)
+        self.assertEqual([10.0, 0.0], [check[3] for check in planner.named("check")])
+
+    def test_a_plan_with_nothing_to_drop_is_judged_as_cuRobo_returned_it(self) -> None:
+        planner = _Planner([list(_HERE), list(_THERE)])
+        arm, _ = _arm(planner)
+        self._move(arm, _THERE)
+        self.assertEqual([0.0], [check[3] for check in planner.named("check")])
 
     def test_a_shortened_list_the_planner_refuses_falls_back_to_the_plan_as_returned(self) -> None:
         dense = _line(_HERE, _THERE, 41)
@@ -378,13 +393,16 @@ class JudgedIsExecutedTests(unittest.TestCase):
 
 
 @pytest.mark.skipif(mesh_backend_status("ur5e") != "ok", reason="no exact mesh backend on this box")
-def test_with_the_real_local_gate_a_clear_plan_runs_as_one_moveJ() -> None:
-    """The control with nothing stubbed on the local side: the exact mesh gate judges the shortened legs.
+def test_with_the_real_local_gate_a_plan_that_shortens_back_into_the_refused_line_runs_as_cuRobo_returned_it() -> None:
+    """Found porting 85f082b to dev, 2026-09-25: the straight line refused at the clearance must not come back as a
+    shortened plan.
 
-    The planner double refuses the straight line to the goal, so the move plans, and the plan the real gate passes is
-    the plan's two ends.
+    The planner double refuses every list judged at a clearance, so the move plans; cuRobo's plan is straight, and
+    shortened it is the very line refused. Judged at the line clearance it is refused again, and the plan runs as
+    cuRobo returned it, judged at no contact, with nothing stubbed on the local side.
     """
-    planner = _Planner(_line(_HERE, _THERE, 41), refuse_lines=True)
+    dense = _line(_HERE, _THERE, 41)
+    planner = _Planner(dense, refuse_lines=True)
     arm = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
         "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"},
@@ -397,9 +415,10 @@ def test_with_the_real_local_gate_a_clear_plan_runs_as_one_moveJ() -> None:
     with arm.without_camera_world(_DECLINED):
         result = arm.move(pose_where_it_ends(arm, _THERE))
     assert result.ok, result.message
-    assert len(planner.lines) == 1, "the straight line was not judged before the plan"
+    assert len(planner.lines) == 2, "the line and the shortened list were not both judged at the clearance"
+    assert [len(configs) > 2 for configs in planner.lines] == [True, True]
     (execute,) = planner.named("execute")
-    assert [tuple(w) for w in execute[1]] == [tuple(_HERE), tuple(_THERE)]
+    assert execute[1] is dense, "the plan ran shortened into the line the planner refused"
 
 
 @pytest.mark.skipif(mesh_backend_status("ur5e") != "ok", reason="no exact mesh backend on this box")

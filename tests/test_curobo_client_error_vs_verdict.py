@@ -186,6 +186,16 @@ class TheBatchCheckBranchTests(unittest.TestCase):
                 self.assertIn('"planner_error": True', line)
                 self.assertIn("_emit(", line)
 
+    def test_a_refused_sample_is_stamped_a_configuration_of_the_path(self) -> None:
+        """Found porting to dev, 2026-09-25, and live in prod: check_js stamped every refused sample ``start``, so a
+        goal the route screened, or sample 10 of a line, read "cuRobo refuses the start of this move". check_js does
+        not know what the configurations it judges are to the caller; it says they are a path's."""
+        stamps = [line.strip() for line in self.block if "where=" in line]
+        self.assertTrue(stamps, "the check_js branch stamps no refusal, so this test would pass on nothing")
+        for line in stamps:
+            with self.subTest(line=line):
+                self.assertIn("where=WHERE_PATH", line)
+
     def test_every_reply_goes_through_emit(self) -> None:
         text = "\n".join(self.block)
         self.assertIn("_emit(", text)

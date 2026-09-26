@@ -886,8 +886,10 @@ class JawIOGripper:
         if changed:
             return changed
         if choice != "pulse":
-            self.logger.warning("a person said the jaws on %s stand CLOSED and did not open them (%s)", where, reason)
-            return f"a person said the jaws on {where} stand CLOSED and chose not to open them"
+            # An abort is a choice; three wrong answers or the end of input are not, and the refusal says which it was.
+            said = "chose not to open them" if choice == "abort" else "gave no clear answer to whether to open them"
+            self.logger.warning("a person said the jaws on %s stand CLOSED and %s (%s)", where, said, reason)
+            return f"a person said the jaws on {where} stand CLOSED and {said}"
         self.logger.warning("a person said the jaws on %s stand CLOSED and had them opened (%s)", where, reason)
         self._closed, self._edge_unknown = True, False
         if self._actuation == "single_toggle":

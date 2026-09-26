@@ -184,13 +184,17 @@ class ThePlanCarriesTheReasonTests(unittest.TestCase):
 
     def test_a_checked_path_carries_the_refusal_of_the_sample_it_names(self) -> None:
         judged = {"success": True, "valid": False, "first_invalid": 1, "checked": 2,
-                  "refusal": dict(_TOUCHING, where="start")}
+                  "refusal": dict(_TOUCHING, where="path")}
         with _Stubbed(_READY, [judged]) as client:
             client.start()
             verdict = client.check_joints([[0.0] * 6, [0.1] * 6])
         self.assertEqual(verdict.first_invalid, 1)
         assert verdict.refusal is not None
         self.assertEqual(verdict.refusal.link_b, "hand")
+        # Found porting to dev, 2026-09-25: a refused sample read "the start of this move" wherever it sat on the path.
+        self.assertIs(StateWhere.PATH, verdict.refusal.where)
+        self.assertIn("cuRobo refuses a configuration of the path it was asked to judge", verdict.refusal.render())
+        self.assertNotIn("start", verdict.refusal.render())
 
         passing = {"success": True, "valid": True, "first_invalid": None, "checked": 2}
         with _Stubbed(_READY, [passing]) as client:

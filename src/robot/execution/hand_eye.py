@@ -1587,7 +1587,7 @@ def _wrist_body_for_sweep(robot_cfg: Any, rig: Any, *, data_dir: Any, reason: "s
     from src.calibration.rig_calibration import RigArtifactMissing
     from src.config.cameras import load_camera, tree_camera_refusal
     from src.config.loader import ConfigError
-    from src.robot.execution.wrist_bodies import WristBodies, WristBodyRequired
+    from src.robot.execution.wrist_bodies import WristBodies, WristBodyRequired, WristBodyUnplaced
     from src.robot.safety.planning.hand import wrist_body_reader
 
     reader = wrist_body_reader(robot_cfg)
@@ -1608,7 +1608,7 @@ def _wrist_body_for_sweep(robot_cfg: Any, rig: Any, *, data_dir: Any, reason: "s
         return None, f"{key}.body: {registry}"
     try:
         return WristBodies.from_config(robot_cfg, _one_rig(rig), data_dir=data_dir), None
-    except WristBodyRequired as exc:
+    except WristBodyUnplaced as exc:
         if reason and reason.strip():
             return None, None
         # The observation alone when the artifact is missing: its remedy is to run this sweep, which is what
@@ -1619,6 +1619,10 @@ def _wrist_body_for_sweep(robot_cfg: Any, rig: Any, *, data_dir: Any, reason: "s
         # rstrip: the refusal it wraps may end on a full stop of its own, and ".." reads as a typo.
         return None, (f"{said.rstrip('.')}. To sweep this camera before its body can be placed, say why: "
                       '--unmodelled-wrist-body "<reason>"')
+    except WristBodyRequired as exc:
+        # A body that is placed and does not cover its camera (E14): no reason stands in for a cover, so none is
+        # offered (review of 2026-09-25; before, a reason swept this camera with no body at all).
+        return None, str(exc)
 
 
 def _declared_wrist_bodies(
@@ -1718,22 +1722,23 @@ def _hand_over(carried: Any, robot: Any) -> str:
 
 
 def _held_by_the_arm(robot: Any) -> tuple[Any, ...]:
-    """The wrist bodies the robot's arm holds now: the robot's record from its build, and what its guard holds.
+    """The wrist bodies the robot's arm holds now: what its guard holds, else the robot's record from its build.
 
-    ``Robot.wrist_bodies`` is set once, when the robot is built, so a sweep's own hand-over is not in it; the arm's
-    self-collision guard is (``SafetyPreflight.wrist_bodies``), so a robot swept a second time is not handed the same
-    bodies again. A guard that cannot be read adds nothing.
+    The arm's self-collision guard (``SafetyPreflight.wrist_bodies``) is what the planner and the guard read, so it is
+    the answer wherever it can be read: a sweep's own hand-over is in it, and so is a body a sweep replaced.
+    ``Robot.wrist_bodies`` is set once, when the robot is built, and stands in only for an arm whose guard cannot be
+    read. Counting the record beside the guard (before the review of 2026-09-25) took a body the guard no longer
+    held for one it held, so a sweep carrying it again handed nothing.
     """
-    held_by = getattr(robot, "wrist_bodies", None)
-    held = list(held_by.bodies) if held_by is not None else []
     preflight = getattr(getattr(robot, "arm", None), "safety_preflight", None)
     reader = getattr(preflight, "wrist_bodies", None)
     if callable(reader):
         try:
-            held.extend(body for body in reader(robot.arm) if body not in held)
-        except Exception as exc:  # noqa: BLE001 (a guard that cannot be read adds nothing; the record stands)
+            return tuple(reader(robot.arm))
+        except Exception as exc:  # noqa: BLE001 (a guard that cannot be read says nothing; the record stands)
             logger.debug("hand-eye: the arm's guard gave no wrist bodies: %s", exc)
-    return tuple(held)
+    held_by = getattr(robot, "wrist_bodies", None)
+    return tuple(held_by.bodies) if held_by is not None else ()
 
 
 def _on_the_arm(rig: Any) -> bool:

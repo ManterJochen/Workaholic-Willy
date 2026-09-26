@@ -48,7 +48,7 @@ obstacle and positive in free space, in the planner's voxel order. Written the o
 round, every voxel that is not an obstacle reads as inside one and the whole grid blocks,
 as ``scripts/curobo/probe_live_world.py`` measures.
 
-A refusal block is {"where":"default_q"|"start"|"goal", "kind":"self_collision"|"joint_limit"|"world",
+A refusal block is {"where":"default_q"|"start"|"goal"|"path", "kind":"self_collision"|"joint_limit"|"world",
 "joints":[6 rad], "pair":[link,link]?, "depth_mm":float?, "clearance_mm":float?}. The pair is named from sphere
 ownership in the config this sidecar loaded, through ``_curobo_pairs``; a descriptor that
 resolves its spheres from a file carries no ownership, and the refusal is then unnamed
@@ -252,6 +252,7 @@ try:
         KIND_WORLD,
         WHERE_DEFAULT_Q,
         WHERE_GOAL,
+        WHERE_PATH,
         WHERE_START,
     )
 
@@ -658,7 +659,9 @@ for _line in sys.stdin:
                 # configuration nobody can picture.
                 _named = _judge_states([req["joints"][_first]], world=True, clearance_m=_clearance)[0]
                 if _named is not None:
-                    _reply["refusal"] = dict(_named, where=WHERE_START)
+                    # A configuration of the path handed in: a start, a goal screened alone or a sample between, which
+                    # the sidecar cannot tell apart, so it does not say "start" (found porting to dev, 2026-09-25).
+                    _reply["refusal"] = dict(_named, where=WHERE_PATH)
             _emit(_reply)
         except Exception as exc:  # noqa: BLE001
             # The call failed and nothing was judged: labelled planner_error so the client

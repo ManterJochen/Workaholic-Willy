@@ -223,27 +223,21 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     # identical to QualityBandsMm: the excellent, good and marginal floats are all classify_rmse
     # reads, so the cast is a typing narrowing.
     quality = str(classify_rmse(result.rmse_mm, cast("QualityBandsMm", cal.quality_bands_mm)))
-    gate_mm = 1.0 if marker == "ground_truth" else 8.0
-    # Accuracy is bounded by d_t + d_r (vs the true CV-optical oracle). The AX=XB rmse band: GT must be
-    # good+ (it is exact); a small ArUco tool marker viewed obliquely from the overhead is realistically
-    # ~3 mm rmse (marginal), so accept marginal-but-not-poor for the fiducial path.
-    ok_quality = quality in (("good", "excellent") if marker == "ground_truth"
-                             else ("good", "excellent", "marginal"))
-    ok = d_t < gate_mm and d_r < 1.5 and ok_quality
+    ok, rule = _gate(marker, d_t, d_r, quality)
     print("\n--- RESULT ---", flush=True)
     print(f"  accepted samples: {result.num_samples}", flush=True)
     print(f"  calibrated T_cam_to_BASE mm: {np.round(np.asarray(result.transform.to_matrix())[:3, 3], 1)}", flush=True)
     print(f"  AX=XB rmse: {result.rmse_mm:.4f} mm | max_error: {result.max_error_mm:.4f} | quality: {quality}", flush=True)
     print(f"  ERROR vs overhead oracle: translation={d_t:.3f} mm, rotation={d_r:.3f} deg", flush=True)
-    print(f"  GATE (<{gate_mm:.0f} mm, <1.5 deg, quality good+): {'PASS' if ok else 'CHECK'}", flush=True)
+    print(f"  GATE ({rule}): {'PASS' if ok else 'CHECK'}", flush=True)
     # The solve itself, once: accepted-vs-planned samples (AX=XB degrades quietly when views were
     # refused), the residual, and the error against the true CV-optical oracle.
     _log_result = _LOG.info if ok else _LOG.warning
     _log_result(
         "ETH %s/%s solved: %d/%d samples accepted, rmse=%.4f mm max_error=%.4f mm quality=%s, "
-        "vs oracle dt=%.3f mm dr=%.3f deg -> gate(<%.0f mm, <1.5 deg, good+)=%s",
+        "vs oracle dt=%.3f mm dr=%.3f deg -> gate(%s)=%s",
         camera_id, marker, result.num_samples, len(planned), result.rmse_mm, result.max_error_mm, quality,
-        d_t, d_r, gate_mm, "PASS" if ok else "CHECK: the artifact below is saved anyway",
+        d_t, d_r, rule, "PASS" if ok else "CHECK: the artifact below is saved anyway",
     )
 
     # Persist keyed by camera id as a schema-versioned Extrinsics (eye-to-hand CAMERA->BASE). rig_id
@@ -266,6 +260,21 @@ def calibrate(*, headless: bool = True, marker: str = "ground_truth", camera_id:
     if not headless:
         arm.session.step_n(900)
     return {"ok": ok, "error_mm": d_t, "error_deg": d_r, "quality": quality}
+
+
+def _gate(marker: str, d_t: float, d_r: float, quality: str) -> tuple[bool, str]:
+    """Whether a solve passes, and the rule it was held to, in the words the RESULT and the log print.
+
+    Accuracy is bounded by ``d_t`` and ``d_r``, the error against the true CV-optical oracle. The AX=XB residual's band:
+    the ground-truth marker must reach good (it is exact); a small ArUco tool marker seen obliquely from the overhead is
+    realistically near 3 mm (marginal), so the fiducial path accepts marginal but not poor. One function says both, so
+    the line a person reads is the rule that was checked: it said "quality good+" for either marker while a marginal
+    ArUco solve passed (found porting to dev, 2026-09-26).
+    """
+    gate_mm = 1.0 if marker == "ground_truth" else 8.0
+    accepted = ("good", "excellent") if marker == "ground_truth" else ("good", "excellent", "marginal")
+    ok = d_t < gate_mm and d_r < 1.5 and quality in accepted
+    return ok, f"<{gate_mm:.0f} mm, <1.5 deg, quality {'good+' if marker == 'ground_truth' else 'marginal+'}"
 
 
 def main() -> None:

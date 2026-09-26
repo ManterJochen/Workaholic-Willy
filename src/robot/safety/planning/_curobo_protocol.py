@@ -17,6 +17,7 @@ __all__ = [
     "WHERES",
     "WHERE_DEFAULT_Q",
     "WHERE_GOAL",
+    "WHERE_PATH",
     "WHERE_START",
 ]
 
@@ -25,11 +26,14 @@ __all__ = [
 #: because a planner that cannot plan is not a planner.
 ENV_MEASURE_ONLY = "WILLY_CUROBO_MEASURE_ONLY"
 
-#: Which configuration the sidecar judged: the descriptor's own retract, the start of a move, or its goal.
+#: Which configuration the sidecar judged: the descriptor's own retract, the start of a move, its goal, or a
+#: configuration of a path it was handed to judge (check_js), which it cannot tell a start, a screened goal or a sample
+#: between them apart by.
 WHERE_DEFAULT_Q = "default_q"
 WHERE_START = "start"
 WHERE_GOAL = "goal"
-WHERES = (WHERE_DEFAULT_Q, WHERE_START, WHERE_GOAL)
+WHERE_PATH = "path"
+WHERES = (WHERE_DEFAULT_Q, WHERE_START, WHERE_GOAL, WHERE_PATH)
 
 #: What it found there. ``world`` is the planner's obstacles, not the robot.
 KIND_SELF_COLLISION = "self_collision"

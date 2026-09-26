@@ -43,6 +43,7 @@ from ._curobo_protocol import (
     KINDS,
     WHERE_DEFAULT_Q,
     WHERE_GOAL,
+    WHERE_PATH,
     WHERE_START,
     WHERES,
 )
@@ -99,11 +100,17 @@ class CuroboUnavailableError(RuntimeError):
 
 
 class StateWhere(StrEnum):
-    """Which configuration the sidecar judged: its own retract, the start of a move, or its goal."""
+    """Which configuration the sidecar judged: its own retract, the start of a move, its goal, or one of a path.
+
+    ``PATH`` is what a checked path's refusal carries: the sidecar judges the configurations it is handed and does not
+    know which is a start, a goal screened on its own or a sample between (found porting to dev, 2026-09-25; it read
+    "the start of this move" wherever the sample sat).
+    """
 
     DEFAULT_Q = WHERE_DEFAULT_Q
     START = WHERE_START
     GOAL = WHERE_GOAL
+    PATH = WHERE_PATH
 
 
 class StateRefusalKind(StrEnum):
@@ -181,6 +188,7 @@ class StateRefusal:
             StateWhere.DEFAULT_Q: "the descriptor's own retract (default_q)",
             StateWhere.START: "the start of this move",
             StateWhere.GOAL: "the goal of this move",
+            StateWhere.PATH: "a configuration of the path it was asked to judge",
         }[self.where]
         depth = f"{self.depth_mm:.1f} mm" if chosen(self.depth_mm) else "an unreported depth"
         if self.kind is StateRefusalKind.SELF_COLLISION:
