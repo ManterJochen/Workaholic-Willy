@@ -26,7 +26,9 @@ reads and commands nothing else.
 
 Nothing here moves the arm. There is no path from this CLI to ``arm.move``: it opens
 the connection, which the UR driver gates on a declared tool frame and a coherent
-payload, and then touches digital I/O alone.
+payload, and then touches digital I/O alone. It takes the cell lock before it connects,
+as ``Cell`` and ``Robot`` do, so a session beside a running cell is refused naming the
+holder rather than taking the controller's one control script from it.
 
 Driving an output is still a physical action. A close pin closes real jaws on whatever
 is between them, and an ejector pin starts real suction. Every write is therefore gated
@@ -59,7 +61,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.config.loader import ConfigError
 from src.contracts import UNSET
@@ -67,6 +69,7 @@ from src.robot.constants import UR_IO_CLI_LOG_FILE, create_robot_logger
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import RobotConfig
+    from src.robot.core.arm_capabilities import DigitalIOPort
 
 _EXIT_OK, _EXIT_REFUSED, _EXIT_TIMEOUT, _EXIT_ERROR = 0, 1, 2, 3
 
@@ -225,8 +228,6 @@ def main(argv: list[str] | None = None) -> int:
 
     from src.robot.core.arm_capabilities import DigitalIOPort, SupportsDigitalIO
 
-    from .bench import Bench, BenchAction, Measure, Pulse, Read, Set, Watch
-
     port = DigitalIOPort(args.port)
 
     logger.info(
@@ -258,6 +259,29 @@ def main(argv: list[str] | None = None) -> int:
 
     if not isinstance(arm, SupportsDigitalIO):
         return _refuse(args.profile, "this arm does not advertise SupportsDigitalIO.", robot_cfg)
+
+    # The lock before the connect, as `Cell` and `Robot` take it: a UR controller runs one control
+    # script, and a bench session opened beside a running cell took the controller from it, because
+    # this door took no lock (found in dev, 2026-09-26). Held until the arm is disconnected.
+    from src.robot.execution.cell_lock import CellBusy, CellLock, cell_lock_key
+
+    key = cell_lock_key(robot_cfg)
+    lock = CellLock(key, owner="IO bench") if key else None
+    if lock is not None:
+        try:
+            lock.acquire()
+        except CellBusy as exc:
+            return _refuse(args.profile, str(exc), robot_cfg)
+    try:
+        return _session(args, robot_cfg, arm, port)
+    finally:
+        if lock is not None:
+            lock.release()
+
+
+def _session(args: argparse.Namespace, robot_cfg: "RobotConfig", arm: "Any", port: "DigitalIOPort") -> int:
+    """Connect, perform the one action, disconnect; the caller holds the cell lock around all of it."""
+    from .bench import Bench, BenchAction, Measure, Pulse, Read, Set, Watch
 
     try:
         # connect() is where the UR driver fails closed on an undeclared tool frame and

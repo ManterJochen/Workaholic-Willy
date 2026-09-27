@@ -209,5 +209,73 @@ class CliArgumentTests(unittest.TestCase):
             main([])
 
 
+#: This file's own controller address (TEST-NET-2), so the cell lock the bench takes is no other test's.
+_IP = "198.51.100.23"
+_KEY = f"ur@{_IP}"
+
+
+class _CliArm(FakeIO):
+    """What ``create_arm`` hands the bench's command line: the controller's digital I/O and a connect."""
+
+    def connect(self) -> None:
+        pass
+
+    def disconnect(self) -> None:
+        pass
+
+
+class TheBenchTakesTheCellLockTests(unittest.TestCase):
+    """A UR controller runs one control script, so a bench session opened beside a running cell took the
+    controller from it: the bench connected without the lock every other door takes (found in dev, 2026-09-26)."""
+
+    def setUp(self) -> None:
+        from src.robot.execution.cell_lock import lock_path_for
+
+        self.addCleanup(lambda: lock_path_for(_KEY).unlink(missing_ok=True))
+
+    def _bench(self, arm: _CliArm, *argv: str) -> "tuple[int, str]":
+        import contextlib
+        import io
+        from unittest.mock import patch
+
+        from src.config.schema.robot import RobotConfig
+        from src.robot.drivers.ur import __main__ as bench_cli
+
+        cfg = RobotConfig.model_validate({
+            "vendor": "ur", "ur": {"ip": _IP},
+            "gripper": {"vendor": "jaw_io", "jaw_io": {"close_output_pin": 4, "io_port": "standard"}},
+        })
+        said = io.StringIO()
+        with patch.object(bench_cli, "_load_robot_config", lambda *_a: cfg), \
+                patch("src.robot.drivers.create_arm", lambda *_a, **_k: arm), \
+                contextlib.redirect_stdout(said):
+            code = bench_cli.main(["--port", "standard", *argv])
+        return code, said.getvalue()
+
+    def test_a_cell_another_process_holds_is_refused_before_the_bench_connects(self) -> None:
+        from src.robot.execution.cell_lock import CellLock
+
+        connects: list[str] = []
+        arm = _CliArm()
+        arm.connect = lambda: connects.append("connect")  # type: ignore[method-assign]
+        with CellLock(_KEY, owner="operator console"):
+            code, said = self._bench(arm, "--read")
+        self.assertEqual(1, code, said)
+        self.assertIn("already owned by operator console", said)
+        self.assertEqual(connects, [], "the bench connected to a controller another process holds")
+
+    def test_the_bench_holds_the_lock_while_connected_and_gives_it_back(self) -> None:
+        from src.robot.execution.cell_lock import CellLock, peek
+
+        held: list[object] = []
+        arm = _CliArm()
+        arm.connect = lambda: held.append(peek(_KEY))  # type: ignore[method-assign]
+        code, said = self._bench(arm, "--read")
+        self.assertEqual(0, code, said)
+        self.assertEqual(getattr(held[0], "owner", None), "IO bench")
+        with CellLock(_KEY, owner="the next process"):
+            pass
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
