@@ -1,29 +1,42 @@
 """Pre-execution decision policy.
 
 This module is the single owner of the auto fail-closed decision
-logic. It runs before the existing grasp/refinement/verification
-pipeline and either:
+logic. It runs once per pick, on one perception frame, before the
+grasp is executed, and either:
 
 * approves the current grasp candidates (``GRASP_NOW``),
-* requests one bounded camera re-observation
-  (``MOVE_CAMERA``, executed by
-  :class:`AutonomousGraspService` inside its bounded loop),
 * requests scene recovery (``RECOVER``: the engine only emits the
   typed report so the service can surface it to the operator), or
 * refuses to execute (``FAIL_CLOSED``: only on real hardware, by
   operator-locked default).
 
+It never moves the camera to look again. ``MOVE_CAMERA``, the bounded
+re-observation it once requested, was removed on 2026-09-29 with the
+viewpoint planners it needed. A grasp less confident than the threshold
+carries ``low_confidence``: on the legacy fail-closure, and on the
+permissive downgrade of either path (the fused fail-closure carries
+``uncertainty_fail_closed``).
+
+Records logged before 2026-09-29 name that verdict differently. They
+carry ``reobserve_planner_unavailable``, which every cell built from
+config emitted for it (no config had built a viewpoint planner since the
+multi-view commit gate left on 2026-09-28), or ``reobserve_budget_exhausted``
+where the camera moves were used up. Their ``low_confidence`` rode only
+on the retired ``move_camera`` action, so the action tells an old camera
+move from today's verdict. The telemetry catalog requires a decision's
+keys, never its values, so those records still audit.
+
 Operator-locked defaults:
 
 * ``auto_uncertainty_threshold = 0.4``: requires ``top_score >=
   0.6`` to proceed (1 - threshold).
-* ``max_reobservations = 2``: bounded retry budget.
 * ``reasons_penalty = 0.2``: added to the base uncertainty when the
   grasp result carries any failure reasons.
 * ``fail_closed_on_real_hardware = True``: simulated runs stay
-  permissive even when budget is exhausted (the engine reports
-  ``GRASP_NOW`` and surfaces the would-have-been fail-closed reason in
-  the structured log fields).
+  permissive when the grasp is not confident (the engine reports
+  ``GRASP_NOW`` and surfaces why it did not trust the grasp,
+  ``low_confidence`` or ``channel_disagreement``, in the
+  structured log fields).
 
 This module is pure: no perception, no hardware, no file I/O. It maps a typed
 input bag onto a typed :class:`DecisionReport`. The one side effect is a single
@@ -74,23 +87,41 @@ class DecisionAction(StrEnum):
     """Terminal action the decision engine selects for a single tick.
 
     Values are stable strings so they round-trip through JSON
-    telemetry without translation.
+    telemetry without translation. ``move_camera`` is retired (see the
+    module docstring) and appears only in records logged before
+    2026-09-29.
     """
 
     GRASP_NOW = "grasp_now"
-    MOVE_CAMERA = "move_camera"
     RECOVER = "recover"
     FAIL_CLOSED = "fail_closed"
 
 
 class DecisionReasonCode(StrEnum):
-    """Machine-readable reason accompanying a :class:`DecisionAction`."""
+    """Machine-readable reason accompanying a :class:`DecisionAction`.
+
+    ``LOW_CONFIDENCE`` names a grasp less confident than the threshold
+    allows: the reason of the fail-closure on real hardware on the legacy
+    path, and of the permissive ``GRASP_NOW`` otherwise, on the legacy and
+    the fused path alike (the fused fail-closure carries
+    ``UNCERTAINTY_FAIL_CLOSED``).
+
+    Retired strings no decision emits any more, named here so a record
+    logged before 2026-09-29 stays readable:
+
+    * ``reobserve_planner_unavailable``: that same verdict until
+      2026-09-29, named after the viewpoint planner no cell built from
+      config had had since 2026-09-28. Renamed to ``low_confidence`` then
+      (owner decision 2026-09-29).
+    * ``reobserve_budget_exhausted``: the camera moves used up; it left
+      with ``MOVE_CAMERA`` on 2026-09-29.
+    * ``low_confidence`` beside the retired ``move_camera`` action: a camera
+      move, not this verdict. The action tells the two apart.
+    """
 
     CONFIDENT_GRASP = "confident_grasp"
     LOW_CONFIDENCE = "low_confidence"
     NO_CANDIDATES = "no_candidates"
-    REOBSERVE_BUDGET_EXHAUSTED = "reobserve_budget_exhausted"
-    REOBSERVE_PLANNER_UNAVAILABLE = "reobserve_planner_unavailable"
     DECISION_DISABLED = "decision_disabled"
     # Fused-uncertainty driven reasons.
     UNCERTAINTY_FAIL_CLOSED = "uncertainty_fail_closed"
@@ -117,7 +148,6 @@ class DecisionPolicy:
 
     enabled: bool = True
     auto_uncertainty_threshold: float = 0.4
-    max_reobservations: int = 2
     reasons_penalty: float = 0.2
     fail_closed_on_real_hardware: bool = True
 
@@ -126,11 +156,6 @@ class DecisionPolicy:
             raise ValueError(
                 "DecisionPolicy.auto_uncertainty_threshold must be in "
                 f"[0.0, 1.0], got {self.auto_uncertainty_threshold!r}"
-            )
-        if int(self.max_reobservations) < 0:
-            raise ValueError(
-                "DecisionPolicy.max_reobservations must be >= 0, got "
-                f"{self.max_reobservations!r}"
             )
         if not (0.0 <= float(self.reasons_penalty) <= 1.0):
             raise ValueError(
@@ -151,9 +176,14 @@ class DecisionReport:
     The six mandatory fields surface verbatim in :meth:`to_dict`:
     ``decision_action``, ``decision_reason_code``, ``uncertainty_score``,
     ``threshold_used``, ``mode``, ``attempt_id``. ``reobservation_count``
-    (camera re-observations before this decision) and ``top_score`` (the
-    top GraspResult score, when known) are serialised beside them for
-    downstream debugging, ahead of the fused-uncertainty fields below.
+    and ``top_score`` (the top GraspResult score, when known) are
+    serialised beside them for downstream debugging, ahead of the
+    fused-uncertainty fields below.
+
+    ``reobservation_count`` is always 0: it counted the camera
+    re-observations before the decision, and ``MOVE_CAMERA`` was removed
+    on 2026-09-29. It stays in the report, and in its dict, so every
+    record keeps the one fifteen-key shape.
     """
 
     action: DecisionAction
@@ -162,7 +192,7 @@ class DecisionReport:
     threshold_used: float
     mode: str
     attempt_id: str
-    reobservation_count: int
+    reobservation_count: int = 0
     top_score: Optional[float] = None
     # Fused-uncertainty plumbing. ``uncertainty_source`` is ``"fused"`` when
     # ``snapshot.fused`` drove the threshold check, ``"legacy"`` when the
@@ -224,28 +254,12 @@ class DecisionReport:
 
 
 # ---------------------------------------------------------------------------
-# Terminal selectors (pure, shared by the fused + legacy paths)
+# Terminal selector (pure, shared by the fused + legacy paths)
 # ---------------------------------------------------------------------------
 
 
-def _permissive_reason(viewpoint_planner_available: bool) -> DecisionReasonCode:
-    """Reason code when auto cannot re-observe and downgrades permissively.
-
-    ``REOBSERVE_PLANNER_UNAVAILABLE`` iff there is no viewpoint planner;
-    otherwise ``REOBSERVE_BUDGET_EXHAUSTED``. Keyed on
-    ``viewpoint_planner_available`` alone, never on ``budget_left``: the
-    caller has already established that re-observation is impossible.
-    """
-
-    return (
-        DecisionReasonCode.REOBSERVE_PLANNER_UNAVAILABLE
-        if not viewpoint_planner_available
-        else DecisionReasonCode.REOBSERVE_BUDGET_EXHAUSTED
-    )
-
-
 def _fail_closed_action(fail_closed_active: bool) -> DecisionAction:
-    """Terminal action when re-observation is impossible.
+    """Terminal action for a grasp the engine does not trust.
 
     ``FAIL_CLOSED`` on real hardware, which is the operator-locked default.
     Otherwise the permissive ``GRASP_NOW`` downgrade, which covers simulation
@@ -268,9 +282,8 @@ def _fail_closed_action(fail_closed_active: bool) -> DecisionAction:
 class DecisionEngine:
     """Pure, stateless wrapper around :class:`DecisionPolicy`.
 
-    The caller threads the re-observation count and ``attempt_id`` through
-    each :meth:`decide` call, so one instance drives many concurrent picks
-    safely.
+    The caller threads ``attempt_id`` through each :meth:`decide` call, so
+    one instance drives many concurrent picks safely.
     """
 
     policy: DecisionPolicy
@@ -281,9 +294,7 @@ class DecisionEngine:
         grasp_result: Optional[GraspResult],
         mode: str,
         attempt_id: str,
-        reobservation_count: int,
         is_simulated: bool,
-        viewpoint_planner_available: bool,
         uncertainty_snapshot: Optional[UncertaintySnapshot] = None,
         uncertainty_active: bool = False,
         ranking_penalty_weight: float = 0.0,
@@ -327,8 +338,8 @@ class DecisionEngine:
             carrier: dict[str, Any],
         ) -> DecisionReport:
             # Shared terminal builder. The immutable per-tick scalars
-            # (threshold / mode / attempt_id / reobservation_count) are closed
-            # over; the per-path carrier block (``legacy_common`` vs
+            # (threshold / mode / attempt_id) are closed over; the
+            # per-path carrier block (``legacy_common`` vs
             # ``fused_common_kwargs``, or ``{}`` for no-candidates) is passed
             # verbatim by the caller and spread, never merged across paths.
             report = DecisionReport(
@@ -338,7 +349,6 @@ class DecisionEngine:
                 threshold_used=threshold,
                 mode=mode_str,
                 attempt_id=attempt_str,
-                reobservation_count=int(reobservation_count),
                 top_score=top_score,
                 **carrier,
             )
@@ -347,7 +357,7 @@ class DecisionEngine:
             logger.log(
                 logging.WARNING if action in _REFUSAL_ACTIONS else logging.INFO,
                 "attempt=%s mode=%s -> %s (%s): uncertainty=%s threshold=%.3f "
-                "top_score=%s reobservations=%d source=%s",
+                "top_score=%s source=%s",
                 attempt_str,
                 mode_str,
                 action.value,
@@ -355,7 +365,6 @@ class DecisionEngine:
                 "n/a" if uncertainty_score is None else f"{uncertainty_score:.3f}",
                 threshold,
                 "n/a" if top_score is None else f"{top_score:.3f}",
-                int(reobservation_count),
                 carrier.get("uncertainty_source", "none"),
             )
             return report
@@ -408,22 +417,11 @@ class DecisionEngine:
                     snapshot.disagreement_triggered
                 ),
             )
-            budget_left = (
-                int(reobservation_count) < int(self.policy.max_reobservations)
-            )
 
             # Disagreement gate fires first: it represents inconsistent
             # perception channels and must not be masked by a confident
             # top score.
             if snapshot.disagreement_triggered:
-                if budget_left and viewpoint_planner_available:
-                    return _report(
-                        action=DecisionAction.MOVE_CAMERA,
-                        reason_code=DecisionReasonCode.CHANNEL_DISAGREEMENT,
-                        uncertainty_score=decision_uncertainty,
-                        top_score=top_score,
-                        carrier=fused_common_kwargs,
-                    )
                 action = _fail_closed_action(fail_closed_active)
                 return _report(
                     action=action,
@@ -443,16 +441,7 @@ class DecisionEngine:
                     carrier=fused_common_kwargs,
                 )
 
-            # Low confidence: re-observe if possible, else fail-close
-            # with the fused-path reason code.
-            if budget_left and viewpoint_planner_available:
-                return _report(
-                    action=DecisionAction.MOVE_CAMERA,
-                    reason_code=DecisionReasonCode.LOW_CONFIDENCE,
-                    uncertainty_score=decision_uncertainty,
-                    top_score=top_score,
-                    carrier=fused_common_kwargs,
-                )
+            # Low confidence: fail-close with the fused-path reason code.
             if fail_closed_active:
                 return _report(
                     action=DecisionAction.FAIL_CLOSED,
@@ -462,10 +451,9 @@ class DecisionEngine:
                     carrier=fused_common_kwargs,
                 )
             # Permissive downgrade (sim or fail_closed disabled).
-            permissive_reason = _permissive_reason(viewpoint_planner_available)
             return _report(
                 action=DecisionAction.GRASP_NOW,
-                reason_code=permissive_reason,
+                reason_code=DecisionReasonCode.LOW_CONFIDENCE,
                 uncertainty_score=decision_uncertainty,
                 top_score=top_score,
                 carrier=fused_common_kwargs,
@@ -525,26 +513,11 @@ class DecisionEngine:
                 carrier=legacy_common,
             )
 
-        # ---- Low confidence: try to re-observe ----------------------------
-        budget_left = (
-            int(reobservation_count) < int(self.policy.max_reobservations)
-        )
-
-        if budget_left and viewpoint_planner_available:
-            return _report(
-                action=DecisionAction.MOVE_CAMERA,
-                reason_code=DecisionReasonCode.LOW_CONFIDENCE,
-                uncertainty_score=uncertainty,
-                top_score=top_score,
-                carrier=legacy_common,
-            )
-
-        # ---- Cannot re-observe: fail-closed or permissive downgrade -------
-        reason = _permissive_reason(viewpoint_planner_available)
+        # ---- Low confidence: fail-closed or permissive downgrade ----------
         action = _fail_closed_action(fail_closed_active)
         return _report(
             action=action,
-            reason_code=reason,
+            reason_code=DecisionReasonCode.LOW_CONFIDENCE,
             uncertainty_score=uncertainty,
             top_score=top_score,
             carrier=legacy_common,

@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 import yaml
+
+if TYPE_CHECKING:
+    from pydantic import ValidationError
 
 
 _PRESETS_DIR: Path = (
@@ -84,8 +87,11 @@ def validate_preset(name: str, *, base: Mapping[str, Any] | None = None) -> None
     The preset merges onto ``base``, which defaults to ``load_config().robot``,
     and the merged result is validated against :class:`RobotConfig`. Raises
     :class:`KeyError` for an unknown preset or ``pydantic.ValidationError`` for
-    a bad key.
+    a bad key; a key removed on purpose carries the sentence that says what to
+    write instead, as the tree loader's message does.
     """
+
+    from pydantic import ValidationError
 
     from src.config.loader import load_config
     from src.config.schema.robot import RobotConfig
@@ -103,7 +109,47 @@ def validate_preset(name: str, *, base: Mapping[str, Any] | None = None) -> None
     # The deep-merge runs outside Pydantic, so a typo'd key (e.g.
     # ``defualt_mode``) would slip through silently; re-validating the
     # merged result through the schema (``extra='forbid'``) rejects it.
-    RobotConfig.model_validate(apply_preset(base_dict, name))
+    try:
+        RobotConfig.model_validate(apply_preset(base_dict, name))
+    except ValidationError as exc:
+        said = _with_removed_key_sentences(exc)
+        if said is exc:
+            raise
+        raise said from exc
+
+
+def _with_removed_key_sentences(exc: ValidationError) -> ValidationError:
+    """``exc`` with the removed-on-purpose sentence on each key it refuses that left the schema.
+
+    ``extra='forbid'`` refuses such a key with pydantic's bare "Extra inputs are not permitted". The
+    tree loader adds the sentence from ``REMOVED_KEYS``, and a preset is validated here rather than
+    through the loader, so the sentence is added here too. Every other error passes through with its
+    type, location and message; ``exc`` itself comes back when no key it refuses was removed.
+    """
+    from pydantic import ValidationError
+    from pydantic_core import InitErrorDetails, PydanticCustomError
+
+    from src.config.schema._removed import removed_key_sentence
+
+    errors = exc.errors()
+    sentences = [
+        removed_key_sentence("robot." + ".".join(str(part) for part in error["loc"]))
+        if error["type"] == "extra_forbidden" else None
+        for error in errors
+    ]
+    if not any(sentences):
+        return exc
+    details: list[InitErrorDetails] = []
+    for error, sentence in zip(errors, sentences):
+        kind, message = str(error["type"]), str(error["msg"])
+        if sentence is not None:
+            kind, message = "removed_on_purpose", f"{message}; removed on purpose: {sentence}"
+        details.append({
+            "type": PydanticCustomError(kind, "{message}", {"message": message}),
+            "loc": tuple(error["loc"]),
+            "input": error["input"],
+        })
+    return ValidationError.from_exception_data(exc.title, details)
 
 
 def validate_all_presets(*, base: Mapping[str, Any] | None = None) -> list[str]:

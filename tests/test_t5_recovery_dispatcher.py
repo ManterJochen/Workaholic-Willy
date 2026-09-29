@@ -50,7 +50,8 @@ class RecoveryDispatcherDefaultsTests(unittest.TestCase):
                 f"unexpected sequence for {reason}",
             )
 
-    def test_perception_signals_prefer_rescan_then_next_viewpoint(self) -> None:
+    def test_perception_signals_rescan(self) -> None:
+        # RESCAN alone: NEXT_VIEWPOINT, which followed it, was merged into it on 2026-09-29.
         for reason in (
             GraspFailureReason.RESCAN_RECOMMENDED,
             GraspFailureReason.LOW_DEPTH_CONFIDENCE,
@@ -61,28 +62,26 @@ class RecoveryDispatcherDefaultsTests(unittest.TestCase):
         ):
             self.assertEqual(
                 self.dispatcher.actions_for(reason),
-                (
-                    SceneRecoveryAction.RESCAN,
-                    SceneRecoveryAction.NEXT_VIEWPOINT,
-                ),
+                (SceneRecoveryAction.RESCAN,),
                 f"unexpected sequence for {reason}",
             )
 
-    def test_occlusion_signals_prefer_next_viewpoint_then_rescan(self) -> None:
+    def test_occlusion_signals_rescan(self) -> None:
+        # They moved the viewpoint first until NEXT_VIEWPOINT was merged into RESCAN (2026-09-29);
+        # another view comes from a look pose or a second camera, not from recovery.
         for reason in (
             GraspFailureReason.ACTIVE_PERCEPTION_RECOMMENDED,
             GraspFailureReason.HEAVY_OCCLUSION,
         ):
             self.assertEqual(
                 self.dispatcher.actions_for(reason),
-                (
-                    SceneRecoveryAction.NEXT_VIEWPOINT,
-                    SceneRecoveryAction.RESCAN,
-                ),
+                (SceneRecoveryAction.RESCAN,),
                 f"unexpected sequence for {reason}",
             )
 
-    def test_no_candidates_path_includes_nudge_target(self) -> None:
+    def test_no_candidates_path_skips_the_part_then_rescans(self) -> None:
+        # The push left these rows on 2026-09-29 (owner): nothing says a neighbour is in the way, so it has
+        # no direction to go. It is offered for ALL_COLLIDED only.
         for reason in (
             GraspFailureReason.NO_CANDIDATES_GENERATED,
             GraspFailureReason.NO_VALID_GRASP,
@@ -91,22 +90,22 @@ class RecoveryDispatcherDefaultsTests(unittest.TestCase):
                 self.dispatcher.actions_for(reason),
                 (
                     SceneRecoveryAction.NEXT_TARGET,
-                    SceneRecoveryAction.NUDGE_TARGET,
-                    SceneRecoveryAction.NEXT_VIEWPOINT,
+                    SceneRecoveryAction.RESCAN,
                 ),
                 f"unexpected sequence for {reason}",
             )
 
     def test_all_collided_path_offers_agitate_for_clutter_jams(self) -> None:
         # G6: a clutter jam (ALL_COLLIDED) additionally offers the envelope-clamped agitate between the
-        # nudge and the viewpoint change. Stays double-gated (profile + policy + fixture + amplitude).
+        # nudge and the rescan (the viewpoint change until NEXT_VIEWPOINT was merged into RESCAN).
+        # Stays double-gated (profile + policy + fixture + amplitude).
         self.assertEqual(
             self.dispatcher.actions_for(GraspFailureReason.ALL_COLLIDED),
             (
                 SceneRecoveryAction.NEXT_TARGET,
                 SceneRecoveryAction.NUDGE_TARGET,
                 SceneRecoveryAction.CONTAINER_AGITATE,
-                SceneRecoveryAction.NEXT_VIEWPOINT,
+                SceneRecoveryAction.RESCAN,
             ),
         )
 
@@ -157,9 +156,9 @@ class RecoveryDispatcherOverrideTests(unittest.TestCase):
         )
         # Non-overridden reason retains default mapping.
         self.assertEqual(
-            dispatcher.actions_for(GraspFailureReason.HEAVY_OCCLUSION),
+            dispatcher.actions_for(GraspFailureReason.NO_VALID_GRASP),
             (
-                SceneRecoveryAction.NEXT_VIEWPOINT,
+                SceneRecoveryAction.NEXT_TARGET,
                 SceneRecoveryAction.RESCAN,
             ),
         )

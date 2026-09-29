@@ -3,7 +3,7 @@
 Contracts:
 
 1. ``GraspingOrderingConfig`` defaults to OFF and mirrors the T2/T3
-   apply-modes default ``(auto, dense_clutter, dense_autonomous)``
+   apply-modes default ``(auto, dense_clutter)``
    (EASY locked out for the +5% cycle-time budget).
 2. Numeric validators reject negatives / out-of-range values at
    construction time.
@@ -33,7 +33,7 @@ class DefaultsTests(unittest.TestCase):
         self.assertEqual(cfg.max_local_score_drop, 0.1)
         self.assertEqual(
             cfg.apply_modes,
-            ("auto", "dense_clutter", "dense_autonomous"),
+            ("auto", "dense_clutter"),
         )
 
     def test_blocker_graph_defaults(self) -> None:

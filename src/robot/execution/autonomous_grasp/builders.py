@@ -13,7 +13,7 @@ one-directional: nothing here imports the service.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, Any, Optional
 
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.constants import GRASP_BUILDERS_LOG_FILE, create_robot_logger
@@ -24,8 +24,6 @@ from src.robot.grasping.collision import (
     SuctionCupGripperModel,
 )
 from src.robot.grasping.decision import DecisionEngine, DecisionPolicy
-from src.robot.grasping.multiview.fusion import FusionConfig, SceneFusion
-from src.robot.grasping.loop.pick_loop import CommitPolicy
 from src.robot.grasping.motion.grasp_motion import (
     GraspMotion,
     build_execution_policy,
@@ -37,21 +35,10 @@ from src.robot.grasping.loop.target_selector import (
     BlockerGraphConfig,
     TargetOrderingConfig,
 )
-from src.robot.grasping.recovery.policy import (
-    FixtureEnvelope,
-    SceneRecoveryAction,
-    SceneRecoveryPolicy,
-    SceneRecoveryStrategy,
-)
-from src.robot.grasping.closed_loop.refinement import PreGraspRefiner, RefinementPolicy
 from src.robot.grasping.scoring.success_probability import (
     RankingBlendConfig,
     UncertaintyRerankConfig,
     try_load_shadow_success_context,
-)
-from src.robot.grasping.closed_loop.verification import (
-    GraspVerificationPolicy,
-    GraspVerifier,
 )
 
 from .config import (
@@ -74,10 +61,7 @@ if TYPE_CHECKING:
     from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
     from src.robot.grasping.motion.frame_resolver import FrameResolver
     from src.robot.grasping.generation.calculator import GraspCalculator
-    from src.robot.grasping.loop.pick_loop import (
-        PerceptionSource,
-        ViewpointPlanner,
-    )
+    from src.robot.grasping.loop.pick_loop import PerceptionSource
 
     from .config import GraspBehaviorProfile, GraspMode
 
@@ -93,9 +77,7 @@ _OVERLAY_SLOTS: tuple[str, ...] = (
     "shadow_success_context",
     "ranking_blend_config",
     "uncertainty_rerank_config",
-    "scene_fusion",
     "fusion_geometry_config",
-    "commit_policy",
     "corridor_config",
     "feasibility_config",
     "target_ordering",
@@ -140,264 +122,11 @@ def build_gripper_geometry(
     )
 
 
-def build_subpolicies(
-    grasping_cfg: Optional[RobotGraspingConfig],
-    *,
-    refinement_policy: Optional[RefinementPolicy],
-    verification_policy: Optional[GraspVerificationPolicy],
-    recovery_policy: Optional[SceneRecoveryPolicy],
-    standoff_mm: float,
-    recovery_fixture: Optional[FixtureEnvelope],
-) -> tuple[
-    Optional[RefinementPolicy],
-    Optional[GraspVerificationPolicy],
-    Optional[SceneRecoveryPolicy],
-]:
-    """Sub-policy auto-build (refinement / verification / recovery).
-
-    Each block is materialised only when the caller did not pass an explicit
-    policy and the corresponding ``grasping_cfg.*`` block is enabled. Disabled
-    blocks leave the slot at :data:`None` so the ``MODE_NOT_AVAILABLE`` gates
-    fire. Raises :class:`ValueError` for an unknown recovery action, or for a
-    physical recovery action requested without a ``recovery_fixture``.
-    """
-
-    resolved_refinement_policy = refinement_policy
-    resolved_verification_policy = verification_policy
-    resolved_recovery_policy = recovery_policy
-
-    if grasping_cfg is not None:
-        if resolved_refinement_policy is None and grasping_cfg.closed_loop.enabled:
-            cl = grasping_cfg.closed_loop
-            resolved_refinement_policy = RefinementPolicy(
-                enabled=True,
-                standoff_mm=standoff_mm,
-                max_position_correction_mm=float(cl.max_position_correction_mm),
-                max_orientation_correction_deg=float(
-                    cl.max_orientation_correction_deg
-                ),
-                max_grip_width_correction_mm=float(
-                    cl.max_grip_width_correction_mm
-                ),
-                target_match_iou_threshold=float(cl.target_match_iou_threshold),
-                # Whether refinement takes the second scan (standoff move plus re-acquire) or
-                # re-validates on the frame it already has. ``service.py`` gates the standoff
-                # move on ``policy.reperceive``. A static overhead camera wants it off: moving
-                # to standoff buys nothing when the viewpoint does not change, and costs a move
-                # plus an acquire per attempt.
-                reperceive=bool(cl.pregrasp_rescan),
-            )
-        if (
-            resolved_verification_policy is None
-            and grasping_cfg.verification.enabled
-        ):
-            vc = grasping_cfg.verification
-            vp_kwargs: dict[str, Any] = {
-                "enabled": True,
-                "require_object_detected": bool(vc.require_object_detected),
-                "width_delta_min_mm": float(vc.width_delta_min_mm),
-                "post_lift_vision_check": bool(vc.post_lift_vision_check),
-                "vision_displacement_iou_max": float(
-                    vc.vision_displacement_iou_max
-                ),
-                "fail_closed": bool(vc.fail_closed),
-            }
-            # Optional schema field: propagate only when set, so the
-            # policy default of ``None`` is not overridden.
-            max_delta = getattr(vc, "width_delta_max_mm", None)
-            if max_delta is not None:
-                vp_kwargs["width_delta_max_mm"] = float(max_delta)
-            resolved_verification_policy = GraspVerificationPolicy(**vp_kwargs)
-        if (
-            resolved_recovery_policy is None
-            and grasping_cfg.dense_recovery.enabled
-        ):
-            dr = grasping_cfg.dense_recovery
-            resolved_actions: list[SceneRecoveryAction] = []
-            for name in dr.allowed_actions:
-                try:
-                    resolved_actions.append(SceneRecoveryAction(name))
-                except ValueError as exc:
-                    raise ValueError(
-                        f"robot.grasping.dense_recovery.allowed_actions "
-                        f"contains unknown action {name!r}. "
-                        f"Allowed: {[a.value for a in SceneRecoveryAction if a is not SceneRecoveryAction.NONE]}"
-                    ) from exc
-            # SceneRecoveryPolicy enforces the physical-action /
-            # fixture invariant in its __post_init__. The pre-check
-            # here raises an actionable error that names the missing
-            # ``recovery_fixture`` kwarg directly.
-            _PHYSICAL = {
-                SceneRecoveryAction.NUDGE_TARGET,
-                SceneRecoveryAction.CONTAINER_AGITATE,
-            }
-            if any(a in _PHYSICAL for a in resolved_actions) and recovery_fixture is None:
-                raise ValueError(
-                    "robot.grasping.dense_recovery requests a "
-                    "physical action (nudge_target / "
-                    "container_agitate) but no ``recovery_fixture`` "
-                    "was supplied. Pass a FixtureEnvelope to "
-                    "AutonomousGraspService.from_robot_config "
-                    "(Phase T0 fail-closed)."
-                )
-            resolved_recovery_policy = SceneRecoveryPolicy(
-                enabled=True,
-                allowed_actions=tuple(resolved_actions),
-                max_recovery_actions=int(dr.max_recovery_actions),
-                fixture=recovery_fixture,
-            )
-
-    return (
-        resolved_refinement_policy,
-        resolved_verification_policy,
-        resolved_recovery_policy,
-    )
-
-
-def build_closed_loop_actors(
-    grasping_cfg: Optional[RobotGraspingConfig],
-    *,
-    refinement_policy: Optional[RefinementPolicy],
-    verification_policy: Optional[GraspVerificationPolicy],
-    recovery_policy: Optional[SceneRecoveryPolicy],
-    refiner: Optional[PreGraspRefiner],
-    verifier: Optional[GraspVerifier],
-    recovery_strategy: Optional[SceneRecoveryStrategy],
-) -> tuple[
-    Optional[PreGraspRefiner],
-    Optional[GraspVerifier],
-    Optional[SceneRecoveryStrategy],
-]:
-    """The runtime objects the three closed-loop policies need in order to act.
-
-    ``build_subpolicies`` turns ``closed_loop`` / ``verification`` / ``dense_recovery``
-    into policies; this builds the ``refiner``, ``verifier`` and ``recovery_strategy``
-    that consume them, so an enabled policy has something behind it rather than
-    reporting ``mode_requires_refinement_but_no_refiner_wired`` at pick time.
-
-    None of these objects is hardware-coupled: ``DefaultPreGraspRefiner`` needs only
-    its policy (the tracker defaults), and the verifiers and all three recovery
-    strategies take no required arguments.
-
-    An explicitly passed object always wins over an auto-built one.
-    """
-
-    if grasping_cfg is None:
-        return refiner, verifier, recovery_strategy
-
-    resolved_refiner = refiner
-    resolved_verifier = verifier
-    resolved_strategy = recovery_strategy
-
-    if resolved_refiner is None and refinement_policy is not None and refinement_policy.enabled:
-        from src.robot.grasping.closed_loop.refinement import DefaultPreGraspRefiner
-
-        resolved_refiner = DefaultPreGraspRefiner(policy=refinement_policy)
-
-    if (
-        resolved_verifier is None
-        and verification_policy is not None
-        and verification_policy.enabled
-    ):
-        from src.robot.grasping.closed_loop.verification import (
-            CompositeGraspVerifier,
-            ObjectDetectingGripperVerifier,
-            VisionTargetDisplacementVerifier,
-            WidthDeltaGripperVerifier,
-        )
-
-        # Both gripper verifiers, because they read different things: one asks the gripper whether
-        # it believes it holds something, the other measures how far the jaws actually closed. A
-        # gripper that offers neither makes both inconclusive, which ``require_all_conclusive``
-        # then decides; its schema field states why it defaults to passing and saying so.
-        verifiers: list[Any] = [ObjectDetectingGripperVerifier(), WidthDeltaGripperVerifier()]
-
-        # And the scene verifier, when the operator asked for the post-lift frame. With
-        # ``post_lift_vision_check`` on, the service re-acquires a full perception frame after the
-        # lift and passes the target identity into the verification context; this verifier is what
-        # reads them and applies ``vision_displacement_iou_max``.
-        #
-        # It matters most on the cell that has the least to say otherwise: a jaw gripper driven
-        # over digital I/O with no feedback wired measures neither a hold nor a jaw width. It
-        # answers "object detected" with its own close and reports its commanded band as a width,
-        # so both gripper verifiers read its hold evidence and whether its width is measured, and
-        # return inconclusive there (they passed the echo and failed the band as a collapse until
-        # 2026-09-23). Looking at the scene is then the only way to find out whether the object
-        # actually left the table.
-        if bool(grasping_cfg.verification.post_lift_vision_check):
-            verifiers.append(VisionTargetDisplacementVerifier())
-
-        resolved_verifier = CompositeGraspVerifier(
-            verifiers=tuple(verifiers),
-            require_all_conclusive=bool(
-                getattr(grasping_cfg.verification, "require_all_conclusive", False)
-            ),
-        )
-
-    if resolved_strategy is None and recovery_policy is not None and recovery_policy.enabled:
-        from src.robot.grasping.recovery.policy import (
-            ActivePerceptionRecoveryStrategy,
-            NextTargetRecoveryStrategy,
-            NoRecoveryStrategy,
-        )
-
-        choice = str(getattr(grasping_cfg.dense_recovery, "strategy", "active_perception"))
-        strategies: dict[str, SceneRecoveryStrategy] = {
-            "active_perception": ActivePerceptionRecoveryStrategy(),
-            "next_target": NextTargetRecoveryStrategy(),
-            "none": NoRecoveryStrategy(),
-        }
-        resolved_strategy = strategies[choice]
-
-    auto_built = [
-        name
-        for name, before, after in (
-            ("refiner", refiner, resolved_refiner),
-            ("verifier", verifier, resolved_verifier),
-            ("recovery_strategy", recovery_strategy, resolved_strategy),
-        )
-        if before is None and after is not None
-    ]
-    if auto_built:
-        # Naming the actors config assembled makes the enabled/wired pair checkable in the log; an
-        # enabled policy with nothing behind it is otherwise invisible until pick time.
-        logger.info("closed-loop actors auto-built from config: %s", ", ".join(auto_built))
-    return resolved_refiner, resolved_verifier, resolved_strategy
-
-
-def assert_closed_loop_actors_wired(
-    *,
-    refinement_policy: Optional[RefinementPolicy],
-    verification_policy: Optional[GraspVerificationPolicy],
-    recovery_policy: Optional[SceneRecoveryPolicy],
-    refiner: Optional[PreGraspRefiner],
-    verifier: Optional[GraspVerifier],
-    recovery_strategy: Optional[SceneRecoveryStrategy],
-) -> None:
-    """Refuse to build a service whose enabled policy has nothing to drive it.
-
-    Without this check the service builds cleanly and then reports, per attempt at pick time, that
-    the requested mode is not available. Raising here puts the complaint at the boot, where the
-    misconfiguration is and while somebody is still looking.
-    """
-
-    missing = [
-        name
-        for name, policy, actor in (
-            ("closed_loop", refinement_policy, refiner),
-            ("verification", verification_policy, verifier),
-            ("dense_recovery", recovery_policy, recovery_strategy),
-        )
-        if policy is not None and getattr(policy, "enabled", False) and actor is None
-    ]
-    if missing:
-        raise ValueError(
-            "robot.grasping."
-            + " and robot.grasping.".join(missing)
-            + " is enabled but has no runtime object to drive it. Config normally builds one "
-            "(builders.build_closed_loop_actors); a caller that passes its own policies must pass "
-            "the matching refiner / verifier / recovery_strategy too."
-        )
+# ``build_subpolicies``, ``build_closed_loop_actors`` and ``assert_closed_loop_actors_wired`` left on
+# 2026-09-29 with the two blocks they turned into runtime objects: ``robot.grasping.verification``
+# (a verifier no pick path consulted) and ``robot.grasping.dense_recovery`` (a recovery policy and
+# strategy stored on the service and consulted by no pick). The recovery a pick runs is
+# ``robot.grasping.recovery``, which the service reads from the effective-config snapshot below.
 
 
 def build_decision_layer(
@@ -428,7 +157,6 @@ def build_decision_layer(
             resolved_decision_policy = DecisionPolicy(
                 enabled=True,
                 auto_uncertainty_threshold=float(dc.auto_uncertainty_threshold),
-                max_reobservations=int(dc.max_reobservations),
                 reasons_penalty=float(dc.reasons_penalty),
                 fail_closed_on_real_hardware=bool(dc.fail_closed_on_real_hardware),
             )
@@ -464,19 +192,13 @@ def build_effective_config(
     return EffectiveGraspingConfig(
         default_mode=resolved_mode,
         max_attempts=resolved_max_attempts,
-        closed_loop_enabled=bool(grasping_cfg.closed_loop.enabled),
-        verification_enabled=bool(grasping_cfg.verification.enabled),
-        dense_recovery_enabled=bool(grasping_cfg.dense_recovery.enabled),
-        dense_recovery_allowed_actions=tuple(
-            grasping_cfg.dense_recovery.allowed_actions
-        ),
         # The three keys the flat contract does not cover (config.py field docstrings say why).
         # Effective state, the same rule the feasibility, corridor and ordering overlays use: a
         # block outside its ``apply_modes`` reads False even when the YAML says true, because a
         # record has to answer whether the block was acting on this attempt. ``fusion`` has no
-        # ``apply_modes``, so it reports the configured value; whether its substrate is wired
-        # additionally depends on a CAMERA->BASE resolver, which is a runtime fact no config
-        # snapshot can see.
+        # ``apply_modes``, so it reports the configured value; whether another camera's view was
+        # actually fused depends on the rig delivering and on each camera's calibration, which are
+        # runtime facts no config snapshot can see.
         success_model_enabled=bool(
             grasping_cfg.success_model.enabled
             and resolved_mode.value in grasping_cfg.success_model.apply_modes
@@ -490,9 +212,6 @@ def build_effective_config(
             enabled=bool(grasping_cfg.decision.enabled),
             auto_uncertainty_threshold=float(
                 grasping_cfg.decision.auto_uncertainty_threshold
-            ),
-            max_reobservations=int(
-                grasping_cfg.decision.max_reobservations
             ),
         ),
         feasibility=EffectiveFeasibilityConfig(
@@ -888,9 +607,10 @@ def build_config_frame_resolver(
     The calibration is declared on the rig, ``camera.cameras.rigs[<primary>].extrinsics``. An
     eye_to_hand rig gives a :class:`StaticCameraToBaseResolver`; an eye_in_hand rig gives an
     :class:`EyeInHandFrameResolver`, which composes the tool pose. It does not wait for
-    ``fusion.enabled``: this resolver is what turns every grasp into the base frame, and fusion
-    gates only the fusion substrate. ``grasping_cfg`` is kept for its callers and not read, because
-    the calibration is not declared in the grasping block.
+    ``fusion.enabled``: this resolver is what turns every grasp into the base frame, and
+    ``fusion.enabled`` gates only the other cameras' resolvers (:func:`build_config_frame_resolvers`).
+    ``grasping_cfg`` is kept for its callers and not read, because the calibration is not declared
+    in the grasping block.
 
     Returns ``None`` when no camera section is handed in or the primary rig declares no
     calibration. Fail-closed: a declared artifact that does not load raises at construction, naming
@@ -957,65 +677,11 @@ def build_config_frame_resolvers(
     return resolvers
 
 
-def build_config_viewpoint_planner(
-    grasping_cfg: Optional[RobotGraspingConfig], robot_cfg: RobotConfig
-) -> Optional["ViewpointPlanner"]:
-    """Auto-build a ScoringViewpointPlanner so the commit-gate reobserve relocates
-    the camera to a diverse viewpoint in production (otherwise the reobserve re-ingests the same
-    static frame and only inflates views_accepted without growing the corridor evidence).
-
-    Returns ``None`` (byte-identical) unless all three of ``grasping.fusion.enabled``,
-    ``grasping.fusion.commit_policy.enabled`` and ``grasping.fusion.active_perception_use_fusion``
-    are True; ``active_perception_use_fusion`` is the dedicated, named off switch for this planner.
-    A caller-supplied ``viewpoint_planner`` wins upstream. The planner's viewpoint budget is tied to
-    ``commit_policy.max_reobserve_attempts``, the single source of truth for the reobserve budget,
-    and its safety_check is a ``WorkspaceBoxSafetyCheck`` derived from ``robot_cfg.workspace_limits``
-    so a proposed camera pose outside the declared workspace is refused (fail-closed backstop; falls
-    back to the planner default if no workspace box is configured).
-    """
-    if grasping_cfg is None:
-        return None
-    fusion_cfg = getattr(grasping_cfg, "fusion", None)
-    if fusion_cfg is None or not bool(getattr(fusion_cfg, "enabled", False)):
-        return None
-    if not bool(getattr(fusion_cfg, "active_perception_use_fusion", False)):
-        return None
-    commit_cfg = getattr(fusion_cfg, "commit_policy", None)
-    if commit_cfg is None or not bool(getattr(commit_cfg, "enabled", False)):
-        return None
-    from src.robot.grasping.closed_loop.active_perception import (
-        ScoringViewpointPlanner,
-        ViewScoringPolicy,
-        WorkspaceBoxSafetyCheck,
-    )
-
-    budget = int(getattr(commit_cfg, "max_reobserve_attempts", 1))
-    policy = ViewScoringPolicy(max_viewpoints=max(budget, 1))
-    wl = getattr(robot_cfg, "workspace_limits", None)
-    if wl is not None:
-        center = (
-            (float(wl.x_min) + float(wl.x_max)) / 2.0,
-            (float(wl.y_min) + float(wl.y_max)) / 2.0,
-            (float(wl.z_min) + float(wl.z_max)) / 2.0,
-        )
-        half = (
-            (float(wl.x_max) - float(wl.x_min)) / 2.0,
-            (float(wl.y_max) - float(wl.y_min)) / 2.0,
-            (float(wl.z_max) - float(wl.z_min)) / 2.0,
-        )
-        return ScoringViewpointPlanner(
-            policy=policy,
-            safety_check=WorkspaceBoxSafetyCheck(center_mm=center, half_extents_mm=half),
-        )
-    return ScoringViewpointPlanner(policy=policy)
-
-
 def build_runtime(
     robot_cfg: RobotConfig,
     *,
     calculator: "GraspCalculator",
     perception: "PerceptionSource",
-    viewpoint_planner: Optional["ViewpointPlanner"],
     resolved_max_attempts: int,
     profile: "GraspBehaviorProfile",
     standoff_mm: float,
@@ -1042,7 +708,6 @@ def build_runtime(
         robot_cfg,
         calculator=calculator,
         perception=perception,
-        viewpoint_planner=viewpoint_planner,
         max_attempts=resolved_max_attempts,
         grasp_sampling_mode=profile.sampling_mode,
         standoff_mm=standoff_mm,
@@ -1179,46 +844,21 @@ def apply_orchestrator_overlays(
             weight=float(unc_cfg.rerank_weight),
             modes=tuple(unc_cfg.rerank_modes),
         )
-    # Shadow-only multi-view fusion substrate. Wired only when
-    # ``grasping.fusion.enabled=True`` and a frame resolver is available
-    # on the orchestrator. Without a resolver the substrate's strict
-    # frame contract would reject every ingest, so the slot stays
-    # ``None`` and preserves the byte-identical path. The orchestrator's
-    # ingest seam re-checks ``config.enabled`` and the substrate itself
-    # enforces frame and intrinsic contracts on every call; this
-    # function never raises.
-    fusion_cfg = grasping_cfg.fusion
-    if (
-        bool(fusion_cfg.enabled)
-        and runtime.orchestrator.frame_resolver is not None
-    ):
-        runtime.orchestrator.scene_fusion = SceneFusion(
-            config=FusionConfig(
-                enabled=True,
-                max_views=int(fusion_cfg.max_views),
-                max_view_age_s=float(fusion_cfg.max_view_age_s),
-                voxel_size_mm=float(fusion_cfg.voxel_size_mm),
-                # The schema validates roi_extent_mm to exactly 3 components; keep the tuple() coercion
-                # (runtime-identical) and cast to the fixed-arity type FusionConfig expects.
-                roi_extent_mm=cast(
-                    "tuple[float, float, float]", tuple(fusion_cfg.roi_extent_mm)
-                ),
-                max_voxels=int(fusion_cfg.max_voxels),
-                depth_min_mm=float(fusion_cfg.depth_min_mm),
-                depth_max_mm=float(fusion_cfg.depth_max_mm),
-            )
-        )
-    # Multi-camera geometry fusion. Independent of the ``fusion.enabled`` substrate above: that one
-    # runs the shadow voxel grid, this one changes the grasp candidates themselves by giving the
+    # Multi-camera geometry fusion. It changes the grasp candidates themselves by giving the
     # generator each object's surface as every camera that can identify it sees it: measured on
     # the datagen reference, top-1 is 43.50 % single-view against 55.93 % fused.
+    #
+    # It needs ``fusion.enabled`` as well as its own switch. ``build_config_frame_resolvers`` builds
+    # the other cameras' CAMERA to BASE resolvers only while ``fusion.enabled`` is on and returns an
+    # empty map otherwise, and a camera with no resolver has its view dropped at the pick with a
+    # warning, so this switch alone leaves the cell single-view (``CameraFusionPlan`` names it).
     #
     # The per-camera resolver map is built here rather than in the loop because it is fail-closed
     # at construction: an enabled camera whose calibration artifact will not load raises while an
     # operator is watching, instead of degrading to single-view later. The perception rig itself is
     # not config, it is a live device handle, so the caller passes it in; until it does, the loop
     # logs that it is running single-view rather than pretending to fuse.
-    geometry_cfg = getattr(fusion_cfg, "geometry", None)
+    geometry_cfg = getattr(grasping_cfg.fusion, "geometry", None)
     if geometry_cfg is not None and bool(getattr(geometry_cfg, "enabled", False)):
         runtime.orchestrator.fusion_geometry_config = geometry_cfg
         runtime.orchestrator.camera_frame_resolvers = build_config_frame_resolvers(grasping_cfg, camera=camera)
@@ -1273,27 +913,9 @@ def apply_orchestrator_overlays(
         logger.info("this cell has %d calibrated camera(s): %s (%d eye-in-hand)",
                     len(_calibrated), ", ".join(_calibrated), len(_eih))
 
-    # Mode-aware commit gate. Always set ``mode_label`` so the
-    # orchestrator can route mode-aware gates correctly. When the
-    # schema-level commit policy is enabled, build the runtime carrier;
-    # the orchestrator's gate helper still defends against missing
-    # fusion via ``SKIPPED_NO_FUSION``.
+    # Always set ``mode_label`` so the orchestrator can route its mode-aware gate, the approach
+    # validation below (``mode_label in _approach_path_modes``), correctly.
     runtime.orchestrator.mode_label = str(resolved_mode.value)
-    commit_cfg = fusion_cfg.commit_policy
-    if bool(commit_cfg.enabled):
-        runtime.orchestrator.commit_policy = CommitPolicy(
-            enabled=True,
-            min_views_accepted=int(commit_cfg.min_views_accepted),
-            min_corridor_hit_fraction=float(
-                commit_cfg.min_corridor_hit_fraction
-            ),
-            corridor_radius_mm=float(commit_cfg.corridor_radius_mm),
-            corridor_length_mm=float(commit_cfg.corridor_length_mm),
-            max_reobserve_attempts=int(
-                commit_cfg.max_reobserve_attempts
-            ),
-            apply_modes=frozenset(commit_cfg.apply_modes),
-        )
 
     # Clutter-aware target ordering, assigned to ``target_ordering`` below. The orchestrator
     # carries the ordering path: a ``target_ordering`` slot, a blocker graph, and `select_target`,

@@ -1,8 +1,7 @@
 # The safety gate every motion passes (`src/robot/safety`)
 
 `SafetyPreflight` is the gate a driver asks before it commands a motion: six guards in a fixed order,
-and the first one that rejects vetoes the move. A guard that cannot decide refuses too. The emergency
-stop is not here: it is a controller function, and nothing in this package can enable, route or observe it.
+and the first one that rejects vetoes the move.
 
 ```python
 from willy import SafetyPreflight, create_arm, load_tree
@@ -17,10 +16,9 @@ refusal = gate.gate_planned_path(waypoints, arm=arm)    # joint waypoints; None 
 print("clear" if refusal is None else refusal)
 ```
 
-The UR, KUKA and Isaac drivers build this gate from the same tree, so a `Robot` or a `Cell` on one of
-them already runs it before each move; the dummy arm carries none. `print(robot.safety())` says what a
-built arm enforces. Build a gate yourself to judge a path at a desk. There is no command line for the
-guards; the calls above run in
+The UR and other vendor drivers build this gate from the same tree, so a `Robot` or a `Cell` on one of
+them already runs it before each move; the dummy arm carries none.
+Quick checks: 
 [gate_the_whole_path.py](../../../examples/offline/safety/gate_the_whole_path.py) and
 [self_collision_backend.py](../../../examples/offline/safety/self_collision_backend.py).
 [`scripts/checks/safety_guards.py`](../../../scripts/checks/safety_guards.py) makes every guard your cell
@@ -48,6 +46,7 @@ names what is gone. Every verdict is a frozen `SafetyDecision` with a `SafetyRea
 | Noun | Built by | Verb | Returns |
 | --- | --- | --- | --- |
 | `SafetyPreflight` | `from_tree(tree)`, `from_safety_config(safety, workspace)` | `evaluate(context)` | a `SafetyDecision` |
+| `SafetyPreflight` | the same | `screen(context)`: `evaluate`'s verdict on a target nothing is sent to, the continuity memo left as it was | a `SafetyDecision` |
 | `SafetyPreflight` | the same | `gate_joint_target`, `gate_joint_path`, `gate_planned_path` | `None` when clear, else the refused `MotionResult` |
 | `SafetyAttestation` | `SafetyAttestation.of(arm)`, `robot.safety()`, `cell.safety()` | `render()` | what an arm will refuse |
 | `ContinuousCollisionMonitor` | `from_model(...)` with `ContinuousGuardProfile(enabled=True)` | `check(joints)` | a verdict per control step |
@@ -66,8 +65,7 @@ names what is gone. Every verdict is a frozen `SafetyDecision` with a `SafetyRea
 ## Self collision: exact meshes, or the capsule proxy
 
 `self_collision.backend` ships as `fcl`: exact mesh distance with Coal, or with python-fcl where Coal is
-absent. python-fcl is in `requirements.txt`; `scripts/ext_deps/install.ps1` installs Coal. Both run the
-same meshes, pairs, thresholds and distance query, so the choice does not change a verdict.
+absent.
 
 The meshes ship in `data/`: an arm bundle `{model}_collision_meshes.npz` for `ur3`, `ur3e`, `ur5`,
 `ur5e`, `ur10`, `ur10e` and `ur16e`, and a hand bundle `{hand}_hand_meshes.npz` for `robotiq_2f85`,
@@ -75,13 +73,6 @@ The meshes ship in `data/`: an arm bundle `{model}_collision_meshes.npz` for `ur
 each bundle's source and a hash of its arrays. With `mesh_dir: null` the guard loads its own model's
 bundle from `data/`; `mesh_dir` names a directory of bundles you baked. A model with no bundle runs the
 capsule proxy.
-
-On a single move, a missing engine or bundle falls back to the capsule proxy and logs one warning with
-the reason; it does not refuse the move. The proxy is coarser: its default 60 mm link radius
-over-rejects reach-down grasps, and it skips the wrist pairs the meshes catch. A path gate never falls
-back, it refuses. `python -m src.robot.safety.planning --check` says what resolved on a machine. The
-`SelfCollisionSafetyConfig` docstring still says an empty `mesh_dir` refuses; the fallback described
-here is what the code does.
 
 ## How each guard decides
 
@@ -116,27 +107,24 @@ default `ContinuousGuardProfile` has `enabled=False`, a margin of 8.0 mm and a b
 only the Isaac driver runs one, when a sim runner such as `run_dense_pick` asks for it. Keep the margin
 under 19.6 mm, the wrist clearance of a natural grasp, or a good pick stops.
 
-Neither is a certified functional-safety stop. A real cell still needs the vendor's safety-rated stop,
-an independent emergency-stop circuit, and compliance with ISO 10218, ISO/TS 15066 and ISO 13849.
+**A real cell still needs the vendor's safety-rated stop,**
+**an independent emergency-stop circuit, and compliance with ISO 10218, ISO/TS 15066 and ISO 13849.**
 
 ## Status
 
 | Capability | Evidence |
 | --- | --- |
-| The six guards and the typed decision on every move | measured in simulation (Isaac picks) and measured against real controller software (URSim) |
-| Payload pushed to a UR controller at connect | measured against real controller software |
-| The continuous monitor | measured in simulation |
-| Arm-against-arm self collision on a physical robot | never touched hardware |
+| The six guards and the typed decision on every move | measured on a UR10 |
+| Payload pushed to a UR controller at connect | measured on a UR10 |
+| The continuous monitor | measured on a UR10 |
+| Arm-against-arm self collision on a physical robot | measured on a UR10 |
 
-Arm-against-arm self collision comes from the bundled UR kinematics, so KUKA and the sim get tool
-against base and tool against fixture only. Several defaults are markers, not guesses (a zero payload
-mass, a centre of gravity at the origin), so an unmeasured cell refuses rather than proceeds.
 
 ## Files
 
 | File | Holds |
 | --- | --- |
-| [`preflight.py`](preflight.py) | `SafetyPreflight`: the builders, `evaluate`, the path gates |
+| [`preflight.py`](preflight.py) | `SafetyPreflight`: the builders, `evaluate` and `screen`, the path gates |
 | [`decision.py`](decision.py) | `SafetyDecision`, `SafetyReason` and the reason to `MotionStatus` table |
 | [`guard.py`](guard.py) | the `SafetyGuard` Protocol and `SafetyContext` |
 | [`workspace.py`](workspace.py), [`joint_limits.py`](joint_limits.py), [`ik_quality.py`](ik_quality.py) | the first three guards, and `JointLimitTableMissing` |

@@ -7,6 +7,12 @@ to execute, or ``None`` when no further recovery is permissible.
 
 The orchestrator never executes motion or touches perception; the
 service is responsible for plumbing.
+
+``NEXT_VIEWPOINT`` was merged into ``RESCAN`` on 2026-09-29, so the
+fall-through cases that escalated RESCAN -> NEXT_VIEWPOINT fall through
+NEXT_TARGET -> RESCAN instead, and ``NextTargetRecoveryStrategy`` /
+``NoRecoveryStrategy`` (which left with the ``dense_recovery`` block) are
+replaced by a local declining stub where a strategy has to say no.
 """
 
 from __future__ import annotations
@@ -23,8 +29,6 @@ from src.robot.grasping.types.feedback import GraspFailureReason
 from src.robot.grasping.types.modes import GraspSamplingMode
 from src.robot.grasping.recovery.policy import (
     FixtureEnvelope,
-    NextTargetRecoveryStrategy,
-    NoRecoveryStrategy,
     SceneRecoveryAction,
     SceneRecoveryContext,
     SceneRecoveryPlan,
@@ -41,7 +45,7 @@ from src.robot.grasping.recovery.orchestrator import (
 
 def _profile(
     mode: GraspMode = GraspMode.DENSE_CLUTTER,
-    allowed: tuple[str, ...] = ("rescan", "next_viewpoint", "next_target", "nudge_target"),
+    allowed: tuple[str, ...] = ("rescan", "next_target", "nudge_target"),
 ) -> GraspBehaviorProfile:
     return GraspBehaviorProfile(
         mode=mode,
@@ -63,12 +67,11 @@ def _policy(
     enabled: bool = True,
     allowed: tuple[SceneRecoveryAction, ...] = (
         SceneRecoveryAction.RESCAN,
-        SceneRecoveryAction.NEXT_VIEWPOINT,
         SceneRecoveryAction.NEXT_TARGET,
     ),
     max_total: int = 3,
     per_action: Optional[dict] = None,
-    apply_modes: tuple[str, ...] = ("auto", "dense_clutter", "dense_autonomous"),
+    apply_modes: tuple[str, ...] = ("auto", "dense_clutter"),
     fixture: Optional[FixtureEnvelope] = None,
 ) -> SceneRecoveryPolicy:
     return SceneRecoveryPolicy(
@@ -112,6 +115,13 @@ class _StubStrategy:
         )
 
 
+class _DecliningStrategy:
+    """Always declines (plans NONE), as a strategy whose preconditions are not met does."""
+
+    def plan(self, context: SceneRecoveryContext) -> SceneRecoveryPlan:
+        return SceneRecoveryPlan(action=SceneRecoveryAction.NONE, reason="declined")
+
+
 def _make_orchestrator(
     *,
     dispatcher: Optional[RecoveryDispatcher] = None,
@@ -120,9 +130,6 @@ def _make_orchestrator(
         dispatcher=dispatcher or RecoveryDispatcher(),
         strategies={
             SceneRecoveryAction.RESCAN: _StubStrategy(SceneRecoveryAction.RESCAN),
-            SceneRecoveryAction.NEXT_VIEWPOINT: _StubStrategy(
-                SceneRecoveryAction.NEXT_VIEWPOINT
-            ),
             SceneRecoveryAction.NEXT_TARGET: _StubStrategy(
                 SceneRecoveryAction.NEXT_TARGET
             ),
@@ -155,7 +162,7 @@ class RecoveryOrchestratorGatingTests(unittest.TestCase):
     def test_mode_not_in_apply_modes_returns_none(self) -> None:
         orch = _make_orchestrator()
         ctx = _ctx(
-            profile=_profile(mode=GraspMode.CLOSED_LOOP),
+            profile=_profile(mode=GraspMode.AUTO),
             policy=_policy(apply_modes=("dense_clutter",)),
             failure_reasons=(GraspFailureReason.RESCAN_RECOMMENDED,),
         )
@@ -176,28 +183,25 @@ class RecoveryOrchestratorDispatchTests(unittest.TestCase):
         self.assertEqual(plan.action, SceneRecoveryAction.RESCAN)
 
     def test_dispatch_skips_disallowed_and_falls_through(self) -> None:
-        # Policy excludes RESCAN; mapping is (RESCAN, NEXT_VIEWPOINT).
+        # IK_FAILED maps to (NEXT_TARGET, RESCAN). With both allowed the first listed wins, which
+        # confirms ordering is respected.
         orch = _make_orchestrator()
         ctx = _ctx(
             profile=_profile(),
-            policy=_policy(
-                allowed=(SceneRecoveryAction.NEXT_VIEWPOINT,),
-            ),
-            failure_reasons=(GraspFailureReason.HEAVY_OCCLUSION,),
+            policy=_policy(),
+            failure_reasons=(GraspFailureReason.IK_FAILED,),
         )
         plan = orch.next_step(ctx)
         self.assertIsNotNone(plan)
         assert plan is not None
-        # HEAVY_OCCLUSION maps to NEXT_VIEWPOINT, RESCAN — NEXT_VIEWPOINT is
-        # listed first by the default dispatcher anyway, so this confirms
-        # ordering is respected. Add a second case where the *first* listed
-        # action is disallowed:
+        self.assertEqual(plan.action, SceneRecoveryAction.NEXT_TARGET)
+        # A second case where the *first* listed action is disallowed: it falls through to RESCAN.
         ctx2 = _ctx(
             profile=_profile(),
             policy=_policy(
                 allowed=(SceneRecoveryAction.RESCAN,),
             ),
-            failure_reasons=(GraspFailureReason.HEAVY_OCCLUSION,),
+            failure_reasons=(GraspFailureReason.IK_FAILED,),
         )
         plan2 = orch.next_step(ctx2)
         self.assertIsNotNone(plan2)
@@ -223,7 +227,7 @@ class RecoveryOrchestratorBudgetTests(unittest.TestCase):
             failure_reasons=(GraspFailureReason.RESCAN_RECOMMENDED,),
             history=(
                 SceneRecoveryAction.RESCAN,
-                SceneRecoveryAction.NEXT_VIEWPOINT,
+                SceneRecoveryAction.NEXT_TARGET,
             ),
         )
         self.assertIsNone(orch.next_step(ctx))
@@ -234,16 +238,16 @@ class RecoveryOrchestratorBudgetTests(unittest.TestCase):
             profile=_profile(),
             policy=_policy(
                 max_total=5,
-                per_action={SceneRecoveryAction.RESCAN: 1},
+                per_action={SceneRecoveryAction.NEXT_TARGET: 1},
             ),
-            failure_reasons=(GraspFailureReason.RESCAN_RECOMMENDED,),
-            history=(SceneRecoveryAction.RESCAN,),
+            failure_reasons=(GraspFailureReason.IK_FAILED,),
+            history=(SceneRecoveryAction.NEXT_TARGET,),
         )
         plan = orch.next_step(ctx)
         self.assertIsNotNone(plan)
         assert plan is not None
-        # RESCAN was used; budget=1 forces fall-through to NEXT_VIEWPOINT.
-        self.assertEqual(plan.action, SceneRecoveryAction.NEXT_VIEWPOINT)
+        # NEXT_TARGET was used; budget=1 forces fall-through to RESCAN.
+        self.assertEqual(plan.action, SceneRecoveryAction.RESCAN)
 
 
 class RecoveryOrchestratorAntiLoopTests(unittest.TestCase):
@@ -251,7 +255,32 @@ class RecoveryOrchestratorAntiLoopTests(unittest.TestCase):
         """Anti-loop: refuse the same (action, failure_class) pair twice."""
 
         orch = _make_orchestrator()
-        # First step: RESCAN_RECOMMENDED -> RESCAN.
+        # First step: IK_FAILED -> NEXT_TARGET.
+        ctx1 = _ctx(
+            profile=_profile(),
+            policy=_policy(),
+            failure_reasons=(GraspFailureReason.IK_FAILED,),
+        )
+        plan1 = orch.next_step(ctx1)
+        assert plan1 is not None
+        self.assertEqual(plan1.action, SceneRecoveryAction.NEXT_TARGET)
+
+        # Same class again with NEXT_TARGET already in typed history.
+        history_entry = RecoveryHistoryEntry(
+            action=SceneRecoveryAction.NEXT_TARGET,
+            failure_class=GraspFailureReason.IK_FAILED,
+            outcome="completed",
+        )
+        ctx2 = orch.context_with_history_entry(ctx1, history_entry)
+        # Second call should skip NEXT_TARGET and pick RESCAN.
+        plan2 = orch.next_step(ctx2)
+        assert plan2 is not None
+        self.assertEqual(plan2.action, SceneRecoveryAction.RESCAN)
+
+    def test_a_class_with_one_action_stops_once_it_was_tried(self) -> None:
+        """RESCAN_RECOMMENDED maps to RESCAN alone since NEXT_VIEWPOINT was merged into it."""
+
+        orch = _make_orchestrator()
         ctx1 = _ctx(
             profile=_profile(),
             policy=_policy(),
@@ -260,18 +289,12 @@ class RecoveryOrchestratorAntiLoopTests(unittest.TestCase):
         plan1 = orch.next_step(ctx1)
         assert plan1 is not None
         self.assertEqual(plan1.action, SceneRecoveryAction.RESCAN)
-
-        # Same class again with RESCAN already in typed history.
-        history_entry = RecoveryHistoryEntry(
+        ctx2 = orch.context_with_history_entry(ctx1, RecoveryHistoryEntry(
             action=SceneRecoveryAction.RESCAN,
             failure_class=GraspFailureReason.RESCAN_RECOMMENDED,
             outcome="completed",
-        )
-        ctx2 = orch.context_with_history_entry(ctx1, history_entry)
-        # Second call should skip RESCAN and pick NEXT_VIEWPOINT.
-        plan2 = orch.next_step(ctx2)
-        assert plan2 is not None
-        self.assertEqual(plan2.action, SceneRecoveryAction.NEXT_VIEWPOINT)
+        ))
+        self.assertIsNone(orch.next_step(ctx2))
 
     def test_same_action_different_failure_class_allowed(self) -> None:
         """Anti-loop is per (action, class), not per action alone."""
@@ -340,20 +363,17 @@ class RecoveryTrailTests(unittest.TestCase):
 class RecoveryOrchestratorIntegrationWithStrategiesTests(unittest.TestCase):
     """Confirm orchestrator delegates to per-action strategies."""
 
-    def test_next_target_strategy_emits_none_when_no_alternatives(self) -> None:
+    def test_a_declining_strategy_falls_through_to_the_next_action(self) -> None:
         orch = RecoveryOrchestrator(
             dispatcher=RecoveryDispatcher(),
             strategies={
                 SceneRecoveryAction.RESCAN: _StubStrategy(SceneRecoveryAction.RESCAN),
-                SceneRecoveryAction.NEXT_VIEWPOINT: _StubStrategy(
-                    SceneRecoveryAction.NEXT_VIEWPOINT
-                ),
-                SceneRecoveryAction.NEXT_TARGET: NextTargetRecoveryStrategy(),
-                SceneRecoveryAction.NUDGE_TARGET: NoRecoveryStrategy(),
+                SceneRecoveryAction.NEXT_TARGET: _DecliningStrategy(),
+                SceneRecoveryAction.NUDGE_TARGET: _DecliningStrategy(),
             },
         )
-        # NEXT_TARGET strategy refuses without ≥2 segmentations and no
-        # frame; orchestrator must fall through to RESCAN.
+        # The NEXT_TARGET strategy declines (as one with no alternative
+        # target in the frame does); orchestrator must fall through to RESCAN.
         ctx = _ctx(
             profile=_profile(),
             policy=_policy(),

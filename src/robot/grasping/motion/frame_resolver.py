@@ -35,7 +35,7 @@ on macOS with no hardware drivers installed.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol, Union, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
@@ -45,16 +45,9 @@ from src.robot.grasping.types.perception import PerceptionFrame
 
 __all__ = [
     "EyeInHandFrameResolver",
-    "FrameResolutionFailure",
     "FrameResolver",
     "IdentityFrameResolver",
-    "RESOLVE_REASON_BAD_TRANSFORM",
-    "RESOLVE_REASON_EXCEPTION",
-    "RESOLVE_REASON_NONE_RETURNED",
-    "RESOLVE_REASON_NO_RESOLVER",
-    "RESOLVE_REASON_WRONG_FRAME",
     "StaticCameraToBaseResolver",
-    "resolve_or_none",
 ]
 
 
@@ -72,8 +65,7 @@ class FrameResolver(Protocol):
 
     The resolver must not mutate the frame or the arm, and it must be
     callable repeatedly within one attempt, because the orchestrator may
-    invoke it for the initial capture, for a refinement recapture, and
-    for active perception viewpoints.
+    invoke it for more than one capture (another camera's frame, a rescan).
     """
 
     def camera_to_base_for_frame(
@@ -169,10 +161,11 @@ class EyeInHandFrameResolver:
         """``CAMERA`` to ``BASE`` for the moment this frame was captured, not for the moment of the call.
 
         The frame is read, not ignored. For a camera bolted to the wrist the transform depends on
-        where the tool was when the shutter opened, and the closed-loop path moves the arm between
-        capture and resolve by design and then re-perceives. Reading the TCP at resolve time instead
-        puts every millimetre the tool travelled in between into the grasp, in a frame nothing
-        downstream checks.
+        where the tool was when the shutter opened, and the arm can move between capture and resolve:
+        a frame taken at one look is used after the arm has left it (the two-scan refinement, which
+        moved it by design, left on 2026-09-29). Reading the TCP at resolve time instead puts every
+        millimetre the tool travelled in between into the grasp, in a frame nothing downstream
+        checks.
 
         A producer that does not stamp `tool_pose` leaves it `None`, and the resolver then reads the
         arm directly. That fallback is what keeps an unstamped source working; stamping is what makes
@@ -226,92 +219,3 @@ class IdentityFrameResolver:
         arm: RobotArm,  # noqa: ARG002 (unused)
     ) -> Transform:
         return Transform.identity(from_frame=Frame.CAMERA, to_frame=Frame.BASE)
-
-
-# ---------------------------------------------------------------------------
-# Typed convenience: non-raising resolution wrapper for shadow callers
-# ---------------------------------------------------------------------------
-
-# Reason strings, a frozen wire contract. A consumer such as
-# multi-view fusion or a telemetry overlay must match against these
-# constants rather than against the human-readable ``message``.
-RESOLVE_REASON_NO_RESOLVER = "no_resolver"
-RESOLVE_REASON_EXCEPTION = "exception"
-RESOLVE_REASON_NONE_RETURNED = "none_returned"
-RESOLVE_REASON_BAD_TRANSFORM = "bad_transform"
-RESOLVE_REASON_WRONG_FRAME = "wrong_frame"
-
-
-@dataclass(frozen=True, slots=True)
-class FrameResolutionFailure:
-    """Typed failure carrier returned by :func:`resolve_or_none`.
-
-    ``reason`` is one of the ``RESOLVE_REASON_*`` module-level
-    constants and is the stable wire field. ``message`` is a
-    human-readable diagnostic for logs and telemetry only. Do not branch
-    on it.
-
-    This carrier exists so that a shadow-path consumer, such as
-    multi-view fusion or a read-only observer, can ask for the transform
-    if it is cheap and safe to produce without entangling itself in the
-    fail-closed branch of the execution policy. Anything that executes
-    motion must use the resolver directly and let exceptions propagate,
-    as the fail-closed contract requires.
-    """
-
-    reason: str
-    message: str = ""
-
-
-def resolve_or_none(
-    resolver: Optional[FrameResolver],
-    frame: PerceptionFrame,
-    *,
-    arm: RobotArm,
-) -> Union[Transform, FrameResolutionFailure]:
-    """Best-effort, non-raising wrapper around :meth:`FrameResolver.camera_to_base_for_frame`.
-
-    Returns either:
-
-    * a :class:`Transform` from ``CAMERA`` to ``BASE`` on success, or
-    * a :class:`FrameResolutionFailure` describing why no transform
-      could be produced.
-
-    This helper never raises, which is why it is for shadow-path and
-    observer callers only, such as fusion ingest or a telemetry overlay.
-    The execution policy must call the resolver directly, so that a
-    hardware or calibration failure surfaces on the fail-closed
-    exception path.
-    """
-
-    if resolver is None:
-        return FrameResolutionFailure(
-            reason=RESOLVE_REASON_NO_RESOLVER,
-            message="no frame resolver wired",
-        )
-    try:
-        t = resolver.camera_to_base_for_frame(frame, arm=arm)
-    except Exception as exc:  # noqa: BLE001 (intentional broad guard for shadow paths)
-        return FrameResolutionFailure(
-            reason=RESOLVE_REASON_EXCEPTION,
-            message=f"{type(exc).__name__}: {exc}",
-        )
-    if t is None:
-        return FrameResolutionFailure(
-            reason=RESOLVE_REASON_NONE_RETURNED,
-            message="resolver returned None",
-        )
-    if not isinstance(t, Transform):
-        return FrameResolutionFailure(
-            reason=RESOLVE_REASON_BAD_TRANSFORM,
-            message=f"resolver returned {type(t).__name__}, expected Transform",
-        )
-    if t.from_frame is not Frame.CAMERA or t.to_frame is not Frame.BASE:
-        return FrameResolutionFailure(
-            reason=RESOLVE_REASON_WRONG_FRAME,
-            message=(
-                f"resolver returned Transform({t.from_frame.name} -> "
-                f"{t.to_frame.name}); expected CAMERA -> BASE"
-            ),
-        )
-    return t

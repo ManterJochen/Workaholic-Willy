@@ -8,8 +8,10 @@ Two sources, and the console never blurs them:
   one history covers both tools. They are also thinner than they look: on a default attempt the
   production serializer fills ``profile``, ``initial_telemetry``, ``execution``, ``selected_grasp``,
   ``recovery_actions`` and ``extra``. ``verification`` and ``refinement`` gained writers on
-  2026-09-10 and fill only on an attempt where those layers actually ran, which no shipped config
-  turns on. ``frame``, ``target``, ``initial_grasp`` and ``refined_grasp`` have no writer at all.
+  2026-09-10; both layers ran only on the two-scan refinement path, removed on 2026-09-29 with the
+  post-grasp verification stage itself, so a live record fills ``verification`` only from a
+  simulator's ground-truth lift and ``refinement`` never.
+  ``frame``, ``target``, ``initial_grasp`` and ``refined_grasp`` have no writer at all.
 
 Anything a UI shows therefore says which of the two it came from, because "the chosen grasp was at
 x=312" and "the run succeeded" are claims of very different strength and only one of them survives a

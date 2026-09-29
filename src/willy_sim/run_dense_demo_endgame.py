@@ -10,16 +10,18 @@ process and then stitched offline with title cards:
   candidate (approach_path_blocked), and no blind grab follows.
 * ``recovery``: the same jam, and the contact-redistribute pushes the movable blocker out of the
   corridor so the re-pick succeeds.
-* ``autonomy``: the autonomous loop. ``DENSE_AUTONOMOUS`` perceives, refines, verifies and recovers.
+
+The fourth segment, ``autonomy``, filmed the ``dense_autonomous`` loop (perceive, refine, verify,
+recover). It was removed on 2026-09-29 with that mode and the two-scan refinement it ran; a video
+recorded before then still shows it.
 
 Each frame carries a decision and state banner naming the segment, the loop state and the outcome.
 Reuses ``run_dense_pick.build_service`` and the real pick paths, no mock. On-box only (Isaac).
 
-    # record each segment (4 clean processes):
+    # record each segment (3 clean processes):
     ...python.bat -m src.willy_sim.run_dense_demo_endgame --segment vision
     ...python.bat -m src.willy_sim.run_dense_demo_endgame --segment safety
     ...python.bat -m src.willy_sim.run_dense_demo_endgame --segment recovery
-    ...python.bat -m src.willy_sim.run_dense_demo_endgame --segment autonomy
     # stitch them into one MP4 (offline, no Isaac):
     python -m src.willy_sim.run_dense_demo_endgame --stitch
 """
@@ -63,12 +65,6 @@ _SEGMENTS: dict[str, dict] = {
         "color": (255, 170, 70),
         "target": (0.45, -0.09, 0.05),
     },
-    "autonomy": {
-        "title": "AUTONOMOUS LOOP (C2)",
-        "caption": "perceive -> refine -> verify -> recover",
-        "color": (200, 120, 255),
-        "target": (0.45, -0.12, 0.08),
-    },
 }
 
 
@@ -110,7 +106,7 @@ def record_segment(segment: str, *, out_path: str | None = None, headless: bool 
         prompt=prompt, headless=headless,
         ycb=is_vision, vision=is_vision,
         blocking=is_blocking, enable_g12=is_blocking,
-        mode="dense_autonomous" if segment == "autonomy" else "dense_clutter",
+        mode="dense_clutter",
         # Natural aim (the clean IK branch) for the free-pick segments; off for the blocking ones, whose
         # refusal and recovery scenarios drive their own approach. The continuous guard is always on.
         natural_aim=not is_blocking, continuous_guard=True,
@@ -258,7 +254,6 @@ def record_segment(segment: str, *, out_path: str | None = None, headless: bool 
         "safety": f"{pick_outcome} -> REFUSED (no blind grab)",
         "recovery": (f"recovered_success -> re-pick lift {z_lift:.0f} mm" if (recovered or _lifted)
                      else f"{pick_outcome} (no recovery this take)"),
-        "autonomy": f"refine->verify->{outcome} -> lift {z_lift:.0f} mm",
     }[segment]
     composed: list[np.ndarray] = []
     for f in frames:
@@ -301,7 +296,7 @@ def _title_card(text_lines, size, color, frames):  # noqa: ANN001, ANN202
 
 
 def stitch(*, demo_dir: str = _DEMO_DIR, out_path: str | None = None, fps: int = 18,
-           max_seg_frames: int = 220, order=("vision", "safety", "recovery", "autonomy")) -> dict:
+           max_seg_frames: int = 220, order=("vision", "safety", "recovery")) -> dict:
     """Offline (no Isaac): concatenate the segment MP4s into one investor MP4 with title cards.
 
     Each segment is subsampled to at most ``max_seg_frames`` on a uniform stride, so the segments stay
@@ -313,6 +308,10 @@ def stitch(*, demo_dir: str = _DEMO_DIR, out_path: str | None = None, fps: int =
     seg_frames: dict[str, list[np.ndarray]] = {}
     for seg in order:
         p = Path(demo_dir) / f"seg_{seg}.mp4"
+        if seg not in _SEGMENTS:
+            # `autonomy`, whose mode left on 2026-09-29, among them: a segment this recorder no longer films.
+            print(f"  skip {seg}: not a segment of this demo", flush=True)
+            continue
         if not p.exists():
             print(f"  skip {seg}: {p} not found", flush=True)
             continue

@@ -185,7 +185,7 @@ def motion_warnings(robot_config: "RobotConfig", gripper: object) -> tuple[Motio
         has_feedback = bool(getattr(gripper, "has_feedback", False))
         opts_in = bool(getattr(gripper, "_open_on_connect_without_feedback", False))
         # A toggle is the one jaw cell whose connect always depends on a PERSON: nothing reads its jaws back, so the
-        # driver asks where they stand before anything moves, and counts its own pulses from the answer. A solenoid
+        # driver asks where they stand before anything moves, and counts its own changes from the answer. A solenoid
         # asks too where it opted in (confirm_open_at_start), and then connects by its feedback as below.
         toggle = toggle_without_sensor_of(gripper) is not None
         if not toggle and getattr(gripper, "asks_at_connect", False) is True:
@@ -201,11 +201,11 @@ def motion_warnings(robot_config: "RobotConfig", gripper: object) -> tuple[Motio
                 subject="gripper",
                 what="Connecting first ASKS where the jaws stand, at the terminal this console runs in, and "
                      "waits for the answer; with no terminal the connect is refused. The hand is a toggle on "
-                     "one output with no sensor, so every pulse flips the jaws and only a person can say where "
-                     "the program's count of its pulses starts.",
-                precaution="Look at the jaws before you answer. If they stand closed you are offered ONE PULSE "
-                           "to open them, which releases anything between them where the arm stands; answer "
-                           "'a' to abort instead.",
+                     "one output with no sensor, so every change of the output, on or off, moves the jaws, and "
+                     "only a person can say where the program's count of its changes starts.",
+                precaution="Look at the jaws before you answer. If they stand closed you are offered ONE CHANGE "
+                           "of the output to open them, which releases anything between them where the arm stands; "
+                           "answer 'a' to abort instead.",
             ))
         elif has_feedback:
             warnings.append(MotionWarning(

@@ -78,7 +78,7 @@ class ComputeKpisTests(unittest.TestCase):
             _record(
                 mode="auto",
                 outcome="succeeded",
-                recovery_actions=({"action": "next_viewpoint"},),
+                recovery_actions=({"action": "rescan"},),
             ),
             _record(mode="auto", outcome="execution_failed"),
         )

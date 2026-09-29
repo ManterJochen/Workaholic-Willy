@@ -58,9 +58,9 @@ def _live_gripper():
     )
 
 
-def _service(config: dict, **handles) -> AutonomousGraspService:
+def _service(config: dict | RobotConfig, **handles) -> AutonomousGraspService:
     return AutonomousGraspService.from_robot_config(
-        RobotConfig(**config),
+        RobotConfig(**config) if isinstance(config, dict) else config,
         calculator=_calculator(),  # type: ignore[arg-type]
         perception=SimpleNamespace(acquire=_frame),  # type: ignore[arg-type]
         **handles,
@@ -107,11 +107,11 @@ class LiveHandleTests(unittest.TestCase):
 
         ``effective_config`` is the tell. ``from_components`` leaves it ``None`` -- which is exactly
         why the sim silently lost the U-stack overlays -- so its presence proves the config-driven
-        path really ran.
+        path really ran. The decision engine is the config-built actor it looks for: the verifier it
+        looked for left on 2026-09-29 with the ``verification`` block.
         """
-
         service = _service(
-            {**_SIM_LIKE, "grasping": {"default_mode": "auto", "closed_loop": {"enabled": True}}},
+            RobotConfig(**{**_SIM_LIKE, "grasping": {"default_mode": "auto", "decision": {"enabled": True}}}),
             gripper=_live_gripper(),
         )
 
@@ -120,7 +120,7 @@ class LiveHandleTests(unittest.TestCase):
             "a supplied handle dropped the build back onto the from_components path",
         )
         self.assertIsNotNone(
-            service.refiner, "config-built closed-loop actors did not survive the handle path"
+            service.decision_engine, "a config-built actor did not survive the handle path"
         )
 
 

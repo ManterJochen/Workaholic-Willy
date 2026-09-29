@@ -17,7 +17,7 @@ import math
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.safety.planning import curobo_env_available
@@ -447,11 +447,12 @@ def _end_effector_wiring_row(robot_cfg: "RobotConfig") -> PreflightCheck:
         if jaw.open_output_pin is not None:
             opens = f"open output {jaw.open_output_pin}"
         elif jaw.actuation == "single_toggle":
-            opens = f"open by a second pulse on close output {jaw.close_output_pin}"
-            # Nothing is read back: the program counts its own pulses from a person's answer at connect.
-            fix = ("confirm physically: each pulse flips the jaws and nothing reads them back, so every program asks "
-                   "at its connect, before anything moves, whether they stand open, and counts its own pulses from "
-                   "the answer; run it from a terminal, and look at the jaws before you answer")
+            opens = f"open by the next change of close output {jaw.close_output_pin}"
+            # Nothing is read back: the program counts its own changes from a person's answer at connect.
+            fix = ("confirm physically: each change of the output, switched on or off, moves the jaws once and "
+                   "nothing reads them back, so every program asks at its connect, before anything moves, whether "
+                   "they stand open, and counts its own changes from the answer; run it from a terminal, and look at "
+                   "the jaws before you answer")
         else:
             opens = f"open by dropping close output {jaw.close_output_pin}"
         return PreflightCheck(
@@ -478,7 +479,7 @@ def _jaw_travel_time_row(robot_cfg: "RobotConfig") -> PreflightCheck | None:
     """Whether a jaw_io hand's travel time was measured where it is the only wait the driver has; None for other hands.
 
     With no feedback a close waits ``close_settle_s`` and nothing else, and with no open switch so does an open, which
-    a place backs out on a line right after; a toggle, which reads nothing, waits it after every pulse. The schema
+    a place backs out on a line right after; a toggle, which reads nothing, waits it after every change. The schema
     default, 0.3 s, is a small cylinder's stroke: a Hand-E on its I/O coupling takes up to about 2 s, so a default
     left standing lifts before the jaws have met the part and drags the part a place has just set down.
     """
@@ -498,43 +499,9 @@ def _jaw_travel_time_row(robot_cfg: "RobotConfig") -> PreflightCheck | None:
     return PreflightCheck(
         name, CheckStatus.WARN,
         f"robot.gripper.jaw_io.close_settle_s is the schema default {settle:.1f} s, and the settle time is the only "
-        f"wait {ways}. The arm moves on that long after the edge, whether the jaws have arrived or not",
+        f"wait {ways}. The arm moves on that long after the command, whether the jaws have arrived or not",
         "time the full stroke, open and closed, at the coupling's preset, by stopwatch or video (a Hand-E can take "
         "about 2 s), and set close_settle_s to the longer with a margin; it must cover the stroke",
-    )
-
-
-#: Below this a toggle's pulse loads but is warned: several controller cycles reach the pin, and whether the device
-#: registers a pulse that short as a flip is a bench measurement nothing here makes.
-_TOGGLE_PULSE_WARN_S = 0.1
-
-
-def _toggle_pulse_row(robot_cfg: "RobotConfig") -> PreflightCheck | None:
-    """Whether a ``single_toggle``'s pulse is long enough to trust as one flip; None for every other hand.
-
-    The load refuses a pulse under 0.05 s, a handful of CB3 controller cycles. Between that and
-    0.1 s the controller does apply the pulse, and the driver reads it back HIGH and counts a
-    flip, but a device that needs longer to register it does not flip, and nothing on a toggle
-    notices: every command after it runs inverted until a person looks (review of 2026-09-24).
-    """
-    gripper = robot_cfg.gripper
-    if str(getattr(gripper.vendor, "value", gripper.vendor)).lower() != "jaw_io":
-        return None
-    jaw = gripper.jaw_io
-    if jaw.actuation != "single_toggle":
-        return None
-    pulse = float(jaw.pulse_s)
-    name = "toggle pulse"
-    if pulse >= _TOGGLE_PULSE_WARN_S:
-        return PreflightCheck(name, CheckStatus.OK, (
-            f"pulse_s {pulse:.2f} s on {jaw.io_port} output {jaw.close_output_pin}, each pulse one flip"))
-    return PreflightCheck(
-        name, CheckStatus.WARN,
-        f"robot.gripper.jaw_io.pulse_s is {pulse:.2f} s, under {_TOGGLE_PULSE_WARN_S} s: the controller applies it and "
-        "the program counts a flip, and a device that needs a longer pulse does not flip, which nothing on a toggle "
-        "notices; every command after it runs inverted",
-        f"measure it on the bench: `python -m src.robot.drivers.ur --profile NAME --pulse {jaw.close_output_pin} "
-        f"--for {pulse:.2f} --yes` must flip the jaws once, every time; if not, raise pulse_s (0.2 s is the default)",
     )
 
 
@@ -650,6 +617,41 @@ def _joint_window_row(robot_cfg: "RobotConfig") -> "PreflightCheck | None":
             "and its seam, half a turn away, belongs behind the cell, where nothing is picked; then " + fix,
         )
     return PreflightCheck("joint window", CheckStatus.BENCH, detail, fix)
+
+
+#: A look every joint of which lies within this many units of zero reads as radians written into the degrees key: a full
+#: turn in radians is 6.28, while a look a person taught in degrees turns some joint further than that.
+_LOOK_READS_AS_RADIANS: Final[float] = 6.3
+
+
+def _looks_row(robot_cfg: "RobotConfig") -> "PreflightCheck | None":
+    """The looks the cell profile configures, or ``None`` where it configures none. Every pick whose program names no
+    look is sent to them, a fixed camera's arm too.
+
+    WARN on a look that reads as radians (every joint within :data:`_LOOK_READS_AS_RADIANS`): the key is in degrees, and
+    the loader cannot refuse radians, which are small degrees to it. Read as degrees, such a look sends the arm to a
+    pose a few degrees from zero on every joint, which is nowhere a camera was taught to look from.
+    """
+    looks = getattr(robot_cfg, "look_joint_positions_deg", None)
+    if not looks:
+        return None
+    key = "robot.look_joint_positions_deg"
+    radians = [number for number, look in enumerate(looks, start=1)
+               if all(abs(float(value)) <= _LOOK_READS_AS_RADIANS for value in look)]
+    if radians:
+        which = ", ".join(str(number) for number in radians)
+        return PreflightCheck(
+            "looks", CheckStatus.WARN,
+            f"{key}: look {which} reads as radians, every joint within {_LOOK_READS_AS_RADIANS:g} of zero; the key is "
+            "in degrees, so the arm would be sent a few degrees from zero on every joint",
+            "write each look in degrees, as the pendant shows the joints and `python -m src.robot.drivers.ur --where` "
+            "prints them",
+        )
+    return PreflightCheck(
+        "looks", CheckStatus.OK,
+        f"{key}: {len(looks)} look(s) in degrees, visited in order by every pick whose program names none (a fixed "
+        "camera's arm moves to them too)",
+    )
 
 
 def _vendor(robot_cfg: "RobotConfig") -> str:
@@ -865,6 +867,12 @@ def run_config_preflight(
     if window_row is not None:
         checks.append(window_row)
 
+    # ---- the looks the cell profile configures -------------------------------------------------
+    # In degrees, and radians written there cannot be refused at load; a row only where looks are configured.
+    looks_row = _looks_row(robot_cfg)
+    if looks_row is not None:
+        checks.append(looks_row)
+
     # ---- the hand ------------------------------------------------------------------------------
     # The one name the guard takes its hand from. A cell whose guard reads hand geometry refuses to
     # build without it, so this row is that refusal met at a desk, with the same sentence. And where
@@ -1025,8 +1033,5 @@ def run_config_preflight(
         travel = _jaw_travel_time_row(robot_cfg)
         if travel is not None:
             checks.append(travel)
-        pulse = _toggle_pulse_row(robot_cfg)
-        if pulse is not None:
-            checks.append(pulse)
 
     return PreflightReport(tuple(checks))

@@ -33,6 +33,8 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -358,11 +360,13 @@ class RunRegistry:
             if run.prompt.strip():
                 previous_prompt = service.set_prompt(run.prompt)
 
-            # Asked once, as `PickRun` asks it: whether a camera sits on the wrist does not change
-            # between two picks. A wrist camera sees what the arm points it at, so each pick looks from
-            # the arm's home first; before this the console handed no look, and a wrist camera
-            # perceived from wherever the last pick had left the arm. A service handed no look is
-            # called as it always was, so a fixed camera, and a service that takes none, still runs.
+            # Asked once, as `PickRun` asks it: neither the cell profile's looks nor whether a camera sits
+            # on the wrist changes between two picks. A wrist camera sees what the arm points it at, so
+            # each pick looks from the looks the cell profile configures, else from the arm's home;
+            # before this the console handed no look, and a wrist camera perceived from wherever the last
+            # pick had left the arm. A service handed no look is called as it always was, so a fixed
+            # camera, and a service that takes none, still runs. `both_faces` stays off: the console runs
+            # the fast rule, and the switch is a program's (`PickRun`, `pick`).
             look = _look_for(service)
 
             # Why the run ended before its last pick although nothing raised; "" while it has not.
@@ -370,8 +374,9 @@ class RunRegistry:
             for _ in range(run.requested_picks):
                 if run.stop_requested:
                     break
-                # Before every pick, the first included: a toggle hand the program believes CLOSED, or whose last
-                # pulse nobody can place, would have `pick()` ask a person where the jaws stand. From this thread that
+                # Before every pick, the first included: a toggle hand the program believes CLOSED, or whose jaws
+                # nobody can place (a change that failed, DO0 switched by hand at the pendant), would have `pick()` ask
+                # a person where the jaws stand. From this thread that
                 # question goes to the SERVER's terminal, where nobody watching the console sees it, Stop cannot
                 # reach `input()`, and a 'p' typed later drops the part wherever the arm then stands. A console run
                 # never releases what it lifted, so on a toggle every pick after a success would ask. The run ends
@@ -379,7 +384,12 @@ class RunRegistry:
                 stopped_by = _why_no_pick_starts(service)
                 if stopped_by:
                     break
-                report = service.pick() if look is None else service.pick(look=look)
+                # And inside the pick nobody is asked either: the pick asks the hand at its start and again before its
+                # approach, seconds after the check above, and DO0 switched at the pendant in between made it ask at
+                # the server's terminal (review of 2026-09-28). There a question is a refusal, nothing is sent, and the
+                # pick ends as a hand that needs a person, which ends the run.
+                with _asking_nobody(service):
+                    report = service.pick() if look is None else service.pick(look=look)
                 fault = getattr(report, "fault", None)
                 if fault is not None:
                     # A fault of the cell still ends the run: the next pick would meet the same dead
@@ -405,6 +415,12 @@ class RunRegistry:
                         if ok else f"Pick {run.attempted}: {outcome}. {report.failure_summary()}"
                     ),
                     outcome=outcome, succeeded=ok, reason=report.failure_summary(),
+                    # Where it looked from (a fixed camera handed looks: those it moved to, the last maybe not
+                    # reached, as the reason says) and which looks its grasp was fused from (a wrist camera's).
+                    looks=_names(getattr(report, "looks", ())),
+                    looks_fused=_names(getattr(report, "looks_fused", ())),
+                    # What else the looks came to, each key only where the report says it.
+                    **_what_the_looks_came_to(report),
                 )
                 # After the pick is counted and said: it ran, and its outcome is part of the run's
                 # record. What ends the run is that the next pick must not start.
@@ -495,20 +511,56 @@ class RunRegistry:
 
 
 def _look_for(service: Any) -> Any:
-    """What every pick of a console run looks from: home on a wrist camera, else ``None``, no look at all.
+    """What every pick of a console run looks from: the cell profile's looks, else home on a wrist camera, else
+    ``None``, no look at all.
 
     The rule ``PickRun._looks_for`` keeps for a campaign that names no look of its own
-    (``src/robot/execution/pick_run.py``), and the console names none: a wrist camera sees what the
-    arm points it at, so it looks from the arm's configured home (``src.robot.execution.looks.HOME``);
-    a fixed camera perceives from where the arm stands. ``is True``, so a double that answers every
-    attribute is not read as a wrist camera, and a service that does not say is asked as it always was.
+    (``src/robot/execution/pick_run.py``), and the console names none: the looks the cell profile
+    configures (``robot.look_joint_positions_deg``, read as ``service.configured_looks``), a fixed
+    camera's arm sent to them too; else, as a wrist camera sees what the arm points it at, the arm's configured home
+    (``src.robot.execution.looks.HOME``); else a fixed camera perceives from where the arm stands.
+    Type-checked (``configured_looks_of``) and ``is True``, so a double that answers every attribute is
+    read as neither looks nor a wrist camera, and a service that does not say is asked as it always was.
 
     Imported here, not at the top: the console imports this module to start, and the look vocabulary
     brings the motion layer with it.
     """
     from src.robot.execution.looks import HOME  # noqa: PLC0415
+    from src.robot.execution.pick_run import configured_looks_of  # noqa: PLC0415
 
+    configured = configured_looks_of(service)
+    if configured:
+        return configured
     return HOME if getattr(service, "perceives_from_the_wrist", False) is True else None
+
+
+def _names(value: Any) -> list[str]:
+    """A report's tuple of look names as the wire carries it; a report that does not say names none."""
+    return list(value) if isinstance(value, tuple) and all(isinstance(name, str) for name in value) else []
+
+
+def _what_the_looks_came_to(report: Any) -> dict[str, Any]:
+    """The keys a ``pick_result`` adds for a wrist pick's looks, each only where the report says it, in its type.
+
+    ``jaw_faces_seen`` (jaw 1, jaw 2: whether each contact face of the chosen grasp was seen), ``generated_view_deg``
+    (how far the one view the looks generated turned about the part), ``hand_eye_gap_mm`` (how far apart the looks
+    measure the part's shared surface: the hand-eye check) and ``refused_look`` (the look, generated view or move back
+    whose motion ended the pick). Additive: a report that says none of them, a fixed camera's among them, adds no key,
+    and a double that answers every attribute adds nothing.
+    """
+    said: dict[str, Any] = {}
+    faces = getattr(report, "jaw_faces_seen", None)
+    if isinstance(faces, tuple) and len(faces) == 2 and all(isinstance(seen, bool) for seen in faces):
+        said["jaw_faces_seen"] = list(faces)
+    for key in ("generated_view_deg", "hand_eye_gap_mm"):
+        value = getattr(report, key, None)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            said[key] = float(value)
+    telemetry = getattr(report, "telemetry", None)
+    refused = telemetry.get("refused_look") if isinstance(telemetry, Mapping) else None
+    if isinstance(refused, str) and refused:
+        said["refused_look"] = refused
+    return said
 
 
 def _why_the_run_stops(report: Any) -> str:
@@ -520,7 +572,7 @@ def _why_the_run_stops(report: Any) -> str:
 
     * a controller that cannot move (``controller_stopped``): a protective or emergency stop, or a
       power-off. The pick ends CANCELLED with no fault, and the next pick would perceive, and on a
-      toggle pulse the jaws, for an arm a person has to walk up to;
+      toggle switch the jaws, for an arm a person has to walk up to;
     * a hand that needs a person (``gripper_fault``): a gripper that raised, whose jaws nobody can now
       name, or a toggle that would not start a pick on jaws it believes closed with nobody at a
       terminal. The pick ends EXECUTION_FAILED with no fault, and the next one meets the same hand.
@@ -541,11 +593,11 @@ def _why_the_run_stops(report: Any) -> str:
 
 
 #: How a console operator gets a toggle's count back to OPEN: the one question a person answers about the jaws is the
-#: one a Connect asks, at program start, before anything moves (the owner's rule), and it offers the pulse that opens
+#: one a Connect asks, at program start, before anything moves (the owner's rule), and it offers the change that opens
 #: them. The console has no release of its own to offer.
 _HOW_THE_JAWS_COME_BACK = (
     "The program's count says OPEN again only once a person has said so: Disconnect and Connect the cell before that "
-    "run; the connect asks where the jaws stand, and 'closed' offers one pulse to open them. A run started from the "
+    "run; the connect asks where the jaws stand, and 'closed' offers one change to open them. A run started from the "
     "console never asks at the server's terminal, where nobody watching the console sees the question and Stop "
     "cannot reach it."
 )
@@ -562,24 +614,25 @@ def _why_no_pick_starts(service: Any) -> str:
 
     * the program believes the jaws stand CLOSED: its last command closed them, on the part the last pick lifted,
       which a console run never sets down;
-    * the last pulse failed on its high write, so nobody can say which way it moved them.
+    * nobody can say where the jaws stand: the last change of the output failed, or somebody switched the output by
+      hand since the program's last command (``why_jaws_unknown``, which reads the output once, without asking or
+      sending anything).
 
     Fail closed: anything but a plain ``False`` from ``jaws_closed``, and anything but a plain ``False`` from
     ``edge_unknown`` (``TogglesWithoutSensor``), stops the run, so neither is ever asked about from this thread.
-
-    Imported here, not at the top, as :func:`_look_for` imports: the console imports this module to start.
+    The pick itself asks nobody either (:func:`_asking_nobody`).
     """
-    from src.robot.core.gripper import toggle_without_sensor_of  # noqa: PLC0415
-
-    orchestrator = getattr(getattr(service, "runtime", None), "orchestrator", None)
-    toggle = toggle_without_sensor_of(getattr(orchestrator, "gripper", None))
+    toggle = _toggle_of(service)
     if toggle is None:
         return ""
-    if getattr(toggle, "edge_unknown", True) is not False:
+    reader = getattr(toggle, "why_jaws_unknown", None)
+    why = reader() if callable(reader) else ""
+    why = why if isinstance(why, str) else ""
+    if why or getattr(toggle, "edge_unknown", True) is not False:
         return (
-            "the gripper needs a person, so the run stops: the last pulse on the jaws (a toggle hand with no sensor) "
-            "failed on its high write, so nobody can say where they stand. Look at them, release or place any part "
-            f"they hold, then start a new run. {_HOW_THE_JAWS_COME_BACK}"
+            "the gripper needs a person, so the run stops: nobody can say where they stand (a toggle hand with no "
+            f"sensor): {why or 'its last change failed, so nobody can say which way it moved them'}. Look at them, "
+            f"release or place any part they hold, then start a new run. {_HOW_THE_JAWS_COME_BACK}"
         )
     if toggle.jaws_closed is not False:
         return (
@@ -588,6 +641,30 @@ def _why_no_pick_starts(service: Any) -> str:
             f"console run never sets its part down. {_HOW_THE_JAWS_COME_BACK}"
         )
     return ""
+
+
+def _toggle_of(service: Any) -> Any:
+    """The hand ``pick()`` asks where it toggles with no sensor (``toggle_without_sensor_of``), else ``None``.
+
+    Imported here, not at the top, as :func:`_look_for` imports: the console imports this module to start.
+    """
+    from src.robot.core.gripper import toggle_without_sensor_of  # noqa: PLC0415
+
+    orchestrator = getattr(getattr(service, "runtime", None), "orchestrator", None)
+    return toggle_without_sensor_of(getattr(orchestrator, "gripper", None))
+
+
+#: What a question the hand would ask inside a run's pick answers instead: nobody is asked from a run's thread.
+_NOBODY_ASKED_FROM_A_RUN = (
+    "a run started from the console never asks at the server's terminal; the pick stops here, and the run with it"
+)
+
+
+def _asking_nobody(service: Any) -> Any:
+    """A block in which the hand ``pick()`` asks asks nobody on this thread (``asking_nobody``); a no-op otherwise."""
+    toggle = _toggle_of(service)
+    asking = getattr(toggle, "asking_nobody", None) if toggle is not None else None
+    return asking(_NOBODY_ASKED_FROM_A_RUN) if callable(asking) else nullcontext()
 
 
 def _payload(event: "PickProgress") -> dict[str, Any]:

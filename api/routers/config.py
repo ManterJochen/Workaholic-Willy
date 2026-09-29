@@ -63,12 +63,14 @@ def get_explain(
         )
         # An unknown key is a client bug, not a server error, and the schema's own near-misses are the
         # most useful thing to hand back: they are how a typo becomes a correction in one round trip.
+        # A key removed on purpose says what to write instead, as the terminal's `explain` does.
         raise HTTPException(
             status_code=404,
             detail={
                 "code": "unknown_key",
-                "message": f"{key} is not a config key.",
-                "detail": {"suggestions": list(detail.suggestions)},
+                "message": f"{key} is not a config key."
+                + (f" It was removed on purpose: {detail.removed}" if detail.removed else ""),
+                "detail": {"suggestions": list(detail.suggestions), "removed": detail.removed or None},
             },
         )
 

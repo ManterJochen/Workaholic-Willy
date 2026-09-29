@@ -181,6 +181,29 @@ class _Route:
     planned: bool
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _RankedGoals:
+    """The configurations of one flange goal in the order the arm takes them, the branch it holds first.
+
+    ``groups`` is the goals on the branch the arm holds (``held``), then the others, each group in the order
+    :func:`~src.robot.safety._ur_ik.nearest_goals` gave it, the least time a ``moveJ`` there takes first. ``branches``
+    is every goal's branch and ``names`` how a log line names it, ranked across both groups. A move screens, lines and
+    plans the first group before the second (:meth:`URRobotArm._route_to_the_nearest_goal`); a caller that only asks
+    where a pose goes takes the first the endpoint gate admits, in :attr:`in_order`
+    (:meth:`URRobotArm.nearest_configuration`).
+    """
+
+    held: "URBranch | None"
+    groups: "tuple[list[NearestGoal], list[NearestGoal]]"
+    branches: "dict[NearestGoal, URBranch | None]"
+    names: "dict[NearestGoal, str]"
+
+    @property
+    def in_order(self) -> "list[NearestGoal]":
+        """Every goal, those on the arm's branch first."""
+        return self.groups[0] + self.groups[1]
+
+
 class URRobotArm(RobotArm):
     """The UR-backed arm driver.
 
@@ -1360,6 +1383,10 @@ class URRobotArm(RobotArm):
         planner and the joint-limit guard admit, and ranked by the branch first and the least time a ``moveJ`` there
         takes after it. The goals on the arm's branch are screened, lined and planned to first; the others only after
         all of those failed. The world is refreshed once, here, and every screen, line and plan is judged in it.
+
+        Which goals there are and their order (:meth:`_goals_in_window`, :meth:`_ranked_goals`) is shared with
+        :meth:`nearest_configuration`, so the configuration a caller is told a pose goes to is the one this route
+        screens first.
         """
         try:
             here = [float(v) for v in self._conn.get_joint_positions()]
@@ -1370,49 +1397,17 @@ class URRobotArm(RobotArm):
                          f"positions could not be read ({type(exc).__name__}: {exc}); nothing was sent"),
                 exception=exc,
             )
-        model = str(self.config.ur.model)
-        solutions = (ur_flange_ik(model, np.asarray(goal.to_matrix(), dtype=np.float64), q6_if_singular=here[-1])
-                     if len(here) == self.capabilities.dof else None)
-        if solutions is None:
-            return MotionResult.failed(
-                MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
-                message=(f"robot.ur.model {model!r} has no DH chain to solve this goal on, or the controller reported "
-                         f"{len(here)} joints, so no configuration of it can be chosen; cuRobo is never left to "
-                         "choose one, and nothing was sent"),
-            )
-        if not solutions:
-            return MotionResult.failed(
-                MotionStatus.IK_FAILED, MotionCommand.MOVE_TO, target_pose=pose,
-                message="the flange goal of this pose is out of the arm's reach: it has no inverse kinematics solution",
-            )
-        lower, upper = self._goal_joint_window()
-        goals = nearest_goals(solutions, current=here, lower=lower, upper=upper, velocity=velocity)
-        if not goals:
-            half_turn = any(bool(getattr(g, "within_half_turn_of_home", False))
-                            for g in (getattr(self._preflight, "guards", ()) or ()))
-            return MotionResult.failed(
-                MotionStatus.JOINT_LIMIT_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
-                message=(f"none of the {len(solutions)} inverse kinematics solution(s) of this goal turns inside the "
-                         "planner's and the joint-limit guard's joint window"
-                         + (", which keeps half a turn either side of home "
-                            "(safety.joint_limits.within_half_turn_of_home)" if half_turn else "")
-                         + "; cuRobo is never left to choose a configuration outside it, and nothing was sent"),
-            )
+        goals = self._goals_in_window(goal, pose, here, velocity=velocity)
+        if isinstance(goals, MotionResult):
+            return goals
         refused = self._refresh_before_the_path_gate(
             near_point_mm=[float(v) for v in goal.position_mm], command=MotionCommand.MOVE_TO,
             target_pose=pose, goal_tcp_mm=self._tcp_of_pose(pose),
         )
         if refused is not None:
             return refused
-        held = ur_branch(model, here)
-        branches = {g: ur_branch(model, g.joints) for g in goals}
-        # The arm's own branch first, in the order nearest_goals gave; a configuration at a branch point agrees with
-        # both sides of it, so out of a candle-straight home, all three branch points at once, every goal is on it.
-        on_it = [g for g in goals if _same_branch(held, branches[g])]
-        groups = (on_it, [g for g in goals if g not in on_it])
-        names = {g: (f"goal {rank} of {len(goals)} ({_branch_text(branches[g])}, "
-                     f"{math.degrees(g.largest_rad):.1f} deg at most)")
-                 for rank, g in enumerate(groups[0] + groups[1], start=1)}
+        ranked = self._ranked_goals(here, goals)
+        held, branches, groups, names = ranked.held, ranked.branches, ranked.groups, ranked.names
         tried: list[str] = []
         end_refusals: list[MotionResult] = []
         detours: list[tuple[float, str]] = []
@@ -1510,6 +1505,70 @@ class URRobotArm(RobotArm):
         return MotionResult.failed(
             MotionStatus.TIMEOUT, MotionCommand.MOVE_TO, target_pose=pose, message=NO_PLAN_FAIL_SAFE_MESSAGE,
         )
+
+    def _goals_in_window(
+        self, goal: Pose, pose: Pose, here: "Sequence[float]", *, velocity: float,
+    ) -> "tuple[NearestGoal, ...] | MotionResult":
+        """Every configuration of the flange ``goal`` inside the goal window, quickest first; or the typed refusal.
+
+        The first half of the screening a Cartesian cuRobo move and :meth:`nearest_configuration` share. ``goal`` is
+        the flange goal, ``pose`` the TCP pose every refusal names, ``here`` the joints the arm stands at. Every
+        closed-form solution is turned onto the full turns nearest ``here`` inside :meth:`_goal_joint_window`, the
+        planner's window narrowed to the joint-limit guard's (the cable window about home where the cell keeps one),
+        and ordered by the least time a ``moveJ`` there takes (:func:`~src.robot.safety._ur_ik.nearest_goals`). It asks
+        nothing of the controller, the planner or the world.
+
+        The refusals: a model with no DH chain, or a controller that reported another number of joints,
+        CONTROLLER_REJECTED; a pose out of reach IK_FAILED; no solution with every joint inside the window
+        JOINT_LIMIT_REJECTED, naming the half turn about home where the guard keeps it.
+        """
+        model = str(self.config.ur.model)
+        solutions = (ur_flange_ik(model, np.asarray(goal.to_matrix(), dtype=np.float64), q6_if_singular=here[-1])
+                     if len(here) == self.capabilities.dof else None)
+        if solutions is None:
+            return MotionResult.failed(
+                MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+                message=(f"robot.ur.model {model!r} has no DH chain to solve this goal on, or the controller reported "
+                         f"{len(here)} joints, so no configuration of it can be chosen; cuRobo is never left to "
+                         "choose one, and nothing was sent"),
+            )
+        if not solutions:
+            return MotionResult.failed(
+                MotionStatus.IK_FAILED, MotionCommand.MOVE_TO, target_pose=pose,
+                message="the flange goal of this pose is out of the arm's reach: it has no inverse kinematics solution",
+            )
+        lower, upper = self._goal_joint_window()
+        goals = nearest_goals(solutions, current=here, lower=lower, upper=upper, velocity=velocity)
+        if not goals:
+            half_turn = any(bool(getattr(g, "within_half_turn_of_home", False))
+                            for g in (getattr(self._preflight, "guards", ()) or ()))
+            return MotionResult.failed(
+                MotionStatus.JOINT_LIMIT_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+                message=(f"none of the {len(solutions)} inverse kinematics solution(s) of this goal turns inside the "
+                         "planner's and the joint-limit guard's joint window"
+                         + (", which keeps half a turn either side of home "
+                            "(safety.joint_limits.within_half_turn_of_home)" if half_turn else "")
+                         + "; cuRobo is never left to choose a configuration outside it, and nothing was sent"),
+            )
+        return goals
+
+    def _ranked_goals(self, here: "Sequence[float]", goals: "Sequence[NearestGoal]") -> _RankedGoals:
+        """``goals`` in the order the arm takes them, the branch it holds first, with the names a log line gives them.
+
+        The second half of the shared screening, read on the DH chain alone: the branch of ``here`` and of every goal
+        (:func:`~src.robot.safety._ur_ik.ur_branch`), and each group kept in the order ``goals`` came in.
+        """
+        model = str(self.config.ur.model)
+        held = ur_branch(model, here)
+        branches = {g: ur_branch(model, g.joints) for g in goals}
+        # The arm's own branch first, in the order nearest_goals gave; a configuration at a branch point agrees with
+        # both sides of it, so out of a candle-straight home, all three branch points at once, every goal is on it.
+        on_it = [g for g in goals if _same_branch(held, branches[g])]
+        groups = (on_it, [g for g in goals if g not in on_it])
+        names = {g: (f"goal {rank} of {len(goals)} ({_branch_text(branches[g])}, "
+                     f"{math.degrees(g.largest_rad):.1f} deg at most)")
+                 for rank, g in enumerate(groups[0] + groups[1], start=1)}
+        return _RankedGoals(held=held, groups=groups, branches=branches, names=names)
 
     def _planned(
         self, planner: CuroboUrPlanner, goal: "Sequence[float]", *, name: str,
@@ -1756,6 +1815,24 @@ class URRobotArm(RobotArm):
         self, pose: Pose, final_joints: JointPositions
     ) -> "MotionResult | None":
         """Gate a planner's final configuration with the box and the joint guards; ``None`` = accepted."""
+        return self._judge_planned_config(pose, final_joints, commanded=True)
+
+    def _screen_planned_config(
+        self, pose: Pose, final_joints: JointPositions
+    ) -> "MotionResult | None":
+        """:meth:`_gate_planned_config`'s verdict on a configuration nothing is sent to; ``None`` = admitted.
+
+        The same context, guards and skips, asked through :meth:`SafetyPreflight.screen`: the continuity memo stays
+        where the last commanded target left it, and a refusal is no rejected motion in the log.
+        :meth:`nearest_configuration` screens with it; a move's route gates its goals with
+        :meth:`_gate_planned_config`, whose acceptance is remembered because that goal is the one it drives.
+        """
+        return self._judge_planned_config(pose, final_joints, commanded=False)
+
+    def _judge_planned_config(
+        self, pose: Pose, final_joints: JointPositions, *, commanded: bool
+    ) -> "MotionResult | None":
+        """The endpoint gate on ``final_joints`` for the TCP ``pose``, commanded or only asked; ``None`` = accepted."""
         if self._preflight is None:
             return None
         current_joints: JointPositions | None = None
@@ -1768,7 +1845,8 @@ class URRobotArm(RobotArm):
             pose, command=MotionCommand.MOVE_TO, target_joints=final_joints,
             current_joints=current_joints, arm=self,
         )
-        decision = self._preflight.evaluate(
+        judge = self._preflight.evaluate if commanded else self._preflight.screen
+        decision = judge(
             ctx, skip_guards=frozenset({"ik_quality", "motion_continuity"})
         )
         return SafetyPreflight.as_motion_result(
@@ -2243,6 +2321,87 @@ class URRobotArm(RobotArm):
             )
         return JointPositions(joints)
 
+    def nearest_configuration(self, pose: Pose) -> JointPositions:
+        """The configuration a move to ``pose`` would take the arm to, as the endpoint gate judges it; nothing moves.
+
+        :class:`~src.robot.core.arm_capabilities.ChoosesConfigurations`, for a caller that asks where the arm can
+        stand before it spends a motion on it, such as the generated view of a wrist pick screening the angles of its
+        orbit. It is the screening half of the route a Cartesian cuRobo move takes (:meth:`_route_to_the_nearest_goal`),
+        shared and not copied, so the answer is the configuration a move to ``pose`` screens first:
+
+        1. The joints the arm stands at, read from the controller.
+        2. The flange goal of ``pose`` (:meth:`_pose_to_flange`) solved in closed form, every solution turned onto
+           the full turns nearest the arm inside :meth:`_goal_joint_window`: the planner's window narrowed to the
+           joint-limit guard's, which is the cable window half a turn either side of home where the cell keeps one.
+        3. The branch the arm holds first, then the others, each by the least time a ``moveJ`` there takes.
+        4. The first of them the endpoint gate admits (:meth:`_screen_planned_config`: the workspace box on the
+           TCP, the joint limits, self-collision, the payload). The box is asked here because a joint move to the
+           answer exempts it (``RobotArm.move_to_joints``), and a camera placed outside the box is still outside it.
+           The box reads the TCP alone, which every configuration of ``pose`` puts in the same place, so the first
+           configuration it refuses is every configuration's refusal and no other is asked.
+
+        What a move does next is not done: no camera world is refreshed, the planner is not asked, and no line or
+        path is judged, so the motion to a configuration named here is still judged whole when it runs and can be
+        refused then. Nothing is commanded, so nothing is remembered as if it had been: the continuity memo the next
+        move is judged from stays where the last commanded target left it, and a configuration the gate refuses is
+        logged at DEBUG, not as a refused motion. It answers on an ik cell too, because the closed form needs no
+        planner. One speed for every joint orders the goals the same whatever it is, so the configured maximum
+        stands in for a move's; only two configurations equally near to the last bit, which serve alike, can be
+        taken in the other order.
+
+        Raises ``RobotKinematicsError`` whose message says ``refused by`` what refused ``pose``: the inverse
+        kinematics (out of reach, or a model with no DH chain), the joint window (no configuration inside it), or the
+        endpoint gate (the box, or every configuration refused, the first one's refusal quoted). Raises
+        ``RobotConnectionError`` where the controller cannot say where the arm stands, a reading that failed or one
+        that is no configuration of this arm (a joint that is not finite, another number of joints), which is no
+        statement about the pose; and ``FrameMismatchError`` for a pose outside BASE, as :meth:`ik` does.
+        """
+        if pose.frame is not Frame.BASE:
+            raise FrameMismatchError(
+                f"nearest_configuration() requires pose in Frame.BASE; got {pose.frame!r}."
+            )
+        if not self._conn.is_connected:
+            raise RobotConnectionError("nearest_configuration() requires an open connection.")
+        try:
+            here = [float(v) for v in self._conn.get_joint_positions()]
+        except (RobotConnectionError, RuntimeError, OSError) as exc:
+            raise RobotConnectionError(
+                f"the configuration a pose goes to is chosen from where the arm stands, and the controller's joint "
+                f"positions could not be read ({type(exc).__name__}: {exc})"
+            ) from exc
+        dof = self.capabilities.dof
+        if len(here) != dof or not all(math.isfinite(v) for v in here):
+            # A lost or garbled controller is never mistaken for an angle the arm cannot reach.
+            raise RobotConnectionError(
+                f"the configuration a pose goes to is chosen from where the arm stands, and the controller's joint "
+                f"reading is no configuration of this {dof}-joint arm: {here!r}"
+            )
+        label = pose.label or "<unlabeled>"
+        goals = self._goals_in_window(self._pose_to_flange(pose), pose, here,
+                                      velocity=float(self.config.motion_limits.max_velocity))
+        if isinstance(goals, MotionResult):
+            by = "the joint window" if goals.status is MotionStatus.JOINT_LIMIT_REJECTED else "the inverse kinematics"
+            raise RobotKinematicsError(f"{label}: refused by {by}: {goals.message}")
+        ranked = self._ranked_goals(here, goals)
+        refusals: list[MotionResult] = []
+        for candidate in ranked.in_order:
+            refused = self._screen_planned_config(pose, JointPositions(candidate.joints))
+            if refused is None:
+                self.logger.debug("nearest configuration of %s: %s, after %d refused by the endpoint gate",
+                                  label, ranked.names[candidate], len(refusals))
+                return JointPositions(candidate.joints)
+            refusals.append(refused)
+            if refused.status is MotionStatus.WORKSPACE_REJECTED:
+                why = (f"the workspace box refuses the TCP, which each of its {len(ranked.in_order)} configuration(s) "
+                       f"inside the joint window puts in the same place, {refused.status.value}: {refused.message}")
+                break
+        else:
+            first = refusals[0]
+            why = (f"all {len(refusals)} configuration(s) inside the joint window were refused, the first in the arm's "
+                   f"order {first.status.value}: {first.message}")
+        self.logger.debug("no configuration for %s: refused by the endpoint gate: %s", label, why)
+        raise RobotKinematicsError(f"{label}: refused by the endpoint gate: {why}")
+
     @property
     def capabilities(self) -> RobotCapabilities:
         """Static feature flags advertised by this driver."""
@@ -2312,6 +2471,44 @@ class URRobotArm(RobotArm):
             velocity=velocity, acceleration=acceleration,
         )
 
+    def move_to_joints_on_the_line(
+        self,
+        joints: JointPositions,
+        *,
+        velocity: float | None = None,
+        acceleration: float | None = None,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
+    ) -> MotionResult:
+        """:meth:`move_to_joints` on the straight joint line only: a line that is not clear is refused, never planned around.
+
+        :class:`~src.robot.core.arm_capabilities.DrivesJointLines`, for the motions the owner allows on the line from
+        where the arm stands and nowhere else (2026-09-29): the view a wrist pick generates, and its move back to the
+        look that saw the part. They must never drive through a retract pose or take a detour nobody taught, so cuRobo
+        is never asked to plan one, at any angle.
+
+        Judged exactly as :meth:`move_to_joints` judges a joint move (:meth:`_judge_joint_move`): the camera world
+        refreshed with every frame the pick holds, the target on its twin inside the cable window, the destination
+        guards, and the straight joint line by both authorities at ``safety.planned_motion.line_clearance_mm``. A clear
+        line runs as one ``moveJ`` to the target. A line either authority refuses is refused with that refusal and the
+        sentence that nothing is planned around it; nothing is sent. The camera world is stamped as on
+        :meth:`move_to_joints`. An arm whose paths nobody judges, the ik planner or no preflight, refuses it
+        ``UNSUPPORTED`` before anything is sent: a line nobody judged is not the line the owner allows.
+        """
+        stamp = self._move_camera_world(camera_world)
+        refused = self._refused_for_camera_world(stamp, MotionCommand.MOVE_JOINTS, target_joints=joints)
+        if refused is not None:
+            return refused
+        before = self._planner_refresh()
+        target, route, unstamped = self._judge_joint_move(joints, command=MotionCommand.MOVE_JOINTS, plan_around=False)
+        if unstamped is None:
+            unstamped = self._drive_judged_joints(
+                target, route, command=MotionCommand.MOVE_JOINTS, done="move_to_joints_on_the_line",
+                velocity=velocity, acceleration=acceleration,
+            )
+        after = self._planner_refresh()
+        vouched = after.camera_world() if after is not None and after is not before else None
+        return stamp_result(unstamped, self._move_camera_world(camera_world, planned=vouched))
+
     def _drive_judged_joints(
         self,
         joints: JointPositions,
@@ -2358,7 +2555,7 @@ class URRobotArm(RobotArm):
         return MotionResult.executed(command, target_joints=joints, message=done)
 
     def _judge_joint_move(
-        self, joints: JointPositions, *, command: MotionCommand
+        self, joints: JointPositions, *, command: MotionCommand, plan_around: bool = True,
     ) -> "tuple[JointPositions, _Route | None, MotionResult | None]":
         """Judge a joint move before anything is commanded, as ``(target, route, refusal)``.
 
@@ -2387,6 +2584,11 @@ class URRobotArm(RobotArm):
            refused ``JOINT_LIMIT_REJECTED`` naming the joint, and its legs meet both authorities as a Cartesian
            plan's do. Any other refusal of the line stands.
 
+        ``plan_around`` false is the straight joint line only (:meth:`move_to_joints_on_the_line`): step 4 is never
+        taken, and a line that collides is refused as it was, with the sentence that nothing is planned around it. An
+        arm that judges no line then refuses before anything else, ``UNSUPPORTED``: with no preflight, or on the ik
+        planner, whose ``moveJ`` interpolates a line nothing here models.
+
         The connection is read first, because a path starts at the current configuration and a disconnected arm has
         none to give. A read that fails is CONNECTION_ERROR too: the transport raises ``RuntimeError`` or ``OSError``
         rather than a robot error, and it would otherwise leave the verb as a raw exception. With a live camera world,
@@ -2394,6 +2596,13 @@ class URRobotArm(RobotArm):
         from that refresh, and a refresh inside the planner's check would run after the guard, which would then judge
         against the motion before.
         """
+        if not plan_around and (self._preflight is None or self._motion_planner != "curobo"):
+            return joints, None, MotionResult.failed(
+                MotionStatus.UNSUPPORTED, command, target_joints=joints,
+                message=(f"a straight joint line only runs where it is judged, and nobody judges the paths of this arm "
+                         f"(robot.ur.motion_planner {self._motion_planner!r}"
+                         f"{', no safety preflight' if self._preflight is None else ''}); nothing was sent"),
+            )
         if self._preflight is None:
             return joints, None, None
         if self._motion_planner != "curobo":
@@ -2434,6 +2643,9 @@ class URRobotArm(RobotArm):
                                    clearance_mm=self._line_clearance_mm())
         if refused is None:
             return target, self._route(line, planned=False, how="direct line" + turned), None
+        if not plan_around:
+            return target, None, dataclasses.replace(
+                refused, message=f"{refused.message}; a straight joint line only: nothing is planned around it")
         if refused.status is not MotionStatus.SELF_COLLISION_REJECTED:
             return target, None, refused
         try:

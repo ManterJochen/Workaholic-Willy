@@ -59,8 +59,52 @@ class TaxonomyEnumTests(unittest.TestCase):
         )
         self.assertEqual(ROOT_CAUSE_ORDER, expected)
 
-    def test_taxonomy_version_is_one(self) -> None:
-        self.assertEqual(TAXONOMY_VERSION, 1)
+    def test_taxonomy_version_is_three(self) -> None:
+        # 2 since 2026-09-29: the recommendations were rewritten to stop advising removed features.
+        # 3 the same day: the occlusion recommendation says what a wrist pick does with its looks, fused.
+        self.assertEqual(TAXONOMY_VERSION, 3)
+
+    def test_the_occlusion_recommendation_says_what_a_wrist_pick_does_with_its_looks(self) -> None:
+        # Version 2 told an operator a wrist pick stops at the first look that finds something. Since the
+        # wrist pick fuses its looks it stops at the first safe grasp, and one generated view is the last resort.
+        text = RECOMMENDATIONS[FailureRootCause.OCCLUSION_MISREAD]
+        self.assertNotIn("first look that finds something", text)
+        for said in ("fuses each with the ones before", "valid and certain", "one generated view",
+                     "last resort", "robot.look_joint_positions_deg"):
+            with self.subTest(said=said):
+                self.assertIn(said, text)
+
+    def test_no_recommendation_advises_a_removed_feature(self) -> None:
+        # Version 1 advised the multi-view fusion volume, active_perception's attempts, the commit
+        # gate's corridor radius and DENSE_AUTONOMOUS escalation, all removed on 2026-09-28/29.
+        removed = (
+            "fusion volume", "active_perception", "active perception", "commit gate",
+            "dense_autonomous", "closed_loop", "viewpoint", "verification residual", "regrasp",
+        )
+        for cause, text in RECOMMENDATIONS.items():
+            for phrase in removed:
+                with self.subTest(cause=cause.value, phrase=phrase):
+                    self.assertNotIn(phrase, text.lower())
+
+    def test_every_key_and_mode_a_recommendation_names_exists(self) -> None:
+        import re
+
+        from src.config._schema_index import schema_index
+        from src.robot.execution.autonomous_grasp.config import GraspMode
+
+        index = schema_index()
+        for cause, text in RECOMMENDATIONS.items():
+            for key in re.findall(r"robot\.[a-z_.]*[a-z_]", text):
+                with self.subTest(cause=cause.value, key=key):
+                    self.assertTrue(
+                        key in index or any(path.startswith(key + ".") for path in index),
+                        f"{key} is not a key the schema accepts",
+                    )
+        self.assertIn("robot.grasping.fusion.geometry.enabled", index)
+        self.assertIn("dense_clutter", {mode.value for mode in GraspMode})
+        self.assertIn(
+            "dense_clutter", RECOMMENDATIONS[FailureRootCause.DEFORMABLE_MISCLASSIFICATION]
+        )
 
     def test_recommendation_table_covers_every_non_unclassified(self) -> None:
         for cause in ROOT_CAUSE_ORDER:

@@ -9,9 +9,11 @@ A two-phase coordinator that reuses the existing machinery, with no new fuser or
   3. Refine and grasp: the existing wrist eye-in-hand pick service (``build_service``, the calibrated
      ``EyeInHandFrameResolver``, the wrist GroundTruthPerceptionSource, ``service.pick()``).
 
-This sidesteps two structural blockers: the orchestrator binds one resolver, and ``SceneFusion``
-refuses a second camera's intrinsics. The overhead uses ground-truth perception, which is
-deterministic; swapping it for the GroundingDINO+SAM2 stack is a later step.
+This sidesteps a structural blocker: the orchestrator binds one resolver, so the handoff is a BASE
+point rather than a second camera's surface (fusing surfaces across cameras is the pick loop's
+``grasping.fusion.geometry``, which ``run_multiview_pick --fuse-geometry`` measures). The overhead
+uses ground-truth perception, which is deterministic; swapping it for the GroundingDINO+SAM2 stack
+is a later step.
 
 On-box only (needs Isaac). Run with Isaac's bundled python:
     <isaac-sim>\\python.bat -m src.willy_sim.run_fused_pick --runs 10 [--gui]

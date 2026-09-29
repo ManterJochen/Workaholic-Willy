@@ -12,7 +12,7 @@ cannot say is read as not measured and not modelled rather than guessed.
   confirmed; an unmeasured release detaches and says it was not checked.
 * A hand that toggles with no sensor (``core.gripper.TogglesWithoutSensor``, a ``jaw_io`` single_toggle) is told open
   or close and never a width: a report carries no width, says the hold and the release were not checked because there
-  is no sensor, and says where the jaws already stood and nothing was pulsed.
+  is no sensor, and says where the jaws already stood and nothing was sent.
 * No force is commanded.
 * A gripper that raises is stopped once where it can be stopped, and the report carries the fault.
 * Nothing is commanded on a robot with no gripper, a gripper that holds nothing, an arm or gripper whose link is not
@@ -24,7 +24,7 @@ in this order: a robot that cannot hold, a link that is not open, a pose not in 
 motion would be refused for (``ReadsCameraWorld``), an arm whose motions do not go through cuRobo and the exact mesh
 guard (``motion.route_of``: a desk arm runs, a UR on the ik planner, a KUKA and an arm that does not say are refused),
 and last, as the one question put to the controller, a controller that cannot move. A pick on a hand that toggles with
-no sensor then asks it whether its jaws stand open (``jaws_open_for_a_pick``) instead of pulsing them open: never a pulse
+no sensor then asks it whether its jaws stand open (``jaws_open_for_a_pick``) instead of opening them: never a change
 before the arm moves, and the pick is refused where the hand believes them closed and nobody at a terminal says
 otherwise. Then the motions: a planned move to
 the standoff, a line down to the pose, the hand verb, which asks the controller again at the part, and a line back up to
@@ -137,7 +137,7 @@ class HandReport:
     error: str = ""
     #: The hand has no sensor at all (it toggles): nothing about the width, the hold or the release was checked.
     no_sensor: bool = False
-    #: What the hand said about the command, such as that the jaws already stood there and nothing was pulsed.
+    #: What the hand said about the command, such as that the jaws already stood there and nothing was sent.
     note: str = ""
 
     @property
@@ -348,10 +348,10 @@ def _width_refusal(gripper: Any, width_mm: float, *, close: bool, what: str) -> 
 
 
 def _already(toggle: Any, *, closed: bool) -> str:
-    """For a hand that toggles, where its count says the jaws already stand as asked: no pulse goes out, said so."""
+    """For a hand that toggles, where its count says the jaws already stand as asked: no change goes out, said so."""
     if toggle is None or bool(toggle.jaws_closed) is not closed:
         return ""
-    return f"already {'closed' if closed else 'open'}: no pulse"
+    return f"already {'closed' if closed else 'open'}: no change"
 
 
 def _fault(gripper: Any, verb: HandVerb, commanded: float | None, exc: BaseException) -> HandReport:
@@ -610,9 +610,9 @@ class _Handling:
             return self._report(HandlingOutcome.REFUSED, message=why)
         toggle = toggle_without_sensor_of(self.gripper)
         if toggle is not None:
-            # Never a pulse before the arm moves (owner's decision, 2026-09-24): every pulse flips a toggle, and a pulse
-            # on a wrong count closed the owner's jaws before the part. The hand is asked instead, and it asks a person
-            # where it believes its jaws closed; a pick nobody can vouch for ends here, before any motion.
+            # Never a change before the arm moves (owner's decision, 2026-09-24): every change moves a toggle's jaws, and
+            # one on a wrong count closed the owner's jaws before the part. The hand is asked instead, and it asks a
+            # person where it believes its jaws closed; a pick nobody can vouch for ends here, before any motion.
             try:
                 why = toggle.jaws_open_for_a_pick()
             except Exception as exc:  # noqa: BLE001 (a gripper fault is the report, after the jaws are stopped)

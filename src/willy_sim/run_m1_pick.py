@@ -58,7 +58,7 @@ def build_service(
     camera_world: "Maybe[CameraWorldDecline | SimCameraWorld]" = UNSET,
     headless: bool = True,
     data_dir: str | None = None,
-    mode: str = "easy",   # "easy" | "auto" | "closed_loop" (see willy_sim/harness/modes.py)
+    mode: str = "easy",   # "easy" | "auto" (see willy_sim/harness/modes.py)
     # Pick-policy tunings: not paths, so they stay as defaults rather than config.
     pre_open_width_mm: float = 80.0,   # jaw clearance during the descent (object is 30 mm)
     close_width_mm: float = 25.0,      # grip a 30 mm object (5 mm compression)
@@ -246,8 +246,8 @@ def main() -> None:
     ap.add_argument("--gui", action="store_true")
     ap.add_argument("--no-headless", action="store_true", help="alias for --gui")
     ap.add_argument("--data-dir", type=str, default=None)
-    ap.add_argument("--mode", type=str, default="easy", choices=["easy", "auto", "closed_loop"],
-                    help="P1: grasp mode (easy=trust path; auto=real DecisionEngine; closed_loop=S3+S4)")
+    ap.add_argument("--mode", type=str, default="easy", choices=["easy", "auto"],
+                    help="P1: grasp mode (easy=trust path; auto=real DecisionEngine)")
     ap.add_argument("--record-log", type=str, default=None,
                     help="P0: append one GraspAttemptRecord JSONL line per pick to this path "
                          "(the soak/KPI/RL data source; default off -> byte-identical)")

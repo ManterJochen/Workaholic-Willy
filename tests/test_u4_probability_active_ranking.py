@@ -4,8 +4,8 @@ U4 scope (locked at handoff):
 
 * Convex blend ``final = (1 - w) * geometric + w * predicted_p``.
 * ``w`` clamped to ``[0.0, 0.5]`` so geometry retains ≥50 % influence.
-* Mode filter LOCKED to ``{"dense_clutter", "dense_autonomous"}``.
-  EASY / AUTO / CLOSED_LOOP must never participate in blend reranking.
+* Mode filter LOCKED to ``{"dense_clutter"}`` (``dense_autonomous`` left with its mode
+  on 2026-09-29). EASY / AUTO must never participate in blend reranking.
 * Lifecycle gate: ``"shadow"`` is hard no-op; only ``"canary"`` and
   ``"active"`` may rerank.
 * ``GraspPoint.score`` is NEVER mutated — only ``metadata`` and the
@@ -123,7 +123,7 @@ class SchemaDefaultsTests(unittest.TestCase):
         self.assertEqual(cfg.ranking_blend_weight, 0.20)
         self.assertEqual(
             cfg.ranking_blend_modes,
-            ("dense_clutter", "dense_autonomous"),
+            ("dense_clutter",),
         )
 
     def test_explicit_dense_modes_accepted(self) -> None:
@@ -166,11 +166,11 @@ class SchemaValidationTests(unittest.TestCase):
     def test_blend_modes_must_be_subset_of_apply_modes(self) -> None:
         with self.assertRaises(Exception) as ctx:
             GraspingSuccessModelConfig(
-                # ``dense_autonomous`` is in default apply_modes but the
+                # ``dense_clutter`` is in default apply_modes but the
                 # operator narrowed apply_modes; the blend set then
                 # references a mode not in apply_modes -> rejected.
-                apply_modes=("easy", "dense_clutter"),
-                ranking_blend_modes=("dense_clutter", "dense_autonomous"),
+                apply_modes=("easy", "auto"),
+                ranking_blend_modes=("dense_clutter",),
             )
         self.assertIn("subset of apply_modes", str(ctx.exception))
 
@@ -401,7 +401,7 @@ class AppliedBlendMathTests(unittest.TestCase):
         self.assertEqual(new[0].label, "top")
 
     def test_top1_changed_when_probability_flips_order(self) -> None:
-        ctx = _load_ctx(mode_label="dense_autonomous")
+        ctx = _load_ctx(mode_label="dense_clutter")
         cfg = RankingBlendConfig(enabled=True, weight=0.5)
         # Geometric leader has very low probability; runner-up has
         # very high probability. With w=0.5 the runner-up wins.
@@ -619,7 +619,7 @@ class OrchestratorBlendIntegrationTests(unittest.TestCase):
                          ])
 
     def test_active_lifecycle_also_permits_blend(self) -> None:
-        ctx = _load_ctx(mode_label="dense_autonomous", lifecycle_phase="active")
+        ctx = _load_ctx(mode_label="dense_clutter", lifecycle_phase="active")
         orch = self._build(
             ctx=ctx,
             blend_cfg=RankingBlendConfig(enabled=True, weight=0.4),

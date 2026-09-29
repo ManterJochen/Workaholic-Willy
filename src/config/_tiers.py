@@ -32,7 +32,6 @@ TIERS: tuple[str, ...] = ("safety", "site", "tuned", "advanced")
 #: stops matching after a rename, without saying so.
 _SAFETY_ELSEWHERE = frozenset({
     "robot.grasping.decision.fail_closed_on_real_hardware",
-    "robot.grasping.verification.fail_closed",
     "robot.grasping.uncertainty.fail_closed_threshold",
 })
 

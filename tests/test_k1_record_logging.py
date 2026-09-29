@@ -58,7 +58,6 @@ class SerializerTests(unittest.TestCase):
             AutonomousGraspOutcome.OOD_BLOCKED_AUTO,
             AutonomousGraspOutcome.MISSING_CAMERA_FRAME,
             AutonomousGraspOutcome.UNSAFE_RECOVERY_REFUSED,
-            AutonomousGraspOutcome.NO_COMMIT_INSUFFICIENT_FUSION,
         ):
             rec = to_attempt_record(_report(outcome), attempt_id="x")
             self.assertTrue(rec.extra["safety_rejected"], msg=str(outcome))
@@ -99,7 +98,7 @@ class SerializerTests(unittest.TestCase):
         # P4.2: the per-step recovery trail on the report is written to the record's TOP-LEVEL
         # recovery_actions field (the V6 train_recovery source) -- not into extra.
         steps = (
-            {"action": "next_viewpoint", "outcome": "completed", "executed": True},
+            {"action": "next_target", "outcome": "completed", "executed": True},
             {"action": "rescan", "outcome": "recovered_success", "executed": True},
         )
         report = SimpleNamespace(

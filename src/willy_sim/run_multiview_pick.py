@@ -528,10 +528,10 @@ def _print_block_carriers(report: Any) -> None:
     the thirteen blocks touch the calculator at all, and the rest act on the service and the
     orchestrator.
 
-    The line also carries `telemetry['reason']`, which is how the closed-loop runs explain
-    themselves: `mode_not_available` names a stage, while the reason names the cause, for
-    instance `mode_requires_verification_but_no_verifier_wired`. `execution_failed` swallowing
-    cuRobo's own message has the same shape.
+    The line also carries `telemetry['reason']`, which is how a refused run explains itself:
+    `mode_not_available` names a stage, while the reason names the cause, for instance
+    `per_call_mode_requires_different_sampling_mode`. `execution_failed` swallowing cuRobo's own
+    message has the same shape.
 
     Every field name below is read off the dataclass. A guessed name prints None for every
     block in every run, which is indistinguishable from "no block fired": a broken instrument
@@ -581,7 +581,6 @@ def _print_block_carriers(report: Any) -> None:
         f"latency={lat}",
         f"motion={motion}",
         f"reason={tel.get('reason')}",
-        f"phase_gate={tel.get('phase_gate')}",
         f"decision={getattr(getattr(dec, 'action', None), 'value', None)}"
         f"/{getattr(dec, 'reason_code', None)}",
         f"dec_uncertainty={getattr(dec, 'uncertainty_score', None)}",
@@ -591,7 +590,7 @@ def _print_block_carriers(report: Any) -> None:
         f"shadow_p={getattr(shadow, 'predicted_success_probability', None)}",
         f"shadow_phase={getattr(shadow, 'model_lifecycle_phase', None)}",
         # Count and names. "1 action" is not an answer when the safety rule is about which action: a
-        # `rescan` after a planner refusal re-perceives and moves nothing, while a `next_viewpoint`
+        # `rescan` after a planner refusal re-perceives and moves nothing, while a `nudge_target`
         # drives the arm somewhere the operator did not name. The trail carries the names, so print
         # them; the count alone cannot tell the two apart, and that distinction is the decision.
         f"recovery_actions={len(getattr(report, 'recovery_actions', ()) or ())}",
@@ -599,8 +598,8 @@ def _print_block_carriers(report: Any) -> None:
         f"/{tel.get('recovery_trail_terminal_reason')}",
         f"blend={getattr(report, 'ranking_blend_telemetry', None) is not None}",
         f"rerank={getattr(report, 'uncertainty_rerank_telemetry', None) is not None}",
-        f"fusion={getattr(report, 'fusion_telemetry', None) is not None}",
-        f"commit={getattr(getattr(report, 'commit_decision', None), 'committed', None)}",
+        # The cameras fused into the picked object's cloud, empty when it came from one camera.
+        f"fused={list(getattr(report, 'fused_views', ()) or ())}",
     ]
     print("[report] " + " ".join(parts), flush=True)
 
@@ -613,7 +612,7 @@ def run_multiview_gate(
     data_dir: str | None = None,
     # Which cell to boot, from --robot-model and --profile. The multi-camera runner needs this more
     # than most: MODE_CAMERAS names overhead, oblique_L and oblique_R, and those are exactly the three
-    # the `tiltcam` profile re-places, so a profile chain here is what lets the closed-loop path be
+    # the `tiltcam` profile re-places, so a profile chain here is what lets the wrist-refine pick be
     # measured under the optics the real cell has.
     cell_kwargs: "dict | None" = None,
     marker: str = "ground_truth",
@@ -636,8 +635,8 @@ def run_multiview_gate(
     # Measuring the others without this knob gives a green "no effect, harmless" result for blocks
     # that are unreachable by construction, which would then run for the first time on a real cell.
     grasp_mode: str = "easy",
-    # See ``run_eih_pick.build_service``: hand the sub-policy ownership to the config blocks so that
-    # toggling `decision`/`closed_loop`/`verification` is what changes the run, not this runner.
+    # See ``run_eih_pick.build_service``: hand the sub-policy ownership to the config block so that
+    # toggling `decision` is what changes the run, not this runner.
     config_subpolicies: bool = False,
     # Opt-in reachability filter; see run_eih_pick.build_service. Two effects at once: it discards
     # unreachable candidates, and it is the precondition for `grasping.feasibility` to re-rank at all.
@@ -670,10 +669,7 @@ def run_multiview_gate(
     compare_views: bool = False,
     execute_best_view: bool = False,
     reorient_topdown: bool = False,
-    synthesize_3d: bool = False,
     probe_refine: bool = False,
-    closed_loop: bool = False,
-    stale_baseline: bool = False,
     bin_preset: str | None = None,
     calibrated: bool = False,
     collect_perception: bool = False,
@@ -1032,6 +1028,11 @@ def run_multiview_gate(
                 }
                 if fusion_latency_ms is not None:
                     extra["fusion_latency_ms"] = round(float(fusion_latency_ms), 3)
+                elif "fusion_latency_ms" in (getattr(report, "telemetry", None) or {}):
+                    # A stop spent no extra view. The pick's own geometry fusion (--fuse-geometry)
+                    # stamps the key on the report, and the record starts from the report's
+                    # telemetry, so without this the trainer would read the stop as a continue.
+                    extra["fusion_latency_ms"] = None
                 # Demote a pipeline 'succeeded' that did not lift to a real failure token, so that
                 # derive_outcome_class, and the OPE reward built on it, reflects the measured lift
                 # rather than the pipeline's self-report.
@@ -1180,250 +1181,11 @@ def run_multiview_gate(
               f"{n_pass}/{runs} lifted (>= {gate.lift_threshold_mm:.0f} mm) -> gate_passed={gate_ok} ===", flush=True)
         return GateResult(runs=runs, passed=n_pass, results=results, gate_passed=gate_ok, target=target_label)
 
-    # 3D multi-view grasp synthesis: not localization and not collision, but the grasp itself
-    # synthesized from the fused 3D geometry of every camera. ``build_fused_target_cloud`` feeds
-    # ``synthesize_grasp_from_cloud``, which runs PCA on the BASE XY footprint, closes across the minor
-    # axis and anchors at the fused centroid. Each run also reports every single view's footprint
-    # centroid against the fused one, which is the geometry-fusion accuracy: symmetric obliques each
-    # see one biased side and fusing cancels the bias. The fused grasp is then executed through the
-    # policy and the lift is measured.
-    if synthesize_3d:
-        from src.robot.grasping.multiview.synthesis import (
-            fused_grasp_to_point,
-            synthesize_grasp_from_cloud,
-        )
-
-        policy = getattr(orch, "policy", None)
-        if policy is None:
-            raise SystemExit("synthesize-3d needs the orchestrator's GraspExecutionPolicy (none found)")
-        # The fused footprint of a symmetric cube is near-square, so the PCA minor axis is an
-        # essentially free yaw that can land near the UR5e's unreachable top-down orientation, where
-        # cuRobo intermittently fails to plan the descent. For a symmetric object the closing yaw is a
-        # free choice, so it is snapped to base X, which is reachable, the same thing the dense pick
-        # does with align_closing_to_base_x. The fused centroid accuracy is untouched: only the free
-        # yaw moves. This holds for symmetric objects only. A fixed-axis object such as an elongated
-        # box must keep the synthesized axis, and the fused footprint already tells the two apart.
-        policy.align_closing_to_base_x = True
-        grip = cfg.robot.gripper
-
-        def _synth_fused() -> "object | None":
-            per = build_fused_target_cloud(cameras, target_idx)
-            if not per:
-                return None
-            return synthesize_grasp_from_cloud(
-                np.vstack(list(per.values())), grasp_depth_mm=3.0,
-                min_width_mm=grip.min_width_mm, max_width_mm=grip.max_width_mm,
-            )
-
-        # cuRobo cold-start warmup: the first trajopt plan after a build intermittently fails to plan.
-        # One throwaway pick and reset warms the planner before the measured loop, so run 0 is not
-        # penalised by the cold start. The synthesis is deterministic, so the warmup grasp is the same
-        # grasp the measured run uses.
-        try:
-            gripper.open()
-            arm.move_joint(JointPositions(home_q))
-            obj.set_world_pose(position=np.asarray(home_pos), orientation=np.asarray(home_quat))
-            session.step_n(20)
-            _wg = _synth_fused()
-            if _wg is not None:
-                policy.execute(fused_grasp_to_point(_wg))  # type: ignore[arg-type]
-            gripper.open()
-            arm.move_joint(JointPositions(home_q))
-            obj.set_world_pose(position=np.asarray(home_pos), orientation=np.asarray(home_quat))
-            session.step_n(20)
-        except Exception as exc:  # noqa: BLE001 (warmup is best-effort)
-            print(f"warmup pick skipped ({type(exc).__name__}: {exc})", flush=True)
-
-        results = []
-        for i in range(runs):
-            try:
-                gripper.open()
-                arm.move_joint(JointPositions(home_q))
-                obj.set_world_pose(position=np.asarray(home_pos), orientation=np.asarray(home_quat))
-                try:
-                    obj.set_linear_velocity(np.zeros(3))
-                    obj.set_angular_velocity(np.zeros(3))
-                except Exception:  # noqa: BLE001
-                    pass
-                session.step_n(30)
-
-                per_cam = build_fused_target_cloud(cameras, target_idx)
-                if not per_cam:
-                    print(f"RUN {i}: NO camera saw the target cloud -> fail", flush=True)
-                    results.append({"run": i, "succeeded": False, "lift_mm": 0.0, "passed": False})
-                    continue
-                true_c = np.asarray(obj.get_world_pose()[0], dtype=np.float64) * 1000.0
-                fused_cloud = np.vstack(list(per_cam.values()))
-                # A grasp_depth of 3 mm puts the anchor just below the cloud's top surface, at the
-                # near-top grasp z of about 37 mm where the eye-in-hand and M1 picks grasp. The
-                # default of 8 mm drives the interpolated descent closer to the table, and cuRobo
-                # then intermittently fails to plan the lowest approach waypoint.
-                fg = synthesize_grasp_from_cloud(
-                    fused_cloud, grasp_depth_mm=3.0,
-                    min_width_mm=grip.min_width_mm, max_width_mm=grip.max_width_mm,
-                )
-                if fg is None:
-                    print(f"RUN {i}: fused cloud too small to synthesize -> fail", flush=True)
-                    results.append({"run": i, "succeeded": False, "lift_mm": 0.0, "passed": False})
-                    continue
-
-                # Geometry-fusion accuracy: each single view's centroid XY error vs the fused one (vs truth).
-                per_err: dict[str, float] = {}
-                for name, view_cloud in per_cam.items():
-                    sg = synthesize_grasp_from_cloud(view_cloud, min_width_mm=grip.min_width_mm, max_width_mm=grip.max_width_mm)
-                    if sg is not None:
-                        per_err[name] = float(np.linalg.norm((sg.position_mm - true_c)[:2]))
-                fused_err = float(np.linalg.norm((fg.position_mm - true_c)[:2]))
-                best_single = min(per_err.values()) if per_err else float("nan")
-                print(f"RUN {i}: 3D synth from {list(per_cam.keys())}  footprint={np.round(fg.footprint_mm, 1)} "
-                      f"width={fg.width_mm:.1f}", flush=True)
-                print(f"RUN {i}: centroid XY err: per-view {({k: round(v, 1) for k, v in per_err.items()})} "
-                      f"-> FUSED {fused_err:.1f} mm (best single {best_single:.1f} mm)", flush=True)
-
-                grasp = fused_grasp_to_point(fg)
-                z0 = float(np.asarray(obj.get_world_pose()[0])[2])
-                report = policy.execute(grasp)
-                z1 = float(np.asarray(obj.get_world_pose()[0])[2])
-                outcome_str = str(getattr(getattr(report, "outcome", None), "value", "?"))
-                lift_mm = (z1 - z0) * 1000.0
-                passed = bool(lift_mm >= gate.lift_threshold_mm)
-                results.append({"run": i, "succeeded": outcome_str == "executed", "lift_mm": round(lift_mm, 1),
-                                "passed": passed, "fused_err_mm": round(fused_err, 1),
-                                "best_single_err_mm": round(best_single, 1), "outcome": outcome_str})
-                print(f"RUN {i}: policy outcome={outcome_str} lift_mm={lift_mm:.1f} passed(lifted)={passed}", flush=True)
-            except Exception as exc:  # noqa: BLE001 (a safety abort / motion failure = a failed run)
-                print(f"RUN {i}: ABORTED ({type(exc).__name__}: {exc})", flush=True)
-                results.append({"run": i, "succeeded": False, "lift_mm": 0.0, "passed": False, "aborted": str(exc)})
-
-        n_pass = sum(1 for r in results if r["passed"])
-        gate_ok = gate_passed(n_pass, runs, gate.pass_fraction)
-        print(f"\n=== Lever C 3D-synthesis ({mode}): {n_pass}/{runs} lifted (>= {gate.lift_threshold_mm:.0f} mm) "
-              f"-> gate_passed={gate_ok} ===", flush=True)
-        return GateResult(runs=runs, passed=n_pass, results=results, gate_passed=gate_ok, target=target_label)
-
-    # Closed-loop pick: re-decide the grasp as the arm closes in, recovering from a target disturbance
-    # the always-watching obliques catch. Per run: localize, move the wrist over the first guess, at
-    # which point the arm occludes the overhead and only the obliques still see, disturb the target,
-    # re-perceive from the obliques, re-synthesize the corrected 3D grasp, and execute it. Under
-    # --stale-baseline the run grasps the stale first guess instead, which aims at where the object was
-    # and misses. Fixed obliques are what make this work: a moving wrist loses the target at the
-    # standoff, while the obliques keep watching while the arm moves.
-    if closed_loop:
-        from src.robot.grasping.multiview.synthesis import (
-            fused_grasp_to_point,
-            synthesize_grasp_from_cloud,
-        )
-
-        policy = getattr(orch, "policy", None)
-        if policy is None:
-            raise SystemExit("closed-loop needs the orchestrator's GraspExecutionPolicy (none found)")
-        policy.align_closing_to_base_x = True  # symmetric cube: snap the free yaw to reachable base X
-        grip = cfg.robot.gripper
-        # Re-perceive from the obliques only: while the arm closes in it occludes the overhead, wholly
-        # or partly, and including the overhead's partial mask drags the fused centroid off the target.
-        # The obliques resolve occlusion and stay clean, so the closed-loop perceive uses just them and
-        # keeps the accurate fuse whose symmetric bias cancels.
-        reperc_cams = {k: v for k, v in cameras.items() if k != "overhead"}
-        if not reperc_cams:
-            raise SystemExit("closed-loop needs at least one oblique camera (use --mode eth2/eth3)")
-
-        def _synth_at(cloud_by_cam: "dict[str, np.ndarray]") -> "object | None":
-            if not cloud_by_cam:
-                return None
-            return synthesize_grasp_from_cloud(
-                np.vstack(list(cloud_by_cam.values())), grasp_depth_mm=3.0,
-                min_width_mm=grip.min_width_mm, max_width_mm=grip.max_width_mm,
-            )
-
-        mode_label = "STALE(open-loop)" if stale_baseline else "CORRECTED(closed-loop)"
-        print(f"=== H5.2 closed-loop pick ({mode_label}) ===", flush=True)
-        # cuRobo cold-start warmup, one throwaway pick and reset, as in the 3D synthesis path above.
-        try:
-            gripper.open()
-            arm.move_joint(JointPositions(home_q))
-            obj.set_world_pose(position=np.asarray(home_pos), orientation=np.asarray(home_quat))
-            session.step_n(20)
-            _wg = _synth_at(build_fused_target_cloud(reperc_cams, target_idx))
-            if _wg is not None:
-                policy.execute(fused_grasp_to_point(_wg))  # type: ignore[arg-type]
-            gripper.open()
-            arm.move_joint(JointPositions(home_q))
-            obj.set_world_pose(position=np.asarray(home_pos), orientation=np.asarray(home_quat))
-            session.step_n(20)
-        except Exception as exc:  # noqa: BLE001
-            print(f"warmup pick skipped ({type(exc).__name__}: {exc})", flush=True)
-
-        results = []
-        for i in range(runs):
-            dx, dy = DISTURBANCES[i % len(DISTURBANCES)]
-            try:
-                gripper.open()
-                arm.move_joint(JointPositions(home_q))
-                obj.set_world_pose(position=np.asarray(home_pos), orientation=np.asarray(home_quat))
-                try:
-                    obj.set_linear_velocity(np.zeros(3))
-                    obj.set_angular_velocity(np.zeros(3))
-                except Exception:  # noqa: BLE001
-                    pass
-                session.step_n(25)
-
-                # 1) initial localize + first-guess grasp (the "guess from afar")
-                c0, _ = multi_view_localize(reperc_cams, target_idx)
-                fg0 = _synth_at(build_fused_target_cloud(reperc_cams, target_idx))
-                if c0 is None or fg0 is None:
-                    print(f"RUN {i}: initial localize/synth failed -> fail", flush=True)
-                    results.append({"run": i, "succeeded": False, "lift_mm": 0.0, "passed": False})
-                    continue
-                # 2) approach: drive the wrist over the first guess, so the arm now occludes the overhead
-                arm.move(topdown_view_pose(c0, p_cam_tool, view_height_mm))
-                session.step_n(10)
-                # 3) disturb the target mid-approach (a neighbour nudge / settling)
-                new_pos = np.asarray(home_pos, dtype=np.float64).copy()
-                new_pos[0] += dx / 1000.0
-                new_pos[1] += dy / 1000.0
-                obj.set_world_pose(position=new_pos, orientation=np.asarray(home_quat))
-                try:
-                    obj.set_linear_velocity(np.zeros(3))
-                    obj.set_angular_velocity(np.zeros(3))
-                except Exception:  # noqa: BLE001
-                    pass
-                session.step_n(25)
-                true_new = np.asarray(obj.get_world_pose()[0], dtype=np.float64) * 1000.0
-
-                # 4) stale (open-loop) grasps the first guess; closed-loop re-perceives from the obliques
-                #    (which still see past the arm) and re-synthesizes the corrected grasp.
-                if stale_baseline:
-                    grasp_src = fg0
-                else:
-                    grasp_src = _synth_at(build_fused_target_cloud(reperc_cams, target_idx))
-                    if grasp_src is None:
-                        print(f"RUN {i}: re-perceive synth failed -> fail", flush=True)
-                        results.append({"run": i, "succeeded": False, "lift_mm": 0.0, "passed": False})
-                        continue
-                grasp = fused_grasp_to_point(grasp_src)  # type: ignore[arg-type]
-                target_err = float(np.linalg.norm((np.asarray(grasp.position) - true_new)[:2]))
-                print(f"RUN {i}: disturb=({dx:+.0f},{dy:+.0f})  grasp targets XY={np.round(np.asarray(grasp.position)[:2], 1)} "
-                      f"(true_new {np.round(true_new[:2], 1)}, target_err {target_err:.1f}mm) [{mode_label}]", flush=True)
-
-                # 5) execute + measure the lift
-                z0 = float(np.asarray(obj.get_world_pose()[0])[2])
-                report = policy.execute(grasp)
-                z1 = float(np.asarray(obj.get_world_pose()[0])[2])
-                outcome_str = str(getattr(getattr(report, "outcome", None), "value", "?"))
-                lift_mm = (z1 - z0) * 1000.0
-                passed = bool(lift_mm >= gate.lift_threshold_mm)
-                results.append({"run": i, "succeeded": outcome_str == "executed", "lift_mm": round(lift_mm, 1),
-                                "passed": passed, "target_err_mm": round(target_err, 1), "outcome": outcome_str})
-                print(f"RUN {i}: outcome={outcome_str} lift_mm={lift_mm:.1f} passed(lifted)={passed}", flush=True)
-            except Exception as exc:  # noqa: BLE001 (a safety abort / motion failure = a failed run)
-                print(f"RUN {i}: ABORTED ({type(exc).__name__}: {exc})", flush=True)
-                results.append({"run": i, "succeeded": False, "lift_mm": 0.0, "passed": False, "aborted": str(exc)})
-
-        n_pass = sum(1 for r in results if r["passed"])
-        gate_ok = gate_passed(n_pass, runs, gate.pass_fraction)
-        print(f"\n=== H5.2 closed-loop ({mode_label}, {mode}): {n_pass}/{runs} lifted (>= "
-              f"{gate.lift_threshold_mm:.0f} mm) -> gate_passed={gate_ok} ===", flush=True)
-        return GateResult(runs=runs, passed=n_pass, results=results, gate_passed=gate_ok, target=target_label)
+    # Two levers left here on 2026-09-29 with `multiview/synthesis.py`, the top-down grasp from the fused
+    # footprint they both executed: `--synthesize-3d` (Lever C, that grasp from every camera's cloud) and
+    # `--closed-loop` with its `--stale-baseline` (H5.2, the same grasp re-synthesized from the obliques
+    # after a disturbance). A fused cell's grasp comes from the generator fed the fused cloud
+    # (`--fuse-geometry`), and `--probe-refine` above still measures the re-perceive without a grasp.
 
     results = []
     for i in range(runs):
@@ -1572,7 +1334,7 @@ def main() -> int:
     ap.add_argument("--approach-validate", action="store_true",
                     help="Lever B / G12: wire the swept-volume approach validator (implies --scene-collision)")
     ap.add_argument("--grasp-mode", default="easy",
-                    choices=["easy", "auto", "closed_loop", "dense_clutter", "dense_autonomous"],
+                    choices=["easy", "auto", "dense_clutter"],
                     help="which GraspMode builds the service (NOT the camera set; that is --mode). "
                          "The mode decides which grasping.* config blocks can fire at all: EASY is in "
                          "the apply_modes of exactly one of them")
@@ -1593,10 +1355,9 @@ def main() -> int:
                          "DISCARDED (read rejected_ik), and grasping.feasibility can finally re-rank. "
                          "two effects in one flag; measure IK alone before adding feasibility")
     ap.add_argument("--config-subpolicies", action="store_true",
-                    help="suppress the runner's hand-built decision engine / refiner / verifier so the "
-                         "grasping.decision / .closed_loop / .verification config blocks are their only "
-                         "source (needs --boot config). Without it the constructor argument wins and "
-                         "toggling those blocks measures nothing")
+                    help="suppress the runner's hand-built decision engine so the grasping.decision "
+                         "config block is its only source (needs --boot config). Without it the "
+                         "constructor argument wins and toggling that block measures nothing")
     ap.add_argument("--scene", default="clutter", choices=sorted(SCENES),
                     help="object scene: clutter = 3 separated cubes | close = touching-neighbour value "
                          "| occlude = a tall OCCLUDER beside a default target | tall = the same three "
@@ -1618,15 +1379,9 @@ def main() -> int:
                     help="Lever A-2: EXECUTE the best grasp-synthesis view + measure the lift")
     ap.add_argument("--reorient-topdown", action="store_true",
                     help="Lever A-2: re-orient the best-view grasp top-down (position+width+yaw, base -Z approach)")
-    ap.add_argument("--synthesize-3d", action="store_true",
-                    help="Lever C: synthesize the grasp from the FUSED 3D target cloud of all cameras + execute")
     ap.add_argument("--probe-refine", action="store_true",
                     help="H5.2 Phase-0 (read-only): measure whether an oblique re-perceive recovers a target "
                          "disturbance that defeats open-loop")
-    ap.add_argument("--closed-loop", action="store_true",
-                    help="H5.2: closed-loop pick; re-perceive from the obliques after a disturbance + execute the corrected grasp")
-    ap.add_argument("--stale-baseline", action="store_true",
-                    help="H5.2: open-loop baseline; grasp the STALE first-guess (ignores the disturbance -> misses)")
     ap.add_argument("--calibrated", action="store_true",
                     help="use each camera's own CALIBRATED extrinsics, the eth_<id>.json run_eth_calibrate wrote "
                          "for this robot model, read through the rig loader, instead of --mode + the sim GT oracle")
@@ -1654,8 +1409,7 @@ def main() -> int:
         scene=args.scene, grasp_lift_mm=args.grasp_lift_mm,
         ground_truth_depth=not args.rendered_depth,
         compare_views=args.compare_views, execute_best_view=args.execute_best_view,
-        reorient_topdown=args.reorient_topdown, synthesize_3d=args.synthesize_3d,
-        probe_refine=args.probe_refine, closed_loop=args.closed_loop, stale_baseline=args.stale_baseline,
+        reorient_topdown=args.reorient_topdown, probe_refine=args.probe_refine,
         bin_preset=args.bin, calibrated=args.calibrated, cell_kwargs=cell_profile_kwargs(args),
         collect_perception=args.collect_perception, perception_continue_mode=args.perception_continue_mode,
         perception_jitter_mm=args.perception_jitter_mm, record_log=args.record_log, seed=args.seed,

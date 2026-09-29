@@ -1,9 +1,6 @@
 # Grippers (`src/robot/grippers`)
 
-The drivers for the hand on the arm, each behind the `Gripper` Protocol: a Robotiq over its URCap
-socket, an OnRobot RG2 or RG6 over Modbus, a jaw or a suction cup over the controller's digital I/O, a
-dummy for a desk and an explicit "no gripper", plus the two simulated grippers Isaac uses.
-`robot.gripper.vendor` picks the driver and `Robot` builds it, so you rarely call this package directly.
+The drivers for the hand on the arm, each behind the `Gripper` Protocol. Mostly you interact with them through the `Robot` interface rather than directly.
 
 ```python
 from willy import Robot, load_tree
@@ -31,7 +28,7 @@ python -m src.robot.drivers.ur --measure 4=1 --watch 0 --yes   # drive a pin and
 |---|---|---|---|
 | `robotiq` | `GripperController` | ASCII on TCP port 63352, opened by the URCap on the UR controller | a UR arm with the Robotiq URCap |
 | `onrobot` | `OnRobotGripper` | Modbus TCP to the Compute Box, port 502 by default | the box on your network; RG2 or RG6 only |
-| `jaw_io` | `JawIOGripper` | one or two output pins (one for a toggle, where every pulse flips the jaws), optional reed switches or a part sensor | an arm with digital I/O: the UR driver |
+| `jaw_io` | `JawIOGripper` | one or two output pins (one for a toggle, where every change of it moves the jaws), optional reed switches or a part sensor | an arm with digital I/O: the UR driver |
 | `vacuum` | `VacuumGripper` | an ejector pin, an optional blow-off pin and vacuum switch | an arm with digital I/O: the UR driver |
 | `dummy` | `DummyGripper` | nothing: a width in memory, clamped to range | nothing |
 | `none` | `NullGripper` | nothing | nothing |
@@ -97,16 +94,21 @@ feedback wired, unless `open_on_connect_without_feedback` is set, or asks a pers
 into `confirm_open_at_start`.
 
 A `single_toggle` (the owner's Hand-E on the Robotiq I/O Coupling, one tool output, no feedback) reads
-no sensor at all, and a feedback input on it is refused. Every pulse flips its jaws, so the program
-counts its own pulses from where a person says they stand: its `connect()`, once per program start
-and before anything moves, asks at the terminal whether the jaws stand open (Enter or `open` = open),
-and a person who says closed chooses one pulse to open them or an abort. With no terminal and no
-`ask=` handed in, the connect is refused. The hand counts as connected only once the answer is in, so
+no sensor at all, and a feedback input on it is refused. Every change of its output moves its jaws,
+switched on as much as switched off (the owner at the pendant, 2026-09-28), so a command is ONE change,
+left where it went, and nothing is pulsed: the low, high, low pulse it sent before moved the jaws two
+or three times. The program counts its own changes from where a person says they stand: its
+`connect()`, once per program start and before anything moves, reads the output without writing it and
+asks at the terminal whether the jaws stand open (Enter or `open` = open), and a person who says closed
+chooses one change to open them or an abort. With no terminal and no `ask=` handed in, the connect is
+refused. The hand counts as connected only once the answer is in, so
 nothing can command it while the question waits. Nothing is kept between programs. It is a
 `core.gripper.TogglesWithoutSensor`, which is how the pick code knows, without importing this package,
-to send no pulse before the arm moves (it asks `jaws_open_for_a_pick()`, which asks the person again
+to send no change before the arm moves (it asks `jaws_open_for_a_pick()`, which asks the person again
 where the count says closed or cannot say, and there takes only the word `open` or `closed`: an empty
-line is asked again), exactly one at the part and one at a release that finds the jaws closed. It takes
+line is asked again), exactly one at the part and one at a release that finds the jaws closed. The
+output is read before every command: one that no longer stands where the program left it was switched
+by hand, at the pendant above all, and the command is refused with nothing sent; the next pick asks. It takes
 no width (`set_width_mm` is refused), and a pick with it counts as grasped with the hold not checked,
 because there is no sensor. The bench's `--jaws open|closed` drives the jaws through the driver, which
 asks first.
@@ -114,12 +116,13 @@ asks first.
 At the terminal the console's typeahead is discarded before each question (`msvcrt` on Windows,
 `termios.tcflush` on POSIX), so an Enter pressed earlier cannot answer it; an `ask=` handed in is not
 drained. A question whose connection changed while it waited (a disconnect or another connect) is
-refused without a pulse. Every write is read back (`get_digital_output`, every 8 ms for about `pulse_s`
-and two controller cycles, 50 ms at least): a toggle's count flips only once its pin reads HIGH, and a
-pin that never does raises and leaves the count unknowable until a person says where the jaws stand; a
-solenoid raises where its level or coil never shows. The config refuses a `pulse_s` under 0.05 s for
-`single_toggle` and `double_solenoid`, and a pin above 1 on `io_port: tool`, which has outputs 0-1 and
-inputs 0-1 (`jaw_io` and `vacuum` alike).
+refused with nothing sent. Every write is read back (`get_digital_output`, every 8 ms: for a solenoid
+for about `pulse_s` and two controller cycles, 50 ms at least, for a toggle 0.25 s): a toggle's count
+flips only once its output reads the new level, and one that never does raises and leaves the count
+unknowable until a person says where the jaws stand; a solenoid raises where its level or coil never
+shows. The config refuses a `pulse_s` under 0.05 s for `double_solenoid` (a toggle never reads it),
+and a pin above 1 on `io_port: tool`, which has outputs 0-1 and inputs 0-1 (`jaw_io` and `vacuum`
+alike).
 
 The hand verbs (`pick`, `place`, `grasp`, `release`) and the pick loop tell `jaw_io` open or close by
 intent (`OpensAndCloses.set_closed`), so `closed_below_mm` cannot turn a verb round; on a solenoid it

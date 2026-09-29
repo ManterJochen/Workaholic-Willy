@@ -40,10 +40,6 @@ class EffectiveGraspingConfigCorridorExtensionTests(unittest.TestCase):
         bare = EffectiveGraspingConfig(
             default_mode=GraspMode.AUTO,
             max_attempts=5,
-            closed_loop_enabled=False,
-            verification_enabled=False,
-            dense_recovery_enabled=False,
-            dense_recovery_allowed_actions=(),
         )
         fields = set(bare.to_dict().keys())
         # The 9 new fields locked in the T3 plan.
@@ -70,10 +66,6 @@ class EffectiveGraspingConfigCorridorExtensionTests(unittest.TestCase):
         snap = EffectiveGraspingConfig(
             default_mode=GraspMode.AUTO,
             max_attempts=5,
-            closed_loop_enabled=False,
-            verification_enabled=False,
-            dense_recovery_enabled=False,
-            dense_recovery_allowed_actions=(),
         )
         d = snap.to_dict()
         for key in (
@@ -107,7 +99,7 @@ class OcclusionApplyModesEasyExclusionTests(unittest.TestCase):
         self.assertNotIn("easy", c.apply_modes)
         self.assertIn("auto", c.apply_modes)
         self.assertIn("dense_clutter", c.apply_modes)
-        self.assertIn("dense_autonomous", c.apply_modes)
+        self.assertNotIn("dense_autonomous", c.apply_modes)
 
 
 if __name__ == "__main__":

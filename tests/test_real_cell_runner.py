@@ -480,7 +480,7 @@ if __name__ == "__main__":
 
 
 class GraspVerificationTests(unittest.TestCase):
-    """The only verifier a jaw cell can use, and the two defects that made it wrong in both directions.
+    """How a jaw cell's close is judged: once by two verifiers, and the defects that made one wrong both ways.
 
     MEASURED 2026-08-09, capability first: the Robotiq driver exposes NO ``is_object_detected``, so
     ``ObjectDetectingGripperVerifier`` returns INCONCLUSIVE forever on the September jaw cell.
@@ -489,50 +489,11 @@ class GraspVerificationTests(unittest.TestCase):
 
     That leaves one real question: does ``width_delta`` discriminate hold from no-hold? At the shipped
     defaults it did not, in both directions at once.
+
+    The three cases that drove ``WidthDeltaGripperVerifier`` itself left on 2026-09-29 with the verifier and
+    the post-grasp verification stage (no pick path ran it). What stays pinned here is what outlived it: the
+    two width concepts, and the gOBJ hold evidence the execution policy reads after every close.
     """
-
-    @staticmethod
-    def _verify(post_mm: float, commanded_mm: float = 45.0):
-        from unittest.mock import MagicMock as _MM
-
-        from src.robot.grasping.closed_loop.verification import (
-            GraspVerificationContext,
-            WidthDeltaGripperVerifier,
-        )
-        from src.robot.grippers.robotiq import GripperController
-
-        cfg = RobotConfig()
-        gripper = GripperController(cfg.gripper, ip="127.0.0.1", driver_factory=lambda: _MM())
-        return WidthDeltaGripperVerifier().verify(GraspVerificationContext(
-            grasp=None, policy=cfg.grasping.verification, gripper=gripper,
-            post_close_width_mm=post_mm, commanded_close_width_mm=commanded_mm,
-        ))
-
-    def test_a_thin_held_part_is_not_reported_as_an_empty_grasp(self) -> None:
-        """The verifier asks "did the jaws collapse on nothing?" -- a question about the MECHANISM.
-        Reading ``min_width_mm`` (5.0, a POLICY floor) put the threshold at 7 mm, so a genuinely held
-        6 mm part FAILED. It now reads ``closed_width_mm`` (0.0, the 2F-85 shut on nothing)."""
-        for post in (46.0, 20.0, 6.0, 3.0):
-            with self.subTest(post_close_width_mm=post):
-                self.assertEqual(str(self._verify(post).outcome), "passed")
-
-    def test_collapsed_jaws_still_fail(self) -> None:
-        """The fix must not blunt the case the verifier was already getting right."""
-        for post in (0.0, 1.0):
-            with self.subTest(post_close_width_mm=post):
-                r = self._verify(post)
-                self.assertEqual(str(r.outcome), "failed")
-                self.assertEqual(r.reason, "jaws_collapsed_to_minimum")
-
-    def test_a_gripper_that_never_closed_now_fails(self) -> None:
-        """``width_delta_max_mm`` was None, so the verifier could not see the case it exists for: a
-        close that never executed leaves the jaws at their pre-open width (~80 mm) and that was
-        reported PASSED -- the cell carries air to the drop-off and logs a success."""
-        for post in (80.0, 58.0):
-            with self.subTest(post_close_width_mm=post):
-                r = self._verify(post)
-                self.assertEqual(str(r.outcome), "failed")
-                self.assertEqual(r.reason, "jaws_did_not_close_enough")
 
     def test_the_two_width_concepts_stay_distinct(self) -> None:
         """A regression guard on the confusion itself: policy floor and mechanism must not collapse
@@ -565,7 +526,8 @@ class GraspVerificationTests(unittest.TestCase):
         ⚠ ``width_delta`` is no longer the jaw cell's only option, and it was never a working one on
         a Robotiq: MEASURED 2026-09-10, its collapse threshold is ``closed_width_mm + 2.0`` = 2.0 mm
         while the driver may not command below ``min_width_mm`` = 5.0 mm, so the jaws stop where they
-        were told and the comparison can never fire. The verifier a jaw cell wants is this one.
+        were told and the comparison can never fire. The evidence a jaw cell wants is this one, and
+        it is what the execution policy reads after every close since the verifiers left (2026-09-29).
         """
         from src.robot.core.gripper import ObjectDetectingGripper
         from src.robot.grippers.robotiq import GripperController

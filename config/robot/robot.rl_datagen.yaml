@@ -55,11 +55,9 @@ robot:
       enabled: true
 
     fusion:
-      enabled: true         # the shadow voxel substrate
-      # Minimum valid depth sample; anything nearer is rejected. A datagen scene puts the wrist
-      # camera closer than the 80 mm default, which would discard real surface from the nearest
-      # view, the one with the best look at the target. Must stay below `depth_max_mm`.
-      depth_min_mm: 40.0
+      # The switch the other cameras' CAMERA to BASE resolvers for geometry fusion are built under,
+      # from `cameras`, which stays unset here (see below).
+      enabled: true
       geometry:
         enabled: true       # fuse each object across cameras; this switch changes the candidates
         # Decimate each cloud to one point per 4 mm for the association scoring only; the fused

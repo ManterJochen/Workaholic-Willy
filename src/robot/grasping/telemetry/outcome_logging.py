@@ -1,8 +1,8 @@
 """Outcome logging for autonomous grasp attempts.
 
-This module is a pure recorder. It does not call perception, the robot or the
-verification stack, and only serialises typed reports produced elsewhere into a
-JSONL-safe :class:`GraspAttemptRecord`.
+This module is a pure recorder. It does not call perception or the robot, and
+only serialises typed reports produced elsewhere into a JSONL-safe
+:class:`GraspAttemptRecord`.
 
 What it is for
 --------------
@@ -44,9 +44,6 @@ __all__ = [
     "json_safe",
     "profile_metadata_from",
     "recovery_metadata_from",
-    "refinement_metadata_from",
-    "target_metadata_from",
-    "verification_metadata_from",
 ]
 
 
@@ -110,6 +107,10 @@ def profile_metadata_from(profile: Any) -> dict[str, Any]:
     """Snapshot a :class:`GraspBehaviorProfile` into a JSON-safe dict.
 
     It is duck-typed, so any object with the same attributes works.
+
+    ``refinement_enabled`` and ``verification_enabled`` are written ``False`` since 2026-09-29:
+    the profile fields left with the two-scan refinement and with the post-grasp verification
+    stage, and the keys stay so every record's profile block keeps its shape.
     """
 
     return {
@@ -160,24 +161,6 @@ def frame_metadata_from(frame: Any) -> dict[str, Any]:
     }
 
 
-def target_metadata_from(target: Any) -> Optional[dict[str, Any]]:
-    """Summarise a :class:`TargetIdentity`, its mask shape and centroid."""
-
-    if target is None:
-        return None
-    mask = getattr(target, "mask", None)
-    mask_shape: Optional[list[int]] = None
-    if mask is not None:
-        mask_shape = [int(d) for d in np.asarray(mask).shape]
-    centroid = getattr(target, "centroid_xy", None)
-    return {
-        "mask_shape": mask_shape,
-        "centroid_xy": json_safe(centroid),
-        "area_px": int(getattr(target, "area_px", 0) or 0),
-        "label": getattr(target, "label", None),
-    }
-
-
 def grasp_metadata_from(grasp: Any) -> Optional[dict[str, Any]]:
     """Summarise a :class:`GraspPoint`-like object.
 
@@ -201,43 +184,6 @@ def grasp_metadata_from(grasp: Any) -> Optional[dict[str, Any]]:
         "frame": json_safe(getattr(grasp, "frame", None)),
         "label": getattr(grasp, "label", None),
         "metadata": json_safe(getattr(grasp, "metadata", {}) or {}),
-    }
-
-
-def refinement_metadata_from(report: Any) -> Optional[dict[str, Any]]:
-    """Summarise a :class:`RefinementReport`."""
-
-    if report is None:
-        return None
-    return {
-        "outcome": json_safe(getattr(report, "outcome", None)),
-        "matched_segmentation_index": json_safe(
-            getattr(report, "matched_segmentation_index", None)
-        ),
-        "match_iou": json_safe(getattr(report, "match_iou", None)),
-        "position_delta_mm": json_safe(
-            getattr(report, "position_delta_mm", None)
-        ),
-        "orientation_delta_deg": json_safe(
-            getattr(report, "orientation_delta_deg", None)
-        ),
-        "grip_width_delta_mm": json_safe(
-            getattr(report, "grip_width_delta_mm", None)
-        ),
-        "failure_reason": json_safe(getattr(report, "failure_reason", None)),
-        "telemetry": json_safe(getattr(report, "telemetry", {}) or {}),
-    }
-
-
-def verification_metadata_from(report: Any) -> Optional[dict[str, Any]]:
-    """Summarise a :class:`GraspVerificationReport`."""
-
-    if report is None:
-        return None
-    return {
-        "outcome": json_safe(getattr(report, "outcome", None)),
-        "reason": getattr(report, "reason", ""),
-        "telemetry": json_safe(getattr(report, "telemetry", {}) or {}),
     }
 
 
@@ -327,7 +273,12 @@ class GraspAttemptRecord:
     ---------------
     profile, frame, target, initial_grasp, initial_telemetry,
     refined_grasp, refinement, selected_grasp, execution, verification
-        The per-stage summaries, each ``None`` where the stage did not run.
+        The per-stage summaries, each ``None`` where the stage did not run. Nothing writes
+        ``target``, ``refined_grasp`` or ``refinement`` since the two-scan refinement left on
+        2026-09-29, with the helpers that built the first and the last; the fields stay so a
+        record logged before then still reads and round-trips. ``verification`` is written only
+        from a simulator's ground-truth lift since the post-grasp verification stage left the
+        same day; a record logged before then keeps the verifier's block and still reads.
     recovery_actions
         An ordered list of recovery summaries, empty where no recovery was attempted.
     extra

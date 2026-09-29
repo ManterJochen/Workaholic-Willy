@@ -3,7 +3,7 @@
     python -m src.robot.drivers.ur --read                      # read every pin, changes nothing
     python -m src.robot.drivers.ur --watch 0 --for 15          # trip a sensor by hand, see it
     python -m src.robot.drivers.ur --set 4=1 --yes             # drive one output
-    python -m src.robot.drivers.ur --pulse 4 --for 0.2 --yes   # the double-solenoid and single-toggle shape
+    python -m src.robot.drivers.ur --pulse 4 --for 0.2 --yes   # the double-solenoid shape (moves a toggle twice)
     python -m src.robot.drivers.ur --measure 4=1 --watch 0 --yes   # <- the number you came for
     python -m src.robot.drivers.ur --jaws open --yes           # the configured jaw_io hand, through its driver
     python -m src.robot.drivers.ur --where                     # where the arm stands, as lines to paste
@@ -35,11 +35,14 @@ is between them, and an ejector pin starts real suction. Every write is therefor
 behind ``--yes``, and in a non-interactive shell the gate refuses rather than prompts.
 ``--read``, ``--watch`` and ``--where`` are read-only and need no gate.
 
-A single toggle's pin may be pulsed here freely: no count of its pulses outlives a
-program, and every program asks at its connect where the jaws stand. ``--jaws`` moves
-them through the driver, which asks that question first, and its last line says how many
-pulses went out, the one a person chose at that question included: it reads the driver's
-own count (``JawIOGripper.commands_sent``), never where the jaws stood before and after.
+A single toggle's pin may be switched here freely: no count of its changes outlives a
+program, and every program asks at its connect where the jaws stand. Every change of it
+moves the owner's jaws, switched on as much as switched off (2026-09-28), so ``--set``
+moves them once where it changes the output and not at all where the output already stands
+there, and ``--pulse`` moves them twice from low and once from high. ``--jaws`` moves them
+through the driver, which asks that question first, and its last line says how many changes
+went out, the one a person chose at that question included: it reads the driver's own count
+(``JawIOGripper.commands_sent``), never where the jaws stood before and after.
 
 Every refusal says which config it read: the profile chain from ``--profile`` or
 ``WILLY_PROFILE``, or that neither was given and the base tree was loaded (it names a
@@ -185,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
                          "--measure timeout (2)")
     ap.add_argument("--jaws", choices=["open", "closed"], default=None,
                     help="open or close the configured jaw_io hand through its driver; a single toggle asks first "
-                         "where its jaws stand, and pulses only where they stand the other way")
+                         "where its jaws stand, and switches its output once only where they stand the other way")
     ap.add_argument("--where", action="store_true",
                     help="print the arm's joints as a JointPositions.deg(...) line to paste, and its TCP in mm and "
                          "degrees, then exit (read-only)")
@@ -369,9 +372,9 @@ def _drive_jaws(args: argparse.Namespace, robot_cfg: "RobotConfig", arm: object)
     from src.robot.core import RobotError
 
     # What went out is counted by the driver across the connect and the command, not inferred from where the count
-    # stood before and after the command: the connect's question may itself have pulsed the jaws open (a person said
-    # closed and chose the pulse), and a summary that looked only after the connect then said "nothing was pulsed"
-    # about a pulse that went out (review, 2026-09-24).
+    # stood before and after the command: the connect's question may itself have opened the jaws (a person said
+    # closed and chose to open them), and a summary that looked only after the connect then said nothing went out
+    # about a change that did (review, 2026-09-24).
     toggle = bool(getattr(gripper, "toggles_without_sensor", False))
     start = _commands_sent(gripper)
     at_connect: "int | None" = None
@@ -386,7 +389,7 @@ def _drive_jaws(args: argparse.Namespace, robot_cfg: "RobotConfig", arm: object)
             gripper.disconnect()  # type: ignore[attr-defined]
     except RobotError as exc:
         # The driver's own refusal, a toggle nobody could ask about above all, is the answer here, not a traceback.
-        # What went out before it is said too: a refusal after a pulse is a hand that moved.
+        # What went out before it is said too: a refusal after a change is a hand that moved.
         sent = _sent_before_a_refusal(start, at_connect, _commands_sent(gripper), toggle=toggle)
         return _refuse(args.profile, f"--jaws {args.jaws}: {exc}{sent}", robot_cfg)
     print(_jaws_summary(args.jaws, before, after, start, at_connect, _commands_sent(gripper), toggle=toggle),
@@ -401,10 +404,10 @@ def _commands_sent(gripper: object) -> "int | None":
 
 
 def _counted(n: int, *, toggle: bool) -> str:
-    """``1 pulse``, ``2 pulses``, ``nothing``; ``command`` in place of ``pulse`` for a hand that is not a toggle."""
+    """``1 change``, ``2 changes``, ``nothing``; ``command`` in place of ``change`` for a hand that is not a toggle."""
     if n == 0:
         return "nothing"
-    noun = "pulse" if toggle else "command"
+    noun = "change" if toggle else "command"
     return f"{n} {noun}{'' if n == 1 else 's'}"
 
 
@@ -412,7 +415,7 @@ def _jaws_summary(jaws: str, before: bool, after: bool, start: "int | None", at_
                   end: "int | None", *, toggle: bool) -> str:
     """The line ``--jaws`` ends on: where the command took the jaws, and what went out at the connect and for it.
 
-    "Nothing was pulsed" is said only where the driver's count says nothing went out at all, the connect included. A
+    "Nothing was switched" is said only where the driver's count says nothing went out at all, the connect included. A
     driver that keeps no count is not credited with sending nothing: the line then says where the jaws went and no
     more.
     """
@@ -421,7 +424,7 @@ def _jaws_summary(jaws: str, before: bool, after: bool, start: "int | None", at_
         return line
     connect, command = at_connect - start, end - at_connect
     if connect + command == 0:
-        return f"{line} (they already stood there: nothing was {'pulsed' if toggle else 'sent'})"
+        return f"{line} (they already stood there: nothing was {'switched' if toggle else 'sent'})"
     parts = [f"{_counted(connect, toggle=toggle)} at connect, to open them"] if connect else []
     parts.append(f"{_counted(command, toggle=toggle)} for --jaws {jaws}"
                  + ("" if command else " (they already stood there after the connect)"))

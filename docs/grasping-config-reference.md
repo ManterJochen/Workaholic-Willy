@@ -40,15 +40,34 @@ changes nothing. Section 3.2 is the same trap seen from the other side.
 profiles live in `src/robot/execution/autonomous_grasp/config.py`, in `_PROFILES`, and that table is the
 authority.
 
-| Mode | Sampling | Refine | Verify | Recovery actions allowed |
-|---|---|---|---|---|
-| `easy` | single object | no | no | none, and that is a guarantee rather than a default |
-| `auto` | auto | no | no | `rescan`, `next_viewpoint` |
-| `dense_clutter` | dense point cloud | no | no | `rescan`, `next_viewpoint` |
-| `closed_loop` | auto | yes | yes | `rescan`, `next_viewpoint` |
-| `dense_autonomous` | dense point cloud | yes | yes | `rescan`, `next_viewpoint`, `nudge_target` |
+| Mode | Sampling | Recovery actions allowed |
+|---|---|---|
+| `easy` | single object | none, and that is a guarantee rather than a default |
+| `auto` | auto | `rescan` |
+| `dense_clutter` | dense point cloud | `rescan`, `nudge_target` |
 
 `config/robot/robot.yaml` ships `auto`. The simulation runners default to `easy`.
+
+`next_viewpoint` left both profiles on 2026-09-29, merged into `rescan`: with the viewpoint planners
+gone nothing moved the camera for it, so it re-perceived exactly as `rescan` does. A
+`recovery.allowed_actions` or `recovery.per_action_budget` that still names it is refused at load,
+`removed on purpose: use rescan`.
+
+`closed_loop` and `dense_autonomous`, the two modes that refined and verified, were removed on
+2026-09-29 with the two-scan pre-grasp refinement they ran; no shipped config switched it on, and it
+never ran on a physical arm. A tree, a preset or a call that still names one is refused with the mode
+to name instead: `auto` for `closed_loop`, `dense_clutter` for `dense_autonomous`. `nudge_target`, which
+only `dense_autonomous` allowed, moved to `dense_clutter`; it still needs `recovery.allowed_actions` to
+name it and a declared `recovery.fixture`.
+
+A cell built from config pushes nothing even then. The mode's profile is an outer gate that
+`recovery.allowed_actions` cannot widen: `auto` allows `rescan`, `dense_clutter` allows `rescan` and
+`nudge_target`, and no profile allows `next_target` or `container_agitate`, so those two pass the load
+and are never planned. Its recovery loop plans from the dispatcher alone, so a nudge carries no offset
+and is refused before the arm moves (`refused_no_offset`); the loop then escalates. Its `rescan` re-runs
+the pick, which perceives and ranks afresh without excluding the part that failed. Only a caller that
+widens the profile and builds the recovery strategies itself, as the simulator runner
+`run_dense_pick --g6` does for `container_agitate`, moves the arm to recover.
 
 **This is why a block measurement can be worth nothing.** Each mode-gated block declares its own
 `apply_modes`, and `build_effective_config` enforces that filter. `easy` appears in the `apply_modes`
@@ -56,34 +75,39 @@ of exactly one block, `success_model`.
 
 | Block | Its `apply_modes` default | Effect of a mode outside it |
 |---|---|---|
-| `feasibility` | `auto`, `dense_clutter`, `dense_autonomous` | every key collapses to its off value |
-| `occlusion` | `auto`, `dense_clutter`, `dense_autonomous` | every key collapses to its off value |
-| `ordering` | `auto`, `dense_clutter`, `dense_autonomous` | every key collapses to its off value |
-| `recovery` | `auto`, `dense_clutter`, `dense_autonomous` | every key collapses to its off value |
-| `uncertainty` | `auto`, `dense_clutter`, `dense_autonomous` | the runtime consults the list; the snapshot carries it |
-| `success_model` | `easy`, `auto`, `dense_clutter`, `dense_autonomous` | `enabled` reads false |
-| `approach_validation` | `dense_clutter`, `dense_autonomous` | `enabled` reads false |
-| `fusion.commit_policy` | `auto`, `dense_clutter`, `dense_autonomous` | the gate is skipped |
+| `feasibility` | `auto`, `dense_clutter` | every key collapses to its off value |
+| `occlusion` | `auto`, `dense_clutter` | every key collapses to its off value |
+| `ordering` | `auto`, `dense_clutter` | every key collapses to its off value |
+| `recovery` | `auto`, `dense_clutter` | every key collapses to its off value |
+| `uncertainty` | `auto`, `dense_clutter` | the runtime consults the list; the snapshot carries it |
+| `success_model` | `easy`, `auto`, `dense_clutter` | `enabled` reads false |
+| `approach_validation` | `dense_clutter` | `enabled` reads false |
 
-Note that four of those lists exclude `closed_loop` as well as `easy`, which is easy to miss when
-`closed_loop` is the mode you reached for precisely because you wanted more behaviour.
+A mode list that still names `dense_autonomous` or `closed_loop` is refused at load with the same
+sentence as `default_mode`.
 
-Being built is not the same as being acted on. Three blocks are built in every mode and run in
+Being built is not the same as being acted on. Two blocks are built in every mode and run in
 almost none:
 
 * `decision` fires only when the effective mode is not `easy`. The check is in `service.py`, on the
   path into `_pick_with_decision`.
-* `closed_loop` and `verification` are gated on the profile's `refinement_enabled` and
-  `verification_enabled`, so they run in `closed_loop` and `dense_autonomous` only.
-* `approach_validation` installs its carrier in every mode and fires only in the dense modes. The
+* `approach_validation` installs its carrier in every mode and fires only in `dense_clutter`. The
   gate is in `pick_loop.py`.
+
+`verification` was the third until 2026-09-29, when it was removed: no attempt consulted the verifier
+it built. The hold an attempt reports is the execution policy's own check after its close, which reads
+the gripper's `is_object_detected` and `hold_evidence` (a Robotiq's gOBJ). A tree that still writes the
+block is refused at load with the sentence that says so.
+
+`recovery` runs in its modes, and its physical half moves nothing from config: see the note under the
+mode table above.
 
 That last shape, a carrier that is set and never read, is the one the wiring guard cannot see. The
 guard's claim is that a flag reaches a runtime carrier, and `EffectiveGraspingConfig` is a runtime
 carrier. Reaching a carrier and the pick path acting on it are different claims, and knowing that
 limit is part of using the guard.
 
-## 3. The four traps
+## 3. The three traps
 
 Each one turns a measurement into a lie that reads as good news.
 
@@ -101,10 +125,10 @@ computes the signal and then multiplies it by nothing.
 
 ### 3.2 The constructor wins
 
-`build_subpolicies` prefers a constructor argument over the config block: it materialises a
-refinement, verification or recovery policy only where the caller passed none. The simulation
-runners hand `from_robot_config` a hand-built `DecisionEngine` in `auto`, and a refiner plus a
-verifier in `closed_loop`. So `--boot config --grasp-mode auto` runs a decision engine that came out
+`build_decision_layer` prefers a constructor argument over the config block: it builds a decision
+engine only where the caller passed none. The simulation runners hand
+`from_robot_config` a hand-built `DecisionEngine` in `auto`. So `--boot config --grasp-mode auto` runs
+a decision engine that came out
 of the runner, and toggling `grasping.decision.enabled` changes nothing at all. Pass
 `--config-subpolicies` to suppress the runner's and let the config own them; it requires
 `--boot config`, and refuses otherwise rather than silently doing nothing.
@@ -114,12 +138,9 @@ of the runner, and toggling `grasping.decision.enabled` changes nothing at all. 
 On `run_multiview_pick`, `--mode` selects the camera set: `eth1`, `eth2`, `eth3` or `sides`. The
 grasp mode is `--grasp-mode`. They are unrelated, and the logs call both of them mode.
 
-### 3.4 Two blocks are called "recovery"
-
-`grasping.recovery` is the orchestrator: when to recover, and within what budget.
-`grasping.dense_recovery` is the strategy: what recovering means, one of `active_perception`,
-`next_target` or `none`. Different consumers, different allow-lists. Wiring one of them gives you
-half a recovery path.
+A fourth trap left on 2026-09-29: two blocks were called "recovery". `grasping.dense_recovery`, the
+strategy half, built a policy and a strategy no pick consulted, and it was removed; a tree that still
+writes it is refused at load. `grasping.recovery` is the recovery a pick runs.
 
 ## 4. What each block is for
 
@@ -130,18 +151,15 @@ the mode gate. Every block in this table ships `enabled: false`, except `occlusi
 | Block | What it does | Fires in |
 |---|---|---|
 | `decision` | the fail-closed gate: accept, escalate or refuse | every mode except `easy` |
-| `closed_loop` | re-perceive and refine before the final descent | `closed_loop`, `dense_autonomous` |
-| `verification` | check after the grasp whether anything was picked | `closed_loop`, `dense_autonomous` |
-| `dense_recovery` | what recovering means, as a strategy | dense modes |
-| `recovery` | when to recover and within what budget | not `easy` or `closed_loop` |
-| `feasibility` | reachability-aware re-ranking | not `easy` or `closed_loop` |
-| `occlusion` | directional corridor analysis | not `easy` or `closed_loop` |
-| `ordering` | bin-clearing order from a blocker graph | not `easy` or `closed_loop` |
-| `uncertainty` | a fused uncertainty score, with a fail-closed half and a ranking half | not `easy` or `closed_loop` |
-| `success_model` | the learned success predictor | every mode except `closed_loop`, and the only one `easy` reaches |
+| `recovery` | when to recover and within what budget | not `easy` |
+| `feasibility` | reachability-aware re-ranking | not `easy` |
+| `occlusion` | directional corridor analysis | not `easy` |
+| `ordering` | bin-clearing order from a blocker graph | not `easy` |
+| `uncertainty` | a fused uncertainty score, with a fail-closed half and a ranking half | not `easy` |
+| `success_model` | the learned success predictor | every mode, and the only one `easy` reaches |
 | `performance` | latency budgets per stage | every mode |
-| `approach_validation` | the swept-volume check along the approach | carrier everywhere, fires in dense modes |
-| `fusion` | the multi-view voxel substrate and the commit gate | every mode |
+| `approach_validation` | the swept-volume check along the approach | carrier everywhere, fires in `dense_clutter` |
+| `fusion` | the fused cameras' CAMERA to BASE resolvers (`enabled`), and `fusion.geometry` below | every mode |
 | `deep_ranker` | the learned ranker in shadow: it scores, the telemetry records, the order never changes | every mode |
 
 `ordering` has a second precondition that no key expresses: it can only act where the loop is free
@@ -157,12 +175,13 @@ The always-on tunings are a separate family and are not gated by mode:
 * `geometry.stage` chooses which stage proposes candidates, `support_footprint` or `silhouette`.
 * `support` says where the world's floor is, and the bin or tray is `support.container`, not
   `grasping.container`.
-* `fusion.geometry` is per-object multi-camera geometry fusion, a different thing from `fusion`.
-  Its `promote_unmatched` decides whether another camera may introduce an object or only confirm
-  one the primary already found. Off, the pick sees exactly the primary's segmentation list, in
-  its order. On, a part only a second camera can see becomes an object and is computed in that
-  camera's lens, which is why the cell then builds one calculator per camera. Nothing measures
-  how often that happens, so it ships off.
+* `fusion.geometry` is per-object multi-camera geometry fusion, and it needs `fusion.enabled` too: that
+  switch builds the other cameras' CAMERA to BASE resolvers, and with it off every second view is
+  dropped at the pick with a warning. Its `promote_unmatched` decides whether another camera may
+  introduce an object or only confirm one the primary already found. Off, the pick sees exactly the
+  primary's segmentation list, in its order. On, a part only a second camera can see becomes an
+  object and is computed in that camera's lens, which is why the cell then builds one calculator per
+  camera. Nothing measures how often that happens, so it ships off.
 * `gripper_geometry` is the collision envelope the planner checks, parallel jaw or suction cup.
 * `watchdog` has a `mode` rather than an `enabled`, and it ships `shadow`.
 * `isotropic_radial_closing`, `max_attempts` and `record_log_path` sit at the top of the block.
@@ -189,7 +208,7 @@ attributable to it. Seven rules:
 1. Use `--boot config`, or the measurement is about the runner and not about the cell.
 2. Use `--rendered-depth`, or the measurement is about a ground-truth oracle that reports the
    object's centre rather than a surface any real depth camera would deliver.
-3. Use `--config-subpolicies` in `auto` and `closed_loop`, or the constructor wins. See section 3.2.
+3. Use `--config-subpolicies` in `auto`, or the constructor wins. See section 3.2.
 4. The mode has to be one the block can fire in. See section 2.
 5. Set the block's operative value, not only `enabled: true`. See section 3.1.
 6. Read the right number. For a fail-closed gate, a drop in picks is the expected result, so
@@ -202,11 +221,11 @@ attributable to it. Seven rules:
 ### 6.1 The declared-unwired list
 
 `RobotGraspingConfig.UNWIRED_SWITCHES` is a list of flags whose value reaches
-`EffectiveGraspingConfig`, which is the cell's own telemetry, and is then read back by nothing.
-Turning one on changes what the cell reports about itself and not one thing about what it does. A
-model validator refuses to load a config that sets one, with the reason and a pointer to this
-section, so an operator meets the truth where they set the value rather than in a document they may
-never open.
+`EffectiveGraspingConfig`, which is the cell's own telemetry, and is then read back by nothing. It holds
+one flag today, `occlusion.hard_reject_enabled`. Turning one on changes what the cell reports about
+itself and not one thing about what it does. A model validator refuses to load a config that sets one,
+with the reason and a pointer to this section, so an operator meets the truth where they set the value
+rather than in a document they may never open.
 
 Read the list from the code rather than from here:
 

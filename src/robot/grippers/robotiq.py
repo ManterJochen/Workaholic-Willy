@@ -133,9 +133,9 @@ class GripperController:
     def closed_width_mm(self) -> float:
         """What :meth:`get_width_mm` reads with the jaws shut on nothing, 0 mm on a 2F-85.
 
-        This is distinct from :attr:`min_width_mm`, which is a policy floor.
-        Verification asks for this one, because whether the jaws collapsed on nothing
-        is a question about the mechanism.
+        This is distinct from :attr:`min_width_mm`, which is a policy floor. The count
+        map is anchored on this one, because where the jaws stand when shut is a
+        question about the mechanism.
         """
         return float(self.config.closed_width_mm)
 

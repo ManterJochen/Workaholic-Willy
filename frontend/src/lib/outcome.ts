@@ -26,6 +26,7 @@ const REFUSALS = new Set([
   'unsafe_recovery_refused',
   'decision_fail_closed',
   'decision_recover_pending',
+  // Retired with the two-scan refinement on 2026-09-29; a record logged before then still reads as a refusal.
   'refinement_diverged',
   'mode_not_available',
 ])

@@ -21,9 +21,6 @@ from src.robot.grasping.telemetry.outcome_logging import (
     json_safe,
     profile_metadata_from,
     recovery_metadata_from,
-    refinement_metadata_from,
-    target_metadata_from,
-    verification_metadata_from,
 )
 
 
@@ -53,39 +50,43 @@ class _Profile:
     sampling_mode: str = "antipodal"
     refinement_enabled: bool = True
     verification_enabled: bool = True
-    recovery_allowed_actions: tuple = ("next_viewpoint", "next_target")
+    recovery_allowed_actions: tuple = ("rescan", "next_target")
 
 
-@dataclass
-class _Target:
-    mask: np.ndarray
-    centroid_xy: tuple
-    area_px: int
-    label: Optional[str] = "cup"
+#: The ``target`` and ``refinement`` blocks as the two-scan refinement wrote them, before it left on
+#: 2026-09-29 with the helpers that built them. Nothing writes either block now; a record logged
+#: before then still carries them, so they must still round-trip.
+_LEGACY_TARGET_BLOCK: dict[str, Any] = {
+    "mask_shape": [3, 3],
+    "centroid_xy": [1.0, 2.0],
+    "area_px": 5,
+    "label": "cup",
+}
+_LEGACY_REFINEMENT_BLOCK: dict[str, Any] = {
+    "outcome": "accepted",
+    "matched_segmentation_index": 0,
+    "match_iou": 0.92,
+    "position_delta_mm": 1.5,
+    "orientation_delta_deg": 2.0,
+    "grip_width_delta_mm": 0.5,
+    "failure_reason": None,
+    "telemetry": {},
+}
 
 
-@dataclass
-class _RefinementReport:
-    outcome: str = "accepted"
-    matched_segmentation_index: int = 0
-    match_iou: float = 0.92
-    position_delta_mm: float = 1.5
-    orientation_delta_deg: float = 2.0
-    grip_width_delta_mm: float = 0.5
-    failure_reason: Optional[str] = None
-    telemetry: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class _VerificationReport:
-    outcome: str = "passed"
-    reason: str = "object_detected"
-    telemetry: Mapping[str, Any] = field(default_factory=dict)
+#: The ``verification`` block as the post-grasp verifiers wrote it (``verification_metadata_from``),
+#: before they left on 2026-09-29. Nothing live writes that shape now; a record logged before then
+#: still carries it, so it must still round-trip.
+_LEGACY_VERIFICATION_BLOCK: dict[str, Any] = {
+    "outcome": "passed",
+    "reason": "object_detected",
+    "telemetry": {},
+}
 
 
 @dataclass
 class _RecoveryPlan:
-    action: str = "next_viewpoint"
+    action: str = "rescan"
     reason: str = "no_grasp_found"
     nudge_offset_mm: Optional[tuple] = None
     agitate_amplitude_mm: float = 0.0
@@ -206,7 +207,7 @@ class BuilderTests(unittest.TestCase):
         self.assertTrue(meta["verification_enabled"])
         self.assertEqual(
             meta["recovery_allowed_actions"],
-            ["next_viewpoint", "next_target"],
+            ["rescan", "next_target"],
         )
 
     def test_frame_metadata_records_shapes(self) -> None:
@@ -229,23 +230,6 @@ class BuilderTests(unittest.TestCase):
         self.assertFalse(meta["has_rgb"])
         self.assertIsNone(meta["timestamp"])
 
-    def test_target_metadata_none_in_none_out(self) -> None:
-        self.assertIsNone(target_metadata_from(None))
-
-    def test_target_metadata(self) -> None:
-        t = _Target(
-            mask=np.zeros((8, 8), dtype=bool),
-            centroid_xy=(3.0, 4.0),
-            area_px=12,
-            label="cup",
-        )
-        meta = target_metadata_from(t)
-        assert meta is not None
-        self.assertEqual(meta["mask_shape"], [8, 8])
-        self.assertEqual(meta["centroid_xy"], [3.0, 4.0])
-        self.assertEqual(meta["area_px"], 12)
-        self.assertEqual(meta["label"], "cup")
-
     def test_grasp_metadata_uses_to_dict(self) -> None:
         meta = grasp_metadata_from(_grasp_point())
         assert meta is not None
@@ -255,26 +239,13 @@ class BuilderTests(unittest.TestCase):
         self.assertEqual(meta["frame"], "base")
         self.assertEqual(meta["label"], "cup")
 
-    def test_refinement_metadata(self) -> None:
-        meta = refinement_metadata_from(_RefinementReport())
-        assert meta is not None
-        self.assertEqual(meta["outcome"], "accepted")
-        self.assertEqual(meta["matched_segmentation_index"], 0)
-        self.assertAlmostEqual(meta["match_iou"], 0.92)
-
-    def test_verification_metadata(self) -> None:
-        meta = verification_metadata_from(_VerificationReport())
-        assert meta is not None
-        self.assertEqual(meta["outcome"], "passed")
-        self.assertEqual(meta["reason"], "object_detected")
-
     def test_recovery_metadata(self) -> None:
-        report = _RecoveryReport(plan=_RecoveryPlan(action="next_viewpoint"))
+        report = _RecoveryReport(plan=_RecoveryPlan(action="rescan"))
         meta = recovery_metadata_from(report)
         assert meta is not None
         self.assertTrue(meta["executed"])
         self.assertEqual(meta["outcome"], "completed")
-        self.assertEqual(meta["plan"]["action"], "next_viewpoint")
+        self.assertEqual(meta["plan"]["action"], "rescan")
 
 
 # ---------------------------------------------------------------------------
@@ -382,17 +353,11 @@ class GraspAttemptRecordTests(unittest.TestCase):
             timestamp=42.0,
             profile=profile_metadata_from(_Profile()),
             frame=frame_metadata_from(_frame()),
-            target=target_metadata_from(
-                _Target(
-                    mask=np.zeros((3, 3), dtype=bool),
-                    centroid_xy=(1.0, 2.0),
-                    area_px=5,
-                )
-            ),
+            target=dict(_LEGACY_TARGET_BLOCK),
             initial_grasp=grasp_metadata_from(_grasp_point()),
             initial_telemetry={"candidates": 7},
-            refinement=refinement_metadata_from(_RefinementReport()),
-            verification=verification_metadata_from(_VerificationReport()),
+            refinement=dict(_LEGACY_REFINEMENT_BLOCK),
+            verification=dict(_LEGACY_VERIFICATION_BLOCK),
             recovery_actions=[
                 recovery_metadata_from(
                     _RecoveryReport(plan=_RecoveryPlan(action="next_target"))
@@ -402,6 +367,9 @@ class GraspAttemptRecordTests(unittest.TestCase):
         )
         round_tripped = GraspAttemptRecord.from_json(rec.to_json())
         self.assertEqual(round_tripped.to_dict(), rec.to_dict())
+        self.assertEqual(round_tripped.target, _LEGACY_TARGET_BLOCK)
+        self.assertEqual(round_tripped.refinement, _LEGACY_REFINEMENT_BLOCK)
+        self.assertEqual(round_tripped.verification, _LEGACY_VERIFICATION_BLOCK)
 
     def test_round_trip_preserves_per_candidate_log(self) -> None:
         # P4.1: the per-candidate feature log (list of dicts) + behavior id round-trip through the free-form

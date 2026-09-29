@@ -89,6 +89,7 @@ class EveryVerbRefusesTests(unittest.TestCase):
             ("move", arm.move(_pose()), MotionCommand.MOVE_TO),
             ("move linear", arm.move(_pose(), linear=True), MotionCommand.MOVE_TO),
             ("move_to_joints", arm.move_to_joints(_JOINTS), MotionCommand.MOVE_JOINTS),
+            ("move_to_joints_on_the_line", arm.move_to_joints_on_the_line(_JOINTS), MotionCommand.MOVE_JOINTS),
             ("move_to_home", arm.move_to_home(), MotionCommand.MOVE_HOME),
         ):
             with self.subTest(verb=name):

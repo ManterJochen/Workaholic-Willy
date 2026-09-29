@@ -541,7 +541,7 @@ class SuccessModelConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             cfg.success_model.apply_modes,
-            ("easy", "auto", "dense_clutter", "dense_autonomous"),
+            ("easy", "auto", "dense_clutter"),
         )
 
     def test_extra_field_rejected(self) -> None:

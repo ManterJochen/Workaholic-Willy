@@ -225,8 +225,8 @@ class VacuumGripper:
         """Poll the vacuum switch until it reports a seal or the timeout expires, and return the verdict.
 
         A timeout is not an error here. A missed seal is a normal grasp outcome and
-        the verification stage decides, so raising would turn a cup that did not catch
-        this one into a crash.
+        the execution policy's post-close hold check decides, so raising would turn a
+        cup that did not catch this one into a crash.
         """
         started = time.monotonic()
         deadline = started + self._engage_timeout_s

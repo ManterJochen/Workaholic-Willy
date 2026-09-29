@@ -372,9 +372,9 @@ Two things to carry away:
   refused at build until one is declared. The `ur5e,eth2` example declares both of its rigs', at
   artifact paths a sweep writes and the repository does not ship; until both sweeps have run, its
   build is refused naming the file that does not load.
-- **The default pick is open-loop** whatever the calibration says. The decision gate, closed-loop
-  refinement, verification, recovery, fusion with its commit gate, the learned ranker and the learned
-  success model all ship `enabled: false` in [`config/robot/robot.yaml`](../../config/robot/robot.yaml).
+- **The default pick is open-loop** whatever the calibration says. The decision gate,
+  recovery, multi-camera fusion, the learned ranker and the learned success model all ship
+  `enabled: false` in [`config/robot/robot.yaml`](../../config/robot/robot.yaml).
   See [05](05-pick-loop.md).
 
 ### 4.4 Where it fails closed

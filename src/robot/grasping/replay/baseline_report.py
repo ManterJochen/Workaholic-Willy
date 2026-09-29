@@ -215,6 +215,8 @@ def _wall_time_p95_by_mode(
 ) -> dict[str, float | None]:
     """Aggregate per-mode ``attempt_wall_time_s`` p95 (nearest-rank); ``None`` for modes that contributed no samples."""
 
+    # `dense_autonomous` and `closed_loop` are modes retired on 2026-09-29. Their keys stay so the
+    # committed baseline keeps its shape; the canonical packs still carry `dense_autonomous` records.
     modes = ("easy", "auto", "dense_clutter", "dense_autonomous", "closed_loop")
     pooled: dict[str, list[float]] = {m: [] for m in modes}
     for r in pack_results:

@@ -35,6 +35,30 @@ Design contract:
 * Recommendations live in the in-module :data:`RECOMMENDATIONS`
   table. Config-driven recommendation application is deferred.
 
+* Versions. :data:`TAXONOMY_VERSION` 2 (2026-09-29) rewrote the
+  recommendations of version 1, which advised features removed on
+  2026-09-28 and 2026-09-29 (the multi-view fusion volume, the
+  active-perception attempts, the commit gate's corridor radius, the
+  ``dense_autonomous`` mode). Version 3 (2026-09-29, later) rewrote the
+  occlusion recommendation once a wrist pick fuses its looks: it no
+  longer says a pick stops at the first look that finds something. The
+  root causes, their precedence and the rules are unchanged, so the
+  counts of a version-1 or version-2 report compare directly with
+  version 3. Nothing in this module reads a report back:
+  :class:`TaxonomyReport` is built by :func:`build_taxonomy_report` and
+  refuses any version but the current one at construction, so an
+  older report on disk stays a file, and its recommendations are the
+  old wording. Re-run ``--failure-taxonomy`` over the same packs for the
+  current ones. Outside this module, the adaptation planner
+  (``--adaptation-plan --taxonomy-in``) reads a report's
+  ``counts_by_cause`` back from disk without checking
+  ``taxonomy_version``; an older report is valid input there because
+  the counts did not change. That makes ``counts_by_cause`` a key another
+  module reads: until 2026-09-29 the planner looked under a key this
+  report never wrote and its taxonomy rules never fired, and
+  ``tests/test_u11_safe_adaptation.py`` now feeds it a built report so a
+  rename cannot silence them again.
+
 * The JSON report is byte-stable: keys are sorted and lists are
   ordered by impact (count desc, then enum order tie-break).
 """
@@ -66,7 +90,11 @@ logger = create_grasping_logger("FailureTaxonomy", REPLAY_FAILURE_TAXONOMY_LOG_F
 #: Bump on any contract-level change to taxonomy semantics,
 #: recommendation wording, or report schema. Do not bump for
 #: pure additions that preserve old behaviour byte-identically.
-TAXONOMY_VERSION: int = 1
+#: 2 (2026-09-29): the recommendations stop advising removed features
+#: (see the module docstring); the classification is unchanged.
+#: 3 (2026-09-29, later): the occlusion recommendation says what a wrist
+#: pick does with its looks now, fused; the classification is unchanged.
+TAXONOMY_VERSION: int = 3
 
 
 class FailureRootCause(StrEnum):
@@ -92,17 +120,20 @@ ROOT_CAUSE_ORDER: tuple[FailureRootCause, ...] = tuple(FailureRootCause)
 RECOMMENDATIONS: Mapping[FailureRootCause, str] = {
     FailureRootCause.COLLISION_REJECTION: (
         "Investigate planner safety margin and gripper clearance; "
-        "verify scene occupancy from the multi-view fusion volume "
-        "before re-enabling AUTO mode."
+        "verify the scene occupancy the planner checked, the live "
+        "camera world (robot.safety.planning_world) that every "
+        "calibrated camera feeds, before re-enabling AUTO mode."
     ),
     FailureRootCause.CALIBRATION_DRIFT_SUSPECTED: (
         "Trigger the ETH/EIH recalibration workflow and freeze AUTO "
         "execution until the drift watchdog reports a clean residual."
     ),
     FailureRootCause.SLIP_AFTER_GRASP: (
-        "Review gripper torque/friction profile and tighten the "
-        "post-close verification residual; consider enabling the "
-        "regrasp recovery policy."
+        "Review gripper force and pad friction for this part, and read "
+        "the hold the gripper reported right after the close "
+        "(is_object_detected and hold_evidence; gOBJ on a Robotiq): a "
+        "hold reported and then lost points at grip force, pad wear or "
+        "a grasp far from the part's centre of mass."
     ),
     FailureRootCause.EMPTY_AIR_GRASP: (
         "Inspect segmentation mask confidence and depth_confidence "
@@ -111,13 +142,19 @@ RECOMMENDATIONS: Mapping[FailureRootCause, str] = {
     ),
     FailureRootCause.DEFORMABLE_MISCLASSIFICATION: (
         "Audit the deformable-flag detector and widen profile "
-        "coverage; consider DENSE_AUTONOMOUS escalation for "
-        "deformable scenes."
+        "coverage; consider the dense_clutter mode for deformable "
+        "scenes."
     ),
     FailureRootCause.OCCLUSION_MISREAD: (
-        "Increase active_perception max attempts, lower the commit "
-        "gate corridor radius, and require multi-view fusion before "
-        "committing in cluttered scenes."
+        "Give the grasp a view the clutter does not hide: add a second "
+        "camera and fuse it (robot.grasping.fusion.enabled with "
+        "fusion.geometry.enabled), or declare a wrist camera's looks "
+        "(in the program, or robot.look_joint_positions_deg) from the "
+        "sides the clutter leaves open. A wrist pick visits its declared "
+        "looks in order, fuses each with the ones before, and stops at "
+        "the first whose grasp is valid and certain; one generated view "
+        "is taken only as a last resort, once every declared look is "
+        "used up. Order the looks so the part's open side comes first."
     ),
 }
 
@@ -137,7 +174,11 @@ _FAILURE_GATING_OUTCOMES: frozenset[str] = frozenset(
         "recovery_exhausted",
         "unsafe_recovery_refused",
         "no_target",
+        # Retired with the two-scan refinement on 2026-09-29: no pick reports it since. Kept so a
+        # record logged before then is still read as the failure it was.
         "refinement_diverged",
+        # Retired with the multi-view commit gate on 2026-09-28: no pick reports it since. Kept so
+        # a record logged before then is still read as the failure it was.
         "no_commit_insufficient_fusion",
     }
 )
@@ -361,7 +402,12 @@ class TaxonomyReport:
             )
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-safe, byte-stable dict representation."""
+        """Return a JSON-safe, byte-stable dict representation.
+
+        ``counts_by_cause`` is read back by the adaptation planner's taxonomy rules
+        (:mod:`src.robot.grasping.replay.adaptation`): keep the key and its flat
+        ``cause -> int`` shape.
+        """
 
         return {
             "taxonomy_version": int(self.taxonomy_version),

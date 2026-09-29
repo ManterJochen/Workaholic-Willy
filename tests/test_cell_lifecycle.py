@@ -211,10 +211,10 @@ class ASubstitutedGripperIsNotACellTests(unittest.TestCase):
     substitutes a working `NullGripper`, every commanded width is accepted, `get_width_mm()` answers
     the configured 85.0 mm maximum forever, and nothing downstream disagrees.
 
-    ⚠ **THE VERIFIER REPAIR DOES NOT REACH THE DEFAULT PICK.** `WidthDeltaGripperVerifier` refuses a
-    substituted gripper by name, but `grasping.verification.enabled` is `false` in the shipped tree,
-    so on the default open-loop attempt NOBODY READS A WIDTH. The fact is knowable before any motion
-    at all, so it is answered before any motion at all.
+    ⚠ **THE VERIFIER REPAIR NEVER REACHED THE DEFAULT PICK.** `WidthDeltaGripperVerifier` refused a
+    substituted gripper by name, but no open-loop attempt ran it, and it left on 2026-09-29 with the
+    post-grasp verification stage, so on a pick NOBODY READS A WIDTH. The fact is knowable before any
+    motion at all, so it is answered before any motion at all.
 
     ⭐ **AND IT IS ANSWERED HERE SO THERE IS ONE ANSWER.** `api/lifecycle.py` already refuses this
     connect (`ConnectRefused.NO_REAL_GRIPPER`) and reaches the hardware through this function, so

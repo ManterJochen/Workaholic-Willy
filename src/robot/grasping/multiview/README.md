@@ -30,23 +30,16 @@ print(fused.views_used, fused.objects_fused)
 cloud = fused.cloud_for(0)   # object 0 in BASE mm from every camera that saw it, or None
 ```
 
-## Two things are called fusion
+## Two switches, one feature
 
-They share a config prefix and are not the same feature: one changes which grasps exist, the other is
-evidence for a gate that ships off.
+| Config key | What it does |
+| --- | --- |
+| `fusion.enabled` | builds the CAMERA to BASE resolver of each camera `fusion.cameras` lists, from the calibration on its rig |
+| `fusion.geometry.enabled` | fuses each object's surface across those cameras and feeds the union to the generator |
 
-| | Config key | What it is | At run time |
-| --- | --- | --- | --- |
-| Geometry fusion | `fusion.geometry.enabled`, and `fusion.enabled` | per-object BASE clouds fused across cameras, fed to the generator | reaches the pick loop when both are on |
-| Voxel substrate | `fusion.enabled` | a bounded BASE occupancy grid, accumulated within one pick | read only by the commit gate |
-
-Both ship `false`. The commit gate reads the grid through `SceneFusion.corridor_evidence` only when
-`fusion.commit_policy.enabled` is true, which it is not by default; with the gate off the grid is
-written and never consulted.
-
-The two switches are not independent. `fusion.enabled` is also what builds the other cameras' CAMERA to
-BASE resolvers, so geometry fusion with `fusion.enabled` off drops every second view at the pick with a
-warning and plans single-view. Turn both on. `CameraFusionPlan.from_tree(tree)`
+Both ship `false`, and fusing takes both. With `fusion.enabled` off the resolver map is empty, so every
+second view is dropped at the pick with a warning and the cell plans single-view; with
+`fusion.geometry.enabled` off nothing asks for the map. Turn both on. `CameraFusionPlan.from_tree(tree)`
 (`src/robot/execution/camera_fusion.py`) reads a tree without opening anything and says in one sentence
 what a cell is missing to fuse; [`examples/real_robot/17_pick_with_fused_cameras.py`](../../../../examples/real_robot/17_pick_with_fused_cameras.py)
 asks it before it builds the cell.
@@ -97,15 +90,13 @@ out by `camera.cameras.primary_rig_id`, and listing it keeps the single-view war
 | refused at the build | a fused camera's rig declares no calibration, or its artifact does not load | calibrate it and declare the block |
 | `RuntimeError` in the pick | a configured camera delivered no frame and `on_camera_unavailable` is `refuse` | fix the camera, or choose `degrade` |
 | a WARNING, the view dropped | `degrade` and a missing camera, or a camera with no CAMERA to BASE resolver | read the log line; it names the camera |
-| `IngestResult` refused | `SceneFusion.ingest` on a wrong frame, a bad lens, a changed lens, or no valid depth | the reason is on the result |
 
 ## Status
 
 | Capability | Evidence |
 | --- | --- |
 | Geometry fusion across fixed cameras | measured in simulation: `run_multiview_pick`; top-1 43.50 % single-view, 55.93 % fused on the datagen reference |
-| Centroid fusion and the fused-cloud grasp | measured in simulation: called by `run_multiview_pick`, not by the pick loop |
-| The commit gate on the voxel grid | measured in simulation: `run_commit_gate` shows the evidence grows with distinct views and stays flat on a repeated one |
+| Centroid fusion | measured in simulation: called by `run_multiview_pick`, not by the pick loop |
 | `promote_unmatched` | never touched hardware: unit-tested, not measured |
 | A physical multi-camera cell | never touched hardware: none has been built with this code |
 
@@ -115,10 +106,12 @@ out by `camera.cameras.primary_rig_id`, and listing it keeps the single-view war
 | --- | --- |
 | `association.py` | `AssociationMetric`, `associate_target`, `assign_view`, `cluster_views`, `fuse_target_cloud`, `fuse_scene_clouds` |
 | `scene_geometry.py` | `ObservedView`, `fuse_scene_geometry`, `FusedSceneGeometry`, `build_scene_objects`, `SceneObject`, `to_base_mm` |
-| `fusion.py` | `SceneFusion` and `FusionConfig`, the voxel substrate |
 | `localize.py` | `fuse_view_localizations`, `ViewLocalization`: a visibility-weighted BASE centroid |
-| `synthesis.py` | `synthesize_grasp_from_cloud`, `FusedGrasp`: a top-down grasp from the fused footprint, `None` below 8 points |
-| `_fusion_geometry.py`, `_fusion_queries.py` | the ingest loop and the read side of the grid |
+| `unseen_side.py` | `jaw_faces_seen`, `orbit_views`: were both jaw contact faces seen, and the generated orbit view toward an unseen one |
+
+`synthesis.py` (`synthesize_grasp_from_cloud`, a top-down grasp from the fused footprint) was removed on
+2026-09-29 with the two `run_multiview_pick` levers that called it, `--synthesize-3d` and `--closed-loop`:
+a fused cell's grasp comes from the generator fed the fused cloud.
 
 ## Details
 
@@ -129,4 +122,4 @@ out by `camera.cameras.primary_rig_id`, and listing it keeps the single-view war
   `fusion.geometry`, and [guide 01](../../../../docs/guide/01-configuration.md) for the `eth2` profile.
 - Tests: `tests/test_multiview_association.py`, `tests/test_pick_loop_fusion_geometry.py`,
   `tests/test_scene_objects.py`, `tests/test_promoted_objects_reach_the_pick.py`,
-  `tests/test_u5_multi_view_fusion.py`, `tests/test_fusion_camera_map_means_every_camera.py`.
+  `tests/test_fusion_camera_map_means_every_camera.py`.

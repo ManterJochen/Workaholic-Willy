@@ -1,12 +1,12 @@
 """The seam a grasp calculator has to satisfy, measured from what the runtime actually touches.
 
-The runtime contract: the members the orchestrator, the closed-loop refiner and the operator
-service genuinely read or write, found by parsing every access on the live paths rather than by
-reading the class and copying its surface. That surface is deliberately tiny: `GraspCalculator`
+The runtime contract: the members the orchestrator and the operator service genuinely read or
+write, found by parsing every access on the live paths rather than by reading the class and
+copying its surface (the closed-loop refiner, a third reader, left on 2026-09-29). That surface is deliberately tiny: `GraspCalculator`
 has ~40 public members, and a protocol demanding them all would make a second implementation
 impossible for no reason.
 
-    compute_result(...)      the one ranking call site (pick_loop, refinement)   required
+    compute_result(...)      the one ranking call site (pick_loop)               required
     render_debug_images      read and written; the operator console flips it       required
     last_debug_image_png     read after a compute when debug rendering is on       required
     camera_matrix            read by the single-view support-plane refinement      optional, below
@@ -66,7 +66,7 @@ class GraspCandidateGenerator(Protocol):
         Contract beyond the signature, every clause of it binding:
 
         * Never raise on "no grasp". An empty candidate list plus a typed `GraspFailureReason`
-          is the answer; the retry / rescan / relocate / recovery routing runs entirely off
+          is the answer; the retry / rescan / recovery routing runs entirely off
           those reasons, and an exception here bypasses all of it.
         * Frames. When the caller supplies `camera_to_base`, the returned candidates must be in
           the BASE frame; `GraspExecutionPolicy.require_base_frame_grasp` refuses camera-frame

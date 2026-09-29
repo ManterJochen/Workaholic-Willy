@@ -67,7 +67,7 @@ in any other interpreter they say so and exit.
 | [`03_isaac_pick_rate.py`](simulation/03_isaac_pick_rate.py) | a pick rate, scored against the scene's ground truth | Isaac Sim |
 | [`04_isaac_record_a_pick.py`](simulation/04_isaac_record_a_pick.py) | one pick, filmed as an MP4 | Isaac Sim |
 | [`05_measure_a_campaign.py`](simulation/05_measure_a_campaign.py) | a campaign's record log rolled up into KPIs, and what those numbers rest on | nothing |
-| [`06_grasp_modes_and_what_each_needs.py`](simulation/06_grasp_modes_and_what_each_needs.py) | the five grasp modes, what each switches on, and how one that is not wired refuses by name | nothing |
+| [`06_grasp_modes_and_what_each_needs.py`](simulation/06_grasp_modes_and_what_each_needs.py) | the three grasp modes, what each switches on, and how one the service was not built in refuses by name | nothing |
 
 ## offline: data, training and models at a desk
 

@@ -66,7 +66,9 @@ over one bad viewpoint.
 
 Each camera is calibrated on its own and declares its file on its own rig,
 `camera.cameras.rigs[<id>].extrinsics`. `robot.grasping.fusion.cameras` names which cameras are fused,
-by the same rig id, and holds nothing else:
+by the same rig id, and holds nothing else. Fusing takes two switches as well: `fusion.enabled` builds
+each named camera's resolver from its file, and `fusion.geometry.enabled` hands the fused surface to the
+grasp generator. Either one alone leaves the cell single-view:
 
 ```yaml
 camera:
@@ -85,6 +87,7 @@ robot:
   grasping:
     fusion:
       enabled: true
+      geometry: {enabled: true}
       cameras:
         cam_left: {enabled: true}
         cam_right: {enabled: true}

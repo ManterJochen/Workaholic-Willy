@@ -123,17 +123,21 @@ gate: `limits`, `joint_limits`, `ik_quality`, `motion_continuity`, `payload` and
 build `SafetyPreflight` from it. The emergency stop is a hardware and controller function, and
 nothing in this package can enable, disable or observe it.
 
-`config/grasping_presets/` holds `easy` (a single pick at the least risk), `dense_clutter` (bin
-picking with bounded next-viewpoint recovery) and `verification_heavy` (closed loop with a check
-after the grasp). `apply_preset(robot_dict, name)` from `src.robot.grasping.replay` merges one onto a
+`config/grasping_presets/` holds `easy` (a single pick at the least risk) and `dense_clutter` (bin
+picking with a bounded rescan recovery). `verification_heavy` set the `closed_loop` mode; it was
+deleted on 2026-09-29 with that mode, whose two-scan refinement was the only path that ran the check
+after the grasp. `apply_preset(robot_dict, name)` from `src.robot.grasping.replay` merges one onto a
 robot section as a plain dict without validation; `validate_preset` in its `presets` module checks
-that the merge validates.
+that the merge validates, and refuses a preset that names a removed mode, a removed recovery action
+(`next_viewpoint`, merged into `rescan` on 2026-09-29) or a removed block (`verification`,
+`dense_recovery`).
 
 ## What it refuses
 
 | Refusal | When | What to do |
 | --- | --- | --- |
 | an unknown key | a key the schema does not have | the message names the file, the line, the layer and the nearest key |
+| a key, a grasp mode or a recovery action removed on purpose | a key in `REMOVED_KEYS` (the `verification` and `dense_recovery` blocks among them), `closed_loop` / `dense_autonomous` (`REMOVED_GRASP_MODES`), or `next_viewpoint` in `recovery.allowed_actions` or `recovery.per_action_budget` (`REMOVED_RECOVERY_ACTIONS`, all in `schema/_removed.py`) | the message says `removed on purpose` and what to write instead; a preset's validation and `explain` say the same sentence |
 | an unknown layer | a chain names a layer no `*.<layer>.yaml` carries | fix the name; it is checked per layer |
 | an unset variable | `${VAR}` with no default and no such environment variable | set it, or give a default |
 | a hand or camera the registry does not hold | `robot.gripper.model`, or a rig body, names no registry file | name one the registry holds |
@@ -171,4 +175,4 @@ controller addresses are refused while anything is connected.
   [real_cell_first_pick.md](../../docs/runbooks/real_cell_first_pick.md) and [cell_bringup.md](../../docs/runbooks/cell_bringup.md);
   measuring extrinsics: [calibration-setup.md](../../docs/calibration-setup.md)
 - The KPI gate `kpi_thresholds.yaml` feeds is a synthetic contract self-check, not a grasp quality measure
-- Tests: `tests/test_config_tree.py`, `tests/test_config_tree_with_values.py`, `tests/test_config_cli.py`, `tests/test_config_explain.py`, `tests/test_config_edit.py`
+- Tests: `tests/test_config_tree.py`, `tests/test_config_tree_with_values.py`, `tests/test_config_cli.py`, `tests/test_config_explain.py`, `tests/test_config_edit.py`, and `tests/test_a_removed_key_is_answered_wherever_it_is_asked.py` for every `REMOVED_KEYS` entry through `explain` and a preset

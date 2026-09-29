@@ -41,7 +41,7 @@ planned move to the standoff, one line down to the grasp, and line lifts. An arm
 refused before the jaws open. An arm that does not say drives the interpolated waypoints.
 `PolicyReport.line_motion` carries the reading. The jaws open before the approach, close at the grasp,
 and the close is verified before the lift. A hand that toggles with no sensor (`core.gripper.TogglesWithoutSensor`)
-is never pulsed before the approach: it is asked whether its jaws stand open, and asks a person where it
+is never switched before the approach: it is asked whether its jaws stand open, and asks a person where it
 believes them closed; at the grasp it gets one close, and nothing verifies it.
 
 | `PolicyOutcome` | Means | Moved |
@@ -112,8 +112,9 @@ different answers.
 ## Traps
 
 - The swept validator ships off and mode-scoped: `robot.grasping.approach_validation` has
-  `enabled: false` and `apply_modes` of only the dense modes, so switching it on in another mode is
-  inert. Its defaults are an 80 mm standoff, a 100 mm lift, 6 approach and 4 lift samples.
+  `enabled: false` and `apply_modes` of only the dense mode, `dense_clutter`, so switching it on in
+  another mode is inert. Its defaults are an 80 mm standoff, a 100 mm lift, 6 approach and 4 lift
+  samples.
 - The policy lifts along +Z of the grasp's own frame, and the validator's `retreat_direction` defaults
   to +Z too. Both are a vertical lift only for a BASE grasp.
 - `approach_clearance_mm` in [`scoring/`](../scoring/README.md) looks at one waypoint and is telemetry,
@@ -135,7 +136,7 @@ different answers.
 | --- | --- |
 | `grasp_motion.py` | `GraspMotion`, `build_execution_policy`, `foreign_policy_refusal` |
 | `execution_policy.py` | `GraspExecutionPolicy`, `PolicyOutcome`, `PolicyReport` |
-| `frame_resolver.py` | `FrameResolver`, the three resolvers, `FrameResolutionFailure` and `resolve_or_none` |
+| `frame_resolver.py` | `FrameResolver` and the three resolvers |
 | `trajectory_safety.py` | `ApproachPathPolicy`, `ApproachPathOutcome`, `ApproachPathReport` and the sweep functions |
 
 ## Details

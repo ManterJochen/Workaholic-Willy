@@ -34,8 +34,8 @@ logger = create_grasping_logger("RankingBlend", RANKING_BLEND_LOG_FILE)
 # * The blend is convex only: ``final = (1 - w) * geometric + w * predicted_p``.
 # * The weight ``w`` is clamped to ``[0.0, 0.5]``, so the geometric score keeps
 #   at least 50 % of the influence and a miscalibrated model cannot dominate.
-# * The mode filter is locked to ``{"dense_clutter", "dense_autonomous"}``. The
-#   easy, auto and closed-loop modes never take part in blend reranking.
+# * The mode filter is locked to ``{"dense_clutter"}``. The easy and auto modes
+#   never take part in blend reranking.
 # * The lifecycle gate makes ``"shadow"`` a hard no-op. Only ``"canary"`` and
 #   ``"active"`` may rerank, and promotion has already gated the artifact load.
 # * ``GraspPoint.score`` is never mutated per candidate. Only the ``metadata``
@@ -53,7 +53,7 @@ class RankingBlendConfig:
 
     enabled: bool = False
     weight: float = 0.20
-    modes: tuple[str, ...] = ("dense_clutter", "dense_autonomous")
+    modes: tuple[str, ...] = ("dense_clutter",)
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):

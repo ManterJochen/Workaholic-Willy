@@ -167,7 +167,7 @@ class RL3SubstrateTests(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("WILLY_RL3_SUBSTRATE", None)
-            out = _apply_rl3_substrate(self._specs(), 0, RunnerEnv.from_env(vision=False, view_height_mm=0.0))
+            out = _apply_rl3_substrate(self._specs(), 0, RunnerEnv.from_env(vision=False))
         self.assertEqual(len(out), 2)
         self.assertEqual(tuple(out[0].size_mm), (30.0, 30.0, 50.0))  # untouched
 
@@ -178,7 +178,7 @@ class RL3SubstrateTests(unittest.TestCase):
         from src.willy_sim.harness.env import RunnerEnv
 
         with mock.patch.dict(os.environ, {"WILLY_RL3_SUBSTRATE": "unreachable"}):
-            out = _apply_rl3_substrate(self._specs(), 0, RunnerEnv.from_env(vision=False, view_height_mm=0.0))
+            out = _apply_rl3_substrate(self._specs(), 0, RunnerEnv.from_env(vision=False))
         self.assertGreater(out[0].size_mm[0], 85.0)  # too wide for the 85mm gripper -> NO_CANDIDATES
         self.assertEqual(len(out), 2)                # no occluder for unreachable-only
 
@@ -189,7 +189,7 @@ class RL3SubstrateTests(unittest.TestCase):
         from src.willy_sim.harness.env import RunnerEnv
 
         with mock.patch.dict(os.environ, {"WILLY_RL3_SUBSTRATE": "occlusion"}):
-            out = _apply_rl3_substrate(self._specs(), 0, RunnerEnv.from_env(vision=False, view_height_mm=0.0))
+            out = _apply_rl3_substrate(self._specs(), 0, RunnerEnv.from_env(vision=False))
         self.assertEqual(len(out), 3)
         self.assertEqual(out[-1].name, "occluder")
         self.assertGreater(out[-1].position_mm[2], out[0].position_mm[2])  # between camera + target
@@ -201,7 +201,7 @@ class RL3SubstrateTests(unittest.TestCase):
         from src.willy_sim.harness.env import RunnerEnv
 
         with mock.patch.dict(os.environ, {"WILLY_RL3_SUBSTRATE": "both"}):
-            out = _apply_rl3_substrate(self._specs(), 0, RunnerEnv.from_env(vision=False, view_height_mm=0.0))
+            out = _apply_rl3_substrate(self._specs(), 0, RunnerEnv.from_env(vision=False))
         self.assertGreater(out[0].size_mm[0], 85.0)
         self.assertEqual(out[-1].name, "occluder")
 
@@ -473,7 +473,7 @@ class S1ColliderAuthoringSpecTests(unittest.TestCase):
         self.assertIsNone(SimObjectConfig(name="cube").usd_collision_approximation)
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("WILLY_YCB_SCENE", None)
-            for spec in _ycb_specs(False, RunnerEnv.from_env(vision=False, view_height_mm=0.0)):
+            for spec in _ycb_specs(False, RunnerEnv.from_env(vision=False)):
                 self.assertIsNone(spec.usd_collision_approximation)  # demo scene authors nothing
                 self.assertIn("Axis_Aligned_Physics", spec.usd_asset_path or "")
 
@@ -514,7 +514,7 @@ class S1ColliderAuthoringSpecTests(unittest.TestCase):
         from src.willy_sim.harness.env import RunnerEnv
 
         with mock.patch.dict(os.environ, {"WILLY_YCB_SCENE": "pudding"}):
-            specs = _ycb_specs(False, RunnerEnv.from_env(vision=False, view_height_mm=0.0))
+            specs = _ycb_specs(False, RunnerEnv.from_env(vision=False))
         self.assertEqual(len(specs), 1)
         self.assertEqual(specs[0].name, "pudding box")
         self.assertEqual(specs[0].usd_collision_approximation, "convexHull")

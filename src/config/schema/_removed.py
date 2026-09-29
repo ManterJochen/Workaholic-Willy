@@ -4,14 +4,46 @@ A tree that still writes one of these keys is refused at load by ``extra='forbid
 the file, the line and the layer (``loader._describe_validation_error``). This table adds the
 sentence that sends the reader to what replaced the key. Only keys removed on purpose belong here;
 a typo gets the nearest-key suggestion instead. A ``*`` segment in a key stands for one map key,
-such as a camera id.
+such as a camera id. :func:`removed_key_sentence` is the one lookup: the loader's message, a preset's
+validation (``src.robot.grasping.replay.presets``) and ``python -m src.config explain`` all ask it.
+
+A grasp mode is a value, not a key, so ``extra='forbid'`` never sees one that left.
+:data:`REMOVED_GRASP_MODES` holds those, each with the sentence that names the mode to use
+instead: the schema refuses a tree or a preset that still names one (``default_mode`` and every
+mode list under ``robot.grasping``), and ``resolve_grasp_mode`` refuses a caller that passes one.
+A recovery action is a value too: :data:`REMOVED_RECOVERY_ACTIONS` holds the one that left, with the
+sentence that names the action to use instead, and the schema refuses a ``recovery.allowed_actions`` or
+a ``recovery.per_action_budget`` that still names it.
 """
 
 from __future__ import annotations
 
 from typing import Final
 
-__all__ = ["REMOVED_KEYS"]
+__all__ = ["REMOVED_GRASP_MODES", "REMOVED_KEYS", "REMOVED_RECOVERY_ACTIONS", "removed_key_sentence"]
+
+#: Said for each key of the multi-view voxel grid, which left with the commit gate that read it.
+_VOXEL_GRID_REMOVED: Final[str] = (
+    "the multi-view voxel grid this key configured was removed on 2026-09-28 with the commit gate "
+    "that read it, because what it held never reached a grasp, a decision or a measured result, so "
+    "delete this key (cameras are fused by robot.grasping.fusion.enabled with fusion.geometry)."
+)
+
+#: Said for the post-grasp verification block and for each key it held.
+_VERIFICATION_REMOVED: Final[str] = (
+    "the post-grasp verification stage this block configured was removed on 2026-09-29, because no "
+    "pick path ran it once the two-scan refinement left and the gripper's own hold evidence already "
+    "decides every close (the execution policy reads is_object_detected and hold_evidence right after "
+    "it, which on a Robotiq is its gOBJ register), so delete this block."
+)
+
+#: Said for the dense-recovery block and for each key it held.
+_DENSE_RECOVERY_REMOVED: Final[str] = (
+    "the dense-recovery block was removed on 2026-09-29 because the recovery policy and strategy it "
+    "built were stored on the service and consulted by no pick, so delete this block and configure "
+    "recovery under robot.grasping.recovery (enabled, allowed_actions, fixture), the recovery loop a "
+    "pick actually runs."
+)
 
 #: The dotted key as the whole tree names it, to the sentence that replaces it.
 REMOVED_KEYS: Final[dict[str, str]] = {
@@ -66,5 +98,113 @@ REMOVED_KEYS: Final[dict[str, str]] = {
     "robot.grasping.fusion.cameras.*.extrinsics_artifact_path": (
         "the artifact is declared on the rig, camera.cameras.rigs[<id>].extrinsics.artifact_path. "
         "Move it there; an entry in fusion.cameras keeps enabled only."
+    ),
+    "robot.grasping.fusion.max_views": _VOXEL_GRID_REMOVED,
+    "robot.grasping.fusion.max_view_age_s": _VOXEL_GRID_REMOVED,
+    "robot.grasping.fusion.voxel_size_mm": _VOXEL_GRID_REMOVED,
+    "robot.grasping.fusion.roi_extent_mm": _VOXEL_GRID_REMOVED,
+    "robot.grasping.fusion.max_voxels": _VOXEL_GRID_REMOVED,
+    "robot.grasping.fusion.depth_min_mm": _VOXEL_GRID_REMOVED,
+    "robot.grasping.fusion.depth_max_mm": _VOXEL_GRID_REMOVED,
+    "robot.grasping.fusion.intrinsics_atol": _VOXEL_GRID_REMOVED,
+    "robot.grasping.fusion.commit_policy": (
+        "the multi-view commit gate was removed on 2026-09-28 with the voxel grid it read, because "
+        "that grid never reached a grasp, a decision or a measured result and no gate replaces it, "
+        "so delete this block."
+    ),
+    "robot.grasping.fusion.active_perception_use_fusion": (
+        "the viewpoint planner this key gated had nothing to serve once the commit gate left on "
+        "2026-09-28, and the planners were removed on 2026-09-29, so delete this key (a second "
+        "view comes from a second camera, fused by robot.grasping.fusion.enabled with "
+        "fusion.geometry)."
+    ),
+    "robot.grasping.decision.max_reobservations": (
+        "the decision gate no longer moves the camera to look again (MOVE_CAMERA was removed on "
+        "2026-09-29 with the viewpoint planners it needed), so there is no re-observation to "
+        "budget: delete this key; the gate decides once per pick, on one frame."
+    ),
+    "robot.grasping.closed_loop": (
+        "the two-scan pre-grasp refinement this block configured was removed on 2026-09-29 with "
+        "the closed_loop and dense_autonomous modes that ran it, because no shipped config switched "
+        "it on and it never ran on a physical arm, so delete this block (a pick grasps what it "
+        "perceived; another view comes from a look pose or a second camera)."
+    ),
+    "robot.grasping.verification.post_lift_vision_check": (
+        "the post-lift vision check was removed on 2026-09-29 with the two-scan refinement whose "
+        "target identity it compared against, so delete this key (the execution policy's own "
+        "post-close hold check still reads the gripper)."
+    ),
+    "robot.grasping.verification.vision_displacement_iou_max": (
+        "the threshold of the post-lift vision check, which was removed on 2026-09-29 with the "
+        "two-scan refinement whose target identity it compared against, so delete this key (the "
+        "execution policy's own post-close hold check still reads the gripper)."
+    ),
+    "robot.grasping.verification": _VERIFICATION_REMOVED,
+    "robot.grasping.verification.enabled": _VERIFICATION_REMOVED,
+    "robot.grasping.verification.require_object_detected": _VERIFICATION_REMOVED,
+    "robot.grasping.verification.width_delta_min_mm": _VERIFICATION_REMOVED,
+    "robot.grasping.verification.width_delta_max_mm": _VERIFICATION_REMOVED,
+    "robot.grasping.verification.fail_closed": _VERIFICATION_REMOVED,
+    "robot.grasping.verification.require_all_conclusive": _VERIFICATION_REMOVED,
+    "robot.grasping.dense_recovery": _DENSE_RECOVERY_REMOVED,
+    "robot.grasping.dense_recovery.enabled": _DENSE_RECOVERY_REMOVED,
+    "robot.grasping.dense_recovery.max_recovery_actions": _DENSE_RECOVERY_REMOVED,
+    "robot.grasping.dense_recovery.strategy": _DENSE_RECOVERY_REMOVED,
+    "robot.grasping.dense_recovery.allowed_actions": _DENSE_RECOVERY_REMOVED,
+}
+
+
+def removed_key_sentence(dotted: str) -> str | None:
+    """The sentence for ``dotted`` when it, or a block that held it, was removed on purpose.
+
+    ``dotted`` is the key as the whole tree names it, ``robot.grasping.closed_loop.enabled`` say, and
+    a key inside a removed block answers with the block's sentence. A ``*`` segment in a table key
+    matches any one segment. ``None`` for every other key, which then gets the nearest-key suggestion.
+    """
+    parts = dotted.split(".")
+    for end in range(len(parts), 0, -1):
+        held = parts[:end]
+        exact = REMOVED_KEYS.get(".".join(held))
+        if exact is not None:
+            return exact
+        for key, text in REMOVED_KEYS.items():
+            segments = key.split(".")
+            if ("*" in segments and len(segments) == len(held)
+                    and all(k in ("*", p) for k, p in zip(segments, held))):
+                return text
+    return None
+
+
+#: Said for ``closed_loop`` and for the alias it answered to.
+_CLOSED_LOOP_MODE_REMOVED: Final[str] = (
+    "the closed_loop grasp mode was removed on 2026-09-29 with the two-scan pre-grasp refinement it "
+    "ran, which no shipped config switched on and no physical arm ever ran, so name auto instead: "
+    "the same sampler, grasping what it perceived without the second look."
+)
+
+#: Said for ``dense_autonomous`` and for the alias it answered to.
+_DENSE_AUTONOMOUS_MODE_REMOVED: Final[str] = (
+    "the dense_autonomous grasp mode was removed on 2026-09-29 with the two-scan pre-grasp "
+    "refinement it ran, which no shipped config switched on and no physical arm ever ran, so name "
+    "dense_clutter instead: the same dense sampler, which now also allows the nudge_target recovery "
+    "that only dense_autonomous allowed."
+)
+
+#: A grasp mode that left the runtime, by every spelling it was accepted in, to the sentence that
+#: names the mode to use instead.
+REMOVED_GRASP_MODES: Final[dict[str, str]] = {
+    "closed_loop": _CLOSED_LOOP_MODE_REMOVED,
+    "closedloop": _CLOSED_LOOP_MODE_REMOVED,
+    "dense_autonomous": _DENSE_AUTONOMOUS_MODE_REMOVED,
+    "autonomous": _DENSE_AUTONOMOUS_MODE_REMOVED,
+}
+
+#: A recovery action that left the runtime, to the sentence that names the action to use instead. The
+#: string stays readable in a record logged before it left (the replay layer and the RL token map keep
+#: it); only a config or a preset that asks for it again is refused.
+REMOVED_RECOVERY_ACTIONS: Final[dict[str, str]] = {
+    "next_viewpoint": (
+        "use rescan, which it was merged into on 2026-09-29: with the viewpoint planners gone nothing "
+        "moved the camera for it, so it re-perceived from where the camera stood exactly as rescan does."
     ),
 }

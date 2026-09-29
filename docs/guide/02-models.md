@@ -158,10 +158,11 @@ simulator's interpreter can fail certificate verification where the project envi
 `truststore` fixes that, is pinned in both requirements files, and the script reports which trust
 store it used.
 
-**The `sim` profile changes the detector and segmenter numerics, not their weights.** Its model
-overlays inherit the base paths. They load fp32 weights with fp16 autocast (section 6), because the
-production `torch_dtype: auto` misses a small overhead cube that the unset path finds, and they lower
-the detector threshold. For the rest of this guide, set it:
+**The `sim` profile changes the detector threshold, not the weights.** Its model overlays inherit
+the base paths and lower the detector threshold. They also reset `torch_dtype` to unset, fp32 weights
+with fp16 autocast (section 6), because `auto` misses a small overhead cube that the unset path
+finds. Since 2026-09-29 the base files leave it unset as well, so the reset only guards that path. For
+the rest of this guide, set it:
 
 ```powershell
 $env:WILLY_PROFILE = "sim"
@@ -309,19 +310,20 @@ On CUDA that gives three different behaviours:
 
 | YAML value | Weights | Autocast compute |
 |---|---|---|
-| unset (`"__null__"` in the `sim` overlay) | fp32, read from the checkpoint | the CUDA autocast default, fp16 |
-| `auto` (the base value) | fp16 | fp16 |
+| unset (GroundingDINO and SAM2 in the base files, `"__null__"` in the `sim` overlay) | fp32, read from the checkpoint | the CUDA autocast default, fp16 |
+| `auto` (RT-DETR, OneFormer and speech in the base files) | fp16 | fp16 |
 | `"float32"` | fp32 | `autocast(dtype=torch.float32)`, so autocast is effectively off |
 
 **This is the paragraph to remember.** "The detector must run fp32" is true about the weights and
 incomplete as an instruction. Writing `torch_dtype: "float32"`, the obvious way to say it, also turns
-off the fp16 autocast. The simulator overlays choose fp32 weights with fp16-autocast compute, and the
-only way to express that is to leave `torch_dtype` unset. A plain YAML `null` in an overlay keeps the
-base's `auto` (01 section 3), so the reset sentinel `"__null__"` is the only way back. Before a vision
-run, confirm that the chain ends at `"__null__"`, not `auto`:
+off the fp16 autocast. GroundingDINO and SAM2 run fp32 weights with fp16-autocast compute, in the base
+files since 2026-09-29 and in the simulator overlays before that, and the only way to express that is
+to leave `torch_dtype` unset. A plain YAML `null` in an overlay keeps the base's value (01 section 3),
+so the reset sentinel `"__null__"` is the only way an overlay gets back to unset. Before a vision run,
+confirm that the chain ends unset, not at `auto`:
 
 ```bash
-python -m src.config explain models.objectdetector.optim.torch_dtype --profile sim
+python -m src.config explain models.objectdetector.optim.torch_dtype
 ```
 
 fp16 costs recall on small objects, and `build_load_kwargs` logs a warning whenever it resolves to
@@ -446,9 +448,9 @@ Two preconditions the runners handle, and that any source you write must reprodu
   code. Read the clipping range back off the camera before you believe a value you wrote.
 
 What happens after the mask is [04-robot-and-safety.md](04-robot-and-safety.md) and
-[05-pick-loop.md](05-pick-loop.md). The default pick is open-loop: the decision gate, the closed-loop
-refine, verify and recover path, fusion with its commit gate, the rerank stage, the learned success
-model and the reinforcement-learning layer are all built and default to `enabled: false`, and the
+[05-pick-loop.md](05-pick-loop.md). The default pick is open-loop: the decision gate, the recover
+path, multi-camera fusion, the rerank stage, the learned success model and the
+reinforcement-learning layer are all built and default to `enabled: false`, and the
 simulator runners turn them on per flag in runner code.
 
 **Training your own closed-set detector.**

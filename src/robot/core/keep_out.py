@@ -10,6 +10,9 @@ The box is fitted by the world, with the plane, limits, clustering, margin and f
 (``safety.planning.perceived.target_keep_out_box``), so a target leaves exactly the space it would have filled. The
 offer carries the target's points in BASE and never a box of its own making.
 
+Beside the offer, the other thing a pick holds in that world for as long as it runs: the frames its wrist camera took
+at every pose of the pick (``holding_views``), so what one look saw stays in the world for the motions after it.
+
 Value types only, with no import above ``robot.core``: the pick loop, the locator and the safety layer all read them.
 """
 
@@ -25,7 +28,9 @@ import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
 
-__all__ = ["GoalKeepOut", "KeepOutBox", "KeepOutScope", "KeepOutSummary", "SegmentationOffer", "keeping_out"]
+__all__ = [
+    "GoalKeepOut", "KeepOutBox", "KeepOutScope", "KeepOutSummary", "SegmentationOffer", "holding_views", "keeping_out",
+]
 
 
 def _finite(value: object) -> bool:
@@ -229,6 +234,38 @@ def _keeping_out(arm: object, offer: SegmentationOffer) -> Iterator[KeepOutScope
         yield KeepOutScope(world_wired=True, offer=offer)
     finally:
         world.forget_segmentation()
+
+
+def holding_views(arm: object) -> AbstractContextManager[bool]:
+    """Keep every wrist frame ``arm``'s live planner world takes inside the block, and let them go after.
+
+    A pick on a wrist camera looks from several poses, and every motion of the pick is planned against all of what
+    those looks saw rather than only against the frame taken where the arm stands. The world holds each frame placed by
+    the tool pose it was stamped with, and takes the robot out of it where the robot stood then and where it stands now
+    (``LivePlannerWorld.hold_pick_views``). The frames go when the block ends, also when its body raises, because the
+    next pick starts from a cell this one changed. The block yields whether the world holds them.
+
+    It does not nest: a second block started inside the first starts the hold again and ends it on its own exit. An arm
+    with no live world, or with one that cannot hold a pick's frames, opens an empty scope that yields `False`, and so
+    does a world with no camera on the wrist, which has no frame to hold: a fixed camera's newest frame supersedes the
+    one before. Beside :func:`keeping_out`, which holds the target out of that same world for the same pick.
+    """
+    return _holding_views(arm)
+
+
+@contextmanager
+def _holding_views(arm: object) -> Iterator[bool]:
+    world = getattr(arm, "live_planner_world", None)
+    hold, forget = getattr(world, "hold_pick_views", None), getattr(world, "forget_pick_views", None)
+    if not callable(hold) or not callable(forget):
+        yield False
+        return
+    # The world answers whether it has a wrist frame to hold.
+    holding = bool(hold())
+    try:
+        yield holding
+    finally:
+        forget()
 
 
 @dataclass(frozen=True, slots=True)

@@ -82,10 +82,11 @@ class NullGripper:
         """``True`` on every NullGripper, substituted or configured: there are no jaws.
 
         The flag a caller that must not treat this object's width as evidence reads, and it is a
-        flag rather than a class check on purpose: the one consumer that has to know
-        (:class:`~src.robot.grasping.closed_loop.verification.WidthDeltaGripperVerifier`) sits
-        several layers above the gripper package and must not import down into it. Any future no-op
-        end-effector opts in by growing the same attribute.
+        flag rather than a class check on purpose: the consumers that have to know (the hand verbs
+        in ``src/robot/execution/handling.py``, which refuse before anything moves) sit several
+        layers above the gripper package and must not import down into it. Any future no-op
+        end-effector opts in by growing the same attribute. The width-delta grasp verifier that
+        also refused it left on 2026-09-29 with the post-grasp verification stage.
 
         Distinct from :attr:`substitution`, which answers a different question. ``substitution``
         says whether a real gripper was asked for and could not be built; this says whether anything
@@ -129,10 +130,12 @@ class NullGripper:
         ``robot.yaml`` widths. Do not "repair" that into echoing the commanded width. The close this
         stack commands is the object's predicted cross-section minus a millimetre, so an echo reads
         as a plausible held part, varies with the scene, and is a more convincing lie than the
-        constant. The refusal lives where a width becomes a verdict instead:
-        :class:`~src.robot.grasping.closed_loop.verification.WidthDeltaGripperVerifier`
-        rejects any gripper answering :attr:`holds_nothing`, and names the two cases apart by
-        whether a :class:`GripperSubstitution` is attached. Its docstring carries the reasoning.
+        constant. Nothing turns this width into a verdict: the grasp verifier that refused any
+        gripper answering :attr:`holds_nothing` left on 2026-09-29 with the post-grasp
+        verification stage, and the execution policy reads a close's hold from
+        ``is_object_detected`` and ``hold_evidence``, which this object does not claim, so a close
+        on it is reported unmeasured rather than held. The hand verbs refuse it by name
+        (``src/robot/execution/handling.py``).
         """
 
         return self._max

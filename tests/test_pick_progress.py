@@ -262,8 +262,8 @@ class CancellationTests(unittest.TestCase):
         from src.robot.grasping.types.feedback import GraspFailureReason
 
         stop = {"now": False}
-        # RESCAN_RECOMMENDED, not "no reasons": `_decide_action(())` returns "exhausted", so a
-        # reasonless failure ends the pick on attempt 0 and there is no second attempt to cancel.
+        # RESCAN_RECOMMENDED, not "no reasons": a reasonless failure routes to "exhausted", so it
+        # ends the pick on attempt 0 and there is no second attempt to cancel.
         calculator = _Calculator(succeed=False, reasons=(GraspFailureReason.RESCAN_RECOMMENDED,))
 
         def _should_cancel() -> bool:

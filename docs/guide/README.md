@@ -66,13 +66,13 @@ passed after the subcommand.
 Two facts the guides repeat, because believing otherwise costs a day.
 
 **The default pick is open-loop.** Perceive, generate and score candidates on a deterministic
-geometric rank, run the safety preflight and IK, move and close, log. The decision gate, closed-loop
-refinement, post-grasp verification, multi-view fusion, feasibility and occlusion scoring, clutter
-ordering, the learned success model and the reinforcement-learning layer are all built and all
-default to off. Check any claim of that shape against the tree rather than against a document:
+geometric rank, run the safety preflight and IK, move and close, log. The decision gate, recovery,
+multi-view fusion, feasibility and occlusion scoring, clutter ordering, the learned success model and
+the reinforcement-learning layer are all built and all default to off. Check any claim of that shape
+against the tree rather than against a document:
 
 ```bash
-python -c "from willy import load_tree; g = load_tree().robot.grasping; print({n: getattr(g, n).enabled for n in ('fusion', 'decision', 'closed_loop', 'verification', 'recovery', 'success_model')})"
+python -c "from willy import load_tree; g = load_tree().robot.grasping; print({n: getattr(g, n).enabled for n in ('fusion', 'decision', 'recovery', 'success_model')})"
 ```
 
 **There are two composition paths, and the simulator mostly does not use the real one.**

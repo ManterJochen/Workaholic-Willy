@@ -3,10 +3,17 @@
 This module is replay-only: plan generation and plan validation never
 touch the runtime. Adaptation plans are JSON artefacts derived from a
 baseline KPI/SLO report (`docs/baselines/u_plus_baseline_v1.json` or
-equivalent) and an optional failure-taxonomy report. The change set is
-deterministic, because strategies use no clock, no RNG and no I/O,
-while ``plan_id`` and ``created_at_ns`` vary per run unless the caller
-pins ``now_ns``.
+equivalent) and an optional failure-taxonomy report, the JSON
+``--failure-taxonomy`` writes, whose ``counts_by_cause`` the taxonomy
+rules read. The change set is deterministic, because strategies use no
+clock, no RNG and no I/O, while ``plan_id`` and ``created_at_ns`` vary
+per run unless the caller pins ``now_ns``.
+
+A plan is a proposal and nothing applies one on its own:
+``--adaptation-plan`` prints it to stdout and writes no file. Only an
+operator's explicit ``--adaptation-apply PLAN_JSON``, of a plan composed
+in mode ``apply_with_guardrails`` that passes :func:`validate_plan`,
+writes an overlay.
 
 Apply-mode writes a YAML overlay sidecar plus an append-only JSONL
 audit entry under ``logs/adaptation/adaptation_audit.jsonl``. The
@@ -361,15 +368,20 @@ class RuleBasedStrategy:
         )
 
     def _taxonomy_count(self, taxonomy: Mapping[str, Any] | None, cause: str) -> int:
+        """Failures the report files under ``cause``: ``counts_by_cause.<cause>``, the shape
+        :meth:`TaxonomyReport.to_dict` writes (``--failure-taxonomy``).
+
+        Until 2026-09-29 this read ``per_root_cause.<cause>.count``, a shape no producer ever
+        wrote, so every taxonomy rule read zero on a real report and never fired. That shape is not
+        read any more: nothing on disk carries it, only test dicts once made by hand to match.
+        """
+
         if not taxonomy:
             return 0
-        per_cause = taxonomy.get("per_root_cause")
-        if not isinstance(per_cause, Mapping):
+        counts = taxonomy.get("counts_by_cause")
+        if not isinstance(counts, Mapping):
             return 0
-        entry = per_cause.get(cause)
-        if not isinstance(entry, Mapping):
-            return 0
-        count = entry.get("count")
+        count = counts.get(cause)
         return int(count) if isinstance(count, (int, float)) else 0
 
     def _rule_occlusion_misread(
@@ -400,8 +412,8 @@ class RuleBasedStrategy:
                 proposed_value=proposed,
                 rationale=(
                     "occlusion_misread count >= 5 in failure taxonomy; "
-                    "lower recovery_aggressive_threshold to trigger "
-                    "reobserve sooner."
+                    "lower recovery_aggressive_threshold so recovery "
+                    "puts a rescan first sooner."
                 ),
                 source=self.name,
             ),

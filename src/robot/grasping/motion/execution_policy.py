@@ -30,7 +30,7 @@ included.
 A hand that toggles with no sensor
 ----------------------------------
 A :class:`TogglesWithoutSensor` hand (a ``jaw_io`` single_toggle) is never
-pulsed before the arm moves: the pre-open is skipped whatever
+switched before the arm moves: the pre-open is skipped whatever
 ``pre_open_width_mm`` says, and the hand is asked instead whether its jaws
 stand open (``jaws_open_for_a_pick``), which asks a person where it believes
 them closed. A pick nobody can vouch for ends as

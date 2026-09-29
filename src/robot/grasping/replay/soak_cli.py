@@ -130,7 +130,7 @@ def _sim_soak_report_mode(
     ``pick_success_rate`` is reported but not gated: ``baseline_pick_rate=None``, so there is no
     cross-population comparison against the synthetic baseline, which is a different distribution. The
     record-intrinsic integrity keys (min_attempts/untyped/unbounded/telemetry/extra/dead_loop) gate.
-    ``false_positive_grasp_rate`` is shown but structurally 0 (no secondary verifier in sim). Pack-dependent
+    ``false_positive_grasp_rate`` is shown but structurally 0 (no secondary verifier exists). Pack-dependent
     keys are not_applicable. Exit 0 iff no violations.
     """
     verdict = SoakGate.over_sim_records(
@@ -156,7 +156,7 @@ def _sim_soak_report_mode(
             ],
             "does_not_measure": [
                 "real_hardware_grasp_quality",
-                "false_positive_grasp_rate (structurally 0: no secondary verifier in sim)",
+                "false_positive_grasp_rate (structurally 0: no secondary verifier exists)",
             ],
             "note": (
                 "Real Isaac-physics sim picks (not hardware-representative). Gates the record-intrinsic "

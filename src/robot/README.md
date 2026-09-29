@@ -1,8 +1,6 @@
 # The robot: arm, hand, safety and the pick (`src/robot`)
 
-Everything that turns a grasp into motion a cell may perform: the arm and hand drivers behind one
-contract, the safety checks every motion passes, the grasp stack, and the cell that puts them
-together. Your code talks to `Robot` and `Cell` and never imports a vendor SDK, so it does not need
+Your code talks to `Robot` and `Cell` and never imports a vendor SDK, so it does not need
 to know which arm is attached.
 
 ```python
@@ -37,7 +35,7 @@ Every command and its exit codes: [docs/cli.md](../../docs/cli.md).
 | --- | --- | --- |
 | [`execution/`](execution/README.md) | `Robot`, `Cell`, `PickRun`, hand-eye calibration and the real-cell command | `from willy import Robot, Cell, PickRun` |
 | [`safety/`](safety/README.md) | `SafetyPreflight`, the ordered fail-closed guards, and the cuRobo planner binding | `from willy import SafetyPreflight` |
-| [`grasping/`](grasping/README.md) | generating, scoring and choosing grasps, refine, verify, recover, and the attempt record | `Scene`, and the pick service |
+| [`grasping/`](grasping/README.md) | generating, scoring and choosing grasps, the motion and its hold check, recovery, and the attempt record | `Scene`, and the pick service |
 | [`perception/`](perception/README.md) | the live-camera source and the `Locator` of a real cell | `from willy import Locator` |
 | [`drivers/`](drivers/README.md) | the arm registry `create_arm`: `ur`, `kuka`, `sim`, `dummy` | `robot.vendor` in the tree |
 | [`grippers/`](grippers/README.md) | the hand registry: `robotiq`, `onrobot`, `vacuum`, `jaw_io`, `dummy`, `none` | `robot.gripper.vendor` in the tree |
@@ -52,17 +50,20 @@ lazily, so importing it loads no UR driver.
 1. Perceive: a camera frame, and the camera's CAMERA to BASE.
 2. Generate and score: 6-DoF candidates, ranked.
 3. Decide: the AUTO decision gate.
-4. Refine: a bounded second look at the chosen candidate.
-5. Gate: `SafetyPreflight` and IK.
-6. Drive: standoff, approach, grasp, close.
-7. Verify: width change, object detection, or vision.
-8. Recover: rescan, the next viewpoint, a push.
-9. Log: one `GraspAttemptRecord` per attempt, as JSON lines.
+4. Gate: `SafetyPreflight` and IK.
+5. Drive: standoff, approach, grasp, close.
+6. Verify: the execution policy asks the gripper after its close whether it holds something.
+7. Recover: perceive and pick again. A cell built from config never pushes or shakes: the `nudge_target`
+   that `dense_clutter` allows is planned without an offset and refused before the arm moves.
+8. Log: one `GraspAttemptRecord` per attempt, as JSON lines.
 
-Steps 3, 4, 7 and 8 are opt-in and off by default, so the shipped pick is 1, 2, 5, 6 and 9: open-loop.
-Turning a step on is a config change, and a switch that would read as on while doing nothing is
-refused by the schema. The reinforcement-learning layer is off too: trained offline, shadow-only at
-run time, and it can never override a safety rejection. Offline, the logged records feed the KPI
+Steps 3 and 7 are opt-in and off by default, so the shipped pick is 1, 2, 4, 5, 6 and 8: open-loop.
+Turning a step on is a config change. A switch known to read as on while doing nothing is refused by the
+schema (`RobotGraspingConfig.UNWIRED_SWITCHES`, today `occlusion.hard_reject_enabled` alone); every other
+flag is held to reaching a runtime carrier, which is not the same as the pick acting on it
+([the config reference](../../docs/grasping-config-reference.md), sections 2 and 6.1). The
+reinforcement-learning layer is off too: trained offline, shadow-only at run time, and it can never
+override a safety rejection. Offline, the logged records feed the KPI
 roll-up and the training loop, which are never imported back into the live path.
 
 ## Triaging a safety rejection
@@ -77,7 +78,7 @@ it fire.
 | `workspace` | The target pose is outside the configured workspace box. | Check `robot.workspace_limits` and `robot.safety.limits.workspace_margin_mm`, then the camera calibration. |
 | `joint_limit` | The IK solution would drive an axis past its window. | Change the approach angle or prefer another IK seed. Do not widen the limits. |
 | `ik_quality` | IK returned a high-residual or near-singular solution. | Rank toward feasible candidates and require a minimum IK quality. |
-| `self_collision` | A link, the tool or a fixture comes closer than `min_distance_mm`. | Take another approach through the next-viewpoint recovery, or tune the inflation margin. |
+| `self_collision` | A link, the tool or a fixture comes closer than `min_distance_mm`. | Take another approach through a rescan recovery or a look pose that sees the part from elsewhere, or tune the inflation margin. |
 | `payload` | The declared payload is outside the envelope. | Correct the payload estimate. Refuse the pick if the real mass is higher. |
 | `motion_continuity` | Successive targets imply a step larger than the cap. | Rank toward joint-continuous candidates and review trajectory blending. |
 
@@ -90,19 +91,14 @@ run before. Every formula the guards evaluate is in [docs/safety-math.md](../../
 
 | Capability | Evidence |
 | --- | --- |
+| UR-Robot | Measured against UR-Robot |
+| Franka | Currently under development |
+| KUKA | Currently under development |
+| FANUC | Currently under development |
+| ABB | Currently under development |
 | The Isaac Sim driver with a UR5e and a 2F-85, and the pick path on it | measured in simulation |
-| The UR driver over RTDE: connect, power, motion, digital I/O, tool frame, payload, protective stop | measured against real controller software |
-| The KUKA driver over EthernetKRL | never touched hardware |
-| The Robotiq, OnRobot, jaw and suction drivers | never touched hardware; the digital I/O pins were measured switching on a real controller |
-| Motion of a physical arm | never touched hardware |
-
-`franka` and `ros2` are reserved vendor names with no driver, and so are the hands `franka_hand` and
-`schunk`. The KUKA driver writes its payload from config only, does not model arm-against-arm self
-collision, and needs its joint limits in config, or the joint-limit guard reports itself unavailable
-and fails closed. There is no ROS node in this repository.
-
-No module under `src/` imports a web framework or the operator console in [`api/`](../../api/README.md):
-the console depends on the library, never the other way, and a test checks both rules.
+| The Robotiq, OnRobot, jaw and suction drivers | Measured against UR-Robot |
+| Motion of a physical arm | Measured against UR-Robot |
 
 ## Details
 

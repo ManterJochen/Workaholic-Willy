@@ -11,7 +11,7 @@ so a cell that wires none is byte-identical.
 KPI sourcing:
 * ``extra["safety_rejected"]`` is set from the fail-closed outcome family (``decision_fail_closed`` /
   ``uncertainty_fail_closed`` / ``drift_blocked_auto`` / ``ood_blocked_auto`` / ``missing_camera_frame`` /
-  ``unsafe_recovery_refused`` / ``no_commit_insufficient_fusion``), the live "auto/safety refused to
+  ``unsafe_recovery_refused``), the live "auto/safety refused to
   dispatch" signal that fires on a real run. The per-step ``TrajectoryStepReport.safety_rejected``
   predicate is dead in production: its sole caller omits ``safety_check`` entirely, so both validators
   fall back to the no-op ``AcceptAllTrajectorySafetyCheck`` default, and the validator is dense-only
@@ -19,9 +19,10 @@ KPI sourcing:
 * ``extra["verification_failed_after_success"]`` (the ``false_positive_grasp_rate`` source) is left unset
   on purpose. The KPI counts it only on a row whose ``final_outcome == "succeeded"``, meaning an attempt
   that reported success and was later found false by an independent re-verification. The pick path has no
-  such secondary detector, and ``VERIFICATION_FAILED`` is a distinct terminal outcome that never co-occurs
-  with ``SUCCEEDED``, so there is no honest signal to write. The key stays wired: the KPI reads it the
-  moment a false-positive detector (a post-grasp re-check) is added.
+  such secondary detector, and ``VERIFICATION_FAILED`` (the execution policy's own post-close check found
+  the jaws empty) is a distinct terminal outcome that never co-occurs with ``SUCCEEDED``, so there is no
+  honest signal to write. The key stays wired: the KPI reads it the moment a false-positive detector (a
+  post-grasp re-check) is added.
 """
 
 from __future__ import annotations
@@ -35,9 +36,7 @@ from src.robot.grasping.telemetry.outcome_logging import (
     GraspAttemptRecord,
     execution_metadata_from,
     grasp_metadata_from,
-    json_safe,
     profile_metadata_from,
-    refinement_metadata_from,
 )
 
 from .report import AutonomousGraspOutcome
@@ -58,7 +57,6 @@ SAFETY_REJECTED_OUTCOMES: frozenset[AutonomousGraspOutcome] = frozenset(
         AutonomousGraspOutcome.OOD_BLOCKED_AUTO,
         AutonomousGraspOutcome.MISSING_CAMERA_FRAME,
         AutonomousGraspOutcome.UNSAFE_RECOVERY_REFUSED,
-        AutonomousGraspOutcome.NO_COMMIT_INSUFFICIENT_FUSION,
     }
 )
 
@@ -74,21 +72,19 @@ _REASON_TO_EVIDENCE: Mapping[str, str] = {
     "heavy_occlusion": "occlusion_misread_evidence",
     "deformable_routing_required": "deformable_misclass_evidence",
 }
-#: Map the ``GraspVerifier`` verdict reason (verification-failed family) to the evidence flag.
-_VERIFICATION_REASON_TO_EVIDENCE: Mapping[str, str] = {
-    "jaws_collapsed_to_minimum": "empty_air_evidence",
-    "gripper_object_not_detected": "empty_air_evidence",
-    "target_still_visible": "slip_evidence",
-}
+#: The verifier-reason map that stamped ``empty_air_evidence`` and ``slip_evidence`` left on 2026-09-29
+#: with the post-grasp verifiers whose verdicts it read; no pick writes those reasons any more. A
+#: record logged before then keeps the flags it was stamped with, and the failure taxonomy still reads
+#: them.
 
 
 def _stamp_taxonomy_evidence(record_extra: dict[str, Any], report: Any) -> None:
     """Derive the offline failure-taxonomy ``extra.*_evidence`` flags from the runtime's own typed
-    verdicts (the calculator ``GraspFailureReason``s across the attempt history plus the post-grasp
-    ``verification_reason`` already in telemetry). A flag is set only when its typed cause is present on a
-    failed record; absent causes leave the record byte-identical, so the default open-loop pick (no typed
-    failure cause) logs no flag. Collision, occlusion and deformable flags light up under the dense path,
-    slip and empty-air under verification, when their detector fires.
+    verdicts (the calculator ``GraspFailureReason``s across the attempt history). A flag is set only when
+    its typed cause is present on a failed record; absent causes leave the record byte-identical, so the
+    default open-loop pick (no typed failure cause) logs no flag. Collision, occlusion and deformable flags
+    light up under the dense path. Slip and empty-air had their detector in the post-grasp verifiers,
+    which left on 2026-09-29, so no live record is stamped with them.
 
     ``calibration_drift_evidence`` is intentionally not derived: the drift/OOD watchdog is inert by
     default and its ``drift_blocked_auto``/``ood_blocked_auto`` outcomes sit outside the taxonomy gating
@@ -103,84 +99,6 @@ def _stamp_taxonomy_evidence(record_extra: dict[str, Any], report: Any) -> None:
             key = _REASON_TO_EVIDENCE.get(getattr(reason, "value", None) or str(reason))
             if key is not None:
                 record_extra[key] = True
-    # (2) post-grasp verification verdict reason (already stamped into telemetry, so into record_extra).
-    for reason in _verification_reasons(record_extra):
-        vkey = _VERIFICATION_REASON_TO_EVIDENCE.get(reason)
-        if vkey is not None:
-            record_extra[vkey] = True
-
-
-def _verification_reasons(record_extra: "dict[str, Any]") -> "list[str]":
-    """Every reason a verification verdict actually rests on, the composite's children included.
-
-    Measured 2026-09-09: `empty_air_evidence` had never been stamped on a record produced by the
-    shipped wiring. `CompositeGraspVerifier` returns `child_failed:{reason}` and
-    `child_inconclusive:{reason}`, which are its only two non-passing verdicts, and `builders.py`
-    wires the composite whenever verification is on and no verifier was supplied. So an exact lookup
-    on the top-level reason matched nothing, on every record, and a taxonomy counting "the jaws
-    closed on air" counted zero. A zero from a working pipeline reads exactly like a zero from a
-    broken one.
-
-    The children are read as structure rather than parsed out of the string. `service.py` copies the
-    whole verification telemetry into the record, and the composite already lists each child report
-    there with its own `reason`. Splitting the prefix off the wrapped string would work today and
-    would put the composite's private naming convention in a second file; reading the children
-    survives that convention changing, a third prefix appearing, or one composite nesting inside
-    another.
-
-    The top-level reason is still read, because a verifier used without a composite answers with its
-    own reason and that path stays byte-identical.
-    """
-    reasons = [str(record_extra.get("verification_reason", ""))]
-    _collect_child_reasons(record_extra.get("verification_telemetry"), reasons)
-    return reasons
-
-
-def _collect_child_reasons(telemetry: object, into: "list[str]") -> None:
-    """Depth-first over nested composites, because one can hold another.
-
-    Each child entry carries its own `telemetry`, so a composite inside a composite lists its own
-    children one level down. Nothing in the tree does that today; the recursion costs three lines and
-    is the difference between the docstring above being true and being aspirational.
-    """
-    if not isinstance(telemetry, dict):
-        return
-    for child in telemetry.get("children", ()) or ():
-        if not isinstance(child, dict):
-            continue
-        into.append(str(child.get("reason", "")))
-        _collect_child_reasons(child.get("telemetry"), into)
-
-
-def _verification_from_telemetry(
-    record_extra: Mapping[str, Any],
-) -> Optional[dict[str, Any]]:
-    """The verification block, read from the three keys the service actually stamps.
-
-    The lookup this replaces could neither fail nor succeed. The serializer read
-    ``getattr(report, "verification", None)``, and ``AutonomousGraspReport`` has never had a
-    ``verification`` field: not in the dataclass, not in any construction site, not under any other
-    name. So the expression evaluated to ``None`` on every report ever passed here, the block was
-    filled only by the sim ground-truth fallback below, and a real cell that ran a verifier and
-    failed a grasp logged a ``verification_failed`` record with no verification block in it. The
-    telemetry audit then flagged that record as incomplete, which is true and says nothing about why.
-
-    Where the result actually lives: ``AutonomousGraspService._run_verification`` writes
-    ``verification_outcome``, ``verification_reason`` and ``verification_telemetry`` into the executed
-    attempt telemetry bag, and that bag is what ``extra`` is built from a few lines above. The three
-    keys are the whole record of the verifier having run, so they are what this reads. ``None`` when
-    the verifier did not run, which keeps a non-verified attempt byte-identical.
-
-    The shape matches :func:`verification_metadata_from` exactly, because a consumer must not have to
-    know which of the two paths produced the block it is reading.
-    """
-    if "verification_outcome" not in record_extra:
-        return None
-    return {
-        "outcome": json_safe(record_extra.get("verification_outcome")),
-        "reason": str(record_extra.get("verification_reason", "")),
-        "telemetry": json_safe(record_extra.get("verification_telemetry") or {}),
-    }
 
 
 def _camera_world_extras(report: Any) -> dict[str, str]:
@@ -208,6 +126,46 @@ def _camera_world_extras(report: Any) -> dict[str, str]:
         return {}
 
 
+def _look_extras(report: Any) -> dict[str, Any]:
+    """What a pick's looks came to, as record keys, each only where the report says it.
+
+    ``looks_visited`` (the looks the pick perceived from, the report's ``looks`` less a fixed camera's look the arm did
+    not reach), ``looks_fused`` (the look the grasp was ranked on first), ``jaw_faces_seen`` (jaw 1, jaw 2: whether
+    each contact face of the chosen grasp was seen), ``hand_eye_gap_mm`` (the median distance at which the looks
+    measure the part's shared surface), ``generated_view_deg`` (how far the one generated view of a wrist pick turned
+    about the part) and ``both_faces`` (the pick asked for both faces; ``true`` only, on a wrist or a fixed camera):
+    ``looks_visited`` and ``both_faces`` aside, a wrist camera's alone. A fixed camera handed looks (by its program, or
+    by the cell profile's configured looks) moves to them too, and records the ones it reached. Additive and outside the
+    telemetry catalog, so the record of a pick handed no look on a fixed camera is the record it always was. Read in the
+    types the report promises, so a report double that answers every attribute adds nothing. The look a wrist pick did
+    not reach (``refused_look``) and a move back that was refused (``move_back_refused``) come with the telemetry.
+    """
+    extras: dict[str, Any] = {}
+    looks = getattr(report, "looks", ())
+    telemetry = getattr(report, "telemetry", None)
+    said = telemetry if isinstance(telemetry, Mapping) else {}
+    if isinstance(looks, tuple) and said.get("look_refused") and not said.get("refused_look"):
+        # A fixed camera's service loop names the looks it moved to, the one it did not reach last.
+        looks = looks[:-1]
+    if isinstance(looks, tuple) and looks and all(isinstance(look, str) for look in looks):
+        extras["looks_visited"] = list(looks)
+    fused = getattr(report, "looks_fused", ())
+    if isinstance(fused, tuple) and fused and all(isinstance(look, str) for look in fused):
+        extras["looks_fused"] = list(fused)
+    faces = getattr(report, "jaw_faces_seen", None)
+    if isinstance(faces, tuple) and len(faces) == 2 and all(isinstance(seen, bool) for seen in faces):
+        extras["jaw_faces_seen"] = list(faces)
+    gap = getattr(report, "hand_eye_gap_mm", None)
+    if isinstance(gap, (int, float)) and not isinstance(gap, bool):
+        extras["hand_eye_gap_mm"] = float(gap)
+    turn = getattr(report, "generated_view_deg", None)
+    if isinstance(turn, (int, float)) and not isinstance(turn, bool):
+        extras["generated_view_deg"] = float(turn)
+    if getattr(report, "both_faces", False) is True:
+        extras["both_faces"] = True
+    return extras
+
+
 def to_attempt_record(
     report: Any,
     *,
@@ -220,6 +178,10 @@ def to_attempt_record(
     Duck-typed on the report: it reads ``outcome`` / ``mode`` / ``profile`` / ``telemetry``. The report's
     free-form ``telemetry`` bag is carried verbatim into ``extra``, then the ``safety_rejected`` flag is
     stamped on top (see the module docstring for the KPI contract).
+
+    What a pick's looks came to is stamped into ``extra`` beside the telemetry, each key only where the report says
+    it (:func:`_look_extras`: ``looks_visited``, ``looks_fused``, ``jaw_faces_seen``, ``hand_eye_gap_mm``,
+    ``generated_view_deg``, ``both_faces``).
 
     ``extra`` is an optional caller-supplied bag merged on top of the telemetry-derived fields. It is how
     a sim runner stamps ground-truth labels the pipeline cannot self-report (``sim_lift_mm`` /
@@ -237,6 +199,7 @@ def to_attempt_record(
         getattr(getattr(report, "pick_report", None), "calculator_telemetry", None) or {})
     record_extra: dict[str, Any] = dict(getattr(report, "telemetry", {}) or {})
     record_extra["safety_rejected"] = report.outcome in SAFETY_REJECTED_OUTCOMES
+    record_extra.update(_look_extras(report))
     if extra:
         record_extra.update(extra)
     # The camera world the motions stood on, applied after the caller's bag, so a runner cannot
@@ -257,13 +220,13 @@ def to_attempt_record(
     # train_recovery source). Empty () on the non-recovery path, so that path is byte-identical. Not in
     # ``extra``, since it is an existing top-level field, so the frozen extra/catalog policy is untouched.
     recovery_actions = tuple(getattr(report, "recovery_actions", ()) or ())
-    # Populate the execution and verification telemetry blocks the GraspAttemptRecord contract requires
-    # for succeeded/execution_failed/verification_failed outcomes (the soak telemetry audit checks them),
-    # from the report itself. execution is the executed-grasp outcome. The verification block comes from
-    # the telemetry the service stamps, and falls back to the sim ground-truth lift, explicitly
-    # labelled, when the runner stamped it in extra (sim_lifted/sim_lift_mm measured from the object's
-    # world pose, the physical truth, not a hardware verifier). None when neither exists, so the audit
-    # flags an incomplete record.
+    # Populate the execution block the GraspAttemptRecord contract requires for
+    # succeeded/execution_failed/verification_failed outcomes (the soak telemetry audit checks it), from
+    # the report itself: the executed-grasp outcome. The verification block is optional since the
+    # post-grasp verification stage, its one live writer, left on 2026-09-29: it is written only from the
+    # sim ground-truth lift, explicitly labelled, when the runner stamped it in extra (sim_lifted /
+    # sim_lift_mm measured from the object's world pose, the physical truth, not a hardware verifier),
+    # and is None otherwise.
     execution = execution_metadata_from(report)
     # The field that cost the RL layer its action column. `BaselineSARExtractor` projects an action
     # from `selected_grasp`, then `refined_grasp`, then `initial_grasp`, and no writer in this
@@ -279,8 +242,8 @@ def to_attempt_record(
     # every attempt that never reached a grasp.
     selected_grasp = grasp_metadata_from(
         getattr(getattr(report, "pick_report", None), "executed_grasp", None))
-    verification = _verification_from_telemetry(record_extra)
-    if verification is None and "sim_lifted" in record_extra:
+    verification: Optional[dict[str, Any]] = None
+    if "sim_lifted" in record_extra:
         verification = {
             "source": "sim_ground_truth_lift",
             "lifted": bool(record_extra.get("sim_lifted")),
@@ -297,14 +260,9 @@ def to_attempt_record(
         execution=execution,
         selected_grasp=selected_grasp,
         verification=verification,
-        # The other block nobody wrote. The telemetry catalog requires `refinement` for all three
-        # refine-stage outcomes (`refinement_failed`, `target_lost_during_refine`,
-        # `refinement_diverged`), the synthetic soak generator fabricates one so the U12 gate passes,
-        # and no production writer existed: a real refine-stage failure could not produce a complete
-        # record however the cell was configured. The refiner own `RefinementReport` now rides on the
-        # service report and this reads it. `None` when the refiner did not run, which is every
-        # attempt on the default open-loop path.
-        refinement=refinement_metadata_from(getattr(report, "refinement", None)),
+        # `refinement` has no writer since the two-scan refinement left on 2026-09-29, so it stays
+        # `None`; the block stays in the record so a record logged before then still reads, and the
+        # three refine-stage outcomes that required it are known to the catalog by their strings.
         # Kept out of `extra`: it is an existing top-level field, and moving calculator telemetry
         # into the extra bag would change what the frozen extra/catalog policy covers.
         initial_telemetry=initial_telemetry,

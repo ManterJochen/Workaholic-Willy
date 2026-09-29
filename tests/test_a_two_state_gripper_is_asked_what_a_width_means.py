@@ -61,7 +61,14 @@ def _moves(log: _Log) -> list[object]:
 
 
 def _pulses(io: FakeIO) -> int:
-    return sum(1 for _pin, high, _port in io.writes if high)
+    """How often the close pin changed, replayed from low: each change moves a toggle's jaws once, switched on or off
+    (the owner at the pendant, 2026-09-28)."""
+    level, changes = False, 0
+    for pin, value, _port in io.writes:
+        if pin == CLOSE_PIN:
+            changes += value != level
+            level = value
+    return changes
 
 
 class JawIOIsToldWhatAVerbMeansTests(unittest.TestCase):

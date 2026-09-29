@@ -186,10 +186,6 @@ class EffectiveGraspingConfigPerformanceFieldsTests(unittest.TestCase):
         snap = EffectiveGraspingConfig(
             default_mode=GraspMode.AUTO,
             max_attempts=3,
-            closed_loop_enabled=False,
-            verification_enabled=False,
-            dense_recovery_enabled=False,
-            dense_recovery_allowed_actions=(),
             performance=EffectivePerformanceConfig(
                 enabled=True,
                 decision_latency_slo_ms=60.0,
@@ -240,10 +236,6 @@ def _build_perf_effective_config(
     return EffectiveGraspingConfig(
         default_mode=GraspMode.AUTO,
         max_attempts=1,
-        closed_loop_enabled=False,
-        verification_enabled=False,
-        dense_recovery_enabled=False,
-        dense_recovery_allowed_actions=(),
         performance=EffectivePerformanceConfig(
             enabled=enabled,
             decision_latency_slo_ms=60.0,

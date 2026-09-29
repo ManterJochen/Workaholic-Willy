@@ -115,7 +115,7 @@ class EffectiveConfigSnapshotTests(unittest.TestCase):
         self.assertEqual(eff.uncertainty.fail_closed_threshold, 0.4)
         self.assertEqual(
             eff.uncertainty.apply_modes,
-            ("auto", "dense_clutter", "dense_autonomous"),
+            ("auto", "dense_clutter"),
         )
 
     def test_enabled_block_wins_over_legacy(self) -> None:

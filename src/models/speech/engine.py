@@ -71,6 +71,7 @@ _REQUIREMENTS: Final[dict[str, str]] = {
     "scipy": "requirements.txt",
     "numpy": "requirements.txt",
     "sounddevice": "requirements.txt, and it loads the system PortAudio library",
+    "protobuf": "requirements.txt, which transformers asks for when a checkpoint ships no tokenizer.json",
 }
 
 

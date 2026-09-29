@@ -45,7 +45,7 @@ def build_service(
     prompt: str = "a red cube",
     headless: bool = True,
     data_dir: str | None = None,
-    mode: str = "easy",   # "easy" | "auto" | "closed_loop" (see willy_sim/harness/modes.py)
+    mode: str = "easy",   # "easy" | "auto" (see willy_sim/harness/modes.py)
     # Pick-policy tunings: not paths, so they stay as defaults rather than config.
     pre_open_width_mm: float = 80.0,
     close_width_mm: float = 25.0,
@@ -128,15 +128,12 @@ def build_service(
         require_steady_before_motion=(_dwell.require_steady_before_motion if _dwell else False),
         steady_timeout_s=(_dwell.steady_timeout_s if _dwell else 5.0),
     )
-    # One mode knob via willy_sim/harness/modes.py. m2 uses a fixed overhead camera, so the two
-    # closed_loop refine scans share the same view and the image-space IoU tracker can match
-    # (target_match_iou_threshold 0.1). fail_closed=False keeps an inconclusive width verification
-    # from failing an otherwise-good pick.
+    # One mode knob via willy_sim/harness/modes.py.
     grasp_mode = resolve_demo_mode(mode)
     service = AutonomousGraspService.from_components(
         arm=arm, calculator=calculator, perception=perception, gripper=gripper,
         mode=grasp_mode, frame_resolver=resolver, policy=policy, max_attempts=2,
-        **mode_service_kwargs(grasp_mode, refinement_kwargs={"target_match_iou_threshold": 0.1}),
+        **mode_service_kwargs(grasp_mode),
     )
     return service, arm, gripper, handles, cfg, cell
 
@@ -252,9 +249,8 @@ def run_gate(runs: int = 10, *, prompt: str = "a red cube", headless: bool = Tru
              decline_camera_world: str | None = None) -> GateResult:
     """Run ``runs`` real-vision picks (re-place object, park arm, perceive, grasp) and score lift.
 
-    ``mode`` is "easy", "auto" (a real ``DecisionEngine``) or "closed_loop", where the fixed overhead
-    camera lets the two-scan refine IoU-match. closed_loop also prints the per-run refinement
-    telemetry, so a reader can see whether the refine changes the grasp and still holds the gate.
+    ``mode`` is "easy" or "auto" (a real ``DecisionEngine``). "closed_loop", the two-scan refine,
+    was removed on 2026-09-29.
 
     Both instrumentation hooks are opt-in and default-off: ``record_log`` appends one
     ``GraspAttemptRecord`` JSONL line per pick, stamped with the ground-truth ``sim_lift_mm`` and
@@ -265,7 +261,6 @@ def run_gate(runs: int = 10, *, prompt: str = "a red cube", headless: bool = Tru
     ``decline_camera_world`` gives a reason to decline it (see :func:`camera_world_for`). A pick whose
     camera could not vouch for the cell is counted beside the rate rather than ending the gate.
     """
-    cl = str(mode).lower().replace("-", "_") == "closed_loop"
     camera_world, cell_kwargs = camera_world_for(decline_camera_world, cell_kwargs)
     service, arm, gripper, handles, cfg, cell = build_service(
         prompt=prompt, headless=headless, data_dir=data_dir, mode=mode, cell_kwargs=cell_kwargs,
@@ -347,11 +342,6 @@ def run_gate(runs: int = 10, *, prompt: str = "a red cube", headless: bool = Tru
             results.append({"run": i, "succeeded": False, "lift_mm": 0.0, "passed": False,
                             "camera_world": None, "camera_world_raised": True, "motion_status": None})
             continue
-        if cl:
-            tele = getattr(report, "telemetry", None) or {}
-            print(f"  [closed_loop] outcome={getattr(report, 'outcome', None)} "
-                  f"refinement_mode={tele.get('refinement_mode')} "
-                  f"refinement_telemetry={tele.get('refinement_telemetry')}", flush=True)
         lift_mm = lift_mm_since(obj, z0)
         outcome = getattr(report, "outcome", None)
         succeeded = getattr(outcome, "value", outcome) == "succeeded"
@@ -412,9 +402,8 @@ def main() -> None:
     ap.add_argument("--gui", action="store_true")
     ap.add_argument("--no-headless", action="store_true", help="alias for --gui")
     ap.add_argument("--data-dir", type=str, default=None)
-    ap.add_argument("--mode", type=str, default="easy", choices=["easy", "auto", "closed_loop"],
-                    help="P1: grasp mode (easy=trust path; auto=real DecisionEngine; closed_loop=S3+S4)")
-    ap.add_argument("--closed-loop", action="store_true", help="deprecated alias for --mode closed_loop")
+    ap.add_argument("--mode", type=str, default="easy", choices=["easy", "auto"],
+                    help="P1: grasp mode (easy=trust path; auto=real DecisionEngine)")
     ap.add_argument("--record-log", type=str, default=None,
                     help="P0: append one GraspAttemptRecord JSONL line per pick to this path "
                          "(the soak/KPI/RL data source; default off -> byte-identical)")
@@ -437,7 +426,7 @@ def main() -> None:
                          "by default the cell plans against the overhead camera's world")
     add_cell_arguments(ap)
     args = ap.parse_args()
-    mode = "closed_loop" if args.closed_loop else args.mode
+    mode = args.mode
     result = run_gate(runs=args.runs, prompt=args.prompt, headless=not (args.gui or args.no_headless),
                       data_dir=args.data_dir, mode=mode,
                       record_log=args.record_log, debug_frames=args.debug_frames,

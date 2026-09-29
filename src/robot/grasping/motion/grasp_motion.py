@@ -4,7 +4,7 @@
 no guard. The pick service builds the one :class:`GraspExecutionPolicy` it drives from it, with the arm and hand it
 resolved, the base frame guard where a frame resolver is wired, the dwell gate the tree asks for, and the jaws opened
 to the hand's width before every approach (a hand that toggles with no sensor is asked where its jaws stand instead,
-and never pulsed before the arm moves). A policy built by hand drives whatever arm it holds and carries only the
+and never switched before the arm moves). A policy built by hand drives whatever arm it holds and carries only the
 guards its builder set, so while ``policy=`` is still accepted the service refuses one whose arm or hand is not its own.
 
     from src.robot.grasping.motion.grasp_motion import GraspMotion
@@ -39,10 +39,12 @@ class GraspMotion:
     them into waypoints on an arm that keeps no line. ``pre_open_width_mm`` is how far the jaws open before the
     approach, the hand's widest when unset, and never ``None``: the pre-open is what keeps an approach from arriving
     with the jaws wherever the last close left them. A hand that toggles with no sensor is the one exception, and it
-    is the hand's, not this object's: it is never pulsed before the arm moves, it is asked where its jaws stand
+    is the hand's, not this object's: it is never switched before the arm moves, it is asked where its jaws stand
     instead, and it takes no width, so the builder drops the pre-open for it whatever this says. ``close_squeeze_mm``
     is how far below the measured width the jaws close, ``close_speed`` (0 to 1) and ``close_force_n`` what the hand
-    is asked for, and ``align_closing_to_base_x`` yaws a symmetric top-down grasp so it closes along base X.
+    is asked for, and ``align_closing_to_base_x`` yaws a symmetric top-down grasp so it closes along base X. That yaw
+    closes the jaws on faces other than the ones the grasp was chosen on, so a pick that asks for both jaw contact faces
+    (``both_faces``) refuses it before anything moves (``pick_loop.judged_faces_turned_away``).
     """
 
     standoff_mm: Maybe[float] = UNSET
@@ -86,8 +88,8 @@ class GraspMotion:
     def standoff_and_retreat(self, standoff_mm: float, retreat_mm: float) -> tuple[float, float]:
         """This motion's standoff and retreat where it sets them, the service's own where it does not.
 
-        A service reads it before it builds anything that also takes the standoff (the closed loop's second look),
-        so the policy and everything beside it move to one standoff.
+        A service reads it before it builds anything that also takes the standoff, so the policy and everything
+        beside it move to one standoff.
         """
         return (float(self.standoff_mm) if chosen(self.standoff_mm) else float(standoff_mm),
                 float(self.retreat_mm) if chosen(self.retreat_mm) else float(retreat_mm))
@@ -112,7 +114,7 @@ def build_execution_policy(
     ``base_frame_required`` is whether a frame resolver is wired, so a camera frame grasp is refused before any
     motion. ``dwell`` is the tree's ``safety.dwell`` block, read by name: its steady gate holds every move until the
     arm stands still. The jaws open to ``motion.pre_open_width_mm``, else the hand's widest, before every approach,
-    except on a hand that toggles with no sensor, which takes no width and is never pulsed before the arm moves: its
+    except on a hand that toggles with no sensor, which takes no width and is never switched before the arm moves: its
     pre-open is dropped and no width is checked. Refused (``ValueError``): a pre-open wider than the hand opens, and a
     pre-open on a service that drives no hand.
     """

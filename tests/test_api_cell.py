@@ -510,7 +510,9 @@ class MotionWarningTests(unittest.TestCase):
         self.assertEqual(len(toggle), 1)
         for part in ("ASKS where the jaws stand", "terminal", "refused"):
             self.assertIn(part, toggle[0].what)
-        self.assertIn("ONE PULSE", toggle[0].precaution)
+        self.assertIn("ONE CHANGE", toggle[0].precaution)
+        self.assertIn("every change of the output, on or off, moves the jaws", toggle[0].what)
+        self.assertNotIn("pulse", (toggle[0].what + toggle[0].precaution).lower())
         # ⭐ THE CONTROL: a solenoid with switches keeps the feedback sentence.
         sensed = motion_warnings(config, _SensedSolenoid())
         self.assertEqual(len(sensed), 1)

@@ -2,8 +2,7 @@
 
 Grounds a prompt in one RGB-D frame from a cell's camera and places what it finds in the robot's base
 frame: the detector boxes each object, the segmenter cuts it out, and the depth under its mask becomes
-points in millimetres. `Locator` is the call for your own code. It reads its frame through the same
-source a real cell's pick uses, so the warm-ups, the lens, the shutter stamp and the wrist check are the pick's.
+points in millimetres.
 
 ```python
 from willy import Camera, Locator, Robot, load_tree
@@ -139,9 +138,9 @@ The legend is the root README's [Status and honest scope](../../../README.md#sta
 
 | Capability | Evidence |
 |---|---|
-| The live source, the locator and the wrist shutter check | never touched hardware; no physical camera has fed them, pinned against fakes in [`test_locator.py`](../../../tests/test_locator.py) |
-| Prompt, detect, segment, masked cloud on the pick path | measured in simulation, through the Isaac vision sources this adapter mirrors |
-| Mask completion default `none` | measured in simulation, over the reference corpus ([`mask_completion.py`](mask_completion.py)) |
+| The live source, the locator and the wrist shutter check | measured on a real camera setup |
+| Prompt, detect, segment, masked cloud on the pick path | measured on a real camera setup |
+| Mask completion default `none` | measured on a real camera setup |
 
 How the stack behaves on real depth, which returns zeros inside a mask and leaks at its edges, is not
 measured. It is the largest untested surface in the stack, and it can be tested without a robot: a

@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Mapping, Optional
 
 from src.robot.execution.runtime_pick import PickSessionReport
 from src.robot.grasping.decision import DecisionReport
-from src.robot.grasping.multiview.fusion import FusionTelemetry
 from src.robot.grasping.loop.pick_loop import PickOutcome
 from src.robot.grasping.motion.execution_policy import weakest_camera_world
 from src.robot.grasping.rl.router import ShadowRouterTelemetry
@@ -28,25 +27,25 @@ from .config import EffectiveGraspingConfig, GraspBehaviorProfile, GraspMode
 
 if TYPE_CHECKING:
     from src.geometry import Pose
-    from src.robot.grasping.closed_loop.refinement import RefinementReport
-    from src.robot.grasping.loop.pick_loop import CommitDecision
 
 
 class AutonomousGraspOutcome(StrEnum):
     """Terminal status of an :meth:`AutonomousGraspService.pick` call.
 
     Kept separate from :class:`PickOutcome` so the high-level service can add
-    outcome categories (refinement, verification, recovery) without widening the
+    outcome categories (verification, recovery) without widening the
     orchestrator-level taxonomy.
+
+    Three members left on 2026-09-29 with the two-scan pre-grasp refinement that
+    reported them: ``refinement_failed``, ``target_lost_during_refine`` and
+    ``refinement_diverged``. No pick reports them since; the telemetry catalog and the
+    failure taxonomy keep the strings, so a record logged before then still audits.
     """
 
     SUCCEEDED = "succeeded"
     NO_TARGET = "no_target"
     NO_VALID_GRASP = "no_valid_grasp"
     EXECUTION_FAILED = "execution_failed"
-    # Reserved for later phases; declared now so callers can already
-    # write exhaustive switches against the enum.
-    REFINEMENT_FAILED = "refinement_failed"
     VERIFICATION_FAILED = "verification_failed"
     RECOVERY_EXHAUSTED = "recovery_exhausted"
     UNSAFE_RECOVERY_REFUSED = "unsafe_recovery_refused"
@@ -54,22 +53,18 @@ class AutonomousGraspOutcome(StrEnum):
     # but the execution policy refused because no :class:`FrameResolver`
     # was wired and the grasp would have been commanded in camera frame.
     MISSING_CAMERA_FRAME = "missing_camera_frame"
-    # Refiner could not re-identify the target in the second-scan frame.
-    # Distinct from :attr:`NO_VALID_GRASP` so the operator can
-    # distinguish "never had a candidate" from "lost sight of it after
-    # the standoff move".
-    TARGET_LOST_DURING_REFINE = "target_lost_during_refine"
-    # Refined grasp exceeded at least one configured correction bound.
-    # Refuse-to-execute signal.
-    REFINEMENT_DIVERGED = "refinement_diverged"
-    # Honest "this mode is not yet implemented" signal for CLOSED_LOOP /
-    # DENSE_AUTONOMOUS until refinement/verification/recovery land.
+    # A pick asked for a mode the service cannot run as built: a per-call ``mode`` whose sampler
+    # differs from the one the wrapped runtime was built with. Until 2026-09-29 it also refused the
+    # ``closed_loop`` and ``dense_autonomous`` modes on a cell that wired no refiner or verifier;
+    # those modes left with the two-scan refinement.
     MODE_NOT_AVAILABLE = "mode_not_available"
     # AUTO fail-closed decision layer terminal outcomes.
     # ``DECISION_FAIL_CLOSED`` is emitted when the pre-execution
     # :class:`DecisionEngine` refuses to dispatch on real hardware
-    # (low confidence + exhausted re-observation budget or no
-    # viewpoint planner). ``DECISION_RECOVER_PENDING`` is the typed
+    # because the grasp is less confident than its threshold allows
+    # (``low_confidence``; a record logged before 2026-09-29 carries
+    # ``reobserve_planner_unavailable`` for the same verdict).
+    # ``DECISION_RECOVER_PENDING`` is the typed
     # "recovery requested" signal for the no-candidates branch: the
     # decision layer does not execute the recovery state machine, so
     # the report carries the typed :class:`DecisionReport` and tells
@@ -82,12 +77,6 @@ class AutonomousGraspOutcome(StrEnum):
     # :class:`DecisionReasonCode.UNCERTAINTY_FAIL_CLOSED` on the
     # decision report.
     UNCERTAINTY_FAIL_CLOSED = "uncertainty_fail_closed"
-    # Mandatory multi-view commit gate refused the winning candidate and
-    # the configured re-observation budget was exhausted. Distinct from
-    # :attr:`NO_VALID_GRASP` so the operator can tell apart "no candidate
-    # at all" from "had a candidate but the fused evidence was
-    # insufficient".
-    NO_COMMIT_INSUFFICIENT_FUSION = "no_commit_insufficient_fusion"
     # Drift + OOD watchdog blocks AUTO on real hardware at the HIGH and
     # SEVERE drift severities (hardware lock). Distinct outcomes so replay
     # can separate drift-driven from OOD-driven fail-closures and from
@@ -108,7 +97,8 @@ _PICK_TO_AUTONOMOUS: Mapping[PickOutcome, AutonomousGraspOutcome] = {
     PickOutcome.EXECUTED: AutonomousGraspOutcome.SUCCEEDED,
     PickOutcome.NO_PERCEPTION: AutonomousGraspOutcome.NO_TARGET,
     PickOutcome.RESCANNED_EXHAUSTED: AutonomousGraspOutcome.NO_VALID_GRASP,
-    PickOutcome.RELOCATED_EXHAUSTED: AutonomousGraspOutcome.NO_VALID_GRASP,
+    # ``relocated_exhausted`` mapped here too until the relocate path was removed (2026-09-29), so
+    # a record it ended reads ``no_valid_grasp``, an outcome the telemetry catalog still knows.
     PickOutcome.OBJECT_NOT_DETECTED: AutonomousGraspOutcome.VERIFICATION_FAILED,
     PickOutcome.EXECUTION_FAILED: AutonomousGraspOutcome.EXECUTION_FAILED,
     PickOutcome.ABORTED: AutonomousGraspOutcome.EXECUTION_FAILED,
@@ -123,7 +113,6 @@ _PICK_TO_AUTONOMOUS: Mapping[PickOutcome, AutonomousGraspOutcome] = {
     # the pick loop's outcome underneath (``AutonomousGraspReport.gripper_fault``).
     PickOutcome.GRIPPER_FAULT: AutonomousGraspOutcome.EXECUTION_FAILED,
     PickOutcome.CAMERA_FRAME_REJECTED: AutonomousGraspOutcome.MISSING_CAMERA_FRAME,
-    PickOutcome.NO_COMMIT_INSUFFICIENT_FUSION: AutonomousGraspOutcome.NO_COMMIT_INSUFFICIENT_FUSION,
 }
 
 
@@ -212,21 +201,8 @@ class AutonomousGraspReport:
     # fired and ``skip_reason`` names the gate.
     ranking_blend_telemetry: Optional[RankingBlendTelemetry] = None
     # Per-candidate uncertainty re-rank telemetry (mirrors ranking_blend_telemetry). ``None``
-    # for legacy/disabled deployments and on the pre-rerank refine early-returns.
+    # for legacy/disabled deployments and on every report no pick loop produced.
     uncertainty_rerank_telemetry: Optional[UncertaintyRerankTelemetry] = None
-    # Shadow-only multi-view fusion telemetry forwarded verbatim from
-    # :class:`PickReport`. ``None`` whenever ``fusion.enabled=False`` in
-    # the robot config or the service was built without a frame resolver.
-    # Zero decision influence by construction (orchestrator never reads
-    # it).
-    fusion_telemetry: Optional[FusionTelemetry] = None
-    # Typed multi-view commit-gate decision forwarded verbatim from
-    # :class:`PickReport`. ``None`` whenever the service exited before
-    # any candidate was selected. When the gate is configured but
-    # disabled the decision still surfaces with ``allowed=True`` and a
-    # typed ``reason`` so operators can confirm "gate was running and
-    # approved" versus "gate was off".
-    commit_decision: Optional["CommitDecision"] = None
     # Typed candidate-selection shadow-router telemetry. ``None``
     # whenever the service was built without a :class:`ShadowRouter`,
     # which is the default; operator opt-in via ``robot.rl.mode ==
@@ -234,19 +210,9 @@ class AutonomousGraspReport:
     # ``hybrid_ml`` modes. Carrier-only by construction: the
     # orchestrator never reads it.
     shadow_router_telemetry: Optional[ShadowRouterTelemetry] = None
-    # The two-scan refiner own verdict, and until it was carried here the record contract
-    # ``refinement`` block had no production writer at all. ``GraspAttemptRecord.refinement`` is
-    # declared, serialised, deserialised, fabricated by the synthetic soak generator, and required by
-    # the telemetry catalog for ``refinement_failed`` / ``target_lost_during_refine`` /
-    # ``refinement_diverged``, so those three outcomes could never produce a complete record,
-    # whatever the cell did.
-    #
-    # ``None`` on every default attempt, and that is not a gap: the refine path runs only when the
-    # active profile requires refinement and a refiner is wired, which no shipped config does. It is
-    # also ``None`` on the one refine-stage leg that fails before the refiner runs (the second scan
-    # returns no segmentations); that record honestly has no refiner verdict to carry, and a
-    # fabricated one would be the defect this field exists to remove.
-    refinement: Optional["RefinementReport"] = None
+    # `refinement`, the two-scan refiner's verdict, left on 2026-09-29 with the refinement. The
+    # record's `refinement` block stays in `GraspAttemptRecord`, so a record logged before then still
+    # reads, and no writer fills it any more.
     # Per-step recovery trail
     # (``{action, outcome, step_result, executed, failure_reason, plan_reason}`` per step). Empty ``()`` on
     # the default path; populated by ``_attach_recovery_trail`` only when the opt-in recovery loop ran. The
@@ -259,10 +225,34 @@ class AutonomousGraspReport:
     # raising it, with `outcome` EXECUTION_FAILED and no `pick_report`, and a campaign stops on it.
     # `None` on every pick that ended through its own path.
     fault: Optional[Exception] = None
-    #: The looks this attempt moved to before it perceived, in order, each as it reads (``home``, or the joints in
-    #: degrees): the last one is where it perceived from, or the one it did not reach. Empty when the pick perceived
-    #: from wherever the arm stood: a fixed camera's cell, or a pick handed no look (``src.robot.execution.looks``).
+    #: The looks this attempt perceived from, in order, each as it reads (``home``, or the joints in degrees). On a
+    #: wrist camera these are every look the pick loop visited, the one the grasp was ranked on among them: a look the
+    #: planner refused before anything was sent is skipped and not among them, and one the arm did not reach is
+    #: ``telemetry['refused_look']``. On a fixed camera handed looks, the looks the service moved to, the last one where
+    #: it perceived from or the one it did not reach. Empty when the pick perceived from wherever the arm stood: a pick
+    #: handed no look (``src.robot.execution.looks``).
     looks: tuple[str, ...] = ()
+    #: The looks whose views of the part were fused into the one cloud its grasp was ranked on, the look it was ranked on
+    #: first. Empty on a fixed camera and on a pick handed no look.
+    looks_fused: tuple[str, ...] = ()
+    #: Whether the contact face each jaw closes on, of the chosen grasp, was seen from the looks: (jaw 1, jaw 2), the
+    #: rule of ``grasping.multiview.unseen_side.jaw_faces_seen``. What the looks exist for is a safe grasp point, never a
+    #: whole scan of the part: a face not seen is a contact patch of this grasp nobody measured. ``None`` where no grasp
+    #: was judged, on a hand with no jaw faces, and on a fixed camera.
+    jaw_faces_seen: tuple[bool, bool] | None = None
+    #: The hand-eye check of a wrist pick: the median distance, mm, at which its looks measure the surface of the part
+    #: they share. Above ``HAND_EYE_DRIFT_WARN_MM`` the hand-eye calibration may have drifted (a camera loosened on the
+    #: wrist); nothing is changed for it. ``None`` where fewer than two looks shared enough of the part.
+    hand_eye_gap_mm: float | None = None
+    #: Whether this pick asked that both jaw contact faces of its chosen grasp be seen before it grips (``pick``'s
+    #: ``both_faces``, the owner's switch for safety-critical processes), on a wrist camera's pick or a fixed camera's;
+    #: ``False`` otherwise. With it, a face not seen is why such a pick ends ``NO_VALID_GRASP``.
+    both_faces: bool = False
+    #: The one view a wrist pick generated once its declared looks were used up (the last resort, the owner's
+    #: 2026-09-29 rule): how far it turned about the part, degrees, signed. Its look is among :attr:`looks`. ``None``
+    #: where no view was generated: a grasp safe at a declared look, a fixed camera, a pick handed no look, or one whose
+    #: turns the arm screened out or could not drive on the straight joint line.
+    generated_view_deg: float | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -276,7 +266,8 @@ class AutonomousGraspReport:
 
         The pick loop names it ``CONTROLLER_NOT_OPERATIONAL`` after a motion failed, and the service reports it as
         :attr:`AutonomousGraspOutcome.CANCELLED`, with the pick loop's outcome kept in ``pick_report`` and in
-        ``telemetry['low_level_outcome']`` (the two-scan path writes only the telemetry). Read from both. It is not a
+        ``telemetry['low_level_outcome']`` (a pick the controller refused before it began, and a look the arm did not
+        reach, write only the telemetry). Read from both. It is not a
         :attr:`fault`, because the pick ended through its own path, and a campaign stops on it all the same: after a
         protective stop mid-pick the next attempt would otherwise perceive and plan against an arm a person has to
         walk up to (owner-cell audit, 2026-09-23).
@@ -293,7 +284,8 @@ class AutonomousGraspReport:
         The pick loop names it ``GRIPPER_FAULT`` (``PolicyOutcome.GRIPPER_FAULT``): the gripper raised while it was
         commanded, or a hand that toggles with no sensor would not start the pick, because it believed its jaws closed
         and nobody at a terminal said otherwise. Read from ``pick_report``, whose last attempt carries the policy's
-        sentence, and on the two-scan path from ``telemetry['low_level_outcome']`` and ``telemetry['gripper_fault']``. Like
+        sentence, and for a hand that would not start the pick, which leaves no pick report, from
+        ``telemetry['low_level_outcome']`` and ``telemetry['gripper_fault']``. Like
         :attr:`controller_stopped` it is not a :attr:`fault`, and a campaign stops on it all the same: the next pick
         would perceive again for a hand that still cannot start (owner's decision, 2026-09-24).
         """
@@ -310,8 +302,8 @@ class AutonomousGraspReport:
     def object_centre_mm(self) -> Optional[tuple[float, float, float]]:
         """Where the object this pick went for was seen, BASE mm: the median of its mask's surface, as ``Locator`` says.
 
-        Read off the pick report, so :data:`None` where no candidate reached the arm, where the cell resolves no BASE,
-        and on the two-scan path, which carries no pick report.
+        Read off the pick report, so :data:`None` where no candidate reached the arm and where the cell resolves no
+        BASE.
         """
         value = getattr(self.pick_report, "object_centre_mm", None)
         return value if isinstance(value, tuple) and len(value) == 3 else None
@@ -320,7 +312,7 @@ class AutonomousGraspReport:
     def grasp_pose(self) -> "Pose | None":
         """The pose the tool closed at, in BASE, on a pick that succeeded: the grasp waypoint that was judged and ran.
 
-        :data:`None` on every other outcome, and on the two-scan path, which carries no pick report.
+        :data:`None` on every other outcome.
         """
         from src.geometry import Pose  # noqa: PLC0415
 
@@ -329,13 +321,14 @@ class AutonomousGraspReport:
 
     @property
     def fused_views(self) -> tuple[str, ...]:
-        """The cameras whose views of the object this pick went for were fused into the one cloud its grasps were
-        planned on, the camera the grasp is synthesised in first, as rig ids: ``("cam_left", "cam_right")``.
+        """The views of the object this pick went for that were fused into the one cloud its grasps were planned on,
+        the view the grasp is synthesised in first, each by its identity: a fixed camera by its rig id,
+        ``("cam_left", "cam_right")``, and each look of a wrist camera as ``rig@look``, so two looks of one camera are
+        two views.
 
         Empty where that cloud came from one camera: geometry fusion off or standing down, no second camera delivered,
         or none identified that object. Never one camera alone. Read off the pick report's last attempt, the one the
-        pick ended on (``PickAttempt.fused_views`` of the pick loop), so empty on the two-scan path, which carries no
-        pick report.
+        pick ended on (``PickAttempt.fused_views`` of the pick loop).
         """
         value = getattr(self._last_loop_attempt(), "fused_views", ())
         if isinstance(value, tuple) and len(value) > 1 and all(isinstance(view, str) for view in value):
@@ -361,18 +354,15 @@ class AutonomousGraspReport:
         :data:`False` means the success rests on the close command alone: the gripper has no detection capability,
         or it says it measured nothing (a jaw with no feedback wired, a vacuum with no switch), so
         ``object_detected`` came back :data:`None` rather than an echo of the close (owner-cell audit, 2026-09-23).
-        Read from ``pick_report.object_detected``, or on the two-scan path from ``telemetry['object_detected']``.
+        Read from ``pick_report.object_detected``: every pick that succeeds carries a pick report since the two-scan
+        path, which reported its hold in telemetry, left on 2026-09-29.
         """
         if not self.succeeded:
             return None
         pick = self.pick_report
-        if pick is not None:
-            if not bool(getattr(pick, "gripper_present", False)):
-                return None
-            return getattr(pick, "object_detected", None) is True
-        if not bool(self.telemetry.get("gripper_present", False)):
+        if pick is None or not bool(getattr(pick, "gripper_present", False)):
             return None
-        return self.telemetry.get("object_detected") is True
+        return getattr(pick, "object_detected", None) is True
 
     def failure_summary(self) -> str:
         """Why this attempt did not succeed, in one operator-readable line.
@@ -389,6 +379,10 @@ class AutonomousGraspReport:
         * :attr:`fault`, a fault of the cell that ended the pick, as its type and its sentence
           escaped to ASCII;
         * the last attempt's typed ``reasons``, why the candidates were rejected.
+
+        A pick handed looks adds the look it did not reach, the looks it perceived from and the looks it skipped; one
+        that asked for both jaw contact faces (:attr:`both_faces`) and ended ``NO_VALID_GRASP`` adds the face not seen
+        (on a fixed camera, which judges no looks, in the pick loop's own words, ``PickAttempt.withheld``).
         """
         if self.succeeded:
             return ""
@@ -403,19 +397,47 @@ class AutonomousGraspReport:
         attempts = getattr(self.pick_report, "attempts", ()) or ()
         if attempts and (reasons := getattr(attempts[-1], "reasons", ())):
             parts.append("reasons=" + ",".join(str(r) for r in reasons))
-        if refused := self.telemetry.get("look_refused"):
-            parts.append(_ascii(f"look {self.looks[-1] if self.looks else '?'} not reached: {refused}"))
-        elif self.looks:
+        # A wrist pick names the look it did not reach apart from the looks it perceived from; a fixed camera's
+        # service loop names the looks it moved to, the one not reached last.
+        refused = self.telemetry.get("look_refused")
+        not_reached = self.telemetry.get("refused_look")
+        if refused:
+            where = not_reached or (self.looks[-1] if self.looks else "?")
+            parts.append(_ascii(f"look {where} not reached: {refused}"))
+        if self.looks and (not refused or not_reached):
             parts.append(f"looked from {len(self.looks)}: " + "; ".join(self.looks))
+        parts.extend(_ascii(f"skipped look {skipped}") for skipped in self._looks_skipped())
+        # The cause only where the pick asked for both faces and ended for want of them: off the switch a face not
+        # seen ends no pick, and a 45-degree wrist look nearly always misses one (the faces line of `render` says it).
+        if self.both_faces and self.outcome is AutonomousGraspOutcome.NO_VALID_GRASP:
+            unseen = self._faces_not_seen()
+            parts.extend(f"the contact face at jaw {jaw} of the chosen grasp was not seen" for jaw in unseen)
+            # A fixed camera judges no looks, so its report carries no faces: the pick loop's own sentence says it.
+            withheld = getattr(attempts[-1], "withheld", "") if attempts else ""
+            if not unseen and isinstance(withheld, str) and withheld:
+                parts.append(_ascii(withheld))
         return "  ".join(parts)
+
+    def _faces_not_seen(self) -> tuple[int, ...]:
+        """The jaws (1, 2) whose contact face of the chosen grasp no look saw; empty where both were or none was judged."""
+        faces = self.jaw_faces_seen
+        return tuple(jaw for jaw, seen in zip((1, 2), faces) if not seen) if faces is not None else ()
+
+    def _looks_skipped(self) -> tuple[str, ...]:
+        """The looks of a wrist pick the planner refused before anything was sent, skipped as the pick went on, each
+        ``"look: why"`` (``telemetry['looks_skipped']``); empty where none was."""
+        skipped = self.telemetry.get("looks_skipped") or ()
+        return tuple(str(look) for look in skipped) if isinstance(skipped, (list, tuple)) else ()
 
     #: The optional layers, and the attribute that proves each one ran rather than being configured.
     #:
-    #: Each entry is a field that is ``None`` when the layer did not run, never a config flag, so
-    #: this table cannot say "on" for something that produced nothing.
+    #: Each entry is read off what the layer produced on this attempt, never a config flag, so this
+    #: table cannot say "on" for something that produced nothing: a field that is ``None`` when the
+    #: layer did not run, or for fusion :attr:`fused_views`, the cameras whose views were fused into
+    #: the cloud the pick's object was planned on, empty when that cloud came from one camera.
     _LAYERS: ClassVar[tuple[tuple[str, str], ...]] = (
         ("decision", "decision"),
-        ("fusion", "fusion_telemetry"),
+        ("fusion", "fused_views"),
         ("success-model", "shadow_success_telemetry"),
         ("blend", "ranking_blend_telemetry"),
         ("rl-shadow", "shadow_router_telemetry"),
@@ -424,23 +446,20 @@ class AutonomousGraspReport:
     def layers_that_ran(self) -> tuple[str, ...]:
         """The optional layers that actually produced something on this attempt.
 
-        The commit gate is not on the ``None`` table above. :class:`CommitDecision` is attached to
-        ``PickReport.commit_decision`` on every pick with a winning candidate, and a disabled or
-        skipped gate still reports ``allowed=True`` with a typed ``reason``. So
-        ``commit_decision is not None`` means a candidate won, not that the gate ran.
-
-        The gate counts as having participated only when its ``reason`` is outside the
-        ``skipped_*`` family. A reason this method has never seen counts as participation rather
-        than as a skip: a new skip reason reading as "it ran" is the over-reporting this method
-        exists to prevent, and the opposite mistake is only noise.
+        Fusion counts where another camera's view was fused into the cloud the object this pick went
+        for was planned on (:attr:`fused_views`, the geometry fusion under
+        ``grasping.fusion.geometry``). A pick whose fusion stood down, or whose object only one camera
+        identified, reads as single-view here, as it does on its ``fused`` line.
 
         A fragment, so it is not called ``render``. :meth:`render` composes it.
         """
-        ran = [name for name, attribute in self._LAYERS
-               if getattr(self, attribute, None) is not None]
-        commit = self.commit_decision
-        if commit is not None and not str(getattr(commit, "reason", "")).startswith("skipped_"):
-            ran.append("commit")
+        ran: list[str] = []
+        for name, attribute in self._LAYERS:
+            proof = getattr(self, attribute, None)
+            # `fused_views` is a tuple, and empty rather than None when nothing was fused.
+            if proof is None or (isinstance(proof, tuple) and not proof):
+                continue
+            ran.append(name)
         if self.uncertainty.fused_available:
             ran.append("uncertainty")
         if self.recovery_actions:
@@ -455,8 +474,7 @@ class AutonomousGraspReport:
         """The whole attempt, for a person. ASCII, no trailing newline, no arguments.
 
         Every advanced block in this stack ships `enabled: false`, so the default pick is
-        open-loop: no AUTO decision gate, no closed-loop refine, no fusion commit, no learned
-        success model, no RL. The layers line is what keeps a report from reading the same whether
+        open-loop: no AUTO decision gate, no multi-camera fusion, no learned success model, no RL. The layers line is what keeps a report from reading the same whether
         one layer ran or six.
 
         It names what produced something, read off fields that are ``None`` when the layer did not
@@ -493,7 +511,25 @@ class AutonomousGraspReport:
             lines.append("  hold       not measured: the gripper reports no hold, so this success is the close "
                          "command's word")
         if self.looks:
-            lines.append(f"  looks      {'; '.join(self.looks)}")
+            # The looks fused into the grasp's cloud: two or more, as a fusion is never one view alone.
+            fused = f"; fused {' + '.join(self.looks_fused)}" if len(self.looks_fused) > 1 else ""
+            lines.append(_ascii(f"  looks      {'; '.join(self.looks)}{fused}"))
+        lines.extend(_ascii(f"  skipped    look {skipped}") for skipped in self._looks_skipped())
+        if (faces := self.jaw_faces_seen) is not None:
+            said = ", ".join(f"jaw {jaw} {'seen' if seen else 'not seen'}" for jaw, seen in zip((1, 2), faces))
+            asked = "; both required (both_faces)" if self.both_faces else ""
+            lines.append(f"  faces      contact faces of the chosen grasp: {said}{asked}")
+        if (turn := self.generated_view_deg) is not None:
+            lines.append(f"  generated  one view, the looks' last resort: turned {turn:+.0f} deg about the part")
+        if refused_back := self.telemetry.get("move_back_refused"):
+            lines.append(_ascii(f"  approach   from where the arm stood: the move back was refused ({refused_back})"))
+        if (gap := self.hand_eye_gap_mm) is not None:
+            from src.robot.grasping.multiview.association import HAND_EYE_DRIFT_WARN_MM  # noqa: PLC0415
+
+            lines.append(
+                f"  hand-eye   the looks measure the part's shared surface {gap:.1f} mm apart (median)"
+                + (f", more than {HAND_EYE_DRIFT_WARN_MM:.1f} mm: the hand-eye calibration may have drifted, check it"
+                   if gap > HAND_EYE_DRIFT_WARN_MM else ""))
         if (centre := self.object_centre_mm) is not None:
             lines.append("  object     centre ({:.1f}, {:.1f}, {:.1f}) mm BASE".format(*centre))
         if (grasp := self.grasp_pose) is not None:
@@ -536,7 +572,7 @@ class AutonomousGraspReport:
         rather than being re-derived here; a number computed here that :meth:`render` does not
         compute would make the two halves two answers about one attempt.
 
-        ``effective_config`` is deliberately not inlined. It is the flat 82-key telemetry contract,
+        ``effective_config`` is deliberately not inlined. It is the flat 77-key telemetry contract,
         it has its own ``to_dict``, and a consumer that wants it can ask the report for it. Inlining
         it would make this dict far larger than the attempt it describes.
         """
@@ -565,6 +601,11 @@ class AutonomousGraspReport:
             "recovery_actions": [dict(action) for action in self.recovery_actions],
             "telemetry": dict(self.telemetry),
             "looks": list(self.looks),
+            "looks_fused": list(self.looks_fused),
+            "jaw_faces_seen": None if self.jaw_faces_seen is None else list(self.jaw_faces_seen),
+            "hand_eye_gap_mm": None if self.hand_eye_gap_mm is None else float(self.hand_eye_gap_mm),
+            "both_faces": bool(self.both_faces),
+            "generated_view_deg": None if self.generated_view_deg is None else float(self.generated_view_deg),
             "object_centre_mm": None if self.object_centre_mm is None else list(self.object_centre_mm),
             "grasp_pose": _pose_dict(self.grasp_pose),
             "fused_views": list(self.fused_views),

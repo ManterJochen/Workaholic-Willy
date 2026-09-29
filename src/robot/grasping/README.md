@@ -1,7 +1,7 @@
 # The grasp stack (`src/robot/grasping`)
 
 Turns an object's points into ranked 6-DoF grasps, and holds the rest of a pick attempt around them:
-the decision gate, the approach, a second look, recovery and the record each attempt leaves. It moves
+the decision gate, the approach, recovery and the record each attempt leaves. It moves
 nothing by itself: the UR, KUKA and Isaac arm drivers gate every commanded move through their own
 safety preflight, and nothing here can relax a guard.
 
@@ -66,11 +66,15 @@ python -m src.robot.grasping.calibration --replay picks.jsonl --out calibration.
 
 A stock tree runs an open-loop attempt: perceive, generate and rank candidates, safety preflight and
 IK, approach, close and retreat, log. Every block under `robot.grasping` with its own `enabled` switch
-ships `false`: `closed_loop`, `verification`, `dense_recovery`, `decision`, `feasibility`, `ordering`,
-`recovery`, `uncertainty`, `success_model`, `performance`, `fusion`, `approach_validation` and
-`deep_ranker`. So the decision gate, refinement, verification, recovery, multi-view fusion and the
-learned success model are here, and off the path a fresh cell takes. `python scripts/checks/grasping_switches.py` prints which block is
-reachable in which grasp mode, and [the config reference](../../../docs/grasping-config-reference.md)
+ships `false`: `decision`, `feasibility`, `ordering`, `recovery`, `uncertainty`, `success_model`,
+`performance`, `fusion`, `approach_validation` and `deep_ranker`. So the decision gate, recovery,
+multi-view fusion and the learned success model are here, and off the path a fresh cell takes. The
+hold is verified on every path, by the execution policy's own check after its close
+([motion/](motion/README.md)), which reads the gripper's `is_object_detected` and `hold_evidence` (a
+Robotiq's gOBJ). The separate verification stage with its `verification` block, and the
+`dense_recovery` block, were removed on 2026-09-29: no pick consulted them, and a tree that still writes
+either is refused at load. `python scripts/checks/grasping_switches.py`
+prints which block is reachable in which grasp mode, and [the config reference](../../../docs/grasping-config-reference.md)
 explains each block.
 
 ### The shipped presets
@@ -78,23 +82,28 @@ explains each block.
 A preset is a YAML overlay in [`config/grasping_presets/`](../../../config/grasping_presets/).
 `apply_preset` in [replay/presets.py](replay/presets.py) merges one onto a loaded `robot:` block. The
 loader does not validate presets, so a misspelt key merges in silently; `validate_preset` re-checks the
-merged result against the schema. `default_mode` is the one field that switches sampling, refinement
-and verification together.
+merged result against the schema. `default_mode` is the one field that switches the sampling and the
+recovery a mode allows together.
 
 | Preset | `default_mode` | What the overlay sets | Use for |
 | --- | --- | --- | --- |
 | `easy` | `easy` | recover off, uncertainty off | one object on a clean surface, under the strictest gate |
 | (base) | `auto` | nothing | mixed scenes and your own tuning |
-| `dense_clutter` | `dense_clutter` | recover on, `next_viewpoint` only; uncertainty on, fail-closed at 0.4 | bins, piles, occlusion |
-| `verification_heavy` | `closed_loop` | refine and verify, which the mode demands; recover on, `next_viewpoint` only | parts where a slip costs most |
+| `dense_clutter` | `dense_clutter` | recover on, `rescan` only; uncertainty on, fail-closed at 0.4 | bins, piles, occlusion |
+
+`verification_heavy`, the preset that set `closed_loop` to refine and verify, was deleted on 2026-09-29
+with that mode and with `dense_autonomous`: a tree, a preset or a call that still names either is refused
+with the mode to name instead (`auto` for `closed_loop`, `dense_clutter` for `dense_autonomous`).
+`dense_clutter` took over `nudge_target`, the one push a built-in profile allows; it still needs
+`recovery.allowed_actions` to name it and a declared fixture, and a cell built from config pushes nothing
+even then: its recovery loop plans the nudge without an offset and refuses it before the arm moves
+([recovery/](recovery/README.md)). `next_viewpoint`, which
+`dense_clutter` allowed until then, was merged into `rescan` the same day, and a preset or a tree that
+still names it is refused with `removed on purpose: use rescan`.
 
 The gate for `easy` is the strictest: `dead_loop_rate` at 0.0 and `false_positive_grasp_rate` at most
-0.005. `verification_heavy` costs cycle time. Two traps. `closed_loop` demands a refiner and a
-verification policy: a cell without them refuses the pick with a `MODE_NOT_AVAILABLE` outcome rather
-than running open loop. And `recovery.apply_modes` ships as `auto`, `dense_clutter` and
-`dense_autonomous`, so the recovery `verification_heavy` switches on stays inert until the cell adds
-`closed_loop` to that list. The same gate keeps `easy` free of recovery motion whatever an overlay
-says.
+0.005. One trap: `recovery.apply_modes` ships as `auto` and `dense_clutter`, and that list is what keeps
+`easy` free of recovery motion whatever an overlay says.
 
 ### KPI triage
 
@@ -113,7 +122,8 @@ to move a rate.
 | `FileNotFoundError` from `build_calculator` | `calculator: deep` and no file at `deep_generator.artifact_path` | train one ([deep/](deep/README.md)) or set `geometric` |
 | `ValueError` from `build_calculator` | not a generator artifact of this version, or the cell's hand is unset or not trained on | name a finished run's artifact and the cell's hand |
 | `ConfigError` at load | a switch that reaches nothing is on: `occlusion.hard_reject_enabled` | set it back to `false` |
-| outcome `MODE_NOT_AVAILABLE` | the mode demands refinement or verification the cell did not build | enable `closed_loop` and `verification`, or change mode |
+| `ConfigError` at load, `removed on purpose` | a removed mode (`closed_loop`, `dense_autonomous`), recovery action (`next_viewpoint`) or block (`closed_loop`, `verification`, `dense_recovery`) | write what the sentence names |
+| outcome `MODE_NOT_AVAILABLE` | a `mode=` per pick whose sampler the service was not built with | build the service in that mode |
 | `FAIL_CLOSED` from the decision gate | the gate is on, the arm is real and the evidence falls short | read the reason on the record; a simulated arm logs it and goes on |
 | the execution policy fails closed | a camera-frame grasp and no CAMERA to BASE transform | calibrate the camera ([guide 03](../../../docs/guide/03-calibration.md)) |
 
@@ -122,7 +132,8 @@ to move a rate.
 | Capability | Evidence |
 | --- | --- |
 | Analytic generation, scoring and the pick service on a UR5e with a 2F-85 | measured in simulation ([willy_sim](../../willy_sim/README.md)) |
-| Refinement, verification, recovery and multi-view fusion | measured in simulation, switched on per flag by the runners |
+| Recovery and multi-view fusion | measured in simulation, switched on per flag by the runners |
+| The hold check after the close | pinned by tests on the Robotiq driver's gOBJ seam; never touched hardware |
 | A grasp from this package on a physical arm | never touched hardware |
 
 The simulation runners build the pick service through `from_components` and switch the advanced blocks
@@ -143,9 +154,9 @@ friction-cone argument under a contact model, not a substitute for force feedbac
 | [collision/](collision/README.md) | the gripper against the cloud and the table; jaw and suction-cup envelopes |
 | [generation/](generation/README.md) | `GraspCalculator`: a mask and a depth image to ranked `GraspPoint`s |
 | [scoring/](scoring/README.md) | the deterministic scorers, `rank_grasp_poses`, force closure, the learned success predictor |
-| `decision.py` | `DecisionEngine`: `GRASP_NOW`, `MOVE_CAMERA`, `RECOVER` or `FAIL_CLOSED`; off by default |
+| `decision.py` | `DecisionEngine`: `GRASP_NOW`, `RECOVER` or `FAIL_CLOSED`, once per pick; off by default |
 | [planning/](planning/README.md), [motion/](motion/README.md) | the approach pose, the IK seam; approach, close and retreat, and the CAMERA to BASE resolver |
-| [closed_loop/](closed_loop/README.md), [recovery/](recovery/README.md) | the second look, verification, next-best view; bounded recovery. Off by default |
+| [recovery/](recovery/README.md) | bounded recovery. Off by default. `closed_loop/`, which held the post-grasp verifiers no pick path ran, left on 2026-09-29 |
 | [loop/](loop/README.md), [telemetry/](telemetry/README.md) | `BinPickingOrchestrator`, one attempt across the tiers; the frozen `GraspAttemptRecord` |
 | [multiview/](multiview/README.md), [suction/](suction/README.md) | fusion across camera views; suction candidates |
 | [deep/](deep/README.md) | the learned 6-DoF generator; no trained weights ship |

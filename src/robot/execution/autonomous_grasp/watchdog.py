@@ -176,7 +176,6 @@ class WatchdogCoordinator:
         report: WatchdogReport,
         effective_mode: "GraspMode",
         attempt_id: str,
-        reobservation_count: int,
     ) -> DecisionReport:
         """Synthesize a typed FAIL_CLOSED decision for an enforced block."""
 
@@ -187,7 +186,6 @@ class WatchdogCoordinator:
             threshold_used=0.0,
             mode=effective_mode.value,
             attempt_id=attempt_id,
-            reobservation_count=reobservation_count,
             top_score=None,
         )
 
@@ -231,37 +229,24 @@ class WatchdogCoordinator:
             # A buggy subscriber must not abort a pick.
             pass
 
-    def _detect_transitions(
-        self, *, prev: Optional[WatchdogReport], curr: WatchdogReport
-    ) -> tuple[str, ...]:
-        """Return canonical rising-edge event types fired by curr vs prev."""
+    def _detect_transitions(self, *, curr: WatchdogReport) -> tuple[str, ...]:
+        """Return the canonical rising-edge event types ``curr`` fires.
+
+        A pick evaluates the watchdog once, so there is no earlier report of the same pick to
+        compare with: every flag ``curr`` raises is a rising edge for the pick. The comparison
+        with a previous report left with the camera re-observation (``MOVE_CAMERA``, removed
+        2026-09-29), the only thing that evaluated the watchdog twice in one pick.
+        """
 
         order = self._SEVERITY_ORDER
-        prev_drift = order[prev.drift_severity] if prev is not None else 0
-        prev_ood_flagged = bool(prev.ood_flagged) if prev is not None else False
-        prev_degraded = (
-            bool(prev.degraded_mode_active) if prev is not None else False
-        )
-        prev_block_enforced = bool(
-            prev is not None
-            and prev.enforced
-            and prev.recommended_action is WatchdogAction.BLOCK_AUTO
-        )
-
         events: list[str] = []
-        if (
-            prev_drift < order[DriftSeverity.MODERATE]
-            and order[curr.drift_severity] >= order[DriftSeverity.MODERATE]
-        ):
+        if order[curr.drift_severity] >= order[DriftSeverity.MODERATE]:
             events.append(RobotWatchdogEvent.DRIFT_DETECTED)
-        if (not prev_ood_flagged) and bool(curr.ood_flagged):
+        if bool(curr.ood_flagged):
             events.append(RobotWatchdogEvent.OOD_DETECTED)
-        if (not prev_degraded) and bool(curr.degraded_mode_active):
+        if bool(curr.degraded_mode_active):
             events.append(RobotWatchdogEvent.DEGRADED_MODE_ENGAGED)
-        curr_block_enforced = bool(
-            curr.enforced and curr.recommended_action is WatchdogAction.BLOCK_AUTO
-        )
-        if (not prev_block_enforced) and curr_block_enforced:
+        if curr.enforced and curr.recommended_action is WatchdogAction.BLOCK_AUTO:
             events.append(RobotWatchdogEvent.BLOCK_AUTO_TRIGGERED)
         return tuple(events)
 
@@ -269,27 +254,27 @@ class WatchdogCoordinator:
         self,
         *,
         event_listener: Optional["RobotWatchdogEventListener"],
-        prev: Optional[WatchdogReport],
         curr: WatchdogReport,
         attempt_id: str,
-        reobservation_count: int,
         effective_mode: "GraspMode",
     ) -> None:
         """Emit any rising-edge transitions on the listener.
 
-        No-op when the watchdog mode is ``disabled`` or no listener is wired.
+        No-op when the watchdog mode is ``disabled`` or no listener is wired. The payload keeps
+        ``reobservation_count``, always 0 since the camera re-observation it counted
+        (``MOVE_CAMERA``) was removed on 2026-09-29, so a listener sees the shape it always saw.
         """
 
         if curr.mode is WatchdogMode.DISABLED:
             return
         if event_listener is None:
             return
-        transitions = self._detect_transitions(prev=prev, curr=curr)
+        transitions = self._detect_transitions(curr=curr)
         if not transitions:
             return
         payload: dict[str, Any] = {
             "attempt_id": attempt_id,
-            "reobservation_count": reobservation_count,
+            "reobservation_count": 0,
             "grasp_mode": effective_mode.value,
             **curr.to_dict(),
         }

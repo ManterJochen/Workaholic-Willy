@@ -30,9 +30,9 @@ objectdetector:
 
     # The validated M2 baseline runs with torch_dtype + attn UNSET: the detector loads native fp32 weights
     # and its autocast(dtype=None) => fp16-autocast compute, full recall on the small (~46 px) overhead
-    # cube.
+    # cube. The shipped file leaves it unset too (2026-09-29); `auto` would load fp16 weights on CUDA.
     # [default: null]
-    torch_dtype: auto
+    torch_dtype: null
 
     # Passed straight to `from_pretrained(attn_implementation=...)` for GroundingDINO, 'eager' (the shipped
     # production value), 'sdpa', or 'flash_attention_2' if that package is installed.

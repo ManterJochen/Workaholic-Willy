@@ -74,6 +74,14 @@ _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM = 25.0
 #: own calculator passes this number too.
 SUPPORT_READ_ERROR_MM = 5.0
 
+#: How many of the part's measured points must reach down to the height :attr:`Scene.part_bottom_mm` lowers the part's
+#: bottom to: that height is the 20th lowest point, not the lowest. One stray reading under the table (a flying pixel at
+#: the foot, multipath on a shiny bench) would otherwise lower the bottom as far as it read low, and the set-down would
+#: drop the part from that far over the target. Fewer points than this lower nothing. The count a target's top is read
+#: from (``locator._MIN_TOP_POINTS``) for the same reason; a choice, not a measurement: a part's foot seen by a D415 at
+#: working range carries hundreds of points.
+_PART_BOTTOM_POINTS = 20
+
 
 def _has_seen_the_support(target: np.ndarray, normal: Sequence[float]) -> bool:
     """Whether a target cloud reaches far enough along the support normal to have seen what it stands on."""
@@ -195,6 +203,10 @@ class Scene:
     #: What :attr:`declared_support_height_mm` reads: set by :meth:`from_robot_config`, ``None`` where the caller's
     #: ``support_height_mm`` is the only support stated.
     _declared_support_mm: "float | None" = field(default=None, repr=False)
+    #: Whether the target cloud is what two or more looks of a wrist camera measured of the part, fused, so that
+    #: :attr:`part_bottom_mm` may lower the part's bottom to where they measured it: set by ``Located.scene`` for object
+    #: 0 of a look around, ``False`` for one view.
+    _bottom_from_looks: bool = field(default=False, repr=False)
 
     @property
     def declared_support_height_mm(self) -> float:
@@ -218,6 +230,44 @@ class Scene:
         support normal, as :attr:`support_height_mm` is, which on a level table is BASE Z.
         """
         return float(self.support_height_mm if self._declared_support_mm is None else self._declared_support_mm)
+
+    @property
+    def part_bottom_mm(self) -> float:
+        """Where the part's bottom stood, as the LOWER bound a set-down measures its hang from, BASE Z millimetres.
+
+        :attr:`declared_support_height_mm`, lowered to where two or more looks of a wrist camera measured the part's
+        foot, fused (a ``Located.scene`` of a look around's object 0), where they measured it BELOW the declared
+        support, and never raised. ``Located.set_down(i, grasp=, part_bottom_mm=scene.part_bottom_mm)`` hangs the part
+        from here.
+
+        Why only lowered (the owner, 2026-09-29, addendum 7.6): the part's bottom from all the looks may be used only as
+        a lower bound, and only where it reads at or below the declared support plus its read error
+        (:data:`SUPPORT_READ_ERROR_MM`); elsewhere the declared value stands. A bottom read more than the read error
+        above the support is a foot the looks did not see, or a raised block, and no view tells the two apart. A
+        bottom read within the read error above it is the declared support read with that error: it says the part
+        stands on it, and is no lower bound on where, since a camera never sees below a part's base; taken, it would
+        shorten the hang by up to the read error and eat the air the part is set down with. A bottom read below the
+        declared support says the part stood lower than the cell declares (a table or a container floor declared a
+        few millimetres high), which the declared value, no lower bound there, would press into the target by as much:
+        the hang grows to where the looks measured the foot, and the part lands with more air, never less. That height
+        is the :data:`_PART_BOTTOM_POINTS`-th lowest point of the cloud, not the lowest, so a stray reading under the
+        table drops nothing; a point read low only adds air. So every error still goes toward more air, and nothing
+        is pressed into what the part is set down on.
+
+        One view keeps the declared support as before: a fixed camera's (a cell with no wrist camera sets down as it
+        did), a wrist camera's that stopped at its first look, and a scene built from a cloud alone, which says
+        nothing of looks. The measurement is the extra looks' to give. From a bare cloud the declared support is the
+        one the caller stated.
+        """
+        declared = self.declared_support_height_mm
+        if not self._bottom_from_looks:
+            return declared
+        points = np.asarray(self.target_points_base_mm, dtype=float).reshape(-1, 3)
+        heights = points[np.isfinite(points).all(axis=1), 2]
+        if heights.size < _PART_BOTTOM_POINTS:
+            return declared
+        foot = float(np.partition(heights, _PART_BOTTOM_POINTS - 1)[_PART_BOTTOM_POINTS - 1])
+        return foot if foot < declared else declared
 
     @classmethod
     def from_cloud(

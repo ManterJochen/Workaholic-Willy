@@ -94,6 +94,26 @@ class TheOldKeysAreRefusedAtLoadTests(_ScratchTree):
         self.assertEqual(message.count("removed on purpose"), 2)
         self.assertIn("camera.cameras.rigs[<id>].extrinsics", message)
 
+    def test_a_tree_still_writing_the_voxel_grid_or_the_commit_gate_is_refused_saying_why(self) -> None:
+        """The same block lost the multi-view voxel grid and the commit gate that read it (2026-09-28); a tree that
+        still sizes the grid or configures the gate is told so, key by key."""
+        message = self._refusal({"depth_min_mm": 40.0, "commit_policy": {"enabled": False}})
+        self.assertIn("robot.grasping.fusion.depth_min_mm", message)
+        self.assertIn("robot.grasping.fusion.commit_policy", message)
+        self.assertEqual(message.count("removed on purpose"), 2)
+        self.assertIn("voxel grid", message)
+        self.assertIn("commit gate", message)
+
+    def test_every_key_of_the_grid_and_the_gate_is_named_and_gone_from_the_schema(self) -> None:
+        from src.config.schema._removed import REMOVED_KEYS
+        from src.config.schema.robot.grasping_schema import RobotGraspingFusionConfig
+
+        for key in ("max_views", "max_view_age_s", "voxel_size_mm", "roi_extent_mm", "max_voxels",
+                    "depth_min_mm", "depth_max_mm", "intrinsics_atol", "commit_policy"):
+            with self.subTest(key):
+                self.assertIn(f"robot.grasping.fusion.{key}", REMOVED_KEYS)
+                self.assertNotIn(key, RobotGraspingFusionConfig.model_fields)
+
 
 class ThePrimaryResolverFollowsItsRigTests(unittest.TestCase):
 

@@ -2,113 +2,12 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal
+from typing import ClassVar, Iterable, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .._base import ConfigPath, StrictModel
-
-
-class GraspingClosedLoopConfig(StrictModel):
-    """Pre-grasp refinement (closed-loop) knobs.
-
-    Consumed by :class:`src.robot.grasping.closed_loop.refinement.RefinementPolicy`
-    when the operator opts into closed-loop modes. ``enabled=False`` disables the
-    second-scan refinement step even when the active mode profile permits it. The
-    ``max_*_correction_*`` fields cap how far one refinement may move the grasp,
-    in millimetres and degrees.
-    """
-
-    enabled: bool = Field(default=False)
-    pregrasp_rescan: bool = Field(default=True)
-    max_position_correction_mm: float = Field(default=20.0, gt=0.0, le=200.0)
-    max_orientation_correction_deg: float = Field(
-        default=15.0, gt=0.0, le=90.0
-    )
-    max_grip_width_correction_mm: float = Field(
-        default=20.0, gt=0.0, le=200.0
-    )
-    target_match_iou_threshold: float = Field(default=0.3, ge=0.0, le=1.0)
-
-
-class GraspingVerificationConfig(StrictModel):
-    """Post-grasp verification knobs.
-
-    Mirrors the operator-tunable fields on
-    :class:`src.robot.grasping.closed_loop.verification.GraspVerificationPolicy`.
-    Verification stays off unless ``enabled: true`` is set explicitly.
-    """
-
-    enabled: bool = Field(default=False)
-    require_object_detected: bool = Field(default=False)
-    width_delta_min_mm: float = Field(default=2.0, ge=0.0, le=50.0)
-    #: How far above the commanded close width the jaws may sit and still count as engaged, mm.
-    #: Without a ceiling a gripper whose close never executed sits at its pre-open width (~80 mm on
-    #: a 2F-85) and still passes, so the cell carries air to the drop-off and logs a success. 10 mm
-    #: separates cleanly: a commanded 45 mm close reads 45-ish when it holds and ~80 mm when it did
-    #: not, with room for a compliant object a few mm proud of the command. Re-measure on the real
-    #: jaw before trusting the exact number.
-    width_delta_max_mm: float | None = Field(default=10.0, ge=0.0, le=50.0)
-    post_lift_vision_check: bool = Field(default=False)
-    vision_displacement_iou_max: float = Field(default=0.2, ge=0.0, le=1.0)
-    #: It governs `INCONCLUSIVE`, not `FAILED`.
-    #: A `FAILED` verification is refused one clause earlier and unconditionally
-    #: (`service.py`: `outcome is FAILED or (outcome is INCONCLUSIVE and fail_closed)`), so this
-    #: flag only ever decides what an INCONCLUSIVE result does.
-    #:
-    #: On a config-built cell it decides nothing. The verifier `from_robot_config` builds is a
-    #: `CompositeGraspVerifier` with rule `all_must_pass`, and that branch returns only FAILED or
-    #: PASSED: an inconclusive child is resolved inside the composite by `require_all_conclusive`
-    #: below and never reaches this flag. It bites for a caller-supplied verifier, which is how the
-    #: sim runners and a Python caller reach the pick path. Two keys answer one question; this one is
-    #: the older and the narrower, and `require_all_conclusive` is the one a config should set.
-    fail_closed: bool = Field(default=True)
-    require_all_conclusive: bool = Field(
-        default=False,
-        description=(
-            "How to treat a verifier that could not measure anything: a gripper with no width "
-            "feedback and no object-detect capability returns INCONCLUSIVE, not FAILED. False "
-            "(default) counts it as a pass and logs a WARNING plus a telemetry stamp saying "
-            "verification ran and learned nothing, because the alternative is a sensorless cell "
-            "that fails every pick including the good ones. True demands a real measurement and "
-            "is the right setting once the gripper actually reports one. Distinct from "
-            "`fail_closed`, which governs what happens after a verifier says FAILED."
-        ),
-    )
-
-
-class GraspingDenseRecoveryConfig(StrictModel):
-    """Scene-recovery knobs (dense-clutter behaviour).
-
-    ``allowed_actions`` is a free-form list of recovery action names, matched
-    against :class:`src.robot.grasping.recovery.SceneRecoveryAction` at
-    runtime, so unknown names produce a typed error rather than a silent allow.
-    """
-
-    enabled: bool = Field(default=False)
-    #: Per-attempt recovery budget for the dense-recovery block.
-    #:
-    #: `build_subpolicies` copies it into a `SceneRecoveryPolicy` that is stored on the service and
-    #: never consulted by any pick path, so the key is live in the type system and dead in effect.
-    #: The budget that binds at runtime is `robot.grasping.recovery.max_recovery_actions`, one
-    #: block over. Kept deliberately: deleting it forces unpicking the unconsumed `recovery_policy`
-    #: plumbing through a fail-closed service, a refactor rather than a config tidy-up.
-    max_recovery_actions: int = Field(default=2, ge=0, le=10)
-    strategy: Literal["active_perception", "next_target", "none"] = Field(
-        default="active_perception",
-        description=(
-            "Which recovery to plan when a pick fails. The policy above says what is permitted; "
-            "this says what is proposed.\n\n"
-            "`active_perception` (default) escalates RESCAN -> NEXT_VIEWPOINT: look again, then "
-            "look from somewhere else. It never moves a part, so it cannot make the scene worse, "
-            "and it addresses the failure this reference actually has: 68 % of visible objects "
-            "yield no candidate at all, which is a seeing problem. `next_target` simply takes a "
-            "different object: the cheapest possible recovery and the wrong answer for a "
-            "prompt-driven pick, because avoiding the asked-for object is not recovering. `none` "
-            "plans nothing, which is what an operator wants while measuring the policy alone."
-        ),
-    )
-    allowed_actions: tuple[str, ...] = Field(default=("next_viewpoint",))
+from .._removed import REMOVED_GRASP_MODES, REMOVED_RECOVERY_ACTIONS
 
 
 class GraspingDecisionConfig(StrictModel):
@@ -128,22 +27,23 @@ class GraspingDecisionConfig(StrictModel):
         ``uncertainty = (1 - top_score)`` plus an optional ``reasons_penalty``
         when the grasp result carries failure reasons. Default ``0.4`` => require
         ``top_score >= 0.6``.
-    max_reobservations
-        Bounded camera re-observation budget per
-        :meth:`AutonomousGraspService.pick` call. Default ``2``.
     reasons_penalty
         Added to the base uncertainty when :class:`GraspResult.reasons` is
         non-empty. Default ``0.2``.
     fail_closed_on_real_hardware
         When :data:`True` and the running arm reports
-        ``capabilities.is_simulated == False``, an exhausted re-observation budget
-        or absent viewpoint planner is mapped to
-        :class:`DecisionAction.FAIL_CLOSED`. Simulated runs stay permissive.
+        ``capabilities.is_simulated == False``, a grasp less confident than the
+        threshold is mapped to :class:`DecisionAction.FAIL_CLOSED`. Simulated runs
+        stay permissive.
+
+    The gate decides once per pick, on one frame, and never moves the camera to
+    look again: ``max_reobservations``, the budget for that, was removed on
+    2026-09-29 with the camera move it budgeted. A tree that still writes it is
+    refused at load with the reason (``src/config/schema/_removed.py``).
     """
 
     enabled: bool = Field(default=False)
     auto_uncertainty_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
-    max_reobservations: int = Field(default=2, ge=0, le=10)
     reasons_penalty: float = Field(default=0.2, ge=0.0, le=1.0)
     fail_closed_on_real_hardware: bool = Field(default=True)
 
@@ -152,11 +52,35 @@ _KNOWN_GRASP_MODES: frozenset[str] = frozenset(
     {
         "easy",
         "auto",
-        "closed_loop",
         "dense_clutter",
-        "dense_autonomous",
     }
 )
+
+
+def _refuse_removed_actions(where: str, actions: Iterable[str]) -> None:
+    """Refuse a recovery action removed on purpose, with the sentence that names the action to use instead.
+
+    ``next_viewpoint`` was merged into ``rescan`` on 2026-09-29. ``recovery.allowed_actions`` and
+    ``recovery.per_action_budget`` ask this before their own check, so a tree or a preset written before
+    then is told what to write, not only that the name is unknown.
+    """
+    for action in actions:
+        said = REMOVED_RECOVERY_ACTIONS.get(str(action).strip().lower())
+        if said is not None:
+            raise ValueError(f"{where} names the recovery action {action!r}, removed on purpose: {said}")
+
+
+def _refuse_removed_modes(where: str, modes: Iterable[str]) -> None:
+    """Refuse a grasp mode removed on purpose, with the sentence that names the mode to use instead.
+
+    ``closed_loop`` and ``dense_autonomous`` left on 2026-09-29 with the two-scan refinement they
+    ran. Every mode list below asks this before its own check, so a tree or a preset written before
+    then is told what to write, not only that the name is unknown.
+    """
+    for mode in modes:
+        said = REMOVED_GRASP_MODES.get(str(mode).strip().lower())
+        if said is not None:
+            raise ValueError(f"{where} names the grasp mode {mode!r}, removed on purpose: {said}")
 
 
 class GraspingFeasibilityConfig(StrictModel):
@@ -196,7 +120,7 @@ class GraspingFeasibilityConfig(StrictModel):
     enabled: bool = Field(default=False)
     weight: float = Field(default=0.0, ge=0.0, le=1.0)
     apply_modes: tuple[str, ...] = Field(
-        default=("auto", "dense_clutter", "dense_autonomous")
+        default=("auto", "dense_clutter")
     )
     ik_quality_enabled: bool = Field(default=False)
     ik_quality_weight: float = Field(default=0.4, ge=0.0, le=1.0)
@@ -208,6 +132,7 @@ class GraspingFeasibilityConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_apply_modes(self) -> "GraspingFeasibilityConfig":
+        _refuse_removed_modes("feasibility.apply_modes", self.apply_modes)
         unknown = [m for m in self.apply_modes if m not in _KNOWN_GRASP_MODES]
         if unknown:
             raise ValueError(
@@ -256,7 +181,7 @@ class GraspingOcclusionConfig(StrictModel):
     directional_enabled: bool = Field(default=False)
     hard_reject_enabled: bool = Field(default=False)
     apply_modes: tuple[str, ...] = Field(
-        default=("auto", "dense_clutter", "dense_autonomous")
+        default=("auto", "dense_clutter")
     )
     corridor_radius_mm: float = Field(default=20.0, gt=0.0)
     corridor_step_mm: float = Field(default=5.0, gt=0.0)
@@ -268,6 +193,7 @@ class GraspingOcclusionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate(self) -> "GraspingOcclusionConfig":
+        _refuse_removed_modes("occlusion.apply_modes", self.apply_modes)
         unknown = [m for m in self.apply_modes if m not in _KNOWN_GRASP_MODES]
         if unknown:
             raise ValueError(
@@ -296,7 +222,7 @@ class BlockerGraphSchemaConfig(StrictModel):
     mask_adjacency_enabled: bool = Field(default=False)
     depth_only_enabled: bool = Field(default=False)
     #: Reserved: whether two candidates whose approach corridors overlap count as blocking each other.
-    #: The flag is carried the whole way, schema -> EffectiveOrderingConfig -> the frozen 79-key
+    #: The flag is carried the whole way, schema -> EffectiveOrderingConfig -> the frozen 77-key
     #: telemetry dict as `ordering_corridor_overlap_enabled` -> BlockerGraphConfig, and
     #: `target_selector._blocks` does nothing with it: corridor geometry is not consumed there. The
     #: key reaches a frozen telemetry contract, so removing it changes that contract's key set.
@@ -321,7 +247,7 @@ class GraspingOrderingConfig(StrictModel):
     unlock_weight: float = Field(default=0.0, ge=0.0, le=1.0)
     max_local_score_drop: float = Field(default=0.1, ge=0.0, le=1.0)
     apply_modes: tuple[str, ...] = Field(
-        default=("auto", "dense_clutter", "dense_autonomous")
+        default=("auto", "dense_clutter")
     )
     blocker_graph: BlockerGraphSchemaConfig = Field(
         default_factory=BlockerGraphSchemaConfig
@@ -329,6 +255,7 @@ class GraspingOrderingConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_apply_modes(self) -> "GraspingOrderingConfig":
+        _refuse_removed_modes("ordering.apply_modes", self.apply_modes)
         unknown = [m for m in self.apply_modes if m not in _KNOWN_GRASP_MODES]
         if unknown:
             raise ValueError(
@@ -348,6 +275,9 @@ class GraspingRecoveryConfig(StrictModel):
     modes. When :attr:`allowed_actions` contains a physical action
     (``nudge_target`` or ``container_agitate``), :attr:`fixture` must be set: the
     cross-field check refuses to arm a physical recovery without an envelope.
+    ``container_agitate`` is refused as well unless ``support.container`` declares
+    its interior box. That check sits on :class:`RobotGraspingConfig`
+    (``_container_agitate_needs_a_container``) because it needs both blocks.
     """
 
     enabled: bool = Field(default=False)
@@ -355,7 +285,7 @@ class GraspingRecoveryConfig(StrictModel):
     allowed_actions: tuple[str, ...] = Field(default=())
     per_action_budget: tuple[tuple[str, int], ...] = Field(default=())
     apply_modes: tuple[str, ...] = Field(
-        default=("auto", "dense_clutter", "dense_autonomous")
+        default=("auto", "dense_clutter")
     )
     fixture: "GraspingRecoveryFixtureConfig | None" = Field(default=None)
 
@@ -364,13 +294,18 @@ class GraspingRecoveryConfig(StrictModel):
         valid_actions = frozenset(
             {
                 "rescan",
-                "next_viewpoint",
                 "next_target",
                 "nudge_target",
                 "container_agitate",
             }
         )
         physical = frozenset({"nudge_target", "container_agitate"})
+        _refuse_removed_actions("recovery.allowed_actions", self.allowed_actions)
+        _refuse_removed_actions(
+            "recovery.per_action_budget",
+            (entry[0] for entry in self.per_action_budget
+             if isinstance(entry, tuple) and len(entry) == 2),
+        )
         for action in self.allowed_actions:
             if action not in valid_actions:
                 raise ValueError(
@@ -397,6 +332,7 @@ class GraspingRecoveryConfig(StrictModel):
                     "recovery.per_action_budget counts must be non-negative "
                     f"ints; got {action}={count!r}"
                 )
+        _refuse_removed_modes("recovery.apply_modes", self.apply_modes)
         unknown = [m for m in self.apply_modes if m not in _KNOWN_GRASP_MODES]
         if unknown:
             raise ValueError(
@@ -405,9 +341,17 @@ class GraspingRecoveryConfig(StrictModel):
             )
         physical_in_use = [a for a in self.allowed_actions if a in physical]
         if physical_in_use and self.fixture is None:
+            # This check runs before the container one on RobotGraspingConfig, so for container_agitate it
+            # says both, and the operator does not add a fixture only to be refused again.
+            container = (
+                "; container_agitate also needs robot.grasping.support.container to declare its interior box "
+                "(interior_min_mm and interior_max_mm)"
+                if "container_agitate" in physical_in_use
+                else ""
+            )
             raise ValueError(
                 "recovery physical actions require a fixture envelope; "
-                f"got {physical_in_use!r} without fixture"
+                f"got {physical_in_use!r} without fixture{container}"
             )
         return self
 
@@ -419,6 +363,13 @@ class GraspingRecoveryFixtureConfig(StrictModel):
     separate, agitating a container. That is motion aimed at the scene rather than at a grasp, so
     its reach is declared by the operator rather than inferred, and the recovery planner may not
     exceed these three numbers.
+
+    ``max_nudge_mm`` is the longest push the cell allows, 50 mm at most, and above that the config
+    is refused (owner, 2026-09-29). A ``nudge_target`` push moves the part 30 mm unless asked for
+    another distance, and never more than this: with the default of 30 mm, a request for more is
+    refused, never shortened. Below 10 mm no push can open room for a finger, so none is planned. The
+    push's landing is bounded by what the camera saw (the workspace box intersected with the seen
+    table, shrunk by the push plus 30 mm), and this box can only narrow it.
     """
 
     #: Centre in robot BASE frame (mm) of the axis-aligned box a physical recovery action may act
@@ -427,10 +378,14 @@ class GraspingRecoveryFixtureConfig(StrictModel):
     #: Half the side length on each axis (mm), so the box spans ``center +/- half_extents``. Half
     #: extents rather than corners because the recovery planner reasons about distance from the centre.
     half_extents_mm: tuple[float, float, float] = Field(...)
-    #: Longest single push (mm) any one recovery action may command. Bounds the displacement even when
-    #: the box above would permit more: a large shove can eject a part from the bin or bury the target
-    #: deeper, so the ceiling is deliberately small and separate from the envelope.
-    max_nudge_mm: float = Field(default=5.0, ge=0.0, le=50.0)
+    #: The longest single push (mm) any recovery action may command: a ``nudge_target`` push asked
+    #: for more is refused, and the legacy nudge executor cuts a longer offset to it. A push is 30 mm
+    #: when nothing asks otherwise, or this when it is lower. It bounds the displacement even where the
+    #: box above would permit more: a large shove can push a part off the seen table, into a neighbour
+    #: or out of the camera's view, so 50 mm is a hard cap and a larger value is refused. The default
+    #: was 5 mm until 2026-09-29, less than the Hand-E finger's 10.8 mm thickness, so no push could open
+    #: room for a finger; the owner set 30 mm.
+    max_nudge_mm: float = Field(default=30.0, ge=0.0, le=50.0)
 
 
 class UncertaintyChannelWeightsConfig(StrictModel):
@@ -493,7 +448,7 @@ class GraspingUncertaintyConfig(StrictModel):
         candidate score. Default ``0.0`` => ranking byte-identical.
     recovery_aggressive_threshold
         Recovery carrier. When fused exceeds this threshold the orchestrator may
-        prefer perception-recovery actions (``NEXT_VIEWPOINT``/``RESCAN``). Default
+        prefer the perception-recovery action (``RESCAN``). Default
         ``1.01`` => never trips (fused is clamped to ``[0, 1]``).
     calibration_artifact_path
         Optional path (absolute or relative to the config root) to a JSON
@@ -505,7 +460,7 @@ class GraspingUncertaintyConfig(StrictModel):
     enabled: bool = Field(default=False)
     fail_closed_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
     apply_modes: tuple[str, ...] = Field(
-        default=("auto", "dense_clutter", "dense_autonomous")
+        default=("auto", "dense_clutter")
     )
     weights: UncertaintyChannelWeightsConfig = Field(
         default_factory=UncertaintyChannelWeightsConfig
@@ -546,7 +501,7 @@ class GraspingUncertaintyConfig(StrictModel):
     # auto-tuning it up would silently enable reordering, defeating the observe-only intent.
     rerank_weight: float = Field(default=0.0, ge=0.0, le=0.5)
     rerank_modes: tuple[str, ...] = Field(
-        default=("dense_clutter", "dense_autonomous")
+        default=("dense_clutter",)
     )
 
     @model_validator(mode="after")
@@ -556,6 +511,8 @@ class GraspingUncertaintyConfig(StrictModel):
                 "uncertainty.apply_modes must not include 'easy'; "
                 "easy mode is permanently excluded from T6."
             )
+        _refuse_removed_modes("uncertainty.apply_modes", self.apply_modes)
+        _refuse_removed_modes("uncertainty.rerank_modes", self.rerank_modes)
         unknown = [m for m in self.apply_modes if m not in _KNOWN_GRASP_MODES]
         if unknown:
             raise ValueError(
@@ -567,7 +524,7 @@ class GraspingUncertaintyConfig(StrictModel):
                 "uncertainty.enabled=True requires at least one "
                 "weight to be strictly positive; got all zeros."
             )
-        _dense_rerank_modes = frozenset({"dense_clutter", "dense_autonomous"})
+        _dense_rerank_modes = frozenset({"dense_clutter"})
         bad_rerank = [m for m in self.rerank_modes if m not in _dense_rerank_modes]
         if bad_rerank:
             raise ValueError(
@@ -598,7 +555,7 @@ class GraspingSuccessModelConfig(StrictModel):
         (:mod:`src.config.paths`). Defaults to the committed v1 artifact under the
         repository's ``assets/models/success_probability/v1``.
     apply_modes
-        Stable mode names the model may score in. Defaults to the four canonical
+        Stable mode names the model may score in. Defaults to the three canonical
         modes; ``"easy"`` is included because easy pick rate is the
         strict-improvement target the model is calibrated against.
     ranking_blend_enabled
@@ -613,7 +570,7 @@ class GraspingSuccessModelConfig(StrictModel):
         Default ``0.20``.
     ranking_blend_modes
         Locked dense-only subset of grasp-modes the blend reranker may operate in:
-        a subset of ``{"dense_clutter", "dense_autonomous"}`` (``"easy"`` and
+        a subset of ``{"dense_clutter"}`` (``"easy"`` and
         ``"auto"`` stay geometry-only so easy pick-rate cannot regress). Must also
         be a subset of ``apply_modes`` (else the shadow probability is never
         annotated and the blend has nothing to read).
@@ -625,7 +582,7 @@ class GraspingSuccessModelConfig(StrictModel):
         validate_default=True,
     )
     apply_modes: tuple[str, ...] = Field(
-        default=("easy", "auto", "dense_clutter", "dense_autonomous")
+        default=("easy", "auto", "dense_clutter")
     )
     ranking_blend_enabled: bool = Field(default=False)
     ranking_blend_weight: float = Field(
@@ -641,7 +598,7 @@ class GraspingSuccessModelConfig(StrictModel):
         },
     )
     ranking_blend_modes: tuple[str, ...] = Field(
-        default=("dense_clutter", "dense_autonomous")
+        default=("dense_clutter",)
     )
     lifecycle_phase: Literal["shadow", "canary", "active"] = Field(
         default="shadow",
@@ -657,6 +614,8 @@ class GraspingSuccessModelConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate(self) -> "GraspingSuccessModelConfig":
+        _refuse_removed_modes("success_model.apply_modes", self.apply_modes)
+        _refuse_removed_modes("success_model.ranking_blend_modes", self.ranking_blend_modes)
         unknown = [m for m in self.apply_modes if m not in _KNOWN_GRASP_MODES]
         if unknown:
             raise ValueError(
@@ -665,10 +624,10 @@ class GraspingSuccessModelConfig(StrictModel):
             )
         if len(set(self.apply_modes)) != len(self.apply_modes):
             raise ValueError("success_model.apply_modes must be unique")
-        # Ranking-blend is locked to dense-only so easy/auto/closed_loop never blend and easy pick-rate
+        # Ranking-blend is locked to dense-only so easy and auto never blend and easy pick-rate
         # cannot regress regardless of operator config.
         _DENSE_ONLY: frozenset[str] = frozenset(
-            {"dense_clutter", "dense_autonomous"}
+            {"dense_clutter"}
         )
         forbidden = [
             m for m in self.ranking_blend_modes if m not in _DENSE_ONLY
@@ -849,6 +808,7 @@ class GraspingWatchdogConfig(StrictModel):
                 "easy mode is permanently excluded from U+ "
                 "behavioural layers."
             )
+        _refuse_removed_modes("watchdog.block_modes", self.block_modes)
         unknown = [m for m in self.block_modes if m not in _KNOWN_GRASP_MODES]
         if unknown:
             raise ValueError(
@@ -980,107 +940,6 @@ class GraspingPerformanceConfig(StrictModel):
         return self
 
 
-class RobotGraspingCommitPolicyConfig(StrictModel):
-    """Mandatory dense multi-view commit gate.
-
-    When enabled (and the resolved mode is in :attr:`apply_modes`), the pick loop
-    refuses to hand a winning candidate to execution unless the fused scene memory
-    satisfies both ``views_accepted >= min_views_accepted`` and the candidate's
-    approach corridor (a :attr:`corridor_length_mm` x :attr:`corridor_radius_mm`
-    capsule along its approach vector) has at least
-    :attr:`min_corridor_hit_fraction` of its in-ROI voxels marked hit. On refusal
-    the orchestrator triggers up to :attr:`max_reobserve_attempts` more captures
-    before surfacing a typed
-    :attr:`~src.robot.grasping.loop.pick_loop.PickOutcome.NO_COMMIT_INSUFFICIENT_FUSION`.
-    Default ``enabled=False`` is byte-identical.
-    """
-
-    enabled: bool = Field(
-        default=False,
-        description=(
-            "Top-level switch. When False the commit gate is a no-op "
-            "(byte-identical)."
-        ),
-    )
-    min_views_accepted: int = Field(
-        default=2,
-        ge=1,
-        le=64,
-        description=(
-            "Minimum number of accepted views that must already be "
-            "fused before the orchestrator may commit a candidate to "
-            "execution."
-        ),
-    )
-    min_corridor_hit_fraction: float = Field(
-        default=0.30,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Minimum fraction of voxels inside the candidate's "
-            "approach corridor that must be marked hit in the fusion "
-            "grid. 0.0 disables the corridor check (views-only gate)."
-        ),
-    )
-    corridor_radius_mm: float = Field(
-        default=25.0,
-        gt=0.0,
-        le=200.0,
-        description=(
-            "Radius (mm) of the cylindrical capsule around the "
-            "candidate's approach line used for corridor evidence."
-        ),
-    )
-    corridor_length_mm: float = Field(
-        default=120.0,
-        gt=0.0,
-        le=1_000.0,
-        description=(
-            "Length (mm) of the corridor capsule along the candidate's "
-            "approach vector, anchored at the grasp position and "
-            "extending opposite the approach (i.e. into the camera-"
-            "viewing volume where evidence should accumulate)."
-        ),
-    )
-    max_reobserve_attempts: int = Field(
-        default=1,
-        ge=0,
-        le=10,
-        description=(
-            "Per-pick budget of additional perception captures "
-            "triggered when the gate refuses. After exhaustion the "
-            "pick surfaces NO_COMMIT_INSUFFICIENT_FUSION."
-        ),
-    )
-    apply_modes: tuple[str, ...] = Field(
-        default=("auto", "dense_clutter", "dense_autonomous"),
-        description=(
-            "Mode labels that activate the gate. Defaults to all modes "
-            "except easy. The orchestrator skips the gate (and the "
-            "reobserve loop) when its resolved mode label is not in this set."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _validate(self) -> "RobotGraspingCommitPolicyConfig":
-        if not self.apply_modes:
-            raise ValueError(
-                "commit_policy.apply_modes must contain at least one "
-                "mode label"
-            )
-        if len(set(self.apply_modes)) != len(self.apply_modes):
-            raise ValueError(
-                "commit_policy.apply_modes must not contain duplicates"
-            )
-        if "easy" in self.apply_modes:
-            raise ValueError(
-                "commit_policy.apply_modes must not include 'easy' "
-                "(locked Q5: easy is exempt from mandatory multi-view "
-                "decisioning)"
-            )
-        return self
-
-
 class RobotGraspingApproachValidationConfig(StrictModel):
     """Dense-mode swept-volume approach/retreat validation.
 
@@ -1116,15 +975,16 @@ class RobotGraspingApproachValidationConfig(StrictModel):
         description="Extra margin (mm) added to the swept gripper box when testing collisions.",
     )
     apply_modes: tuple[str, ...] = Field(
-        default=("dense_clutter", "dense_autonomous"),
+        default=("dense_clutter",),
         description=(
-            "Mode labels that activate the validator (the dense modes by default). The orchestrator "
+            "Mode labels that activate the validator (the dense mode by default). The orchestrator "
             "skips the check when its resolved mode label is not in this set. easy is locked out."
         ),
     )
 
     @model_validator(mode="after")
     def _validate(self) -> "RobotGraspingApproachValidationConfig":
+        _refuse_removed_modes("approach_validation.apply_modes", self.apply_modes)
         if not self.apply_modes:
             raise ValueError("approach_validation.apply_modes must contain at least one mode label")
         if len(set(self.apply_modes)) != len(self.apply_modes):
@@ -1151,14 +1011,12 @@ class FusionCameraConfig(StrictModel):
 class FusionGeometryConfig(StrictModel):
     """Fuse each object's surface across the fixed cameras and feed that to the grasp generator.
 
-    A separate switch from ``fusion.enabled``, but not an independent one. ``fusion.enabled`` turns
-    on the voxel-occupancy substrate, which is shadow-only and emits telemetry no grasping path
-    consumes, AND it is what builds the other cameras' CAMERA to BASE resolvers
-    (``build_config_frame_resolvers`` returns none while it is off). With ``fusion.enabled`` false
-    every second view is dropped at the pick with a warning, so geometry fusion needs both switches
-    on (``CameraFusionPlan`` checks it). This one changes the grasp candidates themselves, since
-    every camera that can identify an object contributes its view of that object's surface and the
-    generator plans on the union.
+    A separate switch from ``fusion.enabled``, but not an independent one. ``fusion.enabled`` is
+    what builds the other cameras' CAMERA to BASE resolvers (``build_config_frame_resolvers``
+    returns none while it is off). With ``fusion.enabled`` false every second view is dropped at the
+    pick with a warning, so geometry fusion needs both switches on (``CameraFusionPlan`` checks it).
+    This one changes the grasp candidates themselves, since every camera that can identify an object
+    contributes its view of that object's surface and the generator plans on the union.
 
     A candidate is accepted or rejected on its closing axis, the closing axis comes from the
     object's silhouette, and one depth view sees one side of an object while an antipodal grasp
@@ -1174,7 +1032,7 @@ class FusionGeometryConfig(StrictModel):
         default=False,
         description=(
             "Top-level switch. False (default) = the generator sees one view per object, exactly as "
-            "before: byte-identical. Needs ``fusion.enabled`` too: that switch also builds the other "
+            "before: byte-identical. Needs ``fusion.enabled`` too: that switch builds the other "
             "cameras' CAMERA to BASE resolvers, without which every second view is dropped."
         ),
     )
@@ -1302,107 +1160,32 @@ class FusionGeometryConfig(StrictModel):
 
 
 class RobotGraspingFusionConfig(StrictModel):
-    """Bounded multi-view fusion substrate config.
+    """Multi-camera fusion: which cameras a cell fuses, and how each object's surface is fused.
 
-    Configures the deterministic voxel-occupancy grid that
-    :class:`src.robot.grasping.multiview.fusion.SceneFusion` maintains
-    across perception captures within a pick session. The deployment posture is
-    shadow-only: even with ``enabled=True`` the runtime merely ingests perception
-    frames and emits telemetry; the commit gate is what turns fused evidence into
-    dense-mode decisioning.
+    ``enabled`` builds the fused cameras' CAMERA to BASE resolvers
+    (``build_config_frame_resolvers``, one per enabled camera ``cameras`` lists, from the calibration
+    declared on its rig) and does nothing else; ``geometry`` fuses each object's surface across
+    those cameras and hands the union to the grasp generator. Fusing takes both: with ``enabled``
+    off the resolver map is empty and every other camera's view is dropped at the pick with a
+    warning, and with ``geometry.enabled`` off nothing asks for the map. ``CameraFusionPlan`` names
+    whichever is missing.
 
-    All limits are hard caps. Validators enforce positive/finite numerics,
-    ``depth_min_mm < depth_max_mm``, per-axis ROI extent a positive multiple of
-    ``voxel_size_mm``, and ROI x voxel-size never exceeding ``max_voxels`` (so a
-    misconfiguration cannot allocate a gigabyte-scale grid).
+    The voxel-occupancy grid this block also configured, and the commit gate that read it, were
+    removed on 2026-09-28: the grid's contents never reached a grasp, a decision or a measured
+    result. A tree that still writes one of their keys is refused at load with the reason
+    (``src/config/schema/_removed.py``).
     """
 
     enabled: bool = Field(
         default=False,
         description=(
-            "Top-level switch. When False the orchestrator behaves "
-            "byte-identically: no fusion module is constructed, no "
-            "telemetry emitted, no perception ingest performed."
-        ),
-    )
-    max_views: int = Field(
-        default=6,
-        ge=1,
-        le=64,
-        description=(
-            "Maximum number of accepted views retained simultaneously. "
-            "Sliding FIFO: oldest accepted view evicted on overflow."
-        ),
-    )
-    max_view_age_s: float = Field(
-        default=20.0,
-        gt=0.0,
-        le=600.0,
-        description=(
-            "Accepted views older than this are dropped on the next "
-            "ingest (wall-clock relative to the newest accepted view)."
-        ),
-    )
-    voxel_size_mm: float = Field(
-        default=6.0,
-        gt=0.0,
-        le=100.0,
-        description="Cubic voxel edge length in millimetres.",
-    )
-    roi_extent_mm: tuple[float, float, float] = Field(
-        default=(600.0, 600.0, 360.0),
-        description=(
-            "Total X/Y/Z extent (mm) of the fusion ROI, centered on "
-            "the workspace origin. Each axis must be > 0 and an "
-            "integer multiple of ``voxel_size_mm``."
-        ),
-    )
-    max_voxels: int = Field(
-        default=1_000_000,
-        ge=1_000,
-        le=8_000_000,
-        description=(
-            "Hard cap on total voxel count "
-            "(``roi_x/voxel_size * roi_y/voxel_size * roi_z/voxel_size``)."
-        ),
-    )
-    depth_min_mm: float = Field(
-        default=80.0,
-        gt=0.0,
-        le=10_000.0,
-        description="Minimum valid depth sample (mm). Below: rejected.",
-    )
-    depth_max_mm: float = Field(
-        default=1_400.0,
-        gt=0.0,
-        le=10_000.0,
-        description="Maximum valid depth sample (mm). Above: rejected.",
-    )
-    intrinsics_atol: float = Field(
-        default=1e-6,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Absolute tolerance for per-element intrinsic-matrix drift "
-            "between views (strict frame contract). Views whose "
-            "intrinsics differ from the first accepted view by more "
-            "than this are refused."
-        ),
-    )
-    commit_policy: RobotGraspingCommitPolicyConfig = Field(
-        default_factory=RobotGraspingCommitPolicyConfig,
-        description=(
-            "Mandatory dense multi-view commit gate. Defaults to "
-            "``enabled=False`` (byte-identical)."
-        ),
-    )
-    active_perception_use_fusion: bool = Field(
-        default=False,
-        description=(
-            "Read-side wiring switch. When True the viewpoint planner "
-            "may consume fused-state information gain when scoring next "
-            "viewpoints. Default False leaves the planner path "
-            "byte-identical, so the commit gate can be armed on its own."
+            "Builds the CAMERA to BASE resolver of each enabled camera ``cameras`` lists, from the "
+            "calibration declared on its rig, and that is all it does: those resolvers are how "
+            "``geometry`` places every other camera's view in the base frame (the voxel grid this "
+            "switch also fed was removed on 2026-09-28). They are built while ``geometry.enabled`` "
+            "is on as well. False (default) builds none, so with ``geometry.enabled`` on every other "
+            "camera's view is dropped at the pick with a warning and the cell grasps single-view. It "
+            "fuses nothing on its own, and the primary camera's resolver never waits for it."
         ),
     )
     cameras: dict[str, FusionCameraConfig] = Field(
@@ -1425,49 +1208,10 @@ class RobotGraspingFusionConfig(StrictModel):
         default_factory=FusionGeometryConfig,
         description=(
             "Fuse each object's surface across ``cameras`` and hand the union to the grasp "
-            "generator. Independent of ``enabled`` above: that switch runs the shadow voxel "
-            "substrate, this one changes the grasp candidates."
+            "generator. Needs ``enabled`` above as well: that switch builds the other cameras' "
+            "CAMERA to BASE resolvers, without which every second view is dropped at the pick."
         ),
     )
-
-    @model_validator(mode="after")
-    def _validate(self) -> "RobotGraspingFusionConfig":
-        if self.depth_min_mm >= self.depth_max_mm:
-            raise ValueError(
-                "fusion.depth_min_mm must be strictly less than "
-                f"depth_max_mm; got {self.depth_min_mm} >= "
-                f"{self.depth_max_mm}"
-            )
-        if len(self.roi_extent_mm) != 3:
-            raise ValueError(
-                "fusion.roi_extent_mm must have exactly 3 components "
-                f"(x, y, z); got {self.roi_extent_mm!r}"
-            )
-        if any((not isinstance(v, (int, float))) or v <= 0.0 for v in self.roi_extent_mm):
-            raise ValueError(
-                "fusion.roi_extent_mm components must all be > 0; got "
-                f"{self.roi_extent_mm!r}"
-            )
-        vs = float(self.voxel_size_mm)
-        eps = 1e-9
-        for axis_label, extent in zip("xyz", self.roi_extent_mm):
-            ratio = float(extent) / vs
-            if abs(ratio - round(ratio)) > eps:
-                raise ValueError(
-                    f"fusion.roi_extent_mm[{axis_label}]={extent} must "
-                    f"be an integer multiple of voxel_size_mm={vs}"
-                )
-        total_voxels = 1
-        for extent in self.roi_extent_mm:
-            total_voxels *= int(round(float(extent) / vs))
-        if total_voxels > self.max_voxels:
-            raise ValueError(
-                "fusion ROI/voxel combo would allocate "
-                f"{total_voxels} voxels which exceeds max_voxels="
-                f"{self.max_voxels}. Coarsen voxel_size_mm or shrink "
-                "roi_extent_mm."
-            )
-        return self
 
 
 class GraspingParallelJawGeometryConfig(StrictModel):
@@ -1611,6 +1355,20 @@ class GraspingContainerConfig(StrictModel):
             "neighbour points they are checked alongside."
         ),
     )
+
+    @property
+    def interior_declared(self) -> bool:
+        """Whether this container is declared as a box: both interior corners given, each axis a real span.
+
+        ``floor_height_mm`` alone raises the surface the parts rest on, but it declares no interior to act
+        inside. So a recovery that needs a container (``container_agitate``) or a push box inside one reads
+        this.
+        """
+
+        low, high = self.interior_min_mm, self.interior_max_mm
+        if low is None or high is None:
+            return False
+        return all(float(h) > float(lo) for lo, h in zip(low, high))
 
     @model_validator(mode="after")
     def _walls_need_a_box(self) -> "GraspingContainerConfig":
@@ -1953,9 +1711,13 @@ class RobotGraspingConfig(StrictModel):
     """Vendor-neutral grasping-behaviour surface.
 
     Sits as a sibling of :class:`RobotSafetyConfig` under :class:`RobotConfig`.
-    All knobs are behavioural (mode selection, closed-loop refinement,
-    verification, recovery, decision); safety remains exclusively under
-    ``robot.safety``.
+    All knobs are behavioural (mode selection, recovery, decision); safety
+    remains exclusively under ``robot.safety``.
+
+    ``verification`` and ``dense_recovery`` were removed on 2026-09-29: no pick path ran the
+    post-grasp verification stage, the gripper's own hold evidence decides every close, and the
+    dense-recovery policy was consulted by no pick. A tree that still writes either block is refused
+    at load with the sentence that says what to do instead (``src/config/schema/_removed.py``).
 
     The runtime derives per-mode behaviour from the
     :class:`src.robot.execution.autonomous_grasp.GraspBehaviorProfile`
@@ -1966,8 +1728,9 @@ class RobotGraspingConfig(StrictModel):
     layer imports no runtime modules.
     """
 
-    # A stable :class:`GraspMode` name resolved at runtime: "easy", "auto", "closed_loop",
-    # "dense_clutter" or "dense_autonomous".
+    # A stable :class:`GraspMode` name resolved at runtime: "easy", "auto" or "dense_clutter".
+    # "closed_loop" and "dense_autonomous" were removed on 2026-09-29 and are refused at load with
+    # the mode to name instead (`_refuse_removed_default_mode`).
     default_mode: str = Field(default="auto", min_length=1)
     # Upper bound on autonomous attempts per pick() call.
     max_attempts: int = Field(default=5, ge=1, le=50)
@@ -2015,15 +1778,6 @@ class RobotGraspingConfig(StrictModel):
             'substitution, e.g. record_log_path: "${WILLY_RECORD_LOG:-}" -> an empty (unset) value '
             "is treated as off."
         ),
-    )
-    closed_loop: GraspingClosedLoopConfig = Field(
-        default_factory=GraspingClosedLoopConfig
-    )
-    verification: GraspingVerificationConfig = Field(
-        default_factory=GraspingVerificationConfig
-    )
-    dense_recovery: GraspingDenseRecoveryConfig = Field(
-        default_factory=GraspingDenseRecoveryConfig
     )
     decision: GraspingDecisionConfig = Field(
         default_factory=GraspingDecisionConfig
@@ -2133,6 +1887,25 @@ class RobotGraspingConfig(StrictModel):
         # field-for-field under its `apply_modes`.
     }
 
+    #: What the refusal says for each block in ``UNWIRED_SWITCHES``, in place of the switch.
+    UNWIRED_REASONS: ClassVar[dict[str, str]] = {
+        "occlusion": (
+            "The value lands in EffectiveGraspingConfig (the cell's telemetry) and nothing reads it "
+            "back, measured on-box, see docs/grasping-config-reference.md section 6.1. Enabling it "
+            "would give you a cell that reports the capability and does not have it. Set it back to "
+            "false. feasibility additionally carries a measured on-box regression "
+            "(calculator.py:414: ik_quality took the UR5e overhead pick 10/10 -> 0/10), so wiring it "
+            "up is not a matter of connecting it and moving on."
+        ),
+    }
+
+    @field_validator("default_mode")
+    @classmethod
+    def _refuse_removed_default_mode(cls, value: str) -> str:
+        """A mode removed on purpose is refused here, at load, rather than at the first pick."""
+        _refuse_removed_modes("default_mode", (value,))
+        return value
+
     @model_validator(mode="after")
     def _refuse_unwired_switches(self) -> "RobotGraspingConfig":
         """Fail closed on a switch that would read as on and do nothing."""
@@ -2151,12 +1924,31 @@ class RobotGraspingConfig(StrictModel):
             raise ValueError(
                 f"robot.grasping: {', '.join(offenders)} is set, but the "
                 f"{'block' if len(blocks) == 1 else 'blocks'} {', '.join(blocks)} "
-                "never reaches the pick path. The value lands in EffectiveGraspingConfig (the "
-                "cell's telemetry) and nothing reads it back, measured on-box, see "
-                "docs/grasping-config-reference.md section 6.1. Enabling it would give you a cell that "
-                "reports the capability and does not have it. Set it back to false. "
-                "feasibility additionally carries a measured on-box regression "
-                "(calculator.py:414: ik_quality took the UR5e overhead pick 10/10 -> 0/10), so "
-                "wiring it up is not a matter of connecting it and moving on."
+                "never reaches the pick path. "
+                + " ".join(self.UNWIRED_REASONS[block] for block in blocks)
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _container_agitate_needs_a_container(self) -> "RobotGraspingConfig":
+        """``container_agitate`` is refused at load unless ``support.container`` declares its interior box.
+
+        Owner, 2026-09-29. The action exists for a bin, and this cell's parts lie on a table. Its executor
+        does one of two things: it shakes the air where the arm stands, or it sweeps blind along BASE +X,
+        which is the uncontrolled motion the owner ruled out. Agitating a bin is designed when a bin
+        exists. Until then, a config that names the action on a cell without one is refused here, with
+        one sentence. Before, it was accepted and then never planned. This applies whether it is named in
+        ``allowed_actions`` or in ``per_action_budget``, and whether or not recovery is enabled.
+        """
+
+        named = "container_agitate" in self.recovery.allowed_actions or any(
+            isinstance(entry, tuple) and entry and entry[0] == "container_agitate"
+            for entry in self.recovery.per_action_budget
+        )
+        if named and not self.support.container.interior_declared:
+            raise ValueError(
+                "robot.grasping.recovery names container_agitate, but robot.grasping.support.container "
+                "declares no interior box (interior_min_mm and interior_max_mm), and a container is "
+                "agitated only where one is declared, so remove container_agitate or declare the container."
             )
         return self

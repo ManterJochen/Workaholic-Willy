@@ -13,7 +13,9 @@ Four readers took the answers as measurements:
 * the policy attached the carried part 5.0 mm wide for a 40 mm grasp, so the planner lifted it about 34 mm too narrow.
 
 The robot's own hand verbs already read the hold evidence and the measured flag; these readers now do too. Each
-red-first test says what the code before this change did.
+red-first test says what the code before this change did. The two verifiers, and the cases that pinned them here,
+left on 2026-09-29 with the post-grasp verification stage (cleanup phase 4): no pick path ran it, and the grasp
+policy's own check after its close, pinned below, is the one verdict on a hold.
 """
 
 from __future__ import annotations
@@ -24,14 +26,6 @@ from types import SimpleNamespace
 from typing import Any
 
 from src.robot.core.gripper import HoldEvidence
-from src.robot.grasping.closed_loop.verification import (
-    CompositeGraspVerifier,
-    GraspVerificationContext,
-    GraspVerificationPolicy,
-    ObjectDetectingGripperVerifier,
-    VerificationOutcome,
-    WidthDeltaGripperVerifier,
-)
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy, PolicyOutcome
 from src.robot.grippers.jaw_io import JawIOGripper
 from tests.test_a_stopped_controller_moves_no_jaws import (
@@ -41,16 +35,9 @@ from tests.test_a_stopped_controller_moves_no_jaws import (
     _pulses,
     _service,
     _toggle,
-    two_scan_service,
 )
 
 _PART_PIN = 1
-
-
-def _closed_toggle() -> Any:
-    jaws = _toggle([])
-    jaws.set_closed(True)
-    return jaws
 
 
 def _part_sensed(*, held: bool, closed: bool = False) -> Any:
@@ -61,27 +48,6 @@ def _part_sensed(*, held: bool, closed: bool = False) -> Any:
     if closed:
         jaws.set_closed(True)
     return jaws
-
-
-def _context(gripper: Any, *, policy: "GraspVerificationPolicy | None" = None) -> GraspVerificationContext:
-    return GraspVerificationContext(
-        grasp=_grasp(), policy=policy or GraspVerificationPolicy(enabled=True, width_delta_max_mm=10.0),
-        gripper=gripper, pre_close_width_mm=49.99, post_close_width_mm=float(gripper.get_width_mm()),
-        commanded_close_width_mm=39.0,
-    )
-
-
-def _builder_verifier(**verification: Any) -> Any:
-    """The composite ``from_robot_config`` wires when ``robot.grasping.verification.enabled`` is on."""
-    from src.config.schema.robot.grasping_schema import RobotGraspingConfig
-    from src.robot.execution.autonomous_grasp.builders import build_closed_loop_actors
-
-    cfg = RobotGraspingConfig.model_validate({"verification": {"enabled": True, **verification}})
-    _refiner, verifier, _strategy = build_closed_loop_actors(
-        cfg, refinement_policy=None, verification_policy=GraspVerificationPolicy(enabled=True),
-        recovery_policy=None, refiner=None, verifier=None, recovery_strategy=None,
-    )
-    return verifier
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -192,74 +158,6 @@ class ThePolicyCarriesTheWidthItKnowsTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------------------------------
-# The verifiers
-# ---------------------------------------------------------------------------------------------------
-
-
-class TheVerifiersJudgeOnlyWhatWasMeasuredTests(unittest.TestCase):
-    def test_the_hold_verifier_is_inconclusive_on_an_unmeasured_close(self) -> None:
-        """Red before: PASSED gripper_object_detected, on the command echo."""
-        report = ObjectDetectingGripperVerifier().verify(_context(_closed_toggle()))
-
-        self.assertIs(VerificationOutcome.INCONCLUSIVE, report.outcome)
-        self.assertEqual("hold_not_measured", report.reason)
-        self.assertEqual("unmeasured", report.telemetry["hold_evidence"])
-
-    def test_the_width_verifier_is_inconclusive_on_a_band(self) -> None:
-        """Red before: FAILED jaws_collapsed_to_minimum, 5.0 mm against 5.0 + 2.0, held part or not."""
-        report = WidthDeltaGripperVerifier().verify(_context(_closed_toggle()))
-
-        self.assertIs(VerificationOutcome.INCONCLUSIVE, report.outcome)
-        self.assertEqual("width_not_measured", report.reason)
-        self.assertEqual(5.0, report.telemetry["post_close_width_mm"])
-
-    def test_the_composite_example_18_wires_learns_nothing_and_says_so(self) -> None:
-        """Red before: FAILED child_failed:jaws_collapsed_to_minimum on every close; fixing only the width verifier
-        would have PASSED on the echo instead."""
-        verifier = _builder_verifier()
-        self.assertIsInstance(verifier, CompositeGraspVerifier)
-
-        report = verifier.verify(_context(_closed_toggle()))
-
-        self.assertIs(VerificationOutcome.PASSED, report.outcome)
-        self.assertEqual("no_verifier_could_measure", report.reason)
-        self.assertFalse(report.telemetry["measured_something"])
-
-    def test_a_cell_that_requires_a_conclusive_verdict_fails_an_unmeasured_close(self) -> None:
-        report = _builder_verifier(require_all_conclusive=True).verify(_context(_closed_toggle()))
-
-        self.assertIs(VerificationOutcome.FAILED, report.outcome)
-        self.assertEqual("child_inconclusive:hold_not_measured", report.reason)
-
-    def test_a_wired_part_pin_is_judged(self) -> None:
-        policy = GraspVerificationPolicy(enabled=True, require_object_detected=True)
-        held = _part_sensed(held=True, closed=True)
-        empty = _part_sensed(held=False, closed=True)
-
-        self.assertIs(VerificationOutcome.PASSED,
-                      ObjectDetectingGripperVerifier().verify(_context(held, policy=policy)).outcome)
-        self.assertIs(VerificationOutcome.FAILED,
-                      ObjectDetectingGripperVerifier().verify(_context(empty, policy=policy)).outcome)
-
-    def test_a_detected_part_the_gripper_measured_empty_is_empty(self) -> None:
-        class _Contradicting(_MeasuringJaws):
-            def hold_evidence(self) -> HoldEvidence:
-                return HoldEvidence.EMPTY
-
-        policy = GraspVerificationPolicy(enabled=True, require_object_detected=True)
-        report = ObjectDetectingGripperVerifier().verify(_context(_Contradicting(), policy=policy))
-
-        self.assertIs(VerificationOutcome.FAILED, report.outcome)
-        self.assertEqual("gripper_object_not_detected", report.reason)
-
-    def test_a_measured_hold_and_width_still_pass(self) -> None:
-        jaws = _MeasuringJaws()
-        for verifier in (ObjectDetectingGripperVerifier(), WidthDeltaGripperVerifier()):
-            with self.subTest(type(verifier).__name__):
-                self.assertIs(VerificationOutcome.PASSED, verifier.verify(_context(jaws)).outcome)
-
-
-# ---------------------------------------------------------------------------------------------------
 # The service report and the campaign
 # ---------------------------------------------------------------------------------------------------
 
@@ -281,8 +179,9 @@ class TheReportSaysWhatWasMeasuredTests(unittest.TestCase):
             ("measured held", _report(pick_report=SimpleNamespace(gripper_present=True, object_detected=True)), True),
             ("unmeasured", _report(pick_report=SimpleNamespace(gripper_present=True, object_detected=None)), False),
             ("no gripper", _report(pick_report=SimpleNamespace(gripper_present=False, object_detected=None)), None),
-            ("two-scan unmeasured", _report(telemetry={"gripper_present": True, "object_detected": None}), False),
-            ("two-scan held", _report(telemetry={"gripper_present": True, "object_detected": True}), True),
+            # Only a pick report answers since the two-scan path, which said its hold in telemetry, left on
+            # 2026-09-29: telemetry alone is no longer read as a measured hold.
+            ("no pick report", _report(telemetry={"gripper_present": True, "object_detected": True}), None),
             ("not a success", _report(outcome=AutonomousGraspOutcome.EXECUTION_FAILED,
                                       pick_report=SimpleNamespace(gripper_present=True, object_detected=None)), None),
         )
@@ -356,20 +255,6 @@ class TheCampaignCountsWhatWasMeasuredTests(unittest.TestCase):
         self.assertIsNone(run.last.pick_report.object_detected)
         self.assertIs(False, run.last.hold_measured)
         self.assertGreaterEqual(_pulses(events), 2)
-
-    def test_the_two_scan_path_with_example_18s_verification_is_an_unmeasured_success(self) -> None:
-        """Red before: VERIFICATION_FAILED on every pick (the band read as a collapse)."""
-        from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome
-
-        events: list[Any] = []
-        jaws = _toggle(events)
-
-        report = two_scan_service(_Arm(events), jaws, verifier=_builder_verifier()).pick()
-
-        self.assertIs(AutonomousGraspOutcome.SUCCEEDED, report.outcome, report.render())
-        self.assertEqual("no_verifier_could_measure", report.telemetry["verification_reason"])
-        self.assertIsNone(report.telemetry["object_detected"])
-        self.assertIs(False, report.hold_measured)
 
 
 if __name__ == "__main__":  # pragma: no cover

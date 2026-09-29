@@ -123,10 +123,10 @@ robot, a located object or a spoken turn, is Python only; everything else also h
 | Vision-language perception | Autonomous decision |
 |:--:|:--:|
 | ![perception](docs/assets/demo/gif/vision.gif) | ![autonomy](docs/assets/demo/gif/autonomy.gif) |
-| A prompt, detection, segmentation, a masked point cloud, a 6-DoF grasp | Perceive, refine, verify, recover; the AUTO gate is opt-in (`run_m1_pick --mode auto`) |
+| A prompt, detection, segmentation, a masked point cloud, a 6-DoF grasp | Perceive, refine, verify, recover, recorded with the `dense_autonomous` loop that was removed on 2026-09-29; the AUTO gate is opt-in (`run_m1_pick --mode auto`) |
 | **Scene recovery** | **Fail-closed safety** |
 | ![recovery](docs/assets/demo/gif/recovery.gif) | ![safety](docs/assets/demo/gif/safety.gif) |
-| A push near the blocker's centre of mass frees the target | Refused as `approach_path_blocked`, a grasping-side check beside the six guards |
+| A push near the blocker's centre of mass frees the target; the runner arms it, and a cell built from config pushes nothing | Refused as `approach_path_blocked`, a grasping-side check beside the six guards |
 
 Jaw and suction on the same deep KLT bin: the jaw clears the shallow tray and suction reaches the
 floor. In the suction segment the part rides the wrist kinematically, because attaching a physics
@@ -147,6 +147,7 @@ The loops above are muted GIFs. The edited cuts and one original per capability 
 [`docs/assets/demo/`](docs/assets/demo/), and GitHub plays them on click:
 
 - [The autonomy endgame](docs/assets/demo/willy_endgame_demo.mp4), the whole run through the four scenarios
+  (the recorder films three since the fourth, the `dense_autonomous` loop, was removed on 2026-09-29)
 - [KLT, jaw and suction](docs/assets/demo/klt_combined.mp4)
 - [`docs/assets/demo/raw/`](docs/assets/demo/raw/): the wrist-camera pick, the seal-gated suction
   pick, exposing an occluded object, the planner working a bin, clearing a bin to empty, and a second
@@ -176,7 +177,7 @@ flowchart LR
 
     P --> D
     C --> D --> S --> G --> F --> M --> E --> V --> L
-    V -.->|"retry, rescan, push"| G
+    V -.->|"retry, rescan"| G
 
     classDef io    fill:#1f2933,stroke:#63768d,color:#e4e7eb
     classDef perc  fill:#2b3a55,stroke:#5b8def,color:#e4e7eb
@@ -190,8 +191,8 @@ The dependency stack points one way, and nothing imports up:
 - [`willy/`](willy/README.md): the one import, `from willy import ...`, over the packages below.
 - [`src/robot/execution/`](src/robot/execution/README.md): `Robot`, `Cell` and `PickRun`, and the
   composition root that assembles a cell from its tree.
-- [`src/robot/grasping/`](src/robot/grasping/README.md): generate, score, decide, refine, verify,
-  recover and log; every formula is in [`docs/grasping-math.md`](docs/grasping-math.md).
+- [`src/robot/grasping/`](src/robot/grasping/README.md): generate, score, decide, drive the motion
+  and its hold check, recover and log; every formula is in [`docs/grasping-math.md`](docs/grasping-math.md).
 - [`src/robot/safety/`](src/robot/safety/README.md): `SafetyPreflight`, six ordered fail-closed guards
   that outrank anything a model proposes, and the cuRobo binding; formulas in
   [`docs/safety-math.md`](docs/safety-math.md).
@@ -212,10 +213,12 @@ depends on the library, and the library never imports it back. There is no ROS n
 repository.
 
 The default pick is open-loop: perceive, rank geometrically, gate, move, log. The AUTO decision gate,
-closed-loop refinement and verification, recovery, multi-view fusion, the learned success model and
-reinforcement learning are built, opt-in and off by default; each is a `robot.grasping.*` block, and
+recovery, multi-view fusion, the learned success model and reinforcement learning are built, opt-in and
+off by default; each is a `robot.grasping.*` block, and
 [`docs/grasping-config-reference.md`](docs/grasping-config-reference.md) says which grasp mode each can
-fire in. A switch that would read as on while doing nothing is refused by the schema.
+fire in. A switch known to read as on while doing nothing is refused by the schema
+(`UNWIRED_SWITCHES`, today `occlusion.hard_reject_enabled` alone); reaching a carrier is not the same as
+the pick acting on it, and the config reference says which blocks are built and never acted on.
 
 <details>
 <summary><b>Repository layout</b></summary>
@@ -235,7 +238,7 @@ src/
         grippers/           robotiq, onrobot, jaw_io, vacuum, the two simulated ones, dummy, null
         safety/             the ordered fail-closed preflight, and the cuRobo binding
         perception/         real-camera RGB-D into a PerceptionFrame, and the Locator
-        grasping/           generate, score, decide, refine, verify, recover, log
+        grasping/           generate, score, decide, the motion and its hold check, recover, log
         execution/          Robot, Cell, PickRun, the composition root, the real cell, calibration
     willy_sim/              the Isaac Sim runners, the full-motion validation platform
     utility/                paths, device selection, atomic IO, logging, unit scaling

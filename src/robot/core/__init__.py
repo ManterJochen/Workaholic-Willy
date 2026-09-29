@@ -8,7 +8,7 @@ Public exports:
 
 * :class:`RobotArm`, :class:`Gripper`, :class:`ObjectDetectingGripper` and
   :class:`StoppableGripper` are the driver `Protocol`s.
-* :class:`TogglesWithoutSensor` is a hand whose every command is one pulse that flips its
+* :class:`TogglesWithoutSensor` is a hand whose every command is one change that moves its
   jaws, with nothing to read them back; :func:`toggle_without_sensor_of` finds one, so a pick
   asks it before the arm moves instead of commanding an open, with no driver import.
 * :class:`RobotVendor`, :class:`GripperVendor` are the canonical driver identifiers.

@@ -1,53 +1,84 @@
 """
-Active-perception bin-picking orchestrator.
+Bin-picking orchestrator.
 
 This module closes the loop that the calculator exposes via
 :class:`GraspResult.reasons`. The calculator reports why a pick failed
-(no candidates, all IK rejected, rescan recommended, active perception
-recommended, ...); the orchestrator turns those codes into actions:
+(no candidates, every candidate rejected by collision, workspace or IK,
+rescan recommended, ...); the orchestrator turns those codes into actions:
 
-* ``RESCAN_RECOMMENDED`` or no-candidate: request a fresh perception
-  frame from the perception source without moving the robot.
-* ``ACTIVE_PERCEPTION_RECOMMENDED``: ask a
-  :class:`ViewpointPlanner` for a new camera pose, drive the arm
-  there, and re-acquire.
-* ``IK_FAILED`` for the top candidate: try the next ranked candidate
-  before escalating.
+* A reason in ``_RESCAN_REASONS`` (``RESCAN_RECOMMENDED``,
+  ``ACTIVE_PERCEPTION_RECOMMENDED``, ``ALL_OUT_OF_WORKSPACE`` and the
+  no-candidate and weak-perception reasons): request a fresh perception
+  frame from the perception source without moving the robot, within
+  ``max_attempts``.
 * Anything else: terminate with the corresponding outcome.
 
+This loop retries no next ranked candidate. With an IK service wired into
+the calculator, its IK filter drops each candidate the IK cannot reach
+before the result comes back, so the executed grasp is the best reachable
+one; a result whose every candidate failed IK carries ``IK_FAILED``
+beside ``RESCAN_RECOMMENDED`` and is rescanned. A motion that fails once
+it is commanded ends the pick with its typed outcome.
+
+The orchestrator never plans a viewpoint. The viewpoint planners that
+once did, and the relocate path that drove them, were removed on
+2026-09-29: no config has built a planner since the multi-view commit
+gate left (2026-09-28), and a cell that needs another view hands the
+pick look poses (``src/robot/execution/looks.py``) or fuses a second
+camera (``grasping.fusion``).
+
+A camera on the wrist looks from the looks it is handed (``looks``), in
+their order, before its first attempt (:meth:`BinPickingOrchestrator.look_around`).
+The owner's rule (2026-09-29): the looks exist to find a safe grasp point,
+never to scan the part whole. Each look is fused with the looks before it,
+the grasp is computed again on what they saw together, and the looking
+stops at the first look whose grasp is valid and carries none of the
+rescan reasons. A grasp that is still uncertain, or no candidate at all,
+sends the arm on to the next look. A fixed camera ignores ``looks`` and
+picks exactly as it always did. A wrist pick handed looks never rescans
+where the arm stands: its next view is the next look. One handed none has
+no next look, and rescans where it stands as it always did.
+
+Once every look a pick was handed was visited and its grasp is still not
+safe enough, it generates one more view, the last resort (the owner,
+2026-09-29): its judged look turned about the part to the contact face of
+the chosen grasp no view showed, or to the side no look faced when there is
+no grasp, screened by the arm before it moves and driven on the straight
+joint line alone (``src/robot/execution/generated_view.py``). The arm then
+goes back to the look that saw the part on that line, or approaches from
+where it stands. The planner world holds every frame the pick took until the
+pick ends, and is offered the target's cloud fused over the looks. With
+``both_faces`` a grasp no view showed both contact faces of is not gripped,
+on a fixed camera as on the wrist.
+
 The orchestrator is vendor-neutral: it depends only on the
-:class:`RobotArm` Protocol, the calculator, a perception protocol, and
-an optional viewpoint planner. A real SAM2 perception source and a real
-next-best-view solver plug in without changes to this file.
+:class:`RobotArm` Protocol, the calculator and a perception protocol.
+A real SAM2 perception source plugs in without changes to this file.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
-    Iterable,
     Mapping,
-    Protocol,
-    Sequence,
     TypedDict,
-    runtime_checkable,
 )
 
 import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
-from src.geometry import Frame, Pose, Transform
-from src.robot.core.keep_out import SegmentationOffer, keeping_out
+from src.geometry import Transform
+from src.robot.core.keep_out import SegmentationOffer, holding_views, keeping_out
 from src.robot.core import (
     CameraWorldStamp,
     CameraWorldUse,
     Gripper,
-    MotionStatus,
     RobotArm,
     SupportsRobotStatus,
 )
@@ -109,18 +140,18 @@ if TYPE_CHECKING:  # pragma: no cover (import only for typing)
         FusionGeometryConfig,
         GraspingSupportConfig,
     )
+    from src.robot.core import JointPositions
+    from src.robot.execution.generated_view import GeneratedView, ViewAim
+    from src.robot.execution.motion import MotionReport
     from src.robot.grasping.deep.ranker.context import DeepRankerContext
-    from src.robot.grasping.multiview.scene_geometry import FusedSceneGeometry
+    from src.robot.grasping.multiview.scene_geometry import FusedSceneGeometry, ObservedView
+    from src.robot.grasping.multiview.unseen_side import JawFacesSeen
     from src.robot.grasping.types.perception import MultiCameraPerceptionSource
     from src.robot.grasping.collision import GripperGeometryStrategy
     from src.robot.grasping.scoring.corridor import CorridorAnalysisConfig
     from src.robot.grasping.telemetry.latency_tracker import LatencyTracker
     from src.robot.grasping.scoring.feasibility_score import FeasibilityScoreConfig
     from src.robot.grasping.motion.frame_resolver import FrameResolver
-    from src.robot.grasping.multiview.fusion import (
-        FusionTelemetry,
-        SceneFusion,
-    )
     from src.robot.grasping.rl.router import (
         PerceptionShadowTelemetry,
         RankingShadowTelemetry,
@@ -132,15 +163,12 @@ if TYPE_CHECKING:  # pragma: no cover (import only for typing)
 
 __all__ = [
     "BinPickingOrchestrator",
-    "CommitDecision",
-    "CommitPolicy",
-    "LateralOffsetViewpointPlanner",
+    "LookedAround",
     "PerceptionFrame",
     "PerceptionSource",
     "PickAttempt",
     "PickOutcome",
     "PickReport",
-    "ViewpointPlanner",
 ]
 
 
@@ -152,64 +180,6 @@ __all__ = [
 # ``grasping.types.perception``, or from ``grasping``, which does re-export it.
 
 
-@runtime_checkable
-class ViewpointPlanner(Protocol):
-    """Compute the next camera pose when active perception is requested.
-
-    ``current_tcp`` is the current arm TCP pose in :attr:`Frame.BASE`.
-    ``history`` is the chronological list of viewpoints already tried
-    this session. Return ``None`` to signal "no further viewpoint"; the
-    orchestrator will then exit with :attr:`PickOutcome.RELOCATED_EXHAUSTED`.
-    """
-
-    def next_viewpoint(
-        self,
-        *,
-        current_tcp: Pose,
-        history: Sequence[Pose],
-    ) -> Pose | None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class CommitPolicy:
-    """Runtime carrier for the multi-view commit gate.
-
-    Immutable and stateless: per-pick reobserve accounting lives on the
-    orchestrator instance, not here.
-    """
-
-    enabled: bool
-    min_views_accepted: int
-    min_corridor_hit_fraction: float
-    corridor_radius_mm: float
-    corridor_length_mm: float
-    max_reobserve_attempts: int
-    apply_modes: frozenset[str]
-
-
-@dataclass(frozen=True, slots=True)
-class CommitDecision:
-    """Typed outcome of one commit-gate evaluation.
-
-    Attached to :attr:`PickReport.commit_decision` on every pick with a winning
-    candidate. When the gate is disabled or skipped the decision still reports
-    ``allowed=True``, and ``reason`` says why the gate did not participate.
-    """
-
-    allowed: bool
-    reason: str  # See module-level _COMMIT_REASON_* constants
-    views_accepted: int
-    min_views_required: int
-    corridor_hit_fraction: float
-    min_hit_fraction_required: float
-    corridor_queried_voxels: int
-    corridor_hit_voxels: int
-    reobserve_attempts_used: int
-
-
-# Stable string constants for ``CommitDecision.reason``. They are module-level
-# strings rather than an Enum: the values round-trip through JSON and logs
-# verbatim and are greppable as written.
 _LOG = logging.getLogger(__name__)
 
 #: How much vertical extent a single-view target cloud needs before it may be used to locate the
@@ -223,22 +193,21 @@ _LOG = logging.getLogger(__name__)
 #: verify, is the better answer.
 _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM: float = 25.0
 
-_COMMIT_REASON_OK = "ok"
-_COMMIT_REASON_VIEWS_BELOW_MIN = "views_below_min"
-_COMMIT_REASON_HIT_FRACTION_BELOW_MIN = "hit_fraction_below_min"
-_COMMIT_REASON_SKIPPED_DISABLED = "skipped_disabled"
-_COMMIT_REASON_SKIPPED_NO_FUSION = "skipped_no_fusion"
-_COMMIT_REASON_SKIPPED_NO_POLICY = "skipped_no_policy"
-_COMMIT_REASON_SKIPPED_MODE = "skipped_mode"
-_COMMIT_REASON_SKIPPED_CAMERA_FRAME = "skipped_camera_frame"
+#: The look of a wrist pick handed no looks: the pose the arm stands at, perceived without moving.
+_HERE: str = "here"
 
 
 class PickOutcome(str, Enum):
-    """Terminal status of a single :meth:`BinPickingOrchestrator.run` call."""
+    """Terminal status of a single :meth:`BinPickingOrchestrator.run` call.
+
+    ``RELOCATED_EXHAUSTED`` (``relocated_exhausted``) is retired: the relocate path that ended a pick
+    with it was removed on 2026-09-29. A record logged before then still audits, because the service
+    reported it as ``no_valid_grasp`` and kept the low-level name only as free text in
+    ``telemetry['low_level_outcome']``, which nothing parses back into this enum.
+    """
 
     EXECUTED = "executed"
     RESCANNED_EXHAUSTED = "rescanned_exhausted"
-    RELOCATED_EXHAUSTED = "relocated_exhausted"
     NO_PERCEPTION = "no_perception"
     ABORTED = "aborted"
     # An operator asked the run to stop between attempts. Deliberately not ``ABORTED``: that maps to
@@ -252,13 +221,6 @@ class PickOutcome(str, Enum):
     # distinct from EXECUTION_FAILED so a caller can detect missing
     # FrameResolver wiring.
     CAMERA_FRAME_REJECTED = "camera_frame_rejected"
-    # The multi-view commit gate refused the winning candidate (views below
-    # ``min_views_accepted`` and/or corridor hit-fraction below
-    # ``min_corridor_hit_fraction``) and the ``max_reobserve_attempts`` budget
-    # was already consumed. Distinct from RESCANNED_EXHAUSTED so the operator can
-    # tell apart "no valid candidates" from "had a candidate but the fused
-    # evidence was insufficient to commit".
-    NO_COMMIT_INSUFFICIENT_FUSION = "no_commit_insufficient_fusion"
     # Dense-mode approach validation. Every ranked candidate's straight-line
     # approach/retreat sweep collided with a neighbour in the scene cloud (the
     # calculator only checks the final pose), so the fall-back found no
@@ -315,6 +277,74 @@ def _motion_fields(report: "PolicyReport | None") -> dict[str, str | None]:
     }
 
 
+def _sent_nothing(moved: "MotionReport") -> bool:
+    """Whether a look's failed motion was refused by a guard or the planner before anything was sent.
+
+    The one rule, ``generated_view.refused_before_sending`` (its ``REFUSED_BEFORE_SENDING``): only such a refusal lets a
+    wrist pick skip a look, a generated view's turn or its move back and go on (the owner, 2026-09-29). Every other
+    failed motion may have been commanded, so the arm may have moved part of the way or may still be moving, and the
+    attempt ends there, as every failed motion of a pick does.
+    """
+    from src.robot.execution.generated_view import refused_before_sending  # noqa: PLC0415
+
+    return refused_before_sending(moved)
+
+
+def judged_faces_turned_away(orchestrator: Any) -> str:
+    """Why a pick that asks for both jaw contact faces (``both_faces``) cannot run on ``orchestrator``, or ``""``.
+
+    ``both_faces`` judges the contact faces of the grasp the calculator chose, and grips that grasp only: the reranks
+    stand down and the approach check falls back to no other candidate. A policy that yaws every grasp about base Z
+    before it closes (``GraspExecutionPolicy.align_closing_to_base_x``, ``GraspMotion``'s option for symmetric parts)
+    closes the jaws on another pair of faces, which nobody judged. On a hand that closes jaws on two faces the two
+    together are the program's error, refused (``ValueError``) before anything moves: by the pick loop's
+    :meth:`BinPickingOrchestrator.run` and :meth:`BinPickingOrchestrator.look_around`, and by the service's ``pick``
+    before it asks the controller or the hand. A suction cup has no jaw faces to turn away from.
+    """
+    from src.robot.grasping.collision.gripper_model import SuctionCupGripperModel  # noqa: PLC0415
+
+    if isinstance(getattr(orchestrator, "gripper_model", None), SuctionCupGripperModel):
+        return ""
+    if getattr(getattr(orchestrator, "policy", None), "align_closing_to_base_x", False) is not True:
+        return ""
+    return ("both_faces grips only the grasp whose jaw contact faces were judged, and this pick's motion turns every "
+            "grasp about base Z to close along base X (GraspMotion(align_closing_to_base_x=True)), onto a pair of faces "
+            "nobody judged: ask for one or the other; nothing was moved")
+
+
+def _look_motion_fields(moved: "MotionReport") -> dict[str, str | None]:
+    """A refused look's motion, flattened onto the attempt the way :func:`_motion_fields` flattens a policy's motion."""
+    error = moved.result.exception
+    stamp = moved.camera_world
+    said = stamp if isinstance(stamp, CameraWorldStamp) and stamp.use is not CameraWorldUse.UNSTATED else None
+    return {
+        "motion_status": moved.status.value,
+        "motion_message": moved.message or None,
+        "motion_error": f"{type(error).__name__}: {error}" if error is not None else None,
+        "camera_world": said.use.value if said is not None else None,
+        "camera_world_reason": said.reason if said is not None else None,
+    }
+
+
+def _say_the_look(
+    label: str, *, valid: bool, uncertain: bool, good: bool, reasons: tuple[GraspFailureReason, ...],
+    faces: "JawFacesSeen | None", faces_asked: bool,
+) -> None:
+    """One line per look of a wrist pick: whether its grasp is safe enough to stop looking at, and if not, why."""
+    said = ", ".join(str(reason) for reason in reasons) or "no reason given"
+    if good:
+        _LOG.info("look %s: a valid grasp with no rescan reason; the looking ends here", label)
+    elif not valid:
+        _LOG.info("look %s: no grasp candidate (%s); it is not safe to stop looking here", label, said)
+    elif uncertain:
+        _LOG.info("look %s: the grasp is uncertain (%s); it is not safe to stop looking here", label, said)
+    elif faces_asked:
+        missing = faces.missing if faces is not None else ()
+        jaws = ", ".join(f"jaw {1 if face.side < 0 else 2}" for face in missing) or "either jaw"
+        _LOG.info("look %s: the contact face at %s of the chosen grasp was not seen; both are asked for, so it is "
+                  "not safe to stop looking here", label, jaws)
+
+
 @dataclass(frozen=True, slots=True)
 class PickAttempt:
     """One iteration of the pick loop, surfaced for debugging."""
@@ -325,9 +355,16 @@ class PickAttempt:
     score: float
     # "executed", "object_not_detected", "camera_frame_rejected",
     # "approach_path_blocked", "gripper_fault" or "execution_failed" from _map_policy_outcome;
-    # "rescan", "relocate" or "exhausted" from _decide_action;
-    # "commit_refused_reobserve" and "commit_refused_exhausted" from the commit
-    # gate; "controller_not_operational" when the controller cannot move.
+    # "rescan" or "exhausted" when no candidate was found (``_RESCAN_REASONS``; a wrist pick handed
+    # looks never rescans where it stands, so its attempt is "exhausted");
+    # "controller_not_operational" when the controller cannot move; "look_refused" when a wrist
+    # pick reached none of its looks, the motion to one (its generated view and its move back
+    # included) failed once it may have been commanded or was refused by its verb before any
+    # command, or the controller stopped on the way to one, with nothing perceived there and
+    # nothing else commanded; "faces_unseen" when a pick asked for both jaw contact faces
+    # (``both_faces``) and no view showed both (no look of a wrist pick, generated or declared, nor
+    # the cameras of a fixed one), so its grasp was not gripped. "relocate" is retired with the relocate path (2026-09-29) and appears only on
+    # attempts recorded before then.
     action: str
     # When ``target_ordering`` is enabled this carries the typed
     # :class:`OrderingDecision` produced by the selector for this
@@ -365,6 +402,11 @@ class PickAttempt:
     # How many objects of the frame this attempt ranked gained a second camera's surface, the
     # target or not; 0 when none did or no frame was ranked.
     fused_objects: int = 0
+    # Why the grasp this attempt ranked was not gripped, in the owner's words, on a "faces_unseen"
+    # attempt: the pick asked for both jaw contact faces (``both_faces``) and this names the one no
+    # view showed. Copied onto the attempt so the service's report can say it where no look result
+    # carries it (a fixed camera). ``None`` on every other attempt.
+    withheld: str | None = None
 
 
 class _FusionFields(TypedDict):
@@ -394,7 +436,6 @@ class PickReport:
     #:
     #: Empty when nothing was selected, so a run that generated no candidate is byte-identical.
     selected_telemetry: Mapping[str, Any] = field(default_factory=dict)
-    viewpoints_visited: tuple[Pose, ...] = ()
     # Optional shadow-mode telemetry for the winning candidate of the
     # final attempt. ``None`` whenever the orchestrator is built without
     # a :class:`ShadowSuccessContext`, which is the case when the
@@ -414,23 +455,6 @@ class PickReport:
     # (the silent byte-identical path); otherwise an UncertaintyRerankTelemetry whose ``applied`` tells
     # whether the rerank fired and ``skip_reason`` names the gate when it did not.
     uncertainty_rerank_telemetry: UncertaintyRerankTelemetry | None = None
-    # Shadow-only multi-view fusion telemetry. ``None`` when the
-    # orchestrator was built without a ``scene_fusion`` carrier or when
-    # the carrier is disabled. The contract is strict: ingest never
-    # influences ranking, decision, or recovery; the substrate only
-    # accumulates the bounded voxel grid and surfaces this summary for
-    # replay / observability. Even when the field is populated, the rest
-    # of ``PickReport`` is byte-identical to the pre-fusion path.
-    fusion_telemetry: "FusionTelemetry | None" = None
-    # Typed commit-gate decision for the candidate the orchestrator
-    # chose for execution, or for the one it last evaluated before
-    # exhausting its reobserve budget. ``None`` only when the pick
-    # exits before any candidate is selected, for example on empty
-    # segmentations or on recovery exhausted before a winner is found.
-    # A disabled gate still populates this field, with ``allowed=True``
-    # and ``reason`` naming the skip path, so downstream telemetry can
-    # distinguish "no gate configured" from "gate ran and approved".
-    commit_decision: "CommitDecision | None" = None
     #: Where the object this pick went for was seen, in BASE millimetres: the median of its mask's surface, the pixels
     #: behind a depth step left out, as ``Locator`` places an object. ``None`` when no candidate reached the arm, when
     #: the cell resolves no CAMERA to BASE, or when the mask saw no depth.
@@ -438,47 +462,165 @@ class PickReport:
 
 
 # ---------------------------------------------------------------------------
-# Built-in viewpoint planner
+# Looks of a wrist pick
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class LateralOffsetViewpointPlanner:
-    """Trivial next-best-view stub: nudge the TCP laterally in base frame.
+@dataclass(frozen=True, slots=True, eq=False)
+class _LookView:
+    """What one look of a wrist pick saw, kept for the looks after it and for whoever records the pick.
 
-    Alternates ``+x``, ``-x``, ``+y``, ``-y`` offsets so the camera
-    captures the bin from four cardinal positions before giving up.
-    A deterministic fallback until a learning-based planner lands.
+    ``frame`` is the look's own frame whole: its RGB, its depth, the tool pose stamped at its shutter and its
+    intrinsics. ``surfaces`` holds, per segmentation of the frame, the mask a fusion may give full weight: the mask less
+    the pixels behind a depth step (``pixels_behind_depth_steps``, the Locator's surface rule) and less the grazing ones
+    (``scene_geometry.grazing_pixels``), on ``depth``, which is the measured surface where the frame carries one.
+    ``clouds`` is each of those in BASE, placed by ``camera_to_base``. ``view`` is the same surfaces as the looks after
+    this one fuse them, the empty ones left out, so a blob number in an association is a position in ``blob_objects``,
+    which says whose segmentation it is; ``None`` when the look held nothing it could place. ``name`` is the view's
+    identity in every association and report: the rig and the look, ``rig@look``, so two looks of one camera are two
+    views; the rig alone for a pick handed no looks. ``joints`` is the configuration the arm stood at when the frame was
+    taken, read off the arm, what the move back to this look returns to; ``None`` for a pick handed no looks, or where
+    the arm could not say.
     """
 
-    offset_mm: float = 50.0
-    max_viewpoints: int = 4
+    label: str
+    pose: Any
+    name: str
+    frame: PerceptionFrame
+    camera_to_base: "np.ndarray | None"
+    depth: "np.ndarray | None" = None
+    surfaces: "tuple[np.ndarray | None, ...]" = ()
+    clouds: "tuple[np.ndarray, ...]" = ()
+    view: "ObservedView | None" = None
+    blob_objects: tuple[int, ...] = ()
+    joints: "JointPositions | None" = None
 
-    def next_viewpoint(
-        self,
-        *,
-        current_tcp: Pose,
-        history: Sequence[Pose],
-    ) -> Pose | None:
-        if len(history) >= self.max_viewpoints:
-            return None
-        directions = (
-            np.array([+1.0, 0.0, 0.0]),
-            np.array([-1.0, 0.0, 0.0]),
-            np.array([0.0, +1.0, 0.0]),
-            np.array([0.0, -1.0, 0.0]),
-        )
-        direction = directions[len(history) % len(directions)]
-        new_position = (
-            np.asarray(current_tcp.position_mm, dtype=np.float64)
-            + direction * float(self.offset_mm)
-        )
-        return Pose(
-            position_mm=new_position,
-            quaternion_xyzw=np.asarray(current_tcp.quaternion_xyzw, dtype=np.float64).copy(),
-            frame=Frame.BASE,
-            label=f"viewpoint_{len(history):02d}",
-        )
+    def blob_of(self, index: int) -> int | None:
+        """The blob number segmentation ``index`` of this look has in :attr:`view`, or ``None`` when it has none."""
+        return self.blob_objects.index(index) if index in self.blob_objects else None
+
+    def label_of_blob(self, blob: int) -> str:
+        """The label of the segmentation behind ``blob``, lower case, ``""`` when it carries none."""
+        if self.view is None or not 0 <= blob < len(self.view.segmentations):
+            return ""
+        return str(getattr(self.view.segmentations[blob], "label", "") or "").strip().lower()
+
+    def cloud_of_blob(self, blob: int) -> np.ndarray:
+        if not 0 <= blob < len(self.blob_objects):
+            return np.zeros((0, 3), dtype=np.float64)
+        return self.clouds[self.blob_objects[blob]]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _RankedObject:
+    """What the ranking of one look computed for one of its objects: the calculator's result, the height of the support
+    it was computed against, BASE mm (``None`` when none was resolved), and the cloud the generator was handed for it
+    (``None`` when it derived its own from the mask)."""
+
+    result: GraspResult
+    support_height_mm: float | None
+    cloud_base_mm: "np.ndarray | None"
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _Judgement:
+    """How one look of a wrist pick answered: the grasp it ranked on the views fused so far, and whether it is safe.
+
+    ``members`` names every view whose surface of the target is part of ``target_cloud_base_mm``, view identity to its
+    blob there, this look's own included, so a later look finds the same part by association. ``member_looks`` are the
+    looks among them, this one first. ``reasons`` are the result's, and ``RESCAN_RECOMMENDED`` when the looks disagree
+    on what the target is (``labels_disagree``). ``faces`` is whether each jaw's contact face of the chosen grasp was
+    seen, ``None`` when there is no grasp, a suction hand, or no BASE grasp to judge. ``good`` is the early stop: a
+    valid grasp with none of the rescan reasons, and, with ``both_faces``, both contact faces seen.
+    ``hand_eye_gap_mm`` is the hand-eye check, measured once, on the judgement the looking ends on (``None`` before).
+
+    The rest is the orchestrator's per-frame state as the ranking of this look left it, restored by ``_adopt`` when
+    this look's grasp is the one the pick goes on with.
+    """
+
+    look: _LookView
+    result: "GraspResult | None"
+    target_index: int | None
+    ordering: "OrderingDecision | None"
+    target_cloud_base_mm: "np.ndarray | None"
+    members: Mapping[str, int]
+    member_looks: tuple[str, ...]
+    reasons: tuple[GraspFailureReason, ...]
+    faces: "JawFacesSeen | None"
+    good: bool
+    labels_agreed: int
+    labels_disagree: tuple[tuple[str, str], ...]
+    hand_eye_gap_mm: float | None
+    camera_to_base: "Transform | None"
+    scene_objects: tuple[Any, ...]
+    fused_views_by_object: Mapping[int, tuple[str, ...]]
+    fused_objects_in_frame: int
+    fusion_telemetry: Mapping[str, Any]
+    support_telemetry: Mapping[str, Any]
+    debug_image_png: "bytes | None"
+
+    @property
+    def valid(self) -> bool:
+        """Whether this look ranked a grasp at all."""
+        return self.result is not None and self.result.is_success
+
+    @property
+    def frame(self) -> PerceptionFrame:
+        return self.look.frame
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class LookedAround:
+    """What a wrist pick's looks came to: where it looked, which grasp it goes on with, and why it stopped.
+
+    ``visited`` are the looks perceived from, in order (``here`` for a pick handed none), the generated view included
+    and the move back not repeated. ``judged`` is the look whose grasp the attempt goes on with, ``None`` when no look
+    saw anything. ``dropped`` are looks that did not see the part the grasp was found on, ``refused`` the declared
+    looks a guard or the planner refused before anything was sent, skipped, each with the refusal. ``views`` keeps
+    every look's frame and surfaces for the record. ``stopped`` is the motion that ended the looking with nothing else
+    commanded after it: one that failed once it may have been commanded, one the controller stopped on, or the first
+    refusal when no look was reached. ``stopped_look`` is the look it was going to and ``controller`` why the controller
+    cannot move, when that is why; ``cancelled`` a stop asked for between looks.
+
+    The one generated view (``src/robot/execution/generated_view.py``): ``generated`` is its label when the arm went
+    there, ``orbit +140 deg (...) deg``, and ``generated_view_deg`` its turn about the part, both empty when it did not;
+    ``generated_skipped`` why no view was generated where one was due, ``""`` when one was, or none was due. The move
+    back: ``moved_back`` is the look the arm went back to on the straight joint line, ``move_back_refused`` why it did
+    not, when the approach starts from where the arm stands instead. ``withheld`` says why the grasp is not gripped:
+    ``both_faces`` was asked and no view showed both contact faces of it, naming the face that was not seen.
+    """
+
+    visited: tuple[str, ...] = ()
+    judged: _Judgement | None = None
+    dropped: tuple[str, ...] = ()
+    refused: tuple[tuple[str, str], ...] = ()
+    views: tuple[_LookView, ...] = ()
+    stopped: "MotionReport | None" = None
+    stopped_look: str = ""
+    controller: str | None = None
+    cancelled: bool = False
+    generated: str = ""
+    generated_view_deg: float | None = None
+    generated_skipped: str = ""
+    moved_back: str = ""
+    move_back_refused: str = ""
+    withheld: str = ""
+
+    @property
+    def looks_fused(self) -> tuple[str, ...]:
+        """The looks whose views make up the target's cloud, the one the grasp was ranked on first."""
+        return self.judged.member_looks if self.judged is not None else ()
+
+    @property
+    def jaw_faces_seen(self) -> tuple[bool, bool] | None:
+        """(jaw 1 face seen, jaw 2 face seen) for the chosen grasp, ``None`` when it was not judged."""
+        faces = self.judged.faces if self.judged is not None else None
+        return faces.as_pair() if faces is not None else None
+
+    @property
+    def hand_eye_gap_mm(self) -> float | None:
+        """The median distance between the looks' surfaces of the target, ``None`` when no two looks shared one."""
+        return self.judged.hand_eye_gap_mm if self.judged is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +654,11 @@ def _mean_winning_association_score(fused: "FusedSceneGeometry") -> float:
     return round(total / count, 6) if count else 0.0
 
 
+#: The failure reasons a no-candidate attempt is retried on, with a fresh frame and no motion; every
+#: other reason ends the pick. ``ACTIVE_PERCEPTION_RECOMMENDED`` and ``ALL_OUT_OF_WORKSPACE`` asked for
+#: the camera to be moved, and were rescanned already whenever no viewpoint planner was wired, as on
+#: every cell built from config since 2026-09-28. The planners and that relocate path were removed on
+#: 2026-09-29, so they are rescanned everywhere.
 _RESCAN_REASONS = frozenset(
     {
         GraspFailureReason.RESCAN_RECOMMENDED,
@@ -519,10 +666,6 @@ _RESCAN_REASONS = frozenset(
         GraspFailureReason.LOW_DEPTH_CONFIDENCE,
         GraspFailureReason.LOW_MASK_CONFIDENCE,
         GraspFailureReason.NO_VALID_DEPTH,
-    }
-)
-_RELOCATE_REASONS = frozenset(
-    {
         GraspFailureReason.ACTIVE_PERCEPTION_RECOMMENDED,
         GraspFailureReason.ALL_OUT_OF_WORKSPACE,
     }
@@ -534,14 +677,18 @@ def segmentation_offer_from_frame(
     *,
     camera: "Maybe[str]",
     camera_to_base_mm: "np.ndarray | None",
+    target_points_base_mm: "np.ndarray | None" = None,
 ) -> "SegmentationOffer | None":
     """What one ranked perception frame offers a live planner world, or ``None`` when it can offer nothing.
 
     Every segmentation's mask under its label (``object_<index>`` for an unnamed one) and the
     target's mask to exclude, for ``camera``; and the target's surface in BASE, from
     ``surface_depth_map`` where the frame carries one and ``depth_map`` otherwise, placed by
-    ``camera_to_base_mm``. With no camera only the target's points are offered, and with neither a
-    camera nor points, or a frame that carries no capture time, nothing is.
+    ``camera_to_base_mm``. ``target_points_base_mm``, where given and not empty, is offered as the
+    target's surface instead: the target's cloud fused over the looks of a wrist pick, which holds
+    what every view of the pick saw of it, so its box leaves the part out of every frame the world
+    holds. With no camera only the target's points are offered, and with neither a camera nor
+    points, or a frame that carries no capture time, nothing is.
     """
     segmentations = tuple(frame.segmentations)
     labelled = tuple(
@@ -565,6 +712,8 @@ def segmentation_offer_from_frame(
                 depth = surface if surface is not None else frame.depth_map
                 base = to_base_mm(np.asarray(target_mask).astype(bool), depth, frame.intrinsics, camera_to_base_mm)
                 points = base if base.shape[0] else None
+    if target_points_base_mm is not None and np.asarray(target_points_base_mm).size:
+        points = np.asarray(target_points_base_mm, dtype=np.float64).reshape(-1, 3)
     stamp = getattr(frame, "timestamp", None)
     if stamp is None:
         return None
@@ -592,10 +741,6 @@ class BinPickingOrchestrator:
         Configured :class:`GraspCalculator` instance.
     perception:
         Source of :class:`PerceptionFrame` snapshots.
-    viewpoint_planner:
-        Optional planner for ``ACTIVE_PERCEPTION_RECOMMENDED``. If
-        omitted, an active-perception recommendation falls through to a
-        plain rescan.
     max_attempts:
         Hard cap on the loop iterations.
     dense_sampling:
@@ -613,7 +758,6 @@ class BinPickingOrchestrator:
     arm: RobotArm
     calculator: GraspCalculator
     perception: PerceptionSource
-    viewpoint_planner: ViewpointPlanner | None = None
     max_attempts: int = 5
     dense_sampling: bool = True
     grasp_sampling_mode: GraspSamplingMode | bool | str | None = None
@@ -649,9 +793,9 @@ class BinPickingOrchestrator:
     # :func:`maybe_blend_rerank_candidates` returns the original tuple
     # and ``None`` telemetry, and the
     # ``PickReport.ranking_blend_telemetry`` field stays ``None``. When
-    # enabled, the reranker fires only in dense modes
-    # (``dense_clutter`` / ``dense_autonomous``) under a non-shadow
-    # lifecycle phase and never mutates ``GraspPoint.score``.
+    # enabled, the reranker fires only in the dense mode
+    # (``dense_clutter``) under a non-shadow lifecycle phase and never
+    # mutates ``GraspPoint.score``.
     ranking_blend_config: RankingBlendConfig | None = None
     # Per-candidate uncertainty re-rank carrier. ``None`` (default) is a silent byte-identical
     # no-op. When set, the orchestrator re-sorts candidates by ``score - weight*corridor_risk`` after the
@@ -661,36 +805,13 @@ class BinPickingOrchestrator:
     # own ``corridor_config`` is set. With neither, no candidate carries
     # ``corridor_blockage_confidence`` and the rerank no-ops with ``skip_reason=missing_uncertainty``.
     uncertainty_rerank_config: UncertaintyRerankConfig | None = None
-    # Optional multi-view fusion substrate. ``None`` is the silent
-    # byte-identical default. When set, and when a ``frame_resolver`` is
-    # also wired, the orchestrator calls ``scene_fusion.ingest(...)``
-    # once per acquired :class:`PerceptionFrame` before grasp
-    # computation. The fusion path is shadow-only: its output is
-    # never read by the calculator, the execution policy, or the
-    # recovery dispatcher. Ingest failures (no resolver, frame mismatch,
-    # intrinsic drift, all-invalid depth) are absorbed by the
-    # substrate's typed refuse path and surfaced via
-    # :attr:`PickReport.fusion_telemetry`; the pick loop never raises on
-    # a fusion problem and never alters its decision based on fusion
-    # state.
-    scene_fusion: "SceneFusion | None" = None
-    # Optional commit-gate policy. ``None`` or ``commit_policy.enabled
-    # is False`` is the silent byte-identical default. When enabled and
-    # :attr:`mode_label` matches one of the policy's apply modes, the
-    # orchestrator queries the fusion substrate for corridor evidence
-    # of the winning candidate before handing off to ``_execute``.
-    # When the evidence is insufficient the loop triggers up to
-    # :attr:`CommitPolicy.max_reobserve_attempts` extra perception
-    # captures before surfacing
-    # :attr:`PickOutcome.NO_COMMIT_INSUFFICIENT_FUSION`.
-    commit_policy: CommitPolicy | None = None
-    # Resolved grasp-mode label (e.g. ``"auto"``, ``"dense_clutter"``,
-    # ``"dense_autonomous"``). Empty string means the orchestrator was
-    # constructed without mode awareness, in which case the commit gate
-    # is unconditionally skipped with reason ``skipped_mode``; this
-    # preserves byte-identical behavior for every caller that has not
-    # threaded a mode label through, notably any caller that constructs
-    # the orchestrator directly instead of via ``from_robot_config``.
+    # Resolved grasp-mode label (``"easy"``, ``"auto"`` or ``"dense_clutter"``),
+    # set by ``from_robot_config``. The mode-gated
+    # approach validation reads it (``_approach_path_modes``). Empty string
+    # means the orchestrator was constructed without mode awareness, and then
+    # that validation never runs; this preserves byte-identical behavior for
+    # every caller that constructs the orchestrator directly instead of via
+    # ``from_robot_config``.
     mode_label: str = ""
     # Optional hard label-target for a prompt-driven dense pick. ``None`` (default) is
     # byte-identical: every segmentation is a candidate target (legacy argmax / ordering). When set to an
@@ -794,15 +915,18 @@ class BinPickingOrchestrator:
     # orchestrator makes, which is the point: unforwarded, the block's values reach the telemetry
     # snapshot and stop there.
     corridor_config: "CorridorAnalysisConfig | None" = None
-    # Optional latency tracker, set per pick by the service. The single ranking recording site.
+    # Optional latency tracker, set per pick by the service. The single ranking recording site, and
+    # the single fusion one (`_fused_scene`).
     #
-    # The span belongs on the one call every path shares: the default open-loop pick, the decision
-    # path and the closed-loop path all reach it, while a wrap further out covers only some of them
+    # The span belongs on the one call every path shares: the default open-loop pick and the decision
+    # path both reach it (the two-scan closed-loop path did until it left on 2026-09-29), while a wrap
+    # further out covers only some of them
     # and leaves the open-loop pick with no ranking span at all. Timing the open-loop path from
     # outside is not an option either: that path calls `runtime.run_attempt()`, whose elapsed time
     # includes perception and arm motion, and reporting that against an 80 ms ranking SLO would
     # breach instantly and mean nothing. A second wrap around a caller nests a span inside a span
-    # and double-counts.
+    # and double-counts. The fusion span sits inside the ranking one by the same rule: the geometry
+    # fusion runs inside the ranking of a frame, so the ranking span has always included it.
     latency_tracker: "LatencyTracker | None" = field(default=None, repr=False)
     # ``feasibility_*`` come from ``grasping.feasibility`` via ``apply_orchestrator_overlays``.
     # None (default) is not forwarded, so the calculator keeps its constructor values, i.e. off.
@@ -832,17 +956,56 @@ class BinPickingOrchestrator:
     # influences execution.
     shadow_router: "ShadowRouter | None" = None
 
-    _viewpoints_visited: list[Pose] = field(default_factory=list, init=False, repr=False)
+    #: Where a camera on the wrist looks from before the first attempt, in order: each a
+    #: :class:`~src.robot.core.JointPositions` or ``"home"`` (:mod:`src.robot.execution.looks`). Set per pick by
+    #: whoever runs it. Empty means the pose the arm stands at is the one look. Read only when the frames are placed
+    #: by the tool pose (an :class:`EyeInHandFrameResolver`): a fixed camera never moves to look, and its picks are the
+    #: picks it always made.
+    looks: tuple[Any, ...] = ()
+    #: Require that both jaw contact faces of the chosen grasp were seen before gripping: the owner's switch for
+    #: safety-critical processes (2026-09-29). Off, the default and the fast one, a look is good enough when its grasp
+    #: is valid and carries none of the rescan reasons. On, a look is good enough only once both contact faces were
+    #: seen as well, and when no view, declared or generated, showed both, nothing is gripped: the attempt ends
+    #: ``faces_unseen``, ``RESCANNED_EXHAUSTED`` (``no_valid_grasp`` to the service), naming the face no view showed
+    #: (:attr:`LookedAround.withheld`). A fixed camera never looks around, so on it the grasp its cameras ranked is
+    #: gripped only where they showed both contact faces (fused, where the cell fuses its fixed cameras), and the
+    #: attempt ends the same way where they did not. A suction hand has no jaw faces and always passes. Like
+    #: ``looks``, it stays set on the orchestrator from one pick to the next until whoever set it resets it.
+    both_faces: bool = False
+
+    # ---- per pick, while a wrist pick looks around (``look_around``) ----
+    #: The earlier looks of this pick, in the order they were visited: what every later look is fused with.
+    _look_views: "list[_LookView]" = field(default_factory=list, init=False, repr=False)
+    #: The fixed cameras' views, the cameras absent and those that grounded nothing, acquired once per pick at its
+    #: first look; ``None`` until then.
+    _fixed_views: "tuple[tuple[ObservedView, ...], list[str], list[str]] | None" = field(
+        default=None, init=False, repr=False)
+    #: The look being ranked, while it is: what ``_fused_scene`` fuses with the earlier looks.
+    _current_look: "_LookView | None" = field(default=None, init=False, repr=False)
+    #: What the ranking of the current look fused, for its judgement.
+    _last_fused_scene: "FusedSceneGeometry | None" = field(default=None, init=False, repr=False)
+    #: Per object of the last ranking: its result, its support and the cloud its generator was handed.
+    _results_by_object: "dict[int, _RankedObject]" = field(default_factory=dict, init=False, repr=False)
+    #: The look sequence whose looks are still held (:meth:`look_around` to :meth:`close_looks`): the only one
+    #: :meth:`go_on_with` hands on.
+    _open_looked: "LookedAround | None" = field(default=None, init=False, repr=False)
+    #: A look sequence handed to the next :meth:`run` (:meth:`go_on_with`), which goes on with it rather than looking
+    #: again; consumed by that run, dropped by :meth:`close_looks`.
+    _pending_looked: "LookedAround | None" = field(default=None, init=False, repr=False)
+    #: What the last wrist pick's looks came to; ``None`` for a fixed camera and before the first look.
+    looked_around: "LookedAround | None" = field(default=None, init=False, repr=False)
+    #: Holds what a pick keeps for as long as it looks and picks: the frames its wrist camera took at every pose, in the
+    #: arm's live planner world (``keep_out.holding_views``), for a pick handed looks. Closed by :meth:`close_looks`.
+    _views_scope: ExitStack = field(default_factory=ExitStack, init=False, repr=False)
+    #: Whether the arm's live planner world holds the frames of the pick that is looking (what ``holding_views`` said).
+    _holding: bool = field(default=False, init=False, repr=False)
+
     _last_policy_report: PolicyReport | None = field(default=None, init=False, repr=False)
     #: The objects the last ranking iterated, for where the chosen one was seen (``PickReport.target_centre_mm``).
     _last_scene_objects: tuple[Any, ...] = field(default=(), init=False, repr=False)
     _resolved_sampling_mode: GraspSamplingMode = field(
         default=GraspSamplingMode.AUTO, init=False, repr=False
     )
-    # Per-pick reobserve counter. Reset to 0 at the top of :meth:`run`
-    # and incremented every time the commit gate refuses and the budget
-    # allows another perception capture.
-    _commit_reobserve_count: int = field(default=0, init=False, repr=False)
     # ---- live progress + cancellation (both default-off, both byte-identical when unset) ----
     # A caller that wants to watch a pick attaches ``on_progress``; with it unset every emit is one
     # ``is None`` test and no payload is built. Without it a server subscribing to a live pick
@@ -857,8 +1020,8 @@ class BinPickingOrchestrator:
     # candidate (BASE) frame before the swept-volume check. Reset per pick.
     _pending_camera_to_base: "Transform | None" = field(default=None, init=False, repr=False)
     #: The keep-out scope of the attempt that is running: the target held out of the arm's live
-    #: world from the offer until the pick ends or the arm moves to look again. Opened fresh by
-    #: every run.
+    #: world from the offer until the pick ends or the next frame's offer replaces it. Opened fresh
+    #: by every run.
     _keep_out: ExitStack = field(default_factory=ExitStack, init=False, repr=False)
     #: Whether this run already said that its target stays an obstacle, so the line is written once
     #: per run.
@@ -961,18 +1124,14 @@ class BinPickingOrchestrator:
             )
 
         # The shadow-telemetry aggregator (logic-only; reads loop state via getter-closures-over-self
-        # so it always sees end-of-pick values: _commit_reobserve_count is incremented mid-loop and
-        # _sequencing_current_attempts is rebound per pick).
+        # so it always sees end-of-pick values: _sequencing_current_attempts is rebound per pick).
         self._shadow = _ShadowTelemetryAggregator(
             max_attempts_getter=lambda: self.max_attempts,
             shadow_router_getter=lambda: self.shadow_router,
-            viewpoints_getter=lambda: self._viewpoints_visited,
-            commit_reobserve_getter=lambda: self._commit_reobserve_count,
             resolved_mode_getter=lambda: self._resolved_sampling_mode,
-            commit_policy_getter=lambda: self.commit_policy,
         )
 
-    def _resolve_support(self, seg, frame, camera_to_base):  # noqa: ANN001, ANN202
+    def _resolve_support(self, seg, frame, camera_to_base, looks_cloud=None):  # noqa: ANN001, ANN202
         """The support plane for this pick: the declared height, raised by what the cameras saw.
 
         The observation is an externally supplied fused target cloud when one is available, because
@@ -985,6 +1144,12 @@ class BinPickingOrchestrator:
         that a real cell runs. The two are different seams and this one has never seen the other's
         output, so a cell with two calibrated cameras refines its support plane from a single view. ``support_config`` unset returns ``None``, the
         key is never added, and the path is byte-identical.
+
+        The one exception is a wrist pick's looks: ``looks_cloud`` is the target's cloud fused over two or more views
+        of the pick's looks, and it refines the plane in place of the current view's own, under the same extent gate
+        in BASE (:data:`_MIN_CLOUD_EXTENT_FOR_SUPPORT_MM`). It holds this view's surface and what the other looks saw of
+        the part besides, so the lowest point it reaches is the lowest any of them saw: one look that lost the foot of
+        the part behind a neighbour no longer puts the table under what it could see.
         """
         if self.support_config is None:
             return None
@@ -995,6 +1160,8 @@ class BinPickingOrchestrator:
         if cfg.refine_from_target:
             if self.external_target_geometry_base_mm is not None and self.target_label is not None:
                 clouds.append(self.external_target_geometry_base_mm)
+            elif looks_cloud is not None and self._spans_the_support(looks_cloud, "the looks' fused"):
+                clouds.append(looks_cloud)
             elif camera_to_base is not None:
                 cloud = self._target_cloud_base_mm(seg, frame, camera_to_base)
                 if cloud is not None:
@@ -1072,21 +1239,34 @@ class BinPickingOrchestrator:
                 "not refining the support plane this attempt", transform.shape)
             return None
         base_points = points @ transform[:3, :3].T + transform[:3, 3]
-        if self.support_config is not None:
-            normal = _np.asarray(self.support_config.normal, dtype=float).reshape(3)
-            length = float(_np.linalg.norm(normal))
-            if length > 1e-12:
-                along = base_points @ (normal / length)
-                if float(along.max() - along.min()) < _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM:
-                    _LOG.debug(
-                        "single-view target cloud spans %.1f mm along the support normal (< %.1f); "
-                        "it has not observed the support, so the declared height stands",
-                        float(along.max() - along.min()), _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM)
-                    return None
+        if not self._spans_the_support(base_points, "single-view"):
+            return None
         return base_points
 
+    def _spans_the_support(self, base_points: np.ndarray, which: str) -> bool:
+        """Whether a BASE target cloud reaches far enough along the support normal to have seen what it stands on.
+
+        :data:`_MIN_CLOUD_EXTENT_FOR_SUPPORT_MM` along ``support_config.normal``, the gate
+        :meth:`_target_cloud_base_mm` sets out; ``which`` names the cloud in the line that says it did not.
+        """
+        if self.support_config is None:
+            return True
+        normal = np.asarray(self.support_config.normal, dtype=float).reshape(3)
+        length = float(np.linalg.norm(normal))
+        points = np.asarray(base_points, dtype=float).reshape(-1, 3)
+        if length <= 1e-12 or not points.size:
+            return bool(points.size)
+        along = points @ (normal / length)
+        if float(along.max() - along.min()) < _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM:
+            _LOG.debug(
+                "%s target cloud spans %.1f mm along the support normal (< %.1f); "
+                "it has not observed the support, so the declared height stands",
+                which, float(along.max() - along.min()), _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM)
+            return False
+        return True
+
     def _target_centre_base_mm(
-        self, frame: PerceptionFrame, target_index: int | None,
+        self, frame: PerceptionFrame, target_index: int | None, *, fused_cloud_base_mm: "np.ndarray | None" = None,
     ) -> tuple[float, float, float] | None:
         """Where the chosen object was seen, BASE mm, or ``None``: the median of its mask's surface, as ``Locator`` says it.
 
@@ -1094,6 +1274,25 @@ class BinPickingOrchestrator:
         CAMERA to BASE. The primary camera's measured surface (``surface_depth_map``) is preferred over the grasp
         path's depth, which a producer may flatten to the object's top face plus a penetration. A cell with no CAMERA
         to BASE says nothing: its object would be placed in the camera's frame and called BASE.
+
+        ``fused_cloud_base_mm``, where given and not empty, is the object's cloud fused over the views of a wrist pick,
+        and its median is the centre: one view sees one side of the part, and its median leans that way.
+        """
+        if fused_cloud_base_mm is not None and np.asarray(fused_cloud_base_mm).size:
+            middle = np.median(np.asarray(fused_cloud_base_mm, dtype=np.float64).reshape(-1, 3), axis=0)
+            return float(middle[0]), float(middle[1]), float(middle[2])
+        points = self._target_surface_base_mm(frame, target_index)
+        if points is None:
+            return None
+        centre = np.median(points, axis=0)
+        return float(centre[0]), float(centre[1]), float(centre[2])
+
+    def _target_surface_base_mm(self, frame: PerceptionFrame, target_index: int | None) -> "np.ndarray | None":
+        """The chosen object's surface in ``frame``, BASE mm, or ``None``: its mask less the pixels behind a depth step.
+
+        From the object the ranking chose (``_last_scene_objects``), with that camera's own depth, intrinsics and
+        CAMERA to BASE; the primary camera's measured surface (``surface_depth_map``) is preferred over the grasp path's
+        depth. ``None`` with no CAMERA to BASE, no such object, or no depth under its mask.
         """
         from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps  # noqa: PLC0415
         from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
@@ -1110,10 +1309,7 @@ class BinPickingOrchestrator:
             points = to_base_mm(surface, depth, chosen_object.intrinsics, chosen_object.camera_to_base)
         except (AttributeError, TypeError, ValueError):
             return None
-        if points.shape[0] == 0:
-            return None
-        centre = np.median(points, axis=0)
-        return float(centre[0]), float(centre[1]), float(centre[2])
+        return points if points.shape[0] else None
 
     def _fusion_of(self, target_index: int | None) -> _FusionFields:
         """What the last ranked frame fused, as a `PickAttempt` keeps it: the target's cameras and the frame's count.
@@ -1125,6 +1321,768 @@ class BinPickingOrchestrator:
         views = self._fused_views_by_object.get(target_index, ()) if target_index is not None else ()
         return {"fused_views": views, "fused_objects": self._fused_objects_in_frame}
 
+    # ------------------------------------------------------------------
+    # Looks of a wrist pick
+    # ------------------------------------------------------------------
+
+    def _perceives_from_the_wrist(self) -> bool:
+        """Whether this loop's frames are placed by the tool pose: a camera on the wrist, which looks around."""
+        from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver  # noqa: PLC0415
+
+        return isinstance(self.frame_resolver, EyeInHandFrameResolver)
+
+    def look_around(self) -> LookedAround:
+        """Look from each of the pick's :attr:`looks` in order, each fused with the ones before, until a grasp is safe.
+
+        At each look the arm moves there through its own judged verb (``move_to_look``: ``move_to_joints``, or the
+        gated home), the camera perceives, and the frame is ranked on this look's surfaces fused with every earlier
+        look's and with the fixed cameras', acquired once for the pick (:meth:`_fused_looks`). The grasp is computed
+        again on each look, so a better one found on more of the part is taken. The looking stops at the first look
+        whose grasp is valid and carries none of the rescan reasons (``_RESCAN_REASONS``), and with :attr:`both_faces`
+        only once both jaw contact faces of that grasp were seen. A grasp that is still uncertain, or no candidate,
+        goes on to the next look. With no looks the pose the arm stands at is the one look.
+
+        Once a look ranks a valid grasp, the part it is on is kept (the views its cloud is made of): a later look
+        judges that part, found by association, and a look that does not see it is left out and said. A look that
+        finds that part without a valid grasp lets it go.
+
+        Once every declared look is used up, reached or refused before anything was sent, and the grasp is still not
+        safe enough, one view is generated, the last resort (:meth:`_generated_view`,
+        ``src/robot/execution/generated_view.py``): the judged look turned about the part to the contact face of the
+        chosen grasp no view showed, or to the side no look faced when there is no grasp, every turn screened by the arm
+        before it moves, the smallest first, and driven on the straight joint line alone; it is perceived and judged as
+        a look. With :attr:`both_faces`, a grasp no view showed both contact faces of is then not gripped
+        (:attr:`LookedAround.withheld`). Otherwise, where the grasp was ranked on a look other than the one the arm
+        stands at, the arm goes back there on the straight joint line; where that line is not clear, would turn a joint
+        past the generated view's travel cap, or would not be judged against the world holding the frames of the pick,
+        the approach starts from where the arm stands, planned and judged as every approach is. Neither the generated
+        view nor the move back runs unless that world holds them.
+
+        The motions: nothing is said to the hand. A camera that cannot vouch for the cell on the way raises, a fault of
+        the cell. A controller that stopped ends the looking where it is, with nothing else commanded. A look a guard
+        or the planner refused before anything was sent is skipped and said, before a grasp was found as after, and the
+        pick goes on with the next look and the views fused so far; a pick that reaches none of its looks ends there
+        with nothing perceived, as a refused look always ended it. A motion that failed once it may have been
+        commanded, to a look, to the generated view or back, ends the looking there, with nothing else commanded: the
+        arm may have moved part of the way. A stop asked for before a look ends the looking there.
+
+        A pick handed looks holds every frame its wrist camera takes in the arm's live planner world
+        (``keep_out.holding_views``), from its first look until :meth:`close_looks`, which :meth:`run` calls when the
+        pick ends, whether it gripped, failed or raised: every motion of the pick is judged against all of them. A look
+        around that raises lets them go itself. What
+        the looks came to is kept on :attr:`looked_around`. The next :meth:`run` goes on with it only when it is handed
+        on (:meth:`go_on_with`); otherwise that run looks for itself. A camera that is not on the wrist never looks
+        around, and asking it to raises ``ValueError`` with nothing moved; so does :attr:`both_faces` with a policy that
+        turns every grasp off the faces that were judged (:func:`judged_faces_turned_away`).
+        """
+        if not self._perceives_from_the_wrist():
+            raise ValueError(
+                "look_around is a wrist camera's: this pick's frames are not placed by the tool pose, so moving "
+                "the arm would not move its camera; a fixed camera perceives where it stands (run())")
+        self._refuse_a_turned_grasp()
+        try:
+            return self._look_around(attempt_index=0)
+        except BaseException:
+            # A look around that raised hands nothing on, and its frames must not outlive it in the planner world:
+            # the caller's next motion would be judged against a pick that is over. `run()` does the same in its
+            # `finally`; a caller of this public entry may have no such block.
+            self.close_looks()
+            raise
+
+    def _refuse_a_turned_grasp(self) -> None:
+        """Raise ``ValueError`` before anything moves where :attr:`both_faces` is asked and the policy would close the
+        jaws on faces nobody judged (:func:`judged_faces_turned_away`)."""
+        turned = judged_faces_turned_away(self) if self.both_faces else ""
+        if turned:
+            raise ValueError(turned)
+
+    def go_on_with(self, looked: LookedAround) -> None:
+        """Hand ``looked`` to the next :meth:`run`, which goes on with its grasp rather than looking again.
+
+        Only the look sequence :meth:`look_around` returned last, while its looks are still held: a judgement nobody
+        handed on never reaches a later pick, and one whose looks were closed is not handed on. That run consumes it;
+        :meth:`close_looks` drops it unconsumed.
+        """
+        if looked is not self._open_looked:
+            raise ValueError(
+                "only the look sequence look_around() returned last, before close_looks(), can be handed on to the "
+                "next run")
+        self._pending_looked = looked
+
+    def _look_around(self, *, attempt_index: int) -> LookedAround:
+        """:meth:`look_around` for attempt ``attempt_index``, the attempt its progress events carry."""
+        from src.robot.core.errors import CameraWorldUnavailable  # noqa: PLC0415
+        from src.robot.execution.generated_view import move_back_to_look  # noqa: PLC0415
+        from src.robot.execution.looks import look_label, looks_of, move_to_look  # noqa: PLC0415
+        from src.robot.execution.motion import MotionOutcome  # noqa: PLC0415
+
+        self.close_looks()
+        self.looked_around = None
+        plan: list[tuple[str, Any]] = (
+            [(look_label(pose), pose) for pose in looks_of(self.looks)] if self.looks else [(_HERE, None)])
+        if self.looks:
+            # Every frame the wrist camera takes from here until the pick ends stays in the planner world.
+            self._holding = self._views_scope.enter_context(holding_views(self.arm))
+        visited: list[str] = []
+        dropped: list[str] = []
+        refused: list[tuple[str, str]] = []
+        first_refusal: tuple[str, MotionReport] | None = None
+        judged: _Judgement | None = None
+        cancelled = False
+        stopped: MotionReport | None = None
+        stopped_look = ""
+        controller: str | None = None
+        for label, pose in plan:
+            if self.should_cancel is not None and self.should_cancel():
+                cancelled = True
+                break
+            if pose is not None:
+                moved = move_to_look(self.arm, pose)
+                if moved.outcome is MotionOutcome.CAMERA_WORLD_UNAVAILABLE and isinstance(
+                        moved.result.exception, CameraWorldUnavailable):
+                    raise moved.result.exception
+                if not moved.ok:
+                    controller = self._controller_cannot_move()
+                    if controller is not None or not _sent_nothing(moved):
+                        # A stopped controller, or a motion that may have moved the arm: the looking ends here.
+                        stopped, stopped_look = moved, label
+                        break
+                    why = f"{moved.status.value}: {moved.message}"
+                    refused.append((label, why))
+                    if first_refusal is None:
+                        first_refusal = (label, moved)
+                    # A refused look is used up as a visited one is: the one generated view may still come after it.
+                    _LOG.warning(
+                        "look %s was refused before anything was sent (%s): it is skipped, and the pick goes on %sto "
+                        "its next look or, once none is left and the grasp is still not safe enough, to the one "
+                        "generated view", label, why,
+                        "with the views fused so far, " if judged is not None and judged.valid else "")
+                    continue
+            visited.append(label)
+            judgement, missed = self._look(label, pose, judged, attempt_index=attempt_index)
+            if missed:
+                dropped.append(label)
+            if judgement is not None:
+                judged = judgement
+                if judged.good:
+                    break
+        if not cancelled and stopped is None and not visited and first_refusal is not None:
+            # Not one look reached: the attempt ends at the first refusal, with nothing perceived.
+            stopped_look, stopped = first_refusal
+        generated: GeneratedView | None = None
+        generated_skipped = ""
+        if self.looks and not cancelled and stopped is None and visited and (judged is None or not judged.good):
+            # Every declared look is used up, reached or refused before anything was sent (addendum 1), and the grasp is
+            # still not safe enough: the one generated view.
+            if self.should_cancel is not None and self.should_cancel():
+                cancelled = True
+            elif judged is None:
+                generated_skipped = "no look saw anything to turn about"
+            else:
+                judgement, missed, generated = self._generated_view(judged, attempt_index=attempt_index)
+                generated_skipped = generated.skipped
+                if generated.stopped is not None:
+                    stopped, stopped_look, controller = generated.stopped, generated.label, generated.controller
+                elif generated.moved:
+                    visited.append(generated.label)
+                    if missed:
+                        dropped.append(generated.label)
+                    if judgement is not None:
+                        judged = judgement
+        withheld = ""
+        if not cancelled and stopped is None and judged is not None and judged.valid and self._faces_unseen_by(judged):
+            withheld = self._unseen_faces(judged.faces)
+        moved_back = move_back_refused = ""
+        if (not cancelled and stopped is None and not withheld and judged is not None and judged.valid
+                and self._look_views and judged.look is not self._look_views[-1]):
+            # The grasp was ranked on a look other than the one the arm stands at: back there, on the straight line.
+            if self.should_cancel is not None and self.should_cancel():
+                cancelled = True
+            else:
+                back = move_back_to_look(self.arm, judged.look.joints, look=judged.look.label,
+                                         here=self._joints_here(), holding=self._holding,
+                                         controller_stopped=self._controller_cannot_move)
+                if back.stopped is not None:
+                    stopped, stopped_look, controller = back.stopped, judged.look.label, back.controller
+                elif back.done:
+                    moved_back = judged.look.label
+                else:
+                    move_back_refused = back.refused
+                    _LOG.warning(
+                        "the move back to look %s, which saw the part, was refused (%s): the approach starts from where "
+                        "the arm stands, at look %s, planned and judged as every approach is, against the world that "
+                        "holds every frame of the pick", judged.look.label, back.refused, self._look_views[-1].label)
+        if judged is not None:
+            # Once, on the judgement the looking ends on, against the looks before it that its part's cloud holds.
+            earlier = self._look_views[:self._look_views.index(judged.look)] if judged.look in self._look_views else []
+            judged = replace(judged, hand_eye_gap_mm=self._hand_eye_gap_mm(
+                judged.look, judged.target_index, [seen for seen in earlier if seen.view is not None], judged.members))
+        looked = LookedAround(
+            visited=tuple(visited), judged=judged, dropped=tuple(dropped), refused=tuple(refused),
+            views=tuple(self._look_views), stopped=stopped, stopped_look=stopped_look, controller=controller,
+            cancelled=cancelled,
+            generated=generated.label if generated is not None and generated.moved else "",
+            generated_view_deg=generated.azimuth_deg if generated is not None and generated.moved else None,
+            generated_skipped=generated_skipped, moved_back=moved_back, move_back_refused=move_back_refused,
+            withheld=withheld,
+        )
+        self._say_what_the_looks_came_to(looked)
+        self.looked_around = looked
+        self._open_looked = looked
+        return looked
+
+    def close_looks(self) -> "LookedAround | None":
+        """End what a pick's looks hold, the frames held in the planner world among it, and drop a look sequence handed
+        on and not picked. Idempotent: what the looks came to stays readable on :attr:`looked_around`."""
+        self._views_scope.close()
+        self._views_scope = ExitStack()
+        self._holding = False
+        self._open_looked = None
+        self._pending_looked = None
+        self._current_look = None
+        self._look_views = []
+        self._fixed_views = None
+        self._last_fused_scene = None
+        return self.looked_around
+
+    def _look_name(self, label: str) -> str:
+        """A look's view identity: ``rig@look``, the rig alone for a pick handed no looks."""
+        rig = self.primary_camera_id or "primary"
+        return rig if label == _HERE else f"{rig}@{label}"
+
+    def _look_name_ranked(self) -> str | None:
+        """The view identity of the look being ranked, ``None`` outside a look."""
+        return self._current_look.name if self._current_look is not None else None
+
+    def _look(
+        self, label: str, pose: Any, judged: "_Judgement | None", *, attempt_index: int,
+    ) -> "tuple[_Judgement | None, bool]":
+        """Perceive where the arm stands, rank this look fused with the earlier ones, and judge it.
+
+        Returns the judgement, or ``None`` when the look adds none, and whether the look missed the part a valid grasp
+        was found on. A look that segmented nothing is kept for the record and ranks nothing. For a pick handed looks,
+        the configuration the arm stands at is read first and kept with the look: the move back returns to it.
+        """
+        joints = self._joints_here() if self.looks else None
+        frame = self.perception.acquire()
+        route = getattr(self.perception, "last_route", None)
+        emit(
+            self.on_progress, PickStage.PERCEIVED,
+            attempt=attempt_index, segmentation_count=len(frame.segmentations),
+            route=route[0] if route else None, route_reason=route[1] if route else None,
+            **({"extra": {"look": label}} if pose is not None else {}),
+        )
+        camera_to_base = (
+            self.frame_resolver.camera_to_base_for_frame(frame, arm=self.arm)
+            if self.frame_resolver is not None else None
+        )
+        view = self._look_view(label, pose, frame, camera_to_base)
+        if joints is not None:
+            view = replace(view, joints=joints)
+        pinned = judged is not None and judged.valid
+        if not frame.segmentations:
+            self._look_views.append(view)
+            _LOG.info("look %s: nothing was segmented there", label)
+            return None, pinned
+        self._current_look = view
+        try:
+            result, index, ordering = self._best_result_over_segmentations(frame)
+            judgement = self._judge(view, result, index, ordering, judged)
+        finally:
+            self._current_look = None
+        self._look_views.append(view)
+        return judgement, judgement is None and pinned
+
+    def _look_view(
+        self, label: str, pose: Any, frame: PerceptionFrame, camera_to_base: "Transform | None",
+    ) -> _LookView:
+        """What a look keeps of its frame: every segmentation's surface a fusion may give full weight, in BASE.
+
+        A mask less the pixels behind a depth step (``pixels_behind_depth_steps``, as the Locator places a part): at
+        45 degrees the band of table the mask bleeds onto at the part's far edge would otherwise join the part's fused
+        cloud, and the support-footprint generator reads that cloud as it comes. Less the pixels that see their surface
+        at a grazing incidence (``grazing_pixels``), which say more about the edge they were seen past than about where
+        the surface is. On the measured surface (``surface_depth_map``) where the frame carries one, because the grasp
+        path's depth may be flattened under every mask.
+        """
+        from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps  # noqa: PLC0415
+        from src.robot.grasping.multiview.scene_geometry import (  # noqa: PLC0415
+            ObservedView,
+            grazing_pixels,
+            to_base_mm,
+        )
+
+        name = self._look_name(label)
+        matrix = None if camera_to_base is None else np.asarray(camera_to_base.to_matrix(), dtype=np.float64)
+        measured = getattr(frame, "surface_depth_map", None)
+        depth = np.asarray(measured if measured is not None else frame.depth_map, dtype=np.float64)
+        if matrix is None or not frame.segmentations:
+            return _LookView(label=label, pose=pose, name=name, frame=frame, camera_to_base=matrix, depth=depth)
+        intrinsics = np.asarray(frame.intrinsics, dtype=np.float64)
+        surfaces: list[np.ndarray | None] = []
+        clouds: list[np.ndarray] = []
+        for seg in frame.segmentations:
+            mask = getattr(seg, "mask", None)
+            if mask is None:
+                surfaces.append(None)
+                clouds.append(np.zeros((0, 3), dtype=np.float64))
+                continue
+            kept = np.asarray(mask).astype(bool)
+            kept &= ~pixels_behind_depth_steps(kept, depth)
+            kept &= ~grazing_pixels(kept, depth, intrinsics)
+            surfaces.append(kept)
+            clouds.append(to_base_mm(kept, depth, intrinsics, matrix))
+        blob_objects = tuple(index for index, cloud in enumerate(clouds) if cloud.shape[0])
+        view = ObservedView(
+            name=name,
+            masks=tuple(kept for index, kept in enumerate(surfaces) if index in blob_objects and kept is not None),
+            depth_map=depth,
+            intrinsics=intrinsics,
+            camera_to_base=matrix,
+            segmentations=tuple(frame.segmentations[index] for index in blob_objects),
+        ) if blob_objects else None
+        return _LookView(
+            label=label, pose=pose, name=name, frame=frame, camera_to_base=matrix, depth=depth,
+            surfaces=tuple(surfaces), clouds=tuple(clouds), view=view, blob_objects=blob_objects,
+        )
+
+    def _judge(
+        self,
+        look: _LookView,
+        result: "GraspResult | None",
+        index: int | None,
+        ordering: "OrderingDecision | None",
+        judged: "_Judgement | None",
+    ) -> "_Judgement | None":
+        """Whether this look's grasp is safe enough to stop looking at, and on which part, from the views fused so far.
+
+        Before any look found a valid grasp the ranking's choice is judged, and the latest look wins: it fused the
+        most views. Once one did, the part it is on is kept: this look judges the object that associates with one of
+        the views that part's cloud was made of, whatever the ranking chose, and ``None`` says this look did not see it.
+
+        Two rules of the owner's (2026-09-29) read what the looks add. Two looks that call the associated part by
+        different labels make the grasp uncertain (``RESCAN_RECOMMENDED``); looks that agree only add to the count
+        that agreed. And the jaw contact faces of the chosen grasp are judged on the cloud its generator was handed.
+        The hand-eye check is measured once, on the judgement the looking ends on (:meth:`_look_around`).
+        """
+        fused = self._last_fused_scene
+        if judged is not None and judged.valid:
+            target = self._pinned_object(fused, judged.members)
+            found = self._results_by_object.get(target) if target is not None else None
+            if target is None or found is None:
+                _LOG.warning(
+                    "look %s did not see the part the grasp of look %s is on: it is left out, and that grasp stands",
+                    look.label, judged.look.label)
+                return None
+            if target != index:
+                ordering = None
+            index, result = target, found.result
+        ranked = self._results_by_object.get(index) if index is not None else None
+        earlier = [seen for seen in self._look_views if seen.view is not None]
+        members: dict[str, int] = {}
+        if index is not None:
+            own = look.blob_of(index)
+            if own is not None:
+                members[look.name] = own
+            for association in fused.associations if fused is not None else ():
+                assigned = association.assignment[index] if index < len(association.assignment) else None
+                if assigned is not None:
+                    members[association.view] = assigned
+            left_out = [seen.label for seen in earlier if seen.name not in members]
+            if left_out:
+                _LOG.info(
+                    "look %s: what look(s) %s saw did not associate with its target and is left out of its cloud",
+                    look.label, ", ".join(left_out))
+        member_looks = ((look.label,) if index is not None else ()) + tuple(
+            seen.label for seen in earlier if seen.name in members)
+        own_cloud = look.clouds[index] if index is not None and 0 <= index < len(look.clouds) else None
+        cloud = ranked.cloud_base_mm if ranked is not None and ranked.cloud_base_mm is not None else own_cloud
+        if cloud is not None and not cloud.size:
+            cloud = None
+
+        reasons = tuple(result.reasons) if result is not None else ()
+        label = self._label_of(index)
+        from src.robot.grasping.multiview.association import label_agreement  # noqa: PLC0415
+
+        agreed, disagree = label_agreement(label, [
+            (seen.label, seen.label_of_blob(members[seen.name]) if seen.name in members else "") for seen in earlier])
+        if disagree:
+            reasons = tuple(dict.fromkeys((*reasons, GraspFailureReason.RESCAN_RECOMMENDED)))
+            _LOG.warning(
+                "look %s calls its target %r and %s the same part otherwise (%s): the grasp is uncertain",
+                look.label, label, "an earlier look calls" if len(disagree) == 1 else "earlier looks call",
+                ", ".join(f"look {seen}: {other!r}" for seen, other in disagree))
+
+        faces = self._jaw_faces(result, cloud, ranked.support_height_mm if ranked is not None else None)
+        valid = result is not None and result.is_success
+        uncertain = bool(set(reasons) & _RESCAN_REASONS)
+        faces_ok = not self.both_faces or not self._hand_has_jaw_faces() or (faces is not None and faces.both)
+        good = valid and not uncertain and faces_ok
+        _say_the_look(look.label, valid=valid, uncertain=uncertain, good=good, reasons=reasons,
+                      faces=faces if self.both_faces else None, faces_asked=self.both_faces)
+        return _Judgement(
+            look=look, result=result, target_index=index, ordering=ordering, target_cloud_base_mm=cloud,
+            members=members, member_looks=member_looks, reasons=reasons, faces=faces, good=good,
+            labels_agreed=agreed, labels_disagree=tuple(disagree), hand_eye_gap_mm=None,
+            camera_to_base=self._pending_camera_to_base, scene_objects=self._last_scene_objects,
+            fused_views_by_object=dict(self._fused_views_by_object),
+            fused_objects_in_frame=self._fused_objects_in_frame,
+            fusion_telemetry=dict(self._fusion_geometry_telemetry),
+            support_telemetry=dict(self._support_telemetry),
+            debug_image_png=getattr(self.calculator, "last_debug_image_png", None),
+        )
+
+    @staticmethod
+    def _pinned_object(fused: "FusedSceneGeometry | None", members: Mapping[str, int]) -> int | None:
+        """The object of this look that the kept part's views associate with, by most of them; ``None`` for none."""
+        if fused is None:
+            return None
+        votes: dict[int, int] = {}
+        for association in fused.associations:
+            blob = members.get(association.view)
+            if blob is None:
+                continue
+            for index, assigned in enumerate(association.assignment):
+                if assigned == blob:
+                    votes[index] = votes.get(index, 0) + 1
+        return min(votes, key=lambda index: (-votes[index], index)) if votes else None
+
+    def _label_of(self, index: int | None) -> str:
+        """The label of object ``index`` of the last ranking, lower case, ``""`` when it carries none."""
+        if index is None or not 0 <= index < len(self._last_scene_objects):
+            return ""
+        segmentation = getattr(self._last_scene_objects[index], "segmentation", None)
+        return str(getattr(segmentation, "label", "") or "").strip().lower()
+
+    def _hand_has_jaw_faces(self) -> bool:
+        """Whether the hand closes jaws on two faces: every model but a suction cup's."""
+        from src.robot.grasping.collision.gripper_model import SuctionCupGripperModel  # noqa: PLC0415
+
+        return not isinstance(self.gripper_model, SuctionCupGripperModel)
+
+    def _grips_only_the_judged_grasp(self) -> bool:
+        """Whether the grasp gripped must be the one whose jaw contact faces were judged: :attr:`both_faces` asked on a
+        hand that closes jaws on two faces. The reranks then stand down and the approach check falls back to no other
+        candidate, since only the calculator's best had its faces judged."""
+        return self.both_faces and self._hand_has_jaw_faces()
+
+    def _jaw_faces(
+        self, result: "GraspResult | None", cloud: "np.ndarray | None", support_height_mm: float | None,
+    ) -> "JawFacesSeen | None":
+        """Whether each jaw's contact face of the chosen grasp was seen in ``cloud`` (``unseen_side.jaw_faces_seen``).
+
+        The contact patch is the hand's own, off its gripper model (the 2F-85's defaults when none is configured).
+        ``None`` for no valid grasp, no cloud, a suction hand, a grasp not in BASE, or one the check cannot read.
+        """
+        from src.robot.grasping.collision.gripper_model import ParallelJawGripperModel  # noqa: PLC0415
+        from src.robot.grasping.multiview.unseen_side import jaw_faces_seen  # noqa: PLC0415
+
+        best = result.best if result is not None else None
+        if best is None or cloud is None or best.frame is not GraspFrame.BASE or not self._hand_has_jaw_faces():
+            return None
+        jaw = self.gripper_model if isinstance(self.gripper_model, ParallelJawGripperModel) \
+            else ParallelJawGripperModel()
+        try:
+            return jaw_faces_seen(
+                cloud, centre_mm=best.position, approach=best.approach, closing_axis=best.axis,
+                grip_width_mm=float(best.grip_width_mm), pad_ahead_mm=float(jaw.pad_ahead_mm),
+                pad_behind_mm=max(0.0, float(jaw.pad_length_mm) - float(jaw.pad_ahead_mm)),
+                finger_width_mm=float(jaw.finger_width_mm), support_height_mm=support_height_mm,
+            )
+        except ValueError as exc:
+            _LOG.info("the jaw contact faces of the chosen grasp could not be judged: %s", exc)
+            return None
+
+    @staticmethod
+    def _hand_eye_gap_mm(
+        look: _LookView, index: int | None, earlier: "list[_LookView]", members: Mapping[str, int],
+    ) -> float | None:
+        """The median distance between ``look``'s surface of object ``index`` and the earlier looks' (hand-eye check).
+
+        Over the surface both saw (``association.nearest_surface_distances_mm``: each point's nearest point of the other
+        look within reach, on a surface that faces the same way, each turned toward the camera that saw it), pooled
+        over every earlier look whose surface of the part associated with this one's. ``None`` when fewer than
+        ``association.HAND_EYE_MIN_POINTS`` distances were measured: two looks that shared no face say nothing about the
+        calibration.
+        """
+        from src.robot.grasping.multiview.association import (  # noqa: PLC0415
+            HAND_EYE_MIN_POINTS,
+            nearest_surface_distances_mm,
+        )
+
+        own_cloud = look.clouds[index] if index is not None and 0 <= index < len(look.clouds) else None
+        if own_cloud is None or not own_cloud.size or look.camera_to_base is None:
+            return None
+        found = [
+            nearest_surface_distances_mm(
+                own_cloud, seen.cloud_of_blob(members[seen.name]), seen_from_mm=look.camera_to_base[:3, 3],
+                other_seen_from_mm=seen.camera_to_base[:3, 3])
+            for seen in earlier if seen.name in members and seen.camera_to_base is not None
+        ]
+        pooled = np.concatenate(found) if found else np.zeros(0)
+        return float(np.median(pooled)) if pooled.size >= HAND_EYE_MIN_POINTS else None
+
+    def _say_what_the_looks_came_to(self, looked: LookedAround) -> None:
+        """One account per pick of where the looks ended, in the owner's words: a safe grasp point, not a scan."""
+        from src.robot.grasping.multiview.association import HAND_EYE_DRIFT_WARN_MM  # noqa: PLC0415
+
+        judged = looked.judged
+        if judged is not None and judged.hand_eye_gap_mm is not None:
+            if judged.hand_eye_gap_mm > HAND_EYE_DRIFT_WARN_MM:
+                _LOG.warning(
+                    "the looks measure the part's shared surface %.1f mm apart (median), more than %.1f mm: the "
+                    "hand-eye calibration may have drifted (a camera loosened on the wrist?). Nothing is changed "
+                    "for it; check the calibration", judged.hand_eye_gap_mm, HAND_EYE_DRIFT_WARN_MM)
+            else:
+                _LOG.info("hand-eye check: the looks measure the part's shared surface %.1f mm apart (median)",
+                          judged.hand_eye_gap_mm)
+        if not self.looks or looked.cancelled or looked.stopped is not None:
+            return
+        looked_from = ", ".join(looked.visited) or "no look"
+        if judged is None:
+            _LOG.info("no look saw anything to pick (looked from %s)", looked_from)
+            return
+        if judged.good:
+            return
+        if not judged.valid:
+            _LOG.info("no look ranked a grasp (looked from %s); the attempt ends without one", looked_from)
+            return
+        if looked.withheld:
+            # Not gripped: the attempt says why (`_faces_unseen`).
+            return
+        reached = len(looked.visited) - (1 if looked.generated else 0)
+        views = ", ".join(judged.member_looks) or judged.look.label
+        _LOG.info("the looks reached (%d of %d)%s gave no grasp safe enough to stop at; the pick goes on with the grasp "
+                  "of look %s on the views of %s", reached, reached + len(looked.refused),
+                  f" and the generated view {looked.generated}" if looked.generated else "", judged.look.label, views)
+
+    def _joints_here(self) -> "JointPositions | None":
+        """The configuration the arm stands at, read off it; ``None``, and said, where it cannot say."""
+        from src.robot.core.errors import RobotError  # noqa: PLC0415
+
+        try:
+            return self.arm.get_joint_positions()
+        except (RobotError, RuntimeError, OSError) as exc:
+            _LOG.warning("the arm could not say where it stands (%s: %s)", type(exc).__name__, exc)
+            return None
+
+    def _generated_view(
+        self, judged: _Judgement, *, attempt_index: int,
+    ) -> "tuple[_Judgement | None, bool, GeneratedView]":
+        """The one view a wrist pick generates once its declared looks are used up, then perceived and judged as a look.
+
+        Aimed by :meth:`_aim`, turned from the judged look (its camera, the tool pose stamped at its shutter, its lens
+        and image), and moved to by ``generated_view.go_to_generated_view`` from where the arm stands, with the arm's
+        home for the cable window, whether the pick's frames are held, and this loop's controller diagnosis: every
+        turn screened by the arm before it moves, the smallest first, the straight joint line alone. Returns the look's
+        judgement and whether it missed the kept part (as :meth:`_look`), and what the view came to.
+        """
+        from src.robot.execution.generated_view import GeneratedView, go_to_generated_view  # noqa: PLC0415
+
+        aim, why = self._aim(judged)
+        tool = getattr(judged.frame, "tool_pose", None)
+        here = self._joints_here() if aim is not None else None
+        if aim is not None and (tool is None or judged.look.camera_to_base is None):
+            why = f"the frame of look {judged.look.label} carries no tool pose or camera placement to turn"
+        elif aim is not None and here is None:
+            why = "the arm could not say where it stands"
+        if why:
+            _LOG.info("no view is generated: %s", why)
+            return None, False, GeneratedView(skipped=why)
+        assert aim is not None and tool is not None and here is not None  # narrowed above
+        height, width = np.asarray(judged.frame.depth_map).shape[:2]
+        generated = go_to_generated_view(
+            self.arm, aim=aim, camera_to_base_mm=judged.look.camera_to_base, tool_to_base_mm=tool.to_matrix(),
+            intrinsics=np.asarray(judged.frame.intrinsics, dtype=np.float64), image_size=(int(width), int(height)),
+            here=here, home=getattr(self.arm, "home_joint_positions", None), holding=self._holding,
+            controller_stopped=self._controller_cannot_move,
+        )
+        if not generated.moved:
+            return None, False, generated
+        assert generated.joints is not None  # moved
+        judgement, missed = self._look(generated.label, generated.joints, judged, attempt_index=attempt_index)
+        return judgement, missed, generated
+
+    def _aim(self, judged: _Judgement) -> "tuple[ViewAim | None, str]":
+        """What the generated view is to show, or ``None`` and why there is nothing to show (the owner, 2026-09-29).
+
+        With a grasp, the jaw contact faces of the chosen grasp no view showed, turning about its centre; a grasp both
+        of whose faces were seen, or whose faces could not be judged (a suction hand among them), leaves nothing to
+        show. With no grasp at all, the side of the target no look faced, about the middle of its cloud.
+        """
+        from src.robot.execution.generated_view import aim_at_faces, aim_at_unseen_side  # noqa: PLC0415
+
+        best = judged.result.best if judged.valid and judged.result is not None else None
+        if best is not None:
+            if judged.faces is None:
+                return None, "the jaw contact faces of the chosen grasp could not be judged, so there is no face to show"
+            if not judged.faces.missing:
+                return None, "both jaw contact faces of the chosen grasp were seen, so there is no face to show"
+            return aim_at_faces(judged.faces.missing, grasp_centre_mm=best.position), ""
+        if judged.target_cloud_base_mm is None:
+            return None, "the target has no cloud to turn about"
+        centres = [seen.camera_to_base[:3, 3] for seen in self._look_views if seen.camera_to_base is not None]
+        try:
+            return aim_at_unseen_side(judged.target_cloud_base_mm, camera_centres_mm=centres), ""
+        except ValueError as exc:
+            return None, f"no side of the target can be told unseen ({exc})"
+
+    def _faces_unseen_by(self, judged: _Judgement) -> bool:
+        """Whether :attr:`both_faces` was asked and no view showed both jaw contact faces of the judged grasp."""
+        return (self.both_faces and self._hand_has_jaw_faces()
+                and not (judged.faces is not None and judged.faces.both))
+
+    @staticmethod
+    def _unseen_faces(faces: "JawFacesSeen | None") -> str:
+        """Which jaw contact face of the chosen grasp no view showed, in the owner's words."""
+        if faces is None:
+            return "the jaw contact faces of the chosen grasp could not be judged on what the views saw"
+        missing = faces.missing
+        jaws = " and ".join(f"jaw {1 if face.side < 0 else 2}" for face in missing)
+        if len(missing) == 1:
+            return f"the contact face at {jaws} of the chosen grasp was not seen from any view"
+        return f"the contact faces at {jaws} of the chosen grasp were not seen from any view"
+
+    def _adopt(
+        self, judged: _Judgement,
+    ) -> "tuple[PerceptionFrame, GraspResult | None, int | None, OrderingDecision | None]":
+        """Go on with the judged look's grasp: its frame, and the per-frame state its ranking left, restored.
+
+        Every look ranked after it overwrote that state, and the rest of the attempt reads it: the CAMERA to BASE the
+        planner world places the target by, the objects the target's centre is read from, what was fused for it, the
+        support it was computed against, and the calculator's overlay of it.
+        """
+        self._pending_camera_to_base = judged.camera_to_base
+        self._last_scene_objects = judged.scene_objects
+        self._fused_views_by_object = dict(judged.fused_views_by_object)
+        self._fused_objects_in_frame = judged.fused_objects_in_frame
+        self._fusion_geometry_telemetry = dict(judged.fusion_telemetry)
+        self._support_telemetry = dict(judged.support_telemetry)
+        if judged.debug_image_png is not None and hasattr(self.calculator, "last_debug_image_png"):
+            self.calculator.last_debug_image_png = judged.debug_image_png  # type: ignore[attr-defined]
+        return judged.frame, judged.result, judged.target_index, judged.ordering
+
+    def _look_refused(
+        self, attempt_index: int, looked: LookedAround, attempts: list[PickAttempt],
+    ) -> PickReport:
+        """The attempt of a wrist pick whose looks ended on a motion to a look: nothing perceived there, nothing else
+        commanded. ``CONTROLLER_NOT_OPERATIONAL`` when the controller cannot move, ``EXECUTION_FAILED`` otherwise: no
+        look reached, a motion the verb refused before any command, or a look motion that failed once it may have been
+        commanded."""
+        from src.robot.execution.motion import MotionOutcome  # noqa: PLC0415
+
+        assert looked.stopped is not None  # the caller's branch
+        fields = _look_motion_fields(looked.stopped)
+        if looked.controller is not None:
+            _LOG.error("pick aborted on the way to look %s: %s", looked.stopped_look, looked.controller)
+            outcome = PickOutcome.CONTROLLER_NOT_OPERATIONAL
+        elif _sent_nothing(looked.stopped):
+            _LOG.error("the pick reached none of its looks (%s); nothing else is commanded",
+                       "; ".join(f"{look}: {why}" for look, why in looked.refused))
+            outcome = PickOutcome.EXECUTION_FAILED
+        elif looked.stopped.outcome is MotionOutcome.REFUSED:
+            # Refused by the motion verb before it commanded anything (a link not open, a camera world the arm would
+            # refuse, a route that does not run, an arm that did not come to rest): nothing was sent, and the cell is
+            # not fit for the motion, so the pick still ends there.
+            _LOG.error("the motion to look %s was refused before any command (%s: %s): nothing was sent, and the pick "
+                       "ends there with nothing else commanded", looked.stopped_look,
+                       looked.stopped.status.value, looked.stopped.message)
+            outcome = PickOutcome.EXECUTION_FAILED
+        else:
+            _LOG.error("the motion to look %s failed once it may have been commanded (%s: %s): the arm may have moved "
+                       "part of the way, so the pick ends there and nothing else is commanded", looked.stopped_look,
+                       looked.stopped.status.value, looked.stopped.message)
+            outcome = PickOutcome.EXECUTION_FAILED
+        action = "look_refused"
+        emit(
+            self.on_progress, PickStage.ATTEMPT_FINISHED,
+            attempt=attempt_index, action=action, outcome=str(outcome),
+            extra={"look": looked.stopped_look},
+            **{k: v for k, v in fields.items() if v is not None},
+        )
+        attempts.append(PickAttempt(
+            attempt_index=attempt_index,
+            target_index=None,
+            reasons=(GraspFailureReason.CONTROLLER_NOT_OPERATIONAL,) if looked.controller is not None else (),
+            score=0.0,
+            action=action,
+            ordering_decision=None,
+            fused_views=(),
+            fused_objects=0,
+            **fields,
+        ))
+        return PickReport(outcome=outcome, attempts=tuple(attempts))
+
+    def _faces_unseen(
+        self, attempt_index: int, attempts: list[PickAttempt], *, withheld: str, result: GraspResult,
+        target_index: int | None, ordering: "OrderingDecision | None", looked: "LookedAround | None" = None,
+    ) -> PickReport:
+        """The attempt of a pick that asked for both jaw contact faces (:attr:`both_faces`), when no view showed both.
+
+        Nothing is gripped and nothing else is commanded: the owner's fail-closed ending for safety-critical processes
+        (2026-09-29). ``RESCANNED_EXHAUSTED`` with ``NO_VALID_GRASP``, which the service reports as ``no_valid_grasp``,
+        and ``withheld``, the reason naming the face no view showed, on the event (and, for a wrist pick, on
+        :attr:`LookedAround.withheld`, its ``looked``). ``result`` is the grasp that was not gripped.
+        """
+        _LOG.error("%s: both_faces asks for both before gripping, so nothing is gripped and nothing else is commanded",
+                   withheld)
+        action = "faces_unseen"
+        reasons = (GraspFailureReason.NO_VALID_GRASP,)
+        emit(
+            self.on_progress, PickStage.ATTEMPT_FINISHED,
+            attempt=attempt_index, action=action, outcome=str(PickOutcome.RESCANNED_EXHAUSTED),
+            target_index=target_index, reasons=tuple(str(reason) for reason in reasons),
+            extra={"withheld": withheld, **self._looks_extra(looked)},
+        )
+        attempts.append(PickAttempt(
+            attempt_index=attempt_index, target_index=target_index, reasons=reasons,
+            score=float(result.top_score), action=action, ordering_decision=ordering,
+            **self._fusion_of(target_index), withheld=withheld,
+        ))
+        return PickReport(
+            outcome=PickOutcome.RESCANNED_EXHAUSTED, attempts=tuple(attempts),
+            selected_telemetry=dict(getattr(result, "telemetry", None) or {}),
+        )
+
+    def _faces_the_fixed_cameras_did_not_show(
+        self, frame: PerceptionFrame, result: GraspResult, target_index: int | None,
+    ) -> str:
+        """For a fixed-camera pick asked for both jaw contact faces (:attr:`both_faces`): which face of the chosen grasp
+        its cameras did not show, in the owner's words; ``""`` when they showed both.
+
+        Judged as a wrist look is (``unseen_side.jaw_faces_seen``), on the cloud the generator was handed for the
+        target, fused over the fixed cameras where the cell fuses them, else on the target's surface in this frame, the
+        pixels behind a depth step left out, against the support the grasp was computed on. Faces that cannot be judged
+        are not seen: the switch fails closed.
+        """
+        ranked = self._results_by_object.get(target_index) if target_index is not None else None
+        cloud = ranked.cloud_base_mm if ranked is not None else None
+        if cloud is None:
+            cloud = self._target_surface_base_mm(frame, target_index)
+        faces = self._jaw_faces(result, cloud, ranked.support_height_mm if ranked is not None else None)
+        return "" if faces is not None and faces.both else self._unseen_faces(faces)
+
+    def _fused_target(self, judged: _Judgement) -> "np.ndarray | None":
+        """The judged target's cloud where the pick was handed looks and more than one view's surface of it is in it,
+        the one the planner world and the target's centre take; ``None`` otherwise, and one view's frame speaks for
+        itself as it always did. A pick handed no looks keeps its own frame for both even where a fixed camera is fused
+        into its grasp, as it did before a wrist pick could look around."""
+        cloud = judged.target_cloud_base_mm
+        if not self.looks or len(judged.members) < 2 or cloud is None or not cloud.size:
+            return None
+        return cloud
+
+    def _looks_extra(self, looked: "LookedAround | None") -> dict[str, Any]:
+        """What the looks came to, as a progress event carries it; empty unless the pick was handed looks."""
+        if looked is None or not self.looks:
+            return {}
+        pair = looked.jaw_faces_seen
+        return {
+            "looks": list(looked.visited),
+            "looks_fused": list(looked.looks_fused),
+            "jaw_faces_seen": list(pair) if pair is not None else None,
+        }
+
     def run(self) -> PickReport:
         """Execute the loop and return a :class:`PickReport`.
 
@@ -1132,19 +2090,19 @@ class BinPickingOrchestrator:
         sequencing / perception / recovery shadow telemetry in a
         ``try/finally`` block so every terminal branch surfaces the
         typed carriers for the post-pick reader.
+
+        :attr:`both_faces` with a policy that turns every grasp off the faces that were judged raises ``ValueError``
+        first, before anything is perceived or moved (:func:`judged_faces_turned_away`).
         """
 
-        # Per-pick reset of the multi-view fusion grid: voxel evidence accumulates within a pick
-        # (across its rescan/relocate views) but must not leak across independent picks; stale
-        # cross-pick evidence starves candidates. Within-pick accumulation is preserved: the clear
-        # happens before the loop, not during it. No-op when fusion is unwired/shadow-off (the
-        # default).
-        if self.scene_fusion is not None:
-            self.scene_fusion.clear()
+        self._refuse_a_turned_grasp()
         emit(self.on_progress, PickStage.PICK_STARTED, attempt_total=self.max_attempts)
         report: PickReport | None = None
         self._keep_out = ExitStack()
         self._keep_out_unplaced_said = False
+        if self._pending_looked is None:
+            # A pick that was not handed its looks says nothing about the last pick's.
+            self.looked_around = None
         try:
             report = self._execute_pick()
             return report
@@ -1152,6 +2110,7 @@ class BinPickingOrchestrator:
             # First, so the target is back in the world before anything else this pick left behind
             # is read.
             self._keep_out.close()
+            self.close_looks()
             self._finalize_sequencing_shadow()
             self._finalize_perception_shadow()
             self._finalize_recovery_shadow()
@@ -1168,10 +2127,8 @@ class BinPickingOrchestrator:
         attempts: list[PickAttempt] = []
         # The shadow finaliser reads the same list via this stable reference.
         self._sequencing_current_attempts = attempts
-        self._viewpoints_visited = []
-        # Reset the per-pick commit / shadow accumulators (see the field
+        # Reset the per-pick shadow accumulators (see the field
         # declarations for what each slot carries).
-        self._commit_reobserve_count = 0
         self._pending_camera_to_base = None
         self._fused_views_by_object = {}
         self._fused_objects_in_frame = 0
@@ -1182,11 +2139,7 @@ class BinPickingOrchestrator:
         self._sequencing_telemetry = None
         self._perception_telemetry = None
         self._recovery_telemetry = None
-        # ``last_commit_decision`` carries the most recent gate
-        # evaluation so terminal branches that did not reach the commit
-        # gate still report ``None`` (e.g. NO_PERCEPTION) while branches
-        # that did reach it surface the decision.
-        last_commit_decision: CommitDecision | None = None
+        looking = self._perceives_from_the_wrist()
         for attempt_index in range(self.max_attempts):
             # "Stop" means do not begin another attempt. Asked here, before perception, so a cancel
             # costs at most the attempt already running; it never interrupts a motion in flight,
@@ -1196,77 +2149,101 @@ class BinPickingOrchestrator:
                 return PickReport(
                     outcome=PickOutcome.CANCELLED,
                     attempts=tuple(attempts),
-                    viewpoints_visited=tuple(self._viewpoints_visited),
-                    fusion_telemetry=self._fusion_telemetry_or_none(),
-                    commit_decision=last_commit_decision,
                 )
             emit(
                 self.on_progress, PickStage.ATTEMPT_STARTED,
                 attempt=attempt_index, attempt_total=self.max_attempts,
             )
-            frame = self.perception.acquire()
-            # Read after acquire, so it describes the frame that was just grounded rather than the
-            # previous one. Duck-typed and optional: a source with no routed backend returns None and
-            # the event is exactly the one this loop has always emitted.
-            _route = getattr(self.perception, "last_route", None)
-            emit(
-                self.on_progress, PickStage.PERCEIVED,
-                attempt=attempt_index, segmentation_count=len(frame.segmentations),
-                route=_route[0] if _route else None,
-                route_reason=_route[1] if _route else None,
-            )
-            # ---- shadow-only multi-view fusion ingest ----
-            # No-op when the orchestrator was built without
-            # ``scene_fusion``. When wired the substrate enforces its
-            # own frame / intrinsic contract and never raises; failures
-            # are absorbed and surfaced via fusion telemetry only. This
-            # call must come before any decision logic so the substrate
-            # sees every acquired frame even when segmentations are
-            # empty or downstream steps decide to rescan / relocate.
-            self._maybe_ingest_scene_fusion(frame, attempt_index)
-            if not frame.segmentations:
-                attempts.append(
-                    PickAttempt(
-                        attempt_index=attempt_index,
-                        target_index=None,
-                        reasons=(GraspFailureReason.EMPTY_MASK,),
-                        score=0.0,
-                        action="exhausted",
+            looked: LookedAround | None = None
+            fused_target: np.ndarray | None = None
+            if looking:
+                # A camera on the wrist looks from every look of the pick, fused, before it ranks: the
+                # attempt goes on with the grasp the looks judged, from the frame it was ranked on. A
+                # pick handed looks never comes back here for a second attempt (its next view was its
+                # next look); one handed none comes back to rescan where it stands, as it always did.
+                # A look sequence is gone on with only when it was handed on (`go_on_with`).
+                looked = self._pending_looked
+                self._pending_looked = None
+                if looked is None:
+                    looked = self._look_around(attempt_index=attempt_index)
+                if looked.cancelled:
+                    emit(self.on_progress, PickStage.CANCELLED, attempt=attempt_index)
+                    return PickReport(outcome=PickOutcome.CANCELLED, attempts=tuple(attempts))
+                if looked.stopped is not None:
+                    return self._look_refused(attempt_index, looked, attempts)
+                if looked.judged is None:
+                    attempts.append(PickAttempt(
+                        attempt_index=attempt_index, target_index=None,
+                        reasons=(GraspFailureReason.EMPTY_MASK,), score=0.0, action="exhausted",
+                    ))
+                    return PickReport(outcome=PickOutcome.NO_PERCEPTION, attempts=tuple(attempts))
+                frame, best_result, target_index, ordering_decision = self._adopt(looked.judged)
+                if looked.withheld:
+                    # Both jaw contact faces were asked for and no view showed both: nothing is gripped.
+                    assert best_result is not None  # a judgement that withholds a grasp ranked one
+                    return self._faces_unseen(
+                        attempt_index, attempts, withheld=looked.withheld, result=best_result,
+                        target_index=target_index, ordering=ordering_decision, looked=looked)
+                # The target's cloud fused over the views of the pick: what the planner world leaves out, and
+                # where the part is said to be. The approach starts where the looks left the arm (the look the
+                # grasp was ranked on, or where the move back to it was refused), judged against every frame.
+                fused_target = self._fused_target(looked.judged)
+            else:
+                frame = self.perception.acquire()
+                # Read after acquire, so it describes the frame that was just grounded rather than the
+                # previous one. Duck-typed and optional: a source with no routed backend returns None and
+                # the event is exactly the one this loop has always emitted.
+                _route = getattr(self.perception, "last_route", None)
+                emit(
+                    self.on_progress, PickStage.PERCEIVED,
+                    attempt=attempt_index, segmentation_count=len(frame.segmentations),
+                    route=_route[0] if _route else None,
+                    route_reason=_route[1] if _route else None,
+                )
+                if not frame.segmentations:
+                    attempts.append(
+                        PickAttempt(
+                            attempt_index=attempt_index,
+                            target_index=None,
+                            reasons=(GraspFailureReason.EMPTY_MASK,),
+                            score=0.0,
+                            action="exhausted",
+                        )
                     )
-                )
-                return PickReport(
-                    outcome=PickOutcome.NO_PERCEPTION,
-                    attempts=tuple(attempts),
-                    viewpoints_visited=tuple(self._viewpoints_visited),
-                    fusion_telemetry=self._fusion_telemetry_or_none(),
-                    commit_decision=last_commit_decision,
-                )
+                    return PickReport(
+                        outcome=PickOutcome.NO_PERCEPTION,
+                        attempts=tuple(attempts),
+                    )
 
-            best_result, target_index, ordering_decision = (
-                self._best_result_over_segmentations(frame)
-            )
-            self._offer_masks_to_planner_world(frame, target_index)
-            if best_result is None or not best_result.is_success:
-                action = self._decide_action(
-                    best_result.reasons if best_result is not None else ()
+                best_result, target_index, ordering_decision = (
+                    self._best_result_over_segmentations(frame)
                 )
+            self._offer_masks_to_planner_world(frame, target_index, target_points_base_mm=fused_target)
+            # What the looks came to, on the events a console reads. Empty unless the pick was
+            # handed looks, so every other pick emits exactly the events it emitted before.
+            looks_extra = self._looks_extra(looked)
+            if best_result is None or not best_result.is_success:
                 reasons = best_result.reasons if best_result is not None else ()
+                # A reason worth another look gets a fresh frame, without motion; any other ends the
+                # pick. A wrist pick handed looks has had its other looks already.
+                action = "rescan" if set(reasons) & _RESCAN_REASONS and not (looking and self.looks) else "exhausted"
+                # A refusal an operator can act on carries what was seen, not just what failed.
+                # Only the label gate populates these keys, so every other rejection path emits
+                # exactly the event it emitted before.
+                seen_extra = (
+                    {
+                        "target_label": best_result.telemetry["target_label"],
+                        "labels_seen": list(best_result.telemetry["labels_seen"]),
+                    }
+                    if best_result is not None
+                    and GraspFailureReason.TARGET_LABEL_NOT_FOUND in reasons
+                    else {}
+                )
                 emit(
                     self.on_progress, PickStage.NO_CANDIDATE,
                     attempt=attempt_index, target_index=target_index,
                     reasons=tuple(str(r) for r in reasons), action=action,
-                    # A refusal an operator can act on carries what was seen, not just what failed.
-                    # Only the label gate populates these keys, so every other rejection path emits
-                    # exactly the event it emitted before.
-                    **(
-                        {"extra": {
-                            "target_label": best_result.telemetry["target_label"],
-                            "labels_seen": list(best_result.telemetry["labels_seen"]),
-                        }}
-                        if best_result is not None
-                        and GraspFailureReason.TARGET_LABEL_NOT_FOUND in reasons
-                        else {}
-                    ),
+                    **({"extra": {**seen_extra, **looks_extra}} if seen_extra or looks_extra else {}),
                 )
                 attempts.append(
                     PickAttempt(
@@ -1281,36 +2258,27 @@ class BinPickingOrchestrator:
                 )
                 if action == "rescan":
                     continue
-                if action == "relocate" and self.viewpoint_planner is not None:
-                    # The move to look again plans against the cell with the last target back in it.
-                    self._keep_out.close()
-                    if self._relocate_camera():
-                        continue
-                    return PickReport(
-                        outcome=PickOutcome.RELOCATED_EXHAUSTED,
-                        attempts=tuple(attempts),
-                        viewpoints_visited=tuple(self._viewpoints_visited),
-                        fusion_telemetry=self._fusion_telemetry_or_none(),
-                        commit_decision=last_commit_decision,
-                    )
                 # No further recovery available.
                 return PickReport(
-                    outcome=(
-                        PickOutcome.RELOCATED_EXHAUSTED
-                        if action == "relocate"
-                        else PickOutcome.RESCANNED_EXHAUSTED
-                    ),
+                    outcome=PickOutcome.RESCANNED_EXHAUSTED,
                     attempts=tuple(attempts),
-                    viewpoints_visited=tuple(self._viewpoints_visited),
-                    fusion_telemetry=self._fusion_telemetry_or_none(),
-                    commit_decision=last_commit_decision,
                 )
+
+            if not looking and self.both_faces and self._hand_has_jaw_faces():
+                # Both jaw contact faces asked for on a fixed camera, which cannot look around: the grasp its cameras
+                # ranked is gripped only where they showed both, and another frame from where they stand shows no more.
+                withheld = self._faces_the_fixed_cameras_did_not_show(frame, best_result, target_index)
+                if withheld:
+                    return self._faces_unseen(
+                        attempt_index, attempts, withheld=withheld, result=best_result, target_index=target_index,
+                        ordering=ordering_decision)
 
             emit(
                 self.on_progress, PickStage.RANKED,
                 attempt=attempt_index, target_index=target_index,
                 candidate_count=len(best_result.candidates),
                 score=float(best_result.top_score),
+                **({"extra": looks_extra} if looks_extra else {}),
             )
             # Success path: execute approach, grasp, retreat via the policy.
             # Annotate the chosen result's candidates with shadow
@@ -1332,6 +2300,14 @@ class BinPickingOrchestrator:
             # the same ``GraspPoint`` object survives the blend, so
             # post-blend ids map back via ``id(...)``.
             pre_blend_candidates = tuple(best_result.candidates)
+            # With both jaw contact faces asked for (``both_faces``), the grasp gripped is the one whose faces were
+            # judged: the calculator's best at ranking time. Neither rerank below may swap another candidate in
+            # ahead of it, so both are handed no config and stand down (their telemetry stays ``None``), and
+            # ``_execute`` falls back to no other candidate either.
+            judged_only = self._grips_only_the_judged_grasp()
+            if judged_only and (self.ranking_blend_config is not None or self.uncertainty_rerank_config is not None):
+                _LOG.info("both_faces: the reranks stand down, so the grasp gripped is the one whose contact faces "
+                          "were judged")
             # Bounded probability-blend reranker. No-op when:
             #   * ``ranking_blend_config`` is None / disabled (silent;
             #     returns ``blend_telemetry=None``, legacy parity).
@@ -1350,7 +2326,7 @@ class BinPickingOrchestrator:
             blend_candidates, blend_telemetry = maybe_blend_rerank_candidates(
                 best_result.candidates,
                 ctx=self.shadow_success_context,
-                config=self.ranking_blend_config,
+                config=None if judged_only else self.ranking_blend_config,
             )
             # Apply the blend result (swap candidates + re-derive shadow telemetry on a top-1
             # change) via the shared helper.
@@ -1358,9 +2334,10 @@ class BinPickingOrchestrator:
                 best_result, shadow_telemetry, blend_candidates, blend_telemetry
             )
             # ---- per-candidate uncertainty re-rank ----
-            # Runs after the blend (re-sorts the blended order) and before the ranking shadow (so
-            # the shadow observes the final executed order) and the commit gate (so the gate vets the
-            # pose that actually executes). Subtractive: ``adjusted = score - weight*corridor_risk``.
+            # Runs after the blend (re-sorts the blended order), before the ranking shadow (so the
+            # shadow observes the final executed order) and before execution (so the approach
+            # validation walks the order that executes). Subtractive:
+            # ``adjusted = score - weight*corridor_risk``.
             # Silent no-op unless wired + dense + non-shadow + weight>0 + every candidate carries a
             # corridor-risk signal. On a top-1 change ``shadow_telemetry`` is re-derived from the new
             # winner, as the blend block above.
@@ -1368,7 +2345,7 @@ class BinPickingOrchestrator:
                 maybe_uncertainty_rerank_candidates(
                     best_result.candidates,
                     ctx=self.shadow_success_context,
-                    config=self.uncertainty_rerank_config,
+                    config=None if judged_only else self.uncertainty_rerank_config,
                 )
             )
             # Apply the uncertainty rerank result via the same shared helper.
@@ -1390,73 +2367,6 @@ class BinPickingOrchestrator:
                 post_blend_candidates=best_result.candidates,
                 attempt_index=attempt_index,
             )
-            # ---- mandatory commit gate ----
-            # Evaluate the multi-view commit gate against the winner
-            # after any rerank and before :meth:`_execute`. The
-            # helper short-circuits to ``allowed=True`` whenever any
-            # of the byte-identical-skip conditions hold (no policy,
-            # disabled, no fusion, mode not in apply set, no winning
-            # candidate, candidate not in BASE frame), so legacy
-            # callers see no behavior change. A refusal with budget
-            # left records the refused decision, logs a typed attempt,
-            # and continues the outer loop into another perception
-            # capture. A refusal with the budget exhausted surfaces
-            # :attr:`PickOutcome.NO_COMMIT_INSUFFICIENT_FUSION`.
-            commit_decision = self._evaluate_commit_gate(best_result)
-            last_commit_decision = commit_decision
-            if not commit_decision.allowed:
-                if (
-                    self.commit_policy is not None
-                    and self._commit_reobserve_count
-                    < self.commit_policy.max_reobserve_attempts
-                ):
-                    self._commit_reobserve_count += 1
-                    attempts.append(
-                        PickAttempt(
-                            attempt_index=attempt_index,
-                            target_index=target_index,
-                            reasons=best_result.reasons,
-                            score=best_result.top_score,
-                            action="commit_refused_reobserve",
-                            ordering_decision=ordering_decision,
-                            **self._fusion_of(target_index),
-                        )
-                    )
-                    # Relocate to a diverse viewpoint before the next capture so the fused
-                    # corridor evidence grows across views instead of re-ingesting the same frame (a
-                    # static re-acquire only inflates views_accepted without improving corridor
-                    # coverage). Reuses the recovery _relocate_camera, which advances the planner
-                    # history and moves the arm; for the sim arm move_to routes through move(),
-                    # which runs SafetyPreflight. No-op (byte-identical) when no viewpoint_planner
-                    # is wired or the planner is exhausted: the loop re-acquires at the same pose.
-                    if self.viewpoint_planner is not None:
-                        self._keep_out.close()
-                        self._relocate_camera()
-                    continue
-                # Budget exhausted (or no policy with allowed=False,
-                # which the helper's skip rules make impossible; the
-                # branch is defensive).
-                attempts.append(
-                    PickAttempt(
-                        attempt_index=attempt_index,
-                        target_index=target_index,
-                        reasons=best_result.reasons,
-                        score=best_result.top_score,
-                        action="commit_refused_exhausted",
-                        ordering_decision=ordering_decision,
-                        **self._fusion_of(target_index),
-                    )
-                )
-                return PickReport(
-                    outcome=PickOutcome.NO_COMMIT_INSUFFICIENT_FUSION,
-                    attempts=tuple(attempts),
-                    viewpoints_visited=tuple(self._viewpoints_visited),
-                    shadow_success_telemetry=shadow_telemetry,
-                    ranking_blend_telemetry=blend_telemetry,
-                    uncertainty_rerank_telemetry=uncertainty_rerank_telemetry,
-                    fusion_telemetry=self._fusion_telemetry_or_none(),
-                    commit_decision=commit_decision,
-                )
             # The last event before the arm moves. Everything after this is motion, so a console that
             # stops updating here is telling an operator the truth: the stack is done deciding.
             emit(
@@ -1466,7 +2376,7 @@ class BinPickingOrchestrator:
                 position_mm=_grasp_position_mm(best_result),
             )
             # Read before the arm moves, off the frame the grasp was synthesised in.
-            target_centre = self._target_centre_base_mm(frame, target_index)
+            target_centre = self._target_centre_base_mm(frame, target_index, fused_cloud_base_mm=fused_target)
             fused_for_target = self._fusion_of(target_index)
             policy_report = self._execute(best_result)
             self._last_policy_report = policy_report
@@ -1528,21 +2438,15 @@ class BinPickingOrchestrator:
                 ),
                 # The selected grasp's telemetry, not the executed one's. See the field's comment.
                 selected_telemetry=dict(getattr(best_result, "telemetry", None) or {}),
-                viewpoints_visited=tuple(self._viewpoints_visited),
                 shadow_success_telemetry=shadow_telemetry,
                 ranking_blend_telemetry=blend_telemetry,
                 uncertainty_rerank_telemetry=uncertainty_rerank_telemetry,
-                fusion_telemetry=self._fusion_telemetry_or_none(),
-                commit_decision=last_commit_decision,
                 target_centre_mm=target_centre,
             )
 
         return PickReport(
             outcome=PickOutcome.RESCANNED_EXHAUSTED,
             attempts=tuple(attempts),
-            viewpoints_visited=tuple(self._viewpoints_visited),
-            fusion_telemetry=self._fusion_telemetry_or_none(),
-            commit_decision=last_commit_decision,
         )
 
     # ------------------------------------------------------------------
@@ -1802,212 +2706,6 @@ class BinPickingOrchestrator:
 
     # ------------------------------------------------------------------
 
-    def _maybe_ingest_scene_fusion(
-        self, frame: PerceptionFrame, attempt_index: int
-    ) -> None:
-        """Shadow-only multi-view fusion ingest seam.
-
-        Strict no-op when ``scene_fusion`` is unset or the substrate's
-        config is disabled. When wired, resolves ``T_cam_to_base`` via
-        the typed :func:`resolve_or_none` helper so resolver failures
-        (no resolver, raising resolver, wrong-frame transform) cannot
-        propagate into the pick loop. Successful resolution is handed
-        to :meth:`SceneFusion.ingest`, which enforces its own frame /
-        intrinsic contract. Both layers absorb their failure modes
-        into the substrate's typed refuse path; this method never
-        raises and never alters the pick loop's control flow.
-        """
-
-        fusion = self.scene_fusion
-        if fusion is None or not fusion.config.enabled:
-            return
-        # Lazy import to avoid pulling the fusion surface into modules
-        # that touch ``pick_loop`` only for the legacy API.
-        from src.robot.grasping.motion.frame_resolver import (
-            resolve_or_none,
-        )
-
-        resolved = resolve_or_none(
-            self.frame_resolver, frame, arm=self.arm
-        )
-        # ``resolve_or_none`` returns either a ``Transform`` (success)
-        # or a ``FrameResolutionFailure`` carrier (refuse). A refuse
-        # still counts an attempted ingest: ``ingest`` is called with a
-        # deliberately bad frame so the substrate's own refuse counter
-        # records the failure, which keeps the telemetry consistent
-        # with "ingest was attempted but rejected".
-        if not isinstance(resolved, Transform):
-            # Synthesize an attempt-refuse so telemetry reflects it.
-            # The transform passed is an invalid TOOL->BASE, which the
-            # substrate refuses with REFUSE_BAD_FRAME, keeping the
-            # counter convention uniform.
-            invalid = Transform.identity(
-                from_frame=Frame.TOOL, to_frame=Frame.BASE
-            )
-            fusion.ingest(
-                depth_map=frame.depth_map,
-                intrinsics=frame.intrinsics,
-                t_cam_to_base=invalid,  # type: ignore[arg-type]
-                timestamp_ns=self._fusion_timestamp_ns(
-                    frame, attempt_index
-                ),
-            )
-            return
-        fusion.ingest(
-            depth_map=frame.depth_map,
-            intrinsics=frame.intrinsics,
-            t_cam_to_base=resolved,
-            timestamp_ns=self._fusion_timestamp_ns(frame, attempt_index),
-        )
-
-    @staticmethod
-    def _fusion_timestamp_ns(
-        frame: PerceptionFrame, attempt_index: int
-    ) -> int:
-        """Deterministic timestamp source for fusion ingest.
-
-        Prefers ``frame.timestamp`` (interpreted as seconds) so the
-        age-based eviction is anchored to real perception time. An
-        unstamped frame falls back to ``attempt_index * 1_000_000_000``,
-        one synthetic second per attempt, which is monotonic,
-        byte-deterministic across runs, and keeps the default 20 s age
-        window comfortably wide for typical loop lengths.
-        """
-
-        ts = frame.timestamp
-        if ts is None or not isinstance(ts, (int, float)) or isinstance(ts, bool):
-            return int(attempt_index) * 1_000_000_000
-        try:
-            return int(float(ts) * 1e9)
-        except (TypeError, ValueError, OverflowError):
-            return int(attempt_index) * 1_000_000_000
-
-    def _fusion_telemetry_or_none(self) -> "FusionTelemetry | None":
-        """Return the substrate's current telemetry or ``None``."""
-
-        fusion = self.scene_fusion
-        if fusion is None:
-            return None
-        return fusion.telemetry()
-
-    def _evaluate_commit_gate(
-        self, best_result: GraspResult
-    ) -> CommitDecision:
-        """Commit-gate evaluation.
-
-        Returns a :class:`CommitDecision` for the winning candidate of
-        ``best_result``. The decision is ``allowed=True`` whenever
-        any skip condition holds (no policy, disabled policy, no
-        fusion substrate, empty or non-matching mode label, no
-        winning candidate, candidate not in BASE frame) so legacy
-        callers see byte-identical behavior. The no-candidate branch
-        reports the reason string ``skipped_no_policy``.
-
-        When the gate runs, it queries
-        :meth:`SceneFusion.corridor_evidence` for a capsule of
-        :attr:`CommitPolicy.corridor_length_mm` /
-        :attr:`CommitPolicy.corridor_radius_mm` centered on the
-        winning candidate's position along its approach. The gate
-        requires both:
-
-        * ``views_accepted >= min_views_accepted``
-        * ``hit_fraction >= min_corridor_hit_fraction``
-
-        Strictly read-only with respect to fusion state; never
-        mutates any substrate accumulators or any candidate field.
-        """
-
-        policy = self.commit_policy
-        fusion = self.scene_fusion
-        candidate = best_result.candidates[0] if best_result.candidates else None
-        # Compose a zero-evidence template for skip paths so callers
-        # can read every field unconditionally.
-        def zero(reason):
-            return CommitDecision(
-                allowed=True,
-                reason=reason,
-                views_accepted=(
-                    fusion.telemetry().views_accepted if fusion is not None else 0
-                ),
-                min_views_required=(
-                    int(policy.min_views_accepted) if policy is not None else 0
-                ),
-                corridor_hit_fraction=0.0,
-                min_hit_fraction_required=(
-                    float(policy.min_corridor_hit_fraction)
-                    if policy is not None
-                    else 0.0
-                ),
-                corridor_queried_voxels=0,
-                corridor_hit_voxels=0,
-                reobserve_attempts_used=self._commit_reobserve_count,
-            )
-
-        if policy is None:
-            return zero(_COMMIT_REASON_SKIPPED_NO_POLICY)
-        if not policy.enabled:
-            return zero(_COMMIT_REASON_SKIPPED_DISABLED)
-        if fusion is None or not fusion.config.enabled:
-            return zero(_COMMIT_REASON_SKIPPED_NO_FUSION)
-        if not self.mode_label or self.mode_label not in policy.apply_modes:
-            return zero(_COMMIT_REASON_SKIPPED_MODE)
-        if candidate is None:
-            # Defensive: a success path with no candidates should never
-            # reach the gate; if it does, the gate is skipped.
-            return zero(_COMMIT_REASON_SKIPPED_NO_POLICY)
-        # The corridor query is BASE-frame; refuse to gate a
-        # camera-frame candidate (would silently corrupt the math).
-        # In real configurations this cannot happen because enabling
-        # multi-view fusion requires a wired ``frame_resolver`` which
-        # in turn delivers BASE-frame candidates from the calculator.
-        if candidate.frame is not GraspFrame.BASE:
-            return zero(_COMMIT_REASON_SKIPPED_CAMERA_FRAME)
-
-        evidence = fusion.corridor_evidence(
-            position_mm=candidate.position,
-            approach=candidate.approach,
-            length_mm=float(policy.corridor_length_mm),
-            radius_mm=float(policy.corridor_radius_mm),
-        )
-
-        min_views = int(policy.min_views_accepted)
-        min_hit = float(policy.min_corridor_hit_fraction)
-        views_ok = evidence.views_accepted >= min_views
-        hit_ok = evidence.hit_fraction >= min_hit
-
-        if views_ok and hit_ok:
-            return CommitDecision(
-                allowed=True,
-                reason=_COMMIT_REASON_OK,
-                views_accepted=evidence.views_accepted,
-                min_views_required=min_views,
-                corridor_hit_fraction=evidence.hit_fraction,
-                min_hit_fraction_required=min_hit,
-                corridor_queried_voxels=evidence.queried_voxels,
-                corridor_hit_voxels=evidence.hit_voxels,
-                reobserve_attempts_used=self._commit_reobserve_count,
-            )
-
-        # When both fail the views_below_min reason is surfaced first
-        # (the more fundamental signal: not enough viewpoints means
-        # the corridor evidence is unreliable in the first place).
-        refuse_reason = (
-            _COMMIT_REASON_VIEWS_BELOW_MIN
-            if not views_ok
-            else _COMMIT_REASON_HIT_FRACTION_BELOW_MIN
-        )
-        return CommitDecision(
-            allowed=False,
-            reason=refuse_reason,
-            views_accepted=evidence.views_accepted,
-            min_views_required=min_views,
-            corridor_hit_fraction=evidence.hit_fraction,
-            min_hit_fraction_required=min_hit,
-            corridor_queried_voxels=evidence.queried_voxels,
-            corridor_hit_voxels=evidence.hit_voxels,
-            reobserve_attempts_used=self._commit_reobserve_count,
-        )
-
     def _external_scene_points_camera_frame(
         self, camera_to_base: "Transform | None"
     ) -> "np.ndarray | None":
@@ -2093,6 +2791,9 @@ class BinPickingOrchestrator:
         the outside, just worse at grasping. So every stand-down reason is either a warning or a
         refusal, never silence, and the telemetry records which cameras actually contributed rather
         than which were configured.
+
+        A look of a wrist pick is fused elsewhere (:meth:`_fused_looks`): with the pick's earlier looks, and with the
+        fixed cameras acquired once for the pick.
         """
 
         # The counters describe THIS pick. Cleared before any stand-down below, or a pick that stands
@@ -2102,28 +2803,144 @@ class BinPickingOrchestrator:
         # from the last pick that fused would bring an object seen at another moment into this scene.
         self._fusion_geometry_telemetry = {}
         self._last_other_views = ()
+        if self._current_look is not None:
+            return self._fused_looks(frame, camera_to_base)
         config = self.fusion_geometry_config
         if config is None or not bool(config.enabled):
             return None
-        if self.multi_camera_perception is None or camera_to_base is None:
-            # Enabled but unbuildable. This is a deployment error, not a runtime hiccup, so it is
-            # said plainly every pick rather than folded into the missing-camera policy below.
-            _LOG.warning(
-                "grasping.fusion.geometry is enabled but %s; the cell is running single-view",
-                "no multi-camera perception source is wired"
-                if self.multi_camera_perception is None
-                else "no CAMERA->BASE transform is available",
-            )
+        if not self._fixed_cameras_placeable(camera_to_base):
             return None
+        assert camera_to_base is not None  # narrowed by _fixed_cameras_placeable
 
         from src.robot.grasping.multiview.association import AssociationMetric
-        from src.robot.grasping.multiview.scene_geometry import (
-            ObservedView,
-            fuse_scene_geometry,
-        )
+        from src.robot.grasping.multiview.scene_geometry import fuse_scene_geometry
 
+        # The fusion clock (`LatencyStage.FUSION`) starts once the other cameras' frames are in hand,
+        # before they are placed (`_fixed_camera_views` reads it). Their capture, detection and
+        # segmentation are perception, and a fusion budget read against them would breach for a
+        # reason that is not fusion. It stops when the fused scene is built.
+        views, missing, grounded_nothing, fusion_t0_ns = self._fixed_camera_views(config)
+
+        # One entry per segmentation, in order, and not compacted. `cloud_for(idx)` is addressed by
+        # segmentation index at the candidate loop, so dropping a mask-less segmentation here would
+        # shift every later object down one and hand the calculator a different object's surface.
+        # Silently: the lookup is bounds-safe and returns a cloud, just the wrong one. Unreachable
+        # today because `SegmentationResult.mask` is not optional, which is exactly why it is worth
+        # closing now rather than when someone makes it so. An empty mask stands in for a
+        # segmentation that has none, and `fuse_scene_geometry` associates nothing to it.
+        #
+        # The stand-in has the frame's shape, because the back-projection validates mask against
+        # depth and a token-sized array would raise where the real one only selects nothing.
+        _empty = np.zeros(np.asarray(frame.depth_map).shape[:2], dtype=bool)
+        primary_masks = tuple(
+            _empty if mask is None else mask
+            for mask in (getattr(seg, "mask", None) for seg in frame.segmentations)
+        )
+        if not any(mask is not _empty for mask in primary_masks):
+            primary_masks = ()
+        if not views or not primary_masks:
+            # Still stamped, and with the counters: "no camera contributed" and "two cameras
+            # looked and found nothing" are different answers, and the difference is the whole
+            # reason a second camera was bought.
+            self._fusion_geometry_telemetry = {
+                "fused_views_used": 0,
+                "fused_objects": 0,
+                "cameras_grounded_nothing": len(grounded_nothing),
+                "cameras_absent": len(missing),
+            }
+            return None
+
+        # Kept for the scene builder, which needs the same views and must not re-acquire them: a
+        # second `acquire_all` would be a second detect and segment pass per camera, and worse, a
+        # second moment, so the objects would be grouped across frames taken at different times.
+        self._last_other_views = tuple(views)
+
+        with_neighbours = bool(getattr(config, "neighbour_scene_enabled", False))
+        fused = fuse_scene_geometry(
+            primary_masks,
+            frame.depth_map,
+            frame.intrinsics,
+            np.asarray(camera_to_base.to_matrix(), dtype=np.float64),
+            views,
+            metric=AssociationMetric(str(config.metric)),
+            min_score=float(config.min_score),
+            neighbour_mm=float(config.neighbour_mm),
+            max_centroid_mm=float(config.max_centroid_mm),
+            with_neighbours=with_neighbours,
+            neighbour_voxel_mm=float(getattr(config, "neighbour_voxel_mm", 8.0)),
+            # Scoring-only decimation. `getattr` keeps a config object without the field on the
+            # untouched path, and 0.0 is off, so this line changes nothing anywhere it is not set.
+            score_voxel_mm=float(getattr(config, "score_voxel_mm", 0.0)),
+        )
+        self._stamp_fusion(fused, fusion_t0_ns, missing=missing, grounded_nothing=grounded_nothing,
+                           with_neighbours=with_neighbours)
+        return fused
+
+    def _fixed_cameras_placeable(self, camera_to_base: "Transform | None") -> bool:
+        """Whether an enabled `grasping.fusion.geometry` has what it needs to place the other cameras' views.
+
+        Enabled but unbuildable is a deployment error, not a runtime hiccup, so it is said plainly every time rather
+        than folded into the missing-camera policy of :meth:`_fixed_camera_views`.
+        """
+        if self.multi_camera_perception is not None and camera_to_base is not None:
+            return True
+        _LOG.warning(
+            "grasping.fusion.geometry is enabled but %s; the cell is running single-view",
+            "no multi-camera perception source is wired"
+            if self.multi_camera_perception is None
+            else "no CAMERA->BASE transform is available",
+        )
+        return False
+
+    def _stamp_fusion(
+        self, fused: "FusedSceneGeometry", fusion_t0_ns: int, *, missing: list[str], grounded_nothing: list[str],
+        with_neighbours: bool,
+    ) -> None:
+        """Record the fusion span and stamp what the fusion did, as :meth:`_fused_scene` has always stamped it."""
+        fusion_ms = (time.monotonic_ns() - fusion_t0_ns) / 1_000_000.0
+        # `fusion_latency_ms`, recorded only where another camera's view entered the fusion
+        # (`views_used`, the record's `fused_view_count`), so a pick that stood down to one view
+        # reports no fusion time rather than a zero, and the SLO gate skips it. A later attempt of
+        # the same pick that fuses replaces the span, as every stage does.
+        if fused.views_used and self.latency_tracker is not None:
+            self.latency_tracker.record(LatencyStage.FUSION, fusion_ms)
+        # Stamp what ran, not what was configured: the same rule the geometry stage follows.
+        self._fusion_geometry_telemetry = {
+            "fused_views_used": len(fused.views_used),
+            "fused_views": list(fused.views_used),
+            "fused_objects": fused.objects_fused,
+            "fused_objects_total": len(fused.clouds_base_mm),
+            # Delivered a frame, grounded nothing on it. Not a fault, and not the same as absent.
+            "cameras_grounded_nothing": len(grounded_nothing),
+            # Configured, delivered no frame at all. What `on_camera_unavailable` acts on.
+            "cameras_absent": len(missing),
+            # How well the cameras agreed, not just how many answered: the mean association score
+            # over the pairs that won their assignment. The telemetry catalog declares
+            # `fusion_evidence_quality` as a unit interval without saying what it means; this is the
+            # association's own confidence, the only quantity in the fusion that is one. Bounded
+            # [0, 1] for every metric (overlap is a fraction, centroid is clipped, box-IoU is a
+            # ratio), so the catalog's validator holds whichever is configured.
+            "fused_evidence_quality": _mean_winning_association_score(fused),
+        }
+        if with_neighbours:
+            self._fusion_geometry_telemetry["fused_neighbour_points"] = fused.neighbour_points
+
+    def _fixed_camera_views(
+        self, config: "FusionGeometryConfig",
+    ) -> "tuple[list[ObservedView], list[str], list[str], int]":
+        """Every other camera's segmented view placed in BASE, with the cameras absent and those that grounded nothing.
+
+        Acquires every other camera once (``multi_camera_perception.acquire_all()``) and applies the missing-camera
+        policy (``on_camera_unavailable``: refuse raises, anything else warns). A camera with no resolver, or none that
+        placed this frame, is dropped with a warning; one that grounded nothing is counted, not dropped silently. The
+        last element is ``time.monotonic_ns()`` read as the frames came in, where the fusion clock starts.
+        """
+        from src.robot.grasping.multiview.scene_geometry import ObservedView
+
+        assert self.multi_camera_perception is not None  # narrowed by _fixed_cameras_placeable
         resolvers = self.camera_frame_resolvers or {}
         observations = tuple(self.multi_camera_perception.acquire_all())
+        fusion_t0_ns = time.monotonic_ns()
         delivered = {observation.camera_id for observation in observations}
         # The configured list first, the resolver map only as a fallback for a caller that wired
         # this by hand. An expectation derived from the resolvers that built cannot notice a camera
@@ -2212,77 +3029,110 @@ class BinPickingOrchestrator:
                 )
             )
 
-        # One entry per segmentation, in order, and not compacted. `cloud_for(idx)` is addressed by
-        # segmentation index at the candidate loop, so dropping a mask-less segmentation here would
-        # shift every later object down one and hand the calculator a different object's surface.
-        # Silently: the lookup is bounds-safe and returns a cloud, just the wrong one. Unreachable
-        # today because `SegmentationResult.mask` is not optional, which is exactly why it is worth
-        # closing now rather than when someone makes it so. An empty mask stands in for a
-        # segmentation that has none, and `fuse_scene_geometry` associates nothing to it.
-        #
-        # The stand-in has the frame's shape, because the back-projection validates mask against
-        # depth and a token-sized array would raise where the real one only selects nothing.
-        _empty = np.zeros(np.asarray(frame.depth_map).shape[:2], dtype=bool)
-        primary_masks = tuple(
-            _empty if mask is None else mask
-            for mask in (getattr(seg, "mask", None) for seg in frame.segmentations)
+        return views, missing, grounded_nothing, fusion_t0_ns
+
+    def _fixed_views_of_the_pick(
+        self, camera_to_base: "Transform | None",
+    ) -> "tuple[tuple[ObservedView, ...], list[str], list[str]]":
+        """The fixed cameras' views for every look of a wrist pick: acquired once, at its first look, and kept.
+
+        A fixed camera sees the same cell from every look of the wrist, so acquiring it again per look would be a
+        second detect and segment pass per camera for the same answer. Only with ``grasping.fusion.geometry`` enabled,
+        under its missing-camera policy. A rig that lists the wrist camera itself hands back a copy of the first look,
+        placed at the first look's pose for every later one: it is left out, because the looks already fuse that
+        camera, each at the pose it was taken from.
+        """
+        if self._fixed_views is None:
+            config = self.fusion_geometry_config
+            views: list[ObservedView] = []
+            missing: list[str] = []
+            grounded_nothing: list[str] = []
+            if config is not None and bool(config.enabled) and self._fixed_cameras_placeable(camera_to_base):
+                views, missing, grounded_nothing, _placed_ns = self._fixed_camera_views(config)
+                views = [view for view in views if not (self.primary_camera_id and view.name == self.primary_camera_id)]
+            self._fixed_views = (tuple(views), missing, grounded_nothing)
+        return self._fixed_views
+
+    def _fused_looks(
+        self, frame: PerceptionFrame, camera_to_base: "Transform | None",
+    ) -> "FusedSceneGeometry | None":
+        """The look being ranked, fused with every earlier look of the pick and with the fixed cameras.
+
+        The looks' surfaces are the ones :meth:`_look_view` kept: each mask less the pixels behind a depth step and
+        the grazing ones, on the measured surface. Two looks of one wrist camera disagree by more than two fixed cameras
+        do, the more the wrist turned between them, so while an earlier look takes part the association runs at the
+        wrist tolerances (``association.WRIST_VIEW_*``) unless the fusion config asks for wider ones. The neighbours
+        every look saw are returned beside each object's cloud (``with_neighbours``), the seam the candidate filter
+        reads its obstacles from, so a part only an earlier look saw stays an obstacle to this look's grasps. With no
+        earlier look the fixed cameras are fused as :meth:`_fused_scene` fuses them.
+
+        ``None`` when there is nothing to fuse with, or this look placed nothing; the counters are stamped as the fixed
+        cameras' fusion stamps them, and only where that fusion is enabled, so a wrist cell without it keeps the
+        telemetry it had.
+        """
+        from src.robot.grasping.multiview.association import (
+            DEFAULT_NEIGHBOUR_MM,
+            WRIST_VIEW_MIN_SCORE,
+            WRIST_VIEW_NEIGHBOUR_MM,
+            WRIST_VIEW_SCORE_VOXEL_MM,
+            AssociationMetric,
         )
-        if not any(mask is not _empty for mask in primary_masks):
-            primary_masks = ()
-        if not views or not primary_masks:
-            # Still stamped, and with the counters: "no camera contributed" and "two cameras
-            # looked and found nothing" are different answers, and the difference is the whole
-            # reason a second camera was bought.
-            self._fusion_geometry_telemetry = {
-                "fused_views_used": 0,
-                "fused_objects": 0,
-                "cameras_grounded_nothing": len(grounded_nothing),
-                "cameras_absent": len(missing),
-            }
+        from src.robot.grasping.multiview.scene_geometry import fuse_scene_geometry
+
+        look = self._current_look
+        assert look is not None  # the caller's branch
+        self._last_fused_scene = None
+        config = self.fusion_geometry_config
+        fixed_on = config is not None and bool(config.enabled)
+        fixed, missing, grounded_nothing = self._fixed_views_of_the_pick(camera_to_base)
+        earlier = [seen.view for seen in self._look_views if seen.view is not None]
+        views = [*earlier, *fixed]
+        if look.camera_to_base is None or look.view is None or look.depth is None or not views:
+            if fixed_on:
+                self._fusion_geometry_telemetry = {
+                    "fused_views_used": 0,
+                    "fused_objects": 0,
+                    "cameras_grounded_nothing": len(grounded_nothing),
+                    "cameras_absent": len(missing),
+                }
             return None
-
-        # Kept for the scene builder, which needs the same views and must not re-acquire them: a
-        # second `acquire_all` would be a second detect and segment pass per camera, and worse, a
-        # second moment, so the objects would be grouped across frames taken at different times.
-        self._last_other_views = tuple(views)
-
-        with_neighbours = bool(getattr(config, "neighbour_scene_enabled", False))
+        self._last_other_views = tuple(fixed)
+        # One mask per segmentation, not compacted, as `_fused_scene` passes them: the clouds come back by
+        # segmentation index.
+        empty = np.zeros(look.depth.shape[:2], dtype=bool)
+        primary_masks = tuple(empty if surface is None else surface for surface in look.surfaces)
+        if earlier:
+            metric = AssociationMetric(str(config.metric)) if config is not None else AssociationMetric.OVERLAP
+            min_score = float(config.min_score) if config is not None else WRIST_VIEW_MIN_SCORE
+            neighbour_mm = max(float(config.neighbour_mm) if config is not None else DEFAULT_NEIGHBOUR_MM,
+                               WRIST_VIEW_NEIGHBOUR_MM)
+            score_voxel_mm = max(float(getattr(config, "score_voxel_mm", 0.0)) if config is not None else 0.0,
+                                 WRIST_VIEW_SCORE_VOXEL_MM)
+        else:
+            assert config is not None  # the fixed views exist only where their fusion is enabled
+            metric = AssociationMetric(str(config.metric))
+            min_score = float(config.min_score)
+            neighbour_mm = float(config.neighbour_mm)
+            score_voxel_mm = float(getattr(config, "score_voxel_mm", 0.0))
+        with_neighbours = bool(earlier) or bool(getattr(config, "neighbour_scene_enabled", False))
+        fusion_t0_ns = time.monotonic_ns()
         fused = fuse_scene_geometry(
             primary_masks,
-            frame.depth_map,
-            frame.intrinsics,
-            np.asarray(camera_to_base.to_matrix(), dtype=np.float64),
+            look.depth,
+            np.asarray(frame.intrinsics, dtype=np.float64),
+            look.camera_to_base,
             views,
-            metric=AssociationMetric(str(config.metric)),
-            min_score=float(config.min_score),
-            neighbour_mm=float(config.neighbour_mm),
-            max_centroid_mm=float(config.max_centroid_mm),
+            metric=metric,
+            min_score=min_score,
+            neighbour_mm=neighbour_mm,
+            max_centroid_mm=float(config.max_centroid_mm) if config is not None else 150.0,
             with_neighbours=with_neighbours,
-            neighbour_voxel_mm=float(getattr(config, "neighbour_voxel_mm", 8.0)),
-            # Scoring-only decimation. `getattr` keeps a config object without the field on the
-            # untouched path, and 0.0 is off, so this line changes nothing anywhere it is not set.
-            score_voxel_mm=float(getattr(config, "score_voxel_mm", 0.0)),
+            neighbour_voxel_mm=float(getattr(config, "neighbour_voxel_mm", 8.0)) if config is not None else 8.0,
+            score_voxel_mm=score_voxel_mm,
         )
-        # Stamp what ran, not what was configured: the same rule the geometry stage follows.
-        self._fusion_geometry_telemetry = {
-            "fused_views_used": len(fused.views_used),
-            "fused_views": list(fused.views_used),
-            "fused_objects": fused.objects_fused,
-            "fused_objects_total": len(fused.clouds_base_mm),
-            # Delivered a frame, grounded nothing on it. Not a fault, and not the same as absent.
-            "cameras_grounded_nothing": len(grounded_nothing),
-            # Configured, delivered no frame at all. What `on_camera_unavailable` acts on.
-            "cameras_absent": len(missing),
-            # How well the cameras agreed, not just how many answered: the mean association score
-            # over the pairs that won their assignment. The telemetry catalog declares
-            # `fusion_evidence_quality` as a unit interval without saying what it means; this is the
-            # association's own confidence, the only quantity in the fusion that is one. Bounded
-            # [0, 1] for every metric (overlap is a fraction, centroid is clipped, box-IoU is a
-            # ratio), so the catalog's validator holds whichever is configured.
-            "fused_evidence_quality": _mean_winning_association_score(fused),
-        }
-        if with_neighbours:
-            self._fusion_geometry_telemetry["fused_neighbour_points"] = fused.neighbour_points
+        self._stamp_fusion(fused, fusion_t0_ns, missing=missing, grounded_nothing=grounded_nothing,
+                           with_neighbours=with_neighbours)
+        self._last_fused_scene = fused
         return fused
 
     def calculator_for(self, camera_id: str):  # noqa: ANN201
@@ -2393,7 +3243,8 @@ class BinPickingOrchestrator:
         return objects
 
     def _offer_masks_to_planner_world(
-        self, frame: "PerceptionFrame", target_index: "int | None"
+        self, frame: "PerceptionFrame", target_index: "int | None", *,
+        target_points_base_mm: "np.ndarray | None" = None,
     ) -> None:
         """Tell the planner world which object this attempt is reaching for, and hold it out for the attempt.
 
@@ -2409,9 +3260,12 @@ class BinPickingOrchestrator:
         The offer (``segmentation_offer_from_frame``) carries the frame's masks under the
         perception source's camera name and the target's BASE points, placed by the CAMERA to BASE
         this frame was ranked with, never a second resolve. It is held through ``keeping_out`` for
-        every motion of the attempt, closed when the pick ends or the arm moves to look again. A
+        every motion of the attempt, closed when the pick ends or the next frame is offered. A
         source that names no camera offers the target's box alone; one that names no camera and has
         no transform offers nothing, and the target stays an obstacle, which this says once per run.
+        ``target_points_base_mm`` is the target's cloud fused over the views of a wrist pick, offered
+        in place of this frame's surface of it, so the box leaves the part out of every frame the
+        world holds for the pick, not only out of this one.
         """
         world = getattr(self.arm, "live_planner_world", None)
         if world is None:
@@ -2420,6 +3274,7 @@ class BinPickingOrchestrator:
         offer = segmentation_offer_from_frame(
             frame, target_index, camera=self._perception_camera_name(),
             camera_to_base_mm=None if transform is None else np.asarray(transform.to_matrix(), dtype=np.float64),
+            target_points_base_mm=target_points_base_mm,
         )
         self._keep_out.close()
         if offer is None:
@@ -2459,7 +3314,7 @@ class BinPickingOrchestrator:
         """Thin wrapper: records the ranking latency span, then delegates.
 
         A wrapper rather than a span inside the body because this is the one call every pick path
-        makes, open-loop, decision and closed-loop alike, so this single site covers all three.
+        makes, open-loop and decision alike, so this single site covers both.
         """
         tracker = self.latency_tracker
         if tracker is None:
@@ -2495,6 +3350,7 @@ class BinPickingOrchestrator:
         # stand down, and filled where a fused cloud is handed to the generator.
         self._fused_views_by_object = {}
         self._fused_objects_in_frame = 0
+        self._results_by_object = {}
         camera_to_base: Transform | None = None
         if self.frame_resolver is not None:
             camera_to_base = self.frame_resolver.camera_to_base_for_frame(
@@ -2532,7 +3388,8 @@ class BinPickingOrchestrator:
             # Objects whose cloud really holds two cameras, which is not `fused_scene.objects_fused`: that
             # counts the primary's objects alone and would count a camera fused with its own copy.
             self._fused_objects_in_frame = sum(
-                1 for index, obj in enumerate(scene) if _views_behind(obj, index, fused_scene))
+                1 for index, obj in enumerate(scene)
+                if _views_behind(obj, index, fused_scene, primary_name=self._look_name_ranked()))
         # Neighbour masks stay the primary frame's, deliberately. They are the clutter around a
         # target in the frame the grasp is synthesised in, and a mask from another camera is in
         # another camera's pixels: handing it to the dense sampler would place clutter by index into
@@ -2630,7 +3487,8 @@ class BinPickingOrchestrator:
                     extra_kwargs["geometry_points_base_mm"] = object_cloud
                     # Named here and nowhere else: this is the line the fused cloud reaches the
                     # generator on, so an object is said to be planned on cameras only when it was.
-                    self._fused_views_by_object[idx] = _views_behind(obj, idx, fused_scene)
+                    self._fused_views_by_object[idx] = _views_behind(
+                        obj, idx, fused_scene, primary_name=self._look_name_ranked())
             if self.gripper_model is not None:
                 extra_kwargs["gripper_model"] = self.gripper_model
             if self.corridor_config is not None:
@@ -2646,7 +3504,14 @@ class BinPickingOrchestrator:
             # the check being dropped quietly (a silently-skipped table check is the exact defect
             # this whole seam exists to close).
             support_cfg = self.support_config
-            support = self._resolve_support(seg, frame, camera_to_base)
+            # A look of a wrist pick refines the support from the target's cloud fused over its looks, when there is one.
+            looks_cloud = (
+                obj.fused_cloud_base_mm
+                if self._current_look is not None and not obj.promoted and obj.fused_cloud_base_mm is not None
+                and obj.fused_cloud_base_mm.size
+                else None
+            )
+            support = self._resolve_support(seg, frame, camera_to_base, looks_cloud)
             if support is not None and support_cfg is not None and camera_to_base is not None:
                 extra_kwargs["support_plane"] = support.plane
                 extra_kwargs["min_table_clearance_mm"] = support_cfg.min_clearance_mm
@@ -2687,6 +3552,11 @@ class BinPickingOrchestrator:
                 **extra_kwargs,
             )
             self._stamp_deep_ranker(result, extra_kwargs, fused_scene, idx)
+            self._results_by_object[idx] = _RankedObject(
+                result=result,
+                support_height_mm=float(support.height_mm) if support is not None else None,
+                cloud_base_mm=extra_kwargs.get("geometry_points_base_mm"),
+            )
             if result.is_success:
                 if ordering_active:
                     successes.append((idx, result))
@@ -2705,9 +3575,9 @@ class BinPickingOrchestrator:
                 # scene the cell genuinely could not grasp.
                 #
                 # This names the failure and changes nothing else: the reason is absent from
-                # ``_RESCAN_REASONS`` and ``_RELOCATE_REASONS``, so ``_decide_action`` still returns
-                # "exhausted", as it does for the empty tuple. ``labels_seen`` is the actionable
-                # half: what the operator asked for versus what perception actually returned.
+                # ``_RESCAN_REASONS``, so the attempt's action is still "exhausted", as it is for
+                # the empty tuple. ``labels_seen`` is the actionable half: what the operator asked
+                # for versus what perception actually returned.
                 labels_seen = tuple(
                     str(getattr(seg, "label", "") or getattr(seg, "prim_path", "") or "")
                     for seg in frame.segmentations
@@ -2744,60 +3614,21 @@ class BinPickingOrchestrator:
         chosen_seg_idx, chosen_result = successes[decision.chosen_index]
         return chosen_result, chosen_seg_idx, decision
 
-    def _decide_action(self, reasons: Iterable[GraspFailureReason]) -> str:
-        reason_set = set(reasons)
-        if reason_set & _RELOCATE_REASONS:
-            return "relocate" if self.viewpoint_planner is not None else "rescan"
-        if reason_set & _RESCAN_REASONS:
-            return "rescan"
-        return "exhausted"
-
-    def _relocate_camera(self) -> bool:
-        """Drive the arm to the next viewpoint.
-
-        Returns ``False`` when no planner is wired, when the planner has no further viewpoint, and
-        when the typed ``move`` came back with a status other than ``MotionStatus.EXECUTED``. The
-        caller maps all three to :attr:`PickOutcome.RELOCATED_EXHAUSTED`, so a refused motion is
-        not distinguishable from exhaustion in the report.
-        """
-        if self.viewpoint_planner is None:
-            return False
-        current = self.arm.get_tcp_pose()
-        next_pose = self.viewpoint_planner.next_viewpoint(
-            current_tcp=current,
-            history=tuple(self._viewpoints_visited),
-        )
-        if next_pose is None:
-            return False
-        # The typed move when the arm has one, like the execution policy does. `move_to` returns a
-        # bool and, on the drivers that carry one, is the surface with the thinner history; `move` is
-        # the one that plans when a planner is configured. A relocation is a real commanded motion
-        # near the cell, so it deserves the same path a grasp gets.
-        typed_move = getattr(self.arm, "move", None)
-        if callable(typed_move):
-            result = typed_move(next_pose)
-            status = getattr(result, "status", None)
-            if status is not None and status is not MotionStatus.EXECUTED:
-                _LOG.warning(
-                    "viewpoint relocation refused (%s): %s", status, getattr(result, "message", ""),
-                )
-                return False
-        else:
-            self.arm.move_to(next_pose)
-        self._viewpoints_visited.append(next_pose)
-        return True
-
     def _execute(self, result: GraspResult) -> PolicyReport:
         """Delegate motion / gripper choreography to the policy.
 
         When approach validation is wired (``approach_path_policy`` set and this orchestrator's
         ``mode_label`` is in ``_approach_path_modes``, the config's
-        ``approach_validation.apply_modes``, the two dense modes by default), try the ranked
-        candidates in order, validating each candidate's approach/retreat sweep against the scene
-        neighbour cloud, and execute the first sweep-clear one (fall-back). The check reads the
+        ``approach_validation.apply_modes``, the dense mode ``dense_clutter`` by default), try the
+        ranked candidates in order, validating each candidate's approach/retreat sweep against the
+        scene neighbour cloud, and execute the first sweep-clear one (fall-back). The check reads the
         mode label, so an orchestrator constructed with a dense sampling mode but no label gets no
         validation. If every candidate's sweep is blocked, refuse with ``APPROACH_PATH_BLOCKED``
         (no motion). Disabled (default) executes ``result.best`` verbatim, byte-identical.
+
+        With both jaw contact faces asked for (``both_faces``, a jaw hand) only ``result.best`` is tried: its faces
+        are the ones that were judged, and no other candidate's were, so a blocked sweep refuses rather than falls
+        back to a grasp nobody judged.
         """
         grasp = result.best
         if grasp is None:
@@ -2807,7 +3638,8 @@ class BinPickingOrchestrator:
         assert self.policy is not None  # ensured by __post_init__
         if self.approach_path_policy is not None and self.mode_label in self._approach_path_modes:
             cloud = self._obstacle_cloud_in_candidate_frame(result)
-            for candidate in result.candidates:
+            tried = (grasp,) if self._grips_only_the_judged_grasp() else result.candidates
+            for candidate in tried:
                 if self._approach_sweep_is_clear(candidate, cloud):
                     return self.policy.execute(candidate)
             # Every ranked candidate's sweep is blocked: refuse rather than drive into an obstacle.
@@ -2867,7 +3699,7 @@ def _stamp(result: "GraspResult", payload: dict) -> None:
         existing.update(payload)
 
 
-def _views_behind(obj: Any, index: int, fused_scene: Any) -> tuple[str, ...]:
+def _views_behind(obj: Any, index: int, fused_scene: Any, primary_name: str | None = None) -> tuple[str, ...]:
     """The cameras whose surfaces make up ``obj``'s fused cloud, the camera it is grasped from first; ``()`` for one.
 
     Read the way each cloud was built. A primary object's cloud is its own surface plus every other camera's blob the
@@ -2875,7 +3707,8 @@ def _views_behind(obj: Any, index: int, fused_scene: Any) -> tuple[str, ...]:
     A promoted object's cloud is its cluster's members (`build_scene_objects`), whose cameras
     `SceneObject.views_used` already names, the owner first. A camera named twice counts once, so a rig that lists the
     primary fuses nothing onto it; fewer than two cameras is one view and reads as empty. A primary with no id in the
-    rig is named ``primary``.
+    rig is named ``primary``. ``primary_name`` names the primary instead: a look of a wrist pick is ``rig@look``, so two
+    looks of one camera are two views.
 
     Never raises: this is what a report says, and it runs in the ranking of every fused frame, so a shape it does not
     know names nothing rather than ending a pick.
@@ -2887,7 +3720,7 @@ def _views_behind(obj: Any, index: int, fused_scene: Any) -> tuple[str, ...]:
         named = getattr(obj, "views_used", ())
         views = [str(view) for view in named] if isinstance(named, (tuple, list)) else []
     else:
-        views = [str(getattr(obj, "camera_id", "") or "primary")]
+        views = [primary_name or str(getattr(obj, "camera_id", "") or "primary")]
         associations = getattr(fused_scene, "associations", ())
         for association in associations if isinstance(associations, (tuple, list)) else ():
             assignment = getattr(association, "assignment", ())

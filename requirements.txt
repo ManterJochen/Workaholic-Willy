@@ -1,8 +1,3 @@
-# Workaholic-Willy, the complete install.
-#
-#   pip install -r requirements.txt        NVIDIA GPU, the supported path
-#   pip install -r requirements-cpu.txt    a host that cannot take the CUDA wheels
-#
 # ---------------------------------------------------------------------------
 # PyTorch and CUDA 12.8 wheels.
 # ---------------------------------------------------------------------------
@@ -21,31 +16,18 @@ pillow==12.2.0
 opencv-contrib-python==4.13.0.92
 matplotlib==3.10.8
 open3d==0.19.0
-# sounddevice needs the system PortAudio library at runtime. On Linux install it with
-# `apt-get install -y libportaudio2`. Without it, `MicrophoneSource.start()` in
-# src/models/speech/capture.py raises SpeechStackUnavailable; an upload to the console
-# never imports sounddevice.
+# On Linux install it with `apt-get install -y libportaudio2`
 sounddevice==0.5.5
 tqdm==4.67.3
 transformers==5.5.4
+protobuf==7.36.2
 
 # ---------------------------------------------------------------------------
 # Scene generation
 # ---------------------------------------------------------------------------
 trimesh==5.0.0
-
-# trimesh's nearest-surface query builds an R-tree and imports this at the call rather than at the
-# import, so a box without it raises ModuleNotFoundError inside the query. That query is the sphere map
-# ruler: it asks how far every surface sample of a link lies from the nearest sphere, which is what says
-# a planner's collision model has no hole in it. It went undeclared until a box without it ran the suite.
 rtree==1.4.1
-
 mujoco==3.12.0
-
-# Convex decomposition for the scene generator's collision shapes. Like MuJoCo above it is reached only on
-# the datagen path, and like it, the SUITE asks for it: the mesh service tests separate absent from
-# unloadable and need the package present to prove the second. It went undeclared until a box without it
-# ran the suite, which is the same way the R-tree above was found.
 coacd==1.0.14
 
 # ---------------------------------------------------------------------------
@@ -70,25 +52,18 @@ httpx==0.28.1
 # ---------------------------------------------------------------------------
 # Voice and gesture surfaces
 # ---------------------------------------------------------------------------
-# PyAV is deliberately absent. Uploads to the operator console are 16-bit PCM WAV, which the
-# standard library decodes, and the av wheel bundles a GPL build of FFmpeg (see NOTICE).
 mediapipe==1.0.1
 
 # ---------------------------------------------------------------------------
 # Offline training
 # ---------------------------------------------------------------------------
 scikit-learn==1.9.0
-
-# Training deps for closed-set detection.
 accelerate==1.11.0
 
 # ---------------------------------------------------------------------------
 # Promotion signing
 # ---------------------------------------------------------------------------
 cryptography==45.0.7
-
-# AWS KMS reference signer.
-# A GCP or Azure backend would add its own SDK.
 boto3==1.43.89
 
 # ---------------------------------------------------------------------------
@@ -98,13 +73,6 @@ ruff==0.15.15
 mypy==2.1.0
 pytest==9.0.3
 pytest-cov==7.1.0
-
-# Reading a vendor gripper USD to bake its collision bundle. Standalone USD, no simulator and no
-# GPU: scripts/grippers/bake_gripper_variant.py opens a stage and reads meshes, which needs
-# neither. Isaac's own interpreter has pxr too, so this is a convenience for the project venv
-# rather than a second source of truth.
 usd-core==26.8
 pip-audit==2.10.0
-
-# For safe downloading of model weights and other assets.
 truststore==0.10.4

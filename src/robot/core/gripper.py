@@ -26,8 +26,8 @@ Readings a caller takes after a command
 
 A hand that toggles
 -------------------
-* :class:`TogglesWithoutSensor` is a hand whose every command is one pulse that flips its jaws, with no
-  sensor to say where they stand. A pick asks it before the arm moves instead of commanding an open
+* :class:`TogglesWithoutSensor` is a hand whose every command is one change of its output that moves its
+  jaws, with no sensor to say where they stand. A pick asks it before the arm moves instead of commanding an open
   (:func:`toggle_without_sensor_of`), so the pick code needs no driver import.
 """
 
@@ -219,18 +219,20 @@ class MeasuresWidth(Protocol):
 
 @runtime_checkable
 class TogglesWithoutSensor(Protocol):
-    """Capability extension: every command is one pulse that flips the jaws, and nothing measures where they stand.
+    """Capability extension: every command is one change of an output that moves the jaws, and nothing measures
+    where they stand.
 
     ``jaw_io`` with ``actuation: single_toggle`` is one: the owner's Hand-E on the Robotiq I/O Coupling, one tool
-    output, 24 V, no feedback. The program counts its own pulses from where a person said the jaws stood when the
-    gripper connected, so a pulse sent on a wrong count moves the jaws the wrong way and nothing notices. Three rules
+    output, 24 V, no feedback, and every change of the output moves the jaws, switched on as much as switched off
+    (2026-09-28). The program counts its own changes from where a person said the jaws stood when the gripper
+    connected, so a change sent on a wrong count moves the jaws the wrong way and nothing notices. Three rules
     follow, and every pick path keeps them:
 
-    * No pulse before the arm moves at the start of a pick. A pick asks :meth:`jaws_open_for_a_pick` instead of
-      commanding an open: where the count says open it answers at once, and where it says closed it asks the person
-      again rather than pulsing, and refuses the pick when nobody can be asked.
-    * Exactly one pulse at the part (the close) and one at the release, each only where the count says the jaws stand
-      the other way.
+    * No change before the arm moves at the start of a pick. A pick asks :meth:`jaws_open_for_a_pick` instead of
+      commanding an open: where the count says open it answers at once, and where it says closed, or cannot say, it
+      asks the person again rather than switching, and refuses the pick when nobody can be asked.
+    * Exactly one change at the part (the close) and one at the release, each only where the count says the jaws
+      stand the other way.
     * No width is checked and no hold is measured: a close counts as a grasp, and a report says it was not checked
       because there is no sensor.
 
@@ -239,24 +241,25 @@ class TogglesWithoutSensor(Protocol):
 
     @property
     def toggles_without_sensor(self) -> bool:
-        """``True`` where every command is a pulse that flips the jaws and nothing reads them back."""
+        """``True`` where every command is one change that moves the jaws and nothing reads them back."""
         ...
 
     @property
     def jaws_closed(self) -> bool:
-        """Where the program believes the jaws stand: its own count of its pulses, never a measurement."""
+        """Where the program believes the jaws stand: its own count of its changes, never a measurement."""
         ...
 
     @property
     def edge_unknown(self) -> bool:
-        """``True`` where a pulse failed so that nobody can say whether the jaws flipped, until a person says again."""
+        """``True`` where nobody can say where the jaws stand (a change that failed, an output switched by hand), until
+        a person says again."""
         ...
 
     def jaws_open_for_a_pick(self) -> str:
         """Before a pick moves the arm: ``""`` where the jaws stand open, else why the pick must not start.
 
-        Never pulses on its own. Where the count says closed it asks a person again, and a person who says closed
-        may choose one pulse to open them there and then.
+        Never switches on its own. Where the count says closed, or cannot say, it asks a person again, and a person
+        who says closed may choose one change to open them there and then.
         """
         ...
 

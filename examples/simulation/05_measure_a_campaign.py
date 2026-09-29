@@ -34,9 +34,12 @@ with tempfile.TemporaryDirectory() as work:
     print(f"\nsound: {rollup.sound}; {len(rollup.unmeasurable)} rate(s) these records cannot "
           f"measure, {len(rollup.offenders)} record(s) missing a field a KPI reads")
 
-    # A rehearsal has no secondary verifier and no perception, so the rates that need one are
-    # absent by construction. At a real cell they are present, and their absence there would be a
-    # finding about the cell's telemetry rather than about the arm.
+    # A rehearsal records no recovery action and no cycle time, so the rates that divide by those
+    # are unmeasurable here by construction. A real cell's log can carry recovery actions, and then
+    # the recovery rates become measurable (the dense one only over dense-mode records). Two stay
+    # unmeasurable at a real cell as well: no production writer sets a cycle time, and the
+    # false-positive rate needs an independent post-grasp re-check this stack does not have. Each
+    # line below says which case it is.
     for name in sorted(rollup.unmeasurable):
         print(f"  {name:32} {rollup.unmeasurable[name]}")
 

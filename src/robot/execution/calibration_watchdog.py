@@ -21,9 +21,11 @@ Design locks:
   ``DecisionEngine.decide`` is called. On HIGH/SEVERE the service
   short-circuits to a synthetic FAIL_CLOSED decision report carrying that
   reason code.
-* Moderate severity recommends REOBSERVE. The service honours this only when
-  a viewpoint planner and budget are available; otherwise it proceeds with
-  telemetry.
+* Moderate severity recommends REOBSERVE. That is advisory telemetry: the
+  service never acts on it, and nothing re-observes in answer to it (the
+  decision layer's ``MOVE_CAMERA`` was removed on 2026-09-29). The pick
+  proceeds, the recommendation is recorded, and the report's ``enforced``
+  flag reads ``False`` for it in every mode. Only BLOCK_AUTO is enforced.
 * OOD has its own severity ladder mirroring drift.
 * Hardware lock: HIGH/SEVERE block the auto grasp mode on real hardware. In
   simulated runs the block is downgraded to a degraded-mode telemetry flag.
@@ -103,11 +105,12 @@ class WatchdogMode(StrEnum):
       watchdog telemetry.
     * ``shadow``: evaluate and emit telemetry only; never alter
       runtime behaviour. The default.
-    * ``canary``: evaluate, emit, and enforce on real hardware in the
-      auto grasp mode only. Sim and other modes get telemetry without
-      behavioural change.
-    * ``active``: evaluate, emit, and enforce on every configured
-      ``block_mode`` on real hardware.
+    * ``canary`` and ``active``: evaluate, emit, and enforce, and the two
+      enforce the same way today. A BLOCK_AUTO is enforced on real
+      hardware only, and only for a grasp mode listed in
+      ``policy.block_modes`` (default ``("auto",)``); sim and every other
+      grasp mode get telemetry without behavioural change. A REOBSERVE is
+      advisory in both and is never enforced.
     """
 
     DISABLED = "disabled"
@@ -117,7 +120,13 @@ class WatchdogMode(StrEnum):
 
 
 class WatchdogAction(StrEnum):
-    """Recommended action surfaced on the :class:`WatchdogReport`."""
+    """Recommended action surfaced on the :class:`WatchdogReport`.
+
+    ``BLOCK_AUTO`` is the one action the service enforces (a synthetic
+    FAIL_CLOSED decision, see the module docstring). ``REOBSERVE`` is
+    advisory telemetry only: nothing re-observes in answer to it, so it is
+    never reported as enforced.
+    """
 
     NONE = "none"
     REOBSERVE = "reobserve"
@@ -358,7 +367,13 @@ class WatchdogSample:
     * ``calibration_residual_mm``: hand-eye residual reported by
       the most recent calibration quality probe, in millimetres.
     * ``verification_residual_mm``: post-grasp verification pose
-      error, in millimetres.
+      error, in millimetres. The post-grasp verification stage that
+      produced it was removed on 2026-09-29, so no pick fills it any
+      more: only a sample a caller appends itself carries it, or the
+      replay reader, from a record's ``drift_verification_residual_mm``
+      logged before then. The field,
+      its monitor and its ladder stay for the calibration artifact, the
+      RL and replay contracts, and those older records.
     * ``predicted_observed_calibration_delta_mm``: |predicted
       target pose - observed target pose|, in millimetres.
     * ``depth_confidence_mean``: mean per-pixel depth confidence
@@ -700,12 +715,16 @@ class WatchdogReport:
       no behavioural effect).
 
     ``recommended_action`` translates the severity ladder into a
-    runtime instruction: NONE / REOBSERVE / BLOCK_AUTO.
+    recommendation: NONE / REOBSERVE / BLOCK_AUTO.
 
-    ``enforced`` records whether the recommended action is enforced
-    under the current mode + hardware + grasp mode. ``False`` in
-    shadow mode and on simulated runs even when severity is
-    HIGH/SEVERE.
+    ``enforced`` records whether the recommended action changes this pick
+    under the current mode + hardware + grasp mode. Only ``BLOCK_AUTO`` can
+    be enforced, and it is ``False`` in shadow mode and on simulated runs
+    even when severity is HIGH/SEVERE. ``REOBSERVE`` is advisory, so it is
+    always ``False``: nothing re-observes in answer to it. Records logged
+    before 2026-09-29 read ``True`` for a REOBSERVE in canary and active
+    mode, which meant only that it was eligible; it changed no pick then
+    either.
     """
 
     mode: WatchdogMode
@@ -770,12 +789,9 @@ def _should_enforce(
         if grasp_mode not in policy.block_modes:
             return False
         return True
-    if action is WatchdogAction.REOBSERVE:
-        # REOBSERVE is honoured in both canary and active modes; the
-        # service decides whether budget+planner allow it. The
-        # watchdog only reports that the action is eligible to be
-        # enforced.
-        return True
+    # REOBSERVE is advisory telemetry: the service acts on BLOCK_AUTO
+    # alone and nothing re-observes, so a REOBSERVE changes no pick and
+    # is never reported as enforced.
     return False
 
 

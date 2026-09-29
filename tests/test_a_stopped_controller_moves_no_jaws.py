@@ -45,8 +45,20 @@ _CAPS = RobotCapabilities(
 )
 
 
+class _Write(tuple):
+    """``("DO", pin, value)`` on the log, equal to that plain tuple, and knowing whether the write changed the output:
+    every change of the owner's DO0 moves the jaws, switched on as much as switched off (2026-09-28)."""
+
+    changed: bool
+
+    def __new__(cls, pin: int, value: bool, changed: bool) -> "_Write":
+        write = super().__new__(cls, ("DO", pin, value))
+        write.changed = changed
+        return write
+
+
 class _IO:
-    """The tool I/O the toggle pulses, writing every output onto the log the arm shares."""
+    """The tool I/O the toggle switches, writing every output onto the log the arm shares."""
 
     def __init__(self, events: list[Any], inputs: "dict[int, bool] | None" = None) -> None:
         self.events = events
@@ -54,8 +66,9 @@ class _IO:
         self.do: dict[int, bool] = {0: False, 1: False}
 
     def set_digital_output(self, pin: int, value: bool, *, port: DigitalIOPort = DigitalIOPort.STANDARD) -> None:
+        changed = bool(value) != self.do.get(pin, False)
         self.do[pin] = bool(value)
-        self.events.append(("DO", pin, bool(value)))
+        self.events.append(_Write(pin, bool(value), changed))
 
     def get_digital_output(self, pin: int, *, port: DigitalIOPort = DigitalIOPort.STANDARD) -> bool:
         return self.do[pin]
@@ -92,9 +105,14 @@ def _toggle(events: list[Any], *, closed: bool = False) -> JawIOGripper:
     return jaws
 
 
+def _changes(events: list[Any]) -> list[int]:
+    """Where on the log DO0 changed: each change moves a toggle hand once, switched on or off."""
+    return [i for i, e in enumerate(events) if isinstance(e, _Write) and e[1] == 0 and e.changed]
+
+
 def _pulses(events: list[Any]) -> int:
-    """Rising edges on DO0: each one flips a toggle hand."""
-    return sum(1 for e in events if e == ("DO", 0, True))
+    """How often DO0 changed: each change moves a toggle hand once."""
+    return len(_changes(events))
 
 
 class _Arm:
@@ -374,8 +392,11 @@ class TheCampaignStopsOnAStoppedControllerTests(unittest.TestCase):
         self.assertFalse(base.controller_stopped, "an operator's cancel is not a stopped controller")
         loop = replace(base, pick_report=SimpleNamespace(outcome=LoopOutcome.CONTROLLER_NOT_OPERATIONAL))
         self.assertTrue(loop.controller_stopped)
-        two_scan = replace(base, telemetry={"low_level_outcome": str(LoopOutcome.CONTROLLER_NOT_OPERATIONAL)})
-        self.assertTrue(two_scan.controller_stopped)
+        # A pick the controller refused before it began, or a look the arm did not reach, carries no pick report and
+        # says the stop in its telemetry alone.
+        refused_before_start = replace(
+            base, telemetry={"low_level_outcome": str(LoopOutcome.CONTROLLER_NOT_OPERATIONAL)})
+        self.assertTrue(refused_before_start.controller_stopped)
 
     def test_a_double_that_answers_every_attribute_does_not_stop_a_campaign(self) -> None:
         from unittest.mock import MagicMock
@@ -391,93 +412,6 @@ class TheCampaignStopsOnAStoppedControllerTests(unittest.TestCase):
 
         run = PickRun.from_service(_Service(), runs=2, recording=Recording.off()).execute()
         self.assertEqual(2, run.succeeded)
-
-
-class TheTwoScanPathNamesTheStopTests(unittest.TestCase):
-    """The closed-loop path drives its own standoff and policy, and says a stopped controller as the loop does."""
-
-    def _service(self, arm: _Arm, jaws: JawIOGripper) -> Any:
-        return two_scan_service(arm, jaws)
-
-    def test_a_stop_before_the_close_is_cancelled_and_says_the_controller(self) -> None:
-        from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome
-
-        events: list[Any] = []
-        jaws = _toggle(events)
-        arm = _Arm(events, statuses=(_PROTECTIVE,))
-
-        report = self._service(arm, jaws).pick()
-
-        self.assertIs(AutonomousGraspOutcome.CANCELLED, report.outcome, report.render())
-        self.assertTrue(report.controller_stopped)
-        self.assertIn("protective_stop=True", report.telemetry["controller"])
-        self.assertEqual(0, _pulses(events))
-
-    def test_a_standoff_move_the_controller_refused_is_cancelled(self) -> None:
-        from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome
-
-        events: list[Any] = []
-        jaws = _toggle(events)
-        arm = _Arm(events, stop_at_move=0)
-
-        report = self._service(arm, jaws).pick()
-
-        self.assertIs(AutonomousGraspOutcome.CANCELLED, report.outcome, report.render())
-        self.assertEqual("standoff_move", report.telemetry["stage"])
-        self.assertTrue(report.controller_stopped)
-
-    def test_a_failed_standoff_on_a_running_controller_is_still_an_execution_failure(self) -> None:
-        from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome
-
-        events: list[Any] = []
-        jaws = _toggle(events)
-        arm = _Arm(events)
-        arm.move = lambda pose, **_: MotionResult.failed(  # type: ignore[method-assign]
-            MotionStatus.IK_FAILED, MotionCommand.MOVE_TO, target_pose=pose)
-
-        report = self._service(arm, jaws).pick()
-
-        self.assertIs(AutonomousGraspOutcome.EXECUTION_FAILED, report.outcome, report.render())
-        self.assertFalse(report.controller_stopped)
-
-
-def two_scan_service(arm: Any, jaws: Any, *, verifier: Any = None, verification_policy: Any = None) -> Any:
-    """The closed-loop service of tests/test_grasp_verification.py on ``arm`` and ``jaws``: a two-scan refine, then the
-    policy the service builds itself (jaws opened before the approach), then ``verifier`` (a pass by default)."""
-    from src.robot.execution.autonomous_grasp import AutonomousGraspService, GraspMode
-    from src.robot.grasping import (
-        DefaultPreGraspRefiner,
-        GraspVerificationPolicy,
-        IdentityFrameResolver,
-        NoOpVerifier,
-        RefinementPolicy,
-    )
-    from tests._helpers import _FakePerception
-    from tests.test_grasp_verification import (
-        _grasp as _verification_grasp,
-        _matching_perception_pair,
-        _RefinementScriptedCalculator,
-        _result,
-    )
-
-    refinement = RefinementPolicy(enabled=True, standoff_mm=80.0, max_position_correction_mm=50.0,
-                                  max_grip_width_correction_mm=50.0, max_orientation_correction_deg=30.0,
-                                  target_match_iou_threshold=0.3)
-    initial, refined = _matching_perception_pair()
-    calculator = _RefinementScriptedCalculator(initial=_result(_verification_grasp(label="initial")),
-                                               refined=_result(_verification_grasp(label="refined")))
-    return AutonomousGraspService.from_components(
-        arm=arm,
-        calculator=calculator,  # type: ignore[arg-type]
-        perception=_FakePerception([initial, refined]),
-        mode=GraspMode.CLOSED_LOOP,
-        gripper=jaws,
-        frame_resolver=IdentityFrameResolver(),
-        refinement_policy=refinement,
-        refiner=DefaultPreGraspRefiner(policy=refinement),
-        verification_policy=verification_policy or GraspVerificationPolicy(enabled=True),
-        verifier=verifier or NoOpVerifier(),
-    )
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -597,7 +531,7 @@ class ThePickServiceAsksTheControllerBeforeTheHandTests(unittest.TestCase):
         self.assertIn("protective_stop=True", last.telemetry["controller"])
 
     def test_a_running_controller_is_asked_before_the_person_whose_pulse_comes_before_any_motion(self) -> None:
-        """Red before: the person was asked and DO0 pulsed before the controller was asked anything."""
+        """Red before: the person was asked and DO0 switched before the controller was asked anything."""
         events: list[Any] = []
         person = _Person("closed", "p")
         jaws = _toggle_counting_closed(events, person)
@@ -605,10 +539,10 @@ class ThePickServiceAsksTheControllerBeforeTheHandTests(unittest.TestCase):
         report = _service(_Arm(events), jaws).pick()
 
         self.assertTrue(report.succeeded, report.render())
-        self.assertEqual("status", events[0], "the person's pulse came before the controller was asked")
+        self.assertEqual("status", events[0], "the person's change came before the controller was asked")
         self.assertEqual(2, len(person.asked), "where the jaws stand, then pulse or abort")
         self.assertEqual(2, _pulses(events), "the person's open, then the close at the part")
-        self.assertLess(events.index(("DO", 0, True)), events.index("move"), "the person's pulse came after a motion")
+        self.assertLess(_changes(events)[0], events.index("move"), "the person's change came after a motion")
 
 
 # ---------------------------------------------------------------------------------------------------

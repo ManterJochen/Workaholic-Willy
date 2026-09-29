@@ -230,7 +230,14 @@ class WhisperTransformersEngine:
             "Loading Whisper from '%s' on %s (dtype %s).", self._source, device, self._model_dtype
         )
         try:
-            processor = transformers.WhisperProcessor.from_pretrained(self._source, **(base or {}))
+            try:
+                processor = transformers.WhisperProcessor.from_pretrained(self._source, **(base or {}))
+            except ImportError as exc:
+                # transformers' own "requires the protobuf library", raised when it has to build a tokenizer the
+                # checkpoint does not ship: named like every other missing package of this stack (2026-09-28).
+                if "protobuf" in str(exc):
+                    raise SpeechStackUnavailable(package="protobuf", cause=exc) from exc
+                raise
             model = transformers.WhisperForConditionalGeneration.from_pretrained(
                 self._source, **model_kwargs
             ).to(device)

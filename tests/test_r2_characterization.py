@@ -7,10 +7,18 @@ built fully off-box via AutonomousGraspService.from_components + self-contained 
 tests/test_autonomous_grasp_service.py). Any drift in the report (outcome / profile / telemetry / pick_report /
 decision / recovery) during R2.1 fails here with a readable diff.
 
-This file (R2.0a) covers the LEGACY pick path (_execute_pick_body) + the mode-routing + the report contract across
-EASY / AUTO / DENSE_CLUTTER / DENSE_AUTONOMOUS. The WIRED refine/verify/decision scenarios (_pick_with_refinement
-/ _pick_with_decision) + the orchestrator-state side-effect harness land in R2.0b (the report-only golden is BLIND
-to orch._last_policy_report / perception.calls — the R1.2 hazard recurring).
+This file (R2.0a) covers the LEGACY pick path (_execute_pick_body, now _run_legacy_attempt) + the mode-routing +
+the report contract across EASY / AUTO / DENSE_CLUTTER. The WIRED decision scenarios (_pick_with_decision) + the
+orchestrator-state side-effect harness land in R2.0b (the report-only golden is BLIND to orch._last_policy_report /
+perception.calls — the R1.2 hazard recurring).
+
+The two-scan refinement and the two modes that ran it left on 2026-09-29, and their four scenarios with them
+(``dense_autonomous_unwired``, ``refine_two_scan``, ``refine_hold``, ``closed_loop_s4_gate``), as did the profile's
+``refinement_enabled`` leaf. The profile's ``verification_enabled`` leaf left the same day with the post-grasp
+verification stage, and ``next_viewpoint`` left the ``auto`` and ``dense_clutter`` allow-lists, merged into
+``rescan`` (cleanup phase 4); ``dense_clutter`` keeps ``nudge_target``. ``next_target`` ("rescan, skipping the
+failed part", same label only) joined both allow-lists the same day (owner's recovery decisions), which is the one
+leaf that moved in each scenario's ``profile``.
 
 Regenerate INTENTIONALLY (approved change only): WILLY_R2_UPDATE_GOLDEN=1 python -m pytest tests/test_r2_characterization.py
 """
@@ -39,13 +47,6 @@ from src.robot.execution.autonomous_grasp import (
 )
 from src.robot.execution.autonomous_grasp.watchdog import WatchdogSample
 from src.robot.grasping.decision import DecisionEngine, DecisionPolicy
-from src.robot.grasping import (
-    DefaultPreGraspRefiner,
-    GraspVerificationPolicy,
-    IdentityFrameResolver,
-    NoOpVerifier,
-    RefinementPolicy,
-)
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.grasping.types.perception import PerceptionFrame
@@ -96,8 +97,6 @@ def _snap_report(report: object) -> dict:
         "mode": getattr(getattr(report, "mode", None), "value", None),
         "profile": {
             "sampling_mode": getattr(getattr(profile, "sampling_mode", None), "value", None),
-            "refinement_enabled": getattr(profile, "refinement_enabled", None),
-            "verification_enabled": getattr(profile, "verification_enabled", None),
             "recovery_allowed_actions": list(getattr(profile, "recovery_allowed_actions", ()) or ()),
         },
         "telemetry": _jsonable(dict(getattr(report, "telemetry", {}) or {})),
@@ -113,8 +112,7 @@ def _snap_report(report: object) -> dict:
             name: getattr(report, name, None) is not None
             for name in (
                 "shadow_success_telemetry", "ranking_blend_telemetry",
-                "uncertainty_rerank_telemetry", "fusion_telemetry",
-                "commit_decision", "shadow_router_telemetry",
+                "uncertainty_rerank_telemetry", "shadow_router_telemetry",
             )
         },
     }
@@ -202,11 +200,11 @@ def _svc(mode: GraspMode, *, results: list, frames: list) -> AutonomousGraspServ
     )
 
 
-# --------------------------------------------------------------------------- R2.0b: orch-state harness + refine
+# --------------------------------------------------------------------------- R2.0b: orch-state harness
 def _orch_state(svc: AutonomousGraspService) -> dict:
-    """The orchestrator-side side-effects the report-only golden is BLIND to (the R1.2 hazard): the refine path
-    calls exec_policy.execute() directly and never sets _last_policy_report; perception.calls + watchdog_history
-    differ per path. R2.1 must keep these byte-identical."""
+    """The orchestrator-side side-effects the report-only golden is BLIND to (the R1.2 hazard):
+    perception.calls, whether _last_policy_report was set, and watchdog_history differ per path. R2.1 must keep
+    these byte-identical."""
     orch = svc.runtime.orchestrator
     return {
         "perception_calls": getattr(getattr(orch, "perception", None), "calls", None),
@@ -220,79 +218,11 @@ def _run(svc: AutonomousGraspService, **pick_kw: object) -> dict:
     return {**_snap_report(report), "orch_state": _orch_state(svc)}
 
 
-class _RefinementScriptedCalculator:
-    """Initial grasp on the first call (initial frame), refined grasp thereafter (the refiner)."""
-
-    def __init__(self, *, initial: GraspResult, refined: GraspResult) -> None:
-        self._initial, self._refined, self.calls = initial, refined, 0
-
-    def compute_result(self, *_a: object, **_k: object) -> GraspResult:
-        r = self._initial if self.calls == 0 else self._refined
-        self.calls += 1
-        return r
-
-
-def _seg_at(rows: slice, cols: slice) -> SimpleNamespace:
-    mask = np.zeros((32, 32), dtype=np.uint8)
-    mask[rows, cols] = 1
-    return SimpleNamespace(mask=mask)
-
-
-def _frame_with_seg(seg: SimpleNamespace) -> PerceptionFrame:
-    return PerceptionFrame(
-        depth_map=np.full((32, 32), 500.0, dtype=np.float64),
-        intrinsics=np.array([[400.0, 0.0, 16.0], [0.0, 400.0, 16.0], [0.0, 0.0, 1.0]], dtype=np.float64),
-        segmentations=(seg,),
-    )
-
-
-def _grasp_at(label: str, pos: tuple[float, float, float]) -> GraspResult:
-    return GraspResult(
-        candidates=(GraspPoint(position=np.array(pos), approach=np.array([0.0, 0.0, 1.0]),
-                               axis=np.array([1.0, 0.0, 0.0]), grip_width_mm=40.0, score=0.9,
-                               frame=GraspFrame.BASE, label=label),),
-        reasons=(), top_score=0.9,
-    )
-
-
-def _refine_svc(*, reperceive: bool, with_verifier: bool = True) -> AutonomousGraspService:
-    """CLOSED_LOOP refine service (mirrors test_grasp_refinement): two_scan (reperceive=True, 2 frames) vs the
-    static-camera HOLD (reperceive=False, 1 frame). The IoU tracker re-identifies the 1-px-shifted target.
-    With ``with_verifier=False`` the S4 verification readiness gate fires (refiner wired, no verifier)."""
-    policy = RefinementPolicy(
-        enabled=True, standoff_mm=80.0, max_position_correction_mm=50.0,
-        max_grip_width_correction_mm=50.0, max_orientation_correction_deg=30.0,
-        target_match_iou_threshold=0.3, reperceive=reperceive,
-    )
-    calc = _RefinementScriptedCalculator(
-        initial=_grasp_at("initial", (100.0, 50.0, 400.0)),
-        refined=_grasp_at("refined", (102.0, 51.0, 400.0)),
-    )
-    frames = [_frame_with_seg(_seg_at(slice(10, 20), slice(10, 20)))]
-    if reperceive:
-        frames.append(_frame_with_seg(_seg_at(slice(10, 20), slice(11, 21))))
-    return AutonomousGraspService.from_components(
-        arm=_TypedFakeArm(),  # type: ignore[arg-type]
-        calculator=calc,  # type: ignore[arg-type]
-        perception=_FakePerception(frames),
-        mode=GraspMode.CLOSED_LOOP,
-        frame_resolver=IdentityFrameResolver(),
-        refinement_policy=policy,
-        refiner=DefaultPreGraspRefiner(policy=policy),
-        verification_policy=GraspVerificationPolicy(enabled=True) if with_verifier else None,
-        verifier=NoOpVerifier() if with_verifier else None,
-    )
-
-
 # --------------------------------------------------------------------------- R2.0b: decision-path doubles
 def _base_effective_config(**overrides: object) -> EffectiveGraspingConfig:
     return EffectiveGraspingConfig(
         default_mode=GraspMode.AUTO,
         max_attempts=1,
-        closed_loop_enabled=False,
-        verification_enabled=False,
-        dense_recovery_enabled=False,
-        dense_recovery_allowed_actions=(),
         **overrides,  # type: ignore[arg-type]
     )
 
@@ -329,14 +259,6 @@ def _scenarios() -> dict:
     out["easy_rescan_exhausted"] = _run(_svc(GraspMode.EASY, results=[_rescan_result()], frames=[_frame()]), mode=GraspMode.EASY)
     out["auto_success"] = _run(_svc(GraspMode.AUTO, results=[_success_result()], frames=[_frame()]))
     out["dense_clutter_success"] = _run(_svc(GraspMode.DENSE_CLUTTER, results=[_success_result()], frames=[_frame()]))
-    out["dense_autonomous_unwired"] = _run(_svc(GraspMode.DENSE_AUTONOMOUS, results=[_success_result()], frames=[_frame()]))
-    # R2.0b: the wired _pick_with_refinement path (two_scan vs HOLD) — pins the orch-state hazard
-    # (refine never sets _last_policy_report) + perception.calls (2 vs 1).
-    out["refine_two_scan"] = _run(_refine_svc(reperceive=True))
-    out["refine_hold"] = _run(_refine_svc(reperceive=False))
-    # The S4 verification readiness gate (refiner wired, NO verifier) — pins the second gate of _execute_pick_body
-    # (the S3 gate is pinned by dense_autonomous_unwired) so the R2.1 STEP A _readiness_gate dedup is byte-checked.
-    out["closed_loop_s4_gate"] = _run(_refine_svc(reperceive=False, with_verifier=False))
     # R2.0b (pre-STEP-B): the wired _pick_with_decision path — pins _decide_once + _rank_grasp_for_decision +
     # _handle_watchdog_pretick (BLOCK_AUTO) + _resolve_uncertainty_runtime/_build_uncertainty_snapshot_for_tick.
     out["decision_grasp_now"] = _run(_decision_svc())

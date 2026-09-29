@@ -8,8 +8,8 @@ candidate is accepted or rejected on its closing axis, the closing axis comes fr
 one depth view only ever sees one side of an object while an antipodal grasp needs two.
 
 Everything else for that fusion exists already. ``multiview/localize.py`` fuses per-camera centroids,
-``multiview/synthesis.py`` turns a cloud into a grasp, and ``pick_loop`` forwards
-``external_target_geometry_base_mm`` into the ``geometry_points_base_mm`` seam of the calculator. The
+and ``pick_loop`` forwards ``external_target_geometry_base_mm`` into the ``geometry_points_base_mm``
+seam of the calculator, which turns the fused cloud into a grasp. The
 one place that fills the seam otherwise is a sim runner using ground-truth perception in every camera,
 ``run_pile_baseline.py`` through ``MultiObjectGroundTruthPerceptionSource``. Ground truth knows which
 blob in camera B is the blob camera A is looking at. A real cell does not.
@@ -30,7 +30,8 @@ view: it invents a contact face on the far side of a neighbour, and the generato
 that cloud from a real one.
 
 Pure and deterministic: numpy plus the deterministic ``linear_sum_assignment`` of scipy for the
-whole-scene one-to-one constraint, input order preserved, no set iteration, no vendor SDKs. Frames are
+whole-scene one-to-one constraint (and scipy's exact k-d tree for the nearest points of the hand-eye
+check), input order preserved, no set iteration, no vendor SDKs. Frames are
 BASE millimetres throughout, per the repo convention, and every input is a point cloud rather than a
 mask, so the module is independent of how any particular camera produced its segmentation.
 """
@@ -45,6 +46,8 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 __all__ = [
+    "HAND_EYE_DRIFT_WARN_MM",
+    "HAND_EYE_MIN_POINTS",
     "AssociationMetric",
     "AssociationResult",
     "SceneAssociation",
@@ -55,6 +58,8 @@ __all__ = [
     "cluster_views",
     "fuse_scene_clouds",
     "fuse_target_cloud",
+    "label_agreement",
+    "nearest_surface_distances_mm",
 ]
 
 #: Default gate on the match score, measured over 68 scenes with 1240 answerable decisions and 488
@@ -72,6 +77,135 @@ DEFAULT_MIN_SCORE = 0.30
 #: How near two points must be to count as the same surface, in mm. Larger than the depth noise of a
 #: stereo camera at working distance and smaller than the gap between two touching objects.
 DEFAULT_NEIGHBOUR_MM = 12.0
+
+# The tolerances for two looks of one wrist camera, which the pick loop associates across the looks of a
+# pick. They are choices argued from the fixed-camera sweep and the error budget of a hand-eye, not a
+# measurement on the real cell: log the winner and the runner-up per view, and re-tune from 20 or more
+# real picks.
+
+#: The gate for two wrist looks, the fixed cameras' gate unchanged. Consecutive looks share most of the
+#: surface they see and the one generated view shares at least the top, so a true match scores well
+#: clear of it, and at 0.30 the sweep behind :data:`DEFAULT_MIN_SCORE` refused 98.2 % of the pairs where
+#: the target was not in the other view at all.
+WRIST_VIEW_MIN_SCORE = 0.30
+#: How near two wrist-look points must be to count as the same surface, in mm: wider than the fixed
+#: cameras' 12, because two views through one hand-eye disagree by more the more the wrist has turned
+#: between them. A 0.5 degree rotation error at 450 mm is about 4 mm, up to about 8 mm between two
+#: strongly turned views, and the D415 adds 2 to 4 mm of noise on top. The wider radius costs nothing in
+#: separation: a touching neighbour matches only the thin band along the boundary it shares, well under
+#: the gate.
+WRIST_VIEW_NEIGHBOUR_MM = 15.0
+#: The scoring-only decimation for wrist looks, in mm (:func:`_voxel_decimate`). A wrist cloud at 0.45 m
+#: is dense, some thousands of points per face, which the brute-force overlap pass pays for squared;
+#: 3 mm keeps one real point per cell, far finer than the 15 mm radius the score is asked at, and the
+#: fused cloud is rebuilt from the full-resolution clouds whatever it is.
+WRIST_VIEW_SCORE_VOXEL_MM = 3.0
+
+# What two looks of one part both saw, for the hand-eye check the pick loop runs on them
+# (:func:`nearest_surface_distances_mm`).
+
+#: The resolution two looks' clouds are compared at, in mm: one measured point per cube. A wrist cloud at
+#: 0.45 m holds a point every half millimetre; one per millimetre moves a distance by well under the depth
+#: noise and keeps a big part's check to tens of thousands of points.
+SHARED_SURFACE_VOXEL_MM = 1.0
+#: The radius a point's surface normal is fitted over, in mm (local PCA). Several times the D415's 1 to 2 mm
+#: of depth noise at 0.45 m, which a smaller patch would read as the surface's own tilt, and small enough
+#: that only the few millimetres along an edge mix two faces.
+SHARED_SURFACE_NORMAL_RADIUS_MM = 6.0
+#: How far the normals of a pair of points may turn apart for the pair to count as one surface, in degrees.
+#: Two faces of a part meet at 90 degrees or face away at 180; a surface both looks saw turns by the fit's few
+#: degrees and the hand-eye's fraction of one.
+SHARED_SURFACE_MAX_TURN_DEG = 30.0
+#: How far apart two looks of a wrist pick may measure the surface of the part they share before the pick says that
+#: the hand-eye calibration may have drifted, in millimetres: the median of :func:`nearest_surface_distances_mm` from
+#: one look's surface of the target to the other's. The owner's figure. A healthy cell measures a millimetre or two
+#: there: the D415's noise at 0.45 m, and the few millimetres a 0.5 degree hand-eye error moves a point at that range.
+#: Six is past both together and inside the :data:`WRIST_VIEW_NEIGHBOUR_MM` the looks are associated at, so a drift big
+#: enough to matter is said before it is big enough to break the association. Nothing is done about it but say it.
+#: The pick loop's looks and the Locator's are held to it alike.
+HAND_EYE_DRIFT_WARN_MM: float = 6.0
+#: The fewest shared-surface distances the hand-eye check speaks on. Below it two looks shared an edge rather than a
+#: face, and a median of a handful of points is one pixel's luck.
+HAND_EYE_MIN_POINTS: int = 20
+
+
+def label_agreement(
+    label: str, others: Sequence[tuple[str, str]],
+) -> tuple[int, tuple[tuple[str, str], ...]]:
+    """How many of ``others`` call the part what ``label`` calls it, and which call it otherwise.
+
+    The owner's rule for the looks of one part (2026-09-29, addendum 7.3): looks that call the associated part by the
+    same label add to the confidence, and looks that call it differently make its grasp uncertain, since one of them saw
+    something else there. Only the disagreement acts: it adds ``RESCAN_RECOMMENDED`` to the grasp's reasons (the pick
+    loop) or keeps the looking going (the Locator). The count that agreed is kept on the pick loop's judgement and
+    changes nothing: no confidence channel reads it, so a grasp the looks agree on is as safe as the calculator says,
+    no safer. ``others`` are ``(look, label)`` pairs, one per earlier look of the same part. Labels are
+    compared trimmed and in lower case, and an empty label, on either side, says nothing either way: a detector that gave
+    none (or a name a locator made up for it) neither agrees nor disagrees. Returns the count that agreed and the
+    ``(look, label)`` pairs that disagreed, in the order given. One rule for the pick loop's looks and the Locator's.
+    """
+    called = str(label or "").strip().lower()
+    agreed = 0
+    disagree: list[tuple[str, str]] = []
+    for look, other in others:
+        said = str(other or "").strip().lower()
+        if not called or not said:
+            continue
+        if said == called:
+            agreed += 1
+        else:
+            disagree.append((look, said))
+    return agreed, tuple(disagree)
+
+
+def nearest_surface_distances_mm(
+    cloud_base_mm: np.ndarray,
+    other_base_mm: np.ndarray,
+    *,
+    seen_from_mm: Sequence[float] | np.ndarray,
+    other_seen_from_mm: Sequence[float] | np.ndarray,
+    within_mm: float = WRIST_VIEW_NEIGHBOUR_MM,
+    voxel_mm: float = SHARED_SURFACE_VOXEL_MM,
+    normal_radius_mm: float = SHARED_SURFACE_NORMAL_RADIUS_MM,
+    max_turn_deg: float = SHARED_SURFACE_MAX_TURN_DEG,
+) -> np.ndarray:
+    """How far each point of ``cloud_base_mm`` lies from the nearest of ``other_base_mm``, over the surface both saw.
+
+    Two looks of one part through one hand-eye measure the surface they share at the same place, up to depth noise; a
+    hand-eye that has drifted puts one look's copy of it beside the other's. So the distances over the shared surface
+    are the check, and only those: a face one look saw and the other did not must not be measured against what the
+    other saw, or the part's own size reads as drift. A point counts where its nearest point of the other look lies
+    within ``within_mm``, the radius two looks of one part are associated at, and where the two surfaces there face the
+    same way (normals within ``max_turn_deg``). Each normal is fitted over ``normal_radius_mm`` and turned toward the
+    camera that saw it (``seen_from_mm``, ``other_seen_from_mm``, BASE), which is what tells the two faces of a part
+    thinner than the reach apart: they lie within reach of each other and face away from each other. What the measure
+    cannot see is a slide along a surface, which leaves every point on the other copy of it.
+
+    Both clouds are compared at one measured point per ``voxel_mm`` cube, and the nearest point is found on a k-d tree
+    (scipy's, which this module already needs), so a big part costs a fraction of a second. Returns the distances,
+    empty when nothing lies within reach.
+    """
+    from scipy.spatial import cKDTree  # noqa: PLC0415
+
+    from src.robot.grasping.geometry.normals import estimate_surface_normals  # noqa: PLC0415
+
+    a = _voxel_decimate(np.asarray(cloud_base_mm, dtype=np.float64).reshape(-1, 3), float(voxel_mm))
+    b = _voxel_decimate(np.asarray(other_base_mm, dtype=np.float64).reshape(-1, 3), float(voxel_mm))
+    if a.shape[0] == 0 or b.shape[0] == 0:
+        return np.zeros(0, dtype=np.float64)
+    facing_a = estimate_surface_normals(
+        a, radius_mm=float(normal_radius_mm),
+        camera_position_mm=tuple(float(v) for v in np.asarray(seen_from_mm, dtype=np.float64).reshape(3)))
+    facing_b = estimate_surface_normals(
+        b, radius_mm=float(normal_radius_mm),
+        camera_position_mm=tuple(float(v) for v in np.asarray(other_seen_from_mm, dtype=np.float64).reshape(3)))
+    distances, nearest = cKDTree(b).query(a, distance_upper_bound=float(within_mm))
+    reached = np.isfinite(distances)
+    partner = np.where(reached, nearest, 0)
+    turned = np.einsum("ij,ij->i", facing_a.normals.astype(np.float64), facing_b.normals[partner].astype(np.float64))
+    shared = (reached & facing_a.valid_mask & facing_b.valid_mask[partner]
+              & (turned >= np.cos(np.radians(float(max_turn_deg)))))
+    return np.asarray(distances[shared], dtype=np.float64)
 
 
 class AssociationMetric(StrEnum):
@@ -177,8 +311,8 @@ def _voxel_decimate(points: np.ndarray, voxel_mm: float) -> np.ndarray:
 def _overlap_fraction(target: np.ndarray, candidate: np.ndarray, *, neighbour_mm: float) -> float:
     """Share of target points with a candidate point within ``neighbour_mm``.
 
-    Chunked brute force rather than a KD-tree: the clouds are a few thousand points at most, this layer
-    stays numpy-only, and a tree would add a dependency for no measured gain. Chunking bounds the
+    Chunked brute force rather than a KD-tree: the clouds are a few thousand points at most, and a tree
+    would add nothing measured here (the hand-eye check, whose clouds are not, uses one). Chunking bounds the
     temporary at about 8 MB whatever the cloud size, which a plain outer difference does not.
     """
     a = np.asarray(target, dtype=np.float64).reshape(-1, 3)

@@ -7,7 +7,8 @@ driver:
 1. extracts the typed failure-reason set from the report,
 2. asks the orchestrator for the next plan,
 3. executes the plan via the typed executor (or perception
-   re-acquisition for RESCAN / NEXT_VIEWPOINT),
+   re-acquisition for RESCAN, which NEXT_VIEWPOINT was merged into on
+   2026-09-29),
 4. retries ``pick()``.
 
 The driver returns the final :class:`AutonomousGraspReport` paired
@@ -45,7 +46,7 @@ def _profile_dense() -> GraspBehaviorProfile:
     return GraspBehaviorProfile(
         mode=GraspMode.DENSE_CLUTTER,
         sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
-        recovery_allowed_actions=("rescan", "next_viewpoint", "next_target"),
+        recovery_allowed_actions=("rescan", "next_target"),
     )
 
 
@@ -62,26 +63,23 @@ def _policy_enabled() -> SceneRecoveryPolicy:
         enabled=True,
         allowed_actions=(
             SceneRecoveryAction.RESCAN,
-            SceneRecoveryAction.NEXT_VIEWPOINT,
+            SceneRecoveryAction.NEXT_TARGET,
         ),
         max_recovery_actions=3,
-        apply_modes=("auto", "dense_clutter", "dense_autonomous"),
+        apply_modes=("auto", "dense_clutter"),
     )
 
 
 def _orch() -> RecoveryOrchestrator:
-    """Default orchestrator with no-op strategies (driver only uses dispatcher)."""
+    """Default orchestrator with no strategies (driver only uses dispatcher).
 
-    from src.robot.grasping.recovery.policy import NoRecoveryStrategy
+    It held a ``NoRecoveryStrategy`` per action until that class left on 2026-09-29; bypassing the
+    strategies never consulted them.
+    """
 
     return RecoveryOrchestrator(
         dispatcher=RecoveryDispatcher(),
-        strategies={
-            SceneRecoveryAction.RESCAN: NoRecoveryStrategy(),
-            SceneRecoveryAction.NEXT_VIEWPOINT: NoRecoveryStrategy(),
-            SceneRecoveryAction.NEXT_TARGET: NoRecoveryStrategy(),
-            SceneRecoveryAction.NUDGE_TARGET: NoRecoveryStrategy(),
-        },
+        strategies={},
         # Force the orchestrator to plan directly from the dispatcher mapping
         # without running per-action strategies (driver-test focus).
         bypass_strategies=True,
@@ -178,9 +176,13 @@ class RecoveryLoopHappyPathTests(unittest.TestCase):
 
 class RecoveryLoopBudgetExhaustionTests(unittest.TestCase):
     def test_exhausted_budget_terminates_with_typed_trail(self) -> None:
+        # NO_VALID_GRASP maps to (NEXT_TARGET, RESCAN); the loop takes both and then meets the budget.
+        # NEXT_TARGET runs only with the caller's memory of failed parts (2026-09-29), handed in here.
+        # (RESCAN_RECOMMENDED took RESCAN then NEXT_VIEWPOINT until the second was merged into the first
+        # on 2026-09-29.)
         pick = _picker_always_failing(
             AutonomousGraspOutcome.NO_VALID_GRASP,
-            (GraspFailureReason.RESCAN_RECOMMENDED,),
+            (GraspFailureReason.NO_VALID_GRASP,),
         )
         final, trail = run_recovery_loop(
             pick=pick,
@@ -189,13 +191,14 @@ class RecoveryLoopBudgetExhaustionTests(unittest.TestCase):
                 enabled=True,
                 allowed_actions=(
                     SceneRecoveryAction.RESCAN,
-                    SceneRecoveryAction.NEXT_VIEWPOINT,
+                    SceneRecoveryAction.NEXT_TARGET,
                 ),
                 max_recovery_actions=2,
                 apply_modes=("dense_clutter",),
             ),
             orchestrator=_orch(),
             frame_acquirer=lambda: None,
+            skip_failed_part=lambda report: True,
         )
         self.assertNotEqual(final.outcome, AutonomousGraspOutcome.SUCCEEDED)
         self.assertEqual(len(trail.entries), 2)
@@ -227,6 +230,7 @@ class RecoveryLoopAntiLoopTests(unittest.TestCase):
             ),
             orchestrator=_orch(),
             frame_acquirer=lambda: None,
+            skip_failed_part=lambda report: True,
         )
         # TRY_NEXT_CANDIDATE maps to (NEXT_TARGET,); after one attempt the
         # anti-loop refuses the same (action, class) pair → terminate.

@@ -23,9 +23,9 @@ The mathematics lives in [docs/safety-math.md](../safety-math.md): capsule geome
 base-yaw reconcile, the Jacobian singularity test, exact mesh distance and the fail-closed authority rule.
 Driving a hand is [06](06-grippers.md).
 
-**Two facts to start from.** The default grasp attempt is open-loop: the decision gate, closed-loop
-refinement and verification, recovery, fusion with its commit gate, the learned ranker and the learned
-success model all ship `enabled: false` ([05](05-pick-loop.md)). The safety layer is the exception: the
+**Two facts to start from.** The default grasp attempt is open-loop: the decision gate,
+recovery, multi-camera fusion, the learned ranker and the learned success model all ship
+`enabled: false` ([05](05-pick-loop.md)). The safety layer is the exception: the
 driver builds its `SafetyPreflight`, or has one injected, so it runs on every live path (section 4.1).
 
 **Prerequisites.** A virtual environment with `requirements.txt`, in which `python -m src.config` exits 0.

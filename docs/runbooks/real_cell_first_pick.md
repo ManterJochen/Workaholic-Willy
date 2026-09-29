@@ -84,12 +84,13 @@ Two rows are reported `[bench]` and never block, because no interface answers th
   does not carry validates cleanly and switches nothing. A `jaw_io` toggle with no open switch
   (`actuation: single_toggle`) cannot read its jaws, and nothing about them is kept between
   programs: once per program start, when the gripper connects and before the arm moves, the
-  console asks whether the jaws stand open. Answered closed, it offers one pulse to open them, or
-  stops. From there the program counts its own pulses: one at the part to close, one at the release
-  to open, none before the arm moves at the start of a pick, and a pick that begins with the jaws
-  believed closed asks again rather than pulsing. Never push the jaws by hand, and never pulse the
-  pin from elsewhere while a program runs: a device that keeps its own flip state is not moved by a
-  hand, and a pulse the program did not send turns its count round.
+  console asks whether the jaws stand open; the connect writes nothing. Answered closed, it offers
+  one change of the output to open them, or stops. Every change of the output moves the jaws once,
+  switched on or off, so from there the program sends ONE change per command and counts them: one at
+  the part to close, one at the release to open, none before the arm moves at the start of a pick,
+  and a pick that begins with the jaws believed closed asks again rather than switching. Never push
+  the jaws by hand. Switching the output at the pendant while a program runs is noticed: the next
+  command is refused with nothing sent, and the next pick asks where the jaws stand.
 
 A `jaw_io` hand adds a warning, `jaw travel time`, while `close_settle_s` is the schema default
 0.3 s and it is the only wait the driver has: with no switch to read, the arm moves on that long
@@ -299,7 +300,7 @@ run = PickRun.from_cell(cell, runs=5, recording=Recording.off(), look=LOOK, put_
   450 mm at the schema's default 1280 x 720 depth mode and about 310 mm at 848 x 480 (datasheet
   figures, not measured here). Choose a look that stands the camera 500 mm off the parts, or stream
   depth at `depth_resolution: [848, 480]` with colour kept at `[1280, 720]`.
-* **Nothing is said to the hand before a look**: no release, no pulse. With `put_back=True` each
+* **Nothing is said to the hand before a look**: no release, no change of its output. With `put_back=True` each
   lifted part is placed back where the tool closed on it (the pick's standoff, a line in, the
   release, a line out), so the hand is empty at the next look and one part serves the campaign; a
   part that does not go back stops it. Without it, the part rides to the next look, and the next
@@ -347,11 +348,10 @@ one session, because three of them share the same setup.
 4. **Calibrate eye-to-hand** and declare the primary camera's artifact on its rig,
    `camera.cameras.rigs[<primary rig id>].extrinsics`, by pasting the block the calibration command
    prints; it is read whether or not `grasping.fusion.enabled` is on. To fuse every other camera,
-   declare each on its own rig, name it under `grasping.fusion.cameras`, and set
-   `grasping.fusion.enabled: true`. That key also arms the shadow voxel substrate, which ingests
-   perception frames and emits telemetry. It changes no grasp and no motion, because the gate that
-   would let fused evidence decide is `fusion.commit_policy.enabled` and that stays off, but it is
-   not free at runtime.
+   declare each on its own rig, name it under `grasping.fusion.cameras`, and set both
+   `grasping.fusion.enabled: true`, which builds each named camera's CAMERA to BASE resolver, and
+   `grasping.fusion.geometry.enabled: true`, which hands the fused surface to the grasp generator.
+   Either one alone leaves the cell single-view.
 5. **Declare the bench** under `safety.self_collision.fixtures`. With none declared there is no
    surface in the collision world, so nothing refuses a motion that goes through it. Declare
    `safety.planning_world` too, with a measured `support_plane` and `perceived.enabled`: a cuRobo
@@ -381,10 +381,14 @@ What passing means:
 
 * the executed grasp reports `frame = base` rather than `camera`, which is the single sharpest tell;
 * `connect()` logs the tool frame as verified within tolerance;
-* the gripper verifier fails an empty close. Test that deliberately: command a pick at an empty
-  table and confirm the run is reported as a failure. On a jaw cell the verifier is
-  `WidthDeltaGripperVerifier`, the only one available, because the Robotiq driver exposes no
-  object-detection capability;
+* an empty close is reported as a failure. Test that deliberately: command a pick at an empty
+  table and confirm the run is reported as `verification_failed`. That is the execution policy's own
+  check after its close, read off the gripper's object detection. A hand that measures no hold (a jaw
+  on digital I/O with no feedback wired) cannot fail it: its successes print `hold not measured`, and
+  the run says how many rest on the close command's word. There is no second check behind it: the
+  separate verification stage and its `robot.grasping.verification` block were removed on 2026-09-29,
+  because no pick ran them, and a tree that still writes the block is refused at load. A Robotiq on
+  its socket reports gOBJ to this check, which is how its hold is verified;
 * every failure is classified by the record's typed reason rather than by eyeball.
 
 Know which rule you are being judged by. This runner's default is unanimity: every pick must

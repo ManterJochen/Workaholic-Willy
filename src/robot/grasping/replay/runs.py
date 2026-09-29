@@ -284,7 +284,8 @@ class SoakSource(StrEnum):
     #: A captured `GraspAttemptRecord` log from a real cell. Can fail, and is meant to.
     REAL_RECORDS = "real_records"
     #: A log from an Isaac-physics run. Real picks, not hardware-representative, and
-    #: `false_positive_grasp_rate` is structurally 0 because sim has no secondary verifier.
+    #: `false_positive_grasp_rate` is structurally 0: no secondary verifier exists, in sim or on a
+    #: cell, since the post-grasp verification stage left on 2026-09-29.
     SIM_RECORDS = "sim_records"
     #: Records generated on the spot from scenario specs. Proves telemetry and KPI consistency, and
     #: says nothing about grasp quality.

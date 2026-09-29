@@ -17,13 +17,12 @@ These tests pin the operator-locked T1 wiring contract:
       path and produces a :attr:`AutonomousGraspOutcome.SUCCEEDED`
       report whose ``decision`` field is populated and whose
       ``telemetry`` carries the six mandatory plan-rule-#12 keys.
-    - a low-confidence first frame triggers a viewpoint move and a
-      re-acquire; the bounded loop terminates with the final typed
-      decision.
-    - exhausting the re-observation budget on real hardware yields a
+    - a low-confidence frame on real hardware yields a
       :attr:`AutonomousGraspOutcome.DECISION_FAIL_CLOSED` report
       with a fully populated ``decision`` field and structured
-      telemetry; no pick attempt is dispatched.
+      telemetry; no pick attempt is dispatched and the camera does not
+      move. The decision is taken once, on one frame: the camera move
+      that once re-observed (``MOVE_CAMERA``) was removed on 2026-09-29.
 * :class:`GraspMode.EASY` never consults the decision engine even when
   one is wired.
 """
@@ -133,21 +132,6 @@ class _ScriptedCalculator:
         return self._results[idx]
 
 
-class _ScriptedViewpointPlanner:
-    """Yields successive base-frame poses for re-observation."""
-
-    def __init__(self, poses: list[Pose | None]) -> None:
-        self._poses = poses
-        self.calls = 0
-
-    def next_viewpoint(self, *, current_tcp, history):
-        idx = self.calls
-        self.calls += 1
-        if idx >= len(self._poses):
-            return None
-        return self._poses[idx]
-
-
 def _segmentation() -> SimpleNamespace:
     mask = np.zeros((32, 32), dtype=np.uint8)
     mask[10:22, 10:22] = 1
@@ -187,41 +171,27 @@ def _result(score: float, *, reasons: tuple = ()) -> GraspResult:
     )
 
 
-def _viewpoint(z: float) -> Pose:
-    return Pose(
-        position_mm=np.array([50.0, 50.0, z]),
-        quaternion_xyzw=np.array([0.0, 0.0, 0.0, 1.0]),
-        frame=Frame.BASE,
-        label="viewpoint",
-    )
-
-
 def _build_service(
     *,
     calc_results: list[GraspResult],
     frames: list[PerceptionFrame] | None = None,
     capabilities: RobotCapabilities = _REAL_UR_CAPS,
     decision_engine: DecisionEngine | None,
-    viewpoint_poses: list[Pose | None] | None = None,
     mode: GraspMode = GraspMode.AUTO,
-) -> tuple[AutonomousGraspService, _TypedFakeArm, _FakePerception, _ScriptedViewpointPlanner | None]:
+) -> tuple[AutonomousGraspService, _TypedFakeArm, _FakePerception]:
     arm = _TypedFakeArm(capabilities=capabilities)
     perception = _FakePerception(frames or [_perception_frame()])
     calculator = _ScriptedCalculator(calc_results)
-    planner = (
-        _ScriptedViewpointPlanner(viewpoint_poses) if viewpoint_poses is not None else None
-    )
     svc = AutonomousGraspService.from_components(
         arm=arm,
         calculator=calculator,
         perception=perception,
         mode=mode,
-        viewpoint_planner=planner,
     )
     if decision_engine is not None:
         svc.decision_engine = decision_engine
         svc.decision_policy = decision_engine.policy
-    return svc, arm, perception, planner
+    return svc, arm, perception
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +227,7 @@ class DefaultWiringPreservesT0BehaviourTests(unittest.TestCase):
 class DecisionEngineInScopeTests(unittest.TestCase):
     def test_confident_grasp_passes_through_and_records_decision(self) -> None:
         engine = DecisionEngine(policy=DecisionPolicy())  # defaults
-        svc, _, _, _ = _build_service(
+        svc, _, _ = _build_service(
             calc_results=[_result(0.9), _result(0.9)],
             decision_engine=engine,
         )
@@ -279,56 +249,51 @@ class DecisionEngineInScopeTests(unittest.TestCase):
         ):
             self.assertIn(key, report.telemetry)
 
-    def test_low_confidence_triggers_move_camera_then_grasps(self) -> None:
-        engine = DecisionEngine(policy=DecisionPolicy())  # max_reobs=2
-        # First decision-frame computes a low-score result;
-        # after moving the camera the second decision-frame computes a
-        # high-score result; then the actual pick runs (third calculator call).
-        svc, arm, _, planner = _build_service(
-            calc_results=[_result(0.3), _result(0.9), _result(0.9)],
-            frames=[_perception_frame(), _perception_frame(), _perception_frame()],
-            decision_engine=engine,
-            viewpoint_poses=[_viewpoint(550.0)],
-        )
-        report = svc.pick()
-        self.assertIs(report.outcome, AutonomousGraspOutcome.SUCCEEDED)
-        # The viewpoint planner was consulted exactly once.
-        assert planner is not None
-        self.assertEqual(planner.calls, 1)
-        # The arm received the viewpoint move.
-        self.assertGreaterEqual(len(arm.moves), 1)
-        # Final decision is GRASP_NOW after one re-observation.
-        self.assertIs(report.decision.action, DecisionAction.GRASP_NOW)
-        self.assertEqual(report.decision.reobservation_count, 1)
-
-    def test_budget_exhausted_real_hardware_fail_closes(self) -> None:
-        # All decision-frame computes return low score; the engine
-        # exhausts max_reobservations=2 and FAIL_CLOSES on real
-        # hardware. No pick attempt should be dispatched.
+    def test_low_confidence_real_hardware_fail_closes_without_moving(self) -> None:
+        # The decision frame computes a low score and the engine
+        # FAIL_CLOSES on real hardware at once: one frame, no camera move,
+        # no pick attempt dispatched.
         engine = DecisionEngine(policy=DecisionPolicy())
-        svc, arm, _, planner = _build_service(
-            # 3 low-score results: one per decision-frame iteration
-            # (initial + 2 re-observations).
-            calc_results=[_result(0.3), _result(0.3), _result(0.3)],
-            frames=[_perception_frame()] * 3,
+        svc, arm, perception = _build_service(
+            calc_results=[_result(0.3), _result(0.9)],
+            frames=[_perception_frame()] * 2,
             decision_engine=engine,
-            viewpoint_poses=[_viewpoint(550.0), _viewpoint(560.0)],
         )
         report = svc.pick()
         self.assertIs(
             report.outcome, AutonomousGraspOutcome.DECISION_FAIL_CLOSED
         )
         self.assertIsNone(report.pick_report)  # no execution dispatched
+        self.assertEqual(arm.moves, [])  # the camera was not moved to look again
+        self.assertEqual(perception.calls, 1)  # one frame decided
         self.assertIs(report.decision.action, DecisionAction.FAIL_CLOSED)
         self.assertIs(
             report.decision.reason_code,
-            DecisionReasonCode.REOBSERVE_BUDGET_EXHAUSTED,
+            DecisionReasonCode.LOW_CONFIDENCE,
         )
+        self.assertEqual(report.decision.reobservation_count, 0)
         # Plan rule #12 telemetry.
         self.assertEqual(report.telemetry["decision_action"], "fail_closed")
         self.assertEqual(
             report.telemetry["decision_reason_code"],
-            "reobserve_budget_exhausted",
+            "low_confidence",
+        )
+
+    def test_low_confidence_simulated_grasps_permissively(self) -> None:
+        # A simulated arm stays permissive: the same low score is grasped, and the
+        # decision says why it would have refused on real hardware.
+        engine = DecisionEngine(policy=DecisionPolicy())
+        svc, _, _ = _build_service(
+            calc_results=[_result(0.3), _result(0.3)],
+            capabilities=_SIM_CAPS,
+            decision_engine=engine,
+        )
+        report = svc.pick()
+        self.assertIs(report.outcome, AutonomousGraspOutcome.SUCCEEDED)
+        self.assertIs(report.decision.action, DecisionAction.GRASP_NOW)
+        self.assertIs(
+            report.decision.reason_code,
+            DecisionReasonCode.LOW_CONFIDENCE,
         )
 
     def test_no_candidates_emits_recover_pending(self) -> None:
@@ -359,7 +324,7 @@ class DecisionEngineOutOfScopeTests(unittest.TestCase):
     def test_easy_mode_never_consults_decision_engine(self) -> None:
         # EASY is the operator-locked out-of-scope mode for T1.
         engine = DecisionEngine(policy=DecisionPolicy())
-        svc, _, perception, _ = _build_service(
+        svc, _, perception = _build_service(
             calc_results=[_result(0.3)],  # Would fail-close if consulted
             decision_engine=engine,
             mode=GraspMode.EASY,
@@ -410,7 +375,6 @@ class FromRobotConfigDecisionAutoBuildTests(unittest.TestCase):
         cfg = self._cfg(
             enabled=True,
             auto_uncertainty_threshold=0.25,
-            max_reobservations=1,
             reasons_penalty=0.1,
             fail_closed_on_real_hardware=False,
         )
@@ -422,7 +386,6 @@ class FromRobotConfigDecisionAutoBuildTests(unittest.TestCase):
         self.assertIsNotNone(svc.decision_engine)
         self.assertIsNotNone(svc.decision_policy)
         self.assertEqual(svc.decision_policy.auto_uncertainty_threshold, 0.25)
-        self.assertEqual(svc.decision_policy.max_reobservations, 1)
         self.assertEqual(svc.decision_policy.reasons_penalty, 0.1)
         self.assertFalse(svc.decision_policy.fail_closed_on_real_hardware)
         # Snapshot mirrors the enabled state and stores threshold.
@@ -430,7 +393,6 @@ class FromRobotConfigDecisionAutoBuildTests(unittest.TestCase):
         self.assertEqual(
             svc.effective_config.decision.auto_uncertainty_threshold, 0.25
         )
-        self.assertEqual(svc.effective_config.decision.max_reobservations, 1)
 
     def test_caller_supplied_engine_wins_over_config(self) -> None:
         cfg = self._cfg(enabled=True, auto_uncertainty_threshold=0.25)

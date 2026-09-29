@@ -31,10 +31,6 @@ def _bare_effective() -> EffectiveGraspingConfig:
     return EffectiveGraspingConfig(
         default_mode=GraspMode.AUTO,
         max_attempts=5,
-        closed_loop_enabled=False,
-        verification_enabled=False,
-        dense_recovery_enabled=False,
-        dense_recovery_allowed_actions=(),
     )
 
 
@@ -50,7 +46,7 @@ class EffectiveConfigT5DefaultsTests(unittest.TestCase):
         self.assertEqual(d["recovery_orchestrator_max_actions"], 2)
         self.assertEqual(
             d["recovery_orchestrator_apply_modes"],
-            ["auto", "dense_clutter", "dense_autonomous"],
+            ["auto", "dense_clutter"],
         )
         self.assertEqual(d["recovery_orchestrator_allowed_actions"], [])
         self.assertEqual(d["recovery_orchestrator_per_action_budget"], [])
@@ -59,21 +55,17 @@ class EffectiveConfigT5DefaultsTests(unittest.TestCase):
         eff = EffectiveGraspingConfig(
             default_mode=GraspMode.DENSE_CLUTTER,
             max_attempts=5,
-            closed_loop_enabled=False,
-            verification_enabled=False,
-            dense_recovery_enabled=False,
-            dense_recovery_allowed_actions=(),
             recovery_orchestrator=EffectiveRecoveryOrchestratorConfig(
                 per_action_budget=(
                     ("rescan", 1),
-                    ("next_viewpoint", 2),
+                    ("next_target", 2),
                 ),
             ),
         )
         d = eff.to_dict()
         self.assertEqual(
             d["recovery_orchestrator_per_action_budget"],
-            [["rescan", 1], ["next_viewpoint", 2]],
+            [["rescan", 1], ["next_target", 2]],
         )
 
 
@@ -87,7 +79,7 @@ class SchemaApplyModesLockoutTests(unittest.TestCase):
         self.assertNotIn("easy", rec.apply_modes)
         self.assertEqual(
             rec.apply_modes,
-            ("auto", "dense_clutter", "dense_autonomous"),
+            ("auto", "dense_clutter"),
         )
 
 

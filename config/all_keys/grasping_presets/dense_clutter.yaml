@@ -8,7 +8,7 @@ grasping:
   recovery:
     enabled: true
     allowed_actions:
-      - next_viewpoint
+      - rescan
   uncertainty:
     enabled: true
     fail_closed_threshold: 0.4

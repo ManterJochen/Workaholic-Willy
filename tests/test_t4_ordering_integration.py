@@ -41,10 +41,6 @@ def _bare_effective() -> EffectiveGraspingConfig:
     return EffectiveGraspingConfig(
         default_mode=GraspMode.AUTO,
         max_attempts=5,
-        closed_loop_enabled=False,
-        verification_enabled=False,
-        dense_recovery_enabled=False,
-        dense_recovery_allowed_actions=(),
     )
 
 

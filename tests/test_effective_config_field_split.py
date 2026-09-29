@@ -2,7 +2,7 @@
 
 The config was split into per-phase nested sub-configs (``config.watchdog.mode``
 instead of ``config.watchdog_mode``), but ``to_dict()`` must keep emitting the
-historical *flat* 79-key dict in the exact same order with the exact same value
+historical *flat* 74-key dict (plus three appended keys) in the exact same order with the exact same value
 transforms — it feeds ``outcome_logging.json_safe`` (serialized with
 ``sort_keys=False``), so key order is load-bearing for replay/KPI diffs.
 
@@ -26,18 +26,19 @@ from src.robot.execution.autonomous_grasp import (
 
 # The canonical flat key order emitted by ``EffectiveGraspingConfig.to_dict()``.
 # Note ``feasibility_corridor_risk_*`` deliberately sit in the *corridor* region
-# (positions 24-25) even though they now live on the feasibility sub-config — the
+# (positions 22-23) even though they now live on the feasibility sub-config — the
 # split must NOT reorder them.
 EXPECTED_KEYS: tuple[str, ...] = (
     "default_mode",
     "max_attempts",
-    "closed_loop_enabled",
-    "verification_enabled",
-    "dense_recovery_enabled",
-    "dense_recovery_allowed_actions",
+    # `closed_loop_enabled` left with the two-scan refinement on 2026-09-29, removed with the owner's
+    # approval (cleanup, 2026-09-28); every key below shifts one position.
+    # `verification_enabled`, `dense_recovery_enabled` and `dense_recovery_allowed_actions` left the same
+    # day with their blocks (cleanup phase 4, owner-approved 2026-09-29); every key below shifts three more.
     "decision_enabled",
     "decision_auto_uncertainty_threshold",
-    "decision_max_reobservations",
+    # `decision_max_reobservations` left with the decision gate's camera re-observation
+    # (MOVE_CAMERA) on 2026-09-29; the owner approved the one-position shift of every key below.
     "feasibility_enabled",
     "feasibility_score_weight",
     "feasibility_ik_quality_enabled",
@@ -120,28 +121,29 @@ EXPECTED_KEYS: tuple[str, ...] = (
 
 
 def _bare() -> EffectiveGraspingConfig:
-    """A bare snapshot: 6 core fields set, all 8 phase sub-configs defaulted."""
+    """A bare snapshot: the 2 core fields set, all 8 phase sub-configs defaulted."""
 
     return EffectiveGraspingConfig(
         default_mode=GraspMode.AUTO,
         max_attempts=5,
-        closed_loop_enabled=False,
-        verification_enabled=False,
-        dense_recovery_enabled=False,
-        dense_recovery_allowed_actions=(),
     )
 
 
 class ToDictByteIdentityTests(unittest.TestCase):
     def test_key_order_and_count_is_canonical(self) -> None:
         keys = tuple(_bare().to_dict().keys())
-        # 79 historical + 3 appended 2026-08-17 (success_model / fusion / approach_validation).
-        self.assertEqual(len(keys), 82)
+        # 74 historical (79 until decision_max_reobservations, closed_loop_enabled,
+        # verification_enabled, dense_recovery_enabled and dense_recovery_allowed_actions left on
+        # 2026-09-29) + 3 appended 2026-08-17 (success_model / fusion / approach_validation).
+        self.assertEqual(len(keys), 77)
         self.assertEqual(keys, EXPECTED_KEYS)
         # The extension must be an APPEND. A consumer that reads this contract positionally --
         # and the KPI / soak / RL tail is exactly that kind of consumer -- breaks silently on an
         # insertion and not at all on an append, so the shape of the change is itself the contract.
-        self.assertEqual(keys[:79], EXPECTED_KEYS[:79])
+        self.assertEqual(keys[:74], EXPECTED_KEYS[:74])
+        for gone in ("decision_max_reobservations", "closed_loop_enabled", "verification_enabled",
+                     "dense_recovery_enabled", "dense_recovery_allowed_actions"):
+            self.assertNotIn(gone, keys)
 
     def test_corridor_risk_keys_stay_in_corridor_region(self) -> None:
         # Regression guard: these belong to the feasibility sub-config now but
@@ -162,7 +164,8 @@ class ToDictByteIdentityTests(unittest.TestCase):
         self.assertEqual(d["default_mode"], "auto")
         self.assertIsInstance(d["default_mode"], str)
         # tuple -> list
-        self.assertEqual(d["dense_recovery_allowed_actions"], [])
+        self.assertEqual(d["recovery_orchestrator_allowed_actions"], [])
+        self.assertEqual(d["recovery_orchestrator_apply_modes"], ["auto", "dense_clutter"])
         # off-sentinels survive
         self.assertEqual(d["uncertainty_recovery_aggressive_threshold"], 1.01)
         self.assertEqual(d["uncertainty_channel_disagreement_threshold"], 1.01)
@@ -190,17 +193,13 @@ class ToDictByteIdentityTests(unittest.TestCase):
         eff = EffectiveGraspingConfig(
             default_mode=GraspMode.DENSE_CLUTTER,
             max_attempts=5,
-            closed_loop_enabled=False,
-            verification_enabled=False,
-            dense_recovery_enabled=False,
-            dense_recovery_allowed_actions=(),
             recovery_orchestrator=EffectiveRecoveryOrchestratorConfig(
-                per_action_budget=(("rescan", 1), ("next_viewpoint", 2)),
+                per_action_budget=(("rescan", 1), ("next_target", 2)),
             ),
         )
         self.assertEqual(
             eff.to_dict()["recovery_orchestrator_per_action_budget"],
-            [["rescan", 1], ["next_viewpoint", 2]],
+            [["rescan", 1], ["next_target", 2]],
         )
 
 
@@ -209,10 +208,6 @@ class NestedStructureTests(unittest.TestCase):
         eff = EffectiveGraspingConfig(
             default_mode=GraspMode.AUTO,
             max_attempts=5,
-            closed_loop_enabled=False,
-            verification_enabled=False,
-            dense_recovery_enabled=False,
-            dense_recovery_allowed_actions=(),
             watchdog=EffectiveWatchdogConfig(mode="active", window_size=30),
             uncertainty=EffectiveUncertaintyConfig(
                 enabled=True, fail_closed_threshold=0.7

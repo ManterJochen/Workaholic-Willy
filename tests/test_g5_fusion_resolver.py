@@ -1,7 +1,7 @@
 """Gap G5 (Stufe A): build_config_frame_resolver builds the primary camera's resolver from its rig, fail-closed.
 
-This makes the U5 fusion substrate and the U6 commit gate reachable from production config: when the primary
-rig declares its calibration, ``camera.cameras.rigs[<primary>].extrinsics``, as eye_to_hand with an artifact
+This is what turns a config-built cell's grasps into the base frame: when the primary rig declares its
+calibration, ``camera.cameras.rigs[<primary>].extrinsics``, as eye_to_hand with an artifact
 holding a persisted Extrinsics JSON, from_robot_config builds a StaticCameraToBaseResolver. No camera section,
 or a primary that declares no calibration, returns None and leaves the path byte-identical; a declared but
 unloadable artifact raises (fail-closed, an owner decision) and names the rig key.
@@ -61,8 +61,8 @@ class TestBuildConfigFrameResolver:
         assert build_config_frame_resolver(_grasping(fusion_enabled=True)) is None
 
     def test_fusion_disabled_still_builds_from_the_rig(self, tmp_path) -> None:
-        # The resolver turns every grasp into the base frame, and fusion gates only the fusion substrate, so a
-        # calibrated primary gets its resolver with fusion switched off.
+        # The resolver turns every grasp into the base frame, and fusion.enabled gates only the other cameras'
+        # resolvers, so a calibrated primary gets its resolver with fusion switched off.
         resolver = build_config_frame_resolver(_grasping(fusion_enabled=False), camera=_camera(_artifact(tmp_path)))
         assert isinstance(resolver, StaticCameraToBaseResolver)
 
@@ -72,8 +72,8 @@ class TestBuildConfigFrameResolver:
         assert build_config_frame_resolver(_grasping(fusion_enabled=True), camera=_camera(None)) is None
 
     def test_declared_bad_path_raises_fail_closed(self) -> None:
-        # Fail-closed: a declared but unloadable artifact must raise, not silently degrade to an unreachable
-        # gate while the operator believes the camera is calibrated.
+        # Fail-closed: a declared but unloadable artifact must raise, not silently degrade to a cell that cannot
+        # place its camera while the operator believes the camera is calibrated.
         with pytest.raises(RuntimeError, match="does not load") as caught:
             build_config_frame_resolver(
                 _grasping(fusion_enabled=True), camera=_camera("/definitely/not/a/real/extrinsics_artifact.json")

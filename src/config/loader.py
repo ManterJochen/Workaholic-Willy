@@ -746,7 +746,7 @@ def _describe_validation_error(
     lines = [header + ":"]
     try:
         from ._provenance import index_origins, nearest_keys
-        from .schema._removed import REMOVED_KEYS
+        from .schema._removed import removed_key_sentence
 
         origins = index_origins(root, layers)
     except Exception:  # noqa: BLE001 (never let the explainer mask the real error)
@@ -778,16 +778,8 @@ def _describe_validation_error(
             # cross-field rule, or a required field nobody wrote.
             lines.append("      (not written in any YAML: a default or a cross-field rule)")
         lines.append(f"      {err['msg']}")
-        removed = None
-        if err["type"] == "extra_forbidden":
-            # A `*` segment in a removed key stands for one map key, such as a camera id.
-            parts = dotted.split(".")
-            removed = REMOVED_KEYS.get(dotted) or next(
-                (text for key, text in REMOVED_KEYS.items()
-                 if "*" in key and len(key.split(".")) == len(parts)
-                 and all(k in ("*", p) for k, p in zip(key.split("."), parts))),
-                None,
-            )
+        # A `*` segment in a removed key stands for one map key, such as a camera id.
+        removed = removed_key_sentence(dotted) if err["type"] == "extra_forbidden" else None
         if removed is not None:
             lines.append(f"      removed on purpose: {removed}")
         elif err["type"] == "extra_forbidden" and err["loc"]:

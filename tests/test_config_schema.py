@@ -13,15 +13,13 @@ from src.config.schema.camera import (
     WebcamPairRigConfig,
 )
 from src.config.schema.robot import (
-    GraspingClosedLoopConfig,
     GraspingDecisionConfig,
-    GraspingDenseRecoveryConfig,
-    GraspingVerificationConfig,
     GripperConfig,
     RobotConfig,
     RobotGraspingConfig,
     WorkspaceLimitsConfig,
 )
+from src.config.schema.robot.grasping_schema import GraspingRecoveryConfig
 
 
 def _rig(
@@ -155,9 +153,10 @@ class GraspingConfigTests(unittest.TestCase):
         self.assertIsInstance(cfg.grasping, RobotGraspingConfig)
         self.assertEqual(cfg.grasping.default_mode, "auto")
         self.assertEqual(cfg.grasping.max_attempts, 5)
-        self.assertFalse(cfg.grasping.closed_loop.enabled)
-        self.assertFalse(cfg.grasping.verification.enabled)
-        self.assertFalse(cfg.grasping.dense_recovery.enabled)
+        self.assertFalse(cfg.grasping.recovery.enabled)
+        # `verification` and `dense_recovery` left the schema on 2026-09-29.
+        self.assertNotIn("verification", RobotGraspingConfig.model_fields)
+        self.assertNotIn("dense_recovery", RobotGraspingConfig.model_fields)
         # Frozen — direct mutation is rejected.
         with self.assertRaises(ValidationError):
             cfg.grasping.max_attempts = 7  # type: ignore[misc]
@@ -166,36 +165,27 @@ class GraspingConfigTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             RobotGraspingConfig(typo_field=True)  # type: ignore[call-arg]
         with self.assertRaises(ValidationError):
-            GraspingClosedLoopConfig(unknown_knob=1.0)  # type: ignore[call-arg]
+            GraspingDecisionConfig(unknown_knob=1.0)  # type: ignore[call-arg]
 
     def test_yaml_shape_round_trips(self) -> None:
         cfg = RobotGraspingConfig(
-            default_mode="closed_loop",
+            default_mode="dense_clutter",
             max_attempts=3,
-            closed_loop={
+            recovery={
                 "enabled": True,
-                "pregrasp_rescan": False,
-                "max_position_correction_mm": 10.0,
-                "max_orientation_correction_deg": 5.0,
-            },
-            verification={
-                "enabled": True,
-                "require_object_detected": True,
-                "post_lift_vision_check": True,
-            },
-            dense_recovery={
-                "enabled": True,
-                "allowed_actions": ["next_viewpoint", "next_target"],
+                "allowed_actions": ["rescan", "next_target"],
                 "max_recovery_actions": 1,
             },
         )
-        self.assertEqual(cfg.default_mode, "closed_loop")
-        self.assertTrue(cfg.closed_loop.enabled)
-        self.assertFalse(cfg.closed_loop.pregrasp_rescan)
-        self.assertEqual(
-            cfg.dense_recovery.allowed_actions,
-            ("next_viewpoint", "next_target"),
-        )
+        self.assertEqual(cfg.default_mode, "dense_clutter")
+        self.assertTrue(cfg.recovery.enabled)
+        self.assertEqual(cfg.recovery.allowed_actions, ("rescan", "next_target"))
+        self.assertEqual(cfg.recovery.max_recovery_actions, 1)
+        # The two blocks removed on 2026-09-29 are unknown keys now, whatever they hold.
+        for block in ("verification", "dense_recovery"):
+            with self.subTest(block=block):
+                with self.assertRaises(ValidationError):
+                    RobotGraspingConfig(**{block: {"enabled": False}})
 
     def test_validation_bounds(self) -> None:
         with self.assertRaises(ValidationError):
@@ -205,30 +195,9 @@ class GraspingConfigTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             RobotGraspingConfig(max_attempts=51)
         with self.assertRaises(ValidationError):
-            GraspingClosedLoopConfig(max_position_correction_mm=0.0)
+            GraspingRecoveryConfig(max_recovery_actions=-1)
         with self.assertRaises(ValidationError):
-            GraspingClosedLoopConfig(max_orientation_correction_deg=91.0)
-        with self.assertRaises(ValidationError):
-            GraspingClosedLoopConfig(target_match_iou_threshold=1.5)
-        with self.assertRaises(ValidationError):
-            GraspingVerificationConfig(width_delta_min_mm=-1.0)
-        with self.assertRaises(ValidationError):
-            GraspingVerificationConfig(vision_displacement_iou_max=1.5)
-        with self.assertRaises(ValidationError):
-            GraspingDenseRecoveryConfig(max_recovery_actions=-1)
-        with self.assertRaises(ValidationError):
-            GraspingDenseRecoveryConfig(nudge_max_offset_mm=0.0)
-
-    def test_verification_max_width_delta_defaults_to_a_real_ceiling(self) -> None:
-        """It used to default to None, and MEASURED 2026-08-09 that made the verifier blind to the case
-        it exists for: a close that never executed leaves the jaws at their pre-open width (~80 mm on a
-        2F-85) and, with no ceiling, that was reported PASSED -- the cell carries air to the drop-off
-        and logs a success. The type stays Optional so a cell can still switch the bound off
-        deliberately."""
-        cfg = GraspingVerificationConfig()
-        self.assertEqual(cfg.width_delta_max_mm, 10.0)
-        self.assertEqual(GraspingVerificationConfig(width_delta_max_mm=5.0).width_delta_max_mm, 5.0)
-        self.assertIsNone(GraspingVerificationConfig(width_delta_max_mm=None).width_delta_max_mm)
+            GraspingRecoveryConfig(nudge_max_offset_mm=0.0)  # type: ignore[call-arg]
 
     # ------------------------------------------------------------------
     # Phase T1 — decision sub-block. Defaults preserve T0 behaviour
@@ -244,9 +213,10 @@ class GraspingConfigTests(unittest.TestCase):
         # T0-shipped configs.
         self.assertFalse(cfg.decision.enabled)
         self.assertEqual(cfg.decision.auto_uncertainty_threshold, 0.4)
-        self.assertEqual(cfg.decision.max_reobservations, 2)
         self.assertEqual(cfg.decision.reasons_penalty, 0.2)
         self.assertTrue(cfg.decision.fail_closed_on_real_hardware)
+        # The re-observation budget left with MOVE_CAMERA (2026-09-29).
+        self.assertNotIn("max_reobservations", GraspingDecisionConfig.model_fields)
 
     def test_decision_extra_fields_rejected(self) -> None:
         with self.assertRaises(ValidationError):
@@ -258,9 +228,7 @@ class GraspingConfigTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             GraspingDecisionConfig(auto_uncertainty_threshold=1.5)
         with self.assertRaises(ValidationError):
-            GraspingDecisionConfig(max_reobservations=-1)
-        with self.assertRaises(ValidationError):
-            GraspingDecisionConfig(max_reobservations=11)
+            GraspingDecisionConfig(max_reobservations=2)  # type: ignore[call-arg]
         with self.assertRaises(ValidationError):
             GraspingDecisionConfig(reasons_penalty=-0.1)
         with self.assertRaises(ValidationError):
@@ -271,14 +239,12 @@ class GraspingConfigTests(unittest.TestCase):
             decision={
                 "enabled": True,
                 "auto_uncertainty_threshold": 0.25,
-                "max_reobservations": 1,
                 "reasons_penalty": 0.1,
                 "fail_closed_on_real_hardware": False,
             }
         )
         self.assertTrue(cfg.decision.enabled)
         self.assertEqual(cfg.decision.auto_uncertainty_threshold, 0.25)
-        self.assertEqual(cfg.decision.max_reobservations, 1)
         self.assertEqual(cfg.decision.reasons_penalty, 0.1)
         self.assertFalse(cfg.decision.fail_closed_on_real_hardware)
 

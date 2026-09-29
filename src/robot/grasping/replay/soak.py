@@ -46,10 +46,16 @@ from src.robot.grasping.replay.telemetry_catalog import (
 logger = create_grasping_logger("ReplaySoak", REPLAY_SOAK_LOG_FILE)
 
 
+#: Every outcome the catalog knows, the retired ones by their strings included, so a spec can still
+#: synthesise a record of the shape logged before an outcome left.
 _VALID_OUTCOMES: frozenset[str] = frozenset(
     v.value for v in AutonomousGraspOutcome
-)
-_VALID_MODES: frozenset[str] = frozenset(v.value for v in GraspMode)
+) | frozenset(TELEMETRY_CATALOG)
+#: The two grasp modes retired on 2026-09-29 with the two-scan refinement. A record logged before then
+#: carries one, and a canonical pack synthesised in that shape (``dense_canonical_autonomous``) still
+#: does, so the generator keeps accepting them rather than rewriting packs the gates are pinned to.
+_RETIRED_MODES: frozenset[str] = frozenset({"closed_loop", "dense_autonomous"})
+_VALID_MODES: frozenset[str] = frozenset(v.value for v in GraspMode) | _RETIRED_MODES
 _DENSE_MODES: frozenset[str] = frozenset(
     {"dense_clutter", "dense_autonomous"}
 )
@@ -57,6 +63,16 @@ _DENSE_MODES: frozenset[str] = frozenset(
 _RECOVERY_OUTCOMES: frozenset[str] = frozenset(
     {"recovery_exhausted", "unsafe_recovery_refused"}
 )
+#: Blocks the generator writes beyond what the catalog requires today, by outcome. The catalog
+#: required ``verification`` for ``succeeded`` and ``verification_failed`` until 2026-09-29, when the
+#: post-grasp verification stage, its one live writer, left. The canonical packs were synthesised with
+#: that block, and drawing its score moves the random stream every later field is drawn from, so the
+#: generator keeps writing it: their bytes are a signed-off contract (``tests/data/replay/MANIFEST.json``),
+#: and a record of that shape is exactly what a log from before then holds.
+_SYNTHESISED_BEYOND_THE_CATALOG: Mapping[str, frozenset[str]] = {
+    "succeeded": frozenset({"verification"}),
+    "verification_failed": frozenset({"verification"}),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,9 +144,9 @@ def _populate_required_fields(
     mode: str,
     recovery_success: bool,
 ) -> dict[str, object]:
-    """Build the optional record kwargs that satisfy the catalog."""
+    """Build the optional record kwargs that satisfy the catalog (and the pre-2026-09-29 shape)."""
 
-    required = TELEMETRY_CATALOG[outcome]
+    required = TELEMETRY_CATALOG[outcome] | _SYNTHESISED_BEYOND_THE_CATALOG.get(outcome, frozenset())
     fields: dict[str, object] = {}
     if "execution" in required:
         fields["execution"] = {
@@ -150,7 +166,11 @@ def _populate_required_fields(
     # Recovery actions are always synthesised when the outcome
     # requires them; dense-mode success attaches a "next_viewpoint"
     # action with probability 0.5 so the dense-recovery KPI has a
-    # denominator.
+    # denominator. The string is retired (merged into "rescan" on
+    # 2026-09-29) and kept here on purpose: the canonical packs were
+    # synthesised with it, their bytes are a signed-off contract, and
+    # a log from before then holds exactly this shape (the RL token
+    # map still reads it).
     if (
         "recovery_actions" in required
         or outcome in _RECOVERY_OUTCOMES

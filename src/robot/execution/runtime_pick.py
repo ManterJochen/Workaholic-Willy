@@ -54,7 +54,6 @@ from src.robot.grasping.loop.pick_loop import (
     PickAttempt,
     PickOutcome,
     PickReport,
-    ViewpointPlanner,
 )
 
 if TYPE_CHECKING:  # pragma: no cover (import only for typing)
@@ -71,10 +70,6 @@ if TYPE_CHECKING:  # pragma: no cover (import only for typing)
         ShadowSuccessTelemetry,
         UncertaintyRerankTelemetry,
     )
-    from src.robot.grasping.multiview.fusion import (
-        FusionTelemetry,
-    )
-    from src.robot.grasping.loop.pick_loop import CommitDecision
 
 
 __all__ = [
@@ -154,8 +149,11 @@ class PickSessionReport:
         when the gripper has no detection capability.
     attempts
         Full attempt history forwarded from the orchestrator, so
-        debugging tools can see every rescan, relocate and next-target
-        action without re-running the loop.
+        debugging tools can see every rescan without re-running the
+        loop. The loop never switches target on its own: a
+        ``next_target`` is a recovery action, which would live on the
+        service's recovery trail, and no built-in mode profile plans
+        one.
     executed_grasp
         The :class:`GraspResult` that was actually executed, or
         :data:`None` when execution did not happen.
@@ -214,19 +212,6 @@ class PickSessionReport:
     ranking_blend_telemetry: "RankingBlendTelemetry | None" = None
     # Per-candidate uncertainty re-rank telemetry, forwarded verbatim from the PickReport.
     uncertainty_rerank_telemetry: "UncertaintyRerankTelemetry | None" = None
-    # Shadow-only multi-view fusion telemetry, forwarded verbatim from
-    # :class:`PickReport`. ``None`` whenever the orchestrator was built
-    # without a ``SceneFusion`` carrier (or it was disabled). The field
-    # has zero influence on ``outcome``, ``executed_grasp`` and
-    # ``attempts``.
-    fusion_telemetry: "FusionTelemetry | None" = None
-    # Typed commit-gate decision, forwarded verbatim from
-    # :class:`PickReport`. ``None`` when the orchestrator exited
-    # before a candidate was selected (e.g. NO_PERCEPTION). When the
-    # gate is disabled this field still surfaces ``allowed=True`` so
-    # consumers can distinguish "no commit policy" from "policy ran
-    # and approved".
-    commit_decision: "CommitDecision | None" = None
     object_centre_mm: Optional[tuple[float, float, float]] = None
     grasp_pose: "Pose | None" = None
 
@@ -276,7 +261,6 @@ class RuntimePickService:
         calculator: GraspCalculator,
         perception: PerceptionSource,
         gripper: Gripper | None = None,
-        viewpoint_planner: ViewpointPlanner | None = None,
         max_attempts: int = 5,
         dense_sampling: bool = True,
         grasp_sampling_mode: GraspSamplingMode | bool | str | None = None,
@@ -299,7 +283,6 @@ class RuntimePickService:
             arm=arm,
             calculator=calculator,
             perception=perception,
-            viewpoint_planner=viewpoint_planner,
             max_attempts=max_attempts,
             dense_sampling=dense_sampling,
             grasp_sampling_mode=grasp_sampling_mode,
@@ -322,7 +305,6 @@ class RuntimePickService:
         calculator: GraspCalculator,
         grasp_sampling_mode: GraspSamplingMode | bool | str | None = None,
         perception: PerceptionSource,
-        viewpoint_planner: ViewpointPlanner | None = None,
         max_attempts: int = 5,
         dense_sampling: bool = True,
         standoff_mm: float = 80.0,
@@ -376,8 +358,7 @@ class RuntimePickService:
             Already-constructed :class:`GraspCalculator`.
         perception
             Already-constructed :class:`PerceptionSource`.
-        viewpoint_planner, max_attempts, dense_sampling, standoff_mm,
-        retreat_mm, policy
+        max_attempts, dense_sampling, standoff_mm, retreat_mm, policy
             Forwarded verbatim to
             :class:`BinPickingOrchestrator` (see
             :meth:`from_components`).
@@ -402,7 +383,6 @@ class RuntimePickService:
             calculator=calculator,
             perception=perception,
             gripper=gripper,
-            viewpoint_planner=viewpoint_planner,
             max_attempts=max_attempts,
             grasp_sampling_mode=grasp_sampling_mode,
             dense_sampling=dense_sampling,
@@ -476,8 +456,6 @@ class RuntimePickService:
             shadow_success_telemetry=pick_report.shadow_success_telemetry,
             ranking_blend_telemetry=pick_report.ranking_blend_telemetry,
             uncertainty_rerank_telemetry=pick_report.uncertainty_rerank_telemetry,
-            fusion_telemetry=pick_report.fusion_telemetry,
-            commit_decision=pick_report.commit_decision,
             object_centre_mm=getattr(pick_report, "target_centre_mm", None),
             grasp_pose=_closed_at(policy_report) if pick_report.outcome is PickOutcome.EXECUTED else None,
         )

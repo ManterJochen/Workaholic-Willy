@@ -40,8 +40,10 @@ _HARD_READ_SLOTS = ("_last_policy_report", "_pending_camera_to_base")
 _LOOP_STATE_SLOTS = (
     "_sequencing_current_attempts",
     "_sequencing_states",
-    "_viewpoints_visited",
-    "_commit_reobserve_count",
+    # `_viewpoints_visited` left with the viewpoint planners and the relocate path on 2026-09-29; the
+    # perception finalizer feeds its views-seen bucket a zero in its place.
+    # `_commit_reobserve_count` left with the multi-view commit gate on 2026-09-28; the finalizers
+    # feed the sequencing and recovery state keys a zero in its place.
     "_resolved_sampling_mode",
 )
 _ALL_SLOTS = _GETATTR_READ_SLOTS + _HARD_READ_SLOTS + _LOOP_STATE_SLOTS

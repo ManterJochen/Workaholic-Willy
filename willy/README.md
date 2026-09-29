@@ -2,9 +2,7 @@
 
 `from willy import ...` gives you every public name of Workaholic-Willy: a cell's config tree, a
 robot and its verbs, a whole cell and its pick campaigns, cameras and calibration, grasps, speech,
-Isaac Sim, and offline data and training. Importing `willy` loads nothing; a name loads its own module
-the first time you use it, and it is exactly the object that module defines, so mypy checks every call
-you make through it.
+Isaac Sim, and offline data and training.
 
 ```python
 from willy import Pose, Robot, load_tree
@@ -14,10 +12,6 @@ with robot.connected():
     print(robot.home())                               # every verb returns a report that prints as itself
     print(robot.move(Pose.tool_down(450.0, 100.0, 300.0)))
 ```
-
-At a real cell every motion is checked against the camera world: hand the robot its cameras
-(`Robot.from_tree(tree, cameras=[camera])`), or say why it moves without them, with
-`with robot.without_camera_world("why"):` or `decline="why"` on one verb, as `real_robot/03` does.
 
 Install the repository once with `pip install -e . --no-deps` from its root, and this runs from any
 directory. The programs that use each name are in [`examples/`](../examples/README.md).
@@ -33,10 +27,6 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 - A tree that does not load comes back with `ok` false: `print(tree)` gives the refusal with the file
   and the line to fix, and `tree.exit_code` is 1. Any `from_tree` on it raises `ConfigError`.
 
-## The names
-
-Grouped as a program meets them. "Shown in" names the example under `examples/`, or where you meet a
-name that no example imports.
 
 ### The config tree of a cell
 
@@ -81,7 +71,7 @@ name that no example imports.
 | `AutonomousGraspService` | What `Cell.build()` returns: one attempt per `pick()` (`look=` where it looks from), `put_back(report)`, `set_prompt()`, `enable_record_logging()` | `cell.service` in `real_robot/12_pick_with_the_camera.py` |
 | `AutonomousGraspReport` | What one pick did: outcome, mode, the profile in effect, and the layers that actually ran | `simulation/06_grasp_modes_and_what_each_needs.py` |
 | `AutonomousGraspOutcome` | How a pick ended: `SUCCEEDED`, `NO_TARGET`, `NO_VALID_GRASP`, `MODE_NOT_AVAILABLE`, ... | `AutonomousGraspReport.outcome` |
-| `GraspMode` | `easy`, `auto`, `dense_clutter`, `closed_loop`, `dense_autonomous`; chosen when the service is built | `simulation/06_grasp_modes_and_what_each_needs.py` |
+| `GraspMode` | `easy`, `auto`, `dense_clutter`; chosen when the service is built | `simulation/06_grasp_modes_and_what_each_needs.py` |
 | `PickPrompt` | What every camera grounds, the labels it maps onto and the filter; `service.set_prompt(text)` | `PickRun.from_cell(cell, prompt=...)` |
 | `PickRun` | N picks against one cell under one connect: `PickRun.from_cell(cell, runs=...).execute()`; `look=` the joints each pick looks from, `view=` a `LiveView` that shows every camera of the cell, `put_back=True` to put each part back | `real_robot/12_pick_with_the_camera.py` |
 | `PickAttempt` | One pick of a campaign as `on_attempt` gets it: the outcome, the looks tried, `object_mm` (where the object was seen, BASE), `grasp_pose` (where the tool closed), `fused_views` (the cameras whose views were fused into the cloud its grasp was planned on; empty for one view) with `fused_objects`, and the put back | `real_robot/12_pick_with_the_camera.py`, `real_robot/17_pick_with_fused_cameras.py` |
@@ -184,12 +174,3 @@ it needs a FIXED camera, and refuses a wrist rig rather than composing a transfo
 | `GeneratorTraining` | Fits a grasp generator from a recipe or a plan; `probe()`, `train()`, then `write_report()` | `offline/training/02_train_on_your_own_meshes.py` |
 | `PlanOverrides` | The training settings you choose explicitly; they outrank the recipe and the tier | `offline/training/01_recipe_and_tier.py` |
 | `PublicCorpus` | A published grasp corpus, read into the scene files this training loop already eats | `offline/training/04_train_on_a_public_corpus.py` |
-
-## How it is kept honest
-
-[`willy/__init__.py`](__init__.py) maps each name to the module that defines it, and `willy.__all__`
-is that list. [`tests/test_willy.py`](../tests/test_willy.py) holds that every name is its home
-module's own object, that importing `willy` loads nothing, and that every report which renders prints
-the same text. CI type-checks `willy` and every example against these signatures, including the
-`real_robot` files it never runs. How far each capability is proven is in the root README's
-[Status and honest scope](../README.md#status-and-honest-scope).

@@ -10,7 +10,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from src.willy_sim import run_mode_matrix
 from src.willy_sim.run_mode_matrix import (
     aggregate_only,
     cell_command,
@@ -29,14 +31,14 @@ class CellCommandTests(unittest.TestCase):
         )
 
     def test_m2_carries_prompt_and_optional_artifacts(self) -> None:
-        cmd = cell_command("py", "m2", "closed_loop", runs=2, result_json="r.json",
+        cmd = cell_command("py", "m2", "auto", runs=2, result_json="r.json",
                            record_log="rec.jsonl", debug_frames="frames")
         self.assertIn("--prompt", cmd)
         self.assertIn("a red cube", cmd)
         self.assertIn("--record-log", cmd)
         self.assertIn("rec.jsonl", cmd)
         self.assertIn("--debug-frames", cmd)
-        self.assertEqual(cmd[cmd.index("--mode") + 1], "closed_loop")
+        self.assertEqual(cmd[cmd.index("--mode") + 1], "auto")
 
 
 class AggregatorTests(unittest.TestCase):
@@ -53,10 +55,14 @@ class AggregatorTests(unittest.TestCase):
         self.assertIsNone(s["note"])
 
     def test_known_limited_cell_annotated(self) -> None:
-        # Both m1+closed_loop and eih+closed_loop are measured NOT-VIABLE (P1.C) and carry a note.
-        for scene in ("eih", "m1"):
-            agg = matrix_from_cells([{"scene": scene, "mode": "closed_loop", "passed": 0, "runs": 3, "results": []}])
-            self.assertIn("NOT-VIABLE", agg["matrix"][scene]["closed_loop"]["note"])
+        # The shipped table is empty since closed_loop, whose three cells it annotated, left on 2026-09-29;
+        # the annotation itself is pinned on a limit written for the test.
+        self.assertEqual(run_mode_matrix.KNOWN_LIMITED, {})
+        limits = {("eih", "auto"): "NOT-VIABLE: a limit written for this test", ("m1", "auto"): "NOT-VIABLE: too"}
+        with mock.patch.dict(run_mode_matrix.KNOWN_LIMITED, limits):
+            for scene in ("eih", "m1"):
+                agg = matrix_from_cells([{"scene": scene, "mode": "auto", "passed": 0, "runs": 3, "results": []}])
+                self.assertIn("NOT-VIABLE", agg["matrix"][scene]["auto"]["note"])
 
     def test_failed_cell_is_kept_not_dropped(self) -> None:
         agg = matrix_from_cells([{"scene": "m1", "mode": "auto", "status": "timeout"}])
@@ -142,12 +148,13 @@ class RobotAxisTests(unittest.TestCase):
         self.assertEqual(agg["matrix"]["ur3e/m1"]["easy"]["pass_rate"], 0.9)
 
     def test_known_limits_follow_the_scene_not_the_robot(self) -> None:
-        """The KNOWN_LIMITED notes describe the REFINER, so they must still annotate a cell running on
+        """A KNOWN_LIMITED note describes the scene and the mode, so it must still annotate a cell running on
         another arm -- otherwise a known-unviable combination would read as an unexplained failure."""
         from src.willy_sim.run_mode_matrix import matrix_from_cells
 
-        agg = matrix_from_cells([
-            {"scene": "ur3e/m2", "robot": "ur3e", "mode": "closed_loop",
-             "passed": 0, "runs": 3, "results": []},
-        ])
-        self.assertIn("NOT-VIABLE", agg["matrix"]["ur3e/m2"]["closed_loop"]["note"] or "")
+        with mock.patch.dict(run_mode_matrix.KNOWN_LIMITED, {("m2", "auto"): "NOT-VIABLE: written for this test"}):
+            agg = matrix_from_cells([
+                {"scene": "ur3e/m2", "robot": "ur3e", "mode": "auto",
+                 "passed": 0, "runs": 3, "results": []},
+            ])
+        self.assertIn("NOT-VIABLE", agg["matrix"]["ur3e/m2"]["auto"]["note"] or "")

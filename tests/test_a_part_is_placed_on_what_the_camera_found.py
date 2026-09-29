@@ -21,9 +21,16 @@ then released. Three things carry that, and each is held here:
   verb; the real world is held here), because the held part comes within the line clearance of what it lands on.
 * Example 13 itself runs here on the owner's cell doubles (``tests/test_a_toggle_hand_pulses_only_where_the_owner_
   expects.py``: the real toggle driver on a Hand-E that flips on every rising edge, a UR that logs every motion), with
-  its cameras and locators scripted: the first camera that locates a prompt answers it, a wrist camera looks from each
-  look in turn and a fixed one does not move, a target nobody found leaves the part held with no pulse, and the release
-  pulse comes after the place's line in arrived. The owner's invariants I1 to I5 and R6 are checked on every run.
+  its cameras' frames scripted and the real ``Locator.look_around`` over them: the first camera that locates a prompt
+  answers it; a wrist camera looks around for the part, from each look in turn until what it located has a safe grasp,
+  fusing the looks, and for the target from each look in turn until one sees it, never judging it as a part; a fixed
+  one does not move; a look the arm cannot reach ends the program with nothing picked, a target nobody found leaves the
+  part held with no pulse, and the release pulse comes after the place's line in arrived. The owner's invariants I1 to
+  I5 and R6 are checked on every run.
+* ``Scene.part_bottom_mm`` is the bottom a set-down hangs the part from (the owner, 2026-09-29, addendum 7.6): the
+  declared support, lowered only where two or more looks of a wrist camera measured the part standing below it, read
+  from enough points that a stray reading drops nothing, and never raised, so the fused looks can only add air; one
+  view, a fixed camera's above all, hangs the part from the declared support as before.
 """
 
 from __future__ import annotations
@@ -46,10 +53,11 @@ from src.robot.core.gripper import HoldEvidence
 from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.execution.robot import Robot
 from src.robot.grasping.scene import Scene
-from src.robot.perception.locator import Located, LocatedObject, Locator, LocatorRefused, SetDown
-from tests.test_a_scene_plans_the_trees_hand import _cube, _hande, _replace
+from src.robot.perception.locator import Located, LocatedObject, Locator, LocatorRefused, SetDown, _Placed
+from tests.test_a_scene_plans_the_trees_hand import _CENTRE, _cube, _hande, _replace
 from tests.test_a_toggle_hand_pulses_only_where_the_owner_expects import (
     _MOTIONS,
+    _PROTECTIVE,
     _at,
     _cell,
     _Cell,
@@ -329,6 +337,89 @@ class TheSceneSaysTheSupportTheCellDeclaresTests(unittest.TestCase):
         self.assertEqual(0.0, scene.declared_support_height_mm)
 
 
+def _scene_of_looks(robot_config: Any, cloud: np.ndarray, *, looks: int = 2) -> Scene:
+    """The grasp scene of object 0 of what a camera located, ``cloud`` its surface: a wrist camera's look around whose
+    part ``looks`` looks fused, one look a wrist camera that stopped at its first, none a fixed camera's locate."""
+    names = tuple(f"look {number}" for number in range(looks))
+    located = Located(camera="wrist" if looks else "overhead", captured_at_s=100.0,
+                      mounting="eye_in_hand" if looks else "eye_to_hand", tool_to_base_mm=None,
+                      objects=(_object("red cube", cloud),), looks=names, looks_fused=names[::-1])
+    return located.scene(0, robot_config)
+
+
+class ThePartsBottomIsALowerBoundTests(unittest.TestCase):
+    """Addendum 7.6 (the owner, 2026-09-29): a set-down may hang the part from its bottom as all the looks measured it,
+    but only as a LOWER bound: never above the declared support, so it can only add air; read from enough points that
+    one stray reading drops nothing; and only from the looks of a wrist camera, so one view, a fixed camera's above all,
+    hangs the part as before."""
+
+    def test_a_part_on_the_declared_table_hangs_from_the_table(self) -> None:
+        for hidden in (0.0, 3.0, 4.9, 12.0):
+            with self.subTest(hidden_mm=hidden):
+                scene = _scene_of_looks(_hande(), _cube_seen_down_to(hidden))
+                self.assertEqual(0.0, scene.part_bottom_mm, "a foot read high, or hidden, raised the bottom")
+
+    def test_a_part_off_a_raised_block_hangs_from_the_declared_table(self) -> None:
+        scene = _scene_of_looks(_hande(), _cube(40.0, base_mm=30.0))
+        self.assertEqual(0.0, scene.part_bottom_mm, "the block and a hidden foot cannot be told apart")
+
+    def test_a_part_the_looks_saw_standing_below_the_declared_support_hangs_from_where_it_stood(self) -> None:
+        """A table declared 8 mm high: the looks measured the part's foot at 0, so the hang grows by 8 mm and the part
+        lands with its air over the target, not 8 mm into it."""
+        config = _replace(_hande(), "grasping.support.height_mm", 8.0)
+        scene = _scene_of_looks(config, _cube(40.0))
+        self.assertEqual(8.0, scene.declared_support_height_mm)
+        self.assertEqual(0.0, scene.part_bottom_mm, "where the looks measured the part's foot")
+        best = scene.grasps().best
+        assert best is not None, scene.grasps().render()
+        plate = _located("wrist", _object("blue plate", _plate()))
+
+        pressed = plate.set_down(0, grasp=best.pose(), part_bottom_mm=scene.declared_support_height_mm)
+        set_down = plate.set_down(0, grasp=best.pose(), part_bottom_mm=scene.part_bottom_mm)
+
+        self.assertLess(_real_air(pressed, best.pose(), stood_on_mm=0.0), 0.0, "the control: from the declared height "
+                        "the part goes into the target")
+        self.assertGreaterEqual(_real_air(set_down, best.pose(), stood_on_mm=0.0), 5.0 - 1e-9, set_down.render())
+
+    def test_one_view_hangs_the_part_from_the_declared_support_as_before(self) -> None:
+        """A fixed camera (a cell with no wrist camera behaves as it did), and a wrist camera that stopped at its first
+        look: no extra view measured anything, so the declared support stands, whatever the one view read."""
+        config = _replace(_hande(), "grasping.support.height_mm", 8.0)
+        for looks in (0, 1):
+            with self.subTest(looks=looks):
+                self.assertEqual(8.0, _scene_of_looks(config, _cube(40.0), looks=looks).part_bottom_mm)
+        bare = Scene.from_robot_config(config, _cube(40.0))
+        self.assertEqual(8.0, bare.part_bottom_mm, "a scene built from a cloud alone says nothing of looks")
+
+    def test_a_stray_reading_under_the_table_drops_nothing(self) -> None:
+        """A flying pixel at the foot, or multipath on a shiny bench, reads a point far below the table: fewer such
+        points than a bottom is read from lower nothing; that many are a surface the looks measured, and do."""
+        from src.robot.grasping import scene as scene_module
+
+        enough = int(scene_module._PART_BOTTOM_POINTS)  # noqa: SLF001
+        config = _replace(_hande(), "grasping.support.height_mm", 8.0)
+        cube = _cube(40.0)
+        for strays, bottom in ((1, 0.0), (enough - 1, 0.0), (enough, -60.0)):
+            with self.subTest(strays=strays):
+                stray = np.tile([[_CENTRE[0], _CENTRE[1], -60.0]], (strays, 1))
+                self.assertEqual(bottom, _scene_of_looks(config, np.vstack([cube, stray])).part_bottom_mm)
+
+    def test_it_is_never_above_the_declared_support(self) -> None:
+        rng = np.random.default_rng(7)
+        for declared in (-10.0, 0.0, 8.0, 30.0):
+            config = _replace(_hande(), "grasping.support.height_mm", declared)
+            for _ in range(5):
+                cloud = _cube(40.0, base_mm=float(rng.uniform(-20.0, 40.0)))
+                cloud[:, 2] += rng.normal(0.0, 2.0, cloud.shape[0])
+                with self.subTest(declared=declared):
+                    self.assertLessEqual(_scene_of_looks(config, cloud).part_bottom_mm, declared)
+
+    def test_a_bare_cloud_and_an_empty_one_hang_from_the_support_stated(self) -> None:
+        self.assertEqual(7.0, Scene.from_cloud(_cube(40.0, base_mm=30.0), support_height_mm=7.0).part_bottom_mm)
+        self.assertEqual(0.0, _scene_of_looks(_hande(), np.zeros((0, 3))).part_bottom_mm)
+
+
+
 class WhatCannotBeMeasuredIsNotSetDownTests(unittest.TestCase):
     def test_a_target_with_no_surface_gives_no_pose_and_says_why(self) -> None:
         set_down = SetDown.onto(_object("blue plate", np.zeros((0, 3))), grasp=_grasp(26.0), part_bottom_mm=0.0)
@@ -557,6 +648,15 @@ class TheLocatorsOfACellShareOneBackendTests(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------------
 
 _OBJECT, _TARGET = "a red cube", "the blue plate"
+#: How a report names example 13's two looks (its LOOK, in degrees).
+_LOOK_LABELS = ("(-90.0, -100.0, -110.0, -60.0, 90.0, 0.0) deg", "(-70.0, -100.0, -110.0, -60.0, 90.0, 0.0) deg")
+
+
+def _east_face() -> np.ndarray:
+    """The scene test's 40 mm cube as a look from its east sees nothing else of it: its east face, down to the table."""
+    across = np.arange(-20.0, 20.0 + 1e-9, 2.0)
+    up = np.arange(0.0, 40.0 + 1e-9, 2.0)
+    return np.array([[_CENTRE[0] + 20.0, _CENTRE[1] + y, z] for y in across for z in up])
 
 
 class _Owners:
@@ -584,24 +684,27 @@ class _Owner13:
         self.cell.log.write("camera", self.rig_id, "released")
 
 
-class _Seeing:
-    """One camera's locator: on the wrist or not, and what it finds for each prompt, in turn; each locate on the log."""
+class _Seeing(Locator):
+    """One camera's locator, the real one with its frames scripted: on the wrist or not, what it finds for each prompt,
+    in turn, each locate on the log. Its ``look_around`` is the locator's own, so a wrist camera's looks are moved to,
+    fused and judged as on the cell."""
 
     def __init__(self, cell: _Cell, rig_id: str, on_the_wrist: bool, sees: "dict[str, list[np.ndarray | None]]",
                  tool_pose: Any, view: Any = None) -> None:
+        super().__init__(camera=SimpleNamespace(rig_id=rig_id), backend=None, calibration=None,
+                         tool_pose=tool_pose if on_the_wrist else None, attempts=0, view=view)
         self.cell = cell
         self.rig_id = rig_id
-        self.on_the_wrist = on_the_wrist
         self.sees = {prompt: list(answers) for prompt, answers in sees.items()}
         self.tool_pose = tool_pose
         self.view = view
 
-    def locate(self, prompt: str) -> Located:
+    def _locate(self, prompt: str) -> _Placed:
         answers = self.sees.get(prompt, [])
         points = answers.pop(0) if answers else None
         self.cell.log.write("locate", self.rig_id, prompt, points is not None)
         label = "red cube" if prompt == _OBJECT else "blue plate"
-        return _located(self.rig_id, *(() if points is None else (_object(label, points),)))
+        return _Placed(located=_located(self.rig_id, *(() if points is None else (_object(label, points),))))
 
 
 class _Locators:
@@ -659,11 +762,18 @@ class _Views:
 
 
 class _Watched:
-    """The owner's robot as example 13 holds it: the real ``Robot``, each verb marked on the log for ``_check``."""
+    """The owner's robot as example 13 holds it: the real ``Robot``, each verb marked on the log for ``_check``.
 
-    def __init__(self, cell: _Cell) -> None:
+    ``robot_config`` is the tree's robot section, as ``Robot.from_tree`` keeps it: the looks are judged on it.
+    ``stop_at_look`` is the look motion (0 for the first) before which the controller protective-stops.
+    """
+
+    def __init__(self, cell: _Cell, *, stop_at_look: "int | None" = None) -> None:
         self.cell = cell
         self.robot = _robot(cell)
+        self.robot_config = _hande()
+        self.stop_at_look = stop_at_look
+        self.looks_moved = 0
         self.picks: list[dict[str, Any]] = []
         self.places: list[tuple[Pose, dict[str, Any]]] = []
 
@@ -675,8 +785,15 @@ class _Watched:
         return _connected(self.cell, self.robot)
 
     def move_joints(self, joints: Any, **keywords: Any) -> Any:
+        if self.looks_moved == self.stop_at_look:
+            self.cell.arm.status = _PROTECTIVE
+        self.looks_moved += 1
         with _verb(self.cell, "move"):
             return self.robot.move_joints(joints, **keywords)
+
+    def home(self, **keywords: Any) -> Any:
+        with _verb(self.cell, "move"):
+            return self.robot.home(**keywords)
 
     def pick(self, pose: Pose, width_mm: float, **keywords: Any) -> Any:
         self.picks.append(dict(keywords, pose=pose, width_mm=width_mm))
@@ -711,11 +828,12 @@ class _Run:
     """One run of example 13 on a cell whose cameras see what ``script`` says, primary first."""
 
     def __init__(self, script: "dict[str, tuple[bool, dict[str, list[np.ndarray | None]]]]", *, answers: str = "",
-                 rig_ids: "tuple[str, ...] | None" = None, refusal: "str | None" = None, **arm: Any) -> None:
+                 rig_ids: "tuple[str, ...] | None" = None, refusal: "str | None" = None,
+                 stop_at_look: "int | None" = None, **arm: Any) -> None:
         self.cell = _cell(answers, **arm)
         self.owners = _Owners(self.cell)
         self.locators = _Locators(self.cell, script)
-        self.watched = _Watched(self.cell)
+        self.watched = _Watched(self.cell, stop_at_look=stop_at_look)
         self.robots = _Robots(self.watched)
         self.views = _Views(self.cell)
         self.rig_ids = tuple(script) if rig_ids is None else rig_ids
@@ -805,8 +923,61 @@ class Example13PicksAndPlacesWhatTheCamerasFindTests(unittest.TestCase):
 
         self.assertIsNone(run.exit, run.printed[-2000:])
         _check(self, run.cell)
-        self.assertEqual([("look",), ("locate", "wrist", _OBJECT, True), ("look",), ("locate", "wrist", _TARGET, True)],
+        self.assertEqual([("look",), ("locate", "wrist", _OBJECT, True),  # a safe grasp at the first look: no more
+                          ("look",), ("locate", "wrist", _TARGET, True)],  # the first look that sees the target
                          run.looks_and_locates())
+        seen = run.globals["seen"]
+        self.assertEqual((_LOOK_LABELS[0],), seen.looks)
+        self.assertEqual("", seen.refused)
+
+    def test_the_target_is_found_at_the_first_look_that_sees_it_and_is_never_judged_as_a_part(self) -> None:
+        """A plate has no grasp for the hand. Looked for as a part, the wrist would visit every look for one while it
+        carries the part (and, once the generated view is wired, orbit): the target is found look by look instead, the
+        first look that sees it answers, and nothing is held for the place."""
+        run = _Run({"wrist": (True, _sees(part=[_cube(40.0)], target=[None, _plate()]))})()
+
+        self.assertIsNone(run.exit, run.printed[-2000:])
+        _check(self, run.cell)
+        self.assertEqual([("look",), ("locate", "wrist", _OBJECT, True), ("look",), ("locate", "wrist", _TARGET, False),
+                          ("look",), ("locate", "wrist", _TARGET, True)], run.looks_and_locates())
+        onto = run.globals["onto"]
+        self.assertEqual(((), ()), (onto.looks, onto.looks_fused), "the target was looked around for")
+        self.assertEqual(1, len(run.watched.places))
+
+    def test_a_wrist_look_with_no_safe_grasp_goes_on_to_the_next_and_the_part_is_picked_on_both(self) -> None:
+        """The first look sees only the cube's east face, on which the hand finds no grasp; the second sees its top
+        and its south face. The looks are fused, and the grasp is planned on all three faces."""
+        run = _Run({"wrist": (True, _sees(part=[_east_face(), _cube(40.0)], target=[_plate()]))})()
+
+        self.assertIsNone(run.exit, run.printed[-2000:])
+        spans = _check(self, run.cell)
+        self.assertEqual([("look",), ("locate", "wrist", _OBJECT, True), ("look",), ("locate", "wrist", _OBJECT, True)],
+                         run.looks_and_locates()[:4])
+        seen = run.globals["seen"]
+        self.assertEqual(_LOOK_LABELS, seen.looks)
+        self.assertEqual((_LOOK_LABELS[1], _LOOK_LABELS[0]), seen.looks_fused)
+        self.assertEqual(_east_face().shape[0] + _cube(40.0).shape[0], seen.objects[0].points_base_mm.shape[0])
+        np.testing.assert_array_equal(seen.objects[0].points_base_mm, run.watched.picks[0]["keep_out"]
+                                      .target_points_base_mm)
+        self.assertEqual(["closed"], [e.data[0] for e in _only(spans, "pick").of("edge")])
+
+    def test_a_look_the_arm_does_not_reach_ends_the_program_with_nothing_picked(self) -> None:
+        """The controller protective-stops before the first look: the looking ends there, nothing else is commanded,
+        no other camera is asked, and nothing is picked."""
+        run = _Run({
+            "wrist": (True, _sees(part=[_cube(40.0)])),
+            "overhead": (False, _sees(part=[_cube(40.0)])),
+        }, stop_at_look=0)()
+
+        assert run.exit is not None
+        self.assertIn(f"the arm did not reach look {_LOOK_LABELS[0]}", str(run.exit.code))
+        self.assertIn("controller cannot move", str(run.exit.code))
+        self.assertIn("nothing was picked", str(run.exit.code))
+        self.assertIn("controller cannot move", run.printed)
+        _check(self, run.cell)
+        self.assertEqual([("look",)], run.looks_and_locates(), "a locate, or another look, after the look not reached")
+        self.assertEqual([], run.watched.picks)
+        self.assertEqual([], run.events("edge"))
 
     def test_a_part_whose_foot_the_camera_missed_lands_with_its_air_and_is_not_pressed(self) -> None:
         """The reviewer's worst case through the example: 12 mm of the near face unseen, the part on the table at 0."""

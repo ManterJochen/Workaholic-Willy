@@ -7,9 +7,9 @@ the section on your own cell says so.
 A camera scene and a text prompt go in; a detector and a segmenter find the object, a geometric
 calculator ranks 6-DoF grasps, a fail-closed safety pipeline gates every motion, a driver executes it,
 and the attempt is written to a structured log. The default pick is open-loop: perceive, rank, gate,
-move, log. The layers above that (the automatic decision gate, closed-loop refinement and
-verification, multi-view fusion, the learned success model and the reinforcement-learning router)
-are built and ship as `robot.grasping.*` blocks with `enabled: false`. No trained weights for the
+move, log. The layers above that (the automatic decision gate, multi-view fusion, the learned
+success model and the reinforcement-learning router) are built and ship as `robot.grasping.*` blocks
+with `enabled: false`. No trained weights for the
 learned grasp calculator ship either: a cell that wants one trains it on its own data.
 
 ## Install
@@ -163,7 +163,7 @@ A cell with no `CAMERA->BASE` transform builds, connects, and then refuses every
 
 ## Grasp presets
 
-Three preset overlays ship under [`config/grasping_presets/`](../config/grasping_presets/). They are
+Two preset overlays ship under [`config/grasping_presets/`](../config/grasping_presets/). They are
 not part of the validated tree: `apply_preset` in `src/robot/grasping/replay/presets.py` deep-merges
 one onto an already loaded `robot:` block, so `python -m src.config` never sees it and a misspelt key
 merges in silently. `validate_preset` re-validates the merged result and is what rejects it.
@@ -171,8 +171,16 @@ merges in silently. `validate_preset` re-validates the merged result and is what
 | Preset | Mode | What it arms |
 |---|---|---|
 | `easy` | `easy` | nothing. Recovery and uncertainty are both switched off |
-| `dense_clutter` | `dense_clutter` | recovery bounded to `next_viewpoint`, plus uncertainty fusion |
-| `verification_heavy` | `closed_loop` | pre-grasp refinement and post-grasp verification |
+| `dense_clutter` | `dense_clutter` | recovery bounded to `rescan`, plus uncertainty fusion |
+
+A third, `verification_heavy`, set the `closed_loop` mode for a pre-grasp refinement and post-grasp
+verification. It was deleted on 2026-09-29 with that mode and the two-scan refinement it ran, and a
+tree or a preset that still names `closed_loop` is refused with the mode to name instead, `auto`.
+Verification ran only on that refinement's path, and the `robot.grasping.verification` block left the
+same day: a tree that still writes it is refused at load with the sentence that says what to do. The
+hold a pick reports is the gripper's own hold evidence, read after every close. `dense_clutter`
+allowed `next_viewpoint` until then; it was merged into `rescan`, and a preset or a tree that still
+names it is refused with `removed on purpose: use rescan`.
 
 Each block below is the shipped overlay. Paste it under your `robot:` block, or call
 `apply_preset`.
@@ -188,7 +196,7 @@ grasping:
     enabled: false
 ```
 
-`dense_clutter`, bin picking with a bounded second look:
+`dense_clutter`, bin picking with a bounded rescan:
 
 ```yaml preset=dense_clutter
 grasping:
@@ -196,32 +204,17 @@ grasping:
   recovery:
     enabled: true
     allowed_actions:
-      - next_viewpoint
+      - rescan
   uncertainty:
     enabled: true
     fail_closed_threshold: 0.4
 ```
 
-`verification_heavy`, the closed loop for items where a missed slip is unacceptable:
-
-```yaml preset=verification_heavy
-grasping:
-  default_mode: closed_loop
-  recovery:
-    enabled: true
-    allowed_actions:
-      - next_viewpoint
-```
-
-Three things the files say about themselves and the table cannot. `easy` is excluded from
+Two things the files say about themselves and the table cannot. `easy` is excluded from
 `recovery.apply_modes` anyway, so switching recovery off there restates a guarantee the mode already
 carries. In `dense_clutter`, `fail_closed_threshold: 0.4` is the default of
 `decision.auto_uncertainty_threshold`, so arming the layer does not by itself move the gate, and
-nothing is refused at all unless `decision.enabled` is true. In `verification_heavy`, `closed_loop` is
-not in the shipped `recovery.apply_modes` either, so the recovery flag stays inert until the cell adds
-the mode to that list; and `closed_loop` needs both a refiner and a verification policy wired into the
-service, or the pick is refused with a `MODE_NOT_AVAILABLE` outcome rather than degraded to an
-open-loop attempt.
+nothing is refused at all unless `decision.enabled` is true.
 
 ## The soak gate
 

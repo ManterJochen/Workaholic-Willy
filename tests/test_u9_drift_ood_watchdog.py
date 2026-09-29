@@ -307,6 +307,32 @@ class WatchdogEnforcementTests(unittest.TestCase):
         self.assertIs(report.recommended_action, WatchdogAction.BLOCK_AUTO)
         self.assertFalse(report.enforced)
 
+    def test_a_reobserve_is_advisory_and_never_enforced(self) -> None:
+        """D9: nothing re-observes in answer to REOBSERVE, so no mode reports it as enforced.
+
+        Before 2026-09-29 canary and active read ``enforced=True`` for it although the service
+        acts on BLOCK_AUTO alone. The recommendation itself still reaches the telemetry.
+        """
+
+        moderate = WatchdogHistory(
+            (WatchdogSample(predicted_observed_calibration_delta_mm=3.0),)
+        )
+        for mode in WatchdogMode:
+            if mode is WatchdogMode.DISABLED:
+                continue
+            with self.subTest(mode=mode.value):
+                report = evaluate_watchdog(
+                    moderate,
+                    WatchdogPolicy(mode=mode),
+                    grasp_mode="auto",
+                    is_simulated=False,
+                )
+                self.assertIs(report.aggregate_severity, DriftSeverity.MODERATE)
+                self.assertIs(report.recommended_action, WatchdogAction.REOBSERVE)
+                self.assertFalse(report.enforced)
+                self.assertEqual(report.to_dict()["recommended_action"], "reobserve")
+                self.assertIs(report.to_dict()["enforced"], False)
+
     def test_disabled_mode_short_circuits(self) -> None:
         """Q8=A: disabled mode emits NONE, never degraded, never enforced."""
 

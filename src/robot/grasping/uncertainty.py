@@ -88,7 +88,9 @@ class UncertaintyChannel(str, Enum):
     * ``FEASIBILITY_MARGIN``, how far the grasp sits from the IK and reachability feasibility
       boundary.
     * ``VERIFICATION_RESIDUAL``, the disagreement left over after the post-grasp verification
-      cross-check.
+      cross-check. That stage was removed on 2026-09-29, so nothing live produces this channel any
+      more; it stays, with its weight, for the on-disk calibration artifact, the RL and replay
+      contracts, and records logged before then.
     * ``TOPOLOGY_RISK``, the risk from the local shape of the object, which covers thin, deformable
       and ambiguous parts.
     * ``SEMANTIC_CONFIDENCE``, confidence in the class the detector assigned to the object.
@@ -580,8 +582,8 @@ def should_bias_recovery_for_uncertainty(
     """Recovery-bias gate.
 
     Returns :data:`True` when the orchestrator should reorder the
-    recovery action sequence so perception actions
-    (``NEXT_VIEWPOINT`` / ``RESCAN``) come first.
+    recovery action sequence so the perception action (``RESCAN``)
+    comes first.
 
     It triggers exactly when:
 

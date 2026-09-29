@@ -5,8 +5,8 @@ knobs. Operator-locked answers in this session:
 
 * Q3: add now under ``robot.grasping.occlusion`` sub-block,
   additive, defaults off.
-* Q1: ``apply_modes`` default = ``(auto, dense_clutter,
-  dense_autonomous)`` — EASY locked out.
+* Q1: ``apply_modes`` default = ``(auto, dense_clutter)`` — EASY locked
+  out (``dense_autonomous`` left with its mode on 2026-09-29).
 * Q2: ``hard_reject_enabled`` defaults to :data:`False`. T3 ships
   as demote-only.
 * Q8: ``directional_enabled`` defaults to :data:`False`. Operator
@@ -35,7 +35,7 @@ class GraspingOcclusionConfigDefaultsTests(unittest.TestCase):
         self.assertNotIn("easy", c.apply_modes)
         self.assertIn("auto", c.apply_modes)
         self.assertIn("dense_clutter", c.apply_modes)
-        self.assertIn("dense_autonomous", c.apply_modes)
+        self.assertNotIn("dense_autonomous", c.apply_modes)
         # Locked numeric defaults.
         self.assertGreater(c.corridor_radius_mm, 0.0)
         self.assertGreater(c.corridor_step_mm, 0.0)

@@ -106,6 +106,11 @@ def _prerequisites(flag: str, tmpdir: Path) -> dict[str, Any]:
         # ``fusion.geometry.enabled`` installs; with the parent off there is no carrier to put
         # them on.
         return {"fusion": {"geometry": {"enabled": True}}}
+    if flag == "fusion.enabled":
+        # What the switch builds is the fused cameras' CAMERA -> BASE resolvers, and only geometry
+        # fusion over a listed camera asks for them. The camera is the rig `_camera_prerequisite`
+        # calibrates.
+        return {"fusion": {"geometry": {"enabled": True}, "cameras": {_fused_rig_id(): {"enabled": True}}}}
     if flag == "deep_ranker.enabled":
         # The ranker's TREES are gitignored (`.gitignore:52`), so no checkout carries them and
         # `DeepRankerContext.from_config` fail-safes to None on a missing artifact -- the flag is
@@ -115,13 +120,21 @@ def _prerequisites(flag: str, tmpdir: Path) -> dict[str, Any]:
     return {}
 
 
+def _fused_rig_id() -> str:
+    """The shipped RGB-D rig, the one ``_camera_prerequisite`` makes the primary and calibrates."""
+    from src.config import load_config
+
+    data = load_config().camera.model_dump(mode="json")
+    return str(next(r["rig_id"] for r in data["cameras"]["rigs"] if r["source"] == "rgbd"))
+
+
 def _camera_prerequisite(flag: str, tmpdir: Path) -> Maybe[CameraConfig]:
     """The camera section a flag needs before it can act, or UNSET when it needs none.
 
-    The fusion substrate enforces a strict frame contract, so the overlay refuses to wire
-    without a CAMERA->BASE resolver. That resolver is built from the primary rig's declared
-    calibration, ``camera.cameras.rigs[<id>].extrinsics``, which lives in the camera section
-    rather than under ``grasping``. Supply a real persisted artifact there.
+    ``fusion.enabled`` builds each fused camera's CAMERA->BASE resolver from the calibration its
+    rig declares, ``camera.cameras.rigs[<id>].extrinsics``, which lives in the camera section
+    rather than under ``grasping``, and a declared artifact that does not load is refused at
+    build. Supply a real persisted artifact there, on the rig ``_prerequisites`` lists.
     """
 
     if flag != "fusion.enabled":
@@ -210,7 +223,8 @@ def _iter_flags(model: type[BaseModel] = RobotGraspingConfig, prefix: str = "") 
         # default is already True has no off->on edge to drive), so the widening needs
         # `_prerequisites` entries and a default-aware flip before it means what it says. Left
         # narrow deliberately, with the gap written down: `closed_loop.pregrasp_rescan` and
-        # `verification.post_lift_vision_check` sat dead for months inside exactly this blind spot.
+        # `verification.post_lift_vision_check` sat dead for months inside exactly this blind spot
+        # (both left on 2026-09-29 with the two-scan refinement they served).
         elif annotation is bool and "enabled" in name:
             yield path
 
@@ -281,8 +295,9 @@ def _observe(service: AutonomousGraspService) -> dict[str, str]:
         if callable(value) and not is_dataclass(value):
             continue
         observed[f"orchestrator.{name}"] = _shape(value)
-    for name in ("refinement_policy", "verification_policy", "recovery_policy"):
-        observed[f"service.{name}"] = _shape(getattr(service, name, None))
+    # The service's own sub-policy slots (`refinement_policy`, `verification_policy`,
+    # `recovery_policy`) left with the features they served on 2026-09-29; what a flag moves now
+    # lands on the effective config or the orchestrator above.
     return observed
 
 

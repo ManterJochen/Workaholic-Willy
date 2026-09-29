@@ -12,14 +12,12 @@ These tests pin the behavioural seams introduced by U8:
 * ``DecisionEngine.decide`` consumes the snapshot under
   ``uncertainty_active=True``:
     - confident fused ⇒ ``GRASP_NOW`` / ``CONFIDENT_GRASP``;
-    - low-confidence fused (budget + planner) ⇒ ``MOVE_CAMERA`` /
-      ``LOW_CONFIDENCE``;
-    - low-confidence fused (no budget, real HW) ⇒ ``FAIL_CLOSED`` /
+    - low-confidence fused (real HW) ⇒ ``FAIL_CLOSED`` /
       ``UNCERTAINTY_FAIL_CLOSED``;
-    - disagreement (budget + planner) ⇒ ``MOVE_CAMERA`` /
-      ``CHANNEL_DISAGREEMENT``;
-    - disagreement (no budget, real HW) ⇒ ``FAIL_CLOSED`` /
+    - disagreement (real HW) ⇒ ``FAIL_CLOSED`` /
       ``CHANNEL_DISAGREEMENT``.
+  The ``MOVE_CAMERA`` re-observation both once tried first was removed
+  on 2026-09-29.
 * ``uncertainty_active=True`` but ``fused_available=False`` ⇒ Q2=A
   legacy fallback with ``uncertainty_source="legacy_fallback"``.
 * ``reorder_actions_for_uncertainty`` is identity when
@@ -87,7 +85,6 @@ def _engine(**overrides) -> DecisionEngine:
     kwargs = dict(
         enabled=True,
         auto_uncertainty_threshold=0.4,
-        max_reobservations=2,
         reasons_penalty=0.2,
         fail_closed_on_real_hardware=True,
     )
@@ -198,9 +195,7 @@ class DecisionFusedPathTests(unittest.TestCase):
             grasp_result=_grasp_result(0.9),
             mode="HARD",
             attempt_id="u8-1",
-            reobservation_count=0,
             is_simulated=False,
-            viewpoint_planner_available=True,
             uncertainty_snapshot=self._snapshot(0.1),
             uncertainty_active=True,
         )
@@ -209,30 +204,13 @@ class DecisionFusedPathTests(unittest.TestCase):
         self.assertEqual(report.uncertainty_source, "fused")
         self.assertTrue(report.uncertainty_fused_available)
 
-    def test_high_fused_triggers_move_camera(self) -> None:
+    def test_high_fused_real_hw_fail_closed(self) -> None:
         engine = _engine()
         report = engine.decide(
             grasp_result=_grasp_result(0.9),
             mode="HARD",
-            attempt_id="u8-2",
-            reobservation_count=0,
-            is_simulated=False,
-            viewpoint_planner_available=True,
-            uncertainty_snapshot=self._snapshot(0.9),
-            uncertainty_active=True,
-        )
-        self.assertIs(report.action, DecisionAction.MOVE_CAMERA)
-        self.assertIs(report.reason_code, DecisionReasonCode.LOW_CONFIDENCE)
-
-    def test_high_fused_no_budget_fail_closed(self) -> None:
-        engine = _engine(max_reobservations=0)
-        report = engine.decide(
-            grasp_result=_grasp_result(0.9),
-            mode="HARD",
             attempt_id="u8-3",
-            reobservation_count=0,
             is_simulated=False,
-            viewpoint_planner_available=True,
             uncertainty_snapshot=self._snapshot(0.9),
             uncertainty_active=True,
         )
@@ -262,9 +240,7 @@ class DecisionLegacyFallbackTests(unittest.TestCase):
             grasp_result=_grasp_result(0.9),
             mode="HARD",
             attempt_id="u8-4",
-            reobservation_count=0,
             is_simulated=False,
-            viewpoint_planner_available=True,
             uncertainty_snapshot=snap,
             uncertainty_active=True,
         )
@@ -274,7 +250,7 @@ class DecisionLegacyFallbackTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 5/6. Disagreement → MOVE_CAMERA / FAIL_CLOSED with CHANNEL_DISAGREEMENT
+# 5/6. Disagreement → FAIL_CLOSED with CHANNEL_DISAGREEMENT
 # ---------------------------------------------------------------------------
 
 
@@ -291,32 +267,13 @@ class DisagreementDecisionTests(unittest.TestCase):
             channel_disagreement_threshold=0.5,
         )
 
-    def test_disagreement_with_budget_moves_camera(self) -> None:
+    def test_disagreement_real_hw_fail_closed(self) -> None:
         engine = _engine()
         report = engine.decide(
             grasp_result=_grasp_result(0.95),
             mode="HARD",
-            attempt_id="u8-5",
-            reobservation_count=0,
-            is_simulated=False,
-            viewpoint_planner_available=True,
-            uncertainty_snapshot=self._disagreement_snapshot(),
-            uncertainty_active=True,
-        )
-        self.assertIs(report.action, DecisionAction.MOVE_CAMERA)
-        self.assertIs(
-            report.reason_code, DecisionReasonCode.CHANNEL_DISAGREEMENT
-        )
-
-    def test_disagreement_no_budget_real_hw_fail_closed(self) -> None:
-        engine = _engine(max_reobservations=0)
-        report = engine.decide(
-            grasp_result=_grasp_result(0.95),
-            mode="HARD",
             attempt_id="u8-6",
-            reobservation_count=0,
             is_simulated=False,
-            viewpoint_planner_available=True,
             uncertainty_snapshot=self._disagreement_snapshot(),
             uncertainty_active=True,
         )
@@ -336,8 +293,8 @@ class ReorderActionsTests(unittest.TestCase):
     def test_no_op_when_not_aggressive(self) -> None:
         actions = (
             SceneRecoveryAction.NEXT_TARGET,
-            SceneRecoveryAction.NEXT_VIEWPOINT,
             SceneRecoveryAction.NUDGE_TARGET,
+            SceneRecoveryAction.RESCAN,
         )
         self.assertEqual(
             reorder_actions_for_uncertainty(actions, aggressive=False),
@@ -345,20 +302,22 @@ class ReorderActionsTests(unittest.TestCase):
         )
 
     def test_aggressive_promotes_perception_group(self) -> None:
+        # The perception group is RESCAN alone since NEXT_VIEWPOINT was merged into it (2026-09-29);
+        # the rest keep their relative order behind it.
         actions = (
             SceneRecoveryAction.NEXT_TARGET,
-            SceneRecoveryAction.NEXT_VIEWPOINT,
             SceneRecoveryAction.NUDGE_TARGET,
+            SceneRecoveryAction.CONTAINER_AGITATE,
             SceneRecoveryAction.RESCAN,
         )
         reordered = reorder_actions_for_uncertainty(actions, aggressive=True)
         self.assertEqual(
             reordered,
             (
-                SceneRecoveryAction.NEXT_VIEWPOINT,
                 SceneRecoveryAction.RESCAN,
                 SceneRecoveryAction.NEXT_TARGET,
                 SceneRecoveryAction.NUDGE_TARGET,
+                SceneRecoveryAction.CONTAINER_AGITATE,
             ),
         )
 

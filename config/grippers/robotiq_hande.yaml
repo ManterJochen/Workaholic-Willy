@@ -37,9 +37,10 @@ gripper:
     the 2.0 mm envelope overlap are the committed values. The friction is a default.
   # The robot.gripper.vendor drivers that can actuate this hand. robotiq: over the socket the Robotiq URCap
   # opens. jaw_io: through the Robotiq I/O Coupling, which sits between the flange and the Hand-E and turns it
-  # into a digital-I/O hand on the tool connector, one tool output selecting open or closed, with nothing on
-  # the URCap socket (a cell driving it so, 2026-09-23: UR10 CB3, actuation single_toggle on tool DO0). A real
-  # UR profile naming this hand with another driver is refused at load; none and dummy are always admitted.
+  # into a digital-I/O hand on the tool connector, one tool output whose every change moves the jaws, switched
+  # on or off, with nothing on the URCap socket (a cell driving it so since 2026-09-23: UR10 CB3, actuation
+  # single_toggle on tool DO0, one change per command, 2026-09-28). A real UR profile naming this hand with
+  # another driver is refused at load; none and dummy are always admitted.
   drivers: [robotiq, jaw_io]
   jaw:
     # Where the grasp centre sits along the approach, from this hand's own bundle origin. Every other

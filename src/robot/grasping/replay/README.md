@@ -102,8 +102,23 @@ so in its `does_not_measure` field. For a signal that can fail, run `--records-g
   `--post-apply-report PATH`, a report measured under the applied overlay, the two are equal, the
   deltas are zero and the rollback guardrail cannot fire. It logs a warning saying so.
 - Wall-time p95 for `closed_loop` is `None`, because the canonical packs hold no `closed_loop` records.
-  The `easy` wall-time budget is the only wall-time gate, and it is skipped rather than failed when its
-  side is missing.
+  `closed_loop` and `dense_autonomous` are modes retired on 2026-09-29; the baseline keeps their keys so
+  the committed report keeps its shape, and the canonical `dense_canonical_autonomous` pack still carries
+  `dense_autonomous` records. The `easy` wall-time budget is the only wall-time gate, and it is skipped
+  rather than failed when its side is missing.
+- A record logged before 2026-09-29 may carry strings renamed or retired since: a low-confidence decision
+  reads `reobserve_planner_unavailable` where a current one reads `low_confidence`. The audits require a
+  decision's keys, never its values, so both audit; the [telemetry README](../telemetry/README.md) lists
+  every such string.
+- The failure taxonomy is at version 2 since 2026-09-29, which rewrote the recommendations that advised
+  removed features; the classification is unchanged. A version-1 report on disk keeps its old
+  recommendation wording: re-run `--failure-taxonomy` over its packs for the current one. One reader
+  takes a report back, `--adaptation-plan --taxonomy-in PATH`: it reads per-cause counts and never
+  checks `taxonomy_version`, so a version-1 report stays valid input there, which is harmless because
+  the counts mean the same in both versions. It looks those counts up under
+  `per_root_cause.<cause>.count`, a shape `--failure-taxonomy` does not write (it writes
+  `counts_by_cause.<cause>`), so today its taxonomy rules fire only on a report built in that shape by
+  hand; the mismatch predates version 2 and is still open.
 
 ## Files
 

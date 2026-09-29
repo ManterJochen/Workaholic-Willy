@@ -33,10 +33,9 @@
 robot:
   grasping:
     fusion:
-      # Arms the shadow voxel substrate, which ingests perception frames and emits telemetry, and the
-      # resolver for the second camera below, which is built only while this is on. That changes no
-      # grasp and no motion on its own, because the gate that would let fused evidence decide is
-      # `fusion.commit_policy.enabled` and it stays off, but it is not free at runtime.
+      # The switch the resolvers of the cameras below are built under: with it off the second
+      # camera's view is dropped at the pick with a warning. It changes no grasp on its own;
+      # `geometry` below is what hands the fused surface to the grasp generator.
       #
       # The CAMERA to BASE transforms are not in this file. Each camera declares its calibration on
       # its rig in camera/cam.eth2.yaml, under `extrinsics`, and the primary camera's resolver is built
@@ -60,8 +59,8 @@ robot:
 
       geometry:
         # The switch that changes grasp candidates, and the one the extra-camera rig is
-        # gated on. `fusion.enabled` above arms the calibration and the shadow substrate;
-        # this is what makes a second view reach the grasp.
+        # gated on. `fusion.enabled` above builds the second camera's resolver; this is what
+        # makes a second view reach the grasp.
         enabled: true
 
         # How a camera decides it is looking at the same object as the primary. `overlap`

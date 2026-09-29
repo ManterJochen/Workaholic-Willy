@@ -7,10 +7,11 @@ These tests pin the S0 locked contract:
 * :class:`AutonomousGraspService` delegates to the existing
   :class:`RuntimePickService` without changing its surface, so EASY /
   AUTO / DENSE_CLUTTER stay byte-equivalent to today's behavior.
-* Modes that need refinement or verification (``CLOSED_LOOP``,
-  ``DENSE_AUTONOMOUS``) refuse to dispatch in S1 and return a typed
-  :attr:`AutonomousGraspOutcome.MODE_NOT_AVAILABLE` outcome instead of
-  silently downgrading to AUTO.
+* A per-call mode whose sampler the service was not built with is refused
+  with a typed :attr:`AutonomousGraspOutcome.MODE_NOT_AVAILABLE` outcome
+  instead of silently sampling the other way. (``CLOSED_LOOP`` and
+  ``DENSE_AUTONOMOUS``, which refused here without their refiner and
+  verifier, were removed on 2026-09-29 with the two-scan refinement.)
 * The locked recovery allow-lists per mode are exposed unchanged on
   :class:`GraspBehaviorProfile`.
 
@@ -196,9 +197,6 @@ class GraspModeResolverTests(unittest.TestCase):
             ("auto", GraspMode.AUTO),
             ("dense", GraspMode.DENSE_CLUTTER),
             ("dense_clutter", GraspMode.DENSE_CLUTTER),
-            ("closed_loop", GraspMode.CLOSED_LOOP),
-            ("dense_autonomous", GraspMode.DENSE_AUTONOMOUS),
-            ("autonomous", GraspMode.DENSE_AUTONOMOUS),
             # Case- and whitespace-insensitive.
             ("  EASY  ", GraspMode.EASY),
             ("Dense_Clutter", GraspMode.DENSE_CLUTTER),
@@ -212,7 +210,7 @@ class GraspModeResolverTests(unittest.TestCase):
         msg = str(ctx.exception)
         self.assertIn("turbo", msg)
         self.assertIn("easy", msg)
-        self.assertIn("dense_autonomous", msg)
+        self.assertIn("dense_clutter", msg)
 
     def test_bool_is_not_a_valid_input(self) -> None:
         # GraspMode is a *profile* selector, not the low-level sampling
@@ -244,8 +242,8 @@ class GraspBehaviorProfileTests(unittest.TestCase):
         profile = report.profile
         self.assertIs(profile.mode, GraspMode.EASY)
         self.assertIs(profile.sampling_mode, GraspSamplingMode.SINGLE_OBJECT)
-        self.assertFalse(profile.refinement_enabled)
-        self.assertFalse(profile.verification_enabled)
+        # `verification_enabled` left the profile on 2026-09-29 with the verification stage.
+        self.assertFalse(hasattr(profile, "verification_enabled"))
         # EASY must never produce recovery motion --- safety guarantee.
         self.assertEqual(profile.recovery_allowed_actions, ())
 
@@ -258,9 +256,11 @@ class GraspBehaviorProfileTests(unittest.TestCase):
         )
         report = service.pick()
         self.assertIs(report.profile.sampling_mode, GraspSamplingMode.AUTO)
+        # `next_viewpoint` was merged into `rescan` on 2026-09-29, and `next_target` ("rescan, skipping
+        # the failed part", same label only) joined the same day (owner).
         self.assertEqual(
             report.profile.recovery_allowed_actions,
-            ("rescan", "next_viewpoint"),
+            ("rescan", "next_target"),
         )
 
     def test_dense_clutter_profile_locked(self) -> None:
@@ -274,29 +274,11 @@ class GraspBehaviorProfileTests(unittest.TestCase):
         self.assertIs(
             report.profile.sampling_mode, GraspSamplingMode.DENSE_CLUTTER
         )
+        # `nudge_target` moved here from dense_autonomous when that mode left (owner, 2026-09-29),
+        # `next_viewpoint` was merged into `rescan` and `next_target` joined, all the same day.
         self.assertEqual(
             report.profile.recovery_allowed_actions,
-            ("rescan", "next_viewpoint"),
-        )
-
-    def test_dense_autonomous_profile_locked(self) -> None:
-        # Build a service for the dense profile so the per-call mode
-        # is compatible with the configured sampling mode. The pick
-        # call will still refuse (refinement+verification not yet
-        # implemented), but the snapshot profile must match the lock.
-        service = AutonomousGraspService.from_components(
-            arm=_TypedFakeArm(),  # type: ignore[arg-type]
-            calculator=_ScriptedCalculator([_success_result()]),  # type: ignore[arg-type]
-            perception=_FakePerception([_perception_frame()]),
-            mode=GraspMode.DENSE_AUTONOMOUS,
-        )
-        report = service.pick()
-        self.assertIs(report.outcome, AutonomousGraspOutcome.MODE_NOT_AVAILABLE)
-        self.assertTrue(report.profile.refinement_enabled)
-        self.assertTrue(report.profile.verification_enabled)
-        self.assertEqual(
-            report.profile.recovery_allowed_actions,
-            ("rescan", "next_viewpoint", "nudge_target"),
+            ("rescan", "next_target", "nudge_target"),
         )
 
     def test_profile_is_frozen(self) -> None:
@@ -305,7 +287,7 @@ class GraspBehaviorProfileTests(unittest.TestCase):
             sampling_mode=GraspSamplingMode.SINGLE_OBJECT,
         )
         with self.assertRaises(Exception):
-            profile.refinement_enabled = True  # type: ignore[misc]
+            profile.recovery_allowed_actions = ("rescan",)  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------
@@ -387,45 +369,6 @@ class AutonomousGraspServiceTests(unittest.TestCase):
         report = service.pick()
 
         self.assertIs(report.outcome, AutonomousGraspOutcome.NO_VALID_GRASP)
-
-    def test_closed_loop_refuses_until_s3_lands(self) -> None:
-        # CLOSED_LOOP requires refinement (S3) + verification (S4). The
-        # service must NOT silently downgrade to AUTO when those slices
-        # have not landed yet --- doing so would lie to the operator
-        # about which guarantees are in effect. After S3 lands, the
-        # refusal is gated on whether a refiner is wired; an
-        # operator who selects CLOSED_LOOP without wiring a
-        # RefinementPolicy + refiner still gets MODE_NOT_AVAILABLE.
-        service = AutonomousGraspService.from_components(
-            arm=_TypedFakeArm(),  # type: ignore[arg-type]
-            calculator=_ScriptedCalculator([_success_result()]),  # type: ignore[arg-type]
-            perception=_FakePerception([_perception_frame()]),
-            mode=GraspMode.CLOSED_LOOP,
-        )
-
-        report = service.pick()
-
-        self.assertIs(report.outcome, AutonomousGraspOutcome.MODE_NOT_AVAILABLE)
-        self.assertIsNone(report.pick_report)
-        self.assertEqual(
-            report.telemetry.get("reason"),
-            "mode_requires_refinement_but_no_refiner_wired",
-        )
-        self.assertTrue(report.telemetry.get("refinement_required"))
-        self.assertTrue(report.telemetry.get("verification_required"))
-
-    def test_dense_autonomous_refuses_until_recovery_lands(self) -> None:
-        service = AutonomousGraspService.from_components(
-            arm=_TypedFakeArm(),  # type: ignore[arg-type]
-            calculator=_ScriptedCalculator([_success_result()]),  # type: ignore[arg-type]
-            perception=_FakePerception([_perception_frame()]),
-            mode=GraspMode.DENSE_AUTONOMOUS,
-        )
-
-        report = service.pick()
-
-        self.assertIs(report.outcome, AutonomousGraspOutcome.MODE_NOT_AVAILABLE)
-        self.assertIsNone(report.pick_report)
 
     def test_per_call_mode_with_incompatible_sampling_is_refused(self) -> None:
         # Service was built for EASY (SINGLE_OBJECT). Asking it to run a

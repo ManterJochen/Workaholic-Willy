@@ -11,9 +11,10 @@ segmenter:
   model_id: "facebook/sam2-hiera-large"
   local: True
   optim:
-    # `auto` means fp16 on CUDA and fp32 elsewhere. fp16 costs recall on small objects; leaving
-    # `torch_dtype` unset keeps fp32 weights, which is what a cell picking small parts wants.
-    torch_dtype: auto
+    # Unset on purpose (2026-09-29), as for the detector in object.yaml: fp32 weights with fp16
+    # autocast, which is what a cell picking small parts wants. `auto` means fp16 weights on CUDA,
+    # and fp16 costs recall on small objects.
+    torch_dtype: null
     attn_implementation: sdpa
     channels_last: true
     compile: false

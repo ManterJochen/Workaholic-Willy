@@ -11,10 +11,9 @@ grasps from one view, with a warning in its log. :class:`CameraFusionPlan` reads
 every piece that is missing in one sentence, so a program asks before a camera opens or a model loads:
 
 * ``robot.grasping.fusion.geometry.enabled``, the switch that hands the fused cloud to the grasp generator;
-* ``robot.grasping.fusion.enabled``. It arms the shadow voxel grid, which changes no grasp, and it is also the switch
-  the other cameras' CAMERA to BASE are built under (``build_config_frame_resolvers`` returns none while it is off),
-  so with it off every other camera's view is dropped at the pick. The schema calls the two switches independent; for
-  a fused cell they are not;
+* ``robot.grasping.fusion.enabled``, the switch the other cameras' CAMERA to BASE are built under
+  (``build_config_frame_resolvers`` returns none while it is off), so with it off every other camera's view is dropped
+  at the pick. It fuses nothing on its own; a fused cell needs both;
 * two or more cameras in ``robot.grasping.fusion.cameras``, keyed by rig id, the primary among them;
 * each of them an enabled RGB-D rig in ``camera.cameras.rigs`` that declares its calibration (``extrinsics``).
 

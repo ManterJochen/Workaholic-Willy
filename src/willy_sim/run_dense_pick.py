@@ -683,7 +683,7 @@ def build_service(
     from src.robot.grasping.calculator_factory import build_calculator
     from src.robot.grasping.types.perception import PerceptionSource
 
-    env = RunnerEnv.from_env(vision=vision, view_height_mm=0.0)  # the WILLY_* knobs, parsed once
+    env = RunnerEnv.from_env(vision=vision)  # the WILLY_* knobs, parsed once
     # Multi-object clutter scene through the runner's objects_override; the single-object runners keep
     # theirs. The spec and camera-override computation need no config, so they run before the shared boot.
     specs = (
@@ -1110,7 +1110,7 @@ def build_service(
         orch = service.runtime.orchestrator
         orch.uncertainty_rerank_config = UncertaintyRerankConfig(
             enabled=True, weight=float(g4_rerank_weight),
-            modes=("dense_clutter", "dense_autonomous"),
+            modes=("dense_clutter",),
         )
         _sm_cfg = getattr(getattr(cfg.robot, "grasping", None), "success_model", None)
         _artifact_dir = getattr(_sm_cfg, "artifact_dir", "assets/models/success_probability/v1")
@@ -1182,13 +1182,14 @@ def _wire_collection_carriers(service, cfg, grasp_mode, *, collect: bool, recove
             )
             if eff is not None:
                 # Enable the service recovery loop for dense_clutter without applying the orchestrator
-                # overlays: the fusion overlay accumulates BASE-frame voxels across reset-picks and starves
-                # candidates. Fixture-free recovery actions only, because NUDGE_TARGET and
-                # CONTAINER_AGITATE are physical and need a FixtureEnvelope the service-config recovery
-                # path does not supply. next_target is allowed and is one of those actions.
+                # overlays: when this was written, the fusion overlay's BASE-frame voxel grid (removed
+                # on 2026-09-28) accumulated across reset-picks and starved candidates. Fixture-free
+                # recovery actions only, because NUDGE_TARGET and CONTAINER_AGITATE are physical and
+                # need a FixtureEnvelope the service-config recovery path does not supply. next_target
+                # is named but never planned: no built-in mode profile lists it, so rescan is what runs.
                 ro = _dc_replace(
                     eff.recovery_orchestrator, enabled=True,
-                    allowed_actions=("rescan", "next_viewpoint", "next_target"),
+                    allowed_actions=("rescan", "next_target"),
                     apply_modes=("dense_clutter", "auto"), max_actions=3,
                 )
                 service.effective_config = _dc_replace(eff, recovery_orchestrator=ro)
@@ -1200,10 +1201,11 @@ def _wire_collection_carriers(service, cfg, grasp_mode, *, collect: bool, recove
 def _apply_rl3_substrate(specs: list, target_idx: int, env: RunnerEnv) -> list:
     """Failure-injection substrate, off by default, that makes the service recovery loop fire.
 
-    The failures the sim produces on its own, slips and approach blocks, do not trigger the loop's allowed
-    actions of rescan, next_viewpoint and next_target, so this engineers failures that do, and
-    ``recovery_actions`` then populate. ``WILLY_RL3_SUBSTRATE`` takes ``unreachable``, an oversized target
-    that yields NO_CANDIDATES_GENERATED and so next_viewpoint or rescan; ``occlusion``, an occluder over
+    The failures the sim produces on its own, slips and approach blocks, do not trigger the loop's rescan
+    (next_target is allowed too, but no built-in mode profile lists it, so it is never planned), so this
+    engineers failures that do, and ``recovery_actions`` then populate. ``WILLY_RL3_SUBSTRATE`` takes
+    ``unreachable``, an oversized target that yields NO_CANDIDATES_GENERATED and so a rescan
+    (``next_viewpoint``, which it reached before 2026-09-29, was merged into rescan then); ``occlusion``, an occluder over
     the target that yields an empty mask; or ``both``. The recoveries do not succeed in sim, because
     re-perceiving cannot fix an ungraspable target, so the recovery policy abstains with
     degenerate_single_action. This resolves "recovery never fires", not "recovery succeeds".
@@ -1388,7 +1390,7 @@ def run_gate(runs: int = 10, *, prompt: str = "the red cube", headless: bool = T
         motion_planner=motion_planner, hand=hand,
         camera_world=CameraWorldDecline("run_dense_pick: this runner plans without a live camera world"),
     )
-    env = RunnerEnv.from_env(vision=vision, view_height_mm=0.0)  # the WILLY_* knobs, parsed once
+    env = RunnerEnv.from_env(vision=vision)  # the WILLY_* knobs, parsed once
     calc = service.runtime.orchestrator.calculator  # read the corridor telemetry after each pick
     if debug_frames:
         service.enable_debug_image_rendering()
@@ -1935,9 +1937,9 @@ def main() -> None:
     ap.add_argument("--no-headless", action="store_true", help="alias for --gui")
     ap.add_argument("--data-dir", type=str, default=None)
     ap.add_argument("--mode", type=str, default="dense_clutter",
-                    choices=["easy", "auto", "dense_clutter", "dense_autonomous"],
-                    help="P2: grasp mode (dense_clutter = the native dense path; dense_autonomous = C2 full "
-                         "perceive->refine->verify->recover loop; easy/auto for comparison)")
+                    choices=["easy", "auto", "dense_clutter"],
+                    help="P2: grasp mode (dense_clutter = the native dense path; easy/auto for comparison). "
+                         "dense_autonomous, the refine->verify loop, was removed on 2026-09-29")
     ap.add_argument("--record-log", type=str, default=None,
                     help="P0: append one GraspAttemptRecord JSONL line per pick to this path")
     ap.add_argument("--debug-frames", type=str, default=None,

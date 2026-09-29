@@ -77,7 +77,7 @@ class TheEnvelopeReachesThePolicyTests(unittest.TestCase):
 
 class TheTelemetryContractIsUntouchedTests(unittest.TestCase):
     def test_the_new_field_is_not_in_the_flat_dict(self) -> None:
-        """`to_dict()` is a frozen 79-key contract with its own order test.
+        """`to_dict()` is a frozen 77-key contract with its own order test.
 
         The envelope is a nested box, not a scalar, and widening that contract has telemetry-catalog
         consequences — so the field is deliberately absent from it. This asserts the absence so a
@@ -91,10 +91,6 @@ class TheTelemetryContractIsUntouchedTests(unittest.TestCase):
         emitted = EffectiveGraspingConfig(
             default_mode=GraspMode.AUTO,
             max_attempts=5,
-            closed_loop_enabled=False,
-            verification_enabled=False,
-            dense_recovery_enabled=False,
-            dense_recovery_allowed_actions=(),
         ).to_dict()
         self.assertNotIn("recovery_orchestrator_fixture", emitted)
         for key in ("recovery_orchestrator_enabled", "recovery_orchestrator_allowed_actions"):

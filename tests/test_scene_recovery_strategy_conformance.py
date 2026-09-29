@@ -16,9 +16,11 @@ must:
 * **fail closed when the policy is disabled** — the documented master switch (``SceneRecoveryPolicy.enabled``
   / ``permits``): "When :data:`False` every strategy in this module returns ``SceneRecoveryAction.NONE``."
 
-The five strategies are constructed exactly as the existing ``tests/test_grasp_recovery.py`` builds them
+The two strategies are constructed exactly as the existing ``tests/test_grasp_recovery.py`` builds them
 (same profile / policy / context / fixture idioms), so this exercises the real shipped strategy set — not
-hand-built stubs.
+hand-built stubs. There were five until 2026-09-29: ``NoRecoveryStrategy``,
+``ActivePerceptionRecoveryStrategy`` and ``NextTargetRecoveryStrategy`` left with the ``dense_recovery``
+block, the only thing that built them, and ``NEXT_VIEWPOINT`` was merged into ``RESCAN`` the same day.
 """
 
 from __future__ import annotations
@@ -36,11 +38,8 @@ from src.robot.execution.autonomous_grasp import (
     GraspMode,
 )
 from src.robot.grasping import (
-    ActivePerceptionRecoveryStrategy,
     ContainerAgitateStrategy,
     FixtureEnvelope,
-    NextTargetRecoveryStrategy,
-    NoRecoveryStrategy,
     SceneRecoveryAction,
     SceneRecoveryContext,
     SceneRecoveryPlan,
@@ -65,7 +64,6 @@ _FIXTURE = FixtureEnvelope(
 # The full action allow-list (inner gate) so any strategy *may* plan its action when armed.
 _ALL_ACTIONS = (
     SceneRecoveryAction.RESCAN,
-    SceneRecoveryAction.NEXT_VIEWPOINT,
     SceneRecoveryAction.NEXT_TARGET,
     SceneRecoveryAction.NUDGE_TARGET,
     SceneRecoveryAction.CONTAINER_AGITATE,
@@ -79,9 +77,6 @@ def _strategies() -> tuple[SceneRecoveryStrategy, ...]:
     """Every production SceneRecoveryStrategy, built with its real constructor idiom."""
 
     return (
-        NoRecoveryStrategy(),
-        ActivePerceptionRecoveryStrategy(),
-        NextTargetRecoveryStrategy(),
         SmallNudgeStrategy(offset_axis=(1.0, 0.0, 0.0)),
         ContainerAgitateStrategy(),
     )
@@ -91,8 +86,6 @@ def _profile(actions: tuple[str, ...]) -> GraspBehaviorProfile:
     return GraspBehaviorProfile(
         mode=GraspMode.DENSE_CLUTTER,
         sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
-        refinement_enabled=False,
-        verification_enabled=False,
         recovery_allowed_actions=actions,
     )
 
@@ -165,7 +158,7 @@ class SceneRecoveryStrategyConformanceTests(unittest.TestCase):
 
     def test_every_strategy_satisfies_runtime_protocol(self) -> None:
         # SceneRecoveryStrategy is @runtime_checkable; each built-in must structurally satisfy it.
-        self.assertEqual(len(self._strategies), 5, "expected all five built-in strategies")
+        self.assertEqual(len(self._strategies), 2, "expected both built-in strategies")
         for s in self._strategies:
             with self.subTest(strategy=type(s).__name__):
                 self.assertIsInstance(s, SceneRecoveryStrategy)
@@ -254,17 +247,15 @@ class SceneRecoveryStrategyConformanceTests(unittest.TestCase):
                 )
 
     def test_acting_strategies_plan_their_action_when_armed(self) -> None:
-        # Non-vacuity / two-path anchor: the four ACTING strategies must each plan their NON-NONE action on a
-        # context that fully satisfies their preconditions. Paired with the disabled-policy test, this proves
-        # both the accept AND the reject path are genuinely exercised — the suite is not all-NONE (or
-        # all-error-swallow) theatre. NoRecoveryStrategy is intentionally always-NONE and excluded here.
+        # Non-vacuity / two-path anchor: both strategies must each plan their NON-NONE action on a context
+        # that fully satisfies their preconditions. Paired with the disabled-policy test, this proves both the
+        # accept AND the reject path are genuinely exercised — the suite is not all-NONE (or
+        # all-error-swallow) theatre.
         armed_full = _ctx(
             current_tcp=_tcp_at((0.0, 0.0, 200.0)),
             last_frame=_frame_with_n_segs(3),
         )
         expected = {
-            "ActivePerceptionRecoveryStrategy": SceneRecoveryAction.RESCAN,
-            "NextTargetRecoveryStrategy": SceneRecoveryAction.NEXT_TARGET,
             "SmallNudgeStrategy": SceneRecoveryAction.NUDGE_TARGET,
             "ContainerAgitateStrategy": SceneRecoveryAction.CONTAINER_AGITATE,
         }
@@ -280,15 +271,7 @@ class SceneRecoveryStrategyConformanceTests(unittest.TestCase):
                     f"{name} did not plan its action on a fully-armed context (got {plan.action})",
                 )
                 self.assertIsNot(plan.action, SceneRecoveryAction.NONE)
-
-    def test_no_recovery_strategy_is_always_none(self) -> None:
-        # The documented always-decline strategy: returns NONE even on a fully-armed context.
-        no_recovery = NoRecoveryStrategy()
-        plan = no_recovery.plan(
-            _ctx(current_tcp=_tcp_at(), last_frame=_frame_with_n_segs(3))
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NONE)
-        self.assertEqual(plan.reason, "no_recovery_strategy")
+        self.assertEqual(set(expected), {type(s).__name__ for s in self._strategies})
 
 
 if __name__ == "__main__":

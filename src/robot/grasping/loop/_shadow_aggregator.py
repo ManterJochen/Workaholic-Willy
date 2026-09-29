@@ -37,10 +37,23 @@ if TYPE_CHECKING:  # pragma: no cover (import only for typing)
         ShadowRouter,
     )
 
-    from src.robot.grasping.loop.pick_loop import CommitPolicy, PickAttempt
+    from src.robot.grasping.loop.pick_loop import PickAttempt
 
 #: Per-candidate log cap: full feature rows for the top-N candidates, a tail aggregate beyond.
 _CANDIDATE_LOG_TOP_N: int = 16
+
+#: What the loop now counts of commit-gate re-observations, and the budget for them: none. The
+#: multi-view commit gate was removed on 2026-09-28, and it was the only thing that re-observed on
+#: a refused commit. The sequencing and recovery state keys still carry the count and the budget
+#: (rl/sequencing_policy.py, rl/recovery_policy.py, rl/router.py and the committed baselines), so
+#: they are fed this rather than reshaped.
+_NO_COMMIT_REOBSERVATIONS: int = 0
+
+#: How many viewpoints the loop moved the camera to: none. The viewpoint planners and the relocate
+#: path were removed on 2026-09-29, so every frame of a pick comes from where the camera already
+#: stands. The perception-budget state key still carries a views-seen bucket
+#: (rl/perception_budget_policy.py and the committed baselines), so it is fed this rather than reshaped.
+_NO_RELOCATED_VIEWS: int = 0
 
 
 def _candidate_geometry(candidate: object) -> dict[str, float]:
@@ -150,19 +163,13 @@ class _ShadowTelemetryAggregator:
         *,
         max_attempts_getter: Callable[[], int],
         shadow_router_getter: "Callable[[], ShadowRouter | None]",
-        viewpoints_getter: Callable[[], list],
-        commit_reobserve_getter: Callable[[], int],
         resolved_mode_getter: Callable[[], object],
-        commit_policy_getter: "Callable[[], CommitPolicy | None]",
     ) -> None:
         # Getter-closures-over-self (not construction-time copies) so the logic always reads end-of-pick values
-        # (e.g. _commit_reobserve_count is incremented mid-loop; _sequencing_current_attempts is rebound per pick).
+        # (e.g. _sequencing_current_attempts is rebound per pick).
         self._max_attempts_getter = max_attempts_getter
         self._shadow_router_getter = shadow_router_getter
-        self._viewpoints_getter = viewpoints_getter
-        self._commit_reobserve_getter = commit_reobserve_getter
         self._resolved_mode_getter = resolved_mode_getter
-        self._commit_policy_getter = commit_policy_getter
 
     def derive_post_attempt_baseline_action(self, *, last_attempt: "PickAttempt") -> str:
         """Deterministic baseline action the loop would take next.
@@ -176,8 +183,6 @@ class _ShadowTelemetryAggregator:
         from src.robot.grasping.rl.sequencing_policy import (
             SEQUENCING_ACTION_ABORT,
             SEQUENCING_ACTION_GRASP,
-            SEQUENCING_ACTION_RECOVER,
-            SEQUENCING_ACTION_REOBSERVE,
         )
 
         action = last_attempt.action
@@ -190,12 +195,6 @@ class _ShadowTelemetryAggregator:
             return SEQUENCING_ACTION_ABORT
         if action == "rescan":
             return SEQUENCING_ACTION_GRASP
-        if action == "relocate":
-            return SEQUENCING_ACTION_RECOVER
-        if action == "commit_refused_reobserve":
-            return SEQUENCING_ACTION_REOBSERVE
-        if action == "commit_refused_exhausted":
-            return SEQUENCING_ACTION_ABORT
         if action == "exhausted":
             return SEQUENCING_ACTION_ABORT
         if action == "execution_failed":
@@ -227,7 +226,8 @@ class _ShadowTelemetryAggregator:
                 bucket_views_seen,
             )
 
-            views_seen = int(len(self._viewpoints_getter())) + int(self._commit_reobserve_getter())
+            # The loop moves the camera to no other viewpoint, and re-observes on nothing else.
+            views_seen = _NO_RELOCATED_VIEWS
             attempts = list(attempts)
             last = attempts[-1] if attempts else None
             # PickAttempt does not surface a per-attempt candidate count; use an honest floor: 1 if any
@@ -245,11 +245,7 @@ class _ShadowTelemetryAggregator:
                 mode_bucket=bucket_mode(str(self._resolved_mode_getter())),
             )
             last_action = last.action if last is not None else ""
-            kept_capturing = last_action in (
-                "rescan",
-                "relocate",
-                "commit_refused_reobserve",
-            )
+            kept_capturing = last_action == "rescan"
             baseline_action = (
                 PERCEPTION_ACTION_CONTINUE if kept_capturing else PERCEPTION_ACTION_STOP
             )
@@ -279,7 +275,6 @@ class _ShadowTelemetryAggregator:
                 return None
             from src.robot.grasping.rl.recovery_policy import (
                 RECOVERY_ACTION_ABORT_RECOVERY,
-                RECOVERY_ACTION_REOBSERVE,
                 RECOVERY_ACTION_REPLAN_GRASP,
                 RECOVERY_ACTION_RE_SEGMENT,
                 RecoveryStateKey,
@@ -296,16 +291,12 @@ class _ShadowTelemetryAggregator:
                 # The live runtime computes no failure taxonomy (same as the sequencing seam).
                 failure_class_bucket=FAILURE_CLASS_UNKNOWN,
                 attempt_index_bucket=bucket_attempt_index(int(last.attempt_index)),
-                reobserve_count_bucket=bucket_reobserve_count(
-                    int(self._commit_reobserve_getter())
-                ),
+                reobserve_count_bucket=bucket_reobserve_count(_NO_COMMIT_REOBSERVATIONS),
                 dense_bucket=bucket_dense(str(self._resolved_mode_getter())),
                 last_outcome_bucket=bucket_last_outcome("failed"),
             )
             action = last.action
-            if action in ("relocate", "commit_refused_reobserve"):
-                baseline_action = RECOVERY_ACTION_REOBSERVE
-            elif action == "rescan":
+            if action == "rescan":
                 baseline_action = RECOVERY_ACTION_RE_SEGMENT
             elif action in ("execution_failed", "object_not_detected"):
                 baseline_action = RECOVERY_ACTION_REPLAN_GRASP
@@ -341,23 +332,20 @@ class _ShadowTelemetryAggregator:
                 clip_commit_reobserve_count,
             )
 
-            commit_count = int(self._commit_reobserve_getter())
-            max_reobserve = 0
-            commit_policy = self._commit_policy_getter()
-            if commit_policy is not None:
-                max_reobserve = int(commit_policy.max_reobserve_attempts)
             baseline_action = self.derive_post_attempt_baseline_action(last_attempt=last_attempt)
             return SequencingAttemptState(
                 attempt_index=int(last_attempt.attempt_index),
                 last_outcome_label=OUTCOME_LABEL_FAILURE,
                 attempt_index_clipped=clip_attempt_index(int(last_attempt.attempt_index)),
-                commit_reobserve_count_clipped=clip_commit_reobserve_count(commit_count),
-                commit_reobserve_count=commit_count,
+                commit_reobserve_count_clipped=clip_commit_reobserve_count(
+                    _NO_COMMIT_REOBSERVATIONS
+                ),
+                commit_reobserve_count=_NO_COMMIT_REOBSERVATIONS,
                 # Live runtime does not compute failure taxonomy; the sequencing lookup-table policy serves
                 # these from the hand-authored fallback by default.
                 last_failure_class=FAILURE_CLASS_UNKNOWN,
                 max_attempts=int(self._max_attempts_getter()),
-                max_reobserve_attempts=max_reobserve,
+                max_reobserve_attempts=_NO_COMMIT_REOBSERVATIONS,
                 baseline_action=baseline_action,
             )
         except Exception as exc:  # noqa: BLE001 (never break the pick path)

@@ -2,10 +2,11 @@
 
 Every supported :class:`AutonomousGraspOutcome` value maps to the set
 of :class:`GraspAttemptRecord` fields that must be populated for the
-record to count as "incident-grade".
+record to count as "incident-grade". A retired outcome keeps its entry,
+by its string, so a record logged while it existed still audits.
 
 A required field name may reference a top-level record attribute
-(``"execution"``, ``"verification"``, ``"recovery_actions"``, etc.)
+(``"execution"``, ``"recovery_actions"``, etc.)
 or a key inside ``record.extra`` using the ``"extra.<key>"`` dotted
 form. The audit treats both forms uniformly.
 
@@ -37,21 +38,37 @@ _O = AutonomousGraspOutcome
 
 
 TELEMETRY_CATALOG: dict[str, frozenset[str]] = {
-    _O.SUCCEEDED.value: frozenset({"execution", "verification"}),
+    # ``verification`` left both requirements below on 2026-09-29 with the post-grasp verification
+    # stage: no live pick writes the block (a simulator's ground-truth lift is its only writer), and
+    # the hold is the execution policy's own post-close check, whose verdict is the outcome itself
+    # (an empty close ends as ``verification_failed``). A record logged before then that carries the
+    # verifier's block audits as it did: a present field is never a missing one.
+    _O.SUCCEEDED.value: frozenset({"execution"}),
     _O.NO_TARGET.value: frozenset(),
     # A cancelled attempt requires nothing: it stopped before it could produce an execution block, and
     # demanding one would make every operator stop look like a malformed record.
     _O.CANCELLED.value: frozenset(),
+    # Also what a pick the retired relocate path ended (``relocated_exhausted``, removed
+    # 2026-09-29) was reported as, so such a record still audits here.
     _O.NO_VALID_GRASP.value: frozenset(),
     _O.EXECUTION_FAILED.value: frozenset({"execution"}),
-    _O.REFINEMENT_FAILED.value: frozenset({"refinement"}),
-    _O.VERIFICATION_FAILED.value: frozenset({"execution", "verification"}),
+    _O.VERIFICATION_FAILED.value: frozenset({"execution"}),
     _O.RECOVERY_EXHAUSTED.value: frozenset({"recovery_actions"}),
     _O.UNSAFE_RECOVERY_REFUSED.value: frozenset({"recovery_actions"}),
     _O.MISSING_CAMERA_FRAME.value: frozenset(),
-    _O.TARGET_LOST_DURING_REFINE.value: frozenset({"refinement"}),
-    _O.REFINEMENT_DIVERGED.value: frozenset({"refinement"}),
+    # Retired: the two-scan pre-grasp refinement that ended a pick these three ways was removed on
+    # 2026-09-29 with the closed_loop and dense_autonomous modes, and no pick reports them since. Kept
+    # by their strings, each requiring the refinement block exactly as it did, so a record logged
+    # before then still audits; without them that record would read as an unknown outcome.
+    "refinement_failed": frozenset({"refinement"}),
+    "target_lost_during_refine": frozenset({"refinement"}),
+    "refinement_diverged": frozenset({"refinement"}),
     _O.MODE_NOT_AVAILABLE.value: frozenset(),
+    # The decision entries require their keys, never a value: a record logged before
+    # 2026-09-29 whose action or reason code is retired audits as it did. Retired then: the
+    # camera re-observation's ``move_camera`` with the ``low_confidence`` it carried and
+    # ``reobserve_budget_exhausted``, and ``reobserve_planner_unavailable``, which a grasp less
+    # confident than the threshold carried until it was renamed ``low_confidence``.
     _O.DECISION_FAIL_CLOSED.value: frozenset(
         {
             "extra.decision_reason_code",
@@ -69,7 +86,10 @@ TELEMETRY_CATALOG: dict[str, frozenset[str]] = {
             "extra.threshold_used",
         }
     ),
-    _O.NO_COMMIT_INSUFFICIENT_FUSION.value: frozenset(),
+    # Retired: the multi-view commit gate that ended a pick this way was removed on 2026-09-28, and
+    # no pick reports it since. Kept by its string so a record logged before then still audits, and
+    # requires nothing, exactly as it did; without it that record would read as an unknown outcome.
+    "no_commit_insufficient_fusion": frozenset(),
     # Drift / OOD watchdog terminal outcomes. Both require the
     # watchdog telemetry triple so a replay can attribute the
     # fail-closure cleanly.

@@ -37,7 +37,7 @@ class RecoverySchemaDefaultsTests(unittest.TestCase):
         self.assertEqual(rec.per_action_budget, ())
         self.assertEqual(
             rec.apply_modes,
-            ("auto", "dense_clutter", "dense_autonomous"),
+            ("auto", "dense_clutter"),
         )
 
     def test_easy_not_in_default_apply_modes(self) -> None:
@@ -115,13 +115,18 @@ class RecoveryNonPhysicalAllowedTests(unittest.TestCase):
         cfg = _instantiate(
             recovery={
                 "enabled": True,
-                "allowed_actions": ["rescan", "next_viewpoint", "next_target"],
+                "allowed_actions": ["rescan", "next_target"],
             }
         )
         self.assertEqual(
             cfg.recovery.allowed_actions,
-            ("rescan", "next_viewpoint", "next_target"),
+            ("rescan", "next_target"),
         )
+        # `next_viewpoint`, the third non-physical action until it was merged into `rescan` on
+        # 2026-09-29, is refused with the action to name instead.
+        with self.assertRaises(ValidationError) as caught:
+            _instantiate(recovery={"enabled": True, "allowed_actions": ["next_viewpoint"]})
+        self.assertIn("removed on purpose: use rescan", str(caught.exception))
 
 
 if __name__ == "__main__":  # pragma: no cover

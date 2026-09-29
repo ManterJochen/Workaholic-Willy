@@ -20,6 +20,7 @@ defined-by in one command), and ``ansible-config dump --only-changed``.
 
 from __future__ import annotations
 
+import textwrap
 from collections.abc import Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -29,6 +30,7 @@ from .edit import MISSING, read_key
 from .hand_numbers import hand_source
 from ._provenance import comment_above, index_chains, nearest_keys, read_value
 from ._tiers import TIERS, gate_state, tier_for
+from .schema._removed import removed_key_sentence
 from ._schema_index import (
     alias_for,
     field_default,
@@ -109,9 +111,12 @@ class KeyExplanation:
     #: ``None`` when the caller has no loaded tree (``where`` must work while the config is broken).
     value: Any = None
     has_value: bool = False
-    #: False for a key the schema does not accept; then only ``suggestions`` is populated.
+    #: False for a key the schema does not accept; then only ``suggestions`` or ``removed`` is populated.
     known: bool = False
     suggestions: tuple[str, ...] = ()
+    #: For a key that left the schema on purpose, the sentence that says what to write instead
+    #: (``schema/_removed.py``), in place of the nearest-key suggestions. Empty otherwise.
+    removed: str = ""
     tier: str = ""
     type_summary: str = ""
     default: Any = None
@@ -143,6 +148,14 @@ class KeyExplanation:
         out.append(f"{self.path} = {self.value!r}" if self.has_value else self.path)
         out.append("")
 
+        if not self.known and self.removed:
+            out.append(f"{_INDENT}REMOVED ON PURPOSE. The schema no longer accepts it, so setting it is")
+            out.append(f"{_INDENT}refused at load with this sentence:")
+            out.extend(textwrap.wrap(
+                self.removed, width=100, initial_indent=f"{_INDENT}  ", subsequent_indent=f"{_INDENT}  ",
+                break_on_hyphens=False,
+            ))
+            return "\n".join(out)
         if not self.known:
             out.append(f"{_INDENT}NOT A KNOWN KEY. The schema does not accept it, so setting it would be")
             out.append(f"{_INDENT}rejected at load (unknown keys are never ignored).")
@@ -204,9 +217,12 @@ def explain(
     shown = (value is not None) if has_value is None else has_value
 
     if field is None:
+        # A key removed on purpose is answered with what to write instead, never with a near miss:
+        # the nearest living key of `robot.grasping.closed_loop` is `robot.grasping.occlusion`.
+        removed = removed_key_sentence(path) or ""
         return KeyExplanation(
-            path=path, value=value, has_value=shown, known=False,
-            suggestions=tuple(nearest_keys(path, sorted(index), limit=5)),
+            path=path, value=value, has_value=shown, known=False, removed=removed,
+            suggestions=() if removed else tuple(nearest_keys(path, sorted(index), limit=5)),
         )
 
     # `#:` comments in the schema source are how this project documents fields. Pydantic does not

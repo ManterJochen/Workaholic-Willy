@@ -19,7 +19,7 @@ from src.robot.grasping.scoring.success_probability import (
 )
 
 
-def _ctx(*, mode_label: str = "dense_autonomous", lifecycle_phase: str = "canary") -> SimpleNamespace:
+def _ctx(*, mode_label: str = "dense_clutter", lifecycle_phase: str = "canary") -> SimpleNamespace:
     return SimpleNamespace(mode_label=mode_label, lifecycle_phase=lifecycle_phase)
 
 
@@ -33,7 +33,7 @@ class TestConfig:
         cfg = UncertaintyRerankConfig()
         assert cfg.enabled is False
         assert cfg.weight == 0.0
-        assert cfg.modes == ("dense_clutter", "dense_autonomous")
+        assert cfg.modes == ("dense_clutter",)
 
     def test_weight_out_of_bounds_rejected(self) -> None:
         with pytest.raises(ValueError):

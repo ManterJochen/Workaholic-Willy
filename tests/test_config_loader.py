@@ -114,9 +114,10 @@ class ConfigLoaderTests(unittest.TestCase):
 
     def test_profile_overlay_reset_sentinel_unsets_a_base_value(self) -> None:
         # A plain `null` overlay leaf KEEPS the base (test above); the reset sentinel "__null__" is the one
-        # way a profile overlay can force a base field back to None. This is exactly how the `sim` profile
-        # drops the production models.*.optim.torch_dtype: auto (fp16 weights) back to unset — the sim
-        # detector's validated fp32-weights recall path (fp16 was measured to drop the small overhead cube).
+        # way a profile overlay can force a base field back to None. This is how the `sim` profile holds
+        # models.*.optim.torch_dtype at unset whatever the base says — the sim detector's validated
+        # fp32-weights recall path (fp16 was measured to drop the small overhead cube). The base leaves
+        # torch_dtype unset too since 2026-09-29, so attn_implementation ("eager") proves the reset here.
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = _copy_data_tree(tmp_dir)
             (root / "models" / "object.qa.yaml").write_text(
@@ -130,7 +131,7 @@ class ConfigLoaderTests(unittest.TestCase):
             cfg = load_config(root)
 
         optim = cfg.models.objectdetector.optim
-        self.assertIsNone(optim.torch_dtype)          # base "auto" reset to None by the sentinel
+        self.assertIsNone(optim.torch_dtype)          # unset in the base as well since 2026-09-29
         self.assertIsNone(optim.attn_implementation)  # base "eager" reset to None by the sentinel
         self.assertTrue(optim.channels_last)          # a field the overlay didn't touch keeps its base value
 

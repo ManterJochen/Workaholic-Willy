@@ -16,12 +16,15 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
 from src.config.schema.robot.grasping_schema import FusionGeometryConfig
 from src.geometry import Frame, Transform
+from src.robot.grasping.loop import pick_loop
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator
+from src.robot.grasping.telemetry.latency_tracker import LatencyStage, LatencyTracker
 from src.robot.grasping.types.perception import CameraObservation, PerceptionFrame
 
 _LOGGER = "src.robot.grasping.loop.pick_loop"
@@ -162,6 +165,123 @@ class WorkingRigTests(unittest.TestCase):
 
         assert fused is not None
         self.assertIsNone(fused.cloud_for(0))
+
+
+class TheFusionLatencySpanTests(unittest.TestCase):
+    """`fusion_latency_ms` is the geometry fusion of a frame, and only where another camera's view entered it.
+
+    It feeds the fusion SLO gate, two positional RL features and the perception-budget trainer's continue label
+    (its presence), so both halves matter: what the span covers, and when it exists at all.
+    """
+
+    def _orchestrator(self, rig: object, **kwargs) -> tuple[BinPickingOrchestrator, LatencyTracker]:  # noqa: ANN003
+        tracker = LatencyTracker()
+        orch = _orchestrator(multi_camera_perception=rig, latency_tracker=tracker, **kwargs)
+        return orch, tracker
+
+    def test_a_fused_view_records_the_span(self) -> None:
+        orch, tracker = self._orchestrator(
+            _Rig((CameraObservation(camera_id="left", frame=_frame()),)),
+            camera_frame_resolvers={"left": _Resolver()}, fusion_geometry_config=_enabled())
+
+        orch._fused_scene(_frame(), _IDENTITY)
+
+        elapsed = tracker.get(LatencyStage.FUSION)
+        assert elapsed is not None
+        self.assertGreaterEqual(elapsed, 0.0)
+        self.assertEqual(orch._fusion_geometry_telemetry["fused_views_used"], 1)
+
+    def test_a_view_that_matched_nothing_still_entered_the_fusion(self) -> None:
+        """The other camera saw something else: its view was associated and fused nothing, which cost what it cost.
+        The record says the same with a `fused_view_count` of 1."""
+        orch, tracker = self._orchestrator(
+            _Rig((CameraObservation(camera_id="left", frame=_frame(boxes=((24, 30),))),)),
+            camera_frame_resolvers={"left": _Resolver()}, fusion_geometry_config=_enabled())
+
+        orch._fused_scene(_frame(boxes=((2, 6),)), _IDENTITY)
+
+        self.assertIsNotNone(tracker.get(LatencyStage.FUSION))
+        self.assertEqual(orch._fusion_geometry_telemetry["fused_objects"], 0)
+
+    def test_no_other_view_records_no_span(self) -> None:
+        """Absent, never a zero: the SLO gate skips it, and the trainer reads the pick as single-view."""
+        cases = {
+            "fusion off": dict(rig=_Rig((CameraObservation(camera_id="left", frame=_frame()),)),
+                               camera_frame_resolvers={"left": _Resolver()}),
+            "the other camera grounded nothing": dict(
+                rig=_Rig((CameraObservation(camera_id="left", frame=_frame(boxes=())),)),
+                camera_frame_resolvers={"left": _Resolver()}, fusion_geometry_config=_enabled()),
+            "the other camera has no resolver": dict(
+                rig=_Rig((CameraObservation(camera_id="left", frame=_frame()),)),
+                camera_frame_resolvers={}, fusion_geometry_config=_enabled()),
+            "no other camera delivered": dict(rig=_Rig(()), fusion_geometry_config=_enabled()),
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label):
+                rig = kwargs.pop("rig")
+                orch, tracker = self._orchestrator(rig, **kwargs)
+                self.assertIsNone(orch._fused_scene(_frame(), _IDENTITY))
+                self.assertIsNone(tracker.get(LatencyStage.FUSION))
+
+    def test_the_other_cameras_own_perception_is_not_in_the_span(self) -> None:
+        """Their capture, detection and segmentation (`acquire_all`) are perception: five seconds of it here, and a
+        clock that moves nowhere else, leave a span of nothing."""
+        clock = SimpleNamespace(ns=0)
+        clock.monotonic_ns = lambda: clock.ns
+
+        class _SlowRig(_Rig):
+            def acquire_all(self) -> tuple[CameraObservation, ...]:
+                clock.ns += 5_000_000_000
+                return super().acquire_all()
+
+        orch, tracker = self._orchestrator(
+            _SlowRig((CameraObservation(camera_id="left", frame=_frame()),)),
+            camera_frame_resolvers={"left": _Resolver()}, fusion_geometry_config=_enabled())
+
+        with mock.patch.object(pick_loop, "time", clock):
+            orch._fused_scene(_frame(), _IDENTITY)
+
+        self.assertEqual(tracker.get(LatencyStage.FUSION), 0.0)
+
+
+class TheServiceCarriesTheFusionSpanTests(unittest.TestCase):
+    """End to end: the span reaches the pick's report as `fusion_latency_ms`, the field every consumer reads, on a pick
+    that fused another camera's view, and is absent from one that did not."""
+
+    def _telemetry(self, *, fused: bool) -> dict:
+        from src.robot.execution.autonomous_grasp import AutonomousGraspService, GraspMode
+        from src.robot.grasping import IdentityFrameResolver
+        from tests.test_r2_characterization import (
+            _FakePerception,
+            _ScriptedCalculator,
+            _TypedFakeArm,
+            _success_result,
+        )
+
+        svc = AutonomousGraspService.from_components(
+            arm=_TypedFakeArm(),  # type: ignore[arg-type]
+            calculator=_ScriptedCalculator([_success_result()]),  # type: ignore[arg-type]
+            perception=_FakePerception([_frame()]),
+            mode=GraspMode.EASY,
+            frame_resolver=IdentityFrameResolver(),
+        )
+        orch = svc.runtime.orchestrator
+        orch.multi_camera_perception = _Rig((CameraObservation(camera_id="left", frame=_frame()),))
+        orch.camera_frame_resolvers = {"left": _Resolver()}
+        orch.fusion_geometry_config = _enabled() if fused else None
+        report = svc.pick()
+        self.assertTrue(report.succeeded, report.failure_summary())
+        return dict(report.telemetry)
+
+    def test_a_fused_pick_carries_the_fusion_latency(self) -> None:
+        telemetry = self._telemetry(fused=True)
+        self.assertIsInstance(telemetry.get("fusion_latency_ms"), float)
+        self.assertIn("ranking_latency_ms", telemetry, "the ranking span, which holds the fusion one, still lands")
+
+    def test_a_single_view_pick_carries_none(self) -> None:
+        telemetry = self._telemetry(fused=False)
+        self.assertNotIn("fusion_latency_ms", telemetry)
+        self.assertIn("ranking_latency_ms", telemetry)
 
 
 class TheIndexIsTheSegmentationIndexTests(unittest.TestCase):

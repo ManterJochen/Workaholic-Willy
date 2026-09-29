@@ -5,8 +5,8 @@ plus operator sections in ``src/robot/grasping/README.md``:
 
 * A *mode behaviour table* with eight locked columns.
 * A *troubleshooting matrix* (symptom → cause → mode/policy fix).
-* One quickstart paragraph per shipped preset
-  (``easy`` / ``dense_clutter`` / ``verification_heavy``).
+* One quickstart paragraph per shipped preset (``easy`` / ``dense_clutter``;
+  ``verification_heavy`` was deleted on 2026-09-29 with the ``closed_loop`` mode it named).
 
 Robot-level safety triage subset lives in
 ``src/robot/README.md``.
@@ -121,15 +121,16 @@ class GraspingReadmeSectionTests(unittest.TestCase):
 
     def test_mode_behaviour_table_present(self) -> None:
         # The b26944c README restyle documents mode behaviour as the operator PRESETS table:
-        # `default_mode` (the single flip field) + the four behaviour dimensions + every shipped preset.
+        # `default_mode` (the single flip field) + the behaviour dimensions + every shipped preset.
+        # `refine` left the dimensions on 2026-09-29 with the two-scan refinement.
         self.assertIn("default_mode", self.body)
-        for dimension in ("refine", "verify", "recover", "uncertainty"):
+        for dimension in ("verify", "recover", "uncertainty"):
             self.assertIn(
                 dimension,
                 self.body,
                 f"mode/presets table missing behaviour dimension {dimension!r}",
             )
-        for preset in ("easy", "dense_clutter", "verification_heavy"):
+        for preset in list_presets():
             self.assertIn(
                 preset,
                 self.body,

@@ -618,6 +618,7 @@
     },
     "home_joint_positions": null,
     "home_joint_positions_deg": null,
+    "look_joint_positions_deg": null,
     "safe_pose": {
       "x": 450.0,
       "y": -300.0,
@@ -746,36 +747,9 @@
       "calculator": "geometric",
       "isotropic_radial_closing": false,
       "record_log_path": null,
-      "closed_loop": {
-        "enabled": false,
-        "pregrasp_rescan": true,
-        "max_position_correction_mm": 20.0,
-        "max_orientation_correction_deg": 15.0,
-        "max_grip_width_correction_mm": 20.0,
-        "target_match_iou_threshold": 0.3
-      },
-      "verification": {
-        "enabled": false,
-        "require_object_detected": false,
-        "width_delta_min_mm": 2.0,
-        "width_delta_max_mm": 10.0,
-        "post_lift_vision_check": false,
-        "vision_displacement_iou_max": 0.2,
-        "fail_closed": true,
-        "require_all_conclusive": false
-      },
-      "dense_recovery": {
-        "enabled": false,
-        "max_recovery_actions": 2,
-        "strategy": "active_perception",
-        "allowed_actions": [
-          "next_viewpoint"
-        ]
-      },
       "decision": {
         "enabled": false,
         "auto_uncertainty_threshold": 0.4,
-        "max_reobservations": 2,
         "reasons_penalty": 0.2,
         "fail_closed_on_real_hardware": true
       },
@@ -784,8 +758,7 @@
         "weight": 0.0,
         "apply_modes": [
           "auto",
-          "dense_clutter",
-          "dense_autonomous"
+          "dense_clutter"
         ],
         "ik_quality_enabled": false,
         "ik_quality_weight": 0.4,
@@ -800,8 +773,7 @@
         "hard_reject_enabled": false,
         "apply_modes": [
           "auto",
-          "dense_clutter",
-          "dense_autonomous"
+          "dense_clutter"
         ],
         "corridor_radius_mm": 20.0,
         "corridor_step_mm": 5.0,
@@ -817,8 +789,7 @@
         "max_local_score_drop": 0.1,
         "apply_modes": [
           "auto",
-          "dense_clutter",
-          "dense_autonomous"
+          "dense_clutter"
         ],
         "blocker_graph": {
           "mask_adjacency_enabled": false,
@@ -835,8 +806,7 @@
         "per_action_budget": [],
         "apply_modes": [
           "auto",
-          "dense_clutter",
-          "dense_autonomous"
+          "dense_clutter"
         ],
         "fixture": null
       },
@@ -845,8 +815,7 @@
         "fail_closed_threshold": 0.4,
         "apply_modes": [
           "auto",
-          "dense_clutter",
-          "dense_autonomous"
+          "dense_clutter"
         ],
         "weights": {
           "depth_confidence": 1.0,
@@ -864,8 +833,7 @@
         "rerank_enabled": false,
         "rerank_weight": 0.0,
         "rerank_modes": [
-          "dense_clutter",
-          "dense_autonomous"
+          "dense_clutter"
         ]
       },
       "success_model": {
@@ -874,14 +842,12 @@
         "apply_modes": [
           "easy",
           "auto",
-          "dense_clutter",
-          "dense_autonomous"
+          "dense_clutter"
         ],
         "ranking_blend_enabled": false,
         "ranking_blend_weight": 0.2,
         "ranking_blend_modes": [
-          "dense_clutter",
-          "dense_autonomous"
+          "dense_clutter"
         ],
         "lifecycle_phase": "shadow"
       },
@@ -926,32 +892,6 @@
       },
       "fusion": {
         "enabled": false,
-        "max_views": 6,
-        "max_view_age_s": 20.0,
-        "voxel_size_mm": 6.0,
-        "roi_extent_mm": [
-          600.0,
-          600.0,
-          360.0
-        ],
-        "max_voxels": 1000000,
-        "depth_min_mm": 80.0,
-        "depth_max_mm": 1400.0,
-        "intrinsics_atol": 1e-6,
-        "commit_policy": {
-          "enabled": false,
-          "min_views_accepted": 2,
-          "min_corridor_hit_fraction": 0.3,
-          "corridor_radius_mm": 25.0,
-          "corridor_length_mm": 120.0,
-          "max_reobserve_attempts": 1,
-          "apply_modes": [
-            "auto",
-            "dense_clutter",
-            "dense_autonomous"
-          ]
-        },
-        "active_perception_use_fusion": false,
         "cameras": {},
         "geometry": {
           "enabled": false,
@@ -974,8 +914,7 @@
         "num_retreat_samples": 4,
         "collision_margin_mm": 0.0,
         "apply_modes": [
-          "dense_clutter",
-          "dense_autonomous"
+          "dense_clutter"
         ]
       },
       "deep_generator": {

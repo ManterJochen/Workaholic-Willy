@@ -3,8 +3,8 @@
 :class:`GraspCalculator` deliberately does not throw for the common no-grasp cases: an
 empty mask, every candidate colliding, no valid depth under the mask. A caller needs a
 structured way to tell why the candidate list came back empty, so that it can retry
-with a rescan or active perception, fall back to a simpler planner, surface the failure
-to an operator, or keep telemetry naming the stage that rejected the candidates.
+with a fresh frame, fall back to a simpler planner, surface the failure to an operator,
+or keep telemetry naming the stage that rejected the candidates.
 
 This module is a small vendor-neutral enum and a dataclass that wraps the
 ``list[GraspPoint]`` return without breaking the existing API.
@@ -45,6 +45,9 @@ class GraspFailureReason(StrEnum):
     NO_VALID_GRASP = "no_valid_grasp"
     RESCAN_RECOMMENDED = "rescan_recommended"
     TRY_NEXT_CANDIDATE = "try_next_candidate"
+    # Asks for another view of the target. Nothing moves the camera for it since the viewpoint
+    # planners left on 2026-09-29: the pick loop answers it with a fresh frame from where the
+    # camera stands (``_RESCAN_REASONS``), and the recovery table with ``RESCAN``.
     ACTIVE_PERCEPTION_RECOMMENDED = "active_perception_recommended"
     # The mask topology is too risky for a stable parallel-jaw grasp: a ring, a U-shape,
     # a handle. The grasp is rejected before motion planning, and a rescan is recommended
@@ -55,21 +58,24 @@ class GraspFailureReason(StrEnum):
     SEMANTIC_REJECTED = "semantic_rejected"
     # The target mask is heavily occluded by other detected objects: the fraction of the
     # target convex hull covered by neighbouring masks exceeded the configured
-    # ``heavy_occlusion_threshold``. It pairs with ``ACTIVE_PERCEPTION_RECOMMENDED``, so
-    # the caller can ask for a viewpoint change or a scene reshuffle.
+    # ``heavy_occlusion_threshold``. It pairs with ``ACTIVE_PERCEPTION_RECOMMENDED``, which
+    # the pick loop answers with a fresh frame; a scene reshuffle is a recovery action.
     HEAVY_OCCLUSION = "heavy_occlusion"
     # The target was classified as a non-rigid object, a cable, cloth or bag, and the
     # configured ``DeformableHandlingStrategy`` refused to plan a parallel-jaw grasp. The
     # execution layer routes the request to a specialised handler, a deformable planner,
     # an operator or a different end-effector, rather than retrying the rigid pipeline.
     DEFORMABLE_ROUTING_REQUIRED = "deformable_routing_required"
-    # In two-scan pre-grasp refinement, the target the initial grasp was computed on
-    # could not be re-identified in the refined frame, because no matching segmentation
+    # Retired: no producer since the two-scan pre-grasp refinement left on 2026-09-29; kept
+    # for the recovery table and for records logged before then. In that refinement, the
+    # target the initial grasp was computed on could not be re-identified in the refined
+    # frame, because no matching segmentation
     # passed the tracker threshold. It is distinct from ``NO_VALID_GRASP``, so a caller
     # tells losing sight of the object from never having had a candidate.
     TARGET_LOST_DURING_REFINE = "target_lost_during_refine"
-    # Refinement produced a grasp whose position, orientation or grip-width delta
-    # exceeded the configured correction bounds. It is a refuse-to-execute signal: the
+    # Retired with the two-scan refinement on 2026-09-29, like the member above. The
+    # refinement produced a grasp whose position, orientation or grip-width delta
+    # exceeded the configured correction bounds. It was a refuse-to-execute signal: the
     # refined frame disagreed with the initial frame strongly enough that the correction
     # is not trusted.
     REFINEMENT_DIVERGED = "refinement_diverged"
@@ -117,9 +123,9 @@ class GraspFailureReason(StrEnum):
     # Its recovery mapping is deliberately empty, for a different reason from
     # CONTROLLER_NOT_OPERATIONAL above: there acting would be unsafe, and here it would
     # be pointless. The detector is deterministic on a static frame, so a rescan
-    # re-derives the same labels and only burns the attempt budget. Mapping this to a
-    # viewpoint relocate, since an occluded object may carry its label from another
-    # angle, is defensible and is not done here: it needs a measurement first.
+    # re-derives the same labels and only burns the attempt budget. Looking from another
+    # angle, since an occluded object may carry its label there, is defensible and is not
+    # done here: it needs a measurement first.
     #
     # ``GraspResult.telemetry['labels_seen']`` carries what perception did return, which
     # is the actionable half for whoever is reading.

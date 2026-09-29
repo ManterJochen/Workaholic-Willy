@@ -100,14 +100,15 @@ class Cell:
     #: How the pick moves (standoff, squeeze, retreat), built by the pick service into the one policy it
     #: drives, on the arm and hand it resolves and with every guard. ``UNSET`` keeps the service's own.
     motion: "Maybe[GraspMotion]" = UNSET
-    #: Which `GraspMode` the service is BUILT in: `easy`, `auto`, `dense_clutter`, `closed_loop` or
-    #: `dense_autonomous`. ``UNSET`` keeps the service's own default, which is `auto`.
+    #: Which `GraspMode` the service is BUILT in: `easy`, `auto` or `dense_clutter`. ``UNSET`` keeps
+    #: the service's own default, which is `auto`. `closed_loop` and `dense_autonomous` were removed
+    #: on 2026-09-29 and are refused with the mode to name instead.
     #:
     #: Build-time, not per pick, and that is the whole reason it is here. `pick(mode=...)` changes
     #: the behaviour profile of one attempt and never the sampler the service was built with, so a
     #: service built in `auto` refuses `dense_clutter` with `MODE_NOT_AVAILABLE` rather than
-    #: quietly sampling the other way. Without this field the only door to the two dense modes --
-    #: the ones a bin needs -- was to bypass `Cell` and call `build_real_cell` by hand.
+    #: quietly sampling the other way. Without this field the only door to the dense mode -- the
+    #: one a bin needs -- was to bypass `Cell` and call `build_real_cell` by hand.
     mode: "Maybe[GraspMode | str]" = UNSET
     _service: Any = field(default=None, repr=False)
 

@@ -31,8 +31,10 @@ things around it.
 
 Two more are the owner's, 2026-09-24. Where each pick looks from (``look``): a wrist camera sees what
 the arm points it at, and a pick ends above its own grasp, so every pick of a wrist cell first moves to
-a look the program declares, or home when it declares none (`src.robot.execution.looks`); a fixed
-camera does not move. And ``put_back``: a part lifted is put back where it was grasped, so one part
+the looks the program declares, else the ones its cell profile configures
+(``robot.look_joint_positions_deg``), else home on a wrist camera (`src.robot.execution.looks`); a
+fixed camera's arm moves only to looks the program or the profile names. A wrist camera's looks are
+fused, each with the ones before, until a grasp is safe (2026-09-28). And ``put_back``: a part lifted is put back where it was grasped, so one part
 serves a whole campaign; a part that could not be put back stops the campaign, because the next pick
 would start with it in the hand.
 
@@ -42,6 +44,12 @@ every pick (the service's debug image, put back as it was afterwards), pins each
 primary camera's window with the attempt's outcome, and says that outcome on every window. It is display
 only: a window closed, or a view that raises, changes nothing the campaign does, and the view reads the
 cameras through their display path, which changes nothing the picks measure.
+
+Two switches of 2026-09-29, both off by default. ``both_faces`` asks every pick to see both jaw contact
+faces of its chosen grasp before it grips, for safety-critical processes: a wrist camera looks on for them, and
+a pick no view showed both of ends ``no_valid_grasp`` with nothing gripped, on a fixed camera as on the wrist.
+``record_views`` keeps each pick's looks for training, one file per pick
+(`src.robot.execution.record_views`), named after the pick's record.
 """
 
 from __future__ import annotations
@@ -67,6 +75,7 @@ __all__ = [
     "PickRun",
     "PickRunReport",
     "Recording",
+    "configured_looks_of",
 ]
 
 logger = logging.getLogger(__name__)
@@ -200,6 +209,20 @@ class PickAttempt:
     #: How many objects of the frame that grasp was planned in gained a second camera's surface, the object it went for
     #: or not (the service report's `fused_objects`); 0 where none did.
     fused_objects: int = 0
+    #: The looks of a wrist camera whose views of the part were fused into the cloud its grasp was ranked on, the look
+    #: it was ranked on first (the service report's `looks_fused`). Empty on a fixed camera.
+    looks_fused: tuple[str, ...] = ()
+    #: Whether the contact face each jaw closes on, of the chosen grasp, was seen: (jaw 1, jaw 2), the service report's
+    #: `jaw_faces_seen`. `None` where no grasp was judged or the service does not say.
+    jaw_faces_seen: "tuple[bool, bool] | None" = None
+    #: The hand-eye check of a wrist pick, mm (the service report's `hand_eye_gap_mm`). `None` where fewer than two
+    #: looks shared enough of the part.
+    hand_eye_gap_mm: float | None = None
+    #: Where this pick's looks were kept, on a campaign that keeps them (`PickRun.record_views`). Empty otherwise.
+    views_file: str = ""
+    #: How far the one view a wrist pick generated, once its declared looks were used up, turned about the part,
+    #: degrees (the service report's `generated_view_deg`); its look is among `looks`. `None` where none was generated.
+    generated_view_deg: float | None = None
 
     @property
     def passed(self) -> bool:
@@ -219,7 +242,21 @@ class PickAttempt:
             f"  {self.detail}" if self.detail else ""
         ) + ("  hold not measured" if self.unmeasured else "")]
         if self.looks:
-            lines.append(f"    looked from {'; '.join(self.looks)}")
+            fused = f"; fused {' + '.join(self.looks_fused)}" if len(self.looks_fused) > 1 else ""
+            lines.append(f"    looked from {'; '.join(self.looks)}{fused}")
+        if self.jaw_faces_seen is not None:
+            said = ", ".join(f"jaw {jaw} {'seen' if seen else 'not seen'}"
+                             for jaw, seen in zip((1, 2), self.jaw_faces_seen))
+            lines.append(f"    contact faces of the chosen grasp: {said}")
+        if self.generated_view_deg is not None:
+            lines.append(f"    generated one view, turned {self.generated_view_deg:+.0f} deg about the part")
+        if self.hand_eye_gap_mm is not None:
+            from src.robot.grasping.multiview.association import HAND_EYE_DRIFT_WARN_MM  # noqa: PLC0415
+
+            drifted = self.hand_eye_gap_mm > HAND_EYE_DRIFT_WARN_MM
+            lines.append(f"    hand-eye: the looks measure the part {self.hand_eye_gap_mm:.1f} mm apart"
+                         + (f", more than {HAND_EYE_DRIFT_WARN_MM:.1f} mm: the calibration may have drifted, check it"
+                            if drifted else ""))
         if self.object_mm is not None:
             lines.append("    object seen at ({:.1f}, {:.1f}, {:.1f}) mm BASE".format(*self.object_mm))
         if self.grasp_pose is not None:
@@ -234,6 +271,8 @@ class PickAttempt:
         if self.put_back is not None:
             lines.append(f"    put back: {self.put_back.outcome.value}"
                          + ("" if self.put_back.ok else f", {self.put_back.message or 'see the place report'}"))
+        if self.views_file:
+            lines.append(f"    views kept in {self.views_file}".encode("ascii", "backslashreplace").decode("ascii"))
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
@@ -251,6 +290,11 @@ class PickAttempt:
             "put_back": None if self.put_back is None else self.put_back.outcome.value,
             "fused_views": list(self.fused_views),
             "fused_objects": self.fused_objects,
+            "looks_fused": list(self.looks_fused),
+            "jaw_faces_seen": None if self.jaw_faces_seen is None else list(self.jaw_faces_seen),
+            "hand_eye_gap_mm": self.hand_eye_gap_mm,
+            "views_file": self.views_file,
+            "generated_view_deg": self.generated_view_deg,
         }
 
 
@@ -436,9 +480,11 @@ class PickRun:
     #: what a caller writes between two calls. This loop runs inside one verb, and an operator at a
     #: bench must see run 3 before run 4 starts rather than all ten at the end.
     on_attempt: "Callable[[PickAttempt], None] | None" = None
-    #: Where each pick looks from before it perceives, tried in order until one finds something
-    #: (`src.robot.execution.looks`). Unset: a wrist camera looks from the arm's home, a fixed camera
-    #: from where it is mounted, with no motion. Nothing is said to the hand before a look.
+    #: Where each pick looks from before it perceives (`src.robot.execution.looks`). A wrist camera's
+    #: looks go to the pick loop, which fuses each with the ones before and stops at the first safe
+    #: grasp; a fixed camera tries them in turn until one finds something. Unset: the looks the cell
+    #: profile configures (`service.configured_looks`), else the arm's home on a wrist camera, else,
+    #: on a fixed camera, where it is mounted, with no motion. Nothing is said to the hand before a look.
     look: "tuple[LookPose, ...]" = ()
     #: Put each lifted part back where it was grasped (`service.put_back`), so one part serves the
     #: whole campaign. A part that does not go back stops the campaign.
@@ -449,6 +495,18 @@ class PickRun:
     #: and says that outcome on every window (``note``). The caller closes it, after the campaign:
     #: ``with LiveView(show=...) as view:``. Display only: a view that raises changes nothing here.
     view: Any = None
+    #: Ask every pick to see both jaw contact faces of its chosen grasp before it grips (`service.pick`'s `both_faces`,
+    #: which says how a pick whose looks show both nowhere ends): the owner's switch for safety-critical processes.
+    #: Off, the default and the fast one. A wrist camera looks on for both; a fixed camera grips only a grasp its
+    #: cameras showed both faces of. A cell whose motion turns every grasp about base Z before it closes
+    #: (`GraspMotion(align_closing_to_base_x=True)`) would grip faces nobody judged: its first pick raises before anything
+    #: moves, and the campaign stops on it.
+    both_faces: bool = False
+    #: Keep each pick's looks for training (`src.robot.execution.record_views`): the frames of its looks (RGB and
+    #: depth), the tool pose stamped at each, the intrinsics and the target cloud the looks fused, one file per pick
+    #: under `RECORD_VIEWS_DIR`, named after the pick's record (`attempt_id`). Off by default. A fixed camera has no looks
+    #: to keep; a file that cannot be written is said and the campaign goes on.
+    record_views: bool = False
 
     # --- two doors -----------------------------------------------------------------------------
 
@@ -468,6 +526,8 @@ class PickRun:
         look: "Maybe[Look]" = UNSET,
         put_back: bool = False,
         view: Any = None,
+        both_faces: bool = False,
+        record_views: bool = False,
     ) -> "PickRun":
         """A cell this campaign will build, connect, drive and take down.
 
@@ -475,7 +535,8 @@ class PickRun:
         sweeps the full finger travel and a vacuum cup asserts its ejector immediately. Ten
         campaigns of one are not one campaign of ten. A look list that names nothing raises here,
         before any cell is built. ``view`` (a `LiveView`) shows every camera the build opened and
-        each attempt's grasp overlay; see the field.
+        each attempt's grasp overlay; ``both_faces`` asks each pick to see both jaw contact faces of
+        its chosen grasp before gripping; ``record_views`` keeps each pick's looks; see the fields.
         """
         return cls(
             cell=cell,
@@ -490,6 +551,8 @@ class PickRun:
             look=_checked_looks(look),
             put_back=bool(put_back),
             view=view,
+            both_faces=bool(both_faces),
+            record_views=bool(record_views),
         )
 
     @classmethod
@@ -507,12 +570,14 @@ class PickRun:
         look: "Maybe[Look]" = UNSET,
         put_back: bool = False,
         view: Any = None,
+        both_faces: bool = False,
+        record_views: bool = False,
     ) -> "PickRun":
         """An already-connected service. The caller owns the connect and the teardown.
 
         `teardown` stays `None` on the report: this factory did not bring the cell up and must not
-        claim to know how it came down. ``view`` shows the service's cameras and each attempt's
-        grasp overlay, as `from_cell`'s does.
+        claim to know how it came down. ``view``, ``both_faces`` and ``record_views`` are
+        `from_cell`'s.
         """
         return cls(
             service=service,
@@ -526,6 +591,8 @@ class PickRun:
             look=_checked_looks(look),
             put_back=bool(put_back),
             view=view,
+            both_faces=bool(both_faces),
+            record_views=bool(record_views),
         )
 
     # --- the verb ------------------------------------------------------------------------------
@@ -574,16 +641,56 @@ class PickRun:
             self.on_attempt(attempt)
 
     def _looks_for(self, service: Any) -> "Look | None":
-        """What every pick of this campaign looks from: the program's looks, else home on a wrist camera, else none.
+        """What every pick of this campaign looks from: the program's looks, else the ones the cell profile configures,
+        else home on a wrist camera, else none.
 
-        `is True`, so a double that answers every attribute is not read as a wrist camera; a service that
-        does not say perceives from where the arm stands, as it always did.
+        The configured looks only as :func:`configured_looks_of` reads them, and `is True`, so a double that answers
+        every attribute is read as neither; a service that does not say perceives from where the arm stands, as it
+        always did.
         """
         from src.robot.execution.looks import HOME  # noqa: PLC0415
 
         if self.look:
             return self.look
+        configured = configured_looks_of(service)
+        if configured:
+            return configured
         return HOME if getattr(service, "perceives_from_the_wrist", False) is True else None
+
+    def _pick(self, service: Any, look: "Look | None") -> Any:
+        """One pick, handed the campaign's looks and switch; a service handed neither is called as it always was."""
+        keywords: dict[str, Any] = {} if look is None else {"look": look}
+        if self.both_faces:
+            keywords["both_faces"] = True
+        return service.pick(**keywords)
+
+    def _keep_views(self, service: Any, report: Any, index: int) -> str:
+        """Keep the looks of the pick that just ran, on a campaign that asked (`record_views`); where, or `""`.
+
+        Only a pick that says it looked (`report.looks`), from what the service's pick loop kept of those looks, so a
+        pick that ended before its first look, or a fixed camera's, writes nothing and never another pick's looks. The
+        file is named after the pick's record (`attempt_id`). One that cannot be written is said, and the campaign goes
+        on: the views are for training, and the pick they record is over.
+        """
+        if not self.record_views:
+            return ""
+        looks = getattr(report, "looks", ())
+        looked = getattr(service, "looked_around", None)
+        views = getattr(looked, "views", None)
+        if not (isinstance(looks, tuple) and looks) or not (isinstance(views, tuple) and views):
+            return ""
+        from src.robot.execution.record_views import record_views  # noqa: PLC0415
+
+        telemetry = getattr(report, "telemetry", None)
+        name = str(telemetry.get("attempt_id") or "") if isinstance(telemetry, Mapping) else ""
+        try:
+            written = record_views(views, target_cloud_base_mm=getattr(getattr(looked, "judged", None),
+                                                                        "target_cloud_base_mm", None),
+                                   name=name or f"run{index:03d}")
+        except Exception as exc:  # noqa: BLE001 (a lost training file never stops a campaign)
+            logger.warning("pick run: the looks of run %d were not kept: %s: %s", index, type(exc).__name__, exc)
+            return ""
+        return "" if written is None else str(written)
 
     def _put_back(self, service: Any, report: Any) -> "tuple[HandlingReport | None, str]":
         """The put back of a part a pick lifted, and why it did not go back: `""` when it did or none was asked for.
@@ -632,12 +739,14 @@ class PickRun:
                     )
                     break
                 before = None if shown is None else shown.overlay(service)
+                views_file = ""
                 try:
-                    report_i = service.pick() if look is None else service.pick(look=look)
+                    report_i = self._pick(service, look)
                 except Exception as exc:  # noqa: BLE001 (the campaign stops, the cell still comes down)
                     stopped_by = f"{type(exc).__name__}: {exc}"
                 else:
                     last = report_i
+                    views_file = self._keep_views(service, report_i, index)
                     # A fault of the cell stops the campaign as its raise did. `pick()` reports it on
                     # the report instead of raising it, so the campaign reads it there and says it in
                     # the same words.
@@ -663,7 +772,8 @@ class PickRun:
                         stopped_by = f"the gripper needs a person, so the campaign stops: {hand}"
                 if stopped_by:
                     attempts.append(
-                        PickAttempt(index=index, outcome=PickOutcome.RAISED, detail=stopped_by)
+                        PickAttempt(index=index, outcome=PickOutcome.RAISED, detail=stopped_by,
+                                    views_file=views_file)
                     )
                     self._announce(attempts[-1])
                     if shown is not None:
@@ -696,6 +806,7 @@ class PickRun:
                         hold_measured=hold if ok and isinstance(hold, bool) else None,
                         **_what_the_attempt_saw(report_i),
                         put_back=put_back,
+                        views_file=views_file,
                     )
                 )
                 self._announce(attempts[-1])
@@ -788,6 +899,23 @@ def _quietly(target: Any, method: str, *args: Any, **keywords: Any) -> None:
         logger.debug("pick run: %s.%s raised %s: %s", type(target).__name__, method, type(exc).__name__, exc)
 
 
+def configured_looks_of(service: Any) -> "tuple[LookPose, ...]":
+    """The looks ``service``'s cell profile configures (``configured_looks``), or none.
+
+    Only a tuple of looks counts, each a :class:`~src.robot.core.JointPositions` or ``"home"``, as the service reads
+    them from ``robot.look_joint_positions_deg``: a double that answers every attribute, a list, or a raw row of
+    numbers is read as none, so it never becomes a place the arm is sent. The rule a campaign and the console share.
+    """
+    from src.robot.core.joint_positions import JointPositions  # noqa: PLC0415
+    from src.robot.execution.looks import HOME  # noqa: PLC0415
+
+    configured = getattr(service, "configured_looks", ())
+    if isinstance(configured, tuple) and configured and all(
+            isinstance(look, JointPositions) or (isinstance(look, str) and look == HOME) for look in configured):
+        return configured
+    return ()
+
+
 def _checked_looks(look: "Maybe[Look]") -> "tuple[LookPose, ...]":
     """A campaign's looks, in order, refused at the factory when they name nothing, before a cell is built."""
     from src.robot.execution.looks import looks_of  # noqa: PLC0415
@@ -796,8 +924,9 @@ def _checked_looks(look: "Maybe[Look]") -> "tuple[LookPose, ...]":
 
 
 def _what_the_attempt_saw(report: Any) -> dict[str, Any]:
-    """Where the service says the object was, where the tool closed, where it looked from and which cameras its grasp
-    was planned from, as `PickAttempt` keeps them.
+    """Where the service says the object was, where the tool closed, where it looked from, which cameras and looks its
+    grasp was planned from, which contact faces of that grasp were seen, the hand-eye check and the view the looks
+    generated, as `PickAttempt` keeps them.
 
     Each only where the service says it in the type it promises, so a service that does not say, or a double that
     answers every attribute, leaves the attempt as it was. Fused views are two or more names or none: one camera alone
@@ -810,6 +939,10 @@ def _what_the_attempt_saw(report: Any) -> dict[str, Any]:
     looks = getattr(report, "looks", ())
     fused = getattr(report, "fused_views", ())
     count = getattr(report, "fused_objects", 0)
+    looks_fused = getattr(report, "looks_fused", ())
+    faces = getattr(report, "jaw_faces_seen", None)
+    gap = getattr(report, "hand_eye_gap_mm", None)
+    turn = getattr(report, "generated_view_deg", None)
     return {
         "object_mm": centre if isinstance(centre, tuple) and len(centre) == 3 else None,
         "grasp_pose": grasp if isinstance(grasp, Pose) else None,
@@ -817,4 +950,11 @@ def _what_the_attempt_saw(report: Any) -> dict[str, Any]:
         "fused_views": (fused if isinstance(fused, tuple) and len(fused) > 1 and all(isinstance(v, str) for v in fused)
                         else ()),
         "fused_objects": count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 0,
+        "looks_fused": (looks_fused if isinstance(looks_fused, tuple) and all(isinstance(v, str) for v in looks_fused)
+                        else ()),
+        "jaw_faces_seen": (faces if isinstance(faces, tuple) and len(faces) == 2
+                           and all(isinstance(v, bool) for v in faces) else None),
+        "hand_eye_gap_mm": float(gap) if isinstance(gap, (int, float)) and not isinstance(gap, bool) else None,
+        "generated_view_deg": (float(turn) if isinstance(turn, (int, float)) and not isinstance(turn, bool)
+                               else None),
     }

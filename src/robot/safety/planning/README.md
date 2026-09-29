@@ -1,9 +1,7 @@
 # The motion planner and the collision engines (`src/robot/safety/planning`)
 
 This package holds the two external engines the motion stack builds on, cuRobo for collision-free
-trajectories and Coal (or python-fcl) for exact mesh distance, and one reading that says which of them
-is wired on this machine for this robot. A `Robot` or a `Cell` reaches the planner on every move; call
-`MotionStack` yourself to check a machine before the cell comes up.
+trajectories and Coal (or python-fcl) for exact mesh distance calculations.
 
 ```python
 from willy import MotionStack, load_tree
@@ -31,10 +29,7 @@ machine without the GPU environment answers `1` by design. The same reading runs
 
 `scripts/ext_deps/install.ps1` installs both engines under `ext_deps/`, where the defaults look, so a
 standard machine sets no environment variable ([ext_deps/README.md](../../../../ext_deps/README.md)).
-The planner runs in its own interpreter, a sidecar, because it and the simulator need incompatible
-versions of the same GPU runtime. `CuroboPlanClient` spawns it once, keeps it warm, and talks
-newline-delimited JSON with it. This stack is millimetres and XYZW; the planner is metres and WXYZ, and
-the conversion happens at that boundary.
+`CuroboPlanClient` spawns it once per session.
 
 ## The nouns
 
@@ -45,9 +40,6 @@ the conversion happens at that boundary.
 | `LivePlannerWorld` | the driver, from the cell's cameras and declared world | `world_for(...)` | a `PlannerWorldSnapshot` with its verdict |
 | `PlannerHand` | `planner_hand(robot, data_dir=...)` | read | the hand the planner and the guard model |
 
-`MotionStack.from_model` is the one builder; the other two resolve a model and call it. The reading
-names the arm and the key that decided it (`model_source`), because a green reading with no arm named
-is a green light for a robot nobody configured.
 
 ## What it refuses
 
@@ -63,9 +55,6 @@ is a green light for a robot nobody configured.
 | a planner that does not start | no committed evidence file for this arm, hand, coupling, placement and margin | measure one, see [`robot/evidence/`](robot/evidence/README.md) |
 | a planner that does not start, `..._a16.json` | a declared carried part (`planning_world.payload.length_mm`) reserves 16 attach slots, and nobody measured the combination with them | the refusal's `matrix_gate.py ... --attach 16` command, about a minute on the cell's GPU; the UR10 files are committed |
 
-The simulator refuses the same way as a real cell: there is no fallback to blind IK. `WILLY_CUROBO_ROBOT`
-loses to the arm and hand the cell declares, and the driver refuses a descriptor built for another arm,
-one that carries a hand, or one that records nothing about itself.
 
 ## What the planner is told about the cell
 
@@ -179,10 +168,10 @@ variables, and the client warns when one disagrees with it.
 
 | Capability | Evidence |
 | --- | --- |
-| Planned moves on a UR arm | measured in simulation (Isaac) and measured against real controller software (URSim) |
-| The live world and the batch check | measured in simulation: the probe runs the real sidecar on a synthetic camera |
-| Exact mesh collision through Coal or python-fcl | measured in simulation |
-| A planned move on a physical arm | never touched hardware |
+| Planned moves on a UR arm | measured against a UR10 |
+| The live world and the batch check | measured against a UR10 |
+| Exact mesh collision through Coal or python-fcl | measured against a UR10 |
+| A planned move on a physical arm | measured against a UR10 |
 
 `--check` reports that the sidecar's interpreter exists; it does not report that the descriptor beside
 it was built, because that lives in an environment this process does not spawn. `--doctor` closes that

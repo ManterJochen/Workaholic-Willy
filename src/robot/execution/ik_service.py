@@ -14,8 +14,8 @@ Three adapters are provided:
   slots, and qualify the day a driver is registered in them. No
   vendor-specific code lives in this file.
 * :class:`CachedIKService` is an LRU front-end that quantises the
-  query pose so an active-perception loop does not hammer the
-  controller with near-duplicate queries.
+  query pose so repeated IK queries do not hammer the controller
+  with near-duplicate poses.
 * :class:`URAnalyticIKService` is an offline solver seam wrapping
   ``ur_ikfast`` when it is installed. Construction fails with a clear
   :class:`ImportError` when the optional package is missing, rather
@@ -151,9 +151,9 @@ def _quantise_pose(pose: GraspPose, *, position_mm: float, angle_deg: float) -> 
 class CachedIKService:
     """LRU cache in front of any :class:`IKService`.
 
-    Repeated active-perception loops produce many near-duplicate query
-    poses; this cache stops a real controller from being asked the same
-    question twice in a cycle.
+    Repeated IK queries often carry near-duplicate poses; this cache
+    stops a real controller from being asked the same question twice in
+    a cycle.
     """
 
     inner: IKService

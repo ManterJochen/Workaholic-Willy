@@ -1,9 +1,10 @@
 """Centralized parsing of the ``WILLY_*`` runner environment knobs.
 
-:class:`RunnerEnv` parses the 17 runner knobs once at boot into a typed, frozen struct, so a call
+:class:`RunnerEnv` parses the 15 runner knobs once at boot into a typed, frozen struct, so a call
 site reads ``env.field`` rather than ``os.environ.get(...)``. That puts every knob and its default
-in one place, and it is where the two context-dependent defaults are computed: ``ycb_cam_z``
-depends on ``vision``, and ``c1_standoff_mm`` defaults to the eye-in-hand ``view_height_mm``.
+in one place, and it is where the context-dependent default is computed: ``ycb_cam_z`` depends on
+``vision``. The two ``WILLY_C1_*`` knobs, which tuned the eye-in-hand two-scan refine, left with it
+on 2026-09-29.
 
 Scope is the runner layer only. The two perception debug-trace flags (``WILLY_TRACE_DEPTH`` and
 ``WILLY_TRACE_VISION``) are read where they are used, in :mod:`src.willy_sim.perception`, so that
@@ -22,8 +23,6 @@ from src.utility.log_cfg import create_logger
 from src.willy_sim.constants import RUNNER_ENV_LOG_FILE, WILLY_SIM_LOG_DIR
 
 __all__ = ["RunnerEnv"]
-
-_TRUE_TOKENS = ("1", "true", "yes")
 
 #: The struct is a value object and logs nothing itself. The one fact it cannot carry is whether any
 #: knob was set at all, and every field below moves a number that changes a result, so a run made
@@ -49,9 +48,6 @@ class RunnerEnv:
     ycb_close: float | None   # WILLY_YCB_CLOSE (fixed close-width override; None stays adaptive)
     ycb_squeeze: float        # WILLY_YCB_SQUEEZE (adaptive close squeeze margin)
     ik_debug: bool            # WILLY_IK_DEBUG (per-candidate IK cond/min_sv/joint_margin log)
-    # Wrist tracker (read in the eye-in-hand build_service)
-    c1_world_space_tracker: bool  # WILLY_C1_WORLD_SPACE_TRACKER (membership 1/true/yes)
-    c1_standoff_mm: float     # WILLY_C1_STANDOFF_MM (context default: the EIH view_height_mm)
     # opt-in debug traces
     trace_moves: bool         # WILLY_TRACE_MOVES (per-move target/closing/status)
     trace_cands: bool         # WILLY_TRACE_CANDS (all ranked candidates pre-execution)
@@ -59,12 +55,11 @@ class RunnerEnv:
     trace_g12: bool           # WILLY_TRACE_G12 (approach-sweep obstacle cloud and per-candidate verdict)
 
     @classmethod
-    def from_env(cls, *, vision: bool, view_height_mm: float) -> RunnerEnv:
+    def from_env(cls, *, vision: bool) -> RunnerEnv:
         """Parse the runner knobs from ``os.environ``.
 
         ``vision`` selects the ``ycb_cam_z`` default: 1200 with real vision, 1800 with ground-truth
-        masks. ``view_height_mm`` is the ``c1_standoff_mm`` default, the wrist view height of the
-        eye-in-hand cell.
+        masks.
         """
         get = os.environ.get
         _ty = get("WILLY_YCB_TARGET_Y")
@@ -75,7 +70,7 @@ class RunnerEnv:
         # perception trace flags are read elsewhere. The line records what was in this shell.
         _set = sorted(k for k in os.environ if k.startswith("WILLY_"))
         _LOG.info(
-            "runner knobs (vision=%s view_height_mm=%.1f): %s", vision, view_height_mm,
+            "runner knobs (vision=%s): %s", vision,
             ", ".join(f"{k}={os.environ[k]!r}" for k in _set) if _set
             else "no WILLY_* set; the documented defaults",
         )
@@ -91,8 +86,6 @@ class RunnerEnv:
             ycb_close=float(_close) if _close is not None else None,
             ycb_squeeze=float(get("WILLY_YCB_SQUEEZE", "11.0")),
             ik_debug=bool(get("WILLY_IK_DEBUG")),
-            c1_world_space_tracker=get("WILLY_C1_WORLD_SPACE_TRACKER", "").strip().lower() in _TRUE_TOKENS,
-            c1_standoff_mm=float(get("WILLY_C1_STANDOFF_MM", str(view_height_mm))),
             trace_moves=bool(get("WILLY_TRACE_MOVES")),
             trace_cands=bool(get("WILLY_TRACE_CANDS")),
             trace_calc=bool(get("WILLY_TRACE_CALC")),

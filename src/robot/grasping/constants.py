@@ -65,7 +65,6 @@ DEEP_GENERATOR_LOG_FILE: Final[str] = "deep_generator.log"
 
 # --- perception -> pose pipeline (per-attempt runtime events) ---------------
 SCENE_GEOMETRY_LOG_FILE: Final[str] = "multiview_scene_geometry.log"
-TARGET_TRACKING_LOG_FILE: Final[str] = "target_tracking.log"
 REACHABILITY_LOG_FILE: Final[str] = "reachability.log"
 
 # --- decision / loop / recovery (per-attempt runtime events) ----------------

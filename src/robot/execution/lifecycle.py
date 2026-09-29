@@ -55,10 +55,11 @@ class NoRealGripper(RuntimeError):
     and none of them raises: the build hands back a working ``NullGripper``, which accepts every
     commanded width and answers ``get_width_mm()`` with the configured maximum forever.
 
-    The repair that already landed does not reach the default pick. ``WidthDeltaGripperVerifier``
-    refuses a substituted gripper by name, but ``grasping.verification.enabled`` is ``false`` in the
-    shipped tree, so on the default open-loop attempt nothing reads a width and the pick still
-    reports ``SUCCEEDED``. The verifier helps a cell that opted in; this helps the cell that ships.
+    No pick path refuses it for you. The grasp verifier that refused a substituted gripper by name
+    (``WidthDeltaGripperVerifier``) was removed on 2026-09-29 with the post-grasp verification stage,
+    which no pick path ran, and the execution policy reads a close's hold from the gripper's own
+    ``is_object_detected`` and ``hold_evidence``, which a ``NullGripper`` does not claim, so its close
+    is reported unmeasured rather than empty. This refusal is what guards the cell.
 
     An ``Exception``, for the reason ``CellBuildRefused`` is one: both callers of this module catch
     ``Exception`` and turn it into an operator-facing refusal (``api/routers/cell.py`` answers the
@@ -250,10 +251,9 @@ def connect_cell(
     ``real_cell --rehearse --runs 3`` on the shipped ``robot.yaml`` printed ``gripper  NullGripper``
     at build and ``RESULT: 3/3 succeeded`` at the end. The substituted gripper accepts every
     commanded width and answers ``get_width_mm()`` with the configured 85.0 mm maximum forever, so
-    nothing downstream disagrees: ``WidthDeltaGripperVerifier`` does refuse it by name, but
-    ``grasping.verification.enabled`` is ``false`` in the shipped tree and the default open-loop
-    attempt reads no width at all. The fact is decidable before the arm is commanded, so it is
-    decided there.
+    nothing downstream disagrees: the grasp verifier that refused it by name left on 2026-09-29 with
+    the post-grasp verification stage, and the pick reads its hold as unmeasured. The fact is
+    decidable before the arm is commanded, so it is decided there.
 
     Connecting is motion. Robotiq activation is a calibration sweep of the full finger travel; a
     vacuum cup's connect asserts the ejector pin immediately and drops whatever it is holding. This
@@ -343,8 +343,29 @@ def _bring_up(session: "ConnectedCell | ConnectedRobot") -> None:
         raise
 
 
+def let_go_of_held_views(arm: Any) -> None:
+    """Drop the frames a wrist camera's ``Locator.look_around`` held in ``arm``'s live planner world
+    (``LivePlannerWorld.forget_pick_views``), where it holds any; an arm with no live world holds none.
+
+    ``Robot.pick`` calls it when the pick ends, and the one exit of a ``with`` block (:func:`_take_down`) before the
+    cell comes down, so a reconnect in the same process starts with no frames of a look around it did not take. Never
+    raises: a pick's report and a teardown are what the caller reads, and a world that would not let go is logged.
+    """
+    world = getattr(arm, "live_planner_world", None)
+    forget = getattr(world, "forget_pick_views", None)
+    if not callable(forget):
+        return
+    try:
+        forget()
+    except Exception as exc:  # noqa: BLE001 (a report or a teardown is not to be masked by it)
+        logger.warning("the live planner world did not let go of the frames of the looks: %s: %s",
+                       type(exc).__name__, exc)
+
+
 def _take_down(session: "ConnectedCell | ConnectedRobot", service: Any) -> None:
-    """The one exit: :func:`disconnect_cell`, its report kept on the session, then the lock."""
+    """The one exit: the frames a look around held let go (:func:`let_go_of_held_views`), then :func:`disconnect_cell`,
+    its report kept on the session, then the lock."""
+    let_go_of_held_views(session.arm)
     session.teardown = disconnect_cell(session.arm, session.gripper, service)
     if session.lock is not None:
         session.lock.release()

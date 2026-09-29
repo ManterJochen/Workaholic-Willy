@@ -13,8 +13,8 @@ if importlib.util.find_spec("isaacsim") is None:
     print("Isaac Sim is not importable here; run this file with Isaac Sim's own python.bat.")
     raise SystemExit
 
-# Headless picks of one part whose pose the scene knows. "easy" is the direct pick path; "auto" puts
-# the decision gate before every grasp, and "closed_loop" refines and verifies each one.
+# Headless picks of one part whose pose the scene knows. "easy" is the direct pick path, and "auto"
+# puts the decision gate before every grasp.
 result = run_gate(runs=10, headless=True, mode="easy")
 
 # A pick passes only when the service reported success and the simulator saw the part rise past the

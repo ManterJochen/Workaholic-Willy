@@ -306,6 +306,18 @@ class DepthView:
     #: point by at most its range times the angle, so this times each point's range from the camera
     #: is added to that point's bench band.
     placement_error_rad: float = 0.0
+    #: The robot's own body where it stood when this view was taken, or `None` for a view taken
+    #: where the robot stands now.
+    #:
+    #: A frame shows the robot where it stood at the shutter. The body handed to
+    #: :func:`build_perceived_boxes` is where it stands now, which takes the robot out of a frame
+    #: taken now and out of nothing older: a wrist frame a pick holds from its first look, filtered
+    #: by the arm at the approach alone, keeps the links it showed as obstacles where the arm no
+    #: longer is, and the planner routes round a robot that left. So a view taken at another pose
+    #: carries the body from its own shutter, and its points inside that body are the robot's
+    #: (``DropReason.SELF``) as well as its points inside the body now. Only this view's points: where
+    #: the robot stood for one frame says nothing about what another frame saw there.
+    self_body: "SelfBody | None" = None
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -889,7 +901,9 @@ def build_perceived_boxes(
     self_body
         The robot own links, and the part it carries, as capsules in BASE millimetres. A camera
         watching a cell sees the arm, and an arm registered as an obstacle is an arm that cannot
-        move. Leaving this out is only right where no camera can see the robot at all.
+        move. Leaving this out is only right where no camera can see the robot at all. It is the
+        body now and leaves every view; a view taken at another pose also loses the body from its
+        own shutter (:attr:`DepthView.self_body`), from its own points only.
     near_point_mm
         What "nearest" is measured from when the slot budget bites. Normally the goal of the motion
         about to be planned. Defaults to the base origin.
@@ -1036,6 +1050,23 @@ def build_perceived_boxes(
         dropped_points[DropReason.SELF] = int(np.count_nonzero(on_self))
         points_base, pixels, view_of, band_of = (
             points_base[~on_self], pixels[~on_self], view_of[~on_self], band_of[~on_self]
+        )
+        if points_base.shape[0] == 0:
+            return _empty()
+
+    # A view taken at another pose shows the robot where it stood then, which the body now does not
+    # cover. Its own body takes that out of its own points and nobody else's, counted with the robot.
+    # Skipped whole where no view carries one, so a world with no held frame is the one it always was.
+    own_bodies = [(index, view.self_body) for index, view in enumerate(views) if view.self_body is not None]
+    if own_bodies:
+        on_own = np.zeros(points_base.shape[0], dtype=bool)
+        for index, own in own_bodies:
+            member = np.nonzero(view_of == index)[0]
+            if member.size:
+                on_own[member[own.contains(points_base[member])]] = True
+        dropped_points[DropReason.SELF] = dropped_points.get(DropReason.SELF, 0) + int(np.count_nonzero(on_own))
+        points_base, pixels, view_of, band_of = (
+            points_base[~on_own], pixels[~on_own], view_of[~on_own], band_of[~on_own]
         )
         if points_base.shape[0] == 0:
             return _empty()

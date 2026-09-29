@@ -96,11 +96,11 @@ in the [autonomous_grasp README](../../src/robot/execution/autonomous_grasp/READ
 
 | # | Stage | Where it lives | What it can refuse, and why |
 | --- | --- | --- | --- |
-| 0 | mode check | `service.py`, `_pick_inner` | `MODE_NOT_AVAILABLE`: a per-call `mode=` needs another sampler, or a refiner or verifier that is not wired |
+| 0 | mode check | `service.py`, `_pick_inner` | `MODE_NOT_AVAILABLE`: a per-call `mode=` needs another sampler |
 | 1 | perceive | `pick_loop.py`, `_execute_pick` | `NO_PERCEPTION` for a frame with no segmentations. Each retry acquires a fresh frame |
 | 2 | resolve the frame | `_best_result_over_segmentations` | one `frame_resolver` call per iteration: all masks in a frame share one TCP pose |
 | 3 | generate and rank | `calculator.compute_result` per segmentation | a typed failure reason (below); each mask is computed with the other masks as clutter, and the best score wins |
-| 4 | route the failure | `_decide_action` | maps reasons onto `rescan`, `relocate` or `exhausted`; `relocate` without a `viewpoint_planner` becomes `rescan` |
+| 4 | route the failure | `_execute_pick`, `_RESCAN_REASONS` | a reason in `_RESCAN_REASONS` becomes `rescan`, a fresh frame without motion; any other `exhausted`. The loop never moves the camera to look again |
 | 5 | execute | `src/robot/grasping/motion/execution_policy.py` | `CAMERA_FRAME_REJECTED` for a grasp not in BASE while `require_base_frame_grasp` is on, before any waypoint |
 | 6 | move | the same, `_drive_to` | the arm's route and its `SafetyPreflight` (below); a refusal comes back as `MOTION_FAILED` |
 | 7 | close and check | the same | `OBJECT_NOT_DETECTED` when the gripper implements `ObjectDetectingGripper` and reports nothing held |
@@ -118,8 +118,8 @@ say keeps the interpolated approach. Inside `move()`, the driver's `SafetyPrefli
 `EXECUTION_FAILED`.
 
 Between stages 3 and 5 sit the optional layers: the shadow success probability, the ranking blend, the
-uncertainty rerank, the learned-ranker shadow and the multi-view commit gate. At defaults each is a no-op
-that records a skip reason and returns. Section 7 says what turns them on.
+uncertainty rerank and the learned-ranker shadow. At defaults each is a no-op that records a skip reason
+and returns. Section 7 says what turns them on.
 
 Three things about this chain are easy to get wrong.
 
@@ -140,11 +140,12 @@ builds its own policy, which it does only with a `frame_resolver`. A policy you 
 and `None` there leaves the jaws where the last close left them.
 
 A hand that toggles on one output with no sensor (`jaw_io` with `actuation: single_toggle`) is the
-exception: it is never pulsed before the arm moves, whatever `pre_open_width_mm` says, because a pulse
-there flips jaws nothing reads. It was asked at connect whether its jaws stand open, and the program
-counts its own pulses from that answer. A pick that starts with the jaws believed closed asks the same
-question again instead of pulsing, and with nobody at a terminal to answer, or an abort, it ends
-`GRIPPER_FAULT` before any motion ([06](06-grippers.md)).
+exception: it is never switched before the arm moves, whatever `pre_open_width_mm` says, because a change
+of its output there moves jaws nothing reads. It was asked at connect whether its jaws stand open, and the
+program counts its own changes from that answer, one per command. A pick that starts with the jaws
+believed closed, or with the output switched by hand since the last command, asks the same question again
+instead of switching, and with nobody at a terminal to answer, or an abort, it ends `GRIPPER_FAULT` before
+any motion ([06](06-grippers.md)).
 
 ## 3. The smallest working pick
 
@@ -243,8 +244,8 @@ not a bin-clearing loop. Clearing several objects is your loop over `service.pic
 
 What the orchestrator adds over a bare perceive, compute and execute: a bounded retry loop that
 re-perceives each time, routing by failure reason, arbitration between segmentations, one frame-resolver
-call per iteration, the commit gate when fusion is wired, per-pick state hygiene, and a typed report with
-the whole attempt trail. The reason-to-action table is in the
+call per iteration, multi-camera fusion when it is configured, per-pick state hygiene, and a typed report
+with the whole attempt trail. The reason-to-action table is in the
 [pick loop README](../../src/robot/grasping/loop/README.md).
 
 For clearing, `service.set_target_label(label)` sets a hard label target: only that segmentation is
@@ -281,7 +282,9 @@ The service does not place. `cell.robot` is the same arm and hand as a `Robot`, 
 held part at a known pose in BASE, a straight line in and out ([06](06-grippers.md)).
 
 A gripper-level "nothing held" surfaces here as `VERIFICATION_FAILED`; there is no
-`AutonomousGraspOutcome.OBJECT_NOT_DETECTED`. `CANCELLED` is not a failure: an operator stopping the run
+`AutonomousGraspOutcome.OBJECT_NOT_DETECTED`. It is the execution policy's own check after its close,
+read off the gripper's `is_object_detected` and `hold_evidence` (a Robotiq's gOBJ), the only
+verification a pick runs since the separate post-grasp verification stage was removed on 2026-09-29. `CANCELLED` is not a failure: an operator stopping the run
 between attempts is a decision, not a missed grasp, and counting it as `EXECUTION_FAILED` would poison the
 pick rate. A stopped or powered-down controller also reads `CANCELLED` at this level; the lower-level
 `report.pick_report.outcome` keeps `CONTROLLER_NOT_OPERATIONAL`, which belongs to the `PickOutcome`
@@ -296,36 +299,49 @@ again.
 
 ## 6. Grasp modes and presets
 
-### 6.1 The five modes
+### 6.1 The three modes
 
 Each has a fixed behaviour profile in `src/robot/execution/autonomous_grasp/config.py`.
 
-| Mode | Sampling | Refine | Verify | Recovery actions allowed |
-| --- | --- | --- | --- | --- |
-| `easy` | single object | no | no | **none**, a guarantee rather than a default |
-| `auto` | auto | no | no | `rescan`, `next_viewpoint` |
-| `dense_clutter` | dense | no | no | `rescan`, `next_viewpoint` |
-| `closed_loop` | auto | yes | yes | `rescan`, `next_viewpoint` |
-| `dense_autonomous` | dense | yes | yes | `rescan`, `next_viewpoint`, `nudge_target` |
+| Mode | Sampling | Recovery actions allowed |
+| --- | --- | --- |
+| `easy` | single object | **none**, a guarantee rather than a default |
+| `auto` | auto | `rescan` |
+| `dense_clutter` | dense | `rescan`, `nudge_target` |
 
 `robot.yaml` ships `default_mode: "auto"`. `resolve_grasp_mode` accepts aliases (`single`,
-`single_object`, `dense`, `closedloop`, `autonomous`, and `None` for `auto`) and raises `ValueError` on
-anything else, so a typo never runs the wrong sampler.
+`single_object`, `dense`, and `None` for `auto`) and raises `ValueError` on anything else, so a typo never
+runs the wrong sampler.
+
+`closed_loop` and `dense_autonomous` were removed on 2026-09-29 with the two-scan pre-grasp refinement
+they ran (the standoff move, the second frame and the bounded correction), which no shipped config
+switched on and no physical arm ran. A tree, a preset or a call that still names one, or its alias
+`closedloop` or `autonomous`, is refused with the mode to name instead: `auto` for `closed_loop`,
+`dense_clutter` for `dense_autonomous`. `nudge_target`, which only `dense_autonomous` allowed, moved to
+`dense_clutter`, and still needs `recovery.allowed_actions` to name it and a declared fixture. A cell
+built from config pushes nothing even then: its recovery loop plans from the dispatcher alone, so the
+nudge carries no offset and is refused before the arm moves (`refused_no_offset`). `next_target` and
+`container_agitate` are never planned at all, because the table above is an outer gate that
+`recovery.allowed_actions` cannot widen and no mode lists them; naming them passes the load and changes
+nothing ([recovery README](../../src/robot/grasping/recovery/README.md)).
+`next_viewpoint` left both profiles the same day, merged into `rescan`, which is what it did once nothing
+moved the camera for it; a `recovery.allowed_actions` that still names it is refused,
+`removed on purpose: use rescan`.
 
 ### 6.2 The per-call override is restricted on purpose
 
 A per-call `pick(mode=...)` changes the behaviour profile only. It cannot rebuild the runtime, which was
 bound to a sampling mode at construction, so a mode with another sampler is refused with a typed
-`MODE_NOT_AVAILABLE`. You can move between `auto` and `closed_loop`, and between `dense_clutter` and
-`dense_autonomous`. You cannot move into or out of `easy` at call time.
+`MODE_NOT_AVAILABLE`. The three modes each have their own sampler, so a service stays in the mode it
+was built in: you cannot move between modes at call time.
 
-### 6.3 The three presets
+### 6.3 The two presets
 
-Three partial `grasping:` overlays ship in [`config/grasping_presets/`](../../config/grasping_presets/),
+Two partial `grasping:` overlays ship in [`config/grasping_presets/`](../../config/grasping_presets/),
 each short enough to read in full. `easy.yaml` sets `default_mode: easy` and turns recovery and uncertainty
-off, `dense_clutter.yaml` sets the dense mode with both on, and `verification_heavy.yaml` sets
-`default_mode: closed_loop` plus a recovery block. **The config loader does not load them.** They are
-library objects:
+off, and `dense_clutter.yaml` sets the dense mode with both on. A third, `verification_heavy.yaml`, set
+`default_mode: closed_loop` and was deleted on 2026-09-29 with that mode. **The config loader does not
+load them.** They are library objects:
 
 ```python
 from willy import Cell, load_tree
@@ -345,17 +361,18 @@ so a misspelled key survives, and `validate_preset` is the wrapper that catches 
 including the fact that the preset directory resolves from the repository rather than from your `--data`
 tree, belongs to [01](01-configuration.md).
 
-Two traps in the preset table. `verification_heavy.yaml` does not enable verification: it sets the mode and
-a recovery block, nothing more. The `closed_loop` profile demands a wired refiner and verifier, so loading
-this preset and calling `pick()` gives `MODE_NOT_AVAILABLE` unless those blocks are enabled too. And
-`recovery.apply_modes` ships as `auto`, `dense_clutter` and `dense_autonomous`, so the
-`recovery.enabled: true` this preset sets stays inert until a cell adds `closed_loop` to that list.
+One trap in the preset table: `recovery.apply_modes` ships as `auto` and `dense_clutter`, so a
+`recovery.enabled: true` in a mode outside that list stays inert. `validate_preset` refuses a preset of
+your own that still names a removed mode, with the mode to name instead, and one that still names
+`next_viewpoint` or writes a removed block (`verification`, `dense_recovery`), with the sentence that says
+what to do.
 
 ## 7. What is built, what is off, and what turns it on
 
 These blocks under `robot.grasping` carry their own `enabled` switch, and every one ships `false`:
-`closed_loop`, `verification`, `dense_recovery`, `decision`, `feasibility`, `ordering`, `recovery`,
-`uncertainty`, `success_model`, `performance`, `fusion`, `approach_validation` and `deep_ranker`. Check it
+`decision`, `feasibility`, `ordering`, `recovery`, `uncertainty`, `success_model`, `performance`,
+`fusion`, `approach_validation` and `deep_ranker`. `verification` and `dense_recovery` were removed on
+2026-09-29, and a tree that still writes either is refused at load. Check it
 with `python -m src.config where enabled --tier all --limit 500`: every `robot.grasping.*` row reads
 `bool, default False`, with one exception. `fusion.cameras.*.enabled` defaults `True`, but that is the
 per-entry flag on the multi-camera map, and the map is empty by default.
@@ -364,10 +381,12 @@ The shipped [`config/robot/robot.yaml`](../../config/robot/robot.yaml) leaves ev
 at its schema default. Its `grasping:` block sets the always-on tunings plus `default_mode`,
 `max_attempts` and `record_log_path`.
 
-So: **the decision gate, closed-loop refinement, post-grasp verification, recovery, multi-view fusion with
-its commit gate, the uncertainty rerank, the ranking blend, the learned ranker, the learned success model,
-latency budget enforcement and the reinforcement-learning shadow are all built, all exercised, and all
-off.** The simulator runners switch several on per command-line flag in runner code rather than in config,
+So: **the decision gate, recovery, multi-camera fusion, the uncertainty rerank, the ranking blend, the
+learned ranker, the learned success model, latency budget enforcement and the reinforcement-learning
+shadow are all built, all exercised, and all off.** The separate post-grasp verification stage is gone:
+the service called it only from the two-scan refinement, and both were removed on 2026-09-29. The hold
+a pick reports comes from the execution policy's own check after its close, in every mode.
+The simulator runners switch several on per command-line flag in runner code rather than in config,
 which is why a simulation result can involve a decision engine while `grasping.decision.enabled` is still
 false. The same statement from the code's side is in
 [`src/robot/grasping/README.md`](../../src/robot/grasping/README.md); if the two ever disagree, that one
@@ -411,9 +430,9 @@ python -c "from src.config.schema.robot.grasping_schema import RobotGraspingConf
 ```
 
 Then check what was built rather than trusting the YAML, because several loaders return `None` on purpose.
-The service fields worth checking are `effective_config`, `decision_engine`, `refiner`, `verifier` and
-`shadow_router`; on `service.runtime.orchestrator` they are `scene_fusion`, `commit_policy`,
-`approach_path_policy`, `target_ordering`, `frame_resolver`, `viewpoint_planner`, `gripper_model` and
+The service fields worth checking are `effective_config`, `decision_engine` and
+`shadow_router`; on `service.runtime.orchestrator` they are `fusion_geometry_config`,
+`approach_path_policy`, `target_ordering`, `frame_resolver`, `gripper_model` and
 `corridor_config`. Each is `None` when it did not land.
 
 ## 8. Record logging
@@ -432,13 +451,13 @@ summary per stage that is `None` when the stage did not run, and a free-form `ex
 contract is in the [telemetry README](../../src/robot/grasping/telemetry/README.md); changing it means
 updating the KPI, taxonomy and reinforcement-learning consumers together.
 
-Three things in `extra` are worth knowing. `safety_rejected` is set from membership in a fixed outcome set,
-so a metric can count safety refusals without matching strings. `verification` falls back to a block
-labelled as a ground-truth lift when a simulator runner recorded one, so a simulated lift is never taken
-for a real verification. And `camera_world` with `camera_world_reason` name the weakest camera world behind
-the attempt's typed motions (`planned`, `declined`, `unplanned` or `missing`, with an empty reason on
-`planned`); both are absent when no typed motion stated one, and a runner's own `extra` cannot overwrite
-them.
+Three things are worth knowing. `safety_rejected` in `extra` is set from membership in a fixed outcome
+set, so a metric can count safety refusals without matching strings. The record's own `verification`
+block, beside `extra`, is written only from a simulator runner's ground-truth lift, labelled as such, so
+a simulated lift is never taken for a real verification; a live record has none. And `camera_world` with
+`camera_world_reason` name the weakest camera world behind the attempt's typed motions (`planned`,
+`declined`, `unplanned` or `missing`, with an empty reason on `planned`); both are absent when no typed
+motion stated one, and a runner's own `extra` cannot overwrite them.
 
 **What consumes it.**
 
@@ -470,12 +489,10 @@ shows it. Then read `report.outcome`, `dict(report.telemetry)`, and the attempt 
 
 | Outcome | Cause | Fix |
 | --- | --- | --- |
-| `mode_not_available`, reason `per_call_mode_requires_different_sampling_mode` | `pick(mode=...)` asked for another sampler | rebuild with that mode, or stay inside the pairs in 6.2 |
-| `mode_not_available`, gate on refinement or verification | the mode needs a refiner or verifier object | enable the block *and* check the object landed (7.3) |
+| `mode_not_available`, reason `per_call_mode_requires_different_sampling_mode` | `pick(mode=...)` asked for another sampler | rebuild with that mode (6.2) |
 | `no_target` | the frame carried no segmentations | perception, not grasping: check the prompt, and that the camera is not returning black ([02](02-models.md)) |
 | `missing_camera_frame` | a valid candidate existed in the camera frame, and the policy refused it | declare the primary rig's `camera.cameras.rigs[<id>].extrinsics` ([03](03-calibration.md)) |
-| `decision_fail_closed`, `uncertainty_fail_closed` | the decision gate refused | wire a viewpoint planner, or lower the thresholds knowingly |
-| `no_commit_insufficient_fusion` | a candidate existed, fused evidence did not, and the budget is spent | check that `scene_fusion` is wired; the commit policy alone is inert |
+| `decision_fail_closed`, `uncertainty_fail_closed` | the decision gate refused a grasp it did not trust: `low_confidence` for a grasp less confident than the threshold (a record logged before 2026-09-29 carries `reobserve_planner_unavailable` for it), `uncertainty_fail_closed` or `channel_disagreement` for the fused uncertainty. It never moves the camera to look again | improve what the camera sees, or lower the thresholds knowingly |
 | `drift_blocked_auto`, `ood_blocked_auto` | the watchdog locked autonomous operation | read the drift and out-of-distribution telemetry; do not bypass it |
 
 **Which camera world stood behind the motions.** Every printed report has a `camera` line, and
@@ -549,8 +566,7 @@ order:
    `--soak-report`. Real records are the only thing that turns the soak, KPI and reinforcement-learning
    layers from a self-check into a measurement.
 6. **Start in `easy`.** Its recovery allow-list is empty by construction, so it never produces recovery
-   motion. `closed_loop` needs both a refiner and a verifier wired and refuses the pick otherwise, so it is
-   not where a bring-up starts.
+   motion.
 7. **Say where a wrist camera looks from.** A pick perceives from where the arm stands, and a wrist camera
    sees what the arm points it at, so a campaign on a wrist camera first moves to a look before every pick:
    `PickRun.from_cell(cell, ..., look=[JointPositions.deg(...), ...])`, joints in degrees read off the

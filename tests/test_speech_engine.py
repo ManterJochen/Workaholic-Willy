@@ -366,6 +366,28 @@ class TheEngineNamesUnusableWeightsTests(unittest.TestCase):
             self._load(AttributeError("object has no attribute 'not_a_real_field'"), logger)
         self.assertFalse(logger.error.called, "a defect was reported as unusable weights")
 
+    def test_a_tokenizer_that_needs_protobuf_names_the_file_that_holds_it(self) -> None:
+        """transformers' own words on the robot's box (2026-09-28), answered with the file to install from."""
+        from src.models.speech.engine import SpeechStackUnavailable
+
+        failure = ImportError("\nWhisperTokenizerFast requires the protobuf library but it was not found in your "
+                              "environment. Check out the instructions on the installation page of its repo")
+        with self.assertRaises(SpeechStackUnavailable) as caught:
+            self._load(failure, MagicMock())
+        self.assertEqual("protobuf", caught.exception.package)
+        self.assertIs(failure, caught.exception.__cause__)
+        self.assertIn("requirements.txt", str(caught.exception))
+        for name in ("requirements.txt", "requirements-cpu.txt"):
+            with self.subTest(file=name):
+                self.assertIn("protobuf==", (Path(__file__).resolve().parents[1] / name).read_text(encoding="utf-8"),
+                              "the files it names hold the pin")
+
+    def test_another_import_error_while_loading_is_passed_on_as_it_came(self) -> None:
+        failure = ImportError("some other backend is missing")
+        with self.assertRaises(ImportError) as caught:
+            self._load(failure, MagicMock())
+        self.assertIs(failure, caught.exception)
+
 
 class AStackThatCannotLoadIsNamedTests(unittest.TestCase):
     """A missing package is a ModuleNotFoundError; a DLL Windows refuses is an OSError, or an ImportError

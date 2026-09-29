@@ -25,7 +25,6 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 #: own privates without that being part of any seam.
 _RUNTIME_PATHS = (
     "src/robot/grasping/loop",
-    "src/robot/grasping/closed_loop",
     "src/robot/execution/autonomous_grasp",
 )
 

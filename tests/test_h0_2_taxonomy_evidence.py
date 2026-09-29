@@ -4,6 +4,11 @@ runtime's OWN typed verdicts (calculator GraspFailureReasons + the post-grasp ve
 The taxonomy (replay/failure_taxonomy.py) reads these flags but nothing produced them, so coverage was
 0.0 on every real-records run. This pins the producer: a typed cause -> the matching flag -> a non-
 UNCLASSIFIED taxonomy verdict (coverage > 0); an absent / unmapped cause leaves the record byte-identical.
+
+The post-grasp verification reasons (``jaws_collapsed_to_minimum``, ``gripper_object_not_detected``,
+``target_still_visible``) left on 2026-09-29 with the verifiers that said them, and with them the map that
+stamped ``empty_air_evidence`` and ``slip_evidence`` from them: a stray reason in a report's telemetry is not
+a verdict. The taxonomy still reads both flags on a record logged before then.
 """
 
 from __future__ import annotations
@@ -65,21 +70,14 @@ class TaxonomyEvidenceDerivationTests(unittest.TestCase):
         )
         self.assertEqual(ev, {"deformable_misclass_evidence": True})
 
-    def test_empty_air_verification_reason(self) -> None:
-        for reason in ("jaws_collapsed_to_minimum", "gripper_object_not_detected"):
+    def test_a_retired_verification_reason_stamps_nothing(self) -> None:
+        for reason in ("jaws_collapsed_to_minimum", "gripper_object_not_detected", "target_still_visible"):
             with self.subTest(reason=reason):
                 ev = _evidence(
                     AutonomousGraspOutcome.VERIFICATION_FAILED,
                     verification_reason=reason,
                 )
-                self.assertEqual(ev, {"verification_reason": reason, "empty_air_evidence": True})
-
-    def test_slip_verification_reason(self) -> None:
-        ev = _evidence(
-            AutonomousGraspOutcome.VERIFICATION_FAILED,
-            verification_reason="target_still_visible",
-        )
-        self.assertEqual(ev, {"verification_reason": "target_still_visible", "slip_evidence": True})
+                self.assertEqual(ev, {"verification_reason": reason})
 
     def test_reasons_collected_across_attempt_history(self) -> None:
         # occlusion on an early attempt + collision on a later one -> both flagged.

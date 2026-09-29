@@ -76,10 +76,6 @@ class FeasibilityYamlFlowsToServiceTests(unittest.TestCase):
             EffectiveGraspingConfig(
                 default_mode=GraspMode.AUTO,
                 max_attempts=5,
-                closed_loop_enabled=False,
-                verification_enabled=False,
-                dense_recovery_enabled=False,
-                dense_recovery_allowed_actions=(),
             )
             .to_dict()
             .keys()
@@ -103,7 +99,7 @@ class FeasibilityYamlFlowsToServiceTests(unittest.TestCase):
         self.assertNotIn("easy", f.apply_modes)
         self.assertIn("auto", f.apply_modes)
         self.assertIn("dense_clutter", f.apply_modes)
-        self.assertIn("dense_autonomous", f.apply_modes)
+        self.assertNotIn("dense_autonomous", f.apply_modes)  # left with its mode, 2026-09-29
 
     def test_effective_config_to_dict_includes_feasibility_keys(self) -> None:
         # The snapshot is the operator's primary telemetry surface
@@ -118,10 +114,6 @@ class FeasibilityYamlFlowsToServiceTests(unittest.TestCase):
         snap = EffectiveGraspingConfig(
             default_mode=GraspMode.AUTO,
             max_attempts=5,
-            closed_loop_enabled=False,
-            verification_enabled=False,
-            dense_recovery_enabled=False,
-            dense_recovery_allowed_actions=(),
         )
         d = snap.to_dict()
         self.assertIn("feasibility_enabled", d)

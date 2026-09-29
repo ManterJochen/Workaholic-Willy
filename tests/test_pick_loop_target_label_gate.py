@@ -13,8 +13,8 @@ is only that the refusal SAYS SO.
 
 Deliberately NOT changed, and asserted below so a later edit has to be deliberate:
 
-* the reason is in neither ``_RESCAN_REASONS`` nor ``_RELOCATE_REASONS``, so ``_decide_action``
-  still returns ``"exhausted"`` -- identical control flow, identical motion, identical outcome;
+* the reason is not in ``_RESCAN_REASONS``, so the attempt's action is still ``"exhausted"`` --
+  identical control flow, identical motion, identical outcome;
 * the recovery dispatcher maps it to no action at all. Not for safety (the cell is fine) but because
   it would be POINTLESS: a detector is deterministic on a static frame, so a rescan re-derives the
   same labels, and ``NEXT_TARGET`` would hand over an object the operator did not ask for -- the
@@ -30,7 +30,6 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from src.robot.grasping.loop.pick_loop import (
-    _RELOCATE_REASONS,
     _RESCAN_REASONS,
     BinPickingOrchestrator,
 )
@@ -153,16 +152,17 @@ class LabelGateNamesItsRefusalTests(unittest.TestCase):
 class TheControlFlowIsUnchangedTests(unittest.TestCase):
     """The fix names a failure. It must not move the loop."""
 
-    def test_the_reason_routes_to_neither_rescan_nor_relocate(self) -> None:
+    def test_the_reason_does_not_route_to_a_rescan(self) -> None:
+        # The relocate reasons were folded into the rescan reasons (2026-09-29); this one is in neither.
         self.assertNotIn(GraspFailureReason.TARGET_LABEL_NOT_FOUND, _RESCAN_REASONS)
-        self.assertNotIn(GraspFailureReason.TARGET_LABEL_NOT_FOUND, _RELOCATE_REASONS)
 
     def test_the_action_is_still_exhausted(self) -> None:
-        # What the empty reason tuple produced before, asserted directly.
+        # What the empty reason tuple produced before, asserted through the loop: the attempt says
+        # "exhausted" and no second attempt begins, even with attempts to spare.
         orch = _orchestrator(_Perception("a bolt"), "the green cube")
-        self.assertEqual(
-            orch._decide_action((GraspFailureReason.TARGET_LABEL_NOT_FOUND,)), "exhausted"
-        )
+        orch.max_attempts = 3
+        report = orch.run()
+        self.assertEqual([a.action for a in report.attempts], ["exhausted"])
 
     def test_no_calculator_call_is_added_or_removed(self) -> None:
         _Calculator.calls = 0

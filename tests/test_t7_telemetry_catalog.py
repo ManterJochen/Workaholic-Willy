@@ -74,14 +74,15 @@ class CatalogShapeTests(unittest.TestCase):
 
 
 class AuditRecordTests(unittest.TestCase):
-    def test_succeeded_requires_execution_and_verification(self) -> None:
-        # Missing both -> reported.
+    def test_succeeded_requires_execution(self) -> None:
+        # Missing -> reported. `verification` was required too until the post-grasp verification stage,
+        # its one live writer, left on 2026-09-29; a record without it is complete now.
         rec = _r("succeeded")
-        missing = audit_record(rec)
-        self.assertIn("execution", missing)
-        self.assertIn("verification", missing)
+        self.assertEqual(audit_record(rec), ("execution",))
+        self.assertEqual(audit_record(_r("succeeded", execution={"outcome": "executed"})), ())
 
     def test_succeeded_with_execution_and_verification_passes(self) -> None:
+        # A record logged before 2026-09-29 carries the verification block and still passes.
         rec = _r(
             "succeeded",
             execution={"outcome": "executed"},

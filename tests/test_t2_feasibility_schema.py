@@ -44,7 +44,7 @@ class GraspingFeasibilityConfigDefaultsTests(unittest.TestCase):
         # Apply-modes locks EASY out by default (operator answer Q1-B).
         self.assertEqual(
             set(c.apply_modes),
-            {"auto", "dense_clutter", "dense_autonomous"},
+            {"auto", "dense_clutter"},
         )
 
     def test_extra_fields_forbidden(self) -> None:

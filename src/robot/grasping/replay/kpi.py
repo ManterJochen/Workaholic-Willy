@@ -49,6 +49,8 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from src.robot.grasping.telemetry.outcome_logging import GraspAttemptRecord
 
 
+#: ``dense_autonomous`` is a mode retired on 2026-09-29; it stays so a record logged before then, and
+#: the canonical ``dense_canonical_autonomous`` pack, still count as dense.
 _DENSE_MODES: frozenset[str] = frozenset(
     {"dense_clutter", "dense_autonomous"}
 )

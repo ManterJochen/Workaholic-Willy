@@ -21,6 +21,11 @@ Every verb returns a frozen :class:`MotionReport`. A camera that could not vouch
 programmer's error still raises: a decline that is not a :class:`~src.robot.core.camera_world.CameraWorldDecline`, and
 an arm whose typed verb hands back something that is not a ``MotionResult``.
 
+``move_joints_on_the_line`` is ``move_joints`` for a motion allowed on its straight joint line alone, the view a wrist
+pick generates and its move back (``DrivesJointLines``): an arm that cannot drive the line without planning around it is
+refused before any command, and so is one inside a ``without_camera_world`` block, because such a motion is judged
+against the camera world or not run.
+
 ``home`` asks an arm that goes home as a typed verb (``HomesTyped``, the UR driver) for that verb's result, so a home
 it refuses reads the status and the sentence of the gate that refused it. Any other arm answers ``move_home`` with a
 bool, so a home it refuses reads UNKNOWN here, and that driver's log holds the gate.
@@ -38,11 +43,12 @@ from typing import Any
 
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
-from src.robot.core.arm_capabilities import HomesTyped, LineMotion, LineReading, line_motion_of
+from src.robot.core.arm_capabilities import DrivesJointLines, HomesTyped, LineMotion, LineReading, line_motion_of
 from src.robot.core.camera_world import (
     CameraWorldDecline,
     CameraWorldStamp,
     ReadsCameraWorld,
+    active_decline,
     camera_world_refusal,
     without_camera_world,
 )
@@ -68,6 +74,7 @@ __all__ = [
     "home",
     "move",
     "move_joints",
+    "move_joints_on_the_line",
     "route_of",
     "steady_timeout_of",
 ]
@@ -304,6 +311,33 @@ def move_joints(arm: Any, joints: JointPositions, *, decline: Maybe[CameraWorldD
     keywords: dict[str, Any] = {"camera_world": decline} if chosen(decline) else {}
     return _Motion(arm, MotionVerb.MOVE_JOINTS, decline, target_joints=joints).run(
         lambda: arm.move_to_joints(joints, **keywords))
+
+
+def move_joints_on_the_line(arm: Any, joints: JointPositions) -> MotionReport:
+    """Move ``arm`` to ``joints`` (radians) on the straight joint line only, through its ``move_to_joints_on_the_line``.
+
+    For a motion that may run on that line and nowhere else (``DrivesJointLines``): a line the arm's judge refuses is
+    refused, and nothing is planned around it. It takes no decline: such a motion is judged against the camera world
+    or not run, so a ``without_camera_world`` block in scope for the arm refuses it before any command, UNSUPPORTED,
+    whether or not a world is wired. An arm that does not implement the capability has no such motion, and is refused
+    before any command, UNSUPPORTED, by name.
+    """
+    verb = _Motion(arm, MotionVerb.MOVE_JOINTS, UNSET, target_joints=joints)
+    if not isinstance(arm, DrivesJointLines):
+        route = route_of(arm)
+        return MotionReport(MotionVerb.MOVE_JOINTS, MotionOutcome.REFUSED, route, verb._failed(
+            MotionStatus.UNSUPPORTED,
+            f"{type(arm).__name__} does not drive a straight joint line alone (DrivesJointLines): its joint move may "
+            "plan around the line, so a motion allowed on the line only is not commanded", verb._stamp_before(route)))
+    declined = active_decline(arm)
+    if declined is not None:
+        route = route_of(arm)
+        return MotionReport(MotionVerb.MOVE_JOINTS, MotionOutcome.REFUSED, route, verb._failed(
+            MotionStatus.UNSUPPORTED,
+            f"the camera world is declined for this arm ({declined.reason}), and a motion allowed on its straight "
+            "joint line only runs judged against the camera world or not at all; nothing was sent",
+            verb._stamp_before(route)))
+    return verb.run(lambda: arm.move_to_joints_on_the_line(joints))
 
 
 def home(arm: Any, *, decline: Maybe[CameraWorldDecline] = UNSET) -> MotionReport:

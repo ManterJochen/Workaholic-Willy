@@ -47,7 +47,8 @@ class PickStage(StrEnum):
     PICK_STARTED = "pick_started"
     #: One attempt within that pick has begun. Carries ``attempt``/``attempt_total``.
     ATTEMPT_STARTED = "attempt_started"
-    #: A camera frame was acquired. Carries ``segmentation_count``.
+    #: A camera frame was acquired. Carries ``segmentation_count``; at each look of a wrist pick handed looks,
+    #: also ``extra['look']``, the look it was taken from.
     PERCEIVED = "perceived"
     #: Candidates were generated and ranked. Carries ``candidate_count``, ``score``, ``target_index``.
     RANKED = "ranked"
@@ -85,7 +86,16 @@ class PickProgress:
     position_mm: tuple[float, float, float] | None = None
     #: Typed rejection reasons, as strings. Never free text: these come from ``GraspFailureReason``.
     reasons: tuple[str, ...] = ()
-    #: ``executed`` / ``next_target`` / ``rescan`` / ``relocate`` / ``exhausted``.
+    #: ``rescan`` / ``exhausted`` on :attr:`PickStage.NO_CANDIDATE`; ``executed`` or the failed motion's word
+    #: (``object_not_detected``, ``camera_frame_rejected``, ``approach_path_blocked``, ``gripper_fault``,
+    #: ``execution_failed``, ``controller_not_operational``, ``look_refused`` when a wrist pick reached none of its
+    #: looks, the motion to one (its generated view and its move back included) failed once it may have been
+    #: commanded or was refused by its verb before any command, or its controller stopped on the way to one, and
+    #: ``faces_unseen`` when a pick, on the wrist or a fixed camera, asked for both jaw contact faces and no view showed
+    #: both, so nothing was gripped) on :attr:`PickStage.ATTEMPT_FINISHED`. The loop
+    #: never switches target on its own: ``next_target`` is a recovery action, which would be recorded on
+    #: the recovery trail, not here, and no built-in mode profile plans one. ``relocate`` is retired with
+    #: the relocate path (2026-09-29) and appears only in events recorded before then.
     action: str | None = None
     #: The typed ``PickOutcome`` on :attr:`PickStage.PICK_FINISHED`.
     outcome: str | None = None

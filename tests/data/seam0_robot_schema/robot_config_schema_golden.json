@@ -222,11 +222,11 @@
     },
     "FusionGeometryConfig": {
       "additionalProperties": false,
-      "description": "Fuse each object's surface across the fixed cameras and feed that to the grasp generator.\n\nA separate switch from ``fusion.enabled``, but not an independent one. ``fusion.enabled`` turns\non the voxel-occupancy substrate, which is shadow-only and emits telemetry no grasping path\nconsumes, AND it is what builds the other cameras' CAMERA to BASE resolvers\n(``build_config_frame_resolvers`` returns none while it is off). With ``fusion.enabled`` false\nevery second view is dropped at the pick with a warning, so geometry fusion needs both switches\non (``CameraFusionPlan`` checks it). This one changes the grasp candidates themselves, since\nevery camera that can identify an object contributes its view of that object's surface and the\ngenerator plans on the union.\n\nA candidate is accepted or rejected on its closing axis, the closing axis comes from the\nobject's silhouette, and one depth view sees one side of an object while an antipodal grasp\nneeds two. Measured on the datagen reference through the real calculator (n=354): top-1\n43.50 % single-view -> 55.93 % fused, coverage 53.67 -> 64.69 %.\n\nRequires ``cameras`` to be populated (each camera individually calibrated) and a multi-camera\nperception source at runtime. Without both this stands down to the single-view path and stamps\nwhy in the telemetry.",
+      "description": "Fuse each object's surface across the fixed cameras and feed that to the grasp generator.\n\nA separate switch from ``fusion.enabled``, but not an independent one. ``fusion.enabled`` is\nwhat builds the other cameras' CAMERA to BASE resolvers (``build_config_frame_resolvers``\nreturns none while it is off). With ``fusion.enabled`` false every second view is dropped at the\npick with a warning, so geometry fusion needs both switches on (``CameraFusionPlan`` checks it).\nThis one changes the grasp candidates themselves, since every camera that can identify an object\ncontributes its view of that object's surface and the generator plans on the union.\n\nA candidate is accepted or rejected on its closing axis, the closing axis comes from the\nobject's silhouette, and one depth view sees one side of an object while an antipodal grasp\nneeds two. Measured on the datagen reference through the real calculator (n=354): top-1\n43.50 % single-view -> 55.93 % fused, coverage 53.67 -> 64.69 %.\n\nRequires ``cameras`` to be populated (each camera individually calibrated) and a multi-camera\nperception source at runtime. Without both this stands down to the single-view path and stamps\nwhy in the telemetry.",
       "properties": {
         "enabled": {
           "default": false,
-          "description": "Top-level switch. False (default) = the generator sees one view per object, exactly as before: byte-identical. Needs ``fusion.enabled`` too: that switch also builds the other cameras' CAMERA to BASE resolvers, without which every second view is dropped.",
+          "description": "Top-level switch. False (default) = the generator sees one view per object, exactly as before: byte-identical. Needs ``fusion.enabled`` too: that switch builds the other cameras' CAMERA to BASE resolvers, without which every second view is dropped.",
           "title": "Enabled",
           "type": "boolean"
         },
@@ -305,52 +305,6 @@
         }
       },
       "title": "FusionGeometryConfig",
-      "type": "object"
-    },
-    "GraspingClosedLoopConfig": {
-      "additionalProperties": false,
-      "description": "Pre-grasp refinement (closed-loop) knobs.\n\nConsumed by :class:`src.robot.grasping.closed_loop.refinement.RefinementPolicy`\nwhen the operator opts into closed-loop modes. ``enabled=False`` disables the\nsecond-scan refinement step even when the active mode profile permits it. The\n``max_*_correction_*`` fields cap how far one refinement may move the grasp,\nin millimetres and degrees.",
-      "properties": {
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "max_grip_width_correction_mm": {
-          "default": 20.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Max Grip Width Correction Mm",
-          "type": "number"
-        },
-        "max_orientation_correction_deg": {
-          "default": 15.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 90.0,
-          "title": "Max Orientation Correction Deg",
-          "type": "number"
-        },
-        "max_position_correction_mm": {
-          "default": 20.0,
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Max Position Correction Mm",
-          "type": "number"
-        },
-        "pregrasp_rescan": {
-          "default": true,
-          "title": "Pregrasp Rescan",
-          "type": "boolean"
-        },
-        "target_match_iou_threshold": {
-          "default": 0.3,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Target Match Iou Threshold",
-          "type": "number"
-        }
-      },
-      "title": "GraspingClosedLoopConfig",
       "type": "object"
     },
     "GraspingContainerConfig": {
@@ -450,7 +404,7 @@
     },
     "GraspingDecisionConfig": {
       "additionalProperties": false,
-      "description": "Pre-execution decision-layer knobs.\n\nConsumed by :class:`src.robot.grasping.decision.DecisionPolicy` when\nthe operator opts the auto fail-closed decision layer on. Defaults to\n``enabled=False``, so a ``robot.yaml`` that omits the block is unaffected.\n\nAttributes\n----------\nenabled\n    Master switch. When :data:`False`, the runtime builds no\n    :class:`DecisionEngine` and the pick path runs without one.\nauto_uncertainty_threshold\n    Maximum uncertainty (in ``[0, 1]``) accepted as a confident grasp.\n    ``uncertainty = (1 - top_score)`` plus an optional ``reasons_penalty``\n    when the grasp result carries failure reasons. Default ``0.4`` => require\n    ``top_score >= 0.6``.\nmax_reobservations\n    Bounded camera re-observation budget per\n    :meth:`AutonomousGraspService.pick` call. Default ``2``.\nreasons_penalty\n    Added to the base uncertainty when :class:`GraspResult.reasons` is\n    non-empty. Default ``0.2``.\nfail_closed_on_real_hardware\n    When :data:`True` and the running arm reports\n    ``capabilities.is_simulated == False``, an exhausted re-observation budget\n    or absent viewpoint planner is mapped to\n    :class:`DecisionAction.FAIL_CLOSED`. Simulated runs stay permissive.",
+      "description": "Pre-execution decision-layer knobs.\n\nConsumed by :class:`src.robot.grasping.decision.DecisionPolicy` when\nthe operator opts the auto fail-closed decision layer on. Defaults to\n``enabled=False``, so a ``robot.yaml`` that omits the block is unaffected.\n\nAttributes\n----------\nenabled\n    Master switch. When :data:`False`, the runtime builds no\n    :class:`DecisionEngine` and the pick path runs without one.\nauto_uncertainty_threshold\n    Maximum uncertainty (in ``[0, 1]``) accepted as a confident grasp.\n    ``uncertainty = (1 - top_score)`` plus an optional ``reasons_penalty``\n    when the grasp result carries failure reasons. Default ``0.4`` => require\n    ``top_score >= 0.6``.\nreasons_penalty\n    Added to the base uncertainty when :class:`GraspResult.reasons` is\n    non-empty. Default ``0.2``.\nfail_closed_on_real_hardware\n    When :data:`True` and the running arm reports\n    ``capabilities.is_simulated == False``, a grasp less confident than the\n    threshold is mapped to :class:`DecisionAction.FAIL_CLOSED`. Simulated runs\n    stay permissive.\n\nThe gate decides once per pick, on one frame, and never moves the camera to\nlook again: ``max_reobservations``, the budget for that, was removed on\n2026-09-29 with the camera move it budgeted. A tree that still writes it is\nrefused at load with the reason (``src/config/schema/_removed.py``).",
       "properties": {
         "auto_uncertainty_threshold": {
           "default": 0.4,
@@ -468,13 +422,6 @@
           "default": true,
           "title": "Fail Closed On Real Hardware",
           "type": "boolean"
-        },
-        "max_reobservations": {
-          "default": 2,
-          "maximum": 10,
-          "minimum": 0,
-          "title": "Max Reobservations",
-          "type": "integer"
         },
         "reasons_penalty": {
           "default": 0.2,
@@ -557,47 +504,6 @@
       "title": "GraspingDeepRankerConfig",
       "type": "object"
     },
-    "GraspingDenseRecoveryConfig": {
-      "additionalProperties": false,
-      "description": "Scene-recovery knobs (dense-clutter behaviour).\n\n``allowed_actions`` is a free-form list of recovery action names, matched\nagainst :class:`src.robot.grasping.recovery.SceneRecoveryAction` at\nruntime, so unknown names produce a typed error rather than a silent allow.",
-      "properties": {
-        "allowed_actions": {
-          "default": [
-            "next_viewpoint"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "title": "Allowed Actions",
-          "type": "array"
-        },
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "max_recovery_actions": {
-          "default": 2,
-          "maximum": 10,
-          "minimum": 0,
-          "title": "Max Recovery Actions",
-          "type": "integer"
-        },
-        "strategy": {
-          "default": "active_perception",
-          "description": "Which recovery to plan when a pick fails. The policy above says what is permitted; this says what is proposed.\n\n`active_perception` (default) escalates RESCAN -> NEXT_VIEWPOINT: look again, then look from somewhere else. It never moves a part, so it cannot make the scene worse, and it addresses the failure this reference actually has: 68 % of visible objects yield no candidate at all, which is a seeing problem. `next_target` simply takes a different object: the cheapest possible recovery and the wrong answer for a prompt-driven pick, because avoiding the asked-for object is not recovering. `none` plans nothing, which is what an operator wants while measuring the policy alone.",
-          "enum": [
-            "active_perception",
-            "next_target",
-            "none"
-          ],
-          "title": "Strategy",
-          "type": "string"
-        }
-      },
-      "title": "GraspingDenseRecoveryConfig",
-      "type": "object"
-    },
     "GraspingFeasibilityConfig": {
       "additionalProperties": false,
       "description": "Feasibility-aware ranking knobs.\n\nCarries three pre-commit feasibility signals that demote (never reject)\ncandidates with poor execution prospects: IK reachability quality, joint-limit\nmargin, and swept approach feasibility. All three are disabled by default\n(byte-identical). A signal takes effect only when its ``*_enabled`` flag is\nset and the top-level :attr:`weight` is non-zero; one without the other\ncarries no weight. ``apply_modes`` excludes ``easy`` so easy's cycle-time\nbudget is preserved.\n\nAttributes\n----------\nenabled\n    Master switch. When :data:`False`, the calculator is built without a\n    feasibility scorer and the ranking is unchanged.\nweight\n    Top-level feasibility weight in the\n    :class:`~src.robot.grasping.scoring.GraspScoreWeights` normalised\n    average. Default ``0.0`` keeps ``total_score`` byte-identical.\napply_modes\n    Modes not listed here skip feasibility ranking regardless of any other\n    flag (easy is permanently locked out).\nik_quality_enabled, joint_margin_enabled, swept_approach_enabled\n    Per-signal switches. Disabled signals contribute a neutral ``0.5`` floor\n    so they never demote a candidate below an enabled-but-unknown peer.\nik_quality_weight, joint_margin_weight, swept_approach_weight\n    Internal sub-weights inside the feasibility score; only relevant when\n    their corresponding signal is enabled.\nswept_approach_top_k\n    Maximum number of top-ranked candidates evaluated with swept-approach\n    validation. Caps O(N) cost so the affected modes still meet cycle time.",
@@ -605,8 +511,7 @@
         "apply_modes": {
           "default": [
             "auto",
-            "dense_clutter",
-            "dense_autonomous"
+            "dense_clutter"
           ],
           "items": {
             "type": "string"
@@ -785,8 +690,7 @@
         "apply_modes": {
           "default": [
             "auto",
-            "dense_clutter",
-            "dense_autonomous"
+            "dense_clutter"
           ],
           "items": {
             "type": "string"
@@ -861,8 +765,7 @@
         "apply_modes": {
           "default": [
             "auto",
-            "dense_clutter",
-            "dense_autonomous"
+            "dense_clutter"
           ],
           "items": {
             "type": "string"
@@ -1047,7 +950,7 @@
     },
     "GraspingRecoveryConfig": {
       "additionalProperties": false,
-      "description": "Recovery-orchestration knobs.\n\nMirrors the surface in\n:class:`src.robot.grasping.recovery.SceneRecoveryPolicy` but holds\nstring action names, so the config layer imports no runtime enum. Every flag\ndefaults off (byte-identical); ``easy`` is excluded from the default apply\nmodes. When :attr:`allowed_actions` contains a physical action\n(``nudge_target`` or ``container_agitate``), :attr:`fixture` must be set: the\ncross-field check refuses to arm a physical recovery without an envelope.",
+      "description": "Recovery-orchestration knobs.\n\nMirrors the surface in\n:class:`src.robot.grasping.recovery.SceneRecoveryPolicy` but holds\nstring action names, so the config layer imports no runtime enum. Every flag\ndefaults off (byte-identical); ``easy`` is excluded from the default apply\nmodes. When :attr:`allowed_actions` contains a physical action\n(``nudge_target`` or ``container_agitate``), :attr:`fixture` must be set: the\ncross-field check refuses to arm a physical recovery without an envelope.\n``container_agitate`` is refused as well unless ``support.container`` declares\nits interior box. That check sits on :class:`RobotGraspingConfig`\n(``_container_agitate_needs_a_container``) because it needs both blocks.",
       "properties": {
         "allowed_actions": {
           "default": [],
@@ -1060,8 +963,7 @@
         "apply_modes": {
           "default": [
             "auto",
-            "dense_clutter",
-            "dense_autonomous"
+            "dense_clutter"
           ],
           "items": {
             "type": "string"
@@ -1116,7 +1018,7 @@
     },
     "GraspingRecoveryFixtureConfig": {
       "additionalProperties": false,
-      "description": "Operator-bounded envelope for physical recovery actions.\n\nA recovery action is the robot deliberately pushing something: nudging a part that will not\nseparate, agitating a container. That is motion aimed at the scene rather than at a grasp, so\nits reach is declared by the operator rather than inferred, and the recovery planner may not\nexceed these three numbers.",
+      "description": "Operator-bounded envelope for physical recovery actions.\n\nA recovery action is the robot deliberately pushing something: nudging a part that will not\nseparate, agitating a container. That is motion aimed at the scene rather than at a grasp, so\nits reach is declared by the operator rather than inferred, and the recovery planner may not\nexceed these three numbers.\n\n``max_nudge_mm`` is the longest push the cell allows, 50 mm at most, and above that the config\nis refused (owner, 2026-09-29). A ``nudge_target`` push moves the part 30 mm unless asked for\nanother distance, and never more than this: with the default of 30 mm, a request for more is\nrefused, never shortened. Below 10 mm no push can open room for a finger, so none is planned. The\npush's landing is bounded by what the camera saw (the workspace box intersected with the seen\ntable, shrunk by the push plus 30 mm), and this box can only narrow it.",
       "properties": {
         "center_mm": {
           "maxItems": 3,
@@ -1153,7 +1055,7 @@
           "type": "array"
         },
         "max_nudge_mm": {
-          "default": 5.0,
+          "default": 30.0,
           "maximum": 50.0,
           "minimum": 0.0,
           "title": "Max Nudge Mm",
@@ -1169,14 +1071,13 @@
     },
     "GraspingSuccessModelConfig": {
       "additionalProperties": false,
-      "description": "Success-probability overlay (default off).\n\nPoints the runtime at a trained artifact and bounds what it may influence.\n``enabled=False`` means nothing in the pipeline loads or runs the model, so\nadding this block or omitting it is byte-identical.\n\nAttributes\n----------\nenabled\n    Master switch. Defaults to :data:`False`, so the runtime never loads the\n    artifact.\nartifact_dir\n    Path of the directory containing ``model.json`` and ``manifest.json``: absolute,\n    relative to the config folder, or under ``${WILLY_PROJECT_ROOT}``, the repository\n    (:mod:`src.config.paths`). Defaults to the committed v1 artifact under the\n    repository's ``assets/models/success_probability/v1``.\napply_modes\n    Stable mode names the model may score in. Defaults to the four canonical\n    modes; ``\"easy\"`` is included because easy pick rate is the\n    strict-improvement target the model is calibrated against.\nranking_blend_enabled\n    Master switch for the bounded probability-blend reranker. Defaults to\n    :data:`False` (byte-identical). When :data:`True` (and ``enabled``, and a\n    non-shadow lifecycle artifact is loaded), the runtime reranks\n    ``best_result.candidates`` in dense modes only using the convex blend\n    ``(1 - w) * geometric + w * predicted_p``.\nranking_blend_weight\n    Blend weight ``w``. Clamped to ``[0.0, 0.5]`` so the geometric score always\n    retains >=50 % influence and a miscalibrated model cannot dominate ranking.\n    Default ``0.20``.\nranking_blend_modes\n    Locked dense-only subset of grasp-modes the blend reranker may operate in:\n    a subset of ``{\"dense_clutter\", \"dense_autonomous\"}`` (``\"easy\"`` and\n    ``\"auto\"`` stay geometry-only so easy pick-rate cannot regress). Must also\n    be a subset of ``apply_modes`` (else the shadow probability is never\n    annotated and the blend has nothing to read).",
+      "description": "Success-probability overlay (default off).\n\nPoints the runtime at a trained artifact and bounds what it may influence.\n``enabled=False`` means nothing in the pipeline loads or runs the model, so\nadding this block or omitting it is byte-identical.\n\nAttributes\n----------\nenabled\n    Master switch. Defaults to :data:`False`, so the runtime never loads the\n    artifact.\nartifact_dir\n    Path of the directory containing ``model.json`` and ``manifest.json``: absolute,\n    relative to the config folder, or under ``${WILLY_PROJECT_ROOT}``, the repository\n    (:mod:`src.config.paths`). Defaults to the committed v1 artifact under the\n    repository's ``assets/models/success_probability/v1``.\napply_modes\n    Stable mode names the model may score in. Defaults to the three canonical\n    modes; ``\"easy\"`` is included because easy pick rate is the\n    strict-improvement target the model is calibrated against.\nranking_blend_enabled\n    Master switch for the bounded probability-blend reranker. Defaults to\n    :data:`False` (byte-identical). When :data:`True` (and ``enabled``, and a\n    non-shadow lifecycle artifact is loaded), the runtime reranks\n    ``best_result.candidates`` in dense modes only using the convex blend\n    ``(1 - w) * geometric + w * predicted_p``.\nranking_blend_weight\n    Blend weight ``w``. Clamped to ``[0.0, 0.5]`` so the geometric score always\n    retains >=50 % influence and a miscalibrated model cannot dominate ranking.\n    Default ``0.20``.\nranking_blend_modes\n    Locked dense-only subset of grasp-modes the blend reranker may operate in:\n    a subset of ``{\"dense_clutter\"}`` (``\"easy\"`` and\n    ``\"auto\"`` stay geometry-only so easy pick-rate cannot regress). Must also\n    be a subset of ``apply_modes`` (else the shadow probability is never\n    annotated and the blend has nothing to read).",
       "properties": {
         "apply_modes": {
           "default": [
             "easy",
             "auto",
-            "dense_clutter",
-            "dense_autonomous"
+            "dense_clutter"
           ],
           "items": {
             "type": "string"
@@ -1213,8 +1114,7 @@
         },
         "ranking_blend_modes": {
           "default": [
-            "dense_clutter",
-            "dense_autonomous"
+            "dense_clutter"
           ],
           "items": {
             "type": "string"
@@ -1352,13 +1252,12 @@
     },
     "GraspingUncertaintyConfig": {
       "additionalProperties": false,
-      "description": "Uncertainty fusion + calibration layer.\n\nFusion is a weighted convex combination of seven typed per-channel\nmonotone-remapped values (exposed via :class:`UncertaintyChannelWeightsConfig`;\nruntime carrier in :mod:`src.robot.grasping.uncertainty`). When\n:attr:`enabled`, :attr:`fail_closed_threshold` replaces\n:attr:`GraspingDecisionConfig.auto_uncertainty_threshold`; when disabled the\ndecision layer keeps its own threshold (byte-identical). The layer always emits a\ntyped snapshot on every :class:`AutonomousGraspReport` (``fused=0.0,\nfused_available=False`` when disabled). ``\"easy\"`` is excluded from\n:attr:`apply_modes`.\n\nAttributes\n----------\nenabled\n    Master switch. Defaults to :data:`False` (byte-identical).\nfail_closed_threshold\n    When ``fused >= fail_closed_threshold`` the decision layer fail-closes the\n    attempt (replacing ``GraspingDecisionConfig.auto_uncertainty_threshold``).\n    Default ``0.4`` matches that threshold's own default.\napply_modes\n    Stable mode names the layer applies to. ``\"easy\"`` is rejected.\nweights\n    Per-channel non-negative weights. When :attr:`enabled` at least one weight\n    must be strictly positive; all-zero weights are refused, because a fused\n    signal pinned at zero gates nothing.\nranking_penalty_weight\n    Ranking carrier. Multiplies the fused uncertainty when subtracting from a\n    candidate score. Default ``0.0`` => ranking byte-identical.\nrecovery_aggressive_threshold\n    Recovery carrier. When fused exceeds this threshold the orchestrator may\n    prefer perception-recovery actions (``NEXT_VIEWPOINT``/``RESCAN``). Default\n    ``1.01`` => never trips (fused is clamped to ``[0, 1]``).\ncalibration_artifact_path\n    Optional path (absolute or relative to the config root) to a JSON\n    calibration artifact produced by\n    :mod:`src.robot.grasping.calibration.uncertainty_calibration`.\n    When :data:`None`, the identity calibration is used.",
+      "description": "Uncertainty fusion + calibration layer.\n\nFusion is a weighted convex combination of seven typed per-channel\nmonotone-remapped values (exposed via :class:`UncertaintyChannelWeightsConfig`;\nruntime carrier in :mod:`src.robot.grasping.uncertainty`). When\n:attr:`enabled`, :attr:`fail_closed_threshold` replaces\n:attr:`GraspingDecisionConfig.auto_uncertainty_threshold`; when disabled the\ndecision layer keeps its own threshold (byte-identical). The layer always emits a\ntyped snapshot on every :class:`AutonomousGraspReport` (``fused=0.0,\nfused_available=False`` when disabled). ``\"easy\"`` is excluded from\n:attr:`apply_modes`.\n\nAttributes\n----------\nenabled\n    Master switch. Defaults to :data:`False` (byte-identical).\nfail_closed_threshold\n    When ``fused >= fail_closed_threshold`` the decision layer fail-closes the\n    attempt (replacing ``GraspingDecisionConfig.auto_uncertainty_threshold``).\n    Default ``0.4`` matches that threshold's own default.\napply_modes\n    Stable mode names the layer applies to. ``\"easy\"`` is rejected.\nweights\n    Per-channel non-negative weights. When :attr:`enabled` at least one weight\n    must be strictly positive; all-zero weights are refused, because a fused\n    signal pinned at zero gates nothing.\nranking_penalty_weight\n    Ranking carrier. Multiplies the fused uncertainty when subtracting from a\n    candidate score. Default ``0.0`` => ranking byte-identical.\nrecovery_aggressive_threshold\n    Recovery carrier. When fused exceeds this threshold the orchestrator may\n    prefer the perception-recovery action (``RESCAN``). Default\n    ``1.01`` => never trips (fused is clamped to ``[0, 1]``).\ncalibration_artifact_path\n    Optional path (absolute or relative to the config root) to a JSON\n    calibration artifact produced by\n    :mod:`src.robot.grasping.calibration.uncertainty_calibration`.\n    When :data:`None`, the identity calibration is used.",
       "properties": {
         "apply_modes": {
           "default": [
             "auto",
-            "dense_clutter",
-            "dense_autonomous"
+            "dense_clutter"
           ],
           "items": {
             "type": "string"
@@ -1425,8 +1324,7 @@
         },
         "rerank_modes": {
           "default": [
-            "dense_clutter",
-            "dense_autonomous"
+            "dense_clutter"
           ],
           "items": {
             "type": "string"
@@ -1446,68 +1344,6 @@
         }
       },
       "title": "GraspingUncertaintyConfig",
-      "type": "object"
-    },
-    "GraspingVerificationConfig": {
-      "additionalProperties": false,
-      "description": "Post-grasp verification knobs.\n\nMirrors the operator-tunable fields on\n:class:`src.robot.grasping.closed_loop.verification.GraspVerificationPolicy`.\nVerification stays off unless ``enabled: true`` is set explicitly.",
-      "properties": {
-        "enabled": {
-          "default": false,
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "fail_closed": {
-          "default": true,
-          "title": "Fail Closed",
-          "type": "boolean"
-        },
-        "post_lift_vision_check": {
-          "default": false,
-          "title": "Post Lift Vision Check",
-          "type": "boolean"
-        },
-        "require_all_conclusive": {
-          "default": false,
-          "description": "How to treat a verifier that could not measure anything: a gripper with no width feedback and no object-detect capability returns INCONCLUSIVE, not FAILED. False (default) counts it as a pass and logs a WARNING plus a telemetry stamp saying verification ran and learned nothing, because the alternative is a sensorless cell that fails every pick including the good ones. True demands a real measurement and is the right setting once the gripper actually reports one. Distinct from `fail_closed`, which governs what happens after a verifier says FAILED.",
-          "title": "Require All Conclusive",
-          "type": "boolean"
-        },
-        "require_object_detected": {
-          "default": false,
-          "title": "Require Object Detected",
-          "type": "boolean"
-        },
-        "vision_displacement_iou_max": {
-          "default": 0.2,
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Vision Displacement Iou Max",
-          "type": "number"
-        },
-        "width_delta_max_mm": {
-          "anyOf": [
-            {
-              "maximum": 50.0,
-              "minimum": 0.0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": 10.0,
-          "title": "Width Delta Max Mm"
-        },
-        "width_delta_min_mm": {
-          "default": 2.0,
-          "maximum": 50.0,
-          "minimum": 0.0,
-          "title": "Width Delta Min Mm",
-          "type": "number"
-        }
-      },
-      "title": "GraspingVerificationConfig",
       "type": "object"
     },
     "GraspingWatchdogConfig": {
@@ -2521,10 +2357,9 @@
       "properties": {
         "apply_modes": {
           "default": [
-            "dense_clutter",
-            "dense_autonomous"
+            "dense_clutter"
           ],
-          "description": "Mode labels that activate the validator (the dense modes by default). The orchestrator skips the check when its resolved mode label is not in this set. easy is locked out.",
+          "description": "Mode labels that activate the validator (the dense mode by default). The orchestrator skips the check when its resolved mode label is not in this set. easy is locked out.",
           "items": {
             "type": "string"
           },
@@ -2581,76 +2416,9 @@
       "title": "RobotGraspingApproachValidationConfig",
       "type": "object"
     },
-    "RobotGraspingCommitPolicyConfig": {
-      "additionalProperties": false,
-      "description": "Mandatory dense multi-view commit gate.\n\nWhen enabled (and the resolved mode is in :attr:`apply_modes`), the pick loop\nrefuses to hand a winning candidate to execution unless the fused scene memory\nsatisfies both ``views_accepted >= min_views_accepted`` and the candidate's\napproach corridor (a :attr:`corridor_length_mm` x :attr:`corridor_radius_mm`\ncapsule along its approach vector) has at least\n:attr:`min_corridor_hit_fraction` of its in-ROI voxels marked hit. On refusal\nthe orchestrator triggers up to :attr:`max_reobserve_attempts` more captures\nbefore surfacing a typed\n:attr:`~src.robot.grasping.loop.pick_loop.PickOutcome.NO_COMMIT_INSUFFICIENT_FUSION`.\nDefault ``enabled=False`` is byte-identical.",
-      "properties": {
-        "apply_modes": {
-          "default": [
-            "auto",
-            "dense_clutter",
-            "dense_autonomous"
-          ],
-          "description": "Mode labels that activate the gate. Defaults to all modes except easy. The orchestrator skips the gate (and the reobserve loop) when its resolved mode label is not in this set.",
-          "items": {
-            "type": "string"
-          },
-          "title": "Apply Modes",
-          "type": "array"
-        },
-        "corridor_length_mm": {
-          "default": 120.0,
-          "description": "Length (mm) of the corridor capsule along the candidate's approach vector, anchored at the grasp position and extending opposite the approach (i.e. into the camera-viewing volume where evidence should accumulate).",
-          "exclusiveMinimum": 0.0,
-          "maximum": 1000.0,
-          "title": "Corridor Length Mm",
-          "type": "number"
-        },
-        "corridor_radius_mm": {
-          "default": 25.0,
-          "description": "Radius (mm) of the cylindrical capsule around the candidate's approach line used for corridor evidence.",
-          "exclusiveMinimum": 0.0,
-          "maximum": 200.0,
-          "title": "Corridor Radius Mm",
-          "type": "number"
-        },
-        "enabled": {
-          "default": false,
-          "description": "Top-level switch. When False the commit gate is a no-op (byte-identical).",
-          "title": "Enabled",
-          "type": "boolean"
-        },
-        "max_reobserve_attempts": {
-          "default": 1,
-          "description": "Per-pick budget of additional perception captures triggered when the gate refuses. After exhaustion the pick surfaces NO_COMMIT_INSUFFICIENT_FUSION.",
-          "maximum": 10,
-          "minimum": 0,
-          "title": "Max Reobserve Attempts",
-          "type": "integer"
-        },
-        "min_corridor_hit_fraction": {
-          "default": 0.3,
-          "description": "Minimum fraction of voxels inside the candidate's approach corridor that must be marked hit in the fusion grid. 0.0 disables the corridor check (views-only gate).",
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Min Corridor Hit Fraction",
-          "type": "number"
-        },
-        "min_views_accepted": {
-          "default": 2,
-          "description": "Minimum number of accepted views that must already be fused before the orchestrator may commit a candidate to execution.",
-          "maximum": 64,
-          "minimum": 1,
-          "title": "Min Views Accepted",
-          "type": "integer"
-        }
-      },
-      "title": "RobotGraspingCommitPolicyConfig",
-      "type": "object"
-    },
     "RobotGraspingConfig": {
       "additionalProperties": false,
-      "description": "Vendor-neutral grasping-behaviour surface.\n\nSits as a sibling of :class:`RobotSafetyConfig` under :class:`RobotConfig`.\nAll knobs are behavioural (mode selection, closed-loop refinement,\nverification, recovery, decision); safety remains exclusively under\n``robot.safety``.\n\nThe runtime derives per-mode behaviour from the\n:class:`src.robot.execution.autonomous_grasp.GraspBehaviorProfile`\ntable. Values here apply on top of that profile: they tighten or disable\noptional behaviour, but cannot relax safety limits or unlock recovery actions\nthe mode profile forbids. ``default_mode`` is resolved against\n:class:`src.robot.grasping.types.modes.GraspMode` at use time so the config\nlayer imports no runtime modules.",
+      "description": "Vendor-neutral grasping-behaviour surface.\n\nSits as a sibling of :class:`RobotSafetyConfig` under :class:`RobotConfig`.\nAll knobs are behavioural (mode selection, recovery, decision); safety\nremains exclusively under ``robot.safety``.\n\n``verification`` and ``dense_recovery`` were removed on 2026-09-29: no pick path ran the\npost-grasp verification stage, the gripper's own hold evidence decides every close, and the\ndense-recovery policy was consulted by no pick. A tree that still writes either block is refused\nat load with the sentence that says what to do instead (``src/config/schema/_removed.py``).\n\nThe runtime derives per-mode behaviour from the\n:class:`src.robot.execution.autonomous_grasp.GraspBehaviorProfile`\ntable. Values here apply on top of that profile: they tighten or disable\noptional behaviour, but cannot relax safety limits or unlock recovery actions\nthe mode profile forbids. ``default_mode`` is resolved against\n:class:`src.robot.grasping.types.modes.GraspMode` at use time so the config\nlayer imports no runtime modules.",
       "properties": {
         "approach_validation": {
           "$ref": "#/$defs/RobotGraspingApproachValidationConfig",
@@ -2665,9 +2433,6 @@
           ],
           "title": "Calculator",
           "type": "string"
-        },
-        "closed_loop": {
-          "$ref": "#/$defs/GraspingClosedLoopConfig"
         },
         "decision": {
           "$ref": "#/$defs/GraspingDecisionConfig"
@@ -2685,9 +2450,6 @@
           "minLength": 1,
           "title": "Default Mode",
           "type": "string"
-        },
-        "dense_recovery": {
-          "$ref": "#/$defs/GraspingDenseRecoveryConfig"
         },
         "feasibility": {
           "$ref": "#/$defs/GraspingFeasibilityConfig"
@@ -2750,9 +2512,6 @@
         "uncertainty": {
           "$ref": "#/$defs/GraspingUncertaintyConfig"
         },
-        "verification": {
-          "$ref": "#/$defs/GraspingVerificationConfig"
-        },
         "watchdog": {
           "$ref": "#/$defs/GraspingWatchdogConfig"
         }
@@ -2762,14 +2521,8 @@
     },
     "RobotGraspingFusionConfig": {
       "additionalProperties": false,
-      "description": "Bounded multi-view fusion substrate config.\n\nConfigures the deterministic voxel-occupancy grid that\n:class:`src.robot.grasping.multiview.fusion.SceneFusion` maintains\nacross perception captures within a pick session. The deployment posture is\nshadow-only: even with ``enabled=True`` the runtime merely ingests perception\nframes and emits telemetry; the commit gate is what turns fused evidence into\ndense-mode decisioning.\n\nAll limits are hard caps. Validators enforce positive/finite numerics,\n``depth_min_mm < depth_max_mm``, per-axis ROI extent a positive multiple of\n``voxel_size_mm``, and ROI x voxel-size never exceeding ``max_voxels`` (so a\nmisconfiguration cannot allocate a gigabyte-scale grid).",
+      "description": "Multi-camera fusion: which cameras a cell fuses, and how each object's surface is fused.\n\n``enabled`` builds the fused cameras' CAMERA to BASE resolvers\n(``build_config_frame_resolvers``, one per enabled camera ``cameras`` lists, from the calibration\ndeclared on its rig) and does nothing else; ``geometry`` fuses each object's surface across\nthose cameras and hands the union to the grasp generator. Fusing takes both: with ``enabled``\noff the resolver map is empty and every other camera's view is dropped at the pick with a\nwarning, and with ``geometry.enabled`` off nothing asks for the map. ``CameraFusionPlan`` names\nwhichever is missing.\n\nThe voxel-occupancy grid this block also configured, and the commit gate that read it, were\nremoved on 2026-09-28: the grid's contents never reached a grasp, a decision or a measured\nresult. A tree that still writes one of their keys is refused at load with the reason\n(``src/config/schema/_removed.py``).",
       "properties": {
-        "active_perception_use_fusion": {
-          "default": false,
-          "description": "Read-side wiring switch. When True the viewpoint planner may consume fused-state information gain when scoring next viewpoints. Default False leaves the planner path byte-identical, so the commit gate can be armed on its own.",
-          "title": "Active Perception Use Fusion",
-          "type": "boolean"
-        },
         "cameras": {
           "additionalProperties": {
             "$ref": "#/$defs/FusionCameraConfig"
@@ -2778,98 +2531,15 @@
           "title": "Cameras",
           "type": "object"
         },
-        "commit_policy": {
-          "$ref": "#/$defs/RobotGraspingCommitPolicyConfig",
-          "description": "Mandatory dense multi-view commit gate. Defaults to ``enabled=False`` (byte-identical)."
-        },
-        "depth_max_mm": {
-          "default": 1400.0,
-          "description": "Maximum valid depth sample (mm). Above: rejected.",
-          "exclusiveMinimum": 0.0,
-          "maximum": 10000.0,
-          "title": "Depth Max Mm",
-          "type": "number"
-        },
-        "depth_min_mm": {
-          "default": 80.0,
-          "description": "Minimum valid depth sample (mm). Below: rejected.",
-          "exclusiveMinimum": 0.0,
-          "maximum": 10000.0,
-          "title": "Depth Min Mm",
-          "type": "number"
-        },
         "enabled": {
           "default": false,
-          "description": "Top-level switch. When False the orchestrator behaves byte-identically: no fusion module is constructed, no telemetry emitted, no perception ingest performed.",
+          "description": "Builds the CAMERA to BASE resolver of each enabled camera ``cameras`` lists, from the calibration declared on its rig, and that is all it does: those resolvers are how ``geometry`` places every other camera's view in the base frame (the voxel grid this switch also fed was removed on 2026-09-28). They are built while ``geometry.enabled`` is on as well. False (default) builds none, so with ``geometry.enabled`` on every other camera's view is dropped at the pick with a warning and the cell grasps single-view. It fuses nothing on its own, and the primary camera's resolver never waits for it.",
           "title": "Enabled",
           "type": "boolean"
         },
         "geometry": {
           "$ref": "#/$defs/FusionGeometryConfig",
-          "description": "Fuse each object's surface across ``cameras`` and hand the union to the grasp generator. Independent of ``enabled`` above: that switch runs the shadow voxel substrate, this one changes the grasp candidates."
-        },
-        "intrinsics_atol": {
-          "default": 1e-06,
-          "description": "Absolute tolerance for per-element intrinsic-matrix drift between views (strict frame contract). Views whose intrinsics differ from the first accepted view by more than this are refused.",
-          "maximum": 1.0,
-          "minimum": 0.0,
-          "title": "Intrinsics Atol",
-          "type": "number"
-        },
-        "max_view_age_s": {
-          "default": 20.0,
-          "description": "Accepted views older than this are dropped on the next ingest (wall-clock relative to the newest accepted view).",
-          "exclusiveMinimum": 0.0,
-          "maximum": 600.0,
-          "title": "Max View Age S",
-          "type": "number"
-        },
-        "max_views": {
-          "default": 6,
-          "description": "Maximum number of accepted views retained simultaneously. Sliding FIFO: oldest accepted view evicted on overflow.",
-          "maximum": 64,
-          "minimum": 1,
-          "title": "Max Views",
-          "type": "integer"
-        },
-        "max_voxels": {
-          "default": 1000000,
-          "description": "Hard cap on total voxel count (``roi_x/voxel_size * roi_y/voxel_size * roi_z/voxel_size``).",
-          "maximum": 8000000,
-          "minimum": 1000,
-          "title": "Max Voxels",
-          "type": "integer"
-        },
-        "roi_extent_mm": {
-          "default": [
-            600.0,
-            600.0,
-            360.0
-          ],
-          "description": "Total X/Y/Z extent (mm) of the fusion ROI, centered on the workspace origin. Each axis must be > 0 and an integer multiple of ``voxel_size_mm``.",
-          "maxItems": 3,
-          "minItems": 3,
-          "prefixItems": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "number"
-            }
-          ],
-          "title": "Roi Extent Mm",
-          "type": "array"
-        },
-        "voxel_size_mm": {
-          "default": 6.0,
-          "description": "Cubic voxel edge length in millimetres.",
-          "exclusiveMinimum": 0.0,
-          "maximum": 100.0,
-          "title": "Voxel Size Mm",
-          "type": "number"
+          "description": "Fuse each object's surface across ``cameras`` and hand the union to the grasp generator. Needs ``enabled`` above as well: that switch builds the other cameras' CAMERA to BASE resolvers, without which every second view is dropped at the pick."
         }
       },
       "title": "RobotGraspingFusionConfig",
@@ -4236,6 +3906,24 @@
     },
     "kuka": {
       "$ref": "#/$defs/KukaConfig"
+    },
+    "look_joint_positions_deg": {
+      "anyOf": [
+        {
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Look Joint Positions Deg"
     },
     "motion_limits": {
       "$ref": "#/$defs/MotionLimitsConfig"

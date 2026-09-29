@@ -12,7 +12,7 @@ part_width_mm = 40.0  # measure the part you will hold; the close aims 1 mm unde
 # Nothing here moves the arm, so no camera world is asked for. The fingers move: keep hands clear.
 # Connecting takes the lock, the arm, then the hand, and a hand may sweep its fingers as it activates.
 # A hand that toggles on one output with no sensor (jaw_io single_toggle) asks here, in this terminal,
-# whether its jaws stand open, and counts its own pulses from your answer.
+# whether its jaws stand open, and counts its own changes of the output from your answer: one per command.
 with robot.connected():
     print(robot.release())  # open to the hand's full width; a toggle already open says so and sends nothing
     input("Place the part between the open fingers, step back, and press Enter: ")

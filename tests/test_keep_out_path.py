@@ -202,33 +202,6 @@ class ThePickLoopHoldsItsTargetTests(unittest.TestCase):
             _orchestrator(arm, results=[_success_result()], max_attempts=3).run()
         self.assertEqual(1, world.forgets)
 
-    def test_a_relocation_after_no_candidate_plans_with_the_target_back(self) -> None:
-        from src.robot.grasping.loop.pick_loop import LateralOffsetViewpointPlanner
-        from tests.test_pick_loop import _active_perception_result, _success_result
-
-        world = _HoldingWorld()
-        arm = _WorldArm(world)
-        _orchestrator(arm, results=[_active_perception_result(), _success_result()],
-                      viewpoint_planner=LateralOffsetViewpointPlanner(offset_mm=50.0), max_attempts=3).run()
-
-        self.assertFalse(arm.held_at_motion[0], "the viewpoint move planned with the last target left out")
-        self.assertTrue(all(arm.held_at_motion[1:]))
-
-    def test_a_commit_refused_relocation_plans_with_the_target_back(self) -> None:
-        from src.robot.grasping.loop.pick_loop import LateralOffsetViewpointPlanner
-        from tests.test_pick_loop import CommitGateReobserveRelocateTests, _success_result
-
-        world = _HoldingWorld()
-        arm = _WorldArm(world)
-        _orchestrator(arm, results=[_success_result()], viewpoint_planner=LateralOffsetViewpointPlanner(offset_mm=50.0),
-                      max_attempts=3, scene_fusion=CommitGateReobserveRelocateTests._fusion(),
-                      commit_policy=CommitGateReobserveRelocateTests._refusing_policy(), mode_label="auto").run()
-
-        self.assertTrue(arm.held_at_motion, "no viewpoint move happened")
-        self.assertTrue(world.offers, "the refused commit's attempt offered no target")
-        self.assertGreaterEqual(arm.forgets_at_motion[0], 1, "the held target was not given back before the move")
-        self.assertFalse(arm.held_at_motion[0], "the refused commit relocated with the target still left out")
-
     def test_the_offer_names_the_perception_camera(self) -> None:
         from tests.test_pick_loop import _success_result
 

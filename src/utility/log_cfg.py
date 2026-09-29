@@ -15,14 +15,10 @@ from pathlib import Path
 FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 # Guards the process-wide handler registries below against concurrent
-# create_logger() calls. Reentrant, because create_logger holds it while calling
-# the _get_*_handler helpers, which acquire it too.
+# create_logger() calls.
 _LOCK = threading.RLock()
 
 # Process-wide registry of file handlers, keyed by absolute log file path.
-# Loggers that target the same file, such as every class in the robot package
-# writing to robot.log, share one handler: a handler per logger gives each its
-# own file descriptor, and on Windows their rotations race.
 _FILE_HANDLERS: dict[str, RotatingFileHandler] = {}
 
 # One shared console handler, so a record reaches stdout exactly once however
@@ -47,15 +43,6 @@ def _get_file_handler(
             maxBytes=max_bytes,
             backupCount=backup_count,
             encoding="utf-8",
-            # Open on first write rather than at construction. create_logger
-            # runs at module import, so without this a process holds every log
-            # file open whether or not it writes a line, and on Windows renaming
-            # a file another process holds open is refused with PermissionError,
-            # winerror 32: three pool workers holding three handles each already
-            # block the parent's rotation. logging swallows handler errors, so
-            # that failure is silent and the symptom is a rotating log growing
-            # without bound. With delay, a log file appears when something is
-            # first written to it rather than at import.
             delay=True,
         )
         handler.setFormatter(formatter)
@@ -108,10 +95,6 @@ def resolve_log_dir(log_dir: str) -> str:
     """
     if os.path.isabs(log_dir):
         return log_dir
-    # Imported here rather than at module level, where it would close a cycle:
-    # paths -> utility.constants -> utility_logger -> here. constants.py imports
-    # create_logger lazily for the same reason. The package __init__ imports
-    # paths anyway, so it is in sys.modules before any caller reaches this line.
     from src.utility.paths import logs_dir  # noqa: PLC0415
 
     # logs_dir() creates the base itself, so a WILLY_LOG_DIR that points at a

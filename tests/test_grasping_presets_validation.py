@@ -27,9 +27,7 @@ class PresetSchemaValidationTests(unittest.TestCase):
     def test_all_shipped_presets_are_schema_valid(self) -> None:
         validated = validate_all_presets()
         self.assertEqual(set(validated), set(list_presets()))
-        self.assertEqual(
-            set(validated), {"easy", "dense_clutter", "verification_heavy"}
-        )
+        self.assertEqual(set(validated), {"easy", "dense_clutter"})
 
     def test_typo_preset_key_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

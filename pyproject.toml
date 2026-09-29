@@ -1,12 +1,3 @@
-# Workaholic-Willy, tooling configuration for ruff, mypy, pytest and coverage.
-#
-# The project is a library plus CLI stack, run from the repository root as
-# python -m src.<package>. It is packaged only so that pip install -e . --no-deps
-# puts src, api, datagen and willy on the path of a virtual environment: an
-# example or a script then imports the library from anywhere without a sys.path
-# preamble. The dependencies stay in the requirements files CI installs, so
-# [project] names none.
-
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -42,10 +33,6 @@ select = ["F", "E4", "E7", "E9"]
 
 # ---------------------------------------------------------------------------
 # Mypy
-#
-# Enforced across src, api and datagen with no per-module exemptions. The loader
-# and the schema live in src/config and are covered by src; the `config` tree at
-# the repository root is YAML and holds no Python.
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
@@ -62,15 +49,7 @@ follow_imports = "normal"
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The tests import their helpers as `tests._x`, and `tests/` is no package, so the root must be on the
-# path. `python -m pytest` puts it there and bare `pytest`, as CI calls it, does not: MEASURED
-# 2026-09-19 on Linux, conftest.py stopped at "No module named 'tests'" before one test ran.
 pythonpath = ["."]
-# `-rs` prints why each skip happened. MEASURED 2026-09-10: without it the byte-identity family
-# reported "3 skipped" and nothing else, which reads the same as three claims nobody wrote a test
-# for, and for years it WAS that: an allow-list waiting on an environment variable nothing set.
-# The three that remain stand down on a drift measured in the run; the reason names the measurement,
-# and it costs one line per skipped test.
 addopts = "-q -p no:cacheprovider -rs"
 markers = [
     "isaac: needs a real Isaac Sim install (Windows workstation only, skipped where isaacsim is not importable). See docs/isaac-ready.md.",
@@ -84,11 +63,6 @@ markers = [
 source = ["src", "api", "datagen"]
 branch = false
 omit = [
-  # Only code that CI on CPU cannot execute, so the number stays honest. There
-  # is no GPU, no robot, no physical camera and no display. cv2 is installed,
-  # so cv2 based computation is counted; only real capture and vendor SDKs are
-  # omitted.
-  #
   # Vendor robot SDK boundaries (ur_rtde, EKI, robotiq_gripper):
   "*/robot/drivers/kuka/*",
   "*/robot/drivers/ur/connection.py",
@@ -108,23 +82,13 @@ omit = [
   "*/models/speech/speech_to_text.py",
   "*/models/handdetection/*",
   "*/models/_inference.py",
-  # A pure argparse dump tool with no in process caller. The replay and rl
-  # __main__ CLIs are counted, since the suite drives them via subprocess.
   "*/config/__main__.py",
   # Manual, Isaac free build script for the committed cuRobo gripper spheres.
   "*/safety/planning/robot/build_gripper_spheres.py",
-  # The willy_sim Isaac runtime layer boots a SimulationApp or authors USD
-  # prims, which CI on CPU cannot execute; it is validated on the workstation
-  # instead. The CPU runnable core stays counted.
   "*/willy_sim/run_*.py",
   "*/willy_sim/inspect_wrist_cam.py",
   "*/willy_sim/scene.py",
-  # The datagen render and physics engines, for the same reason: each one drives
-  # Isaac, MuJoCo or CoACD, and none of the three is installable on the runner.
-  # Their engine imports are lazy, so these modules import cleanly and would
-  # otherwise count as executable lines no CI run can ever reach. Everything else
-  # in datagen is counted, including the scene authoring, the analytic grasp
-  # labels, the corpus builders and the CLI.
+  # Datagen specific tests
   "*/datagen/render/isaac.py",
   "*/datagen/render/mujoco_engine.py",
   "*/datagen/render/convex_decomposition.py",

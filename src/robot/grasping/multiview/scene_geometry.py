@@ -68,13 +68,32 @@ from src.robot.grasping.multiview.association import (
 logger = create_grasping_logger("SceneGeometry", SCENE_GEOMETRY_LOG_FILE)
 
 __all__ = [
+    "GRAZING_BASELINE_PX",
+    "GRAZING_INCIDENCE_DEG",
     "FusedSceneGeometry",
     "ObservedView",
     "SceneObject",
     "build_scene_objects",
     "fuse_scene_geometry",
+    "grazing_pixels",
     "to_base_mm",
 ]
+
+#: The steepest incidence, in degrees between a pixel's ray and the surface normal there, at which a wrist look's point
+#: still enters the fused cloud. Past it a pixel's footprint on the surface is almost four times its size seen square
+#: (1 / cos 75 = 3.9), the stereo match smears along the surface and the D415 throws its flying pixels, so such a point
+#: says little about where the surface is and a lot about the edge it was seen past. It is thinned out before fusion
+#: rather than kept at full weight: every other look that faces that surface squarer measures it better. Well past the
+#: 60 degrees within which ``unseen_side.MAX_INCIDENCE_DEG`` counts a face as shown, so a face a look was aimed at
+#: keeps its points.
+GRAZING_INCIDENCE_DEG = 75.0
+#: How many pixels either side of a pixel its surface normal is measured across. A steep incidence squeezes a surface
+#: into a few rows of the image, so a longer difference reaches over the crease onto the next face and reads the two
+#: as one: measured on a ray-cast 40 mm cube seen from 450 mm at 10 degrees of elevation through a D415 at half
+#: resolution (about 1 mm per pixel), a baseline of two thins 115 of the 209 points of its grazing top and three only
+#: 74. Two is also long enough that half a millimetre of depth noise on a face seen at 70 degrees, inside the limit,
+#: thins 1 point of 545 where a baseline of one thins 35.
+GRAZING_BASELINE_PX = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +186,66 @@ def to_base_mm(
     if not np.all(np.isfinite(matrix)):
         raise ValueError("camera_to_base must contain only finite values")
     return points_cam @ matrix[:3, :3].T + matrix[:3, 3]
+
+
+def grazing_pixels(
+    mask: np.ndarray,
+    depth_mm: np.ndarray,
+    intrinsics: np.ndarray,
+    *,
+    max_incidence_deg: float = GRAZING_INCIDENCE_DEG,
+    baseline_px: int = GRAZING_BASELINE_PX,
+) -> np.ndarray:
+    """The mask pixels that see their surface more obliquely than ``max_incidence_deg``, as a boolean image.
+
+    The incidence is the angle between the pixel's ray and the surface normal there. The normal is the cross product of
+    the back-projected surface's differences ``baseline_px`` pixels either way along the rows and along the columns,
+    taken only where both ends of both differences are pixels of the mask with a depth: a difference across the mask's
+    edge would measure the step to whatever lies behind it, not the surface. So a pixel within ``baseline_px`` of the
+    mask's edge, or next to a hole in its depth, is never called grazing: what cannot be judged is kept.
+    ``mask & ~grazing_pixels(mask, depth, K)`` is the part of the mask a fusion may give full weight.
+    """
+    selected = np.asarray(mask).astype(bool)
+    depth = np.asarray(depth_mm, dtype=np.float64)
+    if selected.shape != depth.shape or selected.ndim != 2:
+        raise ValueError(f"mask and depth must be the same 2-D shape, got {selected.shape} and {depth.shape}")
+    lens = np.asarray(intrinsics, dtype=np.float64)
+    if lens.shape != (3, 3) or not np.all(np.isfinite(lens)):
+        raise ValueError("intrinsics must be a finite 3x3 lens matrix")
+    step = int(baseline_px)
+    if step < 1:
+        raise ValueError(f"baseline_px must be >= 1, got {baseline_px!r}")
+    grazing = np.zeros(selected.shape, dtype=bool)
+    with np.errstate(invalid="ignore"):
+        valid = selected & np.isfinite(depth) & (depth > 0.0)
+    rows, cols = np.nonzero(valid)
+    if rows.size == 0:
+        return grazing
+    r0, r1 = int(rows.min()), int(rows.max()) + 1
+    c0, c1 = int(cols.min()), int(cols.max()) + 1
+    if r1 - r0 <= 2 * step or c1 - c0 <= 2 * step:
+        return grazing
+    inside = valid[r0:r1, c0:c1]
+    z = np.where(inside, depth[r0:r1, c0:c1], 0.0)
+    v, u = np.mgrid[r0:r1, c0:c1].astype(np.float64)
+    surface = np.stack([(u - lens[0, 2]) * z / lens[0, 0], (v - lens[1, 2]) * z / lens[1, 1], z], axis=-1)
+    along_u = np.zeros_like(surface)
+    along_v = np.zeros_like(surface)
+    measured = np.zeros(inside.shape, dtype=bool)
+    along_u[:, step:-step] = surface[:, 2 * step:] - surface[:, :-2 * step]
+    along_v[step:-step, :] = surface[2 * step:, :] - surface[:-2 * step, :]
+    measured[step:-step, step:-step] = (
+        inside[step:-step, 2 * step:] & inside[step:-step, :-2 * step]
+        & inside[2 * step:, step:-step] & inside[:-2 * step, step:-step]
+    )
+    normal = np.cross(along_u, along_v)
+    normal_length = np.linalg.norm(normal, axis=-1)
+    ray_length = np.linalg.norm(surface, axis=-1)
+    judged = inside & measured & (normal_length > 0.0) & (ray_length > 0.0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cosine = np.abs(np.einsum("ijk,ijk->ij", normal, surface)) / (normal_length * ray_length)
+    grazing[r0:r1, c0:c1] = judged & (cosine < np.cos(np.radians(float(max_incidence_deg))))
+    return grazing
 
 
 def _neighbour_clouds(

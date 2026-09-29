@@ -406,7 +406,8 @@ class SafetyPreflight:
         """Run the pipeline and return the first rejection, or an acceptance.
 
         On acceptance it updates the memoised ``last_target_*`` from ``ctx``, so the
-        continuity guard has them on the next call.
+        continuity guard has them on the next call. A target nothing is sent to is asked
+        through :meth:`screen` instead, which leaves them as they were.
 
         ``skip_guards`` names guards to bypass by ``.name``, and its default is empty.
         Its only caller is the cuRobo driver path, which skips the two continuity
@@ -422,24 +423,70 @@ class SafetyPreflight:
         for cuRobo picks: it rejected the continuous configuration while self-collision
         never fired, and with these two skipped cuRobo lifts reliably.
         """
-        for guard in self._guards:
-            if guard.name in skip_guards:
-                continue
-            decision = guard.evaluate(ctx)
-            if decision.rejected:
-                self._logger.warning(
-                    "Safety preflight rejected motion: guard=%s reason=%s "
-                    "message=%s detail=%s",
-                    decision.guard, decision.reason.value,
-                    decision.message or "<empty>", decision.detail or {},
-                )
-                return decision
+        decision = self._first_refusal(ctx, skip_guards)
+        if decision is not None:
+            self._logger.warning(
+                "Safety preflight rejected motion: guard=%s reason=%s "
+                "message=%s detail=%s",
+                decision.guard, decision.reason.value,
+                decision.message or "<empty>", decision.detail or {},
+            )
+            return decision
         # Accepted, so remember the target for the next continuity check.
         if ctx.target_pose is not None:
             self._last_target_pose = ctx.target_pose
         if ctx.target_joints is not None:
             self._last_target_joints = ctx.target_joints
         return SafetyDecision.accept("preflight")
+
+    def screen(
+        self, ctx: SafetyContext, *, skip_guards: "frozenset[str]" = frozenset()
+    ) -> SafetyDecision:
+        """The verdict :meth:`evaluate` gives ``ctx``, for a target nothing is sent to.
+
+        A driver that asks where the arm could stand before it commands anything, the UR
+        arm's ``nearest_configuration`` screening the configurations of a pose, asks the
+        same guards in the same order with the same ``skip_guards``. Two things differ,
+        both because nothing was commanded:
+
+        * The continuity memo is left as it was. :meth:`evaluate` remembers an accepted
+          target so the next move's continuity is judged from it. A configuration only
+          asked about is no place the arm was sent, and remembering it would judge the
+          next move from there: a harmless step refused as a jump, or a large one let
+          through because it lands near a place asked about.
+        * A refusal is logged at DEBUG, not as a rejected motion. One screen asks several
+          configurations of each of many poses, and a warning for each would read to an
+          operator as that many refused motions. The caller says what it concluded.
+
+        A guard's own log is the guard's: the workspace guard still says that a pose lies
+        outside the box.
+        """
+        decision = self._first_refusal(ctx, skip_guards)
+        if decision is not None:
+            self._logger.debug(
+                "Safety preflight refused a screened target, nothing commanded: guard=%s "
+                "reason=%s message=%s detail=%s",
+                decision.guard, decision.reason.value,
+                decision.message or "<empty>", decision.detail or {},
+            )
+            return decision
+        return SafetyDecision.accept("preflight")
+
+    def _first_refusal(
+        self, ctx: SafetyContext, skip_guards: "frozenset[str]"
+    ) -> "SafetyDecision | None":
+        """The first rejection of ``ctx`` in pipeline order, ``None`` where every guard accepts.
+
+        One loop for :meth:`evaluate` and :meth:`screen`, so a target asked about is judged
+        by exactly the guards, the order and the skips a commanded one is.
+        """
+        for guard in self._guards:
+            if guard.name in skip_guards:
+                continue
+            decision = guard.evaluate(ctx)
+            if decision.rejected:
+                return decision
+        return None
 
     def reset(self) -> None:
         """Clear the continuity memo.

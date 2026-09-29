@@ -3,8 +3,9 @@
 :class:`LatencyTracker` is the small context-manager surface
 :class:`AutonomousGraspService` uses to record the per-stage wall-clock spans that feed
 the runtime SLO gate. ``decision`` is the ``DecisionEngine.decide`` call, ``ranking`` is
-the grasp calculator with the scoring blend, and ``fusion`` is the multi-view fusion
-update.
+the grasp calculator with the scoring blend, and ``fusion`` is the multi-camera geometry
+fusion of a frame (``BinPickingOrchestrator._fused_scene``, from the other cameras' frames
+in hand to the fused scene), recorded only when another camera's view entered it.
 
 The tracker is deliberately passive: it never raises, never blocks the caller and never
 performs IO. It uses :func:`time.monotonic_ns`, so an NTP adjustment does not affect it.

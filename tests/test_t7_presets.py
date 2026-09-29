@@ -1,18 +1,20 @@
 """Phase T7 — RED tests for operator-safe mode presets.
 
-Q4=B + Q5=A lock three preset overlays:
+Q4=B + Q5=A locked three preset overlays; two remain:
 
 * ``easy`` — EASY mode, conservative defaults; recovery off; uncertainty
   layer off (legacy threshold path).
 * ``dense_clutter`` — DENSE_CLUTTER mode, recovery on with
-  ``next_viewpoint`` allowed only (no physical motion by default),
+  ``rescan`` allowed only (no physical motion by default; it allowed
+  ``next_viewpoint`` until that was merged into ``rescan`` on 2026-09-29),
   uncertainty layer ENABLED with the locked AUTO threshold.
-* ``verification_heavy`` — CLOSED_LOOP mode, verification policy
-  toggles on, recovery on with ``next_viewpoint``.
+
+``verification_heavy`` (CLOSED_LOOP mode, recovery on) was deleted on 2026-09-29 with the
+``closed_loop`` mode it named: without the two-scan refinement it had no purpose left.
 
 Contract:
 
-* ``list_presets()`` returns the three preset names sorted.
+* ``list_presets()`` returns the two preset names sorted.
 * ``load_preset(name)`` returns a plain ``dict`` overlay shaped like
   the ``robot:`` block (so it can be deep-merged into ``robot.yaml``).
 * ``apply_preset(base, name)`` returns a new dict where the overlay
@@ -42,10 +44,10 @@ _MINIMAL_BASE: dict = {
 
 
 class PresetCatalogTests(unittest.TestCase):
-    def test_three_presets_shipped(self) -> None:
+    def test_two_presets_shipped(self) -> None:
         self.assertEqual(
             list_presets(),
-            ["dense_clutter", "easy", "verification_heavy"],
+            ["dense_clutter", "easy"],
         )
 
     def test_load_preset_returns_dict(self) -> None:
@@ -84,11 +86,11 @@ class DenseClutterPresetTests(unittest.TestCase):
         merged = apply_preset(_MINIMAL_BASE, "dense_clutter")
         self.assertEqual(merged["grasping"]["default_mode"], "dense_clutter")
 
-    def test_recovery_on_with_next_viewpoint_only(self) -> None:
+    def test_recovery_on_with_rescan_only(self) -> None:
         merged = apply_preset(_MINIMAL_BASE, "dense_clutter")
         recovery = merged["grasping"]["recovery"]
         self.assertTrue(recovery["enabled"])
-        self.assertEqual(list(recovery["allowed_actions"]), ["next_viewpoint"])
+        self.assertEqual(list(recovery["allowed_actions"]), ["rescan"])
 
     def test_uncertainty_enabled_with_locked_threshold(self) -> None:
         merged = apply_preset(_MINIMAL_BASE, "dense_clutter")
@@ -98,20 +100,6 @@ class DenseClutterPresetTests(unittest.TestCase):
 
     def test_loads_into_robot_config(self) -> None:
         merged = apply_preset(_MINIMAL_BASE, "dense_clutter")
-        RobotConfig(**merged)
-
-
-class VerificationHeavyPresetTests(unittest.TestCase):
-    def test_default_mode_is_closed_loop(self) -> None:
-        merged = apply_preset(_MINIMAL_BASE, "verification_heavy")
-        self.assertEqual(merged["grasping"]["default_mode"], "closed_loop")
-
-    def test_recovery_on(self) -> None:
-        merged = apply_preset(_MINIMAL_BASE, "verification_heavy")
-        self.assertTrue(merged["grasping"]["recovery"]["enabled"])
-
-    def test_loads_into_robot_config(self) -> None:
-        merged = apply_preset(_MINIMAL_BASE, "verification_heavy")
         RobotConfig(**merged)
 
 

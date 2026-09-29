@@ -1,188 +1,257 @@
-# Alet Software License Agreement
+# Workaholic-Willy Software License Agreement
 
 **Copyright © 2026 Tim Kackstein**
 **Author: Tim Kackstein**
-
 **All rights reserved.**
 
-## 1. Grant of License
+**Last Updated: 2026**
 
-Permission is hereby granted, free of charge, to any individual, academic institution, educational institution, or non-profit organization ("Licensee") to use, run, copy, and modify this software (the "Software") solely for personal, educational, academic, research, and other non-commercial purposes, subject to the terms and conditions of this Agreement.
+---
 
-This license is personal, non-exclusive, non-transferable, and non-sublicensable.
+## 1. Agreement
+
+This Software License Agreement ("Agreement") is a legal agreement between you ("Licensee") and Tim Kackstein ("Author") and governs your use of the Alet software, including its source code, binaries, documentation, and associated materials (collectively, the "Software").
+
+By downloading, accessing, installing, copying, modifying, or using the Software, you agree to be bound by the terms of this Agreement.
+
+If you do not agree to these terms, you must not use, copy, modify, or distribute the Software.
+
+---
+
+## 2. License Grant
+
+Subject to the terms and conditions of this Agreement, the Author grants you a limited, non-exclusive, revocable, non-transferable, and non-sublicensable license to:
+
+1. install and use copies of the Software;
+2. inspect and study the source code;
+3. modify and create derivative works of the Software;
+4. use modified versions of the Software; and
+5. create copies of the Software reasonably necessary for the permitted uses described in this Agreement.
+
+The rights granted under this Agreement are provided **free of charge for non-commercial use**.
+
+No ownership or other intellectual property rights in the Software are transferred to the Licensee.
 
 All rights not expressly granted under this Agreement are reserved by the Author.
 
-## 2. Non-Commercial Use Only
+---
 
-The Software may be used solely for the Licensee's own personal, educational, academic, research, or other internal non-commercial purposes.
+## 3. Permitted Use
 
-Any commercial use, including but not limited to:
+The Software may be freely used for:
 
-* selling or licensing the Software;
-* incorporating the Software into a commercial product or service;
-* using the Software to provide a commercial service;
-* hosting the Software for third parties;
-* offering the Software as a service (SaaS);
-* using the Software for commercial data processing or commercial operations;
-* resale, rental, leasing, or sublicensing;
-* providing paid access to the Software or functionality derived from it; or
-* any other form of commercial exploitation
+* personal use;
+* educational purposes;
+* academic purposes;
+* research and experimentation;
+* development and testing;
+* evaluation;
+* non-profit activities; and
+* other uses that are not Commercial Use as defined below.
 
-requires prior written permission from the Author.
+The Licensee may modify the Software for these purposes.
 
-Commercial permission may be granted separately under a commercial license or other written agreement.
+The Licensee may also create and maintain private or public forks and other derivative versions for permitted non-commercial purposes, provided that the copyright and license notices are retained.
 
-## 3. Modifications and Derivative Works
+---
 
-The Licensee may modify, adapt, extend, or otherwise create derivative works based on the Software, provided that such modifications and derivative works are used solely for the non-commercial purposes permitted under this Agreement.
+## 4. Commercial Use
 
-Any modified or derivative version remains subject to this Agreement unless the Author expressly grants different terms in writing.
+The Software may not be used for Commercial Use unless the Licensee has obtained a separate written commercial license from the Author.
 
-The Licensee may not use modifications or derivative works for commercial purposes without prior written permission from the Author.
+"Commercial Use" means any use of the Software that is primarily intended to generate revenue, financial benefit, or commercial advantage for the Licensee or another party.
 
-## 4. Redistribution and Third-Party Access
+Commercial Use includes, without limitation:
 
-The Licensee may not distribute, publish, sublicense, sell, rent, lease, lend, transfer, or otherwise make the Software or any modified or unmodified version available to third parties without prior written permission from the Author.
+1. incorporating the Software into a commercial product or service;
+2. using the Software to provide services to paying customers;
+3. offering the Software or substantially similar functionality as a paid service;
+4. providing commercial hosting, SaaS, or managed services based on the Software;
+5. selling, licensing, renting, leasing, or otherwise monetizing the Software;
+6. using the Software as part of a revenue-generating business operation;
+7. distributing the Software as part of a product or service offered commercially; or
+8. otherwise exploiting the Software for commercial advantage or monetary compensation.
 
-This includes, without limitation:
+A commercial license may be subject to a license fee and additional terms agreed separately between the Author and the Licensee.
 
-* uploading the Software or modified versions to public repositories;
-* publishing copies on GitHub or similar platforms;
-* distributing the Software as part of another software package;
-* providing third parties with hosted or remote access to the Software; and
-* distributing compiled, packaged, or otherwise executable versions of the Software.
+**No commercial rights are granted merely because the Software is publicly available, published on GitHub, or available for download.**
 
-Private internal copies made solely for permitted non-commercial use are allowed as described below.
+---
 
-## 5. Backups and Internal Copies
+## 5. Redistribution
 
-The Licensee may create reasonable backup copies of the Software as necessary for its permitted personal, educational, academic, research, or internal non-commercial use.
+The Licensee may redistribute the unmodified or modified Software for permitted non-commercial purposes, provided that:
 
-All copyright notices, attribution notices, license texts, and other proprietary notices contained in the original Software must be retained in such copies.
+1. this Agreement is included with the Software;
+2. the original copyright notices are retained;
+3. the Licensee does not represent the Software as their own original work; and
+4. no commercial rights are granted to recipients beyond those provided by this Agreement.
 
-Backup copies may not be distributed or made available to third parties except as expressly permitted by this Agreement.
+Redistribution does not grant any recipient the right to use the Software commercially.
 
-## 6. Attribution and Copyright Notice
+Any commercial redistribution requires a separate commercial license from the Author.
 
-Any permitted copy of the Software, whether modified or unmodified, must retain all original copyright notices and attribution information.
+---
 
-The following notice must remain intact:
+## 6. Modifications and Derivative Works
 
-**Copyright © 2026 Tim Kackstein — Author: Tim Kackstein**
+The Licensee may modify the Software and create derivative works for permitted non-commercial purposes.
 
-No person may remove, obscure, or alter copyright, attribution, license, or proprietary notices contained in the Software.
+Modified files should clearly indicate that modifications have been made where reasonably practical.
 
-## 7. Confidentiality and Protection
+Derivative works remain subject to this Agreement unless the Author expressly grants different terms in writing.
 
-The Licensee acknowledges that the Software is proprietary to the Author.
+The creation of a derivative work does not transfer ownership of the original Software or its underlying intellectual property to the Licensee.
 
-The Licensee agrees to take reasonable measures to protect the Software and any authorized modifications from unauthorized access, copying, reproduction, publication, distribution, or use.
+Commercial distribution or commercial use of derivative works requires a separate commercial license.
 
-The Licensee must not disclose or make available any portion of the Software to third parties except where expressly permitted by this Agreement or separately authorized in writing by the Author.
+---
 
-Any confidentiality obligations applicable under this Agreement survive termination of the license to the extent permitted by applicable law.
+## 7. Intellectual Property
 
-## 8. Term and Termination
+The Software, including its source code, architecture, design, documentation, trademarks, and other associated intellectual property, remains the property of the Author or its respective rights holders.
 
-This license becomes effective when the Licensee downloads, accesses, copies, or uses the Software.
+Except for the limited rights expressly granted under this Agreement, no license or right is granted, whether by implication, estoppel, or otherwise.
 
-The license continues until terminated.
+The Licensee may not remove, alter, or obscure copyright, license, attribution, or other proprietary notices contained in the Software.
 
-The license automatically terminates immediately and without notice if the Licensee violates any material provision of this Agreement.
+---
 
-The Author may also terminate this license upon written notice if the Licensee materially breaches this Agreement.
+## 8. Trademark and Branding
 
-The Licensee may terminate this Agreement at any time by ceasing all use of the Software and deleting all copies of the Software in its possession or control.
+This Agreement does not grant any rights to use the name "Alet", the name "Tim Kackstein", or any associated logos, trademarks, service marks, or branding.
 
-Upon termination, the Licensee must immediately cease using the Software and, subject to applicable law, delete all copies of the Software and any authorized modifications or derivative works.
+The Licensee may not use such names or marks in a manner that suggests sponsorship, endorsement, affiliation, or official association with the Author without prior written permission.
 
-Termination does not limit any rights or remedies the Author may have arising from a breach of this Agreement.
+---
 
-## 9. Fees
+## 9. Restrictions
 
-The Software is provided free of charge for the uses expressly permitted under this Agreement.
+Except as expressly permitted by this Agreement or a separate written agreement with the Author, the Licensee may not:
 
-No license fee is due for personal, educational, academic, research, or other permitted non-commercial use.
+1. sell, rent, lease, or sublicense the Software;
+2. provide commercial hosting or SaaS services based substantially on the Software;
+3. distribute the Software for commercial purposes;
+4. use the Software to provide paid services;
+5. remove or alter proprietary notices;
+6. misrepresent the origin or authorship of the Software;
+7. use the Software in a manner intended to circumvent the commercial licensing requirements of this Agreement; or
+8. grant third parties rights that the Licensee does not possess under this Agreement.
 
-Any commercial use requires prior written permission from the Author and may be subject to a separate commercial license and licensing fee.
+Nothing in this section prohibits the permitted non-commercial activities described elsewhere in this Agreement.
 
-## 10. No Support or Maintenance
+---
 
-The Software is provided without any obligation on the part of the Author to provide support, maintenance, updates, upgrades, training, documentation, or technical assistance.
+## 10. Third-Party Components
 
-The Author may, at their sole discretion, provide updates or respond to suggestions or feedback, but is under no obligation to do so.
+The Software may contain or depend upon third-party software, libraries, frameworks, assets, or other materials.
 
-## 11. Disclaimer of Warranties
+Such components may be subject to separate license terms.
 
-THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND, WHETHER EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE.
+The Licensee is responsible for complying with all applicable third-party license requirements.
 
-TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE AUTHOR DISCLAIMS ALL WARRANTIES, INCLUDING, WITHOUT LIMITATION, WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, ACCURACY, RELIABILITY, AVAILABILITY, SECURITY, PERFORMANCE, AND THAT THE SOFTWARE WILL BE ERROR-FREE OR UNINTERRUPTED.
+This Agreement does not supersede or replace third-party licenses that apply to components not owned by the Author.
 
-THE LICENSEE ASSUMES ALL RISKS ASSOCIATED WITH THE QUALITY, PERFORMANCE, SECURITY, FUNCTIONALITY, AND USE OF THE SOFTWARE.
+---
 
-THE AUTHOR DOES NOT WARRANT THAT THE SOFTWARE WILL MEET THE LICENSEE'S REQUIREMENTS, OPERATE WITHOUT INTERRUPTION OR ERRORS, OR PRODUCE ANY PARTICULAR RESULT.
+## 11. Commercial Licensing
 
-## 12. Limitation of Liability
+Commercial licenses may be obtained directly from the Author.
 
-TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE AUTHOR SHALL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, CONSEQUENTIAL, PUNITIVE, OR OTHER DAMAGES ARISING OUT OF OR RELATING TO THE SOFTWARE, THIS LICENSE, OR THE USE OF OR INABILITY TO USE THE SOFTWARE.
+A commercial license may grant additional rights, including rights to use, modify, distribute, integrate, host, or commercially exploit the Software.
 
-THIS INCLUDES, WITHOUT LIMITATION, LOSS OF PROFITS, LOSS OF REVENUE, LOSS OF DATA, LOSS OF BUSINESS, LOSS OF GOODWILL, BUSINESS INTERRUPTION, SYSTEM FAILURE, SECURITY INCIDENTS, OR ANY OTHER ECONOMIC OR NON-ECONOMIC LOSS.
+Commercial licensing terms, including applicable fees, scope, duration, and permitted uses, shall be agreed separately in writing.
 
-THE AUTHOR SHALL NOT BE LIABLE FOR DAMAGES ARISING FROM:
-
-* ERRORS, BUGS, OR DEFECTS IN THE SOFTWARE;
-* LOSS OR CORRUPTION OF DATA;
-* FAILURE OF THE SOFTWARE TO PERFORM AS EXPECTED;
-* SECURITY VULNERABILITIES OR UNAUTHORIZED ACCESS;
-* INCOMPATIBILITY WITH HARDWARE, OPERATING SYSTEMS, OR OTHER SOFTWARE;
-* USE OF THE SOFTWARE IN SAFETY-CRITICAL OR HIGH-RISK ENVIRONMENTS; OR
-* ANY MODIFICATION, COMBINATION, OR DERIVATIVE WORK CREATED BY THE LICENSEE OR ANY THIRD PARTY.
-
-THE LICENSEE IS SOLELY RESPONSIBLE FOR EVALUATING WHETHER THE SOFTWARE IS SUITABLE FOR ITS INTENDED USE AND FOR IMPLEMENTING APPROPRIATE SAFEGUARDS, BACKUPS, TESTING, AND SECURITY MEASURES.
-
-IN NO EVENT SHALL THE AUTHOR'S TOTAL LIABILITY ARISING OUT OF OR RELATING TO THIS AGREEMENT OR THE SOFTWARE EXCEED THE AMOUNT ACTUALLY PAID TO THE AUTHOR BY THE LICENSEE FOR THE SOFTWARE DURING THE TWELVE (12) MONTHS PRECEDING THE EVENT GIVING RISE TO THE CLAIM.
-
-WHERE NO AMOUNT HAS BEEN PAID, THE AUTHOR'S MAXIMUM AGGREGATE LIABILITY SHALL BE LIMITED TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW.
-
-NOTHING IN THIS AGREEMENT SHALL EXCLUDE OR LIMIT LIABILITY TO THE EXTENT SUCH LIABILITY CANNOT LAWFULLY BE EXCLUDED OR LIMITED UNDER APPLICABLE LAW.
-
-## 13. No Trademark Rights
-
-This Agreement does not grant the Licensee any rights to use the name "Alet", the name of the Author, or any associated logos, trademarks, service marks, or branding for endorsement, marketing, or other purposes without prior written permission from the Author.
-
-## 14. No Assignment
-
-The Licensee may not assign, transfer, sublicense, or otherwise transfer this Agreement or any rights granted under it to another person or organization without the prior written consent of the Author.
-
-Any attempted transfer in violation of this provision is void to the extent permitted by applicable law.
-
-## 15. Severability
-
-If any provision of this Agreement is determined to be invalid, illegal, or unenforceable by a court or competent authority, the remaining provisions shall remain in full force and effect.
-
-The invalid or unenforceable provision shall, to the extent permitted by applicable law, be interpreted or modified so as to best achieve its original intended purpose.
-
-## 16. No Waiver
-
-No failure or delay by the Author in exercising any right or remedy under this Agreement shall constitute a waiver of that right or remedy.
-
-A waiver of any provision must be expressly made in writing and shall apply only to the specific instance for which it was given.
-
-## 17. Entire Agreement
-
-This Agreement constitutes the entire agreement between the Author and the Licensee concerning the Software and supersedes any prior or contemporaneous understandings or agreements concerning the same subject matter.
-
-Any modification to this Agreement must be made in writing by the Author.
-
-## 18. Commercial Licensing
-
-Commercial licensing or other permissions outside the scope of this Agreement may be requested from the Author.
-
-For commercial licensing inquiries, contact:
+For commercial licensing inquiries:
 
 **[tim.kackstein@gmail.com](mailto:tim.kackstein@gmail.com)**
 
 ---
 
-**THE SOFTWARE IS PROVIDED "AS IS". USE OF THE SOFTWARE CONSTITUTES ACCEPTANCE OF THE TERMS OF THIS AGREEMENT. IF YOU DO NOT AGREE TO THESE TERMS, YOU MAY NOT USE, COPY, MODIFY, OR DISTRIBUTE THE SOFTWARE.**
+## 12. Termination
+
+This Agreement remains effective until terminated.
+
+The license granted under this Agreement automatically terminates if the Licensee materially violates any provision of this Agreement.
+
+Upon termination, the Licensee must cease all use of the Software and, where required by applicable law, delete unauthorized copies in its possession or control.
+
+Termination does not affect any rights or remedies arising from a breach occurring before termination.
+
+The Author may, at their discretion, grant written permission to cure a violation and reinstate the license.
+
+---
+
+## 13. No Support or Maintenance
+
+The Software is provided without any obligation to provide support, maintenance, updates, upgrades, training, documentation, or technical assistance.
+
+The Author may provide such services at their discretion or under a separate agreement.
+
+---
+
+## 14. Disclaimer of Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND.
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE AUTHOR DISCLAIMS ALL WARRANTIES, EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, ACCURACY, RELIABILITY, AVAILABILITY, SECURITY, AND PERFORMANCE.
+
+THE AUTHOR DOES NOT WARRANT THAT THE SOFTWARE WILL BE ERROR-FREE, SECURE, UNINTERRUPTED, OR SUITABLE FOR ANY PARTICULAR PURPOSE.
+
+THE LICENSEE IS SOLELY RESPONSIBLE FOR EVALUATING THE SOFTWARE AND DETERMINING WHETHER IT IS SUITABLE FOR ITS INTENDED USE.
+
+---
+
+## 15. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE AUTHOR SHALL NOT BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR OTHER DAMAGES ARISING OUT OF OR RELATING TO THE SOFTWARE OR THIS AGREEMENT.
+
+THIS INCLUDES, WITHOUT LIMITATION, LOSS OF PROFITS, REVENUE, DATA, BUSINESS, GOODWILL, OR BUSINESS INTERRUPTION.
+
+NOTHING IN THIS AGREEMENT SHALL EXCLUDE OR LIMIT LIABILITY TO THE EXTENT THAT SUCH LIABILITY CANNOT LAWFULLY BE EXCLUDED OR LIMITED.
+
+---
+
+## 16. No Assignment or Sublicensing
+
+The rights granted under this Agreement may not be assigned, transferred, or sublicensed without the prior written consent of the Author.
+
+---
+
+## 17. Severability
+
+If any provision of this Agreement is found to be invalid or unenforceable, the remaining provisions shall remain in full force and effect.
+
+The invalid provision shall, where legally permissible, be interpreted or modified to achieve its intended purpose as closely as possible.
+
+---
+
+## 18. No Waiver
+
+Failure by the Author to enforce any provision of this Agreement does not constitute a waiver of that provision or any other rights.
+
+Any waiver must be expressly made in writing.
+
+---
+
+## 19. Entire Agreement
+
+This Agreement constitutes the entire agreement between the Author and the Licensee regarding the Software and supersedes all prior agreements and understandings concerning the same subject matter.
+
+Any additional permissions or modifications to this Agreement must be granted in writing by the Author.
+
+---
+
+## 20. Reservation of Rights
+
+Except for the rights expressly granted under this Agreement, all rights, title, and interest in and to the Software are reserved by the Author.
+
+The Software is licensed, not sold.
+
+---
+
+**Copyright © 2026 Tim Kackstein. All rights reserved.**
+
+**Commercial use requires a separate written license from the Author.**
+
+**For commercial licensing inquiries: [tim.kackstein@gmail.com](mailto:tim.kackstein@gmail.com)**

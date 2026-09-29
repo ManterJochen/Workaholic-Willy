@@ -1,10 +1,16 @@
-"""Three keys that were dead, and the behaviour each one now has.
+"""Keys that were dead, and the behaviour each one now has.
 
 These were found by a full wired-vs-dead sweep of the config tree (2026-08-22). Fifty keys had no
 reader and were deleted; four had a reader-shaped GAP -- an operator could set them, the schema
-accepted them, and the runtime went on doing whatever it did before. This file pins the three that
+accepted them, and the runtime went on doing whatever it did before. This file pinned the three that
 are not `recovery.fixture` (that one has its own file, and a different story: a latent crash rather
-than an ignored value).
+than an ignored value). Two of them left on 2026-09-29 with the two-scan refinement they served,
+`closed_loop.pregrasp_rescan` and `verification.post_lift_vision_check` (with its
+`vision_displacement_iou_max`), and their cases with them; a tree that still writes one is refused at
+load (`tests/test_no_second_look_before_the_close.py`). The verifier the config built left with the
+whole `verification` block on 2026-09-29, and its case with it
+(`tests/test_the_gripper_says_whether_it_holds.py`). What is left pinned here: `rl.policy_id` is
+checked.
 
 Why a hand-written file when `test_grasping_wiring_guard.py` exists: that guard enumerates booleans
 whose NAME CONTAINS `enabled`. Both flags below are booleans that do not, so they sat in its blind
@@ -17,113 +23,6 @@ from __future__ import annotations
 
 import logging
 import unittest
-from typing import Any
-
-from src.robot.execution.autonomous_grasp.builders import (
-    build_closed_loop_actors,
-    build_subpolicies,
-)
-
-
-def _grasping(**blocks: Any) -> Any:
-    """A `robot.grasping` config with the blocks under test set explicitly."""
-    from src.config.schema.robot import RobotConfig
-
-    return RobotConfig(
-        vendor="dummy",
-        gripper={"vendor": "none"},
-        grasping={"default_mode": "auto", **blocks},
-    ).grasping
-
-
-def _subpolicies(grasping_cfg: Any) -> Any:
-    """`build_subpolicies` with every constructor override left unset.
-
-    The overrides win over config by design (that is how the sim runners inject policies), so a test
-    that wants to exercise the CONFIG path has to pass them all as None -- otherwise it would be
-    asserting on its own arguments.
-    """
-    return build_subpolicies(
-        grasping_cfg,
-        refinement_policy=None,
-        verification_policy=None,
-        recovery_policy=None,
-        standoff_mm=120.0,
-        recovery_fixture=None,
-    )
-
-
-class PregraspRescanDecidesWhetherTheSecondScanHappensTests(unittest.TestCase):
-    """`closed_loop.pregrasp_rescan` -> `RefinementPolicy.reperceive`.
-
-    The claim in docs/grasping-config-reference.md was always that this key is the "actually take the
-    second scan" switch. It was not: `RefinementPolicy.reperceive` drove that, and nothing ever set it
-    from config, so `false` still took the standoff move AND the second scan. A static overhead camera
-    -- which is what a fixed-cell install has -- wants the refine-validate without the re-perceive,
-    and could only get it by constructing the policy in Python.
-    """
-
-    def _policy(self, *, rescan: bool) -> Any:
-        cfg = _grasping(closed_loop={"enabled": True, "pregrasp_rescan": rescan})
-        refinement, _verifier, _recovery = _subpolicies(cfg)
-        return refinement
-
-    def test_true_asks_for_the_second_perception(self) -> None:
-        self.assertTrue(self._policy(rescan=True).reperceive)
-
-    def test_false_actually_suppresses_it(self) -> None:
-        self.assertFalse(self._policy(rescan=False).reperceive)
-
-    def test_the_two_settings_differ(self) -> None:
-        """The whole defect in one assertion: before the wiring these two were equal."""
-        self.assertNotEqual(
-            self._policy(rescan=True).reperceive,
-            self._policy(rescan=False).reperceive,
-        )
-
-
-class PostLiftVisionCheckAddsTheVerifierThatReadsItsThresholdTests(unittest.TestCase):
-    """`verification.post_lift_vision_check` -> a `VisionTargetDisplacementVerifier` in the composite.
-
-    `vision_displacement_iou_max` was a threshold with no comparison behind it: the only class that
-    reads it is `VisionTargetDisplacementVerifier`, and `from_robot_config` built a composite of the
-    object-detect and width-delta verifiers only. Tuning the IoU changed nothing on any config-built
-    cell. The threshold still reaches the verifier through the POLICY (not the constructor), so this
-    asserts the verifier's presence -- that is the half that was missing.
-    """
-
-    def _verifier_types(self, *, check: bool) -> list[str]:
-        cfg = _grasping(verification={"enabled": True, "post_lift_vision_check": check})
-        refinement, verification, recovery = _subpolicies(cfg)
-        # Config -> policies is `build_subpolicies`; policies -> the objects that consume them is
-        # `build_closed_loop_actors`. The composite lives in the second step.
-        _refiner, verifier, _strategy = build_closed_loop_actors(
-            cfg,
-            refinement_policy=refinement,
-            verification_policy=verification,
-            recovery_policy=recovery,
-            refiner=None,
-            verifier=None,
-            recovery_strategy=None,
-        )
-        members = getattr(verifier, "verifiers", ())
-        return [type(member).__name__ for member in members]
-
-    def test_off_keeps_the_previous_composite_exactly(self) -> None:
-        """Default-off byte-identical: a cell that never set this key sees no new verifier."""
-        self.assertEqual(
-            self._verifier_types(check=False),
-            ["ObjectDetectingGripperVerifier", "WidthDeltaGripperVerifier"],
-        )
-
-    def test_on_appends_the_vision_verifier(self) -> None:
-        names = self._verifier_types(check=True)
-        self.assertIn("VisionTargetDisplacementVerifier", names)
-
-    def test_it_is_appended_not_substituted(self) -> None:
-        """The gripper verifiers are cheap and independent; the vision one joins them."""
-        names = self._verifier_types(check=True)
-        self.assertEqual(names[:2], ["ObjectDetectingGripperVerifier", "WidthDeltaGripperVerifier"])
 
 
 class PolicyIdIsCheckedAgainstTheArtifactItNamesTests(unittest.TestCase):

@@ -1,34 +1,40 @@
-"""A toggle hand pulses only where its owner expects it to, end to end, on every path the owner runs.
+"""A toggle hand moves only where its owner expects it to, end to end, on every path the owner runs.
 
-The owner's cell (2026-09-24): a UR10 CB3 with a Robotiq Hand-E on the Robotiq I/O Coupling, driven as ``jaw_io``
-single_toggle on tool DO0, 24 V, no sensor, a 2 s stroke. Each rising edge on DO0 flips the jaws and nothing reads them
-back, so the program counts its own pulses from where a person said the jaws stood when it connected. One pulse in the
-wrong place inverts every command after it, and the whole cell fails there.
+The owner's cell: a UR10 CB3 with a Robotiq Hand-E on the Robotiq I/O Coupling, driven as ``jaw_io`` single_toggle on
+tool DO0, 24 V, no sensor, a 2 s stroke. EVERY CHANGE of DO0 moves the jaws once, switched on as much as switched off
+(the owner at the pendant, 2026-09-28), and nothing reads them back, so the program counts its own changes from where a
+person said the jaws stood when it connected. The low, high, low pulse the driver sent until then moved them two or
+three times: closed, opened and closed at the part, and closed again after a place's release. One change in the wrong
+place inverts every command after it, and the whole cell fails there.
 
 So the owner's own flows run here with the real ``JawIOGripper`` and the real ``Robot`` / ``handling`` /
 ``GraspExecutionPolicy`` / pick loop / pick service / ``PickRun``, on
 
-* a Hand-E double (``_HandE``) on tool DO0 that flips its jaws on every rising edge, and so knows where they really
-  stand whatever the program believes;
+* a Hand-E double (``_HandE``) on tool DO0 that moves its jaws on every change of DO0, and so knows where they really
+  stand whatever the program believes, and which a person can switch by hand as the owner does at the pendant;
 * a UR double (``_Arm``) that answers the controller's state, and refuses or protective-stops the motions a test names;
 * a person at the terminal (``_Person``), answering through the gripper's ``ask=`` seam (the bench: through ``input``);
 
 each writing to one log, every entry with its sequence number, so the order is read off the log and not off anybody's
-bookkeeping. Every scenario is held to the same invariants (``_check``):
+bookkeeping. An ``edge`` on the log is a change the program wrote; a change a person made by hand is a ``hand``. Every
+scenario is held to the same invariants (``_check``):
 
-I1  no rising edge between the start of a pick and its first motion, unless a person answered 'p';
-I2  at most one rising edge at the part per pick (tests say where it must be exactly one): after the line in has
-    arrived and the controller was asked there, before the lift, with a ``close_settle_s`` wait between it and the lift;
-I3  at most one rising edge per place, put back or release, where the count says closed and never where it says open,
+I1  no change between the start of a pick and its first motion, unless a person answered 'p';
+I2  at most one change at the part per pick (tests say where it must be exactly one): after the line in has arrived
+    and the controller was asked there, before the lift, with a ``close_settle_s`` wait between it and the lift;
+I3  at most one change per place, put back or release, where the count says closed and never where it says open,
     after the line in and before the line out, with the stroke waited out before the line out;
 I4  after every verb the jaws stand where the program believes, or the program cannot say and asks before its next
-    pulse, or the hand is disconnected and the next connect asks;
-I5  the connect asks where the jaws stand exactly once per connect;
-R6  a pick asks the person where the program believes the jaws closed (or cannot say), before any pulse or motion, and
-    asks nothing where it believes them open; a release never asks.
+    change, or the hand is disconnected and the next connect asks;
+I5  the connect asks where the jaws stand exactly once per connect, and writes nothing before the answer;
+R6  a pick asks the person where the program believes the jaws closed, or cannot say, or finds DO0 switched by hand,
+    before any change or motion, and asks nothing where it believes them open on a DO0 nobody touched; a release never
+    asks;
+W1  every command is ONE write that changes DO0, and nothing writes DO0 back.
 
 The failures injected are the ones the owner's cell has met or can: a lift refused after the close, an approach
-refused before it, a protective stop mid-pick, an I/O write that raised, and Ctrl-C right after a rising edge.
+refused before it, a protective stop mid-pick, an I/O write that raised, Ctrl-C right after a change, and DO0
+switched by hand at the pendant, between picks and in the middle of one.
 """
 
 from __future__ import annotations
@@ -123,38 +129,46 @@ class _Log:
 
 
 class _HandE:
-    """Tool DO0 of the owner's UR10, wired to a Hand-E on the Robotiq I/O Coupling: every rising edge flips the jaws.
+    """Tool DO0 of the owner's UR10, wired to a Hand-E on the Robotiq I/O Coupling: every change of DO0 moves the jaws.
 
-    ``closed`` is where the jaws really stand. ``next_high_fails`` makes the next HIGH write raise: ``lost`` before it
-    reached the controller (nothing flips), ``reply`` after it did (the jaws flipped and the reply was lost), ``ctrl_c``
-    a Ctrl-C inside the write after the controller took it.
+    Switched on they move once, switched off they move once more, the other way (the owner at the pendant,
+    2026-09-28). ``closed`` is where the jaws really stand, ``level`` where DO0 stands. ``next_write_fails`` makes the
+    next write that changes DO0 raise: ``lost`` before it reached the controller (nothing moves), ``reply`` after it
+    did (the jaws moved and the reply was lost), ``ctrl_c`` a Ctrl-C inside the write after the controller took it.
+    :meth:`switch_by_hand` is the owner at the pendant's I/O tab.
     """
 
-    def __init__(self, log: _Log, *, closed: bool = False) -> None:
+    def __init__(self, log: _Log, *, closed: bool = False, level: bool = False) -> None:
         self.log = log
         self.closed = closed
-        self.level = False
-        self.next_high_fails = ""
+        self.level = level
+        self.next_write_fails = ""
 
     def set_digital_output(self, pin: int, value: bool, *, port: DigitalIOPort = DigitalIOPort.STANDARD) -> None:
         if (int(pin), port) != (0, DigitalIOPort.TOOL):
             raise AssertionError(f"the owner's hand is on tool DO0, and {port.value} output {pin} was written")
+        changed = bool(value) != self.level
         fails = ""
-        if value:
-            fails, self.next_high_fails = self.next_high_fails, ""
+        if changed:
+            fails, self.next_write_fails = self.next_write_fails, ""
         if fails == "lost":
             self.log.write("DO lost", bool(value))
             raise RobotError("the controller did not take the write on tool output 0")
-        rising = bool(value) and not self.level
         self.level = bool(value)
         self.log.write("DO", self.level)
-        if rising:
+        if changed:
             self.closed = not self.closed
             self.log.write("edge", "closed" if self.closed else "open")
         if fails == "reply":
             raise RobotError("the reply to the write on tool output 0 was lost")
         if fails == "ctrl_c":
             raise KeyboardInterrupt
+
+    def switch_by_hand(self) -> None:
+        """The owner switches DO0 at the pendant: the jaws move, and nothing tells the program."""
+        self.level = not self.level
+        self.closed = not self.closed
+        self.log.write("hand", "closed" if self.closed else "open")
 
     def get_digital_output(self, pin: int, *, port: DigitalIOPort = DigitalIOPort.STANDARD) -> bool:
         return self.level
@@ -167,7 +181,7 @@ class _HandE:
 
 
 class _Clock:
-    """The gripper's sleep: every wait on the log, and a Ctrl-C in the first wait after a rising edge once armed."""
+    """The gripper's sleep: every wait on the log, and a Ctrl-C in the first wait after a change once armed."""
 
     def __init__(self, log: _Log) -> None:
         self.log = log
@@ -208,14 +222,17 @@ class _Arm(DummyRobotArm):
 
     Motions are counted by ``move`` call. ``refuse`` is the call the planner refuses on a running controller;
     ``stop_in`` the call that meets a protective stop; ``stop_after`` the call after whose arrival the controller
-    protective-stops. A stopped controller refuses every motion after, joints included.
+    protective-stops; ``switch_after`` the call after whose arrival a person switches DO0 at the pendant (``hand``). A
+    stopped controller refuses every motion after, joints included.
     """
 
     def __init__(self, log: _Log, *, refuse: "int | None" = None, stop_in: "int | None" = None,
-                 stop_after: "int | None" = None) -> None:
+                 stop_after: "int | None" = None, switch_after: "int | None" = None,
+                 hand: "_HandE | None" = None) -> None:
         super().__init__()
         self.log = log
         self.refuse, self.stop_in, self.stop_after = refuse, stop_in, stop_after
+        self.switch_after, self.hand = switch_after, hand
         self.moves = 0
         self.status = _RUNNING
 
@@ -243,6 +260,8 @@ class _Arm(DummyRobotArm):
         self.log.write("move", where, linear, "arrived")
         if index == self.stop_after:
             self.status = _PROTECTIVE
+        if index == self.switch_after and self.hand is not None:
+            self.hand.switch_by_hand()
         return result
 
     def move_to_joints(self, joints: Any, **keywords: Any) -> MotionResult:
@@ -289,28 +308,36 @@ class _Cell:
     arm: _Arm
 
 
-def _cell(*answers: str, closed: bool = False, **arm: Any) -> _Cell:
-    """The owner's cell: the real driver on the Hand-E double, the person answering ``answers`` in turn."""
+def _cell(*answers: str, closed: bool = False, level: bool = False, **arm: Any) -> _Cell:
+    """The owner's cell: the real driver on the Hand-E double, the person answering ``answers`` in turn.
+
+    ``level`` is where DO0 stands before the program starts: HIGH where the owner opened the jaws by hand at the
+    pendant, switching DO0 on.
+    """
     log = _Log()
-    hand_e = _HandE(log, closed=closed)
+    hand_e = _HandE(log, closed=closed, level=level)
     clock = _Clock(log)
     person = _Person(log, *answers)
     jaws = JawIOGripper(hand_e, actuation="single_toggle", close_output_pin=0, io_port="tool", pulse_s=_PULSE_S,
                         close_settle_s=_SETTLE_S, min_width_mm=5.0, max_width_mm=49.99, ask=person, sleep=clock)
-    return _Cell(log, hand_e, clock, person, jaws, _Arm(log, **arm))
+    return _Cell(log, hand_e, clock, person, jaws, _Arm(log, hand=hand_e, **arm))
 
 
-def _belief(jaws: JawIOGripper) -> str:
-    """Where the program believes the jaws stand: its count, or ``unknown`` after a pulse whose high write failed."""
+def _belief(jaws: JawIOGripper, hand_e: "_HandE | None" = None) -> str:
+    """Where the program believes the jaws stand: its count, ``unknown`` where it cannot say, or ``switched`` where DO0
+    no longer stands where the program left it (a person switched it by hand, and the program has not looked yet)."""
     if jaws._edge_unknown:
         return "unknown"
+    left = getattr(jaws, "_level", None)
+    if hand_e is not None and left is not None and hand_e.level != left:
+        return "switched"
     return "closed" if jaws.jaws_closed else "open"
 
 
 @contextmanager
 def _verb(cell: _Cell, what: str) -> Iterator[None]:
     """One verb of the program on the log: begun with the belief, ended with the belief, the jaws and the link."""
-    cell.log.write("begin", what, _belief(cell.jaws))
+    cell.log.write("begin", what, _belief(cell.jaws, cell.hand_e))
     raised = ""
     try:
         yield
@@ -318,7 +345,7 @@ def _verb(cell: _Cell, what: str) -> Iterator[None]:
         raised = type(exc).__name__
         raise
     finally:
-        cell.log.write("end", what, _belief(cell.jaws), "closed" if cell.hand_e.closed else "open",
+        cell.log.write("end", what, _belief(cell.jaws, cell.hand_e), "closed" if cell.hand_e.closed else "open",
                        cell.jaws.is_connected, raised)
 
 
@@ -484,28 +511,33 @@ def _check(t: unittest.TestCase, cell: _Cell) -> list[_Span]:
     trail = cell.log.render()
     spans = _spans(cell.log)
     inside = {e.seq for s in spans for e in s.body}
-    t.assertEqual([], [e for e in cell.log.kinds("edge") if e.seq not in inside],
-                  f"a rising edge outside every verb:\n{trail}")
+    t.assertEqual([], [e for e in cell.log.kinds("edge", "DO", "DO lost") if e.seq not in inside],
+                  f"DO0 written outside every verb:\n{trail}")
     lost = False
     for s in spans:
         at = f"{s.what} #{s.begin.seq}..#{s.end.seq}\n{trail}"
         edges, motions, asks, answers = s.of("edge"), s.of(*_MOTIONS), s.of("ask"), s.of("answer")
         chosen = [a for a in answers if str(a.data[0]).strip().lower() in ("p", "pulse")]
+        # W1: every write changed DO0 and moved the jaws once; nothing wrote it back where it was.
+        t.assertEqual(len(s.of("DO")), len(edges), f"W1: a write of DO0 that changed nothing: {at}")
         if lost:
-            # R8: the last verb left the jaws unknown; the next pulse only after a person has said where they stand.
+            # R8: the last verb left the jaws unknown; the next change only after a person has said where they stand.
             for e in edges:
                 t.assertTrue(any(a.seq < e.seq for a in answers),
-                             f"R8: pulse #{e.seq} on jaws nobody can name, with nobody asked: {at}")
+                             f"R8: change #{e.seq} on jaws nobody can name, with nobody asked: {at}")
         first = motions[0].seq if motions else None
         if s.what in ("connect", "pick"):
-            # I1: before the first motion, a pulse only for a person's 'p', one each.
+            # I1: before the first motion, a change only for a person's 'p', one each.
             early = [e for e in edges if first is None or e.seq < first]
-            t.assertLessEqual(len(early), len(chosen), f"I1: a pulse before the arm moved that nobody chose: {at}")
+            t.assertLessEqual(len(early), len(chosen), f"I1: a change before the arm moved that nobody chose: {at}")
             for edge, answer in zip(early, chosen):
-                t.assertLess(answer.seq, edge.seq, f"I1: pulse #{edge.seq} before the person chose it: {at}")
+                t.assertLess(answer.seq, edge.seq, f"I1: change #{edge.seq} before the person chose it: {at}")
         if s.what == "connect":
             t.assertEqual(1, sum(1 for a in asks if _WHERE in str(a.data[0])), f"I5: the connect asked not once: {at}")
             t.assertEqual([], motions, f"the connect moved the arm: {at}")
+            answered = [a.seq for a in answers]
+            t.assertEqual([], [w for w in s.of("DO", "DO lost") if not answered or w.seq < answered[0]],
+                          f"I5: the connect wrote DO0 before the person answered: {at}")
         elif s.what == "pick":
             if s.believed_at_start == "open":
                 t.assertEqual([], asks, f"R6: a pick on jaws believed open asked: {at}")
@@ -513,27 +545,37 @@ def _check(t: unittest.TestCase, cell: _Cell) -> list[_Span]:
                 t.assertTrue(asks and asks[0].seq < min(x.seq for x in edges + motions),
                              f"R6: a pick on jaws believed {s.believed_at_start} did not ask first: {at}")
             closes = [e for e in edges if first is not None and e.seq > first]
-            t.assertLessEqual(len(closes), 1, f"I2: more than one pulse at the part: {at}")
+            t.assertLessEqual(len(closes), 1, f"I2: more than one change at the part: {at}")
             for e in closes:
                 _at_the_part(t, s, e, at)
         elif s.what == "move":
-            t.assertEqual([], edges, f"a motion pulsed the jaws: {at}")
+            t.assertEqual([], edges, f"a motion moved the jaws: {at}")
         else:  # place, put_back, release, grasp
             t.assertEqual([], asks, f"a {s.what} asked the person: {at}")
-            t.assertLessEqual(len(edges), 1, f"I3: more than one pulse in one {s.what}: {at}")
+            t.assertLessEqual(len(edges), 1, f"I3: more than one change in one {s.what}: {at}")
             already = "closed" if s.what == "grasp" else "open"
             if s.believed_at_start == already:
-                t.assertEqual([], edges, f"a {s.what} on jaws believed {already} pulsed: {at}")
+                t.assertEqual([], edges, f"a {s.what} on jaws believed {already} changed DO0: {at}")
+            if s.believed_at_start in ("unknown", "switched"):
+                t.assertEqual([], edges, f"a {s.what} changed DO0 on a count nobody can vouch for: {at}")
             for e in edges:
                 if motions:
                     _at_the_part(t, s, e, at)
                 elif not s.raised and s.believed != "unknown":
                     t.assertTrue(any(x.kind == "sleep" and x.data[0] == _SETTLE_S and x.seq > e.seq for x in s.body),
-                                 f"no close_settle_s after the pulse #{e.seq}: {at}")
-        # I4: the jaws stand where the program believes, or it cannot say (and asks), or the hand is disconnected.
-        t.assertTrue(s.believed in (s.actual, "unknown") or not s.connected,
+                                 f"no close_settle_s after the change #{e.seq}: {at}")
+        # I4: the jaws stand where the program believes, or it cannot say (and asks), or DO0 was switched by hand since
+        # (and the next pick asks), or the hand is disconnected. "switched" only where a person did switch DO0 after
+        # the program's last write, so a slip in the program's own bookkeeping cannot hide behind it.
+        if s.believed == "switched":
+            wrote = [e.seq for e in cell.log.events if e.kind in ("DO", "DO lost") and e.seq < s.end.seq]
+            by_hand = [e.seq for e in cell.log.events if e.kind == "hand" and e.seq < s.end.seq]
+            t.assertTrue(by_hand and (not wrote or by_hand[-1] > wrote[-1]),
+                         f"I4: the program reads DO0 as switched by hand, and nobody switched it after its last "
+                         f"write: {at}")
+        t.assertTrue(s.believed in (s.actual, "unknown", "switched") or not s.connected,
                      f"I4: after the {s.what} the program believes {s.believed} and the jaws stand {s.actual}: {at}")
-        lost = s.connected and s.believed == "unknown"
+        lost = s.connected and s.believed in ("unknown", "switched")
     t.assertEqual([], cell.person.unscripted, f"questions nobody scripted:\n{trail}")
     return spans
 
@@ -609,6 +651,125 @@ class TheConnectAsksOnceTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------------------------------
+# What the owner saw at the cell on 2026-09-28, each red on the pulse the driver sent before
+# ---------------------------------------------------------------------------------------------------
+
+
+def _writes(s: _Span) -> list[bool]:
+    """The levels a verb wrote to DO0, in order."""
+    return [bool(e.data[0]) for e in s.of("DO")]
+
+
+class WhatTheOwnerSawAtTheCellTests(unittest.TestCase):
+    """The owner (2026-09-28): at the part the jaws closed, opened and closed again; at the tray they opened, the part
+    stood, and after the pulse's time they closed on it again; and a person who answered closed and chose the pulse at
+    the start saw the jaws open and close again before the pick. Every change of DO0 moves the jaws, and the pulse was
+    two or three changes. Each test here failed on that pulse."""
+
+    def test_a_pick_moves_the_jaws_once_at_the_part_and_a_place_once_at_the_tray(self) -> None:
+        cell = _cell("")
+        robot = _robot(cell)
+        with _connected(cell, robot):
+            self.assertTrue(_pick(cell, robot, _PART, 40.0).ok)
+            self.assertTrue(_place(cell, robot, _TRAY).ok)
+        spans = _check(self, cell)
+        pick, place = _only(spans, "pick"), _only(spans, "place")
+        self.assertEqual(([True], [False]), (_writes(pick), _writes(place)), "one write per command, nothing back")
+        self.assertEqual((["closed"], ["open"]), ([e.data[0] for e in pick.of("edge")],
+                                                  [e.data[0] for e in place.of("edge")]))
+        self.assertEqual([], [e for e in cell.log.events if e.kind == "edge" and e.seq > place.of("edge")[0].seq],
+                         "the jaws closed again on the part after it was set down")
+        self.assertFalse(cell.hand_e.closed)
+
+    def test_jaws_opened_by_hand_at_the_pendant_are_not_moved_by_the_connect(self) -> None:
+        """The owner opens the jaws by switching DO0 on at the pendant, and the connect then found DO0 HIGH, set it
+        LOW, and so closed the jaws before it asked where they stand (the warning the owner saw at every connect)."""
+        cell = _cell("", level=True)
+        robot = _robot(cell)
+        with _connected(cell, robot):
+            self.assertTrue(_pick(cell, robot, _PART, 40.0).ok)
+            self.assertTrue(_place(cell, robot, _TRAY).ok)
+        spans = _check(self, cell)
+        self.assertEqual([], _only(spans, "connect").of("DO", "DO lost"), "the connect wrote DO0")
+        self.assertEqual(([False], [True]), (_writes(_only(spans, "pick")), _writes(_only(spans, "place"))))
+        self.assertFalse(cell.hand_e.closed)
+
+    def test_closed_and_p_at_the_start_opens_them_once_and_they_stay_open_until_the_part(self) -> None:
+        cell = _cell("closed", "p", closed=True)
+        robot = _robot(cell)
+        with _connected(cell, robot):
+            opened = cell.hand_e.closed is False
+            self.assertTrue(_pick(cell, robot, _PART, 40.0).ok)
+        spans = _check(self, cell)
+        self.assertTrue(opened, "the jaws stood closed again before the pick")
+        self.assertEqual([True], _writes(_only(spans, "connect")))
+        pick = _only(spans, "pick")
+        self.assertEqual(["closed"], [e.data[0] for e in pick.of("edge")])
+        self.assertLess(pick.of(*_MOTIONS)[-2].seq, pick.of("edge")[0].seq, "the jaws moved before the line in")
+        self.assertTrue(cell.hand_e.closed)
+
+
+class DO0SwitchedByHandTests(unittest.TestCase):
+    """The owner switches DO0 at the pendant (2026-09-28: the URCap cannot drive the coupling), and every change moves
+    the jaws, so the program's count no longer says where they stand. The driver reads DO0 before every command: at a
+    pick's start it asks, and in the middle of a pick it refuses the command with nothing sent, and the next pick asks
+    (the owner's choice)."""
+
+    def test_between_picks_the_next_pick_asks_and_counts_from_the_answer(self) -> None:
+        cell = _cell("", "closed", "p")
+        robot = _robot(cell)
+        with _connected(cell, robot):
+            self.assertTrue(_pick(cell, robot, _PART, 40.0).ok)
+            self.assertTrue(_place(cell, robot, _TRAY).ok)
+            cell.hand_e.switch_by_hand()
+            again = _pick(cell, robot, _PART, 40.0)
+        self.assertTrue(again.ok, again.render())
+        spans = _check(self, cell)
+        second = [s for s in spans if s.what == "pick"][1]
+        self.assertEqual("switched", second.believed_at_start)
+        self.assertTrue(second.of("ask"), "the pick did not ask about a DO0 switched by hand")
+        self.assertEqual(["open", "closed"], [e.data[0] for e in second.of("edge")])
+        self.assertEqual(1, len(cell.log.kinds("hand")))
+        self.assertEqual([], cell.person.answers)
+        self.assertTrue(cell.hand_e.closed and cell.jaws.jaws_closed)
+
+    def test_opened_by_hand_after_a_refused_lift_the_next_pick_asks_and_sends_nothing_on_open(self) -> None:
+        """A lift refused after the close leaves the part in the jaws; the owner opens them at the pendant."""
+        cell = _cell("", "open", refuse=2)
+        robot = _robot(cell)
+        with _connected(cell, robot):
+            self.assertIs(HandlingOutcome.MOTION_REFUSED, _pick(cell, robot, _PART, 40.0).outcome)
+            cell.hand_e.switch_by_hand()
+            cell.arm.refuse = None
+            again = _pick(cell, robot, _PART, 40.0)
+        self.assertTrue(again.ok, again.render())
+        spans = _check(self, cell)
+        second = [s for s in spans if s.what == "pick"][1]
+        self.assertEqual("switched", second.believed_at_start)
+        self.assertEqual(["closed"], [e.data[0] for e in second.of("edge")], "the answer 'open' was sent a change")
+        self.assertLess(second.of(*_MOTIONS)[-2].seq, second.of("edge")[0].seq)
+        self.assertTrue(cell.hand_e.closed and cell.jaws.jaws_closed)
+
+    def test_in_the_middle_of_a_pick_the_close_is_refused_with_nothing_sent_and_the_next_pick_asks(self) -> None:
+        cell = _cell("", "closed", "p", switch_after=1)
+        robot = _robot(cell)
+        with _connected(cell, robot):
+            picked = _pick(cell, robot, _PART, 40.0)
+            again = _pick(cell, robot, _PART, 40.0)
+        self.assertIs(HandlingOutcome.GRIPPER_FAULT, picked.outcome, picked.render())
+        assert picked.hand is not None
+        self.assertIn("switched it since the program's last command", picked.hand.error)
+        self.assertTrue(again.ok, again.render())
+        spans = _check(self, cell)
+        first, second = [s for s in spans if s.what == "pick"]
+        self.assertEqual(([], []), (first.of("DO", "DO lost"), first.of("edge")), "the close was sent anyway")
+        self.assertEqual("unknown", first.believed)
+        self.assertEqual(2, len(first.of(*_MOTIONS)), "the arm lifted after a close nobody can vouch for")
+        self.assertEqual(["open", "closed"], [e.data[0] for e in second.of("edge")])
+        self.assertTrue(cell.hand_e.closed and cell.jaws.jaws_closed)
+
+
+# ---------------------------------------------------------------------------------------------------
 # The owner's flows, nothing failing
 # ---------------------------------------------------------------------------------------------------
 
@@ -639,7 +800,7 @@ class Example05PicksAndPlacesAKnownPartTests(unittest.TestCase):
         with _connected(cell, robot):
             released = _release(cell, robot)
         self.assertIs(HandOutcome.RELEASED, released.outcome, released.render())
-        self.assertEqual("already open: no pulse", released.note)
+        self.assertEqual("already open: no change", released.note)
         _check(self, cell)
         self.assertEqual([], cell.log.kinds("edge"))
 
@@ -875,7 +1036,7 @@ class AProtectiveStopMidPickTests(unittest.TestCase):
 class AnIOWriteThatRaisedTests(unittest.TestCase):
     def test_a_high_that_never_arrived_stops_every_pulse_until_a_person_says(self) -> None:
         cell = _cell("", "open")
-        cell.hand_e.next_high_fails = "lost"
+        cell.hand_e.next_write_fails = "lost"
         robot = _robot(cell)
         with _connected(cell, robot):
             picked = _pick(cell, robot, _PART, 40.0)
@@ -893,7 +1054,7 @@ class AnIOWriteThatRaisedTests(unittest.TestCase):
 
     def test_a_high_whose_reply_was_lost_is_asked_about_and_opened_by_the_persons_pulse(self) -> None:
         cell = _cell("", "closed", "p")
-        cell.hand_e.next_high_fails = "reply"
+        cell.hand_e.next_write_fails = "reply"
         robot = _robot(cell)
         with _connected(cell, robot):
             picked = _pick(cell, robot, _PART, 40.0)
@@ -904,11 +1065,10 @@ class AnIOWriteThatRaisedTests(unittest.TestCase):
         first, second = [s for s in spans if s.what == "pick"]
         self.assertEqual(("unknown", "closed"), (first.believed, first.actual))
         self.assertEqual(["open", "closed"], [e.data[0] for e in second.of("edge")])
-        self.assertFalse(cell.hand_e.level, "DO0 left high")
 
     def test_a_campaign_stops_on_it_and_the_next_pick_asks(self) -> None:
         cell = _cell("", "closed", "p")
-        cell.hand_e.next_high_fails = "reply"
+        cell.hand_e.next_write_fails = "reply"
         service = _service(cell)
         with _cell_connected(cell):
             run = _campaign(cell, service, 3)
@@ -940,12 +1100,11 @@ class CtrlCRightAfterARisingEdgeTests(unittest.TestCase):
         pick = _only(spans, "pick")
         self.assertEqual(("closed", "closed", "KeyboardInterrupt"), (pick.believed, pick.actual, pick.raised))
         self.assertEqual([], [m for m in pick.of(*_MOTIONS) if m.seq > pick.of("edge")[0].seq], "the lift ran")
-        self.assertFalse(cell.hand_e.level, "DO0 left high")
         self.assertFalse(cell.jaws.is_connected or cell.arm.is_connected, "the cell did not come down")
 
     def test_inside_the_high_write_the_program_stops_and_the_next_connect_asks(self) -> None:
         cell = _cell("", "closed", "p")
-        cell.hand_e.next_high_fails = "ctrl_c"
+        cell.hand_e.next_write_fails = "ctrl_c"
         robot = _robot(cell)
         with self.assertRaises(KeyboardInterrupt):
             with _connected(cell, robot):
@@ -1044,7 +1203,6 @@ class TheBenchJawsTests(unittest.TestCase):
                 self.assertEqual(code_wanted, code, printed)
                 self.assertEqual(edges, len(log.kinds("edge")), log.render())
                 self.assertEqual(after, ur.closed)
-                self.assertFalse(ur.level, "DO0 left high")
                 self.assertEqual(1, sum(1 for e in log.kinds("ask") if _WHERE in e.data[0]))
                 self.assertEqual(([], []), (person.answers, person.unscripted))
 

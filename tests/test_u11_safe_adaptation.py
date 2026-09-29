@@ -65,12 +65,52 @@ from src.robot.grasping.replay.adaptation_io import (
 from src.robot.grasping.replay.baseline_report import (
     compare_kpi_deltas,
 )
+from src.robot.grasping.replay.failure_taxonomy import (
+    LABELED_PACK_RELATIVE_PATH,
+    build_taxonomy_report,
+)
 from src.robot.grasping.replay.telemetry_catalog import (
     EXTRA_TELEMETRY_FIELDS,
 )
+from src.robot.grasping.telemetry.outcome_logging import GraspAttemptRecord
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+#: The three keys the taxonomy-driven rules propose, one per cause they read.
+_TAXONOMY_RULE_KEYS = frozenset(
+    {
+        "robot.grasping.uncertainty.recovery_aggressive_threshold",
+        "robot.grasping.success_model.ranking_blend_weight",
+        "robot.grasping.uncertainty.ranking_penalty_weight",
+    }
+)
+
+#: The outcome and symptom flag that make the failure taxonomy name each cause a rule reads.
+_TAXONOMY_SYMPTOMS: dict[str, tuple[str, str]] = {
+    "occlusion_misread": ("no_valid_grasp", "occlusion_misread_evidence"),
+    "empty_air_grasp": ("verification_failed", "empty_air_evidence"),
+    "slip_after_grasp": ("verification_failed", "slip_evidence"),
+}
+
+
+def _written_taxonomy_report(failures_per_cause: dict[str, int]) -> dict:
+    """The report ``--failure-taxonomy`` writes, classified from records by the real taxonomy."""
+
+    records: list[GraspAttemptRecord] = []
+    for cause, count in failures_per_cause.items():
+        outcome, flag = _TAXONOMY_SYMPTOMS[cause]
+        for i in range(count):
+            records.append(
+                GraspAttemptRecord.new(
+                    timestamp=float(len(records)),
+                    attempt_id=f"{cause}-{i}",
+                    mode="auto",
+                    final_outcome=outcome,
+                    extra={flag: True},
+                )
+            )
+    return build_taxonomy_report(records).to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +321,7 @@ class StrategyTests(unittest.TestCase):
 
     def test_plan_id_is_deterministic(self) -> None:
         rc = RobotConfig()
-        tax = {"per_root_cause": {"occlusion_misread": {"count": 9}}}
+        tax = {"counts_by_cause": {"occlusion_misread": 9}}
         p1 = compute_plan(robot_config=rc, baseline={}, taxonomy=tax,
                           mode="recommend_only", now_ns=1234)
         p2 = compute_plan(robot_config=rc, baseline={}, taxonomy=tax,
@@ -293,7 +333,7 @@ class StrategyTests(unittest.TestCase):
         plan = compute_plan(
             robot_config=RobotConfig(),
             baseline={},
-            taxonomy={"per_root_cause": {"occlusion_misread": {"count": 99}}},
+            taxonomy={"counts_by_cause": {"occlusion_misread": 99}},
             mode="off",
             now_ns=1,
         )
@@ -331,7 +371,7 @@ class StrategyTests(unittest.TestCase):
             robot_config=RobotConfig(),
             baseline={},
             taxonomy={
-                "per_root_cause": {"occlusion_misread": {"count": 5}}
+                "counts_by_cause": {"occlusion_misread": 5}
             },
             mode="recommend_only",
             now_ns=1,
@@ -347,7 +387,7 @@ class StrategyTests(unittest.TestCase):
             robot_config=RobotConfig(),
             baseline={},
             taxonomy={
-                "per_root_cause": {"empty_air_grasp": {"count": 5}}
+                "counts_by_cause": {"empty_air_grasp": 5}
             },
             mode="recommend_only",
             now_ns=1,
@@ -362,7 +402,7 @@ class StrategyTests(unittest.TestCase):
             robot_config=RobotConfig(),
             baseline={},
             taxonomy={
-                "per_root_cause": {"slip_after_grasp": {"count": 5}}
+                "counts_by_cause": {"slip_after_grasp": 5}
             },
             mode="recommend_only",
             now_ns=1,
@@ -374,10 +414,10 @@ class StrategyTests(unittest.TestCase):
 
     def test_rate_limit_clips_proposals(self) -> None:
         tax = {
-            "per_root_cause": {
-                "occlusion_misread": {"count": 9},
-                "empty_air_grasp": {"count": 9},
-                "slip_after_grasp": {"count": 9},
+            "counts_by_cause": {
+                "occlusion_misread": 9,
+                "empty_air_grasp": 9,
+                "slip_after_grasp": 9,
             }
         }
         baseline = {
@@ -395,6 +435,41 @@ class StrategyTests(unittest.TestCase):
             rate_limit_max=2,
         )
         self.assertEqual(len(plan.changes), 2)
+
+
+class TaxonomyReportInputTests(unittest.TestCase):
+    """The planner reads the report the failure taxonomy really writes.
+
+    Until 2026-09-29 it looked the counts up under ``per_root_cause.<cause>.count``, a shape no
+    producer writes: on every report from ``--failure-taxonomy`` the three taxonomy rules read zero
+    and never fired, and only dicts hand-made in that shape triggered them.
+    """
+
+    def test_every_taxonomy_rule_fires_on_a_built_report(self) -> None:
+        report = _written_taxonomy_report(
+            {"occlusion_misread": 5, "empty_air_grasp": 5, "slip_after_grasp": 5}
+        )
+        plan = compute_plan(
+            robot_config=RobotConfig(),
+            baseline={},
+            taxonomy=report,
+            mode="recommend_only",
+            now_ns=1,
+        )
+        self.assertEqual({c.key_path for c in plan.changes}, _TAXONOMY_RULE_KEYS)
+
+    def test_a_count_under_the_threshold_fires_nothing(self) -> None:
+        report = _written_taxonomy_report(
+            {"occlusion_misread": 4, "empty_air_grasp": 4, "slip_after_grasp": 4}
+        )
+        plan = compute_plan(
+            robot_config=RobotConfig(),
+            baseline={},
+            taxonomy=report,
+            mode="recommend_only",
+            now_ns=1,
+        )
+        self.assertEqual(plan.changes, ())
 
 
 # ---------------------------------------------------------------------------
@@ -607,7 +682,7 @@ class CLISmokeTests(unittest.TestCase):
             td_path = Path(td)
             tax = td_path / "tax.json"
             tax.write_text(json.dumps(
-                {"per_root_cause": {"occlusion_misread": {"count": 9}}}
+                {"counts_by_cause": {"occlusion_misread": 9}}
             ))
             # plan
             rc, out = self._run_main([
@@ -651,10 +726,33 @@ class CLISmokeTests(unittest.TestCase):
             actions = [e["action"] for e in iter_audit_entries(audit_path)]
             self.assertEqual(actions, ["apply", "rollback"])
 
+    def test_plan_reads_the_report_failure_taxonomy_wrote(self) -> None:
+        # End to end over the committed labeled pack (slip 11, empty air 10, occlusion 8, all over
+        # the rules' threshold of 5): the file --failure-taxonomy writes is what --taxonomy-in reads.
+        with TemporaryDirectory() as td:
+            td_path = Path(td)
+            tax = td_path / "tax.json"
+            rc, out = self._run_main([
+                "--failure-taxonomy", str(REPO_ROOT / LABELED_PACK_RELATIVE_PATH),
+                "--out", str(tax),
+            ])
+            self.assertEqual(rc, 0, msg=out)
+            # An empty baseline carries no SLO signal, so only the taxonomy rules can propose.
+            baseline = td_path / "baseline.json"
+            baseline.write_text("{}", encoding="utf-8")
+            rc, out = self._run_main([
+                "--adaptation-plan",
+                "--baseline-in", str(baseline),
+                "--taxonomy-in", str(tax),
+            ])
+            self.assertEqual(rc, 0, msg=out)
+            keys = {c["key_path"] for c in json.loads(out)["plan"]["changes"]}
+            self.assertEqual(keys, _TAXONOMY_RULE_KEYS)
+
     def _plan_and_apply(self, td_path: Path, extra_apply_args: list[str]):
         tax = td_path / "tax.json"
         tax.write_text(json.dumps(
-            {"per_root_cause": {"occlusion_misread": {"count": 9}}}
+            {"counts_by_cause": {"occlusion_misread": 9}}
         ))
         rc, out = self._run_main([
             "--adaptation-plan", "--taxonomy-in", str(tax),
@@ -716,7 +814,7 @@ class CLISmokeTests(unittest.TestCase):
             td_path = Path(td)
             tax = td_path / "tax.json"
             tax.write_text(json.dumps(
-                {"per_root_cause": {"occlusion_misread": {"count": 9}}}
+                {"counts_by_cause": {"occlusion_misread": 9}}
             ))
             rc, out = self._run_main([
                 "--adaptation-plan",

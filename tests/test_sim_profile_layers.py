@@ -35,8 +35,9 @@ class ProfileChainTests(unittest.TestCase):
 
 class MeasuredValuesSurviveCompositionTests(unittest.TestCase):
     def test_sim_detector_dtype_reset_survives_every_chain(self) -> None:
-        """THE reason profiles compose instead of duplicating. `models/object.sim.yaml` resets the
-        production fp16 `torch_dtype` to unset; running the sim detector fp16 was measured to drop the
+        """THE reason profiles compose instead of duplicating. `models/object.sim.yaml` resets
+        `torch_dtype` to unset, whatever the base says (the base leaves it unset too since 2026-09-29);
+        running the sim detector fp16 was measured to drop the
         small overhead cube (M2 8/10 -> 0/3). A per-robot profile would need its own copy of that, and
         the copies would drift. Chained, there is one copy and it holds for every robot."""
         for model, extra in ((None, None), ("ur3e", None), ("ur3e", ("tiltcam",))):

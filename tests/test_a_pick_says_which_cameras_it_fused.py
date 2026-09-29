@@ -124,9 +124,9 @@ class EachMissingPieceIsNamedTests(unittest.TestCase):
                       "robot.grasping.fusion.geometry.enabled is false")
 
     def test_the_switch_that_builds_the_other_cameras_transforms_switched_off(self) -> None:
-        """`fusion.enabled` arms the shadow voxel grid, and the schema calls the two switches independent. They are not
-        for a fused cell: `build_config_frame_resolvers` returns no resolver while it is off, so every other camera's
-        view is dropped at the pick with a warning. A plan that ignored it would pass a cell that runs single view."""
+        """`fusion.enabled` is a separate key from `fusion.geometry.enabled`, and the two are not independent for a
+        fused cell: `build_config_frame_resolvers` returns no resolver while it is off, so every other camera's view is
+        dropped at the pick with a warning. A plan that ignored it would pass a cell that runs single view."""
         self._refused(_eth2(**{"robot.grasping.fusion.enabled": False}),
                       "robot.grasping.fusion.enabled is false", "CAMERA to BASE")
 

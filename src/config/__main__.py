@@ -7,7 +7,9 @@ Exit codes:
 * 2: bad CLI arguments
 
 A query that finds nothing still exits 0: ``explain`` reports the key as unknown and offers near
-matches, ``where`` prints "no config key matches".
+matches, ``where`` prints "no config key matches". A key removed on purpose is not unknown to
+``explain``: it answers with the sentence ``schema/_removed.py`` holds for it, the one the loader
+refuses a tree that still writes it with, and offers no near matches.
 
 Examples::
 

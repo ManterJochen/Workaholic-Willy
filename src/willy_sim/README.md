@@ -27,7 +27,7 @@ the interpreter first. The runners are the same from a shell:
 
 A pick runner's verdict is its `GATE:` line and the JSON `--result-json` writes. No pick runner's exit code is
 that verdict: most exit 0 whatever the gate said, so a script reads the JSON. `run_m1_pick --mode` takes
-`easy`, `auto` (the decision gate before every grasp) or `closed_loop` (refine and verify each one).
+`easy` or `auto` (the decision gate before every grasp); `closed_loop` left on 2026-09-29.
 `run_m1_pick`, `run_m2_pick`, `run_eih_pick`, `run_multiview_pick`, `run_attribute_pick` and the two
 calibrations take `--robot-model <model>` and `--profile <layer>`, which load the chain `sim,<model>,<layer>`,
 and `--hand <name>`, which runs a registry hand in place of the one the tree names.
@@ -67,7 +67,7 @@ their result JSON.
 | `run_m1_pick` | known-pose pick with ground-truth perception, so a failure is motion or geometry |
 | `run_m2_pick` | real vision: detector and segmenter in the loop, planning against a live world from the overhead camera |
 | `run_eih_pick` | eye-in-hand: the camera rides the wrist and perceives again from where it moved |
-| `run_dense_pick` | dense clutter; `--vision` for real perception, `--mode dense_autonomous` for the full loop |
+| `run_dense_pick` | dense clutter; `--vision` for real perception |
 | `run_fused_pick` | overhead coarse scan, then wrist refine and grasp |
 | `run_multiview_pick` | fixed cameras localize, the wrist refines; `--mode eth1`, `eth2`, `eth3` or `sides` |
 | `run_industrial_bin_pick` | two side cameras find the prompted part in a tray of mixed parts |
@@ -78,9 +78,8 @@ their result JSON.
 `run_m2_pick --decline-camera-world "<why>"` boots the control run without the live world. The film recorders
 are `run_eih_demo`, `run_dense_demo`, `run_dense_demo_endgame`, `run_sorting_demo`, `run_bin_clearing_demo`,
 `run_klt_combined_demo`, `run_clutter_demo`, `run_expose_pick`, `run_suction_demo` and
-`run_industrial_suction_demo`. The probes and matrices are `inspect_wrist_cam`, `run_commit_gate`,
-`run_mode_matrix`, `run_occlusion_probe`, `run_pile_baseline`, `run_shake_label`, `run_suction_probe` and
-`run_curobo_demo`.
+`run_industrial_suction_demo`. The probes and matrices are `inspect_wrist_cam`, `run_mode_matrix`,
+`run_occlusion_probe`, `run_pile_baseline`, `run_shake_label`, `run_suction_probe` and `run_curobo_demo`.
 
 ## On a workstation
 

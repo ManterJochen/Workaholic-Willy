@@ -147,29 +147,27 @@ https://github.com/sethmlarson/truststore
 
 ## External Engines
 
-The following components are installed separately and are not vendored into this repository.
-
 Coal 3.0.4
 BSD-3-Clause
 https://github.com/coal-library/coal
 
-Used as the mesh collision backend. Installed separately into the external dependency environment. No source code is included in this repository.
+Used as the mesh collision backend.
 
 cuRobo 0.8.0,
 BSD-3-Clause
 https://github.com/NVlabs/curobo
 
-Used as the GPU motion planning backend. Installed separately and executed as an external process. No source code is included in this repository.
+Used as the GPU motion planning backend.
 
 NVIDIA Isaac Sim 5.1
 NVIDIA Omniverse License Agreement
 https://developer.nvidia.com/isaac-sim
 
-Used as an external simulation platform. Isaac Sim is installed separately by the operator and is not distributed with this repository.
+Used as an external simulation platform.
 
 ## Model Weights
 
-The following model weights may be fetched at runtime. They are not redistributed with this repository.
+The following model weights may be fetched at runtime.
 
 IDEA-Research/grounding-dino-tiny
 IDEA-Research/grounding-dino-base
@@ -196,31 +194,14 @@ openai/whisper-large-v3-turbo
 MIT
 https://huggingface.co/openai/whisper-large-v3-turbo
 
-The weights of the speech engine, pinned in `scripts/model_weights/fetch.py` at commit
-41f01f3fe87f28c78e2fbf8b568835947dd65ed9, whose model card states `license: mit`.
-
-The training data of this model is undisclosed, and that is recorded here as a known gap rather than
-smoothed over. The model card's own Training Data section reads "No information provided", and the
-paper describes weakly labelled and pseudo-labelled audio collected from the web with no dataset
-licences. The weights are MIT, which is what this repository fetches under and redistributes nothing
-of; what cannot be certified is that no non-commercial corpus was inside the training set. This is a
-provenance gap, not a proven violation, and it is shared by every Whisper-family option and by every
-other large speech recognition model surveyed.
-
 silero-vad 6.2.1
 MIT
 https://github.com/snakers4/silero-vad
 
-The voice detector: the single TorchScript file `silero_vad/data/silero_vad.jit` out of the PyPI
-wheel, pinned in `scripts/model_weights/fetch.py` by the wheel's sha256 and by the file's own. The
-package's code is neither installed nor vendored here; the file is read by
-`src/models/speech/silero.py` through `torch.jit.load`.
 
 ## Published Research and Prior Art
 
 This section records published research that informed independently implemented algorithms or architectural decisions.
-
-Citing a publication does not imply that its software, datasets, or pretrained weights are included in this repository.
 
 ### Grasping and Suction
 
@@ -237,8 +218,6 @@ Sim-Suction
 The deformable-cup seal formulation implemented in `src/robot/grasping/suction/seal.py` is based on the published formulation.
 
 No source code, dataset, or pretrained checkpoint from these projects is included in or required by this repository.
-
-The GraspNet-1Billion dataset and pretrained weights are subject to non-commercial licensing terms and are not used, fetched, or redistributed by this repository.
 
 ### Learned Grasp Generator
 
@@ -321,13 +300,6 @@ Third-party software is used only where its applicable license permits the inten
 Datasets and pretrained weights subject to non-commercial or research-only restrictions are not included in the distributed repository unless their use is separately permitted.
 
 No third-party source code is intentionally copied into this repository unless its applicable license permits such use.
-
-PyAV (`av`) is not installed, used or redistributed by this repository. Its own metadata and license
-file are BSD-3-Clause, but its wheels bundle an FFmpeg built with `--enable-gpl`, `--enable-version3`,
-`--enable-libx264` and `--enable-libx265`, and the bundled avutil and avcodec report "GPL version 3 or
-later", with no FFmpeg license text installed beside them. Uploads to the operator console are 16-bit
-PCM WAV, which the standard library decodes and which the console records; any other format is refused
-with a sentence.
 
 ## Asset Licensing
 

@@ -70,7 +70,7 @@ class RobotWatchdogEvent:
     * ``OOD_DETECTED``, ood_flagged went from False to True.
     * ``DEGRADED_MODE_ENGAGED``, degraded_mode_active went from False to True.
     * ``BLOCK_AUTO_TRIGGERED``, an enforced BLOCK_AUTO action fired and the
-      service short-circuited the decision loop.
+      service short-circuited the decision gate.
     * ``SLO_BREACH``, the runtime's rolling p95 for one of the locked latency
       stages (decision, ranking, fusion) crossed its configured budget. Emission
       is opt-in through ``robot.grasping.performance.emit_breach_events`` behind

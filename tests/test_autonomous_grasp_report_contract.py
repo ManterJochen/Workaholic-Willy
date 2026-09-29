@@ -8,7 +8,7 @@ and why this file exists.
 
 ⭐ **THE LAYERS LINE IS THE PART THAT EARNS THE METHOD.** Every advanced grasping block in this
 repository ships `enabled: false`, so the default pick is open-loop: no AUTO decision gate, no
-closed-loop refine, no fusion commit, no learned success model, no RL. A report that printed only an
+multi-camera fusion, no learned success model, no RL. A report that printed only an
 outcome would read identically whether one layer fired or six.
 """
 
@@ -24,6 +24,8 @@ from src.robot.execution.autonomous_grasp.report import (
     AutonomousGraspOutcome,
     AutonomousGraspReport,
 )
+from src.robot.execution.runtime_pick import PickSessionReport
+from src.robot.grasping.loop.pick_loop import PickAttempt, PickOutcome
 
 
 def _report(**overrides: object) -> AutonomousGraspReport:
@@ -35,11 +37,12 @@ def _report(**overrides: object) -> AutonomousGraspReport:
     return replace(base, **overrides) if overrides else base
 
 
-class _Commit:
-    """Stands in for `CommitDecision`, which is attached whenever a candidate wins."""
-
-    def __init__(self, reason: str) -> None:
-        self.reason, self.allowed = reason, True
+def _picked(**attempt_fields: object) -> PickSessionReport:
+    """A pick loop's report of one executed attempt, carrying ``attempt_fields`` (its fused views, say)."""
+    attempt = PickAttempt(attempt_index=0, target_index=0, reasons=(), score=0.9, action="executed",
+                          **attempt_fields)  # type: ignore[arg-type]
+    return PickSessionReport(outcome=PickOutcome.EXECUTED, robot_vendor="dummy", is_simulated=True,
+                             gripper_present=False, attempts=(attempt,))
 
 
 class TheContractTests(unittest.TestCase):
@@ -90,36 +93,21 @@ class TheLayersLineTests(unittest.TestCase):
         self.assertEqual(_report().layers_that_ran(), ())
         self.assertIn("(none)", _report().render())
 
-    def test_a_skipped_commit_gate_does_not_count_as_having_run(self) -> None:
-        """⛔⛔ THE DEFECT, IN ONE ASSERTION. `CommitDecision` is attached on EVERY pick with a
-        winning candidate, and when the gate is disabled it still reports `allowed=True` with a
-        `skipped_*` reason, so `commit_decision is not None` means "a candidate won", not "the gate
-        ran". The first version of `layers_that_ran` tested exactly that, and a default rehearsal
-        with every advanced block `enabled: false` printed "layers commit".
-
-        MEASURED on that rehearsal: reason was `skipped_no_policy`.
-        """
-        for reason in ("skipped_disabled", "skipped_no_fusion", "skipped_no_policy",
-                       "skipped_mode", "skipped_camera_frame"):
-            with self.subTest(reason):
-                report = _report(commit_decision=_Commit(reason))
-                self.assertIsNotNone(report.commit_decision, "the field IS set; that is the trap")
-                self.assertNotIn("commit", report.layers_that_ran())
-
-    def test_a_gate_that_participated_does_count(self) -> None:
-        for reason in ("ok", "views_below_min", "hit_fraction_below_min"):
-            with self.subTest(reason):
-                self.assertIn("commit", _report(commit_decision=_Commit(reason)).layers_that_ran())
-
-    def test_an_unknown_reason_counts_as_participation(self) -> None:
-        """⚠ THE ASYMMETRY IS DELIBERATE. A NEW skip reason silently reading as "it ran" is the
-        failure this method is about; the opposite mistake is merely noise, so an unrecognised
-        reason errs towards reporting."""
-        self.assertIn("commit", _report(commit_decision=_Commit("some_future_reason")).layers_that_ran())
+    def test_fusion_counts_only_where_another_camera_was_fused_into_the_object(self) -> None:
+        """Read off the attempt, never off a config flag: the cameras behind the cloud the picked
+        object was planned on (`fused_views`). Two of them is fusion. One camera, a neighbour fused
+        while the object was not, or no pick report at all is single-view, as the fused line says."""
+        fused = _report(pick_report=_picked(fused_views=("cam_left", "cam_right"), fused_objects=1))
+        self.assertEqual(fused.layers_that_ran(), ("fusion",))
+        self.assertIn("fusion", fused.render())
+        for label, pick in (("no pick report", None), ("one view", _picked()),
+                            ("a neighbour fused, not the object", _picked(fused_objects=1))):
+            with self.subTest(label):
+                self.assertNotIn("fusion", _report(pick_report=pick).layers_that_ran())
 
     def test_uncertainty_counts_only_when_a_fused_value_exists(self) -> None:
         """The default snapshot is `UncertaintySnapshot.disabled(...)`, which is present on EVERY
-        report. Presence is not participation, the same trap as the commit gate."""
+        report. Presence is not participation."""
         self.assertNotIn("uncertainty", _report().layers_that_ran())
         self.assertFalse(_report().uncertainty.fused_available)
 
@@ -128,8 +116,9 @@ class TheLayersLineTests(unittest.TestCase):
         self.assertIn("recovery", _report(recovery_actions=({"kind": "nudge"},)).layers_that_ran())
 
     def test_the_layers_are_reported_in_the_wire_form_too(self) -> None:
-        report = _report(commit_decision=_Commit("ok"))
+        report = _report(pick_report=_picked(fused_views=("cam_left", "cam_right"), fused_objects=1))
         self.assertEqual(report.to_dict()["layers_that_ran"], list(report.layers_that_ran()))
+        self.assertEqual(report.to_dict()["layers_that_ran"], ["fusion"])
 
 
 class TheRealRehearsalTests(unittest.TestCase):
@@ -143,9 +132,7 @@ class TheRealRehearsalTests(unittest.TestCase):
         cfg = load_robot_config(profile=None).model_copy(update={"vendor": "dummy"})
         report = build_rehearsal_cell(cfg).pick()
 
-        self.assertIsNotNone(report.commit_decision, "a winning candidate attaches one")
-        self.assertTrue(str(report.commit_decision.reason).startswith("skipped_"),
-                        "the gate did not participate on a default cell")
+        self.assertEqual(report.fused_views, (), "a one-camera rehearsal fuses no second view")
         self.assertEqual(report.layers_that_ran(), (),
                          "the default pick is open-loop and the report must say so")
         self.assertIn("(none)", report.render())

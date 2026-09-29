@@ -217,6 +217,68 @@ class ARunNeverAsksAtTheServersTerminalTests(unittest.TestCase):
             self.assertIn(part, run.error)
         self.assertEqual([], events, "the arm moved, the camera was asked or the jaws were pulsed")
 
+    def test_do0_switched_by_hand_ends_the_run_before_the_first_pick_and_asks_nobody(self) -> None:
+        """The owner switches DO0 at the pendant (2026-09-28), and every change moves the jaws without the program
+        knowing. ``pick()`` would ask where they stand, and from the run's thread that question goes to the server's
+        terminal. Red before: ``edge_unknown`` said nothing about an output switched by hand, so the run started the
+        pick and the pick asked at the terminal."""
+        from tests.test_a_stopped_controller_moves_no_jaws import _Arm, _Counted, _service
+        from tests.test_a_toggle_asks_where_its_jaws_stand import Person, _toggle
+
+        events: list[Any] = []
+        jaws = _toggle(events, Person(""))
+        jaws.connect()
+        jaws._io.do[0] = not jaws._io.do.get(0, False)      # type: ignore[attr-defined] # switched at the pendant
+        jaws._ask = None
+        events.clear()
+        service = _Counted(_service(_Arm(events), jaws))
+
+        with patch("sys.stdin", _Terminal("")), patch("builtins.input", return_value="") as typed:
+            run, _hub = _drive(service, picks=2)
+
+        typed.assert_not_called()
+        self.assertEqual(0, service.picks)
+        self.assertIs(RunState.FAILED, run.state)
+        for part in ("the gripper needs a person", "nobody can say where they stand", "switched", "terminal"):
+            self.assertIn(part, run.error)
+        self.assertEqual([], events, "the arm moved, the camera was asked or the jaws were switched")
+
+    def test_do0_switched_by_hand_while_the_pick_runs_ends_the_run_and_asks_nobody(self) -> None:
+        """Review of 2026-09-28: the run checks the hand once before ``pick()``, and the pick asks it twice more, at its
+        start and right before the approach, seconds later. DO0 switched at the pendant in between made the pick ask
+        at the server's terminal from the run's thread, holding the run lock until somebody typed there. Red before:
+        ``input()`` was called three times. The run's picks ask nobody now: the switch refuses the pick with nothing
+        sent, and the run stops."""
+        from tests.test_a_stopped_controller_moves_no_jaws import _Arm, _Counted, _service
+        from tests.test_a_toggle_asks_where_its_jaws_stand import Person, _toggle
+
+        for switch_at in (1, 2):                            # the pick's own controller reads: its start, the approach
+            with self.subTest(switch_at=switch_at):
+                events: list[Any] = []
+                jaws = _toggle(events, Person(""))
+                jaws.connect()
+                jaws._ask = None
+
+                class _SwitchedAtThePendant(_Arm):
+                    def get_robot_status(self) -> Any:
+                        status = super().get_robot_status()
+                        if self.status_reads == switch_at:
+                            jaws._io.do[0] = not jaws._io.do.get(0, False)  # type: ignore[attr-defined]
+                        return status
+
+                events.clear()
+                service = _Counted(_service(_SwitchedAtThePendant(events), jaws))
+
+                with patch("sys.stdin", _Terminal("")), patch("builtins.input", return_value="") as typed:
+                    run, _hub = _drive(service, picks=2)
+
+                typed.assert_not_called()
+                self.assertEqual(1, service.picks)
+                self.assertIs(RunState.FAILED, run.state)
+                self.assertIn("the gripper needs a person", run.error)
+                self.assertEqual([], [e for e in events if isinstance(e, tuple) and e[:2] == ("DO", 0)],
+                                 "DO0 was written on a count the pendant had overturned")
+
     def test_the_first_pick_on_open_jaws_runs_and_asks_nobody(self) -> None:
         """⭐ THE CONTROL: jaws the person said stand open at connect; the one pick runs, one pulse at the part."""
         from tests.test_a_stopped_controller_moves_no_jaws import _Arm, _Counted, _pulses, _service, _toggle

@@ -1,20 +1,22 @@
-"""A single toggle asks a person where its jaws stand, counts its own pulses from the answer, and never pulses before
-the arm moves at the start of a pick (owner's decision, 2026-09-24).
+"""A single toggle asks a person where its jaws stand, counts its own changes from the answer, and never switches before
+the arm moves at the start of a pick (owner's decisions, 2026-09-24 and 2026-09-28).
 
-The owner's hand is a Hand-E on the Robotiq I/O Coupling: ``jaw_io`` single_toggle on tool DO0, each short pulse flips
-the jaws, 24 V, nothing wired back. A persistent record of the pulses (``logs/robot/state``) was tried on 2026-09-23 and
-dropped: a pulse nobody counted still inverted it, and a person had to declare the jaws on the bench to recover. Now:
+The owner's hand is a Hand-E on the Robotiq I/O Coupling: ``jaw_io`` single_toggle on tool DO0, every change of DO0
+moves the jaws, switched on as much as switched off (the owner at the pendant, 2026-09-28), 24 V, nothing wired back. A
+persistent record of the commands (``logs/robot/state``) was tried on 2026-09-23 and dropped: a command nobody counted
+still inverted it, and a person had to declare the jaws on the bench to recover. Now:
 
 * the gripper's connect asks, once per program start and before anything moves, whether the jaws stand open; closed is
-  answered with one pulse to open them or an abort, and with no terminal the connect is refused;
-* every pulse flips the count, whatever verb sent it; a pick sends none before the arm moves, exactly one at the part,
+  answered with one change to open them or an abort, and with no terminal the connect is refused;
+* every change flips the count, whatever verb sent it; a pick sends none before the arm moves, exactly one at the part,
   and a place one where the count says closed and none where it says open ("already open");
-* a pick that starts on jaws the program believes closed asks again instead of pulsing, and with nobody to ask it is
+* a pick that starts on jaws the program believes closed asks again instead of switching, and with nobody to ask it is
   refused before any motion;
 * nothing measures a toggle, so a pick counts as grasped and its report says the hold was not checked (no sensor);
 * a driver that raises in the pick loop's policy becomes a report outcome, never an escaping exception.
 
-Every pulse is read off the recorded rising edges on DO0, on one log the arm writes its motions to.
+Every change is read off the recorded writes to DO0, each of which knows whether it changed the output, on one log
+the arm writes its motions to.
 """
 
 from __future__ import annotations
@@ -42,8 +44,20 @@ _BENCH = "unit double: a bench with no cameras"
 _NO_TERMINAL = io.StringIO("")  # isatty() is False: nobody to ask
 
 
+class _Write(tuple):
+    """``("DO", pin, value)`` on the log, equal to that plain tuple, and knowing whether the write changed the output:
+    every change of the owner's DO0 moves the jaws, switched on as much as switched off (2026-09-28)."""
+
+    changed: bool
+
+    def __new__(cls, pin: int, value: bool, changed: bool) -> "_Write":
+        write = super().__new__(cls, ("DO", pin, value))
+        write.changed = changed
+        return write
+
+
 class _IO:
-    """The tool I/O the toggle pulses, writing every output onto the log the arm shares."""
+    """The tool I/O the toggle switches, writing every output onto the log the arm shares."""
 
     def __init__(self, events: list[Any], *, refuse_high: bool = False) -> None:
         self.events = events
@@ -54,8 +68,9 @@ class _IO:
     def set_digital_output(self, pin: int, value: bool, *, port: DigitalIOPort = DigitalIOPort.STANDARD) -> None:
         if self.refuse_all or (value and self.refuse_high):
             raise RobotError("the controller refused the write on tool output 0")
+        changed = bool(value) != self.do.get(pin, False)
         self.do[pin] = bool(value)
-        self.events.append(("DO", pin, bool(value)))
+        self.events.append(_Write(pin, bool(value), changed))
 
     def get_digital_output(self, pin: int, *, port: DigitalIOPort = DigitalIOPort.STANDARD) -> bool:
         return self.do.get(pin, False)
@@ -88,9 +103,14 @@ def _toggle(events: list[Any], ask: Any = None, **kw: Any) -> JawIOGripper:
                         ask=ask, sleep=kw.pop("sleep", lambda _s: None), **kw)
 
 
+def _changes(events: list[Any]) -> list[int]:
+    """Where on the log DO0 changed: every change moves the jaws, switched on or off (2026-09-28)."""
+    return [i for i, e in enumerate(events) if isinstance(e, _Write) and e[1] == 0 and e.changed]
+
+
 def _pulses(events: list[Any]) -> int:
-    """Rising edges on DO0: each one flips the jaws."""
-    return sum(1 for e in events if e == ("DO", 0, True))
+    """How often DO0 changed: each change moves the jaws once."""
+    return len(_changes(events))
 
 
 def _moves(events: list[Any]) -> list[int]:
@@ -99,7 +119,8 @@ def _moves(events: list[Any]) -> list[int]:
 
 
 def _edges(events: list[Any]) -> list[int]:
-    return [i for i, e in enumerate(events) if e == ("DO", 0, True)]
+    """Where on the log each change of DO0 is."""
+    return _changes(events)
 
 
 def _robot(events: list[Any], jaws: JawIOGripper) -> Robot:
@@ -144,8 +165,8 @@ class TheStartQuestionTests(unittest.TestCase):
         self.assertTrue(jaws.is_connected)
         self.assertEqual(1, _pulses(events))
         self.assertFalse(jaws.jaws_closed)
-        self.assertEqual(2.0, slept[-1], "the stroke was not waited out after the pulse")
-        self.assertIn("one pulse on tool output 0", person.asked[1])
+        self.assertEqual(2.0, slept[-1], "the stroke was not waited out after the change")
+        self.assertIn("one change of tool output 0", person.asked[1])
 
     def test_closed_and_abort_refuses_the_connect_with_nothing_pulsed(self) -> None:
         events: list[Any] = []
@@ -439,7 +460,7 @@ class APickStartTakesAWordNotAnEnterTests(unittest.TestCase):
         jaws._io.refuse_high = False                        # type: ignore[attr-defined]
         self.assertEqual("", jaws.jaws_open_for_a_pick())
         self.assertEqual(3, len(person.asked))
-        self.assertIn("failed on its high write", person.asked[1])
+        self.assertIn("failed on its write", person.asked[1])
 
     def test_enter_at_connect_still_means_open(self) -> None:
         """⭐ THE CONTROL: the owner's agreed answer at program start."""
@@ -631,7 +652,7 @@ class APickPulsesOnceAtThePartTests(unittest.TestCase):
 
         self.assertIs(handling.HandOutcome.RELEASED, report.outcome, report.render())
         self.assertEqual(0, _pulses(events))
-        self.assertEqual("already open: no pulse", report.note)
+        self.assertEqual("already open: no change", report.note)
         self.assertIn("already open", report.render())
 
     def test_a_place_on_open_jaws_sends_nothing_and_says_already_open(self) -> None:
@@ -853,39 +874,6 @@ class ACampaignAsksAtEveryPickAfterAClose(unittest.TestCase):
         self.assertEqual("gripper_fault", last.pick_report.attempts[-1].action)
         self.assertIn("move", events, "the approach before the fault is gone from the log")
 
-    def test_the_two_scan_path_asks_before_its_standoff(self) -> None:
-        from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome
-        from tests.test_a_stopped_controller_moves_no_jaws import two_scan_service
-
-        events: list[Any] = []
-        jaws = _toggle(events, Person(""))
-        jaws.connect()
-        jaws.set_closed(True)
-        jaws._ask = None
-        events.clear()
-
-        with patch("sys.stdin", _NO_TERMINAL):
-            report = two_scan_service(_Arm(events), jaws).pick()
-
-        self.assertIs(AutonomousGraspOutcome.EXECUTION_FAILED, report.outcome, report.render())
-        self.assertIn("not starting the pick", report.gripper_fault)
-        self.assertEqual(["status"], events, "the standoff move came before the question")  # only the controller
-
-    def test_the_two_scan_path_names_a_driver_error_at_the_close(self) -> None:
-        from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome
-        from tests.test_a_stopped_controller_moves_no_jaws import two_scan_service
-
-        events: list[Any] = []
-        jaws = _toggle(events, Person(""))
-        jaws.connect()
-        jaws._io.refuse_high = True                         # type: ignore[attr-defined]
-
-        report = two_scan_service(_Arm(events), jaws).pick()
-
-        self.assertIs(AutonomousGraspOutcome.EXECUTION_FAILED, report.outcome, report.render())
-        self.assertIsNone(report.fault)
-        self.assertIn("the gripper raised: RobotError", report.gripper_fault)
-
 
 # ---------------------------------------------------------------------------------------------------
 # The stroke
@@ -951,11 +939,12 @@ class TheDeskAsksForTheStrokeTests(unittest.TestCase):
         self.assertNotEqual("warn", str(row.status))
 
 
-class TheDeskAsksForAPulseTheHandRegistersTests(unittest.TestCase):
-    """Review of 2026-09-24 (D3). The load refuses a toggle's pulse under 0.05 s, a handful of CB3 controller cycles; the
-    desk warns below 0.1 s, where a pulse the controller did apply may still be too short for the device to flip on."""
+class TheDeskHasNoPulseToAskForTests(unittest.TestCase):
+    """The desk warned a toggle's pulse under 0.1 s (review of 2026-09-24, D3). A toggle sends no pulse any more: every
+    change of its output moves the owner's jaws (2026-09-28), so a command is one change, and ``pulse_s`` is never
+    read for it. A row about it would ask the owner to measure something nothing uses."""
 
-    def _row(self, **jaw_io: object) -> Any:
+    def _rows(self, **jaw_io: object) -> dict[str, Any]:
         from src.config.schema.robot import RobotConfig
         from src.robot.execution.real_cell.preflight import run_config_preflight
 
@@ -964,34 +953,29 @@ class TheDeskAsksForAPulseTheHandRegistersTests(unittest.TestCase):
             "gripper": {"vendor": "jaw_io", "jaw_io": {"close_output_pin": 0, **jaw_io}},
             "safety": {"self_collision": {"backend": "capsule"}},
         })
-        rows = {check.name: check for check in run_config_preflight(cfg, curobo_available=True,
-                                                                    collision_engine="coal").checks}
-        return rows.get("toggle pulse")
+        return {check.name: check for check in run_config_preflight(cfg, curobo_available=True,
+                                                                     collision_engine="coal").checks}
 
-    def test_a_toggle_pulse_under_a_tenth_of_a_second_is_warned(self) -> None:
-        row = self._row(actuation="single_toggle", pulse_s=0.06)
-        self.assertEqual("warn", str(row.status))
-        self.assertIn("0.06 s", row.detail)
-        self.assertIn("--pulse 0 --for", row.fix)
+    def test_a_toggle_has_no_pulse_row_whatever_pulse_s_says(self) -> None:
+        for pulse_s in (0.06, 0.2):
+            with self.subTest(pulse_s=pulse_s):
+                rows = self._rows(actuation="single_toggle", pulse_s=pulse_s)
+                self.assertNotIn("toggle pulse", rows)
+                self.assertNotIn("pulse", rows["end-effector wiring"].detail)
 
-    def test_the_default_pulse_reads_ok(self) -> None:
-        """⭐ THE CONTROL: the schema default, 0.2 s."""
-        row = self._row(actuation="single_toggle")
-        self.assertEqual("ok", str(row.status))
-        self.assertIn("0.20 s", row.detail)
-
-    def test_a_solenoid_has_no_such_row(self) -> None:
-        self.assertIsNone(self._row(actuation="single_solenoid"))
+    def test_a_solenoid_has_no_such_row_either(self) -> None:
+        """⭐ THE CONTROL."""
+        self.assertNotIn("toggle pulse", self._rows(actuation="single_solenoid"))
 
 
 class TheDriverCountsWhatItSentTests(unittest.TestCase):
     """What the bench's summary reads: every command the driver sent the jaws, counted where it is sent."""
 
-    def test_a_toggle_counts_one_per_rising_edge_the_connect_included(self) -> None:
+    def test_a_toggle_counts_one_per_change_the_connect_included(self) -> None:
         events: list[Any] = []
         jaws = _toggle(events, Person("closed", "p"))
         self.assertEqual(0, jaws.commands_sent)
-        jaws.connect()                                      # the person chose the pulse: one edge
+        jaws.connect()                                      # the person chose to open them: one change
         self.assertEqual(1, jaws.commands_sent)
         jaws.set_closed(True)
         jaws.set_closed(True)                               # already closed: nothing sent
@@ -1078,7 +1062,7 @@ class TheBenchTests(unittest.TestCase):
     def _jaws(self, command: str, *answers: str) -> tuple[int, str, int]:
         """``--jaws command --yes`` on the owner's toggle, a person at the terminal answering ``answers``.
 
-        The exit code, the last line printed, and the rising edges the controller saw on DO0.
+        The exit code, the last line printed, and the changes the controller saw on DO0.
         """
         arm = _BenchArm()
         person = Person(*answers)
@@ -1116,16 +1100,16 @@ class TheBenchTests(unittest.TestCase):
         self.assertIn("nobody can be asked", printed)
 
     def test_a_pulse_the_connect_sent_is_counted_in_the_summary(self) -> None:
-        """⛔ Review of 2026-09-24. The person says closed and chooses the pulse, so the connect opens the jaws; then
-        ``--jaws open`` has nothing left to do. Red before: one rising edge went out, and the summary read "from OPEN
-        to OPEN (they already stood there: nothing was pulsed)", because it looked only after the connect."""
+        """⛔ Review of 2026-09-24. The person says closed and chooses to open them, so the connect opens the jaws; then
+        ``--jaws open`` has nothing left to do. Red before: one command went out, and the summary read "from OPEN to
+        OPEN (they already stood there: nothing was switched)", because it looked only after the connect."""
         code, line, edges = self._jaws("open", "closed", "p")
 
         self.assertEqual(0, code)
         self.assertEqual(1, edges)
-        self.assertNotIn("nothing was pulsed", line)
-        self.assertIn("1 pulse went out", line)
-        self.assertIn("1 pulse at connect", line)
+        self.assertNotIn("nothing was switched", line)
+        self.assertIn("1 change went out", line)
+        self.assertIn("1 change at connect", line)
         self.assertIn("nothing for --jaws open", line)
 
     def test_the_summary_counts_the_pulses_of_the_connect_and_of_the_command_together(self) -> None:
@@ -1134,22 +1118,22 @@ class TheBenchTests(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertEqual(2, edges)
         self.assertIn("from OPEN to CLOSED", line)
-        self.assertIn("2 pulses went out", line)
-        self.assertIn("1 pulse at connect", line)
-        self.assertIn("1 pulse for --jaws closed", line)
+        self.assertIn("2 changes went out", line)
+        self.assertIn("1 change at connect", line)
+        self.assertIn("1 change for --jaws closed", line)
 
     def test_nothing_was_pulsed_is_said_only_where_nothing_was(self) -> None:
         """⭐ THE CONTROLS: jaws answered open. ``--jaws open`` sends nothing and says so; ``--jaws closed`` sends one."""
         code, line, edges = self._jaws("open", "")
         self.assertEqual((0, 0), (code, edges))
-        self.assertIn("from OPEN to OPEN (they already stood there: nothing was pulsed)", line)
+        self.assertIn("from OPEN to OPEN (they already stood there: nothing was switched)", line)
 
         code, line, edges = self._jaws("closed", "open")
         self.assertEqual((0, 1), (code, edges))
         self.assertIn("from OPEN to CLOSED", line)
-        self.assertIn("1 pulse went out", line)
+        self.assertIn("1 change went out", line)
         self.assertNotIn("at connect", line)
-        self.assertNotIn("nothing was pulsed", line)
+        self.assertNotIn("nothing was switched", line)
 
     def test_a_refusal_after_a_pulse_was_tried_says_so(self) -> None:
         """The person chose the pulse at connect and the controller refused its high write: the connect is refused,
@@ -1161,7 +1145,7 @@ class TheBenchTests(unittest.TestCase):
 
         self.assertEqual(1, code)
         self.assertIn("REFUSED: --jaws open", printed)
-        self.assertIn("Before this refusal the driver sent 1 pulse at connect", printed)
+        self.assertIn("Before this refusal the driver sent 1 change at connect", printed)
         self.assertIn("look at the jaws", printed)
 
 

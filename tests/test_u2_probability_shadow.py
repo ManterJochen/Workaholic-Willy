@@ -524,7 +524,6 @@ class ServiceWiringTests(unittest.TestCase):
             ("easy", GraspMode.EASY),
             ("auto", GraspMode.AUTO),
             ("dense_clutter", GraspMode.DENSE_CLUTTER),
-            ("dense_autonomous", GraspMode.DENSE_AUTONOMOUS),
         ):
             with self.subTest(mode=mode_str):
                 cfg = _cfg(enabled=True, default_mode=mode_str)

@@ -3,8 +3,9 @@
 ⛔⛔ IT DID NOT. `EyeInHandFrameResolver.camera_to_base_for_frame` carried
 `# noqa: ARG002 - frame not needed for the transform itself` and read `arm.get_tcp_pose()` live. For a
 camera bolted to the wrist, CAMERA -> BASE depends on where the tool was when the SHUTTER opened, and
-the closed-loop path moves the arm between capture and resolve BY DESIGN and then re-perceives. Every
-millimetre travelled in between landed in the grasp, in a frame nothing downstream checks.
+the arm can move between capture and resolve: a frame taken at one look is used after the arm left it
+(the two-scan closed-loop path, which moved it BY DESIGN, left on 2026-09-29). Every millimetre
+travelled in between landed in the grasp, in a frame nothing downstream checks.
 
 ⚠ NEVER RUN ON HARDWARE. The stamp exists and the resolver reads it; no eye-in-hand cell has produced
 a stamped frame yet. Bucket 3 until one does.

@@ -33,6 +33,15 @@ toward what it sees, so a fixed frame that is mostly holes is a camera fault and
 camera on the wrist is carried inside its own minimum range by every grasp, so its frame is judged
 where the motion goes, and by the whole frame only when no goal is named.
 
+A pick on a camera on the wrist is the one time a frame outlives the pose it was taken at. The
+pick looks from several poses and ranks its grasp on everything those looks saw together, so the
+motions that carry the grasp out are planned against all of it too, not against the one frame
+taken where the arm stands: a block beside the part that only the first look saw is otherwise free
+space to the planner by the approach. While a pick holds its frames (``hold_pick_views``) every
+wrist frame a world was built from is kept, one per pose and a dozen at most, each placed by the
+tool pose it was stamped with and each without the robot where the robot stood when it was taken, as
+well as where it stands now. A fixed camera never moves, so its newest frame supersedes the one before.
+
 The depth source is a protocol rather than the perception stack, and the self body arrives as
 capsules rather than as a model name. Both keep this module inside the safety layer instead of
 reaching up into grasping, which is where the perception frame lives.
@@ -43,9 +52,9 @@ from __future__ import annotations
 import os
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol, Sequence, TypedDict
 
 import numpy as np
 
@@ -228,13 +237,26 @@ class PlannerWorldSnapshot:
     #: `None` when no goal was asked about and no box was held.
     keep_out: KeepOutSummary | None = None
     #: The cameras that looked at the motion's goal and held a depth over most of the region about
-    #: it, in camera order; `None` when no goal was asked about or the world is not `FRESH`. Empty is
-    #: a goal no camera looked at, whose surroundings reach the planner as whatever was declared
-    #: there.
+    #: it, in camera order and then the frames a pick holds, as :attr:`held_views` names them; `None`
+    #: when no goal was asked about or the world is not `FRESH`. Empty is a goal no camera looked
+    #: at, whose surroundings reach the planner as whatever was declared there.
     goal_seen_by: tuple[str, ...] | None = None
     #: The declared fixtures or meshes the world could not read for its cameras, each with why. What the
     #: cameras see of them comes back as obstacles, which is the direction it is safe to be wrong in.
     unread_declared: tuple[str, ...] = ()
+    #: The frames a pick holds that a `FRESH` world was built from beside the frames taken now, one
+    #: per earlier pose, named ``"<camera> (held <n>)"`` in the order they were taken; empty while no
+    #: pick holds any (``LivePlannerWorld.hold_pick_views``). The age, the capture time and the
+    #: cameras here are the frames taken now. :attr:`perceived` is built from all of them, so its
+    #: ``source_timestamp`` is the oldest held frame's and its ``depth_coverage`` names them too.
+    held_views: tuple[str, ...] = ()
+    #: How old the oldest of :attr:`held_views` was when the world was built, milliseconds, or `None`
+    #: when there is none. A held frame does not age out, so this is said rather than judged.
+    held_oldest_age_ms: float | None = None
+    #: How many frames of new poses the pick did not hold, this world's own included, because it held
+    #: as many as a pick may (``_MAX_HELD_FRAMES``). What only they saw leaves the world when the arm
+    #: leaves their pose, as it did before a pick held anything. 0 while no pick holds any.
+    held_not_kept: int = 0
 
     @property
     def usable(self) -> bool:
@@ -244,6 +266,11 @@ class PlannerWorldSnapshot:
     @property
     def perceived_count(self) -> int:
         return len(self.cuboids) - int(self.declared_count)
+
+    @property
+    def held(self) -> int:
+        """How many frames of earlier poses of a pick this world was built from."""
+        return len(self.held_views)
 
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""
@@ -261,6 +288,8 @@ class PlannerWorldSnapshot:
             )
         for unread in self.unread_declared:
             head += f"\n  {unread}: what the cameras see of it comes back as obstacles"
+        if self.held or self.held_not_kept:
+            head += f"\n  {_held_text(self.held, self.held_oldest_age_ms, self.held_not_kept, each=True)}"
         return head if self.perceived is None else head + "\n" + self.perceived.render()
 
     def to_dict(self) -> dict[str, Any]:
@@ -277,6 +306,9 @@ class PlannerWorldSnapshot:
                 self.perceived.dropped_obstacle_count if self.perceived is not None else 0
             ),
             "goal_seen_by": None if self.goal_seen_by is None else list(self.goal_seen_by),
+            "held": self.held,
+            "held_oldest_age_ms": self.held_oldest_age_ms,
+            "held_not_kept": int(self.held_not_kept),
         }
 
 
@@ -353,6 +385,12 @@ class LivePlannerWorld:
     _declared_bodies: tuple[DeclaredBody, ...] = field(default=(), init=False, repr=False)
     #: The declared shapes that could not be read for that, each with why.
     _unread_declared: tuple[str, ...] = field(default=(), init=False, repr=False)
+    #: The wrist frames the pick in progress holds, in the order they were taken, or `None` while no
+    #: pick holds any (:meth:`hold_pick_views`).
+    _pick_frames: "list[_HeldFrame] | None" = field(default=None, init=False, repr=False)
+    #: The frames of new poses the pick in progress did not hold because it held
+    #: :data:`_MAX_HELD_FRAMES` already, by camera and shutter time, so a frame served twice counts once.
+    _pick_frames_not_kept: set[tuple[str, float | None]] = field(default_factory=set, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.tuning.voxel_field_mm > 0.0:
@@ -461,7 +499,8 @@ class LivePlannerWorld:
 
         The cache exists so two plans inside one perception cycle share one reading. A caller that
         knows the scene changed, which in practice means a probe or a test rather than a cell, says
-        so here rather than by waiting out the age limit.
+        so here rather than by waiting out the age limit. The frames a pick holds are not a cache
+        and stay (:meth:`forget_pick_views`).
         """
         self._frames.clear()
         self._frame_bodies.clear()
@@ -478,6 +517,10 @@ class LivePlannerWorld:
         changed the cell: a part was taken, released or placed, and a frame cached while its target
         was held out shows the part where the hand held it. The cache keys on the arm alone, and a
         jaw that opens without the arm moving would otherwise hand the next motion that frame.
+
+        The frames a pick holds stay. This is called whenever every keep-out scope closes, which
+        happens inside a pick as well as at its end, and the pick's frames go when the pick says so
+        (:meth:`forget_pick_views`).
         """
         self._labels.clear()
         self._exclude.clear()
@@ -485,6 +528,45 @@ class LivePlannerWorld:
         self._held.clear()
         self._targets.clear()
         self.drop_cached_frames()
+
+    def hold_pick_views(self) -> bool:
+        """Keep every wrist frame from here on, until :meth:`forget_pick_views`: the frames of one pick.
+
+        A pick on a camera on the wrist looks from several poses, and every motion of it is planned
+        against all of what they saw. So while a pick holds, every wrist frame a world was built from
+        is kept: it answered, it was not blind, it was inside the age limit, it carries the tool pose
+        it was taken at, the robot's body at that moment was described, and the world built from it
+        could be built. A frame taken where an earlier one was, the body within a millimetre at every
+        capsule end, replaces it, so the pick keeps one frame per pose it stood at: the looks, the
+        view it generates, the standoff, the grasp and the retreat, because every motion asks the
+        world before it leaves a pose. A fixed camera never moves and holds nothing: its newest frame
+        supersedes the one before. A pick holds :data:`_MAX_HELD_FRAMES` at most, and says so past
+        that (:meth:`_hold`).
+
+        Each held frame goes into every world built until the pick ends, placed by the tool pose it
+        was stamped with, and loses the robot where the robot stood when it was taken as well as
+        where it stands now. It does not age: the frames taken now still have to be inside the age
+        limit, and what only an older frame saw stays in the world, which is the conservative side
+        of a cell that may have changed since. The held target and the goal's jaw region leave
+        every one of them.
+
+        Starting while a pick holds starts again: what was held belongs to a pick that ended. Depth
+        is kept in single precision (:data:`_HELD_DEPTH_DTYPE`). Returns whether this world has a
+        camera on the wrist, whose frames there are to hold; one with fixed cameras only holds nothing.
+        """
+        self._pick_frames = []
+        self._pick_frames_not_kept.clear()
+        return any(camera.camera_to_tool is not None for camera in self.cameras)
+
+    def forget_pick_views(self) -> None:
+        """Drop every frame the pick holds and hold no more: the pick ended."""
+        self._pick_frames = None
+        self._pick_frames_not_kept.clear()
+
+    @property
+    def held_view_count(self) -> int:
+        """How many frames the pick in progress holds, one per pose a world was built at; 0 while none holds."""
+        return 0 if self._pick_frames is None else len(self._pick_frames)
 
     # -----------------------------------------------------------------------------------------
     # The one question
@@ -512,7 +594,9 @@ class LivePlannerWorld:
             Where the motion is going. It decides which obstacles survive the slot budget, because
             the ones near the path are the ones that matter. When cameras look at it, one of them
             has to hold a depth over most of the region about it (``goal_region_mm``), or the
-            world is `UNSEEN`; the cameras that did are named in ``goal_seen_by``.
+            world is `UNSEEN`; the cameras that did are named in ``goal_seen_by``. While a pick
+            holds its frames (:meth:`hold_pick_views`) a frame of an earlier pose that measured the
+            region counts as well, because the world is built from it.
         now
             The clock, injectable so a test can age a frame without sleeping.
         goal_keep_out
@@ -580,24 +664,32 @@ class LivePlannerWorld:
                 meshes=meshes, declared_count=len(declared),
             )
 
+        # The frames of earlier poses of the pick, each placed where it was taken. Empty while no pick
+        # holds any, which leaves everything below as it was before a pick could.
+        earlier = self._earlier_frames()
+
         # Where the motion goes has to have been measured by a camera that looks at it. The views are
         # fused, so one camera that measured the region is enough and a second one's holes take
         # nothing away; a camera that does not look at it vouches for nothing there, and the stamp
-        # says so.
+        # says so. A held frame is one of the views, so it is asked too. A refusal names the camera
+        # an operator can go to, which for a held frame is the camera that took it; the reason names
+        # the frame.
         goal_seen_by: tuple[str, ...] | None = None
         if goal is not None:
             seers: list[str] = []
-            blind_to_it: list[tuple[str, float]] = []
-            for camera in self.cameras:
-                share = _goal_coverage(frames[camera.name], placed[camera.name], goal, float(self.goal_region_mm))
+            blind_to_it: list[tuple[str, float, str]] = []
+            looks = [(camera.name, camera.name, frames[camera.name], placed[camera.name]) for camera in self.cameras]
+            looks += [(held.name, held.camera.name, held.frame, held.camera_to_base) for held in earlier]
+            for name, taken_by, frame, camera_to_base in looks:
+                share = _goal_coverage(frame, camera_to_base, goal, float(self.goal_region_mm))
                 if share is None:
                     continue
                 if share < float(self.min_depth_coverage):
-                    blind_to_it.append((camera.name, share))
+                    blind_to_it.append((name, share, taken_by))
                 else:
-                    seers.append(camera.name)
+                    seers.append(name)
             if blind_to_it and not seers:
-                shares = " and ".join(f"{name!r} {100.0 * share:.0f}%" for name, share in blind_to_it)
+                shares = " and ".join(f"{name!r} {100.0 * share:.0f}%" for name, share, _ in blind_to_it)
                 return PlannerWorldSnapshot(
                     verdict=WorldVerdict.UNSEEN, cuboids=declared, perceived=None, age_ms=oldest,
                     reason=(
@@ -607,7 +699,7 @@ class LivePlannerWorld:
                         "measures or a surface it cannot read, and planned against it would be free space "
                         "nobody saw. Look from further away, or at a depth mode with a shorter minimum range"
                     ),
-                    meshes=meshes, declared_count=len(declared), camera=blind_to_it[0][0],
+                    meshes=meshes, declared_count=len(declared), camera=blind_to_it[0][2],
                 )
             goal_seen_by = tuple(seers)
 
@@ -633,7 +725,7 @@ class LivePlannerWorld:
 
         try:
             perceived = build_perceived_boxes(
-                views=views,
+                views=views + self._held_views(earlier),
                 limits=self.limits,
                 tuning=self.tuning,
                 self_body=SelfBody.from_frames(
@@ -654,6 +746,8 @@ class LivePlannerWorld:
                 verdict=WorldVerdict.UNUSABLE, cuboids=declared, perceived=None, age_ms=oldest,
                 reason=str(exc), meshes=meshes, declared_count=len(declared),
             )
+        # Held only now that a world was built from them (:meth:`_hold_frames_of`).
+        self._hold_frames_of(frames, self_envelope)
 
         perceived_boxes = [
             planner_cuboid(box.name, box.center_mm, box.dims_mm, yaw_rad=box.yaw_rad)
@@ -682,6 +776,9 @@ class LivePlannerWorld:
             keep_out=summary,
             goal_seen_by=goal_seen_by,
             unread_declared=self._unread_declared,
+            held_views=tuple(held.name for held in earlier),
+            held_oldest_age_ms=self._oldest_age_ms({held.name: held.frame for held in earlier}, clock),
+            held_not_kept=len(self._pick_frames_not_kept),
         )
 
     # -----------------------------------------------------------------------------------------
@@ -755,6 +852,124 @@ class LivePlannerWorld:
                 )
         return frames, WorldVerdict.FRESH, "", ""
 
+    def _hold_frames_of(self, frames: dict[str, DepthSnapshot], envelope: SelfEnvelope) -> None:
+        """Hold the frames a world was just built from, for the pick in progress.
+
+        Only once the world is built: a frame whose own world could not be built, a tool pose that is
+        not a pose or a placement error that is not a distance, would otherwise make every world of the
+        pick unusable, at every pose, until the pick ends, where without the hold the next pose starts
+        clean. Each is held with the body it was taken in (``_frame_bodies``), not the one asked about
+        now: a cached frame is served again while the body stands within a millimetre of where it was
+        taken, and two questions a little to either side of that are still the one shutter. The
+        capsules are those of ``envelope``, the body now, which stands within that millimetre.
+        """
+        for camera in self.cameras:
+            self._hold(camera, frames[camera.name], envelope, self._frame_bodies.get(camera.name))
+
+    def _hold(
+        self, camera: CameraView, frame: DepthSnapshot, envelope: SelfEnvelope | None, body: "np.ndarray | None",
+    ) -> None:
+        """Hold ``frame`` for the pick in progress, when one holds and the frame is a wrist frame it can use.
+
+        A fixed camera is never held: it never moves, so its newest frame supersedes the one before. A
+        frame that carries no tool pose cannot be placed, and one whose robot body nobody described
+        cannot lose the robot where it stood, so neither is held; the world built with either is
+        refused anyway. ``body`` is where the robot stood when the frame was taken. A frame already
+        held, the same camera, the same shutter time and that body, is held once and keeps its place.
+        One taken where a held frame of the camera was taken, the body within a millimetre, replaces it
+        and is held as the newest.
+
+        A pick holds :data:`_MAX_HELD_FRAMES` at most. A frame of a new pose past that is not held and
+        is counted (``held_not_kept``), and nothing held is let go to make room: a frame let go takes
+        what only it saw out of the world, and one not held is gone only as it was before a pick could
+        hold anything, when the arm leaves the pose.
+        """
+        if (
+            self._pick_frames is None or camera.camera_to_tool is None or envelope is None or body is None
+            or frame.tool_to_base_mm is None
+        ):
+            return
+        superseded = [
+            held for held in self._pick_frames if held.camera == camera.name and _same_body(held.body, body)
+        ]
+        if any(held.frame.timestamp == frame.timestamp for held in superseded):
+            return
+        if not superseded and len(self._pick_frames) >= _MAX_HELD_FRAMES:
+            self._pick_frames_not_kept.add((camera.name, frame.timestamp))
+            return
+        self._pick_frames[:] = [held for held in self._pick_frames if held not in superseded]
+        self._pick_frames.append(_HeldFrame(
+            camera=camera.name,
+            # Copies, the depth in single precision: a producer may hand out the same buffer again,
+            # and a frozen envelope still carries arrays its builder could write into.
+            frame=replace(
+                frame,
+                depth_mm=np.array(frame.depth_mm, dtype=_HELD_DEPTH_DTYPE, copy=True),
+                intrinsics=np.array(frame.intrinsics, dtype=np.float64, copy=True),
+                tool_to_base_mm=np.array(frame.tool_to_base_mm, dtype=np.float64, copy=True),
+            ),
+            envelope=SelfEnvelope(
+                frames_mm=tuple(np.array(pose, dtype=np.float64, copy=True) for pose in envelope.frames_mm),
+                capsules=tuple(envelope.capsules),
+            ),
+            body=np.array(body, dtype=np.float64, copy=True),
+        ))
+
+    def _earlier_frames(self) -> list["_EarlierView"]:
+        """The frames the pick holds of other poses than the frames served now, named and placed where they were taken.
+
+        In camera order, and per camera in the order they were taken, numbered from 1. A held frame
+        taken where the camera's frame served now was taken, the body within a millimetre of the one
+        that frame was taken in, is that frame or one it replaces as soon as the world is built
+        (:meth:`_hold`): either way the frame served now stands for the pose, in the precision it
+        arrived in, and the held one is not in the world a second time.
+        """
+        if not self._pick_frames:
+            return []
+        earlier: list[_EarlierView] = []
+        for camera in self.cameras:
+            if camera.camera_to_tool is None:
+                continue
+            taken_in = self._frame_bodies.get(camera.name)
+            number = 0
+            for held in self._pick_frames:
+                if held.camera != camera.name:
+                    continue
+                if taken_in is not None and _same_body(held.body, taken_in):
+                    continue
+                number += 1
+                earlier.append(_EarlierView(
+                    name=f"{camera.name} (held {number})", camera=camera, frame=held.frame,
+                    envelope=held.envelope,
+                    camera_to_base=(
+                        np.asarray(held.frame.tool_to_base_mm, dtype=np.float64)
+                        @ np.asarray(camera.camera_to_tool, dtype=np.float64)
+                    ),
+                ))
+        return earlier
+
+    def _held_views(self, earlier: Sequence["_EarlierView"]) -> list[DepthView]:
+        """One view per frame of an earlier pose, each carrying the robot's body from its own shutter.
+
+        No masks: a wrist camera's pixels moved with the arm since, and the held target leaves them
+        by its box in BASE. The body is padded as the body now is, so a link a frame showed leaves it
+        by the margin every other body point does.
+        """
+        return [
+            DepthView(
+                surface_depth_mm=held.frame.depth_mm,
+                intrinsics=held.frame.intrinsics,
+                camera_to_base=held.camera_to_base,
+                name=held.name,
+                timestamp=held.frame.timestamp,
+                self_body=SelfBody.from_frames(
+                    held.envelope.frames_mm, held.envelope.capsules, padding_mm=float(self.tuning.margin_mm),
+                ),
+                **_placement_error(held.camera, held.frame),
+            )
+            for held in earlier
+        ]
+
     def _blind(self, camera: CameraView, frame: DepthSnapshot, *, goal_named: bool) -> str:
         """Why ``frame`` cannot vouch for the part of the cell ``camera`` watches, or empty when it can.
 
@@ -790,9 +1005,7 @@ class LivePlannerWorld:
         if body is None:
             return True
         then = self._frame_bodies.get(camera)
-        if then is None or then.shape != body.shape:
-            return False
-        return body.size == 0 or float(np.max(np.linalg.norm(then - body, axis=1))) <= _BODY_STILL_MM
+        return then is not None and _same_body(then, body)
 
     @staticmethod
     def _age_ms(frame: DepthSnapshot, clock: float) -> float | None:
@@ -847,8 +1060,82 @@ _BOX_ONLY_KEY = "box only: "
 
 #: How far the robot's body may move, at any capsule end, before a cached frame of it is taken
 #: again, millimetres. Well above joint encoder noise at arm's length, well below the padding the
-#: self filter adds.
+#: self filter adds. The same distance says a frame a pick holds was taken where another was.
 _BODY_STILL_MM = 1.0
+
+#: What a held frame keeps its depth in. Single precision: a 1280 x 720 frame in about 3.7 MB
+#: rather than 7.4, for every pose of a pick. Each depth is rounded by about 0.03 micrometre at a
+#: metre, nothing beside the D415's millimetres of noise at that range, but a point that lay on the
+#: edge of a voxel can fall into the next one, and a box grown from the voxels moves by that much.
+#: Measured 2026-09-29 on the ray-cast D415 frame of the owner's pick, first look
+#: (``test_the_planner_world_keeps_every_frame_of_a_pick``): the block beside the cube came out
+#: 100.14 x 87.41 mm rather than 100.42 x 88.04, its centre 0.04 mm off, the cube's box unchanged.
+#: Under a millimetre, inside the 15 mm the world pads every box by.
+_HELD_DEPTH_DTYPE = np.float32
+
+#: How many frames one pick holds at most. A pick stands at the looks its program declares and at
+#: five poses more (the view it generates, the move back, the standoff, the grasp and the retreat),
+#: so twelve leave seven looks. Every held frame is one more view in every world the pick builds,
+#: and the build grows with the views: measured 2026-09-29 on this desk, a bench seen 45 degrees
+#: down from 500 mm at pixel stride 2 took about 19 ms a view at 1280 x 720 and 8 ms at 848 x 480,
+#: about 250 and 100 ms for twelve held frames and the one taken now, and 44 MB of held depth at
+#: 1280 x 720. Past it a new pose is not held and every report of the pick says so; nothing held
+#: is let go, which would take what only that frame saw out of the world (:meth:`LivePlannerWorld._hold`).
+_MAX_HELD_FRAMES = 12
+
+
+def _same_body(then: np.ndarray, now: np.ndarray) -> bool:
+    """Whether a body stands where it stood: the same capsules, each end within :data:`_BODY_STILL_MM`."""
+    if then.shape != now.shape:
+        return False
+    return now.size == 0 or float(np.max(np.linalg.norm(then - now, axis=1))) <= _BODY_STILL_MM
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _HeldFrame:
+    """One wrist frame a pick holds, and the robot's body as it stood when the frame was taken."""
+
+    #: The camera that took it.
+    camera: str
+    #: The frame, its depth in :data:`_HELD_DEPTH_DTYPE`, with the tool pose it was stamped with.
+    frame: DepthSnapshot
+    #: The robot's body at the shutter, from which the frame's own self filter is built: the body a
+    #: world was first built from the frame in, which stood within a millimetre of it.
+    envelope: SelfEnvelope
+    #: The body the frame was taken in, as its capsule end points in BASE (:func:`_placed_body`), to
+    #: tell whether a frame served later is this one or was taken where this one was.
+    body: np.ndarray
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _EarlierView:
+    """A frame the pick holds from an earlier pose, as one world uses it: named, and placed where it was taken."""
+
+    #: ``"<camera> (held <n>)"``: how a refusal, a report and the goal's seers name it.
+    name: str
+    camera: CameraView
+    frame: DepthSnapshot
+    envelope: SelfEnvelope
+    #: CAMERA to BASE at its shutter: its tool pose then, composed with the camera's CAMERA to TOOL.
+    camera_to_base: np.ndarray
+
+
+def _held_text(count: int, oldest_age_ms: float | None, not_kept: int = 0, *, each: bool = False) -> str:
+    """How a report says what a pick's held frames added to a world, and which it could not keep.
+
+    ``each`` adds what every held frame lost, which the world's own render says and a refresh's
+    one line leaves out.
+    """
+    age = "" if oldest_age_ms is None else f", the oldest {oldest_age_ms:.0f} ms old"
+    text = f"{count} frame(s) of earlier poses of this pick kept{age}"
+    if each and count:
+        text += ", each without the robot where it stood"
+    if not_kept:
+        text += (
+            f"; {not_kept} more NOT kept, a pick holds {_MAX_HELD_FRAMES} at most, and what only they saw "
+            "leaves the world with the arm"
+        )
+    return text
 
 
 def _declared_bodies(
@@ -975,7 +1262,14 @@ def _goal_coverage(
     return float(np.count_nonzero(window)) / float(window.size) if window.size else None
 
 
-def _placement_error(camera: CameraView, frame: DepthSnapshot) -> dict[str, float]:
+class _PlacementError(TypedDict):
+    """The two ``DepthView`` fields :func:`_placement_error` fills, typed so the keywords they unpack into are known."""
+
+    placement_error_mm: float
+    placement_error_rad: float
+
+
+def _placement_error(camera: CameraView, frame: DepthSnapshot) -> _PlacementError:
     """How far ``frame`` may be placed off, as ``DepthView`` takes it: millimetres and radians.
 
     The producer declares the tool's motion measured across the grab. For a camera on the wrist a turn of
@@ -1033,11 +1327,22 @@ class WorldRefresh:
     #: held boxes.
     keep_out: KeepOutSummary | None = None
     #: The share of each camera's image that held a depth, in camera order, as the world was built
-    #: (``PerceivedWorld.depth_coverage``). Empty when no world was built.
+    #: (``PerceivedWorld.depth_coverage``). Empty when no world was built. The frames taken now
+    #: only: what a held frame of an earlier pose did not measure, another frame may have.
     depth_coverage: tuple[tuple[str, float], ...] = ()
     #: The cameras that looked at the motion's goal and measured the region about it; `None` when
-    #: no goal was asked about or no world was built, empty when no camera looked at it.
+    #: no goal was asked about or no world was built, empty when no camera looked at it. A frame a
+    #: pick holds from an earlier pose is named ``"<camera> (held <n>)"``.
     goal_seen_by: tuple[str, ...] | None = None
+    #: How many frames of earlier poses of a pick the world was built from beside the frames taken
+    #: now (``LivePlannerWorld.hold_pick_views``); 0 while no pick holds any. The age, the capture
+    #: time and the stamp are about the frames taken now.
+    held_frames: int = 0
+    #: How old the oldest of those was, milliseconds, or `None` when there is none.
+    held_oldest_age_ms: float | None = None
+    #: How many frames of new poses the pick did not hold because it held as many as a pick may
+    #: (``PlannerWorldSnapshot.held_not_kept``); 0 while no pick holds any.
+    held_not_kept: int = 0
 
     @property
     def ok(self) -> bool:
@@ -1083,6 +1388,8 @@ class WorldRefresh:
         )
         if self.voxels_registered:
             line += f", live scene {self.voxels_registered} voxel(s)"
+        if self.held_frames or self.held_not_kept:
+            line += f"; {_held_text(self.held_frames, self.held_oldest_age_ms, self.held_not_kept)}"
         if self.dropped_obstacles:
             line += (
                 f"; {self.dropped_obstacles} obstacle(s) had no slot and are NOT in the world"
@@ -1113,6 +1420,9 @@ class WorldRefresh:
             "keep_out": None if self.keep_out is None else self.keep_out.to_dict(),
             "depth_coverage": {name: float(share) for name, share in self.depth_coverage},
             "goal_seen_by": None if self.goal_seen_by is None else list(self.goal_seen_by),
+            "held_frames": int(self.held_frames),
+            "held_oldest_age_ms": self.held_oldest_age_ms,
+            "held_not_kept": int(self.held_not_kept),
         }
 
 
@@ -1218,6 +1528,11 @@ def refresh_planner_world(
         reasons.append(
             f"{dropped} perceived obstacle(s) did not fit the {source.tuning.max_boxes} slot(s) this "
             "cell allows, so the planner would route through them"
+            # A pick's held frames see more of the cell than the frame taken now, and so more to fit.
+            + (
+                f", counting what {snapshot.held} frame(s) of earlier poses of this pick saw"
+                if snapshot.held else ""
+            )
         )
     reason = "; and ".join(reasons)
     return WorldRefresh(
@@ -1230,9 +1545,15 @@ def refresh_planner_world(
         keep_out=snapshot.keep_out,
         depth_coverage=(
             () if snapshot.perceived is None
-            else tuple((name, float(share)) for name, share in snapshot.perceived.depth_coverage.items())
+            else tuple(
+                (name, float(share)) for name, share in snapshot.perceived.depth_coverage.items()
+                if name not in snapshot.held_views
+            )
         ),
         goal_seen_by=snapshot.goal_seen_by,
+        held_frames=snapshot.held,
+        held_oldest_age_ms=snapshot.held_oldest_age_ms,
+        held_not_kept=snapshot.held_not_kept,
     )
 
 

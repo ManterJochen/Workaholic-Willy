@@ -10,10 +10,14 @@ grasping:
   default_mode: dense_clutter
   recovery:
     enabled: true
-    # `next_viewpoint` moves the camera, not the scene. The two physical actions, `nudge_target`
-    # and `container_agitate`, are refused unless `recovery.fixture` declares a motion envelope.
+    # `rescan` perceives again and moves nothing. `next_viewpoint`, which this preset allowed until
+    # 2026-09-29, was merged into it then and is refused at load. The two physical actions,
+    # `nudge_target` and `container_agitate`, are refused unless `recovery.fixture` declares a motion
+    # envelope, and even with one the service's recovery loop moves for neither: it plans a
+    # `nudge_target` with no offset, which the executor refuses before the arm moves, and it never
+    # plans `container_agitate` or `next_target`, because no built-in mode profile allows them.
     allowed_actions:
-      - next_viewpoint
+      - rescan
   uncertainty:
     enabled: true
     # Fused uncertainty at or above this value fail-closes the attempt. While the layer is enabled

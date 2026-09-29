@@ -3,9 +3,10 @@
 :class:`~src.robot.core.RobotArm` stays a small, strictly vendor-neutral Protocol
 with a contract-locked member set. The extras a controller can offer (digital and
 analog I/O, live force and torque, live robot and safety status, what a straight line
-keeps, a model of the carried part, a move home that says why it was refused) are
-declared here as separate ``runtime_checkable`` Protocols, mirroring
-:class:`~src.robot.core.gripper.ObjectDetectingGripper`. Hand guiding follows the same
+keeps, a model of the carried part, a move home that says why it was refused, the
+configuration a pose goes to, a joint move on its straight joint line and nothing else) are declared here as
+separate ``runtime_checkable`` Protocols,
+mirroring :class:`~src.robot.core.gripper.ObjectDetectingGripper`. Hand guiding follows the same
 pattern from its own module, :mod:`~src.robot.core.freedrive`: an arm a person may move by
 hand advertises ``SupportsFreedrive`` (the UR driver, on teach mode), and one that does not,
 the sim arm among them, keeps the calibration stations it drives to itself.
@@ -31,11 +32,16 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from src.geometry import Frame
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.geometry import Pose
+
+    from .joint_positions import JointPositions
     from .motion_result import MotionResult
 
 __all__ = [
     "CarriesPayload",
+    "ChoosesConfigurations",
     "DigitalIOPort",
+    "DrivesJointLines",
     "HomesTyped",
     "KeepsLines",
     "LineMotion",
@@ -319,6 +325,60 @@ class HomesTyped(Protocol):
 
     def move_to_home(self) -> "MotionResult":
         """Move to the configured home, gated, and return the typed result of that one move."""
+        ...
+
+
+@runtime_checkable
+class ChoosesConfigurations(Protocol):
+    """Capability extension: the arm names the joint configuration a pose goes to, unmoved.
+
+    ``RobotArm.ik`` answers with whatever configuration a solver lands on, and says nothing
+    about whether a motion there would be allowed. An arm that implements this answers the
+    question a caller asks before it spends a motion: the configuration this arm would choose
+    for ``pose`` (a TCP pose in BASE), as its own gates judge it. That is its inverse
+    kinematics, the joint window it chooses in (on a cell with a cable, half a turn either
+    side of home), the branch it holds first, and the endpoint gate: the workspace box on the
+    TCP, the joint limits, self-collision and the payload. The generated view of a wrist pick
+    screens every angle of its orbit this way, so only an angle the arm can stand at costs a
+    judged motion.
+
+    Nothing moves, no camera world is refreshed, and nothing is remembered as commanded: the
+    motion to the answer is still judged whole, its path and the world included, when it
+    runs. A pose with no admissible configuration raises
+    :class:`~src.robot.core.errors.RobotKinematicsError`, whose message names what refused
+    it: the inverse kinematics (out of reach), the window, or the gate. An arm that cannot
+    read where it stands, or reads something that is no configuration of it, raises
+    :class:`~src.robot.core.errors.RobotConnectionError`, which is no statement about the
+    pose.
+
+    It is not a member of :class:`~src.robot.core.RobotArm`, for the reason
+    :class:`HomesTyped` gives; and an arm whose ``ik`` is a stand-in (the dummy's) does not
+    implement it, so a stand-in never places a camera.
+    """
+
+    def nearest_configuration(self, pose: "Pose") -> "JointPositions":
+        """The configuration ``pose`` goes to on this arm, as its gates judge it; raises if none."""
+        ...
+
+
+@runtime_checkable
+class DrivesJointLines(Protocol):
+    """Capability extension: the arm moves to joints on the straight joint line from where it stands, or not at all.
+
+    ``RobotArm.move_to_joints`` runs the straight joint line where it is clear and, on an arm that plans, asks the
+    planner for a way around it where it is not. The owner allows that for a taught pose and never for the motions a
+    pick makes up on its own (2026-09-29): the one view a wrist pick generates, and its move back to the look that saw
+    the part, must never drive through a retract pose or take a detour nobody taught. An arm that implements this runs
+    such a motion as its ``move_to_joints`` runs a clear line, judged the same way against the same world, and refuses a
+    line that is not clear with the refusal its judge gave, nothing sent and nothing planned around it. An arm whose
+    paths nobody judges refuses every such motion: a line nobody judged is not the line that was allowed.
+
+    It is not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives. An arm that
+    does not implement it has no motion a caller may take for a straight joint line alone.
+    """
+
+    def move_to_joints_on_the_line(self, joints: "JointPositions") -> "MotionResult":
+        """Move to ``joints`` on the straight joint line from where the arm stands; refused, nothing sent, if not clear."""
         ...
 
 

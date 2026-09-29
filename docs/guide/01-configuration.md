@@ -383,8 +383,8 @@ stays stated once, and this is the shipped pattern. If it shares nothing, make a
 `--data` or `load_tree(root=...)` at it.
 
 A tree given to a simulator runner's `--data-dir` loads under the `sim` profile, so it must carry
-`*.sim.yaml` overlays or the load fails. Without them the simulated cell would run the production fp16
-detectors, which lose small-object recall.
+`*.sim.yaml` overlays or the load fails. Without them the simulated cell would run the production
+values, the real vendor and the detector's higher threshold among them.
 
 ### Step 1: the required half, and a first green run
 
@@ -499,9 +499,11 @@ went: `robot.rl.fusion` means you wrote it under `rl:`, not under `grasping:`.
 **Two shapes are refused before they can mislead you.** A switch in
 `RobotGraspingConfig.UNWIRED_SWITCHES` would land in the cell's telemetry while nothing reads it, so
 setting one is refused at load; it holds `occlusion.hard_reject_enabled` until the occlusion score is
-trusted. And `robot.grasping.support.container.wall_collision_enabled` without both `interior_min_mm`
-and `interior_max_mm` is refused at load, rather than running a cell that believes a bin protects it
-when it cannot locate the walls.
+trusted. A block removed on purpose, such as `verification` or `dense_recovery` (both 2026-09-29), is
+refused at load with the sentence that says what to do instead. And
+`robot.grasping.support.container.wall_collision_enabled` without both `interior_min_mm` and
+`interior_max_mm` is refused at load, rather than running a cell that believes a bin protects it when
+it cannot locate the walls.
 
 Several blocks can fire only in some grasp modes, and several ship their operative weight at `0.0`,
 so `enabled: true` alone does nothing. Read
@@ -573,12 +575,14 @@ past the rehearsal it has never touched hardware. The procedure is
 
 **The default pick is open-loop.** Perceive, generate and score candidates on a deterministic
 geometric rank, run the safety preflight and IK, move and close, log. The decision gate, the
-closed-loop refine, verify and recover path, fusion with its commit gate, the rerank stage, the learned
-success model and the reinforcement-learning layer are all built and all default to `enabled: false`.
+recover path, multi-camera fusion, the rerank stage, the learned success model and the
+reinforcement-learning layer are all built and all default to `enabled: false`. The hold is
+verified on every pick by the execution policy's own check after its close; the separate post-grasp
+verification stage, which no pick path ran, was removed on 2026-09-29 with its `verification` block.
 Check that against the tree rather than this page:
 
 ```bash
-python -c "from willy import load_tree; g = load_tree(None).robot.grasping; print({n: getattr(g, n).enabled for n in ('fusion', 'decision', 'closed_loop', 'verification', 'recovery', 'success_model')})"
+python -c "from willy import load_tree; g = load_tree(None).robot.grasping; print({n: getattr(g, n).enabled for n in ('fusion', 'decision', 'recovery', 'success_model')})"
 ```
 
 **Most simulator runners take a separate path.** They build the service through `from_components`

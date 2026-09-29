@@ -5,22 +5,25 @@ Coverage layers:
 * :class:`FixtureEnvelope` validation + ``contains``.
 * :class:`SceneRecoveryPolicy` validation (allow-list, fixture
   requirement for physical actions, NONE rejected from allow-list).
-* :class:`NoRecoveryStrategy`.
-* :class:`ActivePerceptionRecoveryStrategy` escalation + EASY gating.
-* :class:`NextTargetRecoveryStrategy`.
+* The shared strategy gate (disabled policy, EASY profile, budget).
 * :class:`SmallNudgeStrategy` clamping + envelope refusal.
 * :class:`ContainerAgitateStrategy` scaffolding + executor refusal.
 * :func:`execute_recovery_motion`: completes non-motion plans, drives
   bounded nudges, aborts on non-EXECUTED motion status, refuses
   agitate motion.
-* :class:`AutonomousGraspService` wiring surface: ``recovery_policy``
-  and ``recovery_strategy`` flow through factories.
+
+``NoRecoveryStrategy``, ``ActivePerceptionRecoveryStrategy`` (``RESCAN`` then
+``NEXT_VIEWPOINT``), ``NextTargetRecoveryStrategy`` and the service's
+``recovery_policy`` / ``recovery_strategy`` slots left on 2026-09-29 with the
+``dense_recovery`` block that built them, and ``NEXT_VIEWPOINT`` with them,
+merged into ``RESCAN``; their cases left this file. The gate cases the
+active-perception strategy carried are pinned on the nudge strategy, which
+goes through the same gate.
 """
 
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
 from typing import Optional
 
 import numpy as np
@@ -34,16 +37,12 @@ from src.robot.core import (
 )
 from src.robot.execution.autonomous_grasp import (
     AutonomousGraspOutcome,
-    AutonomousGraspService,
     GraspBehaviorProfile,
     GraspMode,
 )
 from src.robot.grasping import (
-    ActivePerceptionRecoveryStrategy,
     ContainerAgitateStrategy,
     FixtureEnvelope,
-    NextTargetRecoveryStrategy,
-    NoRecoveryStrategy,
     SceneRecoveryAction,
     SceneRecoveryContext,
     SceneRecoveryPlan,
@@ -51,7 +50,6 @@ from src.robot.grasping import (
     SmallNudgeStrategy,
     execute_recovery_motion,
 )
-from src.robot.grasping.types.feedback import GraspResult
 from src.robot.grasping.types.grasp_point import GraspPoint
 from src.robot.grasping.types.modes import GraspSamplingMode
 from src.robot.grasping.types.perception import PerceptionFrame
@@ -65,13 +63,11 @@ from src.robot.grasping.types.perception import PerceptionFrame
 def _profile(
     *,
     mode: GraspMode = GraspMode.DENSE_CLUTTER,
-    actions: tuple[str, ...] = ("rescan", "next_viewpoint"),
+    actions: tuple[str, ...] = ("rescan",),
 ) -> GraspBehaviorProfile:
     return GraspBehaviorProfile(
         mode=mode,
         sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
-        refinement_enabled=False,
-        verification_enabled=False,
         recovery_allowed_actions=actions,
     )
 
@@ -101,20 +97,6 @@ def _ctx(
         current_tcp=current_tcp,
         last_grasp=last_grasp,
         history=history,
-    )
-
-
-def _seg(shape=(8, 8)) -> SimpleNamespace:
-    mask = np.zeros(shape, dtype=np.uint8)
-    mask[1:4, 1:4] = 1
-    return SimpleNamespace(mask=mask)
-
-
-def _frame_with_n_segs(n: int) -> PerceptionFrame:
-    return PerceptionFrame(
-        depth_map=np.zeros((8, 8), dtype=np.float64),
-        intrinsics=np.eye(3, dtype=np.float64),
-        segmentations=tuple(_seg() for _ in range(n)),
     )
 
 
@@ -186,10 +168,8 @@ class SceneRecoveryPolicyTests(unittest.TestCase):
     def test_default_is_disabled_with_safe_actions(self) -> None:
         policy = SceneRecoveryPolicy()
         self.assertFalse(policy.enabled)
-        self.assertIn(SceneRecoveryAction.RESCAN, policy.allowed_actions)
-        self.assertIn(
-            SceneRecoveryAction.NEXT_VIEWPOINT, policy.allowed_actions
-        )
+        # RESCAN alone since NEXT_VIEWPOINT was merged into it (2026-09-29).
+        self.assertEqual(policy.allowed_actions, (SceneRecoveryAction.RESCAN,))
 
     def test_physical_action_without_fixture_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
@@ -233,119 +213,47 @@ class SceneRecoveryPolicyTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# NoRecoveryStrategy
+# The shared gate, through the nudge strategy
 # ---------------------------------------------------------------------------
 
 
-class NoRecoveryStrategyTests(unittest.TestCase):
-    def test_always_returns_none(self) -> None:
-        plan = NoRecoveryStrategy().plan(_ctx())
-        self.assertIs(plan.action, SceneRecoveryAction.NONE)
+class TheSharedGateTests(unittest.TestCase):
+    """What every strategy asks before it plans: policy on, profile and policy allow it, budget left."""
 
+    def _policy(self, **overrides: object) -> SceneRecoveryPolicy:
+        kwargs: dict = {"enabled": True, "allowed_actions": (SceneRecoveryAction.NUDGE_TARGET,),
+                        "fixture": _CENTERED_FIXTURE}
+        kwargs.update(overrides)
+        return SceneRecoveryPolicy(**kwargs)
 
-# ---------------------------------------------------------------------------
-# ActivePerceptionRecoveryStrategy
-# ---------------------------------------------------------------------------
+    def _plan(self, **ctx: object) -> SceneRecoveryPlan:
+        ctx.setdefault("profile", _profile(actions=("nudge_target",)))
+        ctx.setdefault("current_tcp", _tcp_at())
+        return SmallNudgeStrategy().plan(_ctx(**ctx))  # type: ignore[arg-type]
 
-
-class ActivePerceptionRecoveryStrategyTests(unittest.TestCase):
-    def test_first_call_plans_rescan(self) -> None:
-        plan = ActivePerceptionRecoveryStrategy().plan(_ctx())
-        self.assertIs(plan.action, SceneRecoveryAction.RESCAN)
-
-    def test_second_call_escalates_to_next_viewpoint(self) -> None:
-        plan = ActivePerceptionRecoveryStrategy().plan(
-            _ctx(history=(SceneRecoveryAction.RESCAN,))
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NEXT_VIEWPOINT)
-
-    def test_exhausted_returns_none(self) -> None:
-        plan = ActivePerceptionRecoveryStrategy().plan(
-            _ctx(
-                history=(
-                    SceneRecoveryAction.RESCAN,
-                    SceneRecoveryAction.NEXT_VIEWPOINT,
-                ),
-                policy=SceneRecoveryPolicy(enabled=True, max_recovery_actions=4),
-            )
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NONE)
+    def test_the_gate_lets_a_permitted_action_through(self) -> None:
+        self.assertIs(self._plan(policy=self._policy()).action, SceneRecoveryAction.NUDGE_TARGET)
 
     def test_easy_profile_blocks_recovery(self) -> None:
-        plan = ActivePerceptionRecoveryStrategy().plan(
-            _ctx(profile=_easy_profile())
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NONE)
-        self.assertEqual(plan.reason, "active_perception_exhausted")
-
-    def test_disabled_policy_blocks_recovery(self) -> None:
-        plan = ActivePerceptionRecoveryStrategy().plan(
-            _ctx(policy=SceneRecoveryPolicy(enabled=False))
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NONE)
-
-    def test_budget_exhausted_blocks_recovery(self) -> None:
-        plan = ActivePerceptionRecoveryStrategy().plan(
-            _ctx(
-                history=(SceneRecoveryAction.RESCAN,),
-                policy=SceneRecoveryPolicy(
-                    enabled=True, max_recovery_actions=1
-                ),
-            )
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NONE)
-
-
-# ---------------------------------------------------------------------------
-# NextTargetRecoveryStrategy
-# ---------------------------------------------------------------------------
-
-
-class NextTargetRecoveryStrategyTests(unittest.TestCase):
-    def test_passes_when_multiple_segmentations(self) -> None:
-        policy = SceneRecoveryPolicy(
-            enabled=True,
-            allowed_actions=(SceneRecoveryAction.NEXT_TARGET,),
-        )
-        profile = _profile(actions=("next_target",))
-        plan = NextTargetRecoveryStrategy().plan(
-            _ctx(
-                profile=profile,
-                policy=policy,
-                last_frame=_frame_with_n_segs(2),
-            )
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NEXT_TARGET)
-
-    def test_none_when_single_segmentation(self) -> None:
-        policy = SceneRecoveryPolicy(
-            enabled=True,
-            allowed_actions=(SceneRecoveryAction.NEXT_TARGET,),
-        )
-        profile = _profile(actions=("next_target",))
-        plan = NextTargetRecoveryStrategy().plan(
-            _ctx(
-                profile=profile,
-                policy=policy,
-                last_frame=_frame_with_n_segs(1),
-            )
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NONE)
-
-    def test_none_when_action_not_permitted_by_profile(self) -> None:
-        policy = SceneRecoveryPolicy(
-            enabled=True,
-            allowed_actions=(SceneRecoveryAction.NEXT_TARGET,),
-        )
-        plan = NextTargetRecoveryStrategy().plan(
-            _ctx(
-                profile=_profile(actions=("rescan",)),
-                policy=policy,
-                last_frame=_frame_with_n_segs(3),
-            )
-        )
+        plan = self._plan(profile=_easy_profile(), policy=self._policy())
         self.assertIs(plan.action, SceneRecoveryAction.NONE)
         self.assertEqual(plan.reason, "profile_disallows_action")
+
+    def test_disabled_policy_blocks_recovery(self) -> None:
+        plan = self._plan(policy=self._policy(enabled=False))
+        self.assertIs(plan.action, SceneRecoveryAction.NONE)
+        self.assertEqual(plan.reason, "policy_disabled")
+
+    def test_a_policy_that_does_not_list_it_blocks_recovery(self) -> None:
+        plan = self._plan(policy=SceneRecoveryPolicy(enabled=True))
+        self.assertIs(plan.action, SceneRecoveryAction.NONE)
+        self.assertEqual(plan.reason, "policy_disallows_action")
+
+    def test_budget_exhausted_blocks_recovery(self) -> None:
+        plan = self._plan(policy=self._policy(max_recovery_actions=1),
+                          history=(SceneRecoveryAction.NUDGE_TARGET,))
+        self.assertIs(plan.action, SceneRecoveryAction.NONE)
+        self.assertEqual(plan.reason, "recovery_budget_exhausted")
 
 
 # ---------------------------------------------------------------------------
@@ -725,55 +633,6 @@ class ExecuteRecoveryMotionTests(unittest.TestCase):
         self.assertFalse(report.executed)
         self.assertEqual(report.outcome, "refused_agitate_disabled")
         self.assertEqual(arm.move_calls, [])
-
-
-# ---------------------------------------------------------------------------
-# AutonomousGraspService wiring surface
-# ---------------------------------------------------------------------------
-
-
-class _MinimalCalc:
-    def compute_result(self, *_, **__) -> GraspResult:
-        return GraspResult(candidates=(), reasons=(), top_score=0.0)
-
-
-class _MinimalPerception:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def acquire(self) -> PerceptionFrame:
-        self.calls += 1
-        return PerceptionFrame(
-            depth_map=np.zeros((4, 4), dtype=np.float64),
-            intrinsics=np.eye(3, dtype=np.float64),
-            segmentations=(),
-        )
-
-
-class AutonomousGraspServiceRecoverySlotsTests(unittest.TestCase):
-    def test_recovery_slots_are_threaded_through_from_components(self) -> None:
-        policy = SceneRecoveryPolicy(enabled=True)
-        strategy = ActivePerceptionRecoveryStrategy()
-        service = AutonomousGraspService.from_components(
-            arm=_TypedFakeArm(),  # type: ignore[arg-type]
-            calculator=_MinimalCalc(),  # type: ignore[arg-type]
-            perception=_MinimalPerception(),
-            mode=GraspMode.AUTO,
-            recovery_policy=policy,
-            recovery_strategy=strategy,
-        )
-        self.assertIs(service.recovery_policy, policy)
-        self.assertIs(service.recovery_strategy, strategy)
-
-    def test_recovery_slots_default_to_none(self) -> None:
-        service = AutonomousGraspService.from_components(
-            arm=_TypedFakeArm(),  # type: ignore[arg-type]
-            calculator=_MinimalCalc(),  # type: ignore[arg-type]
-            perception=_MinimalPerception(),
-            mode=GraspMode.AUTO,
-        )
-        self.assertIsNone(service.recovery_policy)
-        self.assertIsNone(service.recovery_strategy)
 
 
 if __name__ == "__main__":  # pragma: no cover

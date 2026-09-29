@@ -23,24 +23,26 @@ class GraspMode(StrEnum):
     :class:`GraspBehaviorProfile`. ``_PROFILES`` below is the authority on what each
     value means.
 
-    EASY-mode verification defaults to :class:`NoOpVerifier`; a width-delta verifier is an
-    opt-in extra. EASY behaves exactly as the plain ``RuntimePickService`` path does unless
-    an operator opts in, so adopting this service is not itself a behaviour change.
+    EASY behaves exactly as the plain ``RuntimePickService`` path does unless an operator opts
+    in, so adopting this service is not itself a behaviour change.
 
-    Robotiq object detection is not wired automatically: the driver implements no
-    ``is_object_detected``, so it never claims the ``ObjectDetectingGripper`` Protocol on its own.
-    A jaw-width reading reaches the stack only through the opt-in verification stack, where
-    ``WidthDeltaGripperVerifier`` is built beside ``ObjectDetectingGripperVerifier`` when
-    ``verification_policy.enabled``, and that second verifier reports inconclusive for any gripper
-    without the capability. No downstream verifier trusts a width reading that was not validated
-    against that operator's parts.
+    Whether a close holds a part is the gripper's own hold evidence, read by the execution policy
+    right after every close in every mode: ``is_object_detected`` where the gripper advertises it,
+    and ``hold_evidence`` where the gripper says whether that answer was measured (a Robotiq on its
+    socket reports gOBJ there; a jaw on digital I/O with no feedback says unmeasured). An empty
+    close ends the pick as ``verification_failed``. The separate post-grasp verification stage and
+    its verifiers were removed on 2026-09-29: no pick path ran them.
+
+    ``closed_loop`` and ``dense_autonomous`` were removed on 2026-09-29 with the two-scan pre-grasp
+    refinement they ran. :func:`resolve_grasp_mode` refuses either name, and the schema a tree that
+    writes one, with the sentence that names the mode to use instead
+    (``src/config/schema/_removed.py``). A record logged before then keeps its mode string, which
+    the replay layer still reads.
     """
 
     EASY = "easy"
     AUTO = "auto"
     DENSE_CLUTTER = "dense_clutter"
-    CLOSED_LOOP = "closed_loop"
-    DENSE_AUTONOMOUS = "dense_autonomous"
 
 
 GraspModeInput = "GraspMode | str | None"
@@ -52,10 +54,6 @@ _GRASP_MODE_ALIASES: dict[str, GraspMode] = {
     "auto": GraspMode.AUTO,
     "dense": GraspMode.DENSE_CLUTTER,
     "dense_clutter": GraspMode.DENSE_CLUTTER,
-    "closed_loop": GraspMode.CLOSED_LOOP,
-    "closedloop": GraspMode.CLOSED_LOOP,
-    "dense_autonomous": GraspMode.DENSE_AUTONOMOUS,
-    "autonomous": GraspMode.DENSE_AUTONOMOUS,
 }
 
 
@@ -68,7 +66,9 @@ def resolve_grasp_mode(value: GraspMode | str | None) -> GraspMode:
     * :data:`None`, which maps to :attr:`GraspMode.AUTO`,
     * a string from the case-insensitive alias table above.
 
-    Anything else raises :class:`ValueError` listing the allowed forms.
+    A mode removed on purpose (``closed_loop``, ``dense_autonomous`` and the aliases they answered
+    to) raises :class:`ValueError` with the sentence that names the mode to use instead. Anything
+    else raises :class:`ValueError` listing the allowed forms.
     """
 
     if isinstance(value, GraspMode):
@@ -80,6 +80,12 @@ def resolve_grasp_mode(value: GraspMode | str | None) -> GraspMode:
         mapped = _GRASP_MODE_ALIASES.get(key)
         if mapped is not None:
             return mapped
+        # Imported here, on the refusal only: this module stays a leaf of the package graph.
+        from src.config.schema._removed import REMOVED_GRASP_MODES  # noqa: PLC0415
+
+        removed = REMOVED_GRASP_MODES.get(key)
+        if removed is not None:
+            raise ValueError(f"grasp mode {value!r} is removed on purpose: {removed}")
     allowed = "GraspMode enum, None, or one of " + ", ".join(
         sorted(set(_GRASP_MODE_ALIASES))
     )
@@ -104,67 +110,50 @@ class GraspBehaviorProfile:
     sampling_mode
         The :class:`GraspSamplingMode` value the calculator should use
         for this profile.
-    refinement_enabled
-        :data:`True` iff this mode is expected to perform a second-scan
-        pre-grasp refinement. When the refiner is unwired the service
-        refuses to execute modes that require it with a typed
-        :attr:`AutonomousGraspOutcome.MODE_NOT_AVAILABLE` outcome.
-    verification_enabled
-        :data:`True` iff this mode expects a post-grasp verification
-        policy beyond the existing :class:`ObjectDetectingGripper`
-        trust-path. When the verifier is unwired the same
-        ``MODE_NOT_AVAILABLE`` rule applies.
     recovery_allowed_actions
         Allow-list of :class:`SceneRecoveryAction` names, held as
         strings so this module does not couple to a Protocol that does
         not exist yet. Empty for :attr:`GraspMode.EASY`: EASY must
         never produce recovery motion.
+
+    ``refinement_enabled`` left on 2026-09-29 with the two-scan refinement, and
+    ``verification_enabled`` the same day with the post-grasp verification stage;
+    a record's profile block still carries both keys, written ``False``.
     """
 
     mode: GraspMode
     sampling_mode: GraspSamplingMode
-    refinement_enabled: bool = False
-    verification_enabled: bool = False
     recovery_allowed_actions: tuple[str, ...] = ()
 
 
 # Per-mode defaults. ``EASY`` always has zero recovery motion: that is a
-# safety guarantee, not a knob.
+# safety guarantee, not a knob. ``next_viewpoint`` left ``auto`` and ``dense_clutter`` on
+# 2026-09-29, merged into ``rescan``, which both already allowed.
+#
+# ``next_target`` joined ``auto`` and ``dense_clutter`` the same day (owner's decision). It means
+# "rescan, skipping the part that failed": another part of the same label, never another object,
+# and it moves nothing itself. ``nudge_target``, the push, stays in ``dense_clutter`` only, so auto
+# recovery stays motion-free. ``container_agitate`` is in no profile: this cell has no container,
+# and a config that names it without one is refused at load.
 _PROFILES: Mapping[GraspMode, GraspBehaviorProfile] = {
     GraspMode.EASY: GraspBehaviorProfile(
         mode=GraspMode.EASY,
         sampling_mode=GraspSamplingMode.SINGLE_OBJECT,
-        refinement_enabled=False,
-        verification_enabled=False,
         recovery_allowed_actions=(),
     ),
     GraspMode.AUTO: GraspBehaviorProfile(
         mode=GraspMode.AUTO,
         sampling_mode=GraspSamplingMode.AUTO,
-        refinement_enabled=False,
-        verification_enabled=False,
-        recovery_allowed_actions=("rescan", "next_viewpoint"),
+        recovery_allowed_actions=("rescan", "next_target"),
     ),
+    # ``nudge_target`` moved here from ``dense_autonomous`` when that mode left on 2026-09-29 (owner's
+    # decision), so the one physical recovery a built-in profile allowed stays reachable. The profile
+    # is only the outer gate: the action still needs ``recovery.allowed_actions`` to name it and a
+    # declared fixture envelope, and ``SceneRecoveryPolicy`` refuses to build without one.
     GraspMode.DENSE_CLUTTER: GraspBehaviorProfile(
         mode=GraspMode.DENSE_CLUTTER,
         sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
-        refinement_enabled=False,
-        verification_enabled=False,
-        recovery_allowed_actions=("rescan", "next_viewpoint"),
-    ),
-    GraspMode.CLOSED_LOOP: GraspBehaviorProfile(
-        mode=GraspMode.CLOSED_LOOP,
-        sampling_mode=GraspSamplingMode.AUTO,
-        refinement_enabled=True,
-        verification_enabled=True,
-        recovery_allowed_actions=("rescan", "next_viewpoint"),
-    ),
-    GraspMode.DENSE_AUTONOMOUS: GraspBehaviorProfile(
-        mode=GraspMode.DENSE_AUTONOMOUS,
-        sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
-        refinement_enabled=True,
-        verification_enabled=True,
-        recovery_allowed_actions=("rescan", "next_viewpoint", "nudge_target"),
+        recovery_allowed_actions=("rescan", "next_target", "nudge_target"),
     ),
 }
 
@@ -186,11 +175,13 @@ def _profile_for(mode: GraspMode) -> GraspBehaviorProfile:
 @dataclass(frozen=True, slots=True)
 class EffectiveDecisionConfig:
     """Decision-layer overlay. Defaults match the locked disabled state so legacy
-    snapshots round-trip unchanged."""
+    snapshots round-trip unchanged.
+
+    ``max_reobservations`` and its flat key ``decision_max_reobservations`` left with the
+    camera re-observation they budgeted (``MOVE_CAMERA``, removed 2026-09-29)."""
 
     enabled: bool = False
     auto_uncertainty_threshold: float = 0.4
-    max_reobservations: int = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,7 +243,6 @@ class EffectiveRecoveryOrchestratorConfig:
     apply_modes: tuple[str, ...] = (
         "auto",
         "dense_clutter",
-        "dense_autonomous",
     )
     allowed_actions: tuple[str, ...] = ()
     per_action_budget: tuple[tuple[str, int], ...] = ()
@@ -264,8 +254,8 @@ class EffectiveRecoveryOrchestratorConfig:
     #: ``container_agitate``: `SceneRecoveryPolicy` refuses to construct without an envelope for
     #: those, because a push with no declared bound is a robot shoving an unbounded workspace.
     #:
-    #: Deliberately not in :meth:`EffectiveGraspingConfig.to_dict`: that is a frozen flat 82-key
-    #: telemetry contract whose exact keys and order are pinned, the first 79 positions held fixed
+    #: Deliberately not in :meth:`EffectiveGraspingConfig.to_dict`: that is a frozen flat 77-key
+    #: telemetry contract whose exact keys and order are pinned, the first 74 positions held fixed
     #: and three keys appended after them, and a nested box is not a scalar. Widening it is a
     #: separate decision with telemetry-catalog consequences.
     fixture: "tuple[tuple[float, float, float], tuple[float, float, float], float] | None" = None
@@ -287,7 +277,6 @@ class EffectiveUncertaintyConfig:
     apply_modes: tuple[str, ...] = (
         "auto",
         "dense_clutter",
-        "dense_autonomous",
     )
     weights: tuple[tuple[str, float], ...] = (
         ("depth_confidence", 1.0),
@@ -383,40 +372,27 @@ class EffectiveGraspingConfig:
     max_attempts
         Resolved upper bound on autonomous grasp attempts per
         :meth:`AutonomousGraspService.pick` call.
-    closed_loop_enabled
-        Whether the operator opted into pre-grasp refinement
-        via ``robot.grasping.closed_loop.enabled``.
-    verification_enabled
-        Whether the operator opted into post-grasp
-        verification via ``robot.grasping.closed_loop.verification.enabled``.
-    dense_recovery_enabled
-        Whether the operator opted into dense-clutter scene
-        recovery via ``robot.grasping.dense_recovery.enabled``.
-    dense_recovery_allowed_actions
-        The recovery action allow-list resolved from
-        ``robot.grasping.dense_recovery.allowed_actions``. Stored as a
-        tuple of stable strings (matching
-        :class:`src.robot.grasping.recovery.SceneRecoveryAction`
-        values) so the snapshot is JSON-safe.
+
+    ``closed_loop_enabled`` left on 2026-09-29 with the two-scan refinement, and
+    ``verification_enabled``, ``dense_recovery_enabled`` and
+    ``dense_recovery_allowed_actions`` the same day with the
+    ``robot.grasping.verification`` and ``robot.grasping.dense_recovery`` blocks they
+    reported, each with its flat key.
     """
 
     default_mode: GraspMode
     max_attempts: int
-    closed_loop_enabled: bool
-    verification_enabled: bool
-    dense_recovery_enabled: bool
-    dense_recovery_allowed_actions: tuple[str, ...]
     # The ``success_model``, ``fusion`` and ``approach_validation`` keys. Appended, never
     # inserted, so every key above keeps its position and its value.
     #
     # Each records the effective state, matching what `feasibility_enabled` and friends do: a
     # block outside its ``apply_modes`` reads False here even when the YAML says true, because
     # the question a record has to answer is "was it acting on this attempt", not "what did the
-    # file say". `fusion` has no ``apply_modes`` so it reports its configured value; the substrate
-    # additionally needs a CAMERA to BASE resolver, which is a runtime fact this snapshot cannot
-    # see. `approach_validation` is the sharp one: it is the block that can refuse a motion, so
-    # its key is what tells a `GraspAttemptRecord` whether the swept-volume validator was on for
-    # that attempt.
+    # file say". `fusion` has no ``apply_modes`` so it reports its configured value; whether another
+    # camera's view was actually fused depends on the rig and each camera's calibration, which are
+    # runtime facts this snapshot cannot see. `approach_validation` is the sharp one: it is the
+    # block that can refuse a motion, so its key is what tells a `GraspAttemptRecord` whether the
+    # swept-volume validator was on for that attempt.
     success_model_enabled: bool = False
     fusion_enabled: bool = False
     approach_validation_enabled: bool = False
@@ -455,18 +431,14 @@ class EffectiveGraspingConfig:
         return {
             "default_mode": self.default_mode.value,
             "max_attempts": int(self.max_attempts),
-            "closed_loop_enabled": bool(self.closed_loop_enabled),
-            "verification_enabled": bool(self.verification_enabled),
-            "dense_recovery_enabled": bool(self.dense_recovery_enabled),
-            "dense_recovery_allowed_actions": list(
-                self.dense_recovery_allowed_actions
-            ),
+            # `closed_loop_enabled` left here with the two-scan refinement on 2026-09-29, removed with the
+            # owner's approval (cleanup, 2026-09-28), which shifts every key below one position.
+            # `verification_enabled`, `dense_recovery_enabled` and `dense_recovery_allowed_actions`
+            # left the same day with their two blocks (cleanup phase 4, owner-approved 2026-09-29),
+            # which shifts every key below three more.
             "decision_enabled": bool(self.decision.enabled),
             "decision_auto_uncertainty_threshold": float(
                 self.decision.auto_uncertainty_threshold
-            ),
-            "decision_max_reobservations": int(
-                self.decision.max_reobservations
             ),
             "feasibility_enabled": bool(self.feasibility.enabled),
             "feasibility_score_weight": float(self.feasibility.score_weight),

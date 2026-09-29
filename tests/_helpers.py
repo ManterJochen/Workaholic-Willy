@@ -2,16 +2,15 @@
 
 These are the byte-identical orchestrator test doubles that were duplicated verbatim across
 ``test_pick_loop`` / ``test_u2_probability_shadow`` / ``test_u4_probability_active_ranking`` /
-``test_grasp_verification``. The canonical (superset) forms live here so a contract change is made
-once; the call-sites are unchanged (the no-arg / default forms reproduce every original call exactly).
+``test_grasp_verification`` (that last one left on 2026-09-29 with the verifiers it tested). The
+canonical (superset) forms live here so a contract change is made once; the call-sites are unchanged
+(the no-arg / default forms reproduce every original call exactly).
 
 INTENTIONALLY NOT shared (the anti-merge guard — these look alike but are different test contracts;
 folding them would silently re-point assertions):
 
 * ``test_u4``'s ``_ScriptedCalculator`` takes a ``points_factory`` and builds a fresh ``GraspResult``
   per call — a DIFFERENT contract from the ``results: list`` scripted calculator here. It stays local.
-* ``test_grasp_verification``'s ``_seg_at`` / ``_frame_with_seg`` (parametrised mask slices) and its
-  ``_RefinementScriptedCalculator`` (initial/refined two-shot) are domain-specific and stay local.
 * The divergent ``_FakeArm`` shapes in other suites (MotionResult-arm, ik-arm, trivial-bool, no-tracking)
   are different contracts and are not hosted here.
 """

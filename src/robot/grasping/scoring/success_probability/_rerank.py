@@ -24,7 +24,7 @@ class UncertaintyRerankConfig:
 
     enabled: bool = False
     weight: float = 0.0
-    modes: tuple[str, ...] = ("dense_clutter", "dense_autonomous")
+    modes: tuple[str, ...] = ("dense_clutter",)
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):

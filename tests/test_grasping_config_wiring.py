@@ -10,14 +10,11 @@ These tests pin the locked T0 contract (operator-confirmed):
   ``grasping`` block was not explicitly set on the ``RobotConfig`` (i.e.
   the operator relied on schema defaults silently). Production
   deployments must declare the block explicitly.
-* Unknown mode strings and unknown recovery action names raise.
-* Sub-policies (``RefinementPolicy``, ``GraspVerificationPolicy``,
-  ``SceneRecoveryPolicy``) are auto-built from their schema sub-blocks
-  when the operator did not pass explicit instances *and* the sub-block
-  is enabled. Disabled sub-blocks leave the slot as :data:`None` so the
-  honest ``MODE_NOT_AVAILABLE`` gates continue to fire.
-* Physical recovery actions requested by config without a caller-
-  supplied :class:`FixtureEnvelope` are refused (strict fail-closed).
+* Unknown mode strings raise.
+* The sub-policies config built on the service (``RefinementPolicy``,
+  ``GraspVerificationPolicy`` and the ``dense_recovery`` ``SceneRecoveryPolicy``)
+  left on 2026-09-29 with their blocks; the recovery a pick runs is built per
+  pick from ``robot.grasping.recovery`` in the snapshot below.
 * Every :class:`AutonomousGraspReport` carries an
   :class:`EffectiveGraspingConfig` snapshot when the service was wired
   from config; the legacy ``from_components`` path leaves it ``None``
@@ -29,6 +26,7 @@ avoid spawning a parallel doubles tree.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +44,7 @@ from src.robot.core import (
 from src.robot.execution.autonomous_grasp import (
     AutonomousGraspService,
     EffectiveGraspingConfig,
+    EffectiveRecoveryOrchestratorConfig,
     GraspMode,
 )
 from src.robot.grasping.types.feedback import GraspResult
@@ -53,10 +52,6 @@ from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.grasping.types.modes import GraspSamplingMode
 from src.robot.grasping.telemetry.outcome_logging import iter_jsonl
 from src.robot.grasping.types.perception import PerceptionFrame
-from src.robot.grasping.recovery.policy import (
-    FixtureEnvelope,
-    SceneRecoveryAction,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -182,9 +177,7 @@ def _robot_cfg_with_grasping(**grasping_overrides):
             "default_mode": grasping_overrides.pop("default_mode", "auto"),
             "max_attempts": grasping_overrides.pop("max_attempts", 5),
             "record_log_path": grasping_overrides.pop("record_log_path", None),
-            "closed_loop": grasping_overrides.pop("closed_loop", {}),
-            "verification": grasping_overrides.pop("verification", {}),
-            "dense_recovery": grasping_overrides.pop("dense_recovery", {}),
+            "recovery": grasping_overrides.pop("recovery", {}),
         },
     )
 
@@ -201,33 +194,29 @@ class EffectiveGraspingConfigTests(unittest.TestCase):
         snap = EffectiveGraspingConfig(
             default_mode=GraspMode.AUTO,
             max_attempts=5,
-            closed_loop_enabled=False,
-            verification_enabled=False,
-            dense_recovery_enabled=False,
-            dense_recovery_allowed_actions=(),
         )
         with self.assertRaises((AttributeError, TypeError)):
             snap.default_mode = GraspMode.EASY  # type: ignore[misc]
 
     def test_to_dict_is_json_safe(self) -> None:
         snap = EffectiveGraspingConfig(
-            default_mode=GraspMode.DENSE_AUTONOMOUS,
+            default_mode=GraspMode.DENSE_CLUTTER,
             max_attempts=7,
-            closed_loop_enabled=True,
-            verification_enabled=True,
-            dense_recovery_enabled=True,
-            dense_recovery_allowed_actions=("next_viewpoint", "nudge_target"),
+            recovery_orchestrator=EffectiveRecoveryOrchestratorConfig(
+                enabled=True, allowed_actions=("rescan", "nudge_target"),
+            ),
         )
         d = snap.to_dict()
-        self.assertEqual(d["default_mode"], "dense_autonomous")
+        json.dumps(d)
+        self.assertEqual(d["default_mode"], "dense_clutter")
         self.assertEqual(d["max_attempts"], 7)
-        self.assertTrue(d["closed_loop_enabled"])
-        self.assertTrue(d["verification_enabled"])
-        self.assertTrue(d["dense_recovery_enabled"])
-        self.assertEqual(
-            d["dense_recovery_allowed_actions"],
-            ["next_viewpoint", "nudge_target"],
-        )
+        self.assertTrue(d["recovery_orchestrator_enabled"])
+        self.assertEqual(d["recovery_orchestrator_allowed_actions"], ["rescan", "nudge_target"])
+        # Each left on 2026-09-29 with the block it reported.
+        for gone in ("closed_loop_enabled", "verification_enabled", "dense_recovery_enabled",
+                     "dense_recovery_allowed_actions"):
+            with self.subTest(key=gone):
+                self.assertNotIn(gone, d)
 
 
 # ---------------------------------------------------------------------------
@@ -353,178 +342,10 @@ class FromRobotConfigFailClosedTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class FromRobotConfigSubPolicyAutoBuildTests(unittest.TestCase):
-    """Enabled sub-blocks are materialised into policy objects."""
-
-    def test_disabled_closed_loop_leaves_refinement_policy_none(self) -> None:
-        cfg = _robot_cfg_with_grasping(default_mode="auto")
-        calc, perception = _calc_and_perception()
-        service = AutonomousGraspService.from_robot_config(
-            cfg,
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-        )
-        self.assertIsNone(service.refinement_policy)
-
-    def test_enabled_closed_loop_builds_refinement_policy(self) -> None:
-        cfg = _robot_cfg_with_grasping(
-            default_mode="closed_loop",
-            closed_loop={
-                "enabled": True,
-                "pregrasp_rescan": True,
-                "max_position_correction_mm": 12.0,
-                "max_orientation_correction_deg": 8.0,
-                "max_grip_width_correction_mm": 7.0,
-                "target_match_iou_threshold": 0.4,
-            },
-        )
-        calc, perception = _calc_and_perception()
-        service = AutonomousGraspService.from_robot_config(
-            cfg,
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-        )
-        self.assertIsNotNone(service.refinement_policy)
-        rp = service.refinement_policy
-        assert rp is not None  # for type checker
-        self.assertTrue(rp.enabled)
-        self.assertEqual(rp.max_position_correction_mm, 12.0)
-        self.assertEqual(rp.max_orientation_correction_deg, 8.0)
-        self.assertEqual(rp.max_grip_width_correction_mm, 7.0)
-        self.assertEqual(rp.target_match_iou_threshold, 0.4)
-
-    def test_enabled_verification_builds_policy(self) -> None:
-        cfg = _robot_cfg_with_grasping(
-            default_mode="auto",
-            verification={
-                "enabled": True,
-                "require_object_detected": True,
-                "width_delta_min_mm": 3.0,
-                "post_lift_vision_check": False,
-                "vision_displacement_iou_max": 0.15,
-                "fail_closed": False,
-            },
-        )
-        calc, perception = _calc_and_perception()
-        service = AutonomousGraspService.from_robot_config(
-            cfg,
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-        )
-        vp = service.verification_policy
-        self.assertIsNotNone(vp)
-        assert vp is not None
-        self.assertTrue(vp.enabled)
-        self.assertTrue(vp.require_object_detected)
-        self.assertEqual(vp.width_delta_min_mm, 3.0)
-        self.assertFalse(vp.fail_closed)
-
-    def test_enabled_non_physical_recovery_builds_policy(self) -> None:
-        cfg = _robot_cfg_with_grasping(
-            default_mode="dense_clutter",
-            dense_recovery={
-                "enabled": True,
-                "allowed_actions": ["rescan", "next_viewpoint"],
-                "max_recovery_actions": 3,
-            },
-        )
-        calc, perception = _calc_and_perception()
-        service = AutonomousGraspService.from_robot_config(
-            cfg,
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-        )
-        rp = service.recovery_policy
-        self.assertIsNotNone(rp)
-        assert rp is not None
-        self.assertTrue(rp.enabled)
-        self.assertEqual(
-            rp.allowed_actions,
-            (SceneRecoveryAction.RESCAN, SceneRecoveryAction.NEXT_VIEWPOINT),
-        )
-        self.assertEqual(rp.max_recovery_actions, 3)
-
-    def test_physical_recovery_without_fixture_raises(self) -> None:
-        cfg = _robot_cfg_with_grasping(
-            default_mode="dense_autonomous",
-            dense_recovery={
-                "enabled": True,
-                "allowed_actions": ["next_viewpoint", "nudge_target"],
-            },
-        )
-        calc, perception = _calc_and_perception()
-        with self.assertRaises(ValueError) as ctx:
-            AutonomousGraspService.from_robot_config(
-                cfg,
-                calculator=calc,  # type: ignore[arg-type]
-                perception=perception,
-            )
-        self.assertIn("fixture", str(ctx.exception).lower())
-
-    def test_physical_recovery_with_fixture_builds_policy(self) -> None:
-        cfg = _robot_cfg_with_grasping(
-            default_mode="dense_autonomous",
-            dense_recovery={
-                "enabled": True,
-                "allowed_actions": ["next_viewpoint", "nudge_target"],
-            },
-        )
-        fixture = FixtureEnvelope(
-            center_mm=(0.0, 0.0, 200.0),
-            half_extents_mm=(300.0, 300.0, 100.0),
-            max_nudge_mm=8.0,
-        )
-        calc, perception = _calc_and_perception()
-        service = AutonomousGraspService.from_robot_config(
-            cfg,
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-            recovery_fixture=fixture,
-        )
-        rp = service.recovery_policy
-        self.assertIsNotNone(rp)
-        assert rp is not None
-        self.assertIn(SceneRecoveryAction.NUDGE_TARGET, rp.allowed_actions)
-        self.assertIs(rp.fixture, fixture)
-
-    def test_unknown_recovery_action_raises(self) -> None:
-        cfg = _robot_cfg_with_grasping(
-            default_mode="dense_clutter",
-            dense_recovery={
-                "enabled": True,
-                "allowed_actions": ["bogus_action"],
-            },
-        )
-        calc, perception = _calc_and_perception()
-        with self.assertRaises(ValueError) as ctx:
-            AutonomousGraspService.from_robot_config(
-                cfg,
-                calculator=calc,  # type: ignore[arg-type]
-                perception=perception,
-            )
-        self.assertIn("bogus_action", str(ctx.exception))
-
-    def test_explicit_refinement_policy_wins_over_config(self) -> None:
-        # The caller's explicit object must not be silently rebuilt
-        # from config — that's the feature-flag compatibility path
-        # locked at T0.
-        from src.robot.grasping.closed_loop.refinement import RefinementPolicy
-
-        cfg = _robot_cfg_with_grasping(
-            default_mode="closed_loop",
-            closed_loop={"enabled": True, "max_position_correction_mm": 12.0},
-        )
-        explicit = RefinementPolicy(
-            enabled=True, max_position_correction_mm=42.0
-        )
-        calc, perception = _calc_and_perception()
-        service = AutonomousGraspService.from_robot_config(
-            cfg,
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-            refinement_policy=explicit,
-        )
-        self.assertIs(service.refinement_policy, explicit)
+# `FromRobotConfigSubPolicyAutoBuildTests` left on 2026-09-29 with what it pinned: the `verification`
+# and `dense_recovery` blocks built into policies on the service. The recovery a pick runs is
+# `robot.grasping.recovery`, whose refusals (an unknown action, a push without a fixture) are the
+# schema's (`tests/test_t5_recovery_schema.py`, `tests/test_recovery_fixture_wiring.py`).
 
 
 # ---------------------------------------------------------------------------
@@ -548,22 +369,17 @@ class EffectiveConfigSnapshotTests(unittest.TestCase):
         assert snap is not None
         self.assertIs(snap.default_mode, GraspMode.AUTO)
         self.assertEqual(snap.max_attempts, 4)
-        self.assertFalse(snap.closed_loop_enabled)
-        self.assertFalse(snap.verification_enabled)
-        self.assertFalse(snap.dense_recovery_enabled)
-        # The snapshot faithfully mirrors the schema, including the
-        # ``allowed_actions`` default. We assert ``enabled is False``
-        # is what gates behaviour --- the allow-list value is
-        # informational when the block is disabled.
-        self.assertEqual(snap.dense_recovery_allowed_actions, ("next_viewpoint",))
+        # The recovery block ships off, and a disabled block reads its off state: an empty allow-list.
+        self.assertFalse(snap.recovery_orchestrator.enabled)
+        self.assertEqual(snap.recovery_orchestrator.allowed_actions, ())
 
     def test_report_contains_effective_config(self) -> None:
         cfg = _robot_cfg_with_grasping(
             default_mode="auto",
             max_attempts=2,
-            dense_recovery={
+            recovery={
                 "enabled": True,
-                "allowed_actions": ["rescan", "next_viewpoint"],
+                "allowed_actions": ["rescan"],
             },
         )
         calc, perception = _calc_and_perception()
@@ -580,10 +396,10 @@ class EffectiveConfigSnapshotTests(unittest.TestCase):
         assert report.effective_config is not None
         self.assertIs(report.effective_config.default_mode, GraspMode.AUTO)
         self.assertEqual(report.effective_config.max_attempts, 2)
-        self.assertTrue(report.effective_config.dense_recovery_enabled)
+        self.assertTrue(report.effective_config.recovery_orchestrator.enabled)
         self.assertEqual(
-            report.effective_config.dense_recovery_allowed_actions,
-            ("rescan", "next_viewpoint"),
+            report.effective_config.recovery_orchestrator.allowed_actions,
+            ("rescan",),
         )
 
     def test_from_components_leaves_effective_config_none(self) -> None:
@@ -846,7 +662,7 @@ class FromRobotConfigRerankOverlayTests(unittest.TestCase):
         assert cfg is not None  # type-narrow for the attribute reads below
         self.assertTrue(cfg.enabled)
         self.assertEqual(cfg.weight, 0.2)
-        self.assertEqual(cfg.modes, ("dense_clutter", "dense_autonomous"))
+        self.assertEqual(cfg.modes, ("dense_clutter",))
 
     def test_rerank_overlay_none_when_disabled(self) -> None:
         # Default-off (rerank_enabled absent) -> the slot stays ``None`` -> byte-identical no-op.
@@ -893,7 +709,7 @@ class FromRobotConfigApproachValidationOverlayTests(unittest.TestCase):
             orch.approach_path_policy, "G12 approach validator not wired via from_robot_config"
         )
         self.assertEqual(
-            orch._approach_path_modes, frozenset({"dense_clutter", "dense_autonomous"})
+            orch._approach_path_modes, frozenset({"dense_clutter"})
         )
 
     def test_overlay_off_when_disabled(self) -> None:
@@ -909,26 +725,18 @@ class FromRobotConfigApproachValidationOverlayTests(unittest.TestCase):
         self.assertEqual(orch._approach_path_modes, frozenset())
 
 
-class FromRobotConfigFusionCommitOverlayTests(unittest.TestCase):
-    """H2.3a — the U5 multi-view fusion substrate (``orch.scene_fusion``) + the U6 commit-gate policy
-    (``orch.commit_policy``) are WIRED onto the orchestrator through from_robot_config when
-    ``grasping.fusion.enabled`` (+ a primary rig whose ``camera.cameras.rigs[<id>].extrinsics`` names a loadable
-    artifact, so the CAMERA->BASE frame resolver auto-builds) and ``grasping.fusion.commit_policy.enabled``. Like
-    the H2.1/H2.2 overlays this config-plumb
-    is reachable ONLY via from_robot_config (no live caller), AND it is **structurally inert on a fixed camera**
-    — the commit gate needs a MOVING (eye-in-hand) camera to accumulate diverse-viewpoint evidence, so the
-    on-box diverse-vs-duplicate proof is ``run_commit_gate`` (EIH), NOT the fixed-overhead H2 gate. The helper
-    ``build_config_frame_resolver`` + its fail-closed contract are pinned by ``tests/test_g5_fusion_resolver.py``;
-    the substrate + gate logic by ``test_u5_*`` / ``test_u6_*``. This pins only the end-to-end overlay wiring
-    (the orch carriers) — the one seam none of those cover. Mirrors the H2.1a / H2.2a overlay-fires tests."""
+class FromRobotConfigPrimaryResolverTests(unittest.TestCase):
+    """A primary rig whose declared calibration does not load refuses the whole ``from_robot_config``
+    composition, not only the ``build_config_frame_resolver`` helper whose own fail-closed contract
+    ``tests/test_g5_fusion_resolver.py`` pins. This pins the end-to-end refusal, the one seam that file
+    does not cover."""
 
     @staticmethod
-    def _cfg(*, fusion_enabled: bool, commit_enabled: bool) -> RobotConfig:
-        fusion: dict = {"enabled": fusion_enabled, "commit_policy": {"enabled": commit_enabled}}
+    def _cfg(*, fusion_enabled: bool) -> RobotConfig:
         return RobotConfig(
             vendor="dummy",
             gripper={"vendor": "none"},
-            grasping={"default_mode": "dense_clutter", "fusion": fusion},
+            grasping={"default_mode": "dense_clutter", "fusion": {"enabled": fusion_enabled}},
         )
 
     @staticmethod
@@ -944,66 +752,15 @@ class FromRobotConfigFusionCommitOverlayTests(unittest.TestCase):
         data["cameras"]["primary_rig_id"] = rig["rig_id"]
         return type(shipped).model_validate(data)
 
-    @staticmethod
-    def _write_extrinsics(directory: str) -> str:
-        # A valid persisted eye-to-hand Extrinsics artifact (identity CAMERA->BASE) so the config frame
-        # resolver auto-builds -- the same save_extrinsics pattern test_g5_fusion_resolver uses.
-        from datetime import datetime, timezone
-        from pathlib import Path
-
-        from src.calibration.extrinsics import Extrinsics
-        from src.calibration.serialization import save_extrinsics
-        from src.geometry import Frame, Transform
-
-        artifact = Path(directory) / "eth_extrinsics.json"
-        save_extrinsics(
-            artifact,
-            Extrinsics(
-                transform=Transform.identity(from_frame=Frame.CAMERA, to_frame=Frame.BASE),
-                rmse_mm=1.0,
-                max_error_mm=2.0,
-                num_samples=10,
-                captured_at=datetime.now(timezone.utc),
-                rig_id="h2_3_test_rig",
-            ),
-        )
-        return str(artifact)
-
-    def test_fusion_and_commit_overlays_wired(self) -> None:
-        import tempfile
-
-        calc, perception = _calc_and_perception()
-        with tempfile.TemporaryDirectory() as tmp:
-            svc = AutonomousGraspService.from_robot_config(
-                self._cfg(fusion_enabled=True, commit_enabled=True),
-                calculator=calc,  # type: ignore[arg-type]
-                perception=perception,
-                camera=self._camera(self._write_extrinsics(tmp)),
-            )
-        orch = svc.runtime.orchestrator
-        self.assertIsNotNone(orch.scene_fusion, "U5 fusion substrate not wired via from_robot_config")
-        self.assertIsNotNone(orch.commit_policy, "U6 commit policy not wired via from_robot_config")
-
-    def test_overlays_off_when_disabled(self) -> None:
-        # Default-off -> both carriers None -> byte-identical pre-U5/U6 path.
-        calc, perception = _calc_and_perception()
-        svc = AutonomousGraspService.from_robot_config(
-            self._cfg(fusion_enabled=False, commit_enabled=False),
-            calculator=calc,  # type: ignore[arg-type]
-            perception=perception,
-        )
-        orch = svc.runtime.orchestrator
-        self.assertIsNone(orch.scene_fusion)
-        self.assertIsNone(orch.commit_policy)
-
     def test_fail_closed_bad_extrinsics_raises_end_to_end(self) -> None:
-        # Fail-closed end to end: fusion enabled and a primary rig that declares an unloadable artifact must
-        # raise through the whole from_robot_config composition (not only the build_config_frame_resolver
-        # helper), so the operator does not get a silently unreachable commit gate while believing fusion is on.
+        # Fail-closed end to end: a primary rig that declares an unloadable artifact must raise through the
+        # whole from_robot_config composition (not only the build_config_frame_resolver helper), so the
+        # operator does not get a cell that cannot place its camera while believing it calibrated. Fusion
+        # is switched on, and the primary's resolver does not wait for it either way.
         calc, perception = _calc_and_perception()
         with self.assertRaises(RuntimeError) as caught:
             AutonomousGraspService.from_robot_config(
-                self._cfg(fusion_enabled=True, commit_enabled=True),
+                self._cfg(fusion_enabled=True),
                 calculator=calc,  # type: ignore[arg-type]
                 perception=perception,
                 camera=self._camera("/definitely/not/a/real/extrinsics_artifact.json"),

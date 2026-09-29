@@ -8,13 +8,16 @@ grouped in that stack order:
     generation
     scoring, planning
     motion
-    closed_loop
     recovery
     telemetry
     uncertainty
 
 Importing ``grasping`` gives the stable public names regardless of which tier
-module they physically live in.
+module they physically live in. ``closed_loop``, the tier between motion and
+recovery, left on 2026-09-29 with the last thing it held, the post-grasp
+verifiers: whether a close holds a part is the gripper's own hold evidence,
+read by :class:`~src.robot.grasping.motion.execution_policy.GraspExecutionPolicy`
+after every close.
 """
 
 # --- types/ : shared value objects ---------------------------------------
@@ -130,50 +133,10 @@ from .motion.trajectory_safety import (
     validate_retreat_path,
 )
 
-# --- closed_loop/ : refine / verify / next-best-view ---------------------
-from .closed_loop.refinement import (
-    DefaultPreGraspRefiner,
-    IoUCentroidTargetTracker,
-    PreGraspRefiner,
-    RefinementOutcome,
-    RefinementPolicy,
-    RefinementReport,
-    TargetIdentity,
-    TargetTracker,
-    WorldSpacePoseTracker,
-    target_identity_from_segmentation,
-)
-from .closed_loop.verification import (
-    CompositeGraspVerifier,
-    GraspVerificationContext,
-    GraspVerificationPolicy,
-    GraspVerificationReport,
-    GraspVerifier,
-    NoOpVerifier,
-    ObjectDetectingGripperVerifier,
-    VerificationOutcome,
-    VisionTargetDisplacementVerifier,
-    WidthDeltaGripperVerifier,
-)
-from .closed_loop.active_perception import (
-    AcceptAllViewpointSafetyCheck,
-    ScoringViewpointPlanner,
-    ViewScoringPolicy,
-    ViewpointCandidate,
-    ViewpointHistory,
-    ViewpointObservation,
-    ViewpointSafetyCheck,
-    ViewpointSignals,
-    WorkspaceBoxSafetyCheck,
-)
-
 # --- recovery/ -----------------------------------------------------------
 from .recovery.policy import (
-    ActivePerceptionRecoveryStrategy,
     ContainerAgitateStrategy,
     FixtureEnvelope,
-    NextTargetRecoveryStrategy,
-    NoRecoveryStrategy,
     SceneRecoveryAction,
     SceneRecoveryContext,
     SceneRecoveryPlan,
@@ -203,9 +166,6 @@ from .telemetry.outcome_logging import (
     json_safe,
     profile_metadata_from,
     recovery_metadata_from,
-    refinement_metadata_from,
-    target_metadata_from,
-    verification_metadata_from,
 )
 
 # --- visualization / uncertainty -----------------------------------------
@@ -231,8 +191,6 @@ from .uncertainty import (
 
 __all__ = [
     "AcceptAllTrajectorySafetyCheck",
-    "AcceptAllViewpointSafetyCheck",
-    "ActivePerceptionRecoveryStrategy",
     "append_jsonl",
     "apply_uncertainty_ranking_penalty",
     "approach_alignment_score",
@@ -246,12 +204,10 @@ __all__ = [
     "certify_contact_pair",
     "colliding_point_indices",
     "CollisionBox",
-    "CompositeGraspVerifier",
     "ContactPair",
     "ContactPoint",
     "ContainerAgitateStrategy",
     "DebugDrawConfig",
-    "DefaultPreGraspRefiner",
     "DeformableClass",
     "DeformableHandlingDecision",
     "DeformableHandlingStrategy",
@@ -285,16 +241,11 @@ __all__ = [
     "GraspSamplingMode",
     "GraspScoreBreakdown",
     "GraspScoreWeights",
-    "GraspVerificationContext",
-    "GraspVerificationPolicy",
-    "GraspVerificationReport",
-    "GraspVerifier",
     "GraspViewerConfig",
     "gripper_table_clearance_mm",
     "GripperGeometryStrategy",
     "GripperKind",
     "IdentityFrameResolver",
-    "IoUCentroidTargetTracker",
     "iter_jsonl",
     "json_safe",
     "MaskAnalysis",
@@ -306,11 +257,7 @@ __all__ = [
     "MultiContactGrasp",
     "MultiContactGraspPlanner",
     "MultiContactPlanRequest",
-    "NextTargetRecoveryStrategy",
-    "NoOpVerifier",
-    "NoRecoveryStrategy",
     "NormalEstimationConfig",
-    "ObjectDetectingGripperVerifier",
     "occlusion_ratio",
     "ParallelJawContactPlanner",
     "ParallelJawGripperModel",
@@ -318,7 +265,6 @@ __all__ = [
     "pose_from_grasp_axes",
     "PolicyOutcome",
     "PolicyReport",
-    "PreGraspRefiner",
     "profile_metadata_from",
     "RadialMultiFingerPlanner",
     "rank_grasp_poses",
@@ -331,10 +277,6 @@ __all__ = [
     "RecoveryOrchestrator",
     "RecoveryTrail",
     "RecoveryTrailEntry",
-    "refinement_metadata_from",
-    "RefinementOutcome",
-    "RefinementPolicy",
-    "RefinementReport",
     "RefuseDeformableStrategy",
     "resolve_grasp_sampling_mode",
     "run_recovery_loop",
@@ -348,7 +290,6 @@ __all__ = [
     "SceneRecoveryReport",
     "SceneRecoveryStrategy",
     "score_grasp_pose",
-    "ScoringViewpointPlanner",
     "SegmentationLike",
     "SemanticDecision",
     "SemanticPolicy",
@@ -363,10 +304,6 @@ __all__ = [
     "SupportPlane",
     "SurfaceNormals",
     "table_clearance_score",
-    "target_identity_from_segmentation",
-    "target_metadata_from",
-    "TargetIdentity",
-    "TargetTracker",
     "topology_risk_from_mask",
     "TrajectorySafetyCheck",
     "TrajectoryStepReport",
@@ -382,18 +319,6 @@ __all__ = [
     "validate_grasp_collision",
     "validate_grasp_collisions",
     "validate_retreat_path",
-    "verification_metadata_from",
-    "VerificationOutcome",
-    "ViewpointCandidate",
-    "ViewpointHistory",
-    "ViewpointObservation",
-    "ViewpointSafetyCheck",
-    "ViewpointSignals",
-    "ViewScoringPolicy",
-    "VisionTargetDisplacementVerifier",
     "width_fit_score",
-    "WidthDeltaGripperVerifier",
     "WorkspaceBox",
-    "WorkspaceBoxSafetyCheck",
-    "WorldSpacePoseTracker",
 ]

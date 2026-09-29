@@ -102,8 +102,8 @@ nothing plans their motions against the camera world or judges their paths.
 | `Robot`, `Cell`, `PickRun` and `HandEyeCalibration` on a physical arm | never touched hardware |
 | The KUKA driver behind the same nouns | never touched hardware |
 
-The default pick is open-loop: perceive, rank, gate, move, log. The decision gate, closed-loop refine
-and verify, recovery, fusion and the learned layers ship `enabled: false`, and a pick report's
+The default pick is open-loop: perceive, rank, gate, move, log. The decision gate,
+recovery, fusion and the learned layers ship `enabled: false`, and a pick report's
 `layers` line reads `(none)` on the shipped tree. A rehearsal on the dummy arm proves the wiring, not
 a pick.
 

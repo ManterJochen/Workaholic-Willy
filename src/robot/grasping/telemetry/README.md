@@ -41,6 +41,11 @@ optional         profile, frame, target, initial_grasp, initial_telemetry, refin
                  selected_grasp, execution, verification, recovery_actions, extra
 ```
 
+`target`, `refined_grasp` and `refinement` have had no writer since the two-scan refinement left on
+2026-09-29, and `verification` only a simulator runner's ground-truth lift since the post-grasp
+verification stage left the same day. They stay in the contract so a record logged before then still
+reads.
+
 Changing its shape means changing, in the same commit, every reader: the telemetry catalog, the KPI
 roll-up, the soak gate, the failure taxonomy, the offline learning dataset builder and the operator
 console's history screen, which rolls records up with the same `compute_kpis`.
@@ -51,13 +56,43 @@ without re-freezing the contract. The record keeps summaries, positions, scores,
 strings, never images, depth maps or full clouds. `to_dict()` and `from_dict()` round-trip with no
 `repr` strings and no NumPy or dataclass objects in the JSON.
 
+### Strings that changed
+
+A record keeps the strings it was written with, and the replay layer reads them all, so an old log still
+audits and classifies. Where a string was renamed or retired, a record logged before the date carries
+the old one:
+
+| Field | Logged before | Carries | Since then |
+| --- | --- | --- | --- |
+| `extra.decision_reason_code` of a grasp less confident than the threshold | 2026-09-29 | `reobserve_planner_unavailable` | `low_confidence` |
+| `extra.decision_action` and `extra.decision_reason_code` around a camera re-observation | 2026-09-29 | `move_camera` with `low_confidence`; `reobserve_budget_exhausted` once the camera moves were used up | never written: the gate no longer moves the camera |
+| `extra.watchdog_enforced` beside a `reobserve` recommendation in canary or active mode | 2026-09-29 | `true`, meaning only eligible | `false`: the recommendation is advisory |
+| `recovery_actions[].action` | 2026-09-29 | `next_viewpoint` | `rescan`, which it was merged into |
+| `mode` | 2026-09-29 | `closed_loop`, `dense_autonomous` | refused: `auto`, `dense_clutter` |
+| `final_outcome` of the two-scan refinement | 2026-09-29 | `refinement_failed`, `target_lost_during_refine`, `refinement_diverged` | never written |
+| `final_outcome` of the multi-view commit gate | 2026-09-28 | `no_commit_insufficient_fusion` | never written |
+
+The same `low_confidence` is thus two things by date: beside `move_camera` before 2026-09-29 it asked for a
+camera move, and beside `fail_closed` or `grasp_now` since then it names the verdict.
+
 ## `LatencyTracker`
 
 | Stage | Field in `extra` | Measures | 95th percentile gate |
 | --- | --- | --- | --- |
 | `DECISION` | `decision_latency_ms` | the `DecisionEngine.decide` call | 60 ms |
 | `RANKING` | `ranking_latency_ms` | the calculator and the scoring blend | 80 ms |
-| `FUSION` | `fusion_latency_ms` | the multi-view fusion update | 220 ms |
+| `FUSION` | `fusion_latency_ms` | the multi-camera geometry fusion of a frame, from the other cameras' frames in hand to the fused scene | 220 ms |
+
+The service records `DECISION` around `DecisionEngine.decide`. The orchestrator records `RANKING` and
+`FUSION` on the call every pick path shares, the ranking of a frame, and the fusion span is taken inside
+it, in `BinPickingOrchestrator._fused_scene`. That span leaves out the other cameras' own capture,
+detection and segmentation (`acquire_all`), which are perception. It is recorded only on an attempt where
+another camera's view entered the fusion (a `fused_view_count` above 0), and is absent from a pick where
+none did: geometry fusion off or standing down, or no other camera delivering a segmented frame. Its
+presence is also the perception-budget trainer's continue label (`fusion_latency_ms_presence`).
+
+Records logged before 2026-09-28 carry a different quantity under the same name: the whole open-loop
+attempt's wall time, stamped whenever the since-removed voxel grid had ingested a view.
 
 The offline evaluator applies the gates. The tracker does no input or output and uses
 `time.monotonic_ns`, so a clock adjustment does not affect it.

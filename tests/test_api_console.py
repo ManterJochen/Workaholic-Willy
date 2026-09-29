@@ -145,6 +145,20 @@ class ConsoleApiTests(unittest.TestCase):
         self.assertEqual(body["code"], "unknown_key")
         self.assertIn("robot.safety.payload.mass_kg", body["detail"]["suggestions"])
 
+    def test_a_key_removed_on_purpose_is_answered_with_what_to_write_instead(self) -> None:
+        """The terminal's `explain` says the sentence from `REMOVED_KEYS`; the console says the same one."""
+        from src.config.schema._removed import REMOVED_KEYS
+
+        response = self.client.get(
+            "/v1/config/explain", params={"key": "robot.grasping.closed_loop.enabled"}
+        )
+        self.assertEqual(response.status_code, 404)
+        body = response.json()
+        self.assertEqual(body["code"], "unknown_key")
+        self.assertEqual(body["detail"]["removed"], REMOVED_KEYS["robot.grasping.closed_loop"])
+        self.assertEqual(body["detail"]["suggestions"], [])
+        self.assertIn("removed on purpose", body["message"])
+
     def test_a_list_element_still_reads_back_although_the_schema_index_cannot_see_it(self) -> None:
         """``explain`` treats a list as a leaf; the loaded tree settles what the value actually is."""
         self.cell.profile = "tiltcam"

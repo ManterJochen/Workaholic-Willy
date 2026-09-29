@@ -2,10 +2,9 @@
 back where it was grasped after every lift, so one part serves the whole campaign. One verdict by a rule you choose,
 a record of every attempt, and a picture of what the camera saw and gripped.
 
-Each pick moves the arm to the first look below and perceives there, going on to the next look when it finds nothing.
-Leave look= out and a wrist camera looks from the configured home, while a fixed camera does not move to look. With
-SHOW_CAMERAS every camera of the cell shows live in a window of its own, each attempt's grasp overlay pinned on the
-primary camera's.
+A wrist camera looks from the looks below in order, each fused with the ones before, and grips at the first safe
+grasp; a fixed camera's arm is moved to them too. Leave look= out and the profile's robot.look_joint_positions_deg
+serve, else home on a wrist camera. With SHOW_CAMERAS every camera shows live, each grasp overlay on the primary's.
 
 Run it at the cell, under the cell's profile, once its camera is calibrated (07-10):
     WILLY_PROFILE=<your cell> python examples/real_robot/12_pick_with_the_camera.py
@@ -17,8 +16,8 @@ from willy import Cell, GraspMotion, JointPositions, LiveView, PassRule, PickAtt
 
 SHOW_CAMERAS = True  # False: no camera windows
 
-# Where the camera looks from, tried in order. Degrees, one per joint, as the pendant shows them: FILL THESE IN from
-# your own cell. Guide the arm by hand to where the camera sees the work and paste the lines 11 prints.
+# Where the camera looks from, in order, the part's open side first. Degrees, one per joint, as the pendant shows them:
+# FILL THESE IN from your own cell. Guide the arm by hand to where the camera sees the work and paste what 11 prints.
 LOOK = [
     JointPositions.deg(-90.0, -100.0, -110.0, -60.0, 90.0, 0.0),
     JointPositions.deg(-70.0, -100.0, -110.0, -60.0, 90.0, 0.0),
@@ -56,6 +55,8 @@ with LiveView(show=SHOW_CAMERAS) as view:
         runs=5,
         prompt="a red cube",  # what every camera grounds, for this campaign only
         look=LOOK,
+        both_faces=False,  # True asks each pick to see both jaw contact faces before it grips: safety-critical parts
+        record_views=False,  # True keeps each pick's looks (images, depth, tool poses) under logs/ for training
         put_back=True,  # a part that does not go back stops the campaign: no pick starts with a part in the hand
         recording=Recording.to_file("logs/picks.jsonl"),  # one attempt record per line: positions, scores, outcome
         # Four of five must succeed; the default rule is every one. Without a sensor in the hand a success is the

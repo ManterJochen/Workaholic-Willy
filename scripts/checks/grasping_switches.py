@@ -29,8 +29,7 @@ this box and not a claim about the config, so it is reported as `unloaded`, quot
 shipped code itself logged, rather than counted as a switch that does nothing.
 
 The traps the sweep cannot execute (the constructor that wins over the config block, the two things
-called mode, the two blocks called recovery) are in `docs/grasping-config-reference.md` sections 2
-and 3.
+called mode) are in `docs/grasping-config-reference.md` sections 2 and 3.
 
 Exit codes: 0 every block moved something under at least one instrument or said why it could not,
 every mode-specific one stayed inside its own `apply_modes`, and every declared-unwired switch was

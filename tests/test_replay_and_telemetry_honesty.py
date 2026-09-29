@@ -11,7 +11,10 @@ each one names the failure it caught:
 * the record serializer read ``report.verification``, an attribute ``AutonomousGraspReport`` has
   never had, so the verification block was ``None`` on every real record;
 * nothing wrote the ``refinement`` block, so the three refine-stage outcomes that the telemetry
-  catalog requires it for could never produce a complete record.
+  catalog requires it for could never produce a complete record. The writer that repaired it left
+  on 2026-09-29 with the two-scan refinement, and its tests with it: no pick produces those
+  outcomes any more, and a record logged before then still audits
+  (``tests/test_no_second_look_before_the_close.py``).
 """
 
 from __future__ import annotations
@@ -23,7 +26,6 @@ from contextlib import redirect_stdout
 from dataclasses import fields
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
 from unittest import mock
 
 from src.robot.grasping.replay import __main__ as replay_main
@@ -173,7 +175,10 @@ class RecordSerializerReadsWhatExistsTests(unittest.TestCase):
 
         self.assertNotIn("verification", {f.name for f in fields(AutonomousGraspReport)})
 
-    def test_the_verification_block_comes_from_the_telemetry_the_service_stamps(self) -> None:
+    def test_no_writer_fills_the_verification_block_from_telemetry_any_more(self) -> None:
+        """The service stamped these three keys from its verification stage, which left on 2026-09-29.
+        A stray stamp in a report's telemetry is not a verdict: the block is written from a simulator's
+        ground-truth lift only, labelled as such."""
         from src.robot.execution.autonomous_grasp.record_logging import (
             to_attempt_record,
         )
@@ -189,199 +194,16 @@ class RecordSerializerReadsWhatExistsTests(unittest.TestCase):
                 "verification_telemetry": {"width_delta_mm": 3.2},
             }
 
-        record = to_attempt_record(_Report(), attempt_id="a1")
-        self.assertIsNotNone(record.verification)
-        assert record.verification is not None
-        self.assertEqual(record.verification["reason"], "width_delta_within_tolerance")
-        self.assertEqual(record.verification["outcome"], "passed")
+        self.assertIsNone(to_attempt_record(_Report(), attempt_id="a1").verification)
+        lifted = to_attempt_record(_Report(), attempt_id="a2", extra={"sim_lifted": True, "sim_lift_mm": 41.5})
+        self.assertIsNotNone(lifted.verification)
+        assert lifted.verification is not None
+        self.assertEqual(lifted.verification["source"], "sim_ground_truth_lift")
+        self.assertIs(lifted.verification["lifted"], True)
+        self.assertEqual(lifted.verification["lift_mm"], 41.5)
 
-    def test_a_refined_attempt_carries_the_refinement_block_the_catalog_requires(self) -> None:
-        from src.robot.execution.autonomous_grasp.record_logging import (
-            to_attempt_record,
-        )
-        from src.robot.grasping.replay.telemetry_catalog import audit_record
-
-        class _Refinement:
-            outcome = "diverged"
-            matched_segmentation_index = 2
-            match_iou = 0.71
-            position_delta_mm = 41.0
-            orientation_delta_deg = 3.0
-            grip_width_delta_mm = 1.0
-            failure_reason = "refinement_diverged"
-            telemetry = {"stage": "refiner"}
-
-        class _Report:
-            outcome = "refinement_diverged"
-            mode = "dense_clutter"
-            profile = None
-            pick_report = None
-            telemetry: dict = {}
-            refinement = _Refinement()
-
-        record = to_attempt_record(_Report(), attempt_id="a2")
-        self.assertIsNotNone(record.refinement)
-        self.assertEqual(audit_record(record), ())
-
-    def test_the_service_carries_its_refinement_report_on_the_report(self) -> None:
-        from src.robot.execution.autonomous_grasp.report import (
-            AutonomousGraspReport,
-        )
-
-        self.assertIn("refinement", {f.name for f in fields(AutonomousGraspReport)})
-
-
-class ARefineStageFailureLogsACompleteRecordTests(unittest.TestCase):
-    """End to end, because the serializer half proves nothing on its own.
-
-    A real ``target_lost_during_refine`` is produced by driving the two-scan path with a second frame
-    the tracker cannot match. The telemetry catalog requires a ``refinement`` block for that outcome
-    and no writer set one, so this record could not be complete however the cell was configured.
-    """
-
-    def _service(self, refined_mask: "tuple[slice, slice]"):
-        import numpy as np
-
-        from src.geometry import Frame, Pose
-        from src.robot.core import (
-            MotionCommand,
-            MotionResult,
-            RobotCapabilities,
-        )
-        from src.robot.execution.autonomous_grasp import (
-            AutonomousGraspService,
-            GraspMode,
-        )
-        from src.robot.grasping import (
-            DefaultPreGraspRefiner,
-            GraspVerificationPolicy,
-            IdentityFrameResolver,
-            NoOpVerifier,
-            RefinementPolicy,
-        )
-        from src.robot.grasping.types.feedback import GraspResult
-        from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
-        from src.robot.grasping.types.perception import PerceptionFrame
-
-        def _frame(rows: slice, cols: slice) -> PerceptionFrame:
-            mask = np.zeros((32, 32), dtype=np.uint8)
-            mask[rows, cols] = 1
-            return PerceptionFrame(
-                depth_map=np.full((32, 32), 500.0, dtype=np.float64),
-                intrinsics=np.array(
-                    [[400.0, 0.0, 16.0], [0.0, 400.0, 16.0], [0.0, 0.0, 1.0]],
-                    dtype=np.float64,
-                ),
-                segmentations=(SimpleNamespace(mask=mask),),
-            )
-
-        grasp = GraspPoint(
-            position=np.array([100.0, 50.0, 400.0]),
-            approach=np.array([0.0, 0.0, 1.0]),
-            axis=np.array([1.0, 0.0, 0.0]),
-            grip_width_mm=40.0,
-            score=0.9,
-            frame=GraspFrame.BASE,
-            label="grasp",
-        )
-
-        class _Arm:
-            def __init__(self) -> None:
-                self._tcp = Pose(
-                    position_mm=np.array([0.0, 0.0, 500.0]),
-                    quaternion_xyzw=np.array([0.0, 0.0, 0.0, 1.0]),
-                    frame=Frame.BASE,
-                    label="home",
-                )
-
-            @property
-            def capabilities(self) -> RobotCapabilities:
-                return RobotCapabilities(
-                    vendor="ur", model="ur5e", dof=6, supports_joint_move=True,
-                    supports_linear_move=True, supports_async_move=False,
-                    has_native_fk=True, has_native_ik=True, has_force_control=False,
-                    is_simulated=False,
-                )
-
-            def get_tcp_pose(self) -> Pose:
-                return self._tcp
-
-            def move(self, pose: Pose, **_: object) -> MotionResult:
-                if pose.frame == Frame.BASE:
-                    self._tcp = pose
-                return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
-
-        class _Perception:
-            def __init__(self, frames: list) -> None:
-                self._frames, self.calls = frames, 0
-
-            def acquire(self) -> PerceptionFrame:
-                frame = self._frames[min(self.calls, len(self._frames) - 1)]
-                self.calls += 1
-                return frame
-
-        class _Calculator:
-            def compute_result(self, *_a: object, **_k: object) -> GraspResult:
-                return GraspResult(candidates=(grasp,), reasons=(), top_score=grasp.score)
-
-        policy = RefinementPolicy(
-            enabled=True, standoff_mm=80.0, max_position_correction_mm=50.0,
-            max_grip_width_correction_mm=50.0, max_orientation_correction_deg=30.0,
-            target_match_iou_threshold=0.3,
-        )
-        return AutonomousGraspService.from_components(
-            arm=_Arm(),  # type: ignore[arg-type]
-            calculator=_Calculator(),  # type: ignore[arg-type]
-            perception=_Perception(
-                [_frame(slice(10, 20), slice(10, 20)), _frame(*refined_mask)]
-            ),
-            mode=GraspMode.CLOSED_LOOP,
-            frame_resolver=IdentityFrameResolver(),
-            refinement_policy=policy,
-            refiner=DefaultPreGraspRefiner(policy=policy),
-            verification_policy=GraspVerificationPolicy(enabled=True),
-            verifier=NoOpVerifier(),
-        )
-
-    def test_target_lost_during_refine_now_passes_the_telemetry_audit(self) -> None:
-        from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome
-        from src.robot.execution.autonomous_grasp.record_logging import (
-            to_attempt_record,
-        )
-        from src.robot.grasping.replay.telemetry_catalog import audit_record
-
-        # A second frame whose only mask is disjoint from the first: the tracker refuses the match.
-        report = self._service((slice(0, 2), slice(0, 2))).pick()
-        self.assertIs(
-            report.outcome, AutonomousGraspOutcome.TARGET_LOST_DURING_REFINE
-        )
-        self.assertIsNotNone(report.refinement)
-
-        record = to_attempt_record(report, attempt_id="lost-1")
-        self.assertIsNotNone(record.refinement)
-        self.assertEqual(audit_record(record), ())
-
-    def test_a_verified_attempt_logs_the_verifier_verdict(self) -> None:
-        """The end-to-end half of the ``report.verification`` repair: the verifier runs, and its
-        verdict has to reach the record from wherever the service actually puts it.
-        """
-        from src.robot.execution.autonomous_grasp.record_logging import (
-            to_attempt_record,
-        )
-
-        # A second frame the tracker DOES match (1-px shift), so the attempt reaches verification.
-        report = self._service((slice(10, 20), slice(11, 21))).pick()
-        self.assertIn("verification_outcome", report.telemetry)
-
-        record = to_attempt_record(report, attempt_id="verified-1")
-        self.assertIsNotNone(record.verification)
-        assert record.verification is not None
-        self.assertEqual(
-            record.verification["outcome"], str(report.telemetry["verification_outcome"])
-        )
-        self.assertEqual(
-            record.verification["reason"], report.telemetry["verification_reason"]
-        )
+class NoWriterFillsTheRefinementBlockTests(unittest.TestCase):
+    """The block stays in the record for the records logged before 2026-09-29, and nothing fills it now."""
 
     def test_an_open_loop_attempt_still_carries_no_refinement_block(self) -> None:
         """⚠ THE BYTE-IDENTICAL HALF. The default pick runs no refiner, and a fabricated block there

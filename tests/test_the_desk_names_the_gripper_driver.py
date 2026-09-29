@@ -86,14 +86,16 @@ class TheDriverRowTests(unittest.TestCase):
         self.assertIn("192.168.1.1", onrobot.detail)
         self.assertIn("URCap", _rows(_cfg("robotiq"))["end-effector wiring"].detail)
 
-    def test_a_toggle_opens_by_a_second_pulse_on_its_one_output(self) -> None:
-        # The owner's cell (2026-09-24): one tool output and nothing wired back, so the desk says how the jaws
-        # open, and that every program asks at its connect where they stand and counts its own pulses from there.
+    def test_a_toggle_opens_by_the_next_change_of_its_one_output(self) -> None:
+        # The owner's cell: one tool output, every change of it moves the jaws (2026-09-28), and nothing wired back, so
+        # the desk says how the jaws open, and that every program asks at its connect where they stand and counts its
+        # own changes from there.
         jaw = _rows(_cfg("jaw_io", jaw_io={"actuation": "single_toggle", "close_output_pin": 0}))["end-effector wiring"]
-        self.assertIn("open by a second pulse on close output 0", jaw.detail)
+        self.assertIn("open by the next change of close output 0", jaw.detail)
         self.assertNotIn("dropping", jaw.detail)
         self.assertIn("asks at its connect", jaw.fix)
-        self.assertIn("its own pulses", jaw.fix)
+        self.assertIn("its own changes", jaw.fix)
+        self.assertIn("switched on or off", jaw.fix)
         self.assertNotIn("--jaws-stand", jaw.fix)             # no record, and nothing to declare on the bench
         self.assertNotIn("swapped pair", jaw.fix)             # a toggle has one output, not a pair
 

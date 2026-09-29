@@ -75,8 +75,8 @@ robot:
     # They are three keys because they answer three questions. The driver's count map is anchored on
     # the aperture, so a number set as a policy ceiling lands every commanded width short. The floor
     # is a policy about the part and never the mechanism. The closed width is what get_width_mm()
-    # reads with the jaws shut on nothing, which grasp verification reads: the 5 mm policy floor in
-    # its place puts that threshold at 7 mm and reports a genuinely held 6 mm part as an empty grasp.
+    # reads with the jaws shut on nothing, the other end of that count map: the 5 mm policy floor in
+    # its place would move every commanded width off the mark.
 
     # Which hand this is, by registry name: the stem of a file in the grippers/ directory beside
     # robot/, for example robotiq_2f85. Name the hand by its model name: 2f85 is the short name
@@ -415,9 +415,9 @@ robot:
   # where records go. Safety stays under `robot.safety`; nothing here can
   # relax a safety limit or unlock a recovery action the mode profile forbids.
   #
-  # Closed-loop refinement, verification, multi-view fusion, feasibility and
-  # occlusion scoring, clutter ordering, scene recovery and the learned success
-  # model belong to this section as well. They all default to off and this cell
+  # Multi-view fusion, feasibility and occlusion scoring, clutter ordering,
+  # scene recovery and the learned success model belong to this section as
+  # well. They all default to off and this cell
   # leaves them off, so their blocks are not written here at all:
   #
   #     python -m src.config where grasping --tier all   # every knob
@@ -561,9 +561,9 @@ robot:
         # default, so wall points arrive at the density of the neighbour points they are checked
         # alongside.
         wall_sample_mm: 8.0
-    # Which behaviour profile a pick runs under when the caller names none: `easy`, `auto`,
-    # `dense_clutter`, `closed_loop` or `dense_autonomous`. `auto` decides dense sampling per scene
-    # and runs neither closed-loop refinement nor verification.
+    # Which behaviour profile a pick runs under when the caller names none: `easy`, `auto` or
+    # `dense_clutter`. `auto` decides dense sampling per scene. `closed_loop` and `dense_autonomous`
+    # were removed on 2026-09-29 and are refused at load with the mode to name instead.
     default_mode: "auto"
     # Upper bound on autonomous attempts inside one `pick()` call.
     max_attempts: 5

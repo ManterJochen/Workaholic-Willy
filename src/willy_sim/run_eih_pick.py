@@ -42,7 +42,6 @@ from src.willy_sim.harness.gate import (
     reset_object_to_home_z0,
 )
 from src.willy_sim.config import require_robot
-from src.willy_sim.harness.env import RunnerEnv
 from src.willy_sim.harness.instrumentation import (
     cell_identity,
     write_pick_artifacts,
@@ -186,7 +185,7 @@ def build_service(
     camera_world: "Maybe[CameraWorldDecline | SimCameraWorld]" = UNSET,
     headless: bool = True,
     data_dir: str | None = None,
-    mode: str = "easy",              # "easy" | "auto" | "closed_loop" (see harness/modes.py)
+    mode: str = "easy",              # "easy" | "auto" (see harness/modes.py)
     marker: str = "ground_truth",    # which calibrated EIH artifact to use (else GT-oracle fallback)
     coarse_object_pos_mm=None,       # BASE-frame object centroid (dual-cam coarse handoff); else sim pos
     objects_override=None,           # list[SimObjectConfig] for a clutter scene; else the config object
@@ -212,14 +211,13 @@ def build_service(
     service_from_config: bool = False,   # boot through from_robot_config (the path a real cell takes)
     # Let the config own the sub-policies instead of this runner. Default False leaves every run
     # byte-identical. It covers a measurement trap: `mode_service_kwargs` hands `from_robot_config`
-    # a hand-built DecisionEngine in auto mode (and a refiner plus verifier in closed_loop), and
-    # `build_decision_layer` takes the constructor argument in preference to the config block
-    # (`resolved_decision_engine is None and ... decision.enabled`), as `build_subpolicies` does for
-    # the refiner and the verifier. So `--boot config --grasp-mode auto` runs a decision engine that
-    # came from this file, and toggling `grasping.decision.enabled` changes nothing: a null result
-    # that reads as "the block is harmless" when it means "the block was never consulted". With this
-    # True the runner passes nothing and the three config blocks (`decision`, `closed_loop`,
-    # `verification`) are the only source.
+    # a hand-built DecisionEngine in auto mode, and `build_decision_layer` takes the constructor
+    # argument in preference to the config block (`resolved_decision_engine is None and ...
+    # decision.enabled`). So `--boot config --grasp-mode auto` runs a decision engine that came
+    # from this file, and toggling `grasping.decision.enabled` changes nothing: a null result that
+    # reads as "the block is harmless" when it means "the block was never consulted". With this
+    # True the runner passes nothing and the config block (`decision`) is the only source. The
+    # `verification` block it also covered left on 2026-09-29.
     config_subpolicies: bool = False,
     # Opt-in reachability filter. Default False is byte-identical: no IK service reaches the
     # calculator, `rejected_ik` stays 0, and `grasping.feasibility`, which re-ranks on
@@ -267,9 +265,10 @@ def build_service(
 
     Returns (service, arm, gripper, handles, cfg, view_pose, cell).
 
-    ``mode`` selects the grasp mode: "easy" is the deterministic open-loop path, "auto" wires the
-    real ``DecisionEngine`` (perceive, rank, decide, grasp), and "closed_loop" adds the refiner and
-    the verifier.
+    ``mode`` selects the grasp mode: "easy" is the deterministic open-loop path, and "auto" wires the
+    real ``DecisionEngine`` (perceive, rank, decide, grasp). "closed_loop", which added the two-scan
+    refiner and the verifier, was removed on 2026-09-29: it was never viable on the moving wrist
+    camera, which lost the target between the two scans.
     """
     from src.robot.execution.autonomous_grasp import AutonomousGraspService
     from src.robot.execution.autonomous_grasp.config import GraspMode
@@ -485,32 +484,14 @@ def build_service(
     # One mode knob, resolved through harness/modes.py. Easy is the deterministic open-loop path.
     # Auto must be built in auto mode, because the per-call override guard refuses
     # easy_service.pick(mode='auto') when the sampling_mode differs; it wires the real
-    # DecisionEngine as a single perceive-then-decide tick with no viewpoint_planner, so no
-    # MOVE_CAMERA is issued and the grasp and motion path after GRASP_NOW is identical to easy.
-    # CLOSED_LOOP wires the refiner and the verifier, both SafetyPreflight-gated, with a fail-open
-    # advisory width.
-    #   Closed loop is wired but not viable on this camera: the wrist camera moves between the two
-    #   refine scans. The viewpoint-invariant WorldSpacePoseTracker
-    #   (WILLY_C1_WORLD_SPACE_TRACKER=1) re-identifies the target by 3D base-frame pose where the
-    #   image-space IoU tracker drops out, but at the default 275 mm refine standoff the object
-    #   leaves the wrist-camera FOV entirely, the instance-id mask is empty, and no tracker has
-    #   anything to match. A smaller standoff (WILLY_C1_STANDOFF_MM) keeps it in view
-    #   intermittently, but eye-in-hand execution then fails. A viable eye-in-hand CLOSED_LOOP
-    #   needs the world-space tracker, a re-perceive standoff that keeps the target visible, and an
-    #   execution fix.
+    # DecisionEngine as a single perceive-then-decide tick, which never moves the camera, so the
+    # grasp and motion path after GRASP_NOW is identical to easy.
+    # CLOSED_LOOP, the two-scan refine, left on 2026-09-29 with its WILLY_C1_* knobs. It was never
+    # viable here: the wrist camera moves between the two scans, and at the refine standoff the
+    # object left the wrist camera's view, so no tracker had anything to match.
     grasp_mode = resolve_demo_mode(mode)
     is_auto = grasp_mode is GraspMode.AUTO
-    # Opt into the viewpoint-invariant WorldSpacePoseTracker: the wrist camera moves between scans,
-    # so the image-space IoU tracker drops below IoU 0.1 and reports TARGET_LOST. The refine
-    # standoff defaults to the wrist view height; a smaller standoff keeps the object inside the
-    # moving wrist camera's FOV, while a large standoff empties the instance-id mask and leaves
-    # nothing to track.
-    env = RunnerEnv.from_env(vision=False, view_height_mm=view_height_mm)  # WILLY_C1_* knobs
-    _c1_world_space = env.c1_world_space_tracker
-    _c1_standoff = env.c1_standoff_mm
-    _mode_kwargs = mode_service_kwargs(grasp_mode, refinement_kwargs={
-        "standoff_mm": _c1_standoff, "use_world_space_tracker": _c1_world_space,
-    })
+    _mode_kwargs = mode_service_kwargs(grasp_mode)
     if config_subpolicies:
         if not service_from_config:
             raise SystemExit(
@@ -519,7 +500,7 @@ def build_service(
             )
         if _mode_kwargs:
             print(f"[config-subpolicies] runner sub-policies suppressed ({sorted(_mode_kwargs)}): "
-                  f"grasping.decision/closed_loop/verification are the only source", flush=True)
+                  f"grasping.decision is the only source", flush=True)
         _mode_kwargs = {}
     if service_from_config:
         # A sim measurement is only a statement about a real cell if the sim boots the way a real
@@ -617,8 +598,8 @@ def _print_boot_path(service, *, arm, gripper, from_config: bool) -> None:  # no
     * an arm that is not the one holding the live session: a second ``SimulationApp`` drives prims
       no camera is looking at, and nothing crashes;
     * ``mode_label`` outside ``_approach_path_modes``: the swept-volume validator reads as enabled
-      and never runs, because the config default is ``(dense_clutter, dense_autonomous)`` while
-      this runner is ``easy``.
+      and never runs, because the config default is ``(dense_clutter,)`` while this runner is
+      ``easy``.
     """
 
     orch = getattr(getattr(service, "runtime", None), "orchestrator", None)
@@ -630,8 +611,7 @@ def _print_boot_path(service, *, arm, gripper, from_config: bool) -> None:  # no
         f"effective_config={'set' if getattr(service, 'effective_config', None) is not None else 'NONE'} | "
         f"mode_label={mode_label!r} | gripper={type(gripper).__name__}"
         f"{' SUBSTITUTED=' + str(substitution.reason) if substitution is not None else ''} | "
-        f"arm_is_live_handle={getattr(orch, 'arm', None) is arm} | "
-        f"scene_fusion={'set' if getattr(orch, 'scene_fusion', None) is not None else 'None'}",
+        f"arm_is_live_handle={getattr(orch, 'arm', None) is arm}",
         flush=True,
     )
     if substitution is not None:
@@ -662,9 +642,7 @@ def _print_autonomy_telemetry(report: object) -> None:
     if isinstance(tele, dict) and tele:
         keys = sorted(tele)[:12]
         print(f"  [autonomy] telemetry keys={keys}", flush=True)
-        for k in ("latency", "latency_spans", "slo", "stage_latency_ms",
-                  "refinement_mode", "refinement_telemetry",
-                  "verification_enabled", "verification_telemetry"):
+        for k in ("latency", "latency_spans", "slo", "stage_latency_ms"):
             if k in tele:
                 print(f"  [autonomy] {k}={tele[k]}", flush=True)
 
@@ -679,9 +657,8 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
 
     Each pick perceives from the view pose, resolves CAMERA->BASE, then grasps.
 
-    ``mode`` is "easy", "auto" (the real ``DecisionEngine``, with the typed ``DecisionReport``
-    printed per run) or "closed_loop" (the refiner and the verifier, with per-run refine telemetry;
-    wired but not viable on the moving wrist camera, see build_service).
+    ``mode`` is "easy" or "auto" (the real ``DecisionEngine``, with the typed ``DecisionReport``
+    printed per run).
 
     Both instruments are opt-in and default off: ``record_log`` appends one ``GraspAttemptRecord``
     JSONL line per pick, stamped with the ground-truth ``sim_lift_mm`` and ``sim_lifted``, and
@@ -689,17 +666,12 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
     neither set the run is byte-identical.
     """
     _m = str(mode).lower().replace("-", "_")
-    is_auto, is_cl = _m == "auto", _m == "closed_loop"
+    is_auto = _m == "auto"
     if is_auto:
         print("=== EIH AUTO decision-gate showcase (perceive -> rank -> DecisionEngine -> grasp) ===", flush=True)
         print("    NOTE: the Isaac arm reports is_simulated=True, so the gate is PERMISSIVE: it "
               "exercises the\n    decide control flow + typed DecisionReport, not a hardware fail-closure "
               "(that needs real hw).", flush=True)
-    if is_cl:
-        print("=== EIH CLOSED_LOOP showcase (perceive -> grasp -> STANDOFF -> re-perceive -> REFINE -> "
-              "execute -> VERIFY) ===", flush=True)
-        print("    Measuring whether the second-scan refine changes the executed grasp (position_delta) "
-              "and holds the gate.", flush=True)
     service, arm, gripper, handles, cfg, view_pose, cell = build_service(
         headless=headless, data_dir=data_dir, mode=mode, marker=marker, cell_kwargs=cell_kwargs,
         ground_truth_depth=ground_truth_depth,
@@ -727,7 +699,7 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
                 d = decision.to_dict()
                 print(f"  [AUTO] action={d.get('decision_action')} reason={d.get('decision_reason_code')} "
                       f"uncertainty={d.get('uncertainty_score')} top_score={d.get('top_score')} "
-                      f"threshold={d.get('threshold_used')} reobs={d.get('reobservation_count')} "
+                      f"threshold={d.get('threshold_used')} "
                       f"src={d.get('uncertainty_source')}", flush=True)
             else:
                 print(f"  [AUTO] no DecisionReport on report (outcome={getattr(report, 'outcome', None)})", flush=True)
@@ -754,7 +726,7 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
             record_log=record_log, debug_dir=debug_frames,
             debug_png=service.last_debug_image_png,
             extra={**identity, "sim_runner": "eih", "sim_mode": mode, "sim_auto": is_auto,
-                   "sim_closed_loop": is_cl, "sim_lift_mm": round(lift_mm, 2), "sim_lifted": bool(passed),
+                   "sim_lift_mm": round(lift_mm, 2), "sim_lifted": bool(passed),
                    "sim_gate_passed": passed},
         )
     n_pass = sum(1 for r in results if r["passed"])
@@ -769,10 +741,9 @@ def main() -> None:
     ap.add_argument("--gui", action="store_true")
     ap.add_argument("--no-headless", action="store_true", help="alias for --gui")
     ap.add_argument("--data-dir", type=str, default=None)
-    ap.add_argument("--mode", type=str, default="easy", choices=["easy", "auto", "closed_loop"],
-                    help="P1: grasp mode (easy=10/10 trust path; auto=real DecisionEngine; closed_loop=S3+S4)")
+    ap.add_argument("--mode", type=str, default="easy", choices=["easy", "auto"],
+                    help="P1: grasp mode (easy=10/10 trust path; auto=real DecisionEngine)")
     ap.add_argument("--demo-auto", action="store_true", help="deprecated alias for --mode auto")
-    ap.add_argument("--closed-loop", action="store_true", help="deprecated alias for --mode closed_loop")
     ap.add_argument("--marker", type=str, default="ground_truth", choices=["ground_truth", "aruco"],
                     help="which CALIBRATED EIH artifact to drive the resolver (logs/calibration/eih_wrist_cam_<marker>.json); "
                          "falls back to the GT oracle if missing/poor")
@@ -788,7 +759,7 @@ def main() -> None:
                     help="let the camera's OWN rendered depth reach the pick instead of the flat "
                          "ground-truth sheet at the object's centre: the September-shaped path")
     args = ap.parse_args()
-    mode = "auto" if args.demo_auto else "closed_loop" if args.closed_loop else args.mode
+    mode = "auto" if args.demo_auto else args.mode
     result = run_gate(runs=args.runs, headless=not (args.gui or args.no_headless), data_dir=args.data_dir,
                       mode=mode, marker=args.marker,
                       record_log=args.record_log, debug_frames=args.debug_frames,

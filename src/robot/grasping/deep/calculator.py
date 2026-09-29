@@ -642,7 +642,9 @@ class DeepGraspCalculator:
         self.last_telemetry = telemetry
         if not candidates:
             # The reasons the recovery orchestrator routes on: ALL_COLLIDED agitates the container,
-            # ALL_TABLE_CONFLICT moves to the next target and rescans. A cell that can only say
+            # ALL_TABLE_CONFLICT moves to the next target and rescans, wherever the mode's profile
+            # lists those actions (no built-in one lists the agitate or the next target, so a cell
+            # built from config rescans, or plans a nudge it then refuses). A cell that can only say
             # NO_VALID_GRASP reaches neither and retries the same thing instead of shaking the bin.
             # Same mapping the analytic path uses, from the same counters.
             return GraspResult(reasons=rejection_reasons(rejection), telemetry=telemetry)

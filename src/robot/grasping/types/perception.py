@@ -2,8 +2,8 @@
 
 A :class:`PerceptionSource` hands the pick loop a :class:`PerceptionFrame`, which is one
 depth, RGB and segmentation snapshot of the bin. They live in the bottom ``types`` tier,
-so every downstream module, the calculator, the frame resolver, refinement, verification
-and recovery, names them without importing the orchestrator that consumes them.
+so every downstream module, the calculator, the frame resolver and recovery, names
+them without importing the orchestrator that consumes them.
 """
 
 from __future__ import annotations
@@ -42,9 +42,10 @@ class PerceptionFrame:
     #: `EyeInHandFrameResolver` computes CAMERA to BASE from the TCP, and without this
     #: field it reads that TCP at resolve time, on the grounds that the frame is not
     #: needed for the transform itself. For a camera bolted to the wrist the transform
-    #: depends on where the tool was when the shutter opened, and the closed-loop path
-    #: moves the arm between capture and resolve by design. Every millimetre the tool
-    #: travelled in between lands in the grasp, in a frame nothing checks.
+    #: depends on where the tool was when the shutter opened, and the arm can move
+    #: between capture and resolve (a frame taken at one look, used after the arm left
+    #: it). Every millimetre the tool travelled in between lands in the grasp, in a
+    #: frame nothing checks.
     #:
     #: `None` means the producer did not stamp it, and the resolver then falls back to
     #: reading the arm, so an existing source is unchanged. It is not a default pose:

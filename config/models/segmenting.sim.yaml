@@ -5,8 +5,9 @@
 segmenter:
   optim:
     # The same unset-dtype path as `object.sim.yaml`: fp32 weights with fp16 autocast, which is
-    # what holds recall on small objects. A `null` leaf would keep the base value `auto` (fp16
-    # weights on CUDA), so the loader's reset sentinel "__null__" is the only way an overlay can
+    # what holds recall on small objects. The base file leaves `torch_dtype` unset too since
+    # 2026-09-29; the reset stays so this path holds whatever the base says. A `null` leaf would
+    # keep the base value, so the loader's reset sentinel "__null__" is the only way an overlay can
     # force a field back to unset. `channels_last` is a memory format rather than a numerical
     # setting, and is off here.
     torch_dtype: "__null__"

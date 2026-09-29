@@ -7,12 +7,11 @@ implementation must honour:
 
 * :meth:`camera_to_base_for_frame` returns a :class:`Transform` (never ``None`` / a bare matrix);
 * that transform is tagged ``from_frame is Frame.CAMERA`` and ``to_frame is Frame.BASE`` — the
-  load-bearing invariant. ``resolve_or_none`` treats ANY other frame pair as
-  ``RESOLVE_REASON_WRONG_FRAME``, so a resolver returning e.g. ``BASE -> CAMERA`` would route a
-  camera-frame pose straight into a base-frame motion command (the exact safety hole this module
-  exists to close);
+  load-bearing invariant. A resolver returning e.g. ``BASE -> CAMERA`` would route a camera-frame
+  pose straight into a base-frame motion command (the exact safety hole this module exists to
+  close);
 * the resolver MUST NOT mutate the arm (no motion / state side effects);
-* it MUST be callable repeatedly per attempt (initial capture, S3 recapture, active perception)
+* it MUST be callable repeatedly per attempt (initial capture, a rescan, another camera's frame)
   and stay consistent across calls.
 
 The suite parametrizes over all three production implementers built with the *exact* construction
@@ -21,9 +20,6 @@ idioms from ``tests/test_frame_resolver.py`` (same ``_StaticTcpArm`` double, sam
 two-path anchor: it is the only one that consults the live TCP, so moving the arm MUST change its
 output, while the eye-to-hand resolvers (Static / Identity) MUST stay invariant — proving the suite
 exercises real divergent output, not an all-accept shape.
-
-``resolve_or_none``'s frame-pair check (the production consumer of this contract) is also asserted
-to AGREE with every resolver, anchoring the wire contract end-to-end.
 """
 
 from __future__ import annotations
@@ -45,10 +41,6 @@ from src.robot.grasping import (
     FrameResolver,
     IdentityFrameResolver,
     StaticCameraToBaseResolver,
-)
-from src.robot.grasping.motion.frame_resolver import (
-    FrameResolutionFailure,
-    resolve_or_none,
 )
 from src.robot.grasping.types.perception import PerceptionFrame
 
@@ -212,24 +204,6 @@ class FrameResolverConformanceTests(unittest.TestCase):
                 self.assertIs(second.to_frame, Frame.BASE)
                 np.testing.assert_allclose(first.translation_mm, second.translation_mm)
                 self.assertEqual(arm.move_calls, [])
-
-    def test_resolve_or_none_agrees_with_every_resolver(self) -> None:
-        # The production non-raising consumer (resolve_or_none) enforces the same frame-pair contract.
-        # It must hand back the SAME Transform each resolver produced — never a FrameResolutionFailure —
-        # anchoring the wire contract end-to-end.
-        for r in self._resolvers:
-            with self.subTest(resolver=type(r).__name__):
-                arm = _StaticTcpArm(_base_tcp())
-                frame = _perception_frame()
-                direct = r.camera_to_base_for_frame(frame, arm=_as_arm(arm))
-                via_helper = resolve_or_none(r, frame, arm=_as_arm(arm))
-                self.assertNotIsInstance(via_helper, FrameResolutionFailure)
-                assert isinstance(via_helper, Transform)  # narrow for the type checker
-                self.assertIs(via_helper.from_frame, Frame.CAMERA)
-                self.assertIs(via_helper.to_frame, Frame.BASE)
-                np.testing.assert_allclose(
-                    via_helper.translation_mm, direct.translation_mm
-                )
 
     def test_eye_in_hand_tracks_live_tcp_while_eye_to_hand_is_invariant(self) -> None:
         # Two-path non-vacuity anchor exercising the ACTUAL numeric output:

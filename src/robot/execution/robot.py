@@ -42,7 +42,7 @@ from src.robot.core.gripper import HoldEvidence
 from src.robot.execution import handling as _handling
 from src.robot.execution import motion as _motion
 from src.robot.execution.cell_lock import CellLock, cell_lock_key
-from src.robot.execution.lifecycle import ConnectedRobot, ConnectStage
+from src.robot.execution.lifecycle import ConnectedRobot, ConnectStage, let_go_of_held_views
 from src.robot.execution.robot_parts import build_gripper, resolve_arm
 from src.robot.safety import SafetyAttestation
 
@@ -240,7 +240,9 @@ class Robot:
         It takes the cross-process lock first when ``lock_key`` is set. That is the lock ``Cell``
         takes for the same controller, so the two refuse each other. Then the arm, then the gripper,
         and on the way out the gripper, the arm and the lock. A substituted gripper is refused before
-        the arm is commanded.
+        the arm is commanded. On the way out the frames a wrist camera's ``Locator.look_around`` held
+        in the arm's live world are let go first (the exit ``Cell.connected()`` runs too), as the next
+        connect starts from a cell this one changed.
         """
         lock = CellLock(self.lock_key, owner="Robot") if self.lock_key else None
         return ConnectedRobot(self.arm, self.gripper, lock=lock, announce=announce)
@@ -429,16 +431,25 @@ class Robot:
         nothing opens again and backs out. ``keep_out`` is held in the arm's live world through every
         motion. A refused motion, and a camera that could not vouch for the cell, end the pick with
         nothing commanded after it, as an outcome. A hand that toggles with no sensor (a ``jaw_io``
-        single_toggle) is never pulsed before the arm moves, whatever ``pre_open_mm`` says: it is asked
+        single_toggle) is never switched before the arm moves, whatever ``pre_open_mm`` says: it is asked
         whether its jaws stand open, asks a person where it believes them closed, and is closed with
-        one pulse at the part.
+        one change of its output at the part.
 
         ``decline`` is the reason these motions need no camera world. ``camera_world=CameraWorldDecline(...)``
         is the same decline as an object, kept as an alias; passing both is a ``TypeError``.
+
+        The pick ends what a wrist camera's ``Locator.look_around`` held for it: the frames of its looks
+        stay in the arm's live world through every motion of the pick, each where it was taken, and are
+        let go when the pick ends, however it ends (the owner, 2026-09-29), a pick refused before any
+        command included. A place does not need them. A program that tries another candidate after a
+        pick that failed looks around again first, so that the frames are held for that pick too.
         """
-        return _handling.pick(self, pose, width_mm, standoff_mm=standoff_mm, squeeze_mm=squeeze_mm,
-                              pre_open_mm=pre_open_mm, camera_world=_motion.decline_of(decline, camera_world),
-                              keep_out=keep_out)
+        try:
+            return _handling.pick(self, pose, width_mm, standoff_mm=standoff_mm, squeeze_mm=squeeze_mm,
+                                  pre_open_mm=pre_open_mm, camera_world=_motion.decline_of(decline, camera_world),
+                                  keep_out=keep_out)
+        finally:
+            let_go_of_held_views(self.arm)
 
     def place(
         self, pose: Pose, *, standoff_mm: float = 80.0, decline: "Maybe[str]" = UNSET,
@@ -453,7 +464,7 @@ class Robot:
         holds its own: a part set down onto something a camera located comes within the line
         clearance of it, and the world would refuse the line in.
 
-            set_down = located.set_down(0, grasp=best.pose(), part_bottom_mm=scene.declared_support_height_mm)
+            set_down = located.set_down(0, grasp=best.pose(), part_bottom_mm=scene.part_bottom_mm)
             if set_down.pose is not None:
                 robot.place(set_down.pose, keep_out=located.keep_out(0))
         """

@@ -33,20 +33,52 @@ Public surface
   external ``pick`` callable. Drives the orchestrator, the executor
   and perception re-acquisition. Returns the final report and the
   typed trail.
+* :func:`terminal_outcome_for_trail`: the service outcome a finished
+  loop stands for (``recovery_exhausted``, ``unsafe_recovery_refused``),
+  or ``None`` to keep the last pick's own.
 
-When armed, the agitate motion drives bounded, envelope-clamped waypoints
-through the SafetyPreflight-gated arm.move surface, the same executor path
-as the nudge: a there-and-back oscillation by default, a contact
-redistribute when the fixture sets a non-zero agitate contact depth. The
-orchestrator never plans an action the policy or profile does not list;
-defaults are chosen so a recovery YAML produces a byte-identical snapshot
-until the operator opts in (CONTAINER_AGITATE stays gated behind a fixture
-and a non-zero amplitude).
+The owner's rules of 2026-09-29, and where each one lives:
+
+* **Per-action strategy mode.** The orchestrator plans ``RESCAN``
+  directly (:data:`DEFAULT_DIRECT_ACTIONS`). Every other action needs a
+  strategy; without one it is skipped for the next action in its row. A
+  physical action is never planned directly. A strategy's plan counts only
+  for the action it was asked for: a plan naming another action is
+  dropped like a refusal to plan. ``bypass_strategies`` plans every action
+  by name alone. It is a test seam: the service passed it until the
+  recovery wiring moved on (part B of the same build).
+* **A refusal before anything moved falls through** to the next action
+  of the same failure (any ``refused_*`` outcome,
+  :func:`~src.robot.grasping.recovery.policy.refused_before_motion`).
+  The refusal stays in the trail. It spends no action budget and never
+  re-runs the pick. One failure can have at most as many refusals as its
+  rows hold actions; past that the loop ends, whatever the orchestrator
+  says. ``aborted_motion_failed`` still ends the loop, because the arm
+  moved.
+* **NEXT_TARGET is "rescan, skipping the failed part".** The caller hands
+  the loop ``skip_failed_part``, its memory of failed parts
+  (:class:`~src.robot.grasping.recovery.exclusion_zones.ExclusionZones`).
+  Without it, or when the failed report names no part, NEXT_TARGET is
+  refused before anything moves and the loop falls through to RESCAN.
+  It never picks another label.
+* **The dispatcher** offers the nudge (the push) only for
+  ``ALL_COLLIDED``, and NEXT_TARGET after ``MOTION_PLAN_REFUSED``.
+
+When armed, the agitate motion drives bounded waypoints, each checked
+against the fixture envelope before the first moves, through the
+SafetyPreflight-gated arm.move surface, the same executor path as the
+nudge: a there-and-back oscillation by default, a contact redistribute
+when the fixture sets a non-zero agitate contact depth. The orchestrator
+never plans an action the policy or profile does not list; defaults are
+chosen so a recovery YAML produces a byte-identical snapshot until the
+operator opts in (CONTAINER_AGITATE stays gated behind a declared
+container, a fixture and a non-zero amplitude).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from typing import (
     Any,
     Callable,
@@ -70,6 +102,7 @@ from src.robot.grasping.recovery.policy import (
     SceneRecoveryPolicy,
     SceneRecoveryStrategy,
     execute_recovery_motion,
+    refused_before_motion,
 )
 from src.robot.grasping.recovery.trail_serialize import (  # noqa: F401 (re-exported for by-name importers)
     recovery_actions_from_trail,
@@ -90,6 +123,9 @@ logger = create_grasping_logger(
 
 
 __all__ = [
+    "DEFAULT_DIRECT_ACTIONS",
+    "OUTCOME_RECOVERY_EXHAUSTED",
+    "OUTCOME_UNSAFE_RECOVERY_REFUSED",
     "RecoveryDispatcher",
     "RecoveryHistoryEntry",
     "RecoveryOrchestrator",
@@ -98,10 +134,14 @@ __all__ = [
     "VALID_TERMINAL_REASONS",
     "reorder_actions_for_uncertainty",
     "run_recovery_loop",
+    "terminal_outcome_for_trail",
 ]
 
 
-# Locked default map from failure class to action priority.
+# Locked default map from failure class to action priority. ``NEXT_VIEWPOINT`` left every row on
+# 2026-09-29, merged into ``RESCAN``: nothing moved the camera for it once the viewpoint planners
+# were removed, so it re-perceived exactly as ``RESCAN`` does. Where a row listed both, ``RESCAN``
+# stays once; where it listed ``NEXT_VIEWPOINT`` alone, ``RESCAN`` takes its place.
 _DEFAULT_MAP: Mapping[GraspFailureReason, Tuple[SceneRecoveryAction, ...]] = {
     # IK, reachability and table conflict: try a different target first,
     # then a rescan to refresh the scene.
@@ -117,66 +157,60 @@ _DEFAULT_MAP: Mapping[GraspFailureReason, Tuple[SceneRecoveryAction, ...]] = {
         SceneRecoveryAction.NEXT_TARGET,
         SceneRecoveryAction.RESCAN,
     ),
-    # Perception-quality complaints: rescan first, then move camera.
+    # Perception-quality complaints: look again.
     GraspFailureReason.RESCAN_RECOMMENDED: (
         SceneRecoveryAction.RESCAN,
-        SceneRecoveryAction.NEXT_VIEWPOINT,
     ),
     GraspFailureReason.LOW_DEPTH_CONFIDENCE: (
         SceneRecoveryAction.RESCAN,
-        SceneRecoveryAction.NEXT_VIEWPOINT,
     ),
     GraspFailureReason.LOW_MASK_CONFIDENCE: (
         SceneRecoveryAction.RESCAN,
-        SceneRecoveryAction.NEXT_VIEWPOINT,
     ),
     GraspFailureReason.EMPTY_MASK: (
         SceneRecoveryAction.RESCAN,
-        SceneRecoveryAction.NEXT_VIEWPOINT,
     ),
     GraspFailureReason.MASK_TOO_SMALL: (
         SceneRecoveryAction.RESCAN,
-        SceneRecoveryAction.NEXT_VIEWPOINT,
     ),
     GraspFailureReason.NO_VALID_DEPTH: (
         SceneRecoveryAction.RESCAN,
-        SceneRecoveryAction.NEXT_VIEWPOINT,
     ),
-    # Occlusion: move viewpoint first.
+    # Occlusion: look again. Another view comes from a look pose or a second camera, not from here.
     GraspFailureReason.ACTIVE_PERCEPTION_RECOMMENDED: (
-        SceneRecoveryAction.NEXT_VIEWPOINT,
         SceneRecoveryAction.RESCAN,
     ),
     GraspFailureReason.HEAVY_OCCLUSION: (
-        SceneRecoveryAction.NEXT_VIEWPOINT,
         SceneRecoveryAction.RESCAN,
     ),
-    # No candidates, collisions or no valid grasp: try alternative
-    # targets, then a bounded nudge (only if fixture present), then
-    # change viewpoint.
+    # No candidates or no valid grasp: skip the part for another of the same label, then rescan. No
+    # push here (owner, 2026-09-29): nothing says a neighbour is in the way, so a push has no direction
+    # to go and no reason to help.
     GraspFailureReason.NO_CANDIDATES_GENERATED: (
         SceneRecoveryAction.NEXT_TARGET,
-        SceneRecoveryAction.NUDGE_TARGET,
-        SceneRecoveryAction.NEXT_VIEWPOINT,
+        SceneRecoveryAction.RESCAN,
     ),
     GraspFailureReason.ALL_COLLIDED: (
-        # A clutter jam is the case agitation is for: try a bounded nudge, then an envelope-clamped
-        # agitate, before changing viewpoint. CONTAINER_AGITATE stays double-gated (profile + policy
-        # allow-list + fixture present + non-zero amplitude), and no built-in profile lists it in
-        # recovery_allowed_actions, so the outer gate always drops it; the entry records the intent
-        # for a profile that does list it.
+        # A clutter jam is the one case a push is for, and only with a neighbour seen within 25 mm of the
+        # part: ALL_COLLIDED says at least one candidate hit something, not that all did, so the pick
+        # attempt checks that evidence before it pushes (push_planner.neighbour_evidence). Then an
+        # envelope-clamped agitate, then a rescan. CONTAINER_AGITATE stays gated (a declared container
+        # at load, profile + policy allow-list + fixture present + non-zero amplitude), and no built-in
+        # profile lists it in recovery_allowed_actions, so the outer gate always drops it; the entry
+        # records the intent for a profile that does list it.
         SceneRecoveryAction.NEXT_TARGET,
         SceneRecoveryAction.NUDGE_TARGET,
         SceneRecoveryAction.CONTAINER_AGITATE,
-        SceneRecoveryAction.NEXT_VIEWPOINT,
+        SceneRecoveryAction.RESCAN,
     ),
     GraspFailureReason.NO_VALID_GRASP: (
         SceneRecoveryAction.NEXT_TARGET,
-        SceneRecoveryAction.NUDGE_TARGET,
-        SceneRecoveryAction.NEXT_VIEWPOINT,
+        SceneRecoveryAction.RESCAN,
     ),
     # Refinement-class failures: rescan to re-acquire the target,
-    # then try a different one.
+    # then try a different one. No pick reports either since the
+    # two-scan refinement left on 2026-09-29; the rows stay so a
+    # failure of that kind replayed from an older record still maps.
     GraspFailureReason.TARGET_LOST_DURING_REFINE: (
         SceneRecoveryAction.RESCAN,
         SceneRecoveryAction.NEXT_TARGET,
@@ -190,15 +224,17 @@ _DEFAULT_MAP: Mapping[GraspFailureReason, Tuple[SceneRecoveryAction, ...]] = {
         SceneRecoveryAction.NEXT_TARGET,
     ),
     # The planner refused to route to a valid grasp and nothing moved.
-    # Rescan and nothing else, as a safety rule rather than a tuning one:
-    # a refusal is a fail-closed outcome, re-perceiving costs nothing and
-    # changes what the planner is asked next, while every other action
-    # here either commands motion (NUDGE_TARGET, CONTAINER_AGITATE, and
-    # NEXT_VIEWPOINT in the pick loop's own recovery) or silently
-    # redirects the cell to an object the operator did not ask for
-    # (NEXT_TARGET). Falling through to one of those after the cell has
-    # just declined to move is how a refusal becomes a motion.
+    # Never an action that commands motion (NUDGE_TARGET, CONTAINER_AGITATE),
+    # as a safety rule rather than a tuning one: falling through to one of
+    # those after the cell has just declined to move is how a refusal
+    # becomes a motion. NEXT_TARGET is allowed first since 2026-09-29 (the
+    # owner relaxed the rule): it skips the part the planner could not reach
+    # for another of the same label, never another object, and moves
+    # nothing itself; the next pick's motion is judged in full like any
+    # other. Then a rescan, which costs nothing and changes what the planner
+    # is asked next.
     GraspFailureReason.MOTION_PLAN_REFUSED: (
+        SceneRecoveryAction.NEXT_TARGET,
         SceneRecoveryAction.RESCAN,
     ),
     # Escalations: no recovery is appropriate, surface to the
@@ -210,8 +246,9 @@ _DEFAULT_MAP: Mapping[GraspFailureReason, Tuple[SceneRecoveryAction, ...]] = {
     GraspFailureReason.CONTROLLER_NOT_OPERATIONAL: (),
     # A target label perception never returned belongs here too: not unsafe (the cell is fine) and
     # not fail-closed (nothing refused anything), only pointless. The detector is deterministic on a
-    # static frame, so a rescan re-derives the same labels; NEXT_TARGET would hand the operator an
-    # object they did not ask for, the exact substitution the hard label gate exists to prevent. The
+    # static frame, so a rescan re-derives the same labels; NEXT_TARGET skips a failed part for another
+    # of the same label, and with no part of that label seen there is nothing to skip to. It never hands
+    # the operator an object they did not ask for, which the hard label gate exists to prevent. The
     # operator reads the labels that were seen and re-prompts.
     GraspFailureReason.TARGET_LABEL_NOT_FOUND: (),
     GraspFailureReason.TOPOLOGY_RISK_REJECTED: (),
@@ -332,9 +369,10 @@ class RecoveryTrail:
 # Perception-style actions that gather more information about the
 # scene. When ``aggressive_recovery_bias`` is set the orchestrator
 # reorders each failure-class action list so these come first; group
-# order across failure classes is preserved.
+# order across failure classes is preserved. ``RESCAN`` alone since
+# ``NEXT_VIEWPOINT`` was merged into it on 2026-09-29.
 _PERCEPTION_ACTIONS: frozenset[SceneRecoveryAction] = frozenset(
-    {SceneRecoveryAction.NEXT_VIEWPOINT, SceneRecoveryAction.RESCAN}
+    {SceneRecoveryAction.RESCAN}
 )
 
 
@@ -366,6 +404,13 @@ def reorder_actions_for_uncertainty(
     return tuple(perception + other)
 
 
+#: Actions the orchestrator plans without a strategy when none is registered for them: a plan that carries
+#: only the action's name, which is all a rescan needs. A caller that hands the loop its memory of failed parts
+#: (``skip_failed_part``) may add ``NEXT_TARGET``. A physical action can never be one of them: its plan must
+#: say where to move, and only a strategy can.
+DEFAULT_DIRECT_ACTIONS: frozenset[SceneRecoveryAction] = frozenset({SceneRecoveryAction.RESCAN})
+
+
 @dataclass(frozen=True, slots=True)
 class RecoveryOrchestrator:
     """Pure decision driver for the recovery state machine.
@@ -375,16 +420,39 @@ class RecoveryOrchestrator:
     :data:`None`, meaning no further recovery is permissible and the
     caller terminates.
 
-    The orchestrator delegates the content of the plan to a
-    per-action strategy looked up in :attr:`strategies` unless
-    :attr:`bypass_strategies` is :data:`True`, in which case it
-    synthesises a minimal plan directly and consults no strategy, so
-    the dispatcher mapping alone decides the action.
+    Per action, the orchestrator uses the strategy registered in
+    :attr:`strategies`. A strategy's plan must name the action it was
+    asked for (or ``NONE``); a plan naming another action is dropped, and
+    the next action in the row is tried. When no strategy is registered,
+    the orchestrator plans the action directly, by name alone, if the
+    action is in :attr:`direct_actions` (:data:`DEFAULT_DIRECT_ACTIONS`:
+    ``RESCAN``). Otherwise it plans nothing for that action and the next
+    one in the row is tried.
+    :attr:`bypass_strategies` plans every action directly and consults no
+    strategy, so the dispatcher mapping alone decides the action. It is
+    the seam for tests where that mapping is the unit under test. The
+    service passed it until the recovery wiring's part B.
     """
 
     dispatcher: RecoveryDispatcher
-    strategies: Mapping[SceneRecoveryAction, SceneRecoveryStrategy]
+    strategies: Mapping[SceneRecoveryAction, SceneRecoveryStrategy] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     bypass_strategies: bool = False
+    direct_actions: frozenset[SceneRecoveryAction] = DEFAULT_DIRECT_ACTIONS
+
+    def __post_init__(self) -> None:
+        direct = frozenset(self.direct_actions)
+        wrong = sorted(
+            a.value for a in direct
+            if a in _PHYSICAL_ACTIONS or a is SceneRecoveryAction.NONE
+        )
+        if wrong:
+            raise ValueError(
+                f"direct_actions may not name {wrong}: a physical action's plan must say where to move, "
+                "and only a strategy can; NONE is not an action"
+            )
+        object.__setattr__(self, "direct_actions", direct)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -513,13 +581,34 @@ class RecoveryOrchestrator:
                 telemetry={"orchestrator": "bypass_strategies"},
             )
         strategy = self.strategies.get(action)
-        if strategy is None:
+        if strategy is not None:
+            plan = strategy.plan(context)
+            if plan.action is action or plan.action is SceneRecoveryAction.NONE:
+                return plan
+            # The strategy protocol is open, so nothing else stops a strategy asked for one action from
+            # planning another. Followed, a refusal of that other action would block it while the row asks
+            # for this one again: the loop would never end. So the plan is dropped like a refusal to plan.
+            logger.warning(
+                "Strategy for %s planned %s instead; dropped",
+                action.value,
+                plan.action.value,
+            )
             return SceneRecoveryPlan(
                 action=SceneRecoveryAction.NONE,
-                reason="no_strategy_for_action",
-                telemetry={"requested_action": str(action)},
+                reason="strategy_planned_another_action",
+                telemetry={"requested_action": str(action), "planned_action": str(plan.action)},
             )
-        return strategy.plan(context)
+        if action in self.direct_actions:
+            return SceneRecoveryPlan(
+                action=action,
+                reason=f"dispatcher:{action.value}",
+                telemetry={"orchestrator": "direct_action"},
+            )
+        return SceneRecoveryPlan(
+            action=SceneRecoveryAction.NONE,
+            reason="no_strategy_for_action",
+            telemetry={"requested_action": str(action)},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -563,8 +652,9 @@ def run_recovery_loop(
     frame_acquirer: Callable[[], None],
     arm: Optional["RobotArm"] = None,
     aggressive_recovery_bias: bool | Callable[[Any], bool] = False,
+    skip_failed_part: Optional[Callable[[Any], bool]] = None,
 ) -> tuple[Any, RecoveryTrail]:
-    """Bounded closed-loop recovery driver.
+    """Bounded recovery driver: pick, recover, pick again.
 
     The driver:
 
@@ -578,8 +668,28 @@ def run_recovery_loop(
     4. Terminates with one of the typed
        :data:`VALID_TERMINAL_REASONS`.
 
+    A plan refused before anything moved (``refused_*``) is recorded in
+    the trail and the orchestrator is asked again for the same failure.
+    That action is then blocked for every reason of this failure, and the
+    refusal spends no action budget and does not re-run the pick. A plan
+    whose motion failed (``aborted_motion_failed``) ends the loop.
+
     The loop is bounded by ``policy.max_recovery_actions`` and the
-    orchestrator's anti-loop rule.
+    orchestrator's anti-loop rule. Each refusal blocks its action for
+    every reason of the failure, and the orchestrator plans only actions
+    of the failure's rows, so one failure can have at most as many
+    refusals as its rows hold distinct actions. The loop counts them and
+    ends (``escalated_no_recovery``) at one more, so an orchestrator that
+    keeps planning what was refused cannot keep the pick spinning in
+    place.
+
+    ``skip_failed_part`` is the caller's memory of failed parts. The
+    ``NEXT_TARGET`` step calls it with the failed pick's report. The
+    caller records that part (its BASE centre, for its label) as one the
+    next picks skip, and returns True, or returns False when the report
+    names no part. Only then does the step re-perceive
+    (``frame_acquirer``) and pick again. Without it, or on False, the
+    step is refused before anything moves and the loop falls through.
 
     ``aggressive_recovery_bias`` may be a plain ``bool`` or a callable
     ``(last_report) -> bool`` re-evaluated each iteration. The callable form
@@ -608,6 +718,7 @@ def run_recovery_loop(
     action_history: list[SceneRecoveryAction] = []
     trail_entries: list[RecoveryTrailEntry] = []
     last_report = pick()
+    refusals_this_failure = 0
 
     while True:
         if _is_success(last_report):
@@ -664,7 +775,12 @@ def run_recovery_loop(
 
         # Execute the plan.
         executed, outcome = _execute_plan(
-            plan=plan, policy=policy, arm=arm, frame_acquirer=frame_acquirer
+            plan=plan,
+            policy=policy,
+            arm=arm,
+            frame_acquirer=frame_acquirer,
+            skip_failed_part=skip_failed_part,
+            last_report=last_report,
         )
         primary_failure = failure_reasons[0]
         logger.info(
@@ -686,6 +802,31 @@ def run_recovery_loop(
                 outcome=outcome,
             )
         )
+        if not executed and refused_before_motion(outcome):
+            # Nothing moved: block this action for every reason of this failure and ask the orchestrator
+            # for the next one. No action budget is spent and the pick is not re-run.
+            logger.info(
+                "Recovery action %s refused before anything moved (%s); trying the next action",
+                plan.action.value,
+                outcome,
+            )
+            typed_history.extend(
+                RecoveryHistoryEntry(action=plan.action, failure_class=reason, outcome=outcome)
+                for reason in failure_reasons
+            )
+            refusals_this_failure += 1
+            if refusals_this_failure > _refusals_possible(orchestrator, failure_reasons):
+                logger.error(
+                    "Recovery refused %d action(s) for one failure, more than its rows hold (%s); the "
+                    "orchestrator is planning what was refused, so the loop ends here",
+                    refusals_this_failure,
+                    ", ".join(r.value for r in failure_reasons),
+                )
+                return last_report, RecoveryTrail(
+                    entries=tuple(trail_entries),
+                    terminal_reason="escalated_no_recovery",
+                )
+            continue
         action_history.append(plan.action)
         typed_history.append(
             RecoveryHistoryEntry(
@@ -695,7 +836,7 @@ def run_recovery_loop(
             )
         )
         if not executed:
-            # Refused or aborted: terminate with escalation.
+            # The motion started and failed: terminate with escalation; a person decides.
             logger.warning(
                 "Recovery action %s was not executed (%s); escalating",
                 plan.action.value,
@@ -706,6 +847,49 @@ def run_recovery_loop(
                 terminal_reason="escalated_no_recovery",
             )
         last_report = pick()
+        refusals_this_failure = 0
+
+
+def _refusals_possible(
+    orchestrator: RecoveryOrchestrator,
+    failure_reasons: Tuple[GraspFailureReason, ...],
+) -> int:
+    """How many refusals one failure can have: the distinct actions its reasons' rows hold."""
+
+    return len({
+        action
+        for reason in failure_reasons
+        for action in orchestrator.dispatcher.actions_for(reason)
+    })
+
+
+#: The two :class:`AutonomousGraspOutcome` values a finished recovery loop can stand for, spelled here so this
+#: package imports no service module (a test pins them against the enum).
+OUTCOME_RECOVERY_EXHAUSTED = "recovery_exhausted"
+OUTCOME_UNSAFE_RECOVERY_REFUSED = "unsafe_recovery_refused"
+
+
+def terminal_outcome_for_trail(trail: RecoveryTrail) -> Optional[str]:
+    """The service outcome a finished recovery loop stands for, or ``None`` to keep the last pick's own.
+
+    * ``unsafe_recovery_refused``: a recovery motion started and failed (``aborted_motion_failed``). The arm
+      stopped where it was and a person decides.
+    * ``recovery_exhausted``: at least one recovery action ran and the loop ended because none was left
+      (``exhausted_budget``, ``anti_loop_blocked``).
+    * ``None`` otherwise: success, a disabled loop, a loop that only refused before anything moved, or one
+      that ended on a failure no action recovers (a stopped controller, a label nobody saw). That pick's own
+      outcome says more.
+    """
+
+    if trail.terminal_reason == "recovered_success":
+        return None
+    if any(entry.outcome == "aborted_motion_failed" for entry in trail.entries):
+        return OUTCOME_UNSAFE_RECOVERY_REFUSED
+    if trail.terminal_reason in ("exhausted_budget", "anti_loop_blocked") and any(
+        entry.executed for entry in trail.entries
+    ):
+        return OUTCOME_RECOVERY_EXHAUSTED
+    return None
 
 
 def _terminal_reason_for_none(
@@ -719,14 +903,17 @@ def _terminal_reason_for_none(
     """Classify why the orchestrator returned ``None`` for telemetry.
 
     Priority: ``exhausted_budget`` > ``anti_loop_blocked`` > ``escalated_no_recovery``.
+    An action refused before anything moved was never tried, so it does not
+    make the end ``anti_loop_blocked``.
     """
 
     if len(action_history) >= policy.max_recovery_actions:
         return "exhausted_budget"
-    # Anti-loop: whether every candidate action for every failure reason was
-    # already tried for the same class.
+    # Anti-loop: whether an action that ran was the one blocked for a failure
+    # reason it was already tried for.
     tried_pairs = {
         (e.action, e.failure_class) for e in typed_history
+        if not refused_before_motion(e.outcome)
     }
     saw_blocked_pair = False
     for reason in failure_reasons:
@@ -744,17 +931,22 @@ def _execute_plan(
     policy: SceneRecoveryPolicy,
     arm: Optional["RobotArm"],
     frame_acquirer: Callable[[], None],
+    skip_failed_part: Optional[Callable[[Any], bool]] = None,
+    last_report: Any = None,
 ) -> tuple[bool, str]:
     """Run the plan's side-effect; return (executed, outcome_string)."""
 
-    if plan.action in (
-        SceneRecoveryAction.RESCAN,
-        SceneRecoveryAction.NEXT_VIEWPOINT,
-    ):
+    if plan.action is SceneRecoveryAction.RESCAN:
         frame_acquirer()
         return True, "completed"
     if plan.action is SceneRecoveryAction.NEXT_TARGET:
-        # No perception side effect; the next pick() call re-ranks.
+        # Rescan, skipping the failed part: the caller's memory records it, then the scene is seen again.
+        # Without that memory the next pick would take the same part again, which is a rescan, not this.
+        if skip_failed_part is None:
+            return False, "refused_no_part_memory"
+        if not skip_failed_part(last_report):
+            return False, "refused_no_failed_part"
+        frame_acquirer()
         return True, "completed"
     if plan.action in (
         SceneRecoveryAction.NUDGE_TARGET,

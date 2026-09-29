@@ -40,10 +40,6 @@ def _eff_cfg(**overrides: object) -> EffectiveGraspingConfig:
     base: dict[str, object] = dict(
         default_mode=GraspMode.DENSE_CLUTTER,
         max_attempts=1,
-        closed_loop_enabled=False,
-        verification_enabled=False,
-        dense_recovery_enabled=False,
-        dense_recovery_allowed_actions=(),
     )
     # Group flat ``recovery_orchestrator_*`` overrides into the nested sub-config
     # (the field split that replaced the old flat API). Call sites keep using the
@@ -64,7 +60,7 @@ def _profile_dense() -> GraspBehaviorProfile:
     return GraspBehaviorProfile(
         mode=GraspMode.DENSE_CLUTTER,
         sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
-        recovery_allowed_actions=("rescan", "next_viewpoint", "next_target"),
+        recovery_allowed_actions=("rescan", "next_target"),
     )
 
 
@@ -166,7 +162,7 @@ class CallableAggressiveBiasTests(unittest.TestCase):
                 enabled=True,
                 allowed_actions=(
                     SceneRecoveryAction.RESCAN,
-                    SceneRecoveryAction.NEXT_VIEWPOINT,
+                    SceneRecoveryAction.NEXT_TARGET,
                 ),
                 apply_modes=("dense_clutter",),
                 max_recovery_actions=3,
@@ -271,13 +267,13 @@ class RecoveryActionsFromTrailTests(unittest.TestCase):
     def test_success_credits_only_last_step(self) -> None:
         trail = RecoveryTrail(
             entries=(
-                self._entry(SceneRecoveryAction.NEXT_VIEWPOINT, "completed"),
+                self._entry(SceneRecoveryAction.NEXT_TARGET, "completed"),
                 self._entry(SceneRecoveryAction.RESCAN, "completed"),
             ),
             terminal_reason="recovered_success",
         )
         rows = recovery_actions_from_trail(trail)
-        self.assertEqual([r["action"] for r in rows], ["next_viewpoint", "rescan"])
+        self.assertEqual([r["action"] for r in rows], ["next_target", "rescan"])
         self.assertEqual(rows[0]["outcome"], "completed")          # intermediate: no credit
         self.assertEqual(rows[1]["outcome"], "recovered_success")  # last: the reward signal
         self.assertEqual(rows[1]["step_result"], "completed")      # raw result preserved

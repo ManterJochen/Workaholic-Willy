@@ -1,4 +1,4 @@
-"""A motion-planner refusal is a recoverable failure, and only ``rescan`` recovers it.
+"""A motion-planner refusal is a recoverable failure, and nothing that moves recovers it.
 
 Measured on-box 2026-08-17 (``--scene occlude``, five picks in five): cuRobo refused to route to a
 grasp that had already been found, scored and accepted. ``PickAttempt.reasons`` describes why no
@@ -9,9 +9,11 @@ grasp was *found*, so it was empty; the recovery driver saw nothing to recover f
 Two invariants live here, and the second is a safety rule rather than a behaviour:
 
 1. The refusal now reaches the recovery driver as :attr:`GraspFailureReason.MOTION_PLAN_REFUSED`.
-2. It maps to ``(RESCAN,)`` and nothing else. A refusal is fail-closed; re-perceiving costs nothing,
-   while every other action in the table either commands motion or silently redirects the cell to an
-   object nobody asked for. Widening that tuple must fail a test, not pass review.
+2. It maps to ``(NEXT_TARGET, RESCAN)`` and nothing else. A refusal is fail-closed. Re-perceiving costs
+   nothing. ``NEXT_TARGET`` skips the part the planner could not reach for another of the same label,
+   never another object, and moves nothing itself: the owner allowed it here on 2026-09-29, and the next
+   pick's motion is judged in full. Every other action in the table commands motion. Widening that
+   tuple must fail a test, not pass review.
 
 The discrimination is the delicate part: ``MotionStatus.TIMEOUT`` covers BOTH "the planner found no
 route, nothing was sent" and "the command was accepted and overran its budget", and on real hardware
@@ -161,25 +163,25 @@ class RecoveryAdapterTests(unittest.TestCase):
 class RefusalRecoversByRescanOnlyTests(unittest.TestCase):
     """The safety rule, pinned so that widening it has to be deliberate."""
 
-    def test_the_mapping_is_rescan_and_nothing_else(self) -> None:
+    def test_the_mapping_is_skip_the_part_then_rescan_and_nothing_else(self) -> None:
         self.assertEqual(
             RecoveryDispatcher().actions_for(
                 GraspFailureReason.MOTION_PLAN_REFUSED
             ),
-            (SceneRecoveryAction.RESCAN,),
+            (SceneRecoveryAction.NEXT_TARGET, SceneRecoveryAction.RESCAN),
         )
 
-    def test_no_action_that_moves_or_redirects_is_reachable(self) -> None:
+    def test_no_action_that_moves_is_reachable(self) -> None:
         # Named individually rather than asserted as a set difference: each of these is a distinct
-        # way a fail-closed refusal would turn back into a motion or into picking the wrong object.
+        # way a fail-closed refusal would turn back into a motion. NEXT_VIEWPOINT was one until it was
+        # merged into RESCAN on 2026-09-29; NEXT_TARGET left this list the same day (owner), because it
+        # now skips the failed part for one of the same label and never switches object.
         actions = RecoveryDispatcher().actions_for(
             GraspFailureReason.MOTION_PLAN_REFUSED
         )
         for forbidden in (
-            SceneRecoveryAction.NEXT_VIEWPOINT,
             SceneRecoveryAction.NUDGE_TARGET,
             SceneRecoveryAction.CONTAINER_AGITATE,
-            SceneRecoveryAction.NEXT_TARGET,
         ):
             with self.subTest(action=forbidden):
                 self.assertNotIn(forbidden, actions)

@@ -263,38 +263,45 @@ in `jaw_io` and in `vacuum`. A pin number measured in the control box needs `io_
 | no switches, `open_on_connect_without_feedback: true` | **opens unconditionally**, and anything held is dropped (refused for `single_toggle`) |
 | no switches, flag off | does not actuate at all |
 | `confirm_open_at_start: true` on a solenoid | first **asks** whether the jaws stand open, as a toggle does, then the row above that fits |
-| `single_toggle` | **asks** whether the jaws stand open, before anything moves; closed is answered with one pulse to open them or an abort; with no terminal the connect is refused |
+| `single_toggle` | **asks** whether the jaws stand open, before anything moves, and writes nothing; closed is answered with one change to open them or an abort; with no terminal the connect is refused |
 
 ### A single toggle asks where its jaws stand
 
-`single_toggle` is one output where every pulse flips the jaws, and nothing is read back: the schema
-refuses a feedback input on it, and `confirm_open_at_start: false`. The owner's Hand-E on the Robotiq
-I/O Coupling is one. So the program counts its own pulses, and only a person can say where the count
-starts. The gripper's connect, which a program makes once at its start after the arm connects and
-before anything moves, asks at the terminal:
+`single_toggle` is one output where every change moves the jaws once, switched on as much as switched
+off, and nothing is read back: the schema refuses a feedback input on it, and
+`confirm_open_at_start: false`. The owner's Hand-E on the Robotiq I/O Coupling is one; the owner
+confirmed at the pendant on 2026-09-28 that switching tool DO0 on moves the jaws once and switching it
+off moves them once more, the other way. So a command is ONE change of the output, left where it went,
+and nothing is pulsed: the low, high, low pulse the driver sent until then moved the jaws two or three
+times, closing, opening and closing again at the part, and closing again after every release.
+
+The program counts its own changes, and only a person can say where the count starts. The gripper's
+connect, which a program makes once at its start after the arm connects and before anything moves,
+reads the output without writing it and asks at the terminal:
 
 ```text
-The jaws of the single_toggle hand on tool output 0: every pulse flips them and nothing reads them back, ...
+The jaws of the single_toggle hand on tool output 0: every change of its output moves them and nothing reads them back, ...
 Look at them. Do they stand OPEN? [Enter or 'open' = open, 'closed' = closed]:
-They stand CLOSED. [p] open them now with one pulse on tool output 0, which releases anything between them; [a] abort:
+They stand CLOSED. [p] open them now with one change of tool output 0, which releases anything between them; [a] abort:
 ```
 
-Enter or `open` starts the count open. `closed` offers `p`, one pulse there and then, after which the
+Enter or `open` starts the count open. `closed` offers `p`, one change there and then, after which the
 stroke (`close_settle_s`) is waited out, or `a`, which refuses the connect and rolls the arm back.
 With no terminal, and no question handed to the driver (`JawIOGripper(..., ask=...)`), the connect is
-refused in one line. Nothing is kept between programs: the next one asks again, so a pulse from the
-pendant's I/O tab or a bench `--pulse` between programs costs nothing.
+refused in one line. Nothing is kept between programs: the next one asks again, so switching the output
+at the pendant's I/O tab between programs costs nothing. The connect used to set an output it found
+high to low, and so moved the jaws before it asked; it writes nothing now.
 
 Only a key pressed after a question is shown answers it. Before each question at the terminal the
 console's typeahead is discarded: an Enter pressed while the models loaded, or meant as push-to-talk in
 examples 14 and 15, used to answer the connect question unseen, and with the jaws really closed every
 command after it ran inverted. A question handed in with `ask=` owns its input and is not drained. The
-hand counts as connected only once the answer is in and any pulse it chose has gone out: while the
+hand counts as connected only once the answer is in and any change it chose has gone out: while the
 question waits, every command is refused, and a disconnect from another thread refuses the connect.
 
-From there every pulse flips the count, whatever verb sent it:
+From there every change flips the count, whatever verb sent it:
 
-| Verb | Pulses |
+| Verb | Changes |
 |---|---|
 | a pick, before the arm moves | **none**, whatever `pre_open_mm` says; where the count says closed (a pick with no place before it) or cannot say, the pick asks again, and with nobody to ask it is refused before any motion |
 | a pick, at the part | exactly one, then `close_settle_s` |
@@ -306,33 +313,39 @@ At a pick start the question takes a word, not Enter:
 Look at them. Do they stand OPEN? [type 'open' or 'closed'; Enter alone is no answer here]:
 ```
 
-The program already believes the jaws stand closed there, so an empty line is asked again ("An empty
-line is no answer here."), and three answers that are none of the choices refuse the pick. A question
-whose connection changed while it waited, a disconnect or a reconnect from another thread, is refused
-without a pulse, and its answer is not acted on.
+The program already believes the jaws stand closed there, or cannot say, so an empty line is asked
+again ("An empty line is no answer here."), and three answers that are none of the choices refuse the
+pick. A question whose connection changed while it waited, a disconnect or a reconnect from another
+thread, is refused with nothing sent, and its answer is not acted on.
 
-The count flips only once the pin has read back HIGH, not when the write returns: a write the
-controller accepted says nothing about the pin (a wrong bank, a reserved pin). The driver reads the
-output back every 8 ms, one CB3 cycle, for about `pulse_s` and two cycles, 50 ms at least. A pin that
-never reads HIGH flips nothing, the low is still sent, and the command raises, naming the bank and the
-pin: the output never read HIGH, so nobody can say whether the jaws flipped. No further pulse goes out
-until the next pick's question,
-or the next connect's, has a person say where the jaws stand. A pin that still reads HIGH before a pulse
-would give no edge, so nothing is sent. The solenoids read their writes back the same way and raise
-where a level or a coil never shows.
+The output is read before every command. One that no longer stands where the program left it was
+switched by somebody else, at the pendant above all, and moved the jaws without the program knowing:
+the command is refused with nothing sent, naming the level it reads and the level the program left, and
+the next pick asks where the jaws stand. So a pick that finds the output switched by hand asks before
+it moves, and a close or a release in the middle of a pick is refused and ends the pick there (the
+owner's choice, 2026-09-28). An output switched on and off again stands where the program left it, and
+the jaws with it.
+
+The count flips only once the output has read back its new level, not when the write returns: a write
+the controller accepted says nothing about the pin (a wrong bank, a reserved pin). The driver reads the
+output back every 8 ms, one CB3 cycle, for 0.25 s at most. An output that never reads back flips
+nothing, and the command raises, naming the bank and the pin: nobody can say whether the jaws moved. No
+further change goes out until the next pick's question, or the next connect's, has a person say where
+the jaws stand. The solenoids read their writes back the same way and raise where a level or a coil
+never shows.
 
 A toggle takes no width: `set_width_mm` is refused, the hand verbs and the pick loop say open or close,
 and the load does not ask `closed_below_mm` to sit between the widths. Nothing measures the jaws, so a
-pick counts as grasped and its report says `hold not checked (no sensor)`, with no millimetres.
+pick counts as grasped and its report says `hold not checked (no sensor)`, with no millimetres. It
+reads no `pulse_s` either.
 
-A pulse the count never saw inverts every later command: one lost to an e-stop or a cable, a power cut
+A change the count never saw inverts every later command: one lost to an e-stop or a cable, a power cut
 mid stroke. Nothing on this wiring can notice it; the next program's question is where a person puts it
-right. Measure the pulse the device needs with
-`python -m src.robot.drivers.ur --profile NAME --pulse 0 --for 0.2 --yes`: one call must flip the jaws
-once. The load refuses a `pulse_s` under 0.05 s for `single_toggle` and `double_solenoid`, several
-controller cycles, and the desk warns (`toggle pulse`) while a toggle's is under 0.1 s. `--jaws open`
-(or `closed`) moves them through the driver, which asks the question first. Never move them by hand: a
-device that keeps its own flip state is not moved by a hand pushing its jaws open.
+right. On the bench, `--set` moves the jaws once where it changes the output and not at all where the
+output already stands at that level, and `--pulse` (high, then low) moves them twice from low and once
+from high. `--jaws open` (or `closed`) moves them through the driver, which
+asks the question first. Never push the jaws open by hand; switch the output at the pendant instead, and
+the next pick asks where they stand.
 
 ### The travel time
 
@@ -487,12 +500,12 @@ nothing.
 
 The guard is keyed on the substitution, not on the absence of jaws. `gripper.vendor: none` carries no
 substitution record: the operator said this cell has no end-effector, and a calibration rig or a
-camera-only bring-up is a legitimate cell. It connects. With `robot.grasping.verification` enabled,
-`WidthDeltaGripperVerifier` refuses both cases by name: a substituted gripper as `FAILED` /
-`no_end_effector_built`, since it answers `get_width_mm()` with its configured maximum whatever it was
-commanded, and `gripper.vendor: none` as `no_end_effector_configured`. Verification is **off** in the
-shipped tree, so on the default open-loop pick nothing reads a width, which is why the refusal sits at the
-connect.
+camera-only bring-up is a legitimate cell. It connects. Nothing on the pick path refuses either case:
+the grasp verifier that refused both by name was removed on 2026-09-29 with the post-grasp verification
+stage and its `robot.grasping.verification` block, which no pick path ran. A pick reads the hold from the
+gripper's own `is_object_detected` and `hold_evidence` right after the close, which a `NullGripper` does
+not claim, so its close is reported unmeasured. The refusal at the connect is what guards the cell, and
+the hand verbs refuse a gripper that holds nothing before anything moves.
 
 ---
 

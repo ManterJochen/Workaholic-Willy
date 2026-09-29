@@ -1,4 +1,4 @@
-"""The mode-matrix harness: easy, auto and closed_loop across the m1, m2 and eih scenes, aggregated.
+"""The mode-matrix harness: easy and auto across the m1, m2 and eih scenes, aggregated.
 
 ``SimulationApp`` is a process singleton (one Isaac session per process), so each ``(scene, mode)`` cell
 runs as its own subprocess, one boot per cell. The driver holds three on-box rules:
@@ -16,10 +16,14 @@ Two ways to run:
 
     # 2) run the cells then aggregate (on-box; one Isaac boot per cell):
     <isaac python> -m src.willy_sim.run_mode_matrix --run --runs 3 \
-        --scenes m1,m2,eih --modes easy,auto,closed_loop --out logs/mode_matrix/matrix.json
+        --scenes m1,m2,eih --modes easy,auto --out logs/mode_matrix/matrix.json
 
 The aggregator (:func:`matrix_from_cells`, :func:`cell_command`) is pure; the subprocess driver
 (:func:`run_matrix`) is on-box only.
+
+``closed_loop``, the third column until 2026-09-29, left with the two-scan refinement it ran. It was
+measured not viable on all three scenes (the refiner lost the target on every second scan), and its
+three ``KNOWN_LIMITED`` notes left with it.
 """
 
 from __future__ import annotations
@@ -47,7 +51,7 @@ SCENES: dict[str, dict[str, Any]] = {
     "m2": {"module": "src.willy_sim.run_m2_pick", "extra": ["--prompt", "a red cube"]},
     "eih": {"module": "src.willy_sim.run_eih_pick", "extra": []},
 }
-MODES: tuple[str, ...] = ("easy", "auto", "closed_loop")
+MODES: tuple[str, ...] = ("easy", "auto")
 
 #: The robot the runners drive when no model is named. A cell on this robot keeps its bare scene label,
 #: so a matrix taken on this robot alone carries no robot prefix at all.
@@ -65,16 +69,9 @@ def scene_label(scene: str, robot: str = DEFAULT_ROBOT) -> str:
     return scene if robot == DEFAULT_ROBOT else f"{robot}/{scene}"
 
 #: Cells known to be limited: they run anyway, and the matrix annotates them rather than reporting a
-#: silent green. closed_loop fails on all three scenes, because the two-scan image-space IoU refiner
-#: returns target_lost whenever the standoff re-perceive shifts the object's image location (m1: the
-#: arm occludes the no-park overhead GT cam; m2: the standoff re-perceive falls under the IoU
-#: threshold; eih: the wrist cam moves between scans). The cause is the refiner, not a per-scene
-#: quirk: closed_loop needs a world-space, non-occluding re-perceive. easy and auto work on all three.
-KNOWN_LIMITED: dict[tuple[str, str], str] = {
-    ("m1", "closed_loop"): "NOT-VIABLE: refiner re-perceive occludes the no-park overhead GT cam -> target_lost (P1.C)",
-    ("m2", "closed_loop"): "NOT-VIABLE: two-scan refine IoU<threshold on the standoff re-perceive -> target_lost (P1.C)",
-    ("eih", "closed_loop"): "NOT-VIABLE: the moving wrist cam breaks the image-space IoU tracker (G13/P1.C)",
-}
+#: silent green. Empty since 2026-09-29: the three it held were closed_loop's, which left with the
+#: two-scan refinement. easy and auto work on all three scenes.
+KNOWN_LIMITED: dict[tuple[str, str], str] = {}
 
 
 def cell_command(
@@ -140,8 +137,8 @@ def matrix_from_cells(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "runs": runs,
             "pass_rate": pass_rate,
             "lift_mm_median": _median(lifts) if lifts else None,
-            # The note is keyed by the bare scene: these limits are properties of the refiner, not of
-            # the arm, so they hold for every robot running that scene.
+            # The note is keyed by the bare scene: a limit is a property of the scene and the mode, not
+            # of the arm, so it holds for every robot running that scene.
             "note": KNOWN_LIMITED.get((str(scene).rsplit("/", 1)[-1], str(mode))),
         }
         matrix.setdefault(str(scene), {})[str(mode)] = summary
@@ -289,7 +286,7 @@ def _write_and_print(cells: Sequence[dict[str, Any]], out: str) -> dict[str, Any
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Willy mode-matrix harness (EASY/AUTO/CLOSED_LOOP x M1/M2/EIH).")
+    ap = argparse.ArgumentParser(description="Willy mode-matrix harness (EASY/AUTO x M1/M2/EIH).")
     ap.add_argument("--run", action="store_true", help="run the cells as subprocesses (on-box); else aggregate-only")
     ap.add_argument("--aggregate-only", type=str, default=None, metavar="LOGDIR",
                     help="skip running; aggregate the *.result.json already in LOGDIR")
@@ -302,7 +299,7 @@ def main() -> None:
                     help="aim a symmetric object's jaw along the RADIAL axis. A shorter arm (UR3e) cannot "
                          "reach a TANGENTIAL top-down close at any azimuth, so its matrix needs this on.")
     ap.add_argument("--scenes", type=str, default="m1,m2,eih")
-    ap.add_argument("--modes", type=str, default="easy,auto,closed_loop")
+    ap.add_argument("--modes", type=str, default="easy,auto")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--out", type=str, default="logs/mode_matrix/matrix.json")
     ap.add_argument("--logdir", type=str, default="logs/mode_matrix")

@@ -16,7 +16,7 @@ from src.config.schema.robot.robot_schema import RobotGraspingApproachValidation
 def test_defaults_disabled_and_dense_only() -> None:
     cfg = RobotGraspingApproachValidationConfig()
     assert cfg.enabled is False
-    assert tuple(cfg.apply_modes) == ("dense_clutter", "dense_autonomous")
+    assert tuple(cfg.apply_modes) == ("dense_clutter",)  # dense_autonomous left with its mode, 2026-09-29
     assert cfg.num_approach_samples == 6
     assert cfg.collision_margin_mm == 0.0
 

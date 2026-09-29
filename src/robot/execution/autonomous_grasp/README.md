@@ -24,11 +24,14 @@ cell's cameras, models and planner, and
 | Noun | Built by | Verb | Returns |
 | --- | --- | --- | --- |
 | `AutonomousGraspService` | `Cell.build()`, `build_real_cell(robot_cfg, prompt=)`, `from_robot_config`, `from_components` | `pick(mode=None, look=...)`, `put_back(report)` | `AutonomousGraspReport`, `HandlingReport` |
-| `GraspMode` | `resolve_grasp_mode(value)`, or `Cell(..., mode=)` at the build | | `easy`, `auto`, `dense_clutter`, `closed_loop`, `dense_autonomous` |
+| `GraspMode` | `resolve_grasp_mode(value)`, or `Cell(..., mode=)` at the build | | `easy`, `auto`, `dense_clutter` |
 | `PickPrompt` | `PickPrompt.from_text(text)` | `service.set_prompt(text)` | the prompt it replaced |
 
-`resolve_grasp_mode` also takes the aliases `single`, `single_object`, `dense`, `closedloop` and
-`autonomous`, and `None` is `auto`. `mode=` on `pick()` changes the behaviour profile of one attempt,
+`resolve_grasp_mode` also takes the aliases `single`, `single_object` and `dense`, and `None` is
+`auto`. `closed_loop` and `dense_autonomous` (with their aliases `closedloop` and `autonomous`) were
+removed on 2026-09-29 with the two-scan pre-grasp refinement they ran, and are refused with the mode to
+name instead: `auto` for `closed_loop`, `dense_clutter` for `dense_autonomous`, which took over the
+`nudge_target` recovery. `mode=` on `pick()` changes the behaviour profile of one attempt,
 never the sampler the service was built with -- so the mode a cell RUNS IN is chosen at the build,
 `Cell.from_tree(tree, mode="dense_clutter")`, and asking a service built in one sampler for another
 comes back `MODE_NOT_AVAILABLE`.
@@ -43,8 +46,8 @@ them, [looks.py](../looks.py)) and perceives there, until a look finds something
 to the hand before a look, and a look the arm does not reach ends the attempt with nothing
 perceived. Without `look=` the pick perceives from where the arm stands, and `PickRun` hands a
 wrist camera `"home"`. The report names the looks tried, where the object's seen surface is
-centred in BASE (`object_centre_mm`) and the pose the tool closed at (`grasp_pose`), both `None` on
-the two-scan path. `put_back(report)` places a lifted part back at that pose through `Robot.place`.
+centred in BASE (`object_centre_mm`) and the pose the tool closed at (`grasp_pose`), both read off
+the pick report. `put_back(report)` places a lifted part back at that pose through `Robot.place`.
 
 `set_prompt` changes what the next picks look for (the phrase every camera grounds, the labels the
 detector's words map onto, and the label filter) with no camera reopened and no model reloaded:
@@ -75,11 +78,12 @@ calls. `service.enable_record_logging(path)` appends one `GraspAttemptRecord` pe
 
 | Refusal | When | What to do |
 | --- | --- | --- |
-| `MODE_NOT_AVAILABLE` outcome | `closed_loop` without a refiner, `dense_autonomous` without a verifier, a `mode=` of another sampler | enable the block, or build the service in that mode |
+| `MODE_NOT_AVAILABLE` outcome | a `mode=` of another sampler than the one the service was built with | build the service in that mode |
+| `ValueError`, `removed on purpose` | a mode that left on 2026-09-29: `closed_loop`, `dense_autonomous` | name the mode the sentence names |
 | `EXECUTION_FAILED` with `fault` | a `RobotError`, `RuntimeError` or `OSError` during the pick | `PickRun` and the console stop the campaign on it |
 | `MISSING_CAMERA_FRAME` outcome | a grasp won and no frame resolver maps it to BASE | declare the camera's calibration on its rig |
 | `ValueError` | no `mode` and no `robot.grasping` block declared | declare the block, or pass `mode=` |
-| `ValueError` | a real vendor with no CAMERA to BASE, or a physical recovery action with no `recovery_fixture` | as the message says |
+| `ValueError` | a real vendor with no CAMERA to BASE, or a physical recovery action with no envelope (a tree is refused at load without `recovery.fixture`; a hand-built `SceneRecoveryPolicy` raises) | as the message says |
 | `ValueError`, `TypeError` | a `policy=` on another arm or hand; both `motion=` and `policy=` | pass `motion=GraspMotion(...)` alone |
 
 A programmer's error still raises from `pick()`, and so do `NotImplementedError` and `RecursionError`.
@@ -92,10 +96,14 @@ A programmer's error still raises from `pick()`, and so do `NotImplementedError`
 | The service on a physical arm | never touched hardware |
 
 The default attempt is open-loop. Every advanced `robot.grasping` block ships `enabled: false`
-(`decision`, `closed_loop`, `verification`, `uncertainty`, `feasibility`, `ordering`, `recovery`,
-`dense_recovery`, `fusion`, `success_model`, `deep_ranker`, `approach_validation`, `performance`),
-and `robot.rl.mode` ships `hybrid_ml`, which builds no shadow router. The report's `layers` line
-names what actually ran, read off the attempt rather than the config.
+(`decision`, `uncertainty`, `feasibility`, `ordering`, `recovery`, `fusion`, `success_model`,
+`deep_ranker`, `approach_validation`, `performance`), and `robot.rl.mode` ships `hybrid_ml`, which
+builds no shadow router. The report's `layers` line names what actually ran, read off the attempt
+rather than the config. The hold an attempt reports is the execution policy's own check after its
+close (`hold_measured`), which reads the gripper's `is_object_detected` and `hold_evidence`. The
+separate post-grasp verification stage, its `verification` block and the `dense_recovery` block, with
+the service slots they filled (`verifier`, `verification_policy`, `recovery_policy`,
+`recovery_strategy`), were removed on 2026-09-29: no attempt consulted them.
 
 Two ways to build the service are not equivalent. `from_robot_config` reads the whole tree and fills
 `effective_config`. `from_components`, for a caller holding live handles the config cannot describe,
@@ -106,14 +114,17 @@ loop until the caller calls `build_effective_config` and `apply_orchestrator_ove
 Record logging is off unless `grasping.record_log_path` is set (it takes `${WILLY_RECORD_LOG:-}`, and
 an empty value is off). Each pick carries a unique `attempt_id`. A cell that logs records while
 `robot.rl.mode` is not `rl_shadow` warns once at boot, because a pairwise ranker cannot train on them.
-`EffectiveGraspingConfig.to_dict()` is the flat telemetry contract of 82 keys, each the state that
+`EffectiveGraspingConfig.to_dict()` is the flat telemetry contract of 77 keys, each the state that
 acted on the attempt: a block outside its `apply_modes` reads false even where the YAML says true.
+`closed_loop_enabled` left it on 2026-09-29 with the refinement it flagged, and
+`verification_enabled`, `dense_recovery_enabled` and `dense_recovery_allowed_actions` the same day
+with their blocks.
 
 ## Files
 
 | File | Holds |
 | --- | --- |
-| `service.py` | `AutonomousGraspService`: the factories, `pick()`, `set_prompt()`, the attempt, the decision loop, refine and verify |
+| `service.py` | `AutonomousGraspService`: the factories, `pick()`, `set_prompt()`, the attempt, the decision gate, the recovery loop |
 | `cells.py` | `build_real_cell`, `build_rehearsal_cell` and their component builders, `CellBuildRefused` |
 | `config.py` | `GraspMode`, `resolve_grasp_mode`, `GraspBehaviorProfile`, `EffectiveGraspingConfig` and its per-phase parts |
 | `report.py` | `AutonomousGraspOutcome`, `AutonomousGraspReport` |

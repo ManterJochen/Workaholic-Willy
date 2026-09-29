@@ -31,25 +31,29 @@ It prints `pick_started`, `attempt_started`, `perceived`, `ranked` with the cand
 | a listener | your function taking a `PickProgress` | `service.attach_progress_listener(fn)` | events while the pick runs |
 | `TargetOrderingConfig` | `robot.grasping.ordering` | `select_target(candidates=..., config=...)` | `OrderingDecision` |
 
-The orchestrator depends only on the `RobotArm` Protocol, a calculator, a perception Protocol and an
-optional viewpoint planner, which is how the simulation runners and a real cell share one loop.
+The orchestrator depends only on the `RobotArm` Protocol, a calculator and a perception Protocol, which
+is how the simulation runners and a real cell share one loop.
 
 ## Reasons become actions
 
 | Reasons from the calculator | What the loop does |
 | --- | --- |
-| `RESCAN_RECOMMENDED`, `NO_CANDIDATES_GENERATED`, `NO_VALID_DEPTH`, `LOW_DEPTH_CONFIDENCE`, `LOW_MASK_CONFIDENCE` | a fresh frame, without moving the robot |
-| `ACTIVE_PERCEPTION_RECOMMENDED`, `ALL_OUT_OF_WORKSPACE` | the viewpoint planner's next camera pose, then a fresh frame; with no planner, a rescan |
+| `RESCAN_RECOMMENDED`, `NO_CANDIDATES_GENERATED`, `NO_VALID_DEPTH`, `LOW_DEPTH_CONFIDENCE`, `LOW_MASK_CONFIDENCE`, `ACTIVE_PERCEPTION_RECOMMENDED`, `ALL_OUT_OF_WORKSPACE` | a fresh frame, without moving the robot |
 | anything else | ends with the matching outcome |
+
+The loop never moves the camera to look again. The viewpoint planners and the relocate path that did were
+removed on 2026-09-29; another view comes from the look poses a program hands a pick
+(`src/robot/execution/looks.py`) or from a second camera ([multiview/](../multiview/README.md)).
 
 With an IK service wired, the calculator drops an unreachable candidate and the next ranked one stands;
 without one, the motion planner is the first to refuse it. `IK_FAILED` means every candidate was
 unreachable, and it arrives with `RESCAN_RECOMMENDED`. With the swept-path validator on, the loop executes the first candidate whose
 approach is clear.
 
-`PickOutcome` is the typed end: `EXECUTED`, `RESCANNED_EXHAUSTED`, `RELOCATED_EXHAUSTED`, `NO_PERCEPTION`,
+`PickOutcome` is the typed end: `EXECUTED`, `RESCANNED_EXHAUSTED`, `NO_PERCEPTION`,
 `ABORTED`, `CANCELLED`, `OBJECT_NOT_DETECTED`, `EXECUTION_FAILED`, `CAMERA_FRAME_REJECTED`,
-`NO_COMMIT_INSUFFICIENT_FUSION`, `APPROACH_PATH_BLOCKED`, `CONTROLLER_NOT_OPERATIONAL`, `GRIPPER_FAULT`.
+`APPROACH_PATH_BLOCKED`, `CONTROLLER_NOT_OPERATIONAL`, `GRIPPER_FAULT`. `RELOCATED_EXHAUSTED` left with the
+relocate path; a record it ended reads `no_valid_grasp`.
 `CANCELLED` is an operator's stop between attempts, kept apart from `ABORTED` so a stop button never counts
 as a failed execution. `CONTROLLER_NOT_OPERATIONAL` stops the loop retrying into a controller that has
 protective-stopped. `GRIPPER_FAULT` is a hand that needs a person: a gripper that raised while it was
@@ -91,7 +95,6 @@ other, and with a target label the choice is made before ordering is asked.
 | Refusal | When | What to do |
 | --- | --- | --- |
 | `CAMERA_FRAME_REJECTED` | the chosen grasp is still in the camera frame on a cell that requires BASE | check the camera's declared calibration |
-| `NO_COMMIT_INSUFFICIENT_FUSION` | the commit gate found too little multi-view evidence and the re-look budget is spent | add a view, or leave the gate off |
 | `APPROACH_PATH_BLOCKED` | every ranked candidate's approach sweep hits the scene cloud | clear the scene or re-perceive |
 | `CONTROLLER_NOT_OPERATIONAL` | the controller is stopped or powered off | a person clears the stop |
 | `GRIPPER_FAULT` | the gripper raised, or a toggle hand believes its jaws closed and nobody at a terminal said otherwise | look at the hand, run from a terminal |
@@ -109,7 +112,7 @@ other, and with a target label the choice is made before ordering is asked.
 
 | File | Holds |
 | --- | --- |
-| [`pick_loop.py`](pick_loop.py) | `BinPickingOrchestrator`, `PickReport`, `PickOutcome`, `CommitPolicy` |
+| [`pick_loop.py`](pick_loop.py) | `BinPickingOrchestrator`, `PickReport`, `PickOutcome`, `PickAttempt` |
 | [`progress.py`](progress.py) | `PickStage`, `PickProgress`, `emit` |
 | [`target_selector.py`](target_selector.py) | `select_target`, `TargetOrderingConfig`, `OrderingDecision`, the blocker graph |
 | [`_pick_helpers.py`](_pick_helpers.py) | a chosen `GraspPoint` to a `GraspPose`, and successes to `TargetCandidate` records |
@@ -123,8 +126,9 @@ producer swallows its own exceptions so it cannot break a pick, which is why the
 
 - [`execution/autonomous_grasp/`](../../execution/autonomous_grasp/README.md) builds and drives this
   orchestrator; [`motion/`](../motion/README.md) executes the chosen grasp.
-- [`recovery/`](../recovery/README.md) and [`closed_loop/`](../closed_loop/README.md) are the two second
-  chances.
+- [`recovery/`](../recovery/README.md) is the second chance. The post-grasp verification stage, which no
+  pick path ran, left on 2026-09-29 with `closed_loop/`; the hold is the execution policy's own check
+  after its close ([`motion/`](../motion/README.md)).
 - [The console](../../../../api/README.md) streams `PickStage` over a WebSocket.
 - [Guide 05, the pick loop](../../../../docs/guide/05-pick-loop.md), and
   [the grasping config reference](../../../../docs/grasping-config-reference.md) for `ordering`.

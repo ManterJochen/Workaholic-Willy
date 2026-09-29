@@ -6,8 +6,8 @@ Locked design decisions exercised:
   T1 backward compatibility) but logically demoted; the new
   ``uncertainty.fail_closed_threshold`` wins **when**
   ``uncertainty.enabled=True``.
-* Q6=A: ``apply_modes`` defaults to ``("auto", "dense_clutter",
-  "dense_autonomous")``; ``"easy"`` is rejected.
+* Q6=A: ``apply_modes`` defaults to ``("auto", "dense_clutter")``;
+  ``"easy"`` is rejected (``"dense_autonomous"`` left with its mode on 2026-09-29).
 * Per-channel weights default to ``1.0`` for the five always-produced
   signals and ``0.0`` for the two optional ones (``topology_risk``,
   ``semantic_confidence``).
@@ -51,7 +51,7 @@ class GraspingUncertaintyConfigTests(unittest.TestCase):
         self.assertEqual(cfg.fail_closed_threshold, 0.4)  # mirrors legacy default
         self.assertEqual(
             cfg.apply_modes,
-            ("auto", "dense_clutter", "dense_autonomous"),
+            ("auto", "dense_clutter"),
         )
         self.assertIsNone(cfg.calibration_artifact_path)
 

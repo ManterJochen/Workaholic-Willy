@@ -1,9 +1,12 @@
-"""A pick looks from the joint positions its program declares, in order, until one finds something.
+"""A pick looks from the joint positions its program declares, in order.
 
 The owner, 2026-09-24: the look poses of a wrist camera are written in the Python program as joints in degrees
-(``JointPositions.deg``), handed to each pick, one or a list tried in order until something is found, home from the
-config when none is given; a fixed camera does not move. They replace the viewing pose the software generated, and
-nothing is said to the hand before a look: no release, no pulse.
+(``JointPositions.deg``), handed to each pick, one or a list tried in order, home from the config when none is given;
+a fixed camera does not move. They replace the viewing pose the software generated, and nothing is said to the hand
+before a look: no release, no pulse. Since 2026-09-28 a wrist camera's looks are the pick loop's: each look is fused
+with the ones before and the looking stops at the first safe grasp, so an object seen and not grasped goes on to the
+next look; a look the planner refuses is skipped (2026-09-29). A fixed camera handed looks still stops at the first
+look that finds something, and at the first it does not reach.
 
 The service here is the real one (``AutonomousGraspService.from_components``) on a desk arm that records every call,
 a hand that records every command, and a camera scripted per look, so the order is read off one shared log.
@@ -21,7 +24,6 @@ from src.robot.core import JointPositions, MotionCommand, MotionResult, MotionSt
 from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.execution.autonomous_grasp import AutonomousGraspOutcome, AutonomousGraspService, GraspMode
 from src.robot.execution.pick_run import PickRun, Recording
-from src.robot.grasping import DefaultPreGraspRefiner, GraspVerificationPolicy, NoOpVerifier, RefinementPolicy
 from src.robot.grasping.decision import DecisionEngine, DecisionPolicy
 from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver, StaticCameraToBaseResolver
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
@@ -133,7 +135,7 @@ def cell(events: list[Any], sees: list[bool | str], *, wrist: bool, refuse_joint
          mode: GraspMode = GraspMode.EASY, calculator: Any = None, **wiring: Any) -> AutonomousGraspService:
     """The pick service on the recording arm, hand and camera; a wrist camera's frames are placed by the tool.
 
-    ``wiring`` goes to ``from_components`` as it is: a decision layer, a refiner, a verifier.
+    ``wiring`` goes to ``from_components`` as it is: a decision layer.
     """
     resolver: Any = (EyeInHandFrameResolver(t_cam_to_tool=Transform.from_matrix(
         np.eye(4), from_frame=Frame.CAMERA, to_frame=Frame.TOOL)) if wrist
@@ -154,13 +156,6 @@ def deciding(policy: DecisionPolicy | None = None) -> dict[str, Any]:
     """The decision layer switched on: it ranks the frame and decides before the pick loop runs."""
     policy = policy or DecisionPolicy(enabled=True)
     return {"decision_policy": policy, "decision_engine": DecisionEngine(policy=policy)}
-
-
-def closed_loop() -> dict[str, Any]:
-    """The two-scan refine and a verifier (one that passes), what ``GraspMode.CLOSED_LOOP`` asks for."""
-    refinement = RefinementPolicy(enabled=True)
-    return {"refinement_policy": refinement, "refiner": DefaultPreGraspRefiner(policy=refinement),
-            "verification_policy": GraspVerificationPolicy(enabled=True), "verifier": NoOpVerifier()}
 
 
 def _looks(events: list[Any]) -> list[Any]:
@@ -212,13 +207,25 @@ class TheLooksAreTriedInOrderTests(unittest.TestCase):
         self.assertGreater(_first(events, "hand"), last_look)
         self.assertGreater(_first(events, "hand"), max(i for i, e in enumerate(events) if e == "perceive"))
 
-    def test_a_look_the_arm_does_not_reach_ends_the_attempt_with_nothing_perceived(self) -> None:
+    def test_a_pick_that_reaches_none_of_its_looks_ends_with_nothing_perceived(self) -> None:
+        """A look the planner refused before anything was sent is skipped and the next one tried (the owner,
+        2026-09-29); a pick that reaches none of them ends there, nothing perceived and nothing else commanded."""
         events: list[Any] = []
         report = cell(events, [True], wrist=True, refuse_joints=True).pick(look=[LOOK_A, LOOK_B])
 
         self.assertIs(AutonomousGraspOutcome.EXECUTION_FAILED, report.outcome)
-        self.assertEqual([("joints", LOOK_A.degrees())], events, "anything after the refused look was commanded")
+        self.assertEqual([("joints", LOOK_A.degrees()), ("joints", LOOK_B.degrees())], events,
+                         "anything but the looks was commanded")
         self.assertIn("outside the cable window", report.failure_summary())
+        self.assertIn("not reached", report.failure_summary())
+        self.assertEqual((), report.looks, "no look was perceived from")
+
+    def test_a_fixed_camera_ends_at_the_first_look_it_does_not_reach(self) -> None:
+        events: list[Any] = []
+        report = cell(events, [True], wrist=False, refuse_joints=True).pick(look=[LOOK_A, LOOK_B])
+
+        self.assertIs(AutonomousGraspOutcome.EXECUTION_FAILED, report.outcome)
+        self.assertEqual([("joints", LOOK_A.degrees())], events, "anything after the refused look was commanded")
         self.assertIn("not reached", report.failure_summary())
         self.assertEqual(1, len(report.looks))
 
@@ -231,12 +238,13 @@ class TheLooksAreTriedInOrderTests(unittest.TestCase):
 
 
 class EveryPickPathSendsAnEmptyLookOnTests(unittest.TestCase):
-    """The decision layer and the two-scan refine answer an empty view in their own words, not the pick loop's.
+    """The decision layer answers an empty view in its own words, not the pick loop's.
 
-    An empty frame reaches the decision layer as ``RECOVER`` for want of candidates, and a prompted label the
-    two-scan path did not find as ``NO_VALID_GRASP`` before anything moved; neither carries the pick loop's trail.
-    Both still found nothing where they looked, and are sent on to the next look. An object seen and not grasped is
-    not: it is answered from where it was seen, as on the pick loop's path.
+    An empty frame reaches the decision layer as ``RECOVER`` for want of candidates, and carries none of the pick
+    loop's trail. It still found nothing where it looked, and is sent on to the next look. An object seen and not
+    grasped is sent on too on a wrist camera, whose looks the decision layer now decides on fused (2026-09-28); a
+    fixed camera answers it from where it was seen, as on the pick loop's path. The two-scan refine, the other path
+    with words of its own, left on 2026-09-29, and its two cases with it.
     """
 
     def test_the_decision_layer_sends_an_empty_look_on_to_the_next(self) -> None:
@@ -258,18 +266,6 @@ class EveryPickPathSendsAnEmptyLookOnTests(unittest.TestCase):
         self.assertEqual([("joints", LOOK_A.degrees()), ("joints", LOOK_B.degrees())], _looks(events))
         self.assertIs(AutonomousGraspOutcome.SUCCEEDED, report.outcome, report.failure_summary())
 
-    def test_the_two_scan_refine_sends_a_look_without_the_prompted_label_on_to_the_next(self) -> None:
-        events: list[Any] = []
-        service = cell(events, ["bolt", True], wrist=True, mode=GraspMode.CLOSED_LOOP, **closed_loop())
-        service.set_target_label("part")
-
-        report = service.pick(look=[LOOK_A, LOOK_B])
-
-        self.assertEqual([("joints", LOOK_A.degrees()), "perceive", ("joints", LOOK_B.degrees()), "perceive"],
-                         events[:4])
-        self.assertEqual([("joints", LOOK_A.degrees()), ("joints", LOOK_B.degrees())], _looks(events))
-        self.assertIs(AutonomousGraspOutcome.SUCCEEDED, report.outcome, report.failure_summary())
-
     def test_what_the_decision_layer_saw_is_in_its_report(self) -> None:
         """The frame's facts the next look is decided on: how many objects it held, and why none was grasped."""
         events: list[Any] = []
@@ -280,26 +276,23 @@ class EveryPickPathSendsAnEmptyLookOnTests(unittest.TestCase):
         self.assertEqual(1, report.telemetry["n_segmentations"])
         self.assertEqual(("all_collided",), report.telemetry["reasons"])
 
-    def test_an_object_seen_and_not_grasped_by_the_decision_layer_ends_the_looking_where_it_was_seen(self) -> None:
+    def test_an_object_seen_and_not_grasped_on_the_wrist_is_looked_at_from_the_next_look(self) -> None:
         events: list[Any] = []
         report = cell(events, [True], wrist=True, mode=GraspMode.AUTO, calculator=_CalculatorThatFindsNoGrasp(),
                       **deciding()).pick(look=[LOOK_A, LOOK_B])
 
         self.assertIs(AutonomousGraspOutcome.DECISION_RECOVER_PENDING, report.outcome)
+        self.assertEqual([("joints", LOOK_A.degrees()), ("joints", LOOK_B.degrees())], _looks(events))
+        self.assertEqual(2, len(report.looks))
+
+    def test_an_object_seen_and_not_grasped_by_a_fixed_camera_ends_the_looking_where_it_was_seen(self) -> None:
+        events: list[Any] = []
+        report = cell(events, [True], wrist=False, mode=GraspMode.AUTO, calculator=_CalculatorThatFindsNoGrasp(),
+                      **deciding()).pick(look=[LOOK_A, LOOK_B])
+
+        self.assertIs(AutonomousGraspOutcome.DECISION_RECOVER_PENDING, report.outcome)
         self.assertEqual([("joints", LOOK_A.degrees())], _looks(events))
         self.assertEqual(1, len(report.looks))
-
-    def test_an_object_seen_and_not_grasped_by_the_two_scan_refine_ends_the_looking_where_it_was_seen(self) -> None:
-        events: list[Any] = []
-        service = cell(events, [True], wrist=True, mode=GraspMode.CLOSED_LOOP,
-                       calculator=_CalculatorThatFindsNoGrasp(), **closed_loop())
-        service.set_target_label("part")
-
-        report = service.pick(look=[LOOK_A, LOOK_B])
-
-        self.assertIs(AutonomousGraspOutcome.NO_VALID_GRASP, report.outcome)
-        self.assertEqual([("joints", LOOK_A.degrees())], _looks(events))
-        self.assertFalse(any(isinstance(e, tuple) and e[0] == "move" for e in events), "the arm left its look")
 
 
 class AStopIsHonouredBeforeEveryLookTests(unittest.TestCase):

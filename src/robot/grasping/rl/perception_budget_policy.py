@@ -3,8 +3,11 @@
 Ships the perception-budget policy contract and a deterministic
 LinUCB contextual-bandit baseline that decides, per attempt, whether
 the runtime should ``STOP`` (commit and proceed to grasp with current
-views) or ``CONTINUE`` (request another viewpoint from
-:class:`ScoringViewpointPlanner`).
+views) or ``CONTINUE`` (take another view). The deterministic planner
+``CONTINUE`` once asked for a viewpoint, ``ScoringViewpointPlanner``, was
+removed on 2026-09-29; another view now comes from a look pose or a
+second camera, and this policy is measured on the sim runner's
+overhead-versus-fused views (``run_multiview_pick --collect-perception``).
 
 Authority locks (identical to the other shadow policies):
 
@@ -360,9 +363,9 @@ DEFAULT_MIN_SUPPORT_THRESHOLD: int = 5
 # ---------------------------------------------------------------------------
 
 #: Conservative default: continue gathering until at least 2 views,
-#: then stop. This mirrors the deterministic
-#: :class:`ScoringViewpointPlanner` behaviour for low view counts and
-#: short-circuits perception cost beyond the second view.
+#: then stop. This mirrors what the deterministic
+#: ``ScoringViewpointPlanner`` (removed 2026-09-29) did for low view
+#: counts and short-circuits perception cost beyond the second view.
 DEFAULT_FALLBACK_TABLE: Mapping[str, str] = {
     VIEWS_SEEN_BUCKET_0: PERCEPTION_ACTION_CONTINUE,
     VIEWS_SEEN_BUCKET_1: PERCEPTION_ACTION_CONTINUE,

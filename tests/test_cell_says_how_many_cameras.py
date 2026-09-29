@@ -67,9 +67,9 @@ def _camera(cameras: dict[str, str | None]):  # noqa: ANN202
 
 
 def _lines(cameras: dict[str, str | None], **kwargs) -> list[tuple[str, str]]:  # noqa: ANN003
-    # `frame_resolver=None` on purpose: with fusion enabled the overlay builds the voxel substrate
-    # only when a resolver exists, and this test is about the CAMERA COUNT line, not that substrate.
-    runtime = SimpleNamespace(orchestrator=SimpleNamespace(frame_resolver=None))
+    # A bare orchestrator stand-in: this test is about the CAMERA COUNT line, and the overlays only
+    # set attributes on it.
+    runtime = SimpleNamespace(orchestrator=SimpleNamespace())
     grasping, camera = _grasping(cameras, **kwargs), _camera(cameras)
     captured: list[tuple[str, str]] = []
 

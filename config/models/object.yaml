@@ -11,7 +11,10 @@ objectdetector:
   threshold: 0.4
   local: True
   optim:
-    torch_dtype: auto          # fp16 on CUDA, fp32 elsewhere; fp16 can miss small objects
+    # Unset on purpose (2026-09-29): fp32 weights with fp16 autocast, the path that holds recall on
+    # small objects. `auto` loads fp16 weights on CUDA and misses them, and naming "float32" turns
+    # the autocast off as well; docs/guide/02-models.md section 6 has the table.
+    torch_dtype: null
     attn_implementation: "eager"  # all this model supports; sdpa and flash_attention_2 raise
     channels_last: true
     compile: false             # opt-in; can speed up after warm-up

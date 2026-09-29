@@ -63,9 +63,10 @@ UNCERTAINTY_RERANK_METADATA_KEY_WEIGHT: str = "uncertainty_rerank_weight"
 #: The locked dense-only subset of grasp modes the reranker may reorder. It mirrors
 #: the schema-side ``_DENSE_ONLY`` set in
 #: :class:`GraspingSuccessModelConfig._validate`, duplicated here so the runtime
-#: carrier validates the same contract without pydantic.
+#: carrier validates the same contract without pydantic. ``dense_autonomous`` left
+#: with the mode on 2026-09-29.
 _DENSE_BLEND_MODES: frozenset[str] = frozenset(
-    {"dense_clutter", "dense_autonomous"}
+    {"dense_clutter"}
 )
 
 

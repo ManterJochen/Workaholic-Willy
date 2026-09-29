@@ -63,7 +63,7 @@ unable to choose between retry, rescan, escalation and abort, so the result carr
 | Every candidate was filtered | `NO_CANDIDATES_GENERATED`, `ALL_COLLIDED`, `ALL_OUT_OF_WORKSPACE`, `ALL_TABLE_CONFLICT`, `IK_FAILED`, `NO_VALID_GRASP` |
 | A policy refused | `TOPOLOGY_RISK_REJECTED`, `SEMANTIC_REJECTED`, `DEFORMABLE_ROUTING_REQUIRED` |
 | Try something different | `RESCAN_RECOMMENDED`, `TRY_NEXT_CANDIDATE`, `ACTIVE_PERCEPTION_RECOMMENDED` |
-| The closed loop lost it | `TARGET_LOST_DURING_REFINE`, `REFINEMENT_DIVERGED` |
+| The two-scan refinement lost it (no producer since it left on 2026-09-29; kept for the recovery table and old records) | `TARGET_LOST_DURING_REFINE`, `REFINEMENT_DIVERGED` |
 | The cell cannot move | `MOTION_PLAN_REFUSED`, `CONTROLLER_NOT_OPERATIONAL` |
 
 The enum is coarse on purpose: enough for an execution layer to branch on. The full root-cause
@@ -103,7 +103,7 @@ dropped and named, never fused at a guessed position.
 | --- | --- | --- |
 | `ValueError` from `GraspPoint` | a zero `approach` or `axis`, a negative width, a score outside `[0, 1]` | fix the value |
 | `ValueError` from `resolve_grasp_sampling_mode` | a value outside the accepted forms | use a mode name or a bool |
-| a camera absent from `acquire_all()` | it produced no frame; `MappedCameraRig.last_failures` says why | the loop applies `fusion.on_camera_unavailable` (`degrade` or `refuse`) |
+| a camera absent from `acquire_all()` | it produced no frame; `MappedCameraRig.last_failures` says why | the loop applies `fusion.geometry.on_camera_unavailable` (`degrade` or `refuse`) |
 
 ## Status
 

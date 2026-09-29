@@ -4,8 +4,8 @@ Every response says which of the two it came from. They are not interchangeable:
 die with the process; records survive restarts and include what the CLI runner wrote, but the production
 serializer fills six of the twelve blocks on a default attempt, so the target and the candidate set are
 not stored. The executed pose does survive, in ``execution.executed_grasp`` and, since 2026-09-10, in
-``selected_grasp``; the refinement trail survives only on an attempt that ran the refiner, which no
-shipped config turns on. A view that mixed them silently would let an operator conclude that something
+``selected_grasp``; the refinement trail survives only on a record logged before the refiner was removed
+on 2026-09-29. A view that mixed them silently would let an operator conclude that something
 is stored which is not.
 """
 

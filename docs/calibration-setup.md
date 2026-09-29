@@ -683,9 +683,11 @@ robot:
 
 `fusion.cameras` names which rigs are fused and holds nothing else, and an id in it that names no
 rig in `camera.cameras.rigs` is refused at load. `fusion.enabled` is the switch the per-camera map
-hangs off: with it `false` the map builder returns nothing and your whole `cameras` block is ignored
-without a word. The map then reaches the pick loop only when `fusion.geometry.enabled` is true as
-well.
+hangs off: it builds each enabled camera's CAMERA to BASE resolver, and only while
+`fusion.geometry.enabled` is on too, because nothing else asks for the map. With `fusion.enabled`
+`false` and geometry on, the map comes back empty and the pick runs single-view, and the loop warns on
+every pick that each other camera's view was dropped. With geometry off, the map is never built and
+no pick warns.
 
 **The primary camera may be listed in `fusion.cameras`.** `_build_multi_camera_rig` in
 `src/robot/execution/autonomous_grasp/cells.py` leaves it out of the extra-camera rig, because the
@@ -693,12 +695,6 @@ primary already streams through the main perception source, and the orchestrator
 `configured_camera_ids`, the cameras a pick waits for, leaves it out as well. Both are decided in code
 from `camera.cameras.primary_rig_id`, so listing the primary costs nothing, and a two-camera cell can
 name both of its cameras.
-
-Turning `fusion.enabled` on does one thing the name does not advertise. Alongside the resolvers it
-constructs the multi-view voxel substrate, which then ingests each view on every pick. Nothing reads
-its output in the default path, because the gate that would let fused evidence decide is
-`fusion.commit_policy.enabled` and it stays off, so it costs time and buys nothing until that gate
-is on.
 
 Three consequences of how the multi-camera path is built. Each camera named in the map must also be
 an RGB-D rig in `camera.cameras.rigs` that declares its `extrinsics`: an id that names no rig is
