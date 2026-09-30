@@ -106,7 +106,7 @@ one-off pause mid-session. `preload: true` loads it when the cell is built, exce
 | --- | --- |
 | The route picking the intended object, and the grounding table above | measured in simulation |
 | The coordinate space, against real weights on a synthetic scene (IoU about 0.87) | measured in simulation (`tests/test_vlm_inference.py`) |
-| The route on a real cell's camera | never touched hardware |
+| The route on a real cell's camera | run on a physical cell: a wrist D415 on a UR10 (CB3); no measurement is kept here |
 
 The parser, the coordinate space and the unavailability contract are also tested without a GPU, and no
 module here imports torch or transformers at import time, so a cell that never sends a hard prompt never

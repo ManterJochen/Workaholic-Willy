@@ -61,6 +61,7 @@ from typing import cast
 
 import numpy as np
 
+from src.contracts import chosen
 from src.geometry import Frame, Pose
 from src.geometry.quaternion import from_rotation_matrix
 from src.robot.core import (
@@ -84,12 +85,14 @@ from src.robot.core.gripper import (
     toggle_without_sensor_of,
     width_is_measured_of,
 )
+from src.robot.grasping.geometry.closing_axis import ClosingAxis, closing_axis_of
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 
 __all__ = [
     "GraspExecutionPolicy",
     "PolicyOutcome",
     "PolicyReport",
+    "closing_axis_twisted",
     "weakest_camera_world",
 ]
 
@@ -263,8 +266,19 @@ class GraspExecutionPolicy:
     # only: YCB, with its fixed graspable axis, needs a shape-aware yaw to the nearest reachable
     # orientation instead.
     align_closing_to_base_x: bool = False
+    # The closing axis the program named (``GraspMotion(closing_axis=...)``, :mod:`~src.robot.grasping.geometry.
+    # closing_axis`), or None for any. Not acted on here: the pick loop reads it before anything reads the candidates
+    # and hands this policy only a grasp that already closes along it, turned that way round, so the grasp judged is the
+    # grasp executed ("choose, don't twist", the owner, 2026-09-30). Refused beside ``align_closing_to_base_x``, which
+    # twists the chosen grasp afterwards. A name or an orientation given here is read into a ``ClosingAxis``.
+    closing_axis: ClosingAxis | None = None
 
     def __post_init__(self) -> None:
+        if self.closing_axis is not None:
+            self.closing_axis = closing_axis_of(self.closing_axis)
+        twisted = closing_axis_twisted(self)
+        if twisted:
+            raise ValueError(twisted)
         if self.approach_steps < 2:
             raise ValueError(
                 f"approach_steps must be >= 2, got {self.approach_steps}"
@@ -624,6 +638,23 @@ class GraspExecutionPolicy:
                 )
             )
         return tuple(poses)
+
+
+def closing_axis_twisted(motion: object) -> str:
+    """Why ``motion`` (a policy or a ``GraspMotion``) cannot close along the axis its program named, or ``""``.
+
+    A named ``closing_axis`` takes only the grasps that already close along it, so the grasp judged is the grasp
+    executed. ``align_closing_to_base_x`` twists every chosen grasp about base Z afterwards, onto faces nobody chose: the
+    simulator's aid for symmetric parts. The two together are the program's error, refused (``ValueError``) where a
+    motion or a policy is built and by the pick loop before anything moves. The switch is read as the twist reads it:
+    any true value (``1``, numpy's ``True``) twists, and is refused as ``True`` is.
+    """
+    closing_axis = getattr(motion, "closing_axis", None)
+    if not getattr(motion, "align_closing_to_base_x", False) or closing_axis is None or not chosen(closing_axis):
+        return ""
+    return ("closing_axis takes only the grasps that already close along the axis the program named, and "
+            "align_closing_to_base_x twists every chosen grasp about base Z afterwards, onto faces nobody chose (the "
+            "simulator's aid for symmetric parts): ask for one or the other; nothing was moved")
 
 
 def _controller_refusal(arm: object) -> str:

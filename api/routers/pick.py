@@ -99,6 +99,30 @@ def _refuse_unroutable_prompt(cell: Console, prompt: str) -> None:
     )
 
 
+def _refuse_unfit_push(cell: Console, push_mm: float | None) -> None:
+    """Refuse a push distance the cell would refuse, before the run starts: above the cell's ceiling
+    (``recovery.fixture.max_nudge_mm``), above the hard cap of 50 mm, or under 10 mm, which cannot open room for a
+    finger. Never shortened: the operator's number is taken as asked or refused with the sentence that says why."""
+    if push_mm is None:
+        return
+    service = cell.session.service
+    distance = getattr(service, "push_distance", None)
+    if not callable(distance):
+        return
+    try:
+        distance(push_mm)
+    except ValueError as refused:
+        logger.warning("Pick refused before anything moved: push_mm=%r (%s).", push_mm, refused)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "push_distance_refused",
+                "message": str(refused),
+                "detail": {"push_mm": push_mm},
+            },
+        ) from None
+
+
 @router.post("/pick", response_model=RunOut, status_code=202, summary="Start a run (THIS MOVES)")
 def post_pick(cell: Annotated[Console, Depends(console)], body: PickIn) -> RunOut:
     """202, not 200: the work is accepted and happening elsewhere, not finished when this returns."""
@@ -114,8 +138,9 @@ def post_pick(cell: Annotated[Console, Depends(console)], body: PickIn) -> RunOu
             },
         )
     _refuse_unroutable_prompt(cell, body.prompt)
+    _refuse_unfit_push(cell, body.push_mm)
     try:
-        run = _registry(cell).start(cell, prompt=body.prompt, picks=body.picks)
+        run = _registry(cell).start(cell, prompt=body.prompt, picks=body.picks, push_mm=body.push_mm)
     except RunConflict as conflict:
         raise HTTPException(
             status_code=409,

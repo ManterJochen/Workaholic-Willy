@@ -56,7 +56,7 @@ with ExitStack() as owners:  # one owner per rig, the primary first, each releas
         if seen.refused or not seen.objects:
             raise SystemExit((seen.refused or f"no camera located {OBJECT!r}") + "; nothing was picked")
         scene = seen.scene(0, tree.robot)  # the part's grasps, planned on what it stands on
-        if (best := scene.grasps().best) is None:
+        if (best := scene.grasps().best) is None:  # opt in: look_around(..., closing_axis="-y"); the scene takes it
             raise SystemExit(f"no grasp on {OBJECT!r} as the camera saw it; nothing was picked")
         print(picked := robot.pick(best.pose(), best.grip_width_mm, keep_out=seen.keep_out(0)))
         if not picked.ok:

@@ -4,16 +4,17 @@ Run it at the cell, under the cell's profile:
     WILLY_PROFILE=<your cell> python examples/real_robot/03_connect_and_move.py
 """
 
-from willy import Pose, Robot, load_tree
+from willy import Robot, load_tree
 
 robot = Robot.from_tree(load_tree())
 print(robot)             # the arm, the hand, the lock, the planner route and the camera world
 print(robot.safety())    # what this arm refuses, asked of the arm that was built
 
 # Poses in millimetres in the robot's base frame, joints in radians; choose both inside your
-# cell's workspace.
-above = Pose.tool_down(450.0, 100.0, 300.0)
-lower = Pose.tool_down(450.0, 100.0, 200.0)
+# cell's workspace. robot.tool_down points the tool straight down, its fingers closing the way your
+# cell's hand naturally stands (robot.natural_closing_axis), along base x where it names none.
+above = robot.tool_down(450.0, 100.0, 300.0)
+lower = robot.tool_down(450.0, 100.0, 200.0)
 
 # Connecting takes the cell's lock, then the arm, then the hand; a hand may sweep its fingers as it
 # activates. Every motion is planned and checked against the camera world. With no camera handed in

@@ -590,6 +590,24 @@ robot:
   # [default: null]
   look_joint_positions_deg: null
 
+  # How the hand and its camera naturally stand: the direction the jaws close along where nothing else
+  # says. A name Pose.tool_down takes (x, -x, y, -y, radial, -radial, tangential, -tangential; a leading +
+  # allowed; radial and tangential are read at each place), or a quaternion [x, y, z, w], as a taught pose
+  # gives it, whose tool +X laid onto the base XY plane is that direction: only its heading counts, not its
+  # pitch out of the horizontal. Camera grasps stay free, any closing direction and any tilt: of a grasp's
+  # two equivalent wrist turns, half a turn about its approach apart (the same two contact faces, the jaws
+  # swapped), the pick, its push, the Locator and Scene.grasps take the one whose tool +X lies nearer this
+  # direction at the grasp's place. No grasp is left out or tilted, and a program's own closing_axis
+  # (GraspMotion, look_around, Scene.grasps) takes precedence. Beside the simulator's twist (GraspMotion
+  # align_closing_to_base_x), which chooses the way round itself, no grasp is turned; a push still takes the
+  # natural way round. A pose built through the cell, robot.tool_down(x, y, z), closes along it where the
+  # program names no axis. Unset, no grasp is turned and robot.tool_down closes along x, as Pose.tool_down
+  # does. Refused at load: an unknown name, a quaternion that is none, one whose tool +X stands within 10
+  # degrees of the vertical.
+  #   natural_closing_axis: "-y"        # the tool +X along base -y
+  # [default: null]
+  natural_closing_axis: null
+
   # Cartesian POSITION the robot can retreat to at operator request.
   safe_pose:
 
@@ -723,13 +741,16 @@ robot:
       backend: fcl
 
       # The clearance in mm that must remain between every monitored shape pair (arm link vs arm link, base,
-      # tool, and every fixture box).
+      # tool, and every declared fixture box; a box a camera saw keeps perceived_min_distance_mm). It is also
+      # the step every path is sampled at.
       # [default: 10.0]
       min_distance_mm: 10.0
 
       # Clearance (mm) handed to the TRAJECTORY PLANNER so it stops proposing configurations this guard will
       # reject. Undeclared by default: a UR cell that plans with cuRobo must set it here or in its profile, or
-      # it refuses to start a planner rather than inherit a number nobody measured for that arm and hand.
+      # it refuses to start a planner rather than inherit a number nobody measured for that arm and hand. It
+      # pads the planner's model only: where the padded spheres alone refuse a pose this guard accepts, on the
+      # arm's own pairs, this guard decides.
       # [default: null]
       planner_margin_mm: null
 
@@ -742,6 +763,17 @@ robot:
       # Static fixture obstacle used by the self-collision guard.
       # No entries. Each item under `fixtures:` is a complete block; see the index for its keys.
       fixtures: []
+
+      # The clearance in mm the exact mesh guard keeps from a box a camera saw. That box holds the thinned
+      # cloud, one point per 10 mm camera voxel, grown by `planning_world.perceived.margin_mm`, so 5 keeps the
+      # arm 20 mm from every point of it. A pixel the thinning dropped can lie nearer a box face than the
+      # margin: over 3,400 noise-free synthetic scenes at the shipped tuning, down to 4.07 mm inside its box,
+      # at least 9 mm from a sample the guard passes; a measurement, not a bound. The arm against itself and
+      # every declared fixture keep `min_distance_mm`. This plus the margin must reach `min_distance_mm`, the
+      # step every path is sampled at, and while it is below `min_distance_mm` the voxel may be no coarser
+      # than the 10 mm it was measured at, or the config is refused at load.
+      # [default: 5.0]
+      perceived_min_distance_mm: 5.0
 
       # An alternate DIRECTORY to load the pre-baked collision-mesh bundle from.
       # [default: null]
@@ -854,7 +886,9 @@ robot:
       # How far, in mm, every configuration of a straight joint line has to stay from the planner's world (the
       # declared cell and the camera's) before the line runs instead of a plan. A line that comes closer is
       # planned around. 10 mm is the distance cuRobo's optimiser keeps its own plans from an obstacle, and the
-      # local guard's shipped self_collision.min_distance_mm. 0 judges a line at no penetration, as a plan is.
+      # local guard's shipped self_collision.min_distance_mm, which it keeps from the arm and a declared fixture;
+      # from a box the camera saw (already grown by perceived.margin_mm) it keeps perceived_min_distance_mm,
+      # 5 mm. 0 judges a line at no penetration, as a plan is.
       # [default: 10.0]
       line_clearance_mm: 10.0
 
@@ -978,7 +1012,11 @@ robot:
         # [default: 2]
         pixel_stride: 2
 
-        # Cloud thinning before anything else, in mm. Smaller keeps more shape and costs more time.
+        # Cloud thinning before anything else, in mm. Smaller keeps more shape and costs more time. It keeps
+        # the first pixel of each voxel in the camera's frame and the boxes are fitted to those, so a coarser
+        # voxel lets a pixel it dropped lie further out of its box: at 20 a measured pixel lay 5.6 mm outside
+        # every box. The 5 mm self_collision.perceived_min_distance_mm was measured at 10, and while seen boxes
+        # are held nearer than self_collision.min_distance_mm a coarser voxel is refused at load.
         # [default: 10.0]
         voxel_size_mm: 10.0
 
@@ -1010,17 +1048,21 @@ robot:
         margin_mm: 15.0
 
         # How many perceived boxes there is room for beside the declared ones. The planner reserves a
-        # fixed number of collision slots when it starts, so this is a real ceiling: the nearest
-        # survive and the rest are counted and named in the report, because an obstacle the planner
-        # never received is one it will route straight through.
-        # [default: 8]
-        max_boxes: 8
+        # fixed number of collision slots when it starts, so this is a real ceiling. Every object is a
+        # height map of a few boxes (a bin is its walls); past the ceiling the boxes merge into the
+        # boxes that hold them, down to one per object, and only what still does not fit is left out,
+        # counted and named, and the motion refused, because an obstacle the planner never received is
+        # one it will route straight through.
+        # [default: 64]
+        max_boxes: 64
 
         # Carry each perceived box down to the support plane instead of stopping at the surface that
         # was seen. A depth camera measures surfaces, not bodies: a part on a bench comes back as its
         # top face, and a planner routing around that sheet drives a link through the part under it.
-        # One cost worth knowing: a container whose rim the camera sees and that nobody declared
-        # becomes a solid block from rim to bench, and the cell can then never reach into it.
+        # Each box is one column of the object's height map, so a container nobody declared comes
+        # back as its walls, each carried down to the bench, with its inside free as long as the camera
+        # sees its floor within plane_clearance_mm of the bench. Off, a box ends margin_mm under the
+        # lowest point seen in it, and what stands under a seen surface is in no box.
         # [default: true]
         floor_to_plane: true
 
@@ -1253,21 +1295,25 @@ robot:
       # is refused at load with that sentence. The mode's built-in profile is a second gate this list
       # cannot widen: auto allows rescan and next_target, dense_clutter allows rescan, next_target and
       # nudge_target, and no profile allows container_agitate. rescan re-runs the pick with a fresh
-      # perceive and rank. next_target is a rescan that skips the part that failed, for this pick and the
-      # next two, and only picks another part of the same label, never another object; until the service
-      # hands the loop its memory of failed parts, it is refused before anything moves and the rescan
-      # runs instead. nudge_target pushes the part with the open jaws, inside the pick attempt; it is
-      # offered only for all_collided (at least one grasp collided) with a neighbour seen within 25 mm of
-      # the part, and needs a fixture; until the pick attempt runs the push, the loop's nudge is refused
-      # before anything moves (refused_no_offset). container_agitate is refused at load unless
-      # grasping.support.container declares its interior box. An action refused before anything moved
-      # falls through to the next one; a motion that failed ends the loop.
+      # perceive and rank; a wrist pick handed looks gets none, since its looks were its rescans.
+      # next_target is a rescan that skips the part that failed, for this pick and the next two, same
+      # label only, never another object; a wrist pick runs its looks again for the next part, and one
+      # that sees only skipped parts stops with a sentence. nudge_target pushes the part with the open
+      # jaws inside the pick attempt, on a wrist camera, dense_clutter only: offered for all_collided (at
+      # least one grasp collided), and for a blocked approach where approach validation runs, with a
+      # neighbour seen within 25 mm of the part; it needs a fixture, and pushes at most 1 per part, 2 per
+      # pick and 5 per campaign. A push that stops once something may have moved leaves the arm where it
+      # is and ends the campaign: a person decides. The loop itself never plans a nudge. container_agitate
+      # is refused at load unless grasping.support.container declares its interior box. An action refused
+      # before anything moved falls through to the next one; a motion that failed ends the loop.
       # [default: []]
       # [Options: rescan, next_target, nudge_target, container_agitate]
       allowed_actions: []
 
-      # A per-action cap, given as (action, count) pairs, on top of the global max_recovery_actions e.g.
-      # allow at most one nudge_target per pick while still permitting several rescans.
+      # A per-action cap, given as (action, count) pairs, on top of the global max_recovery_actions, e.g.
+      # allow at most one rescan per pick. A count of 0 switches that action off. For nudge_target a count
+      # above 0 only switches the push on: the push keeps its own budgets, 1 per part, 2 per pick and 5 per
+      # campaign.
       # [default: []]
       per_action_budget: []
 
@@ -1280,9 +1326,11 @@ robot:
       # Recovery action envelope in robot base frame (mm).
       # center_mm: box centre.
       # half_extents_mm: half-size per axis; box spans centre +/- extents.
-      # max_nudge_mm: the longest push any recovery action may command, at most 50; a larger value is
-      #   refused at load. A nudge_target push is 30 mm unless asked for another distance, never more than
-      #   this (a request for more is refused, not shortened), and never less than 10 mm [default: 30.0].
+      # max_nudge_mm: the longest push the cell allows, from 10 to 50; any other value is refused at load. A
+      #   request (the API, a PickRun) for a longer push is refused, not shortened [default: 50.0].
+      # push_distance_mm: how far a nudge_target push moves the part when nobody asks for another
+      #   distance; at least 10 (a shorter push cannot open room for a finger) and never more than
+      #   max_nudge_mm (refused at load) [default: 30.0].
       # Required for physical recovery actions (nudge_target/container_agitate).
       # Only active when robot.grasping.recovery.enabled is true.
 

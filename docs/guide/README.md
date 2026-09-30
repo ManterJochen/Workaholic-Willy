@@ -60,6 +60,9 @@ passed after the subcommand.
 | clear a whole bin rather than one object | [05](05-pick-loop.md), the bin-picking orchestrator |
 | turn on record logging for the soak, KPI and learning tools | [05](05-pick-loop.md), record logging |
 | work out why nothing was picked | [05](05-pick-loop.md), troubleshooting |
+| tell a wrist camera where to look from | [05](05-pick-loop.md), a wrist camera looks around, and [01](01-configuration.md) for `robot.look_joint_positions_deg` |
+| grip only once both jaw contact faces were seen | [05](05-pick-loop.md), `both_faces` |
+| let a dense pick skip a failed part, or push a boxed-in one | [05](05-pick-loop.md), recovery, and [grasping-config-reference.md](../grasping-config-reference.md) |
 
 ## What is on, and what is only built
 
@@ -67,9 +70,11 @@ Two facts the guides repeat, because believing otherwise costs a day.
 
 **The default pick is open-loop.** Perceive, generate and score candidates on a deterministic
 geometric rank, run the safety preflight and IK, move and close, log. The decision gate, recovery,
-multi-view fusion, feasibility and occlusion scoring, clutter ordering, the learned success model and
-the reinforcement-learning layer are all built and all default to off. Check any claim of that shape
-against the tree rather than against a document:
+fixed-camera fusion, feasibility and occlusion scoring, clutter ordering, the learned success model and
+the reinforcement-learning layer are all built and all default to off. One thing needs no switch: **a
+wrist camera looks around** whenever a pick hands it looks, fuses them and stops as soon as the grasp is
+safe ([05](05-pick-loop.md)). Check any claim of that shape against the tree rather than against a
+document:
 
 ```bash
 python -c "from willy import load_tree; g = load_tree().robot.grasping; print({n: getattr(g, n).enabled for n in ('fusion', 'decision', 'recovery', 'success_model')})"
@@ -96,8 +101,27 @@ YAML mentions. It lists at most 40 keys per tier; pass `--limit 500` for the com
 Every command printed here was run against this repository, and every path and config key named here
 was resolved against it. What is not promised is a number. The pick rates a cell reaches depend on
 its optics, its objects and its gripper, so the guides state the rule a gate applies rather than the
-score somebody else's run got. Where a guide does report a result, it uses the three evidence levels
-of the root README's [Status and honest scope](../../README.md#status-and-honest-scope).
+score somebody else's run got. Where a guide does report a result, it says which of four levels of
+evidence stands behind it, and they mean exactly this:
+
+| Level | Means |
+|---|---|
+| **run on a physical cell** | a real arm, hand or camera driven by this code at a cell; the page names what ran, and no pick rate from it is kept here |
+| **measured in simulation** | Isaac Sim, on the box, with numbers |
+| **measured against real controller software** | a real protocol or a real controller, no physical motion |
+| **never touched hardware** | code complete, behaviour unproven |
+
+**Where it has run.** A **UR10 (CB3)** with a **D415 on the wrist** and a **Hand-E switched over one tool
+output** (`jaw_io`, `single_toggle`) has run this code from a powered-off arm to camera picks: the
+connect, home and moves planned with cuRobo (example 03), the wrist camera's calibration by hand in
+freedrive against one ArUco marker (examples 09 and 10), detection and segmentation on its frames, and
+camera picks through `PickRun` (example 12) and the `Locator` (example 13). Two gripper drivers were
+measured with a UR: `jaw_io` and the Robotiq driver over its URCap socket, whose port 63352 this cell
+refused, so its Hand-E runs as `jaw_io`; OnRobot and suction never touched hardware. **Not run there
+yet:** the wrist looks of 2026-09-29, their generated view and the push; the operator console and the
+API; and the deep grasp network, which was never trained. A few package pages write this level as
+*measured on a UR10*, *measured against a UR10*, *measured against UR-Robot* or *measured on a real
+camera setup*.
 
 Two consequences worth carrying between guides:
 

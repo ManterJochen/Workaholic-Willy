@@ -43,6 +43,9 @@ class PlannerStartReport:
     seconds: float = 0.0
     #: Which wrist cameras the planner carried (``WristBodies.line``), or why none were asked about.
     wrist_bodies: str = ""
+    #: Each look the cell profile configures, screened by the exact guard and the planner just started, one line each
+    #: (``PoseScreen.render``); empty where the profile configures none.
+    looks: tuple[str, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -62,6 +65,7 @@ class PlannerStartReport:
             lines.append(f"  admitted by {self.evidence}")
         if self.wrist_bodies:
             lines.append(f"  {self.wrist_bodies}")
+        lines.extend(f"  {line}" for line in self.looks)
         if self.loaded:
             lines.extend(f"  {line}" for line in self.loaded.splitlines())
         return "\n".join(lines)
@@ -69,7 +73,7 @@ class PlannerStartReport:
     def to_dict(self) -> dict[str, Any]:
         return {"arm": self.arm, "hand": self.hand, "started": self.started, "refusal": self.refusal,
                 "loaded": self.loaded, "evidence": self.evidence, "seconds": self.seconds,
-                "wrist_bodies": self.wrist_bodies}
+                "wrist_bodies": self.wrist_bodies, "looks": list(self.looks)}
 
 
 @dataclass(frozen=True)
@@ -135,6 +139,9 @@ class PlannerStart:
             if wrist is not None:
                 wrist.hand_to(arm)
             identity = arm.start_planner()
+            # Before it stops: each configured look, by both authorities (the owner, 2026-09-30), where the camera
+            # section says which wrist cameras hang on the arm and the arm holds every one of them.
+            looks = _screened_looks(arm, cfg) if wrist is not None else _unscreened_looks(cfg)
         except CuroboUnavailableError as exc:
             return refused(str(exc))
         except Exception as exc:  # noqa: BLE001 (a sidecar that fails to start is a refusal to report, not a crash)
@@ -151,4 +158,44 @@ class PlannerStart:
             seconds=time.perf_counter() - began,
             wrist_bodies=(wrist.line() if wrist is not None
                           else "wrist cameras  not asked: no camera section was handed in"),
+            looks=looks,
         )
+
+
+def _screened_looks(arm: Any, cfg: "RobotConfig") -> tuple[str, ...]:
+    """Each look ``robot.look_joint_positions_deg`` configures, screened on the planner just started; one line each.
+
+    What a pick would meet at each look, said at the desk before a pick meets it (``planning.band``): clear, in the
+    planner's cushion band (straight lines run, a planned move takes a short escape leg), or refused, an ERROR, with a
+    pose nearby both clear. Only an arm whose class screens (``URRobotArm.screen_configuration``); a screen that raises
+    is said on its line. Nothing moves: no controller is asked.
+    """
+    rows = getattr(cfg, "look_joint_positions_deg", None) or ()
+    if not rows or not callable(getattr(type(arm), "screen_configuration", None)):
+        return ()
+    from src.robot.core.joint_positions import JointPositions
+    from src.robot.execution.looks import look_label
+
+    lines: list[str] = []
+    ask_planner = True
+    for index, row in enumerate(rows, start=1):
+        look = JointPositions.deg(*row)
+        label = f"look {index} {look_label(look)}"
+        try:
+            screen = arm.screen_configuration(look, ask_planner=ask_planner)
+        except Exception as exc:  # noqa: BLE001 (a screen that fails is said on its line, the start still reports)
+            lines.append(f"{label}: not screened: {type(exc).__name__}: {exc}")
+            continue
+        lines.append(screen.line(label))
+        ask_planner = ask_planner and not bool(getattr(screen, "planner_unavailable", False))
+    return tuple(lines)
+
+
+def _unscreened_looks(cfg: "RobotConfig") -> tuple[str, ...]:
+    """The one line said where the looks are not screened: no camera section was handed in, so nobody knows which wrist
+    cameras hang on the arm, and a screen without a housing that is there reads clear a pose it meets. ``()`` where
+    the profile configures no look."""
+    if not (getattr(cfg, "look_joint_positions_deg", None) or ()):
+        return ()
+    return ("looks not screened: no camera section was handed in, so which wrist cameras hang on the arm is not known, "
+            "and a screen without a housing that is there would miss what it meets (Cell.start_planner hands it)",)

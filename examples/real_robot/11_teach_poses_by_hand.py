@@ -29,8 +29,11 @@ SHOW_CAMERA = True  # False: no window
 
 tree = load_tree()
 # The arm alone, as a calibration builds it: no hand is built, so no activation stroke and no question about where
-# the jaws stand. The hand still hangs on the flange, and the payload question below counts it.
-robot = Robot.from_config(tree.robot, gripper=None)
+# the jaws stand. The hand still hangs on the flange, and the payload question below counts it. The arm carries the
+# housing of every wrist camera the tree declares, so each pose is screened with it once taught; a camera not
+# calibrated yet cannot place its housing, and then the arm is built without it and no pose is screened.
+robot = Robot.from_tree(tree, gripper=None,
+                        unmodelled_wrist_body="poses are taught by hand, and nothing here moves the arm by itself")
 print(robot)
 rig = CAMERA or tree.app_config.camera.cameras.primary_rig_id  # every pose taught here belongs to this rig
 

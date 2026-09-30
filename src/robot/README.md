@@ -4,21 +4,23 @@ Your code talks to `Robot` and `Cell` and never imports a vendor SDK, so it does
 to know which arm is attached.
 
 ```python
-from willy import Pose, Robot, load_tree
+from willy import Robot, load_tree
 
 robot = Robot.from_tree(load_tree())      # the cell WILLY_PROFILE names; connects nothing
 print(robot)                              # arm, hand, lock, safety, planner route, camera world
 print(robot.safety())                     # what this arm refuses, asked of the arm that was built
 with robot.connected(), robot.without_camera_world("bench run, the table is clear"):
     print(robot.home())
-    print(robot.move(Pose.tool_down(450.0, 100.0, 300.0)))
+    print(robot.move(robot.tool_down(450.0, 100.0, 300.0)))   # straight down, the cell's closing axis
 ```
 
 Under `WILLY_PROFILE=console_dummy` the same lines run at a desk on a dummy arm
 ([02_a_robot_at_the_desk.py](../../examples/simulation/02_a_robot_at_the_desk.py)); at a cell,
 [03_connect_and_move.py](../../examples/real_robot/03_connect_and_move.py) is the first example that
 moves the arm. Poses are millimetres in the robot's base frame, rotations XYZW quaternions, joints
-radians, and vendor unit conventions stay inside the drivers.
+radians, and vendor unit conventions stay inside the drivers. `robot.tool_down(x, y, z)` points the tool
+straight down with its fingers along the cell's `robot.natural_closing_axis`, base x where it names none,
+as the cell-free `Pose.tool_down` does.
 
 ```bash
 python -m src.robot.drivers.doctor --require ur             # which arm and hand drivers this machine can build
@@ -35,7 +37,7 @@ Every command and its exit codes: [docs/cli.md](../../docs/cli.md).
 | --- | --- | --- |
 | [`execution/`](execution/README.md) | `Robot`, `Cell`, `PickRun`, hand-eye calibration and the real-cell command | `from willy import Robot, Cell, PickRun` |
 | [`safety/`](safety/README.md) | `SafetyPreflight`, the ordered fail-closed guards, and the cuRobo planner binding | `from willy import SafetyPreflight` |
-| [`grasping/`](grasping/README.md) | generating, scoring and choosing grasps, the motion and its hold check, recovery, and the attempt record | `Scene`, and the pick service |
+| [`grasping/`](grasping/README.md) | generating, scoring and choosing grasps, a wrist camera's looks, the motion and its hold check, recovery, and the attempt record | `Scene`, and the pick service |
 | [`perception/`](perception/README.md) | the live-camera source and the `Locator` of a real cell | `from willy import Locator` |
 | [`drivers/`](drivers/README.md) | the arm registry `create_arm`: `ur`, `kuka`, `sim`, `dummy` | `robot.vendor` in the tree |
 | [`grippers/`](grippers/README.md) | the hand registry: `robotiq`, `onrobot`, `vacuum`, `jaw_io`, `dummy`, `none` | `robot.gripper.vendor` in the tree |
@@ -47,14 +49,19 @@ lazily, so importing it loads no UR driver.
 
 ## The pick, in order
 
-1. Perceive: a camera frame, and the camera's CAMERA to BASE.
+1. Perceive: a camera frame, and the camera's CAMERA to BASE. A wrist camera looks from each of the
+   pick's looks, fuses them and stops at the first safe grasp; one generated view on the straight joint
+   line is the last resort. Fixed cameras fuse without moving.
 2. Generate and score: 6-DoF candidates, ranked.
 3. Decide: the AUTO decision gate.
 4. Gate: `SafetyPreflight` and IK.
 5. Drive: standoff, approach, grasp, close.
-6. Verify: the execution policy asks the gripper after its close whether it holds something.
-7. Recover: perceive and pick again. A cell built from config never pushes or shakes: the `nudge_target`
-   that `dense_clutter` allows is planned without an offset and refused before the arm moves.
+6. Check the hold: the execution policy asks the gripper after its close whether it holds something.
+7. Recover: `auto` and `dense_clutter` may perceive and pick again (`rescan`) or skip the failed part for
+   another of the same label (`next_target`); `dense_clutter` alone may also push a blocked part aside
+   (`nudge_target`), inside a wrist camera's pick attempt, with the jaws open and nobody asked. A push
+   that stops leaves the arm where it is, and a person clears the cell before the next run. `easy` never
+   recovers, and nothing on a config-built cell shakes a bin.
 8. Log: one `GraspAttemptRecord` per attempt, as JSON lines.
 
 Steps 3 and 7 are opt-in and off by default, so the shipped pick is 1, 2, 4, 5, 6 and 8: open-loop.
@@ -97,7 +104,8 @@ run before. Every formula the guards evaluate is in [docs/safety-math.md](../../
 | FANUC | Currently under development |
 | ABB | Currently under development |
 | The Isaac Sim driver with a UR5e and a 2F-85, and the pick path on it | measured in simulation |
-| The Robotiq, OnRobot, jaw and suction drivers | Measured against UR-Robot |
+| The Robotiq and jaw drivers | Measured against UR-Robot |
+| The OnRobot and suction drivers | never touched hardware |
 | Motion of a physical arm | Measured against UR-Robot |
 
 ## Details

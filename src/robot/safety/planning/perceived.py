@@ -41,6 +41,14 @@ Two more things it says out loud, because each one is space the planner receives
     point's range, and capped (``bench_band_mm``). Anything lower than that band above the bench
     is not an obstacle to the planner.
 
+One kind of unseen space it does not receive as free: what the robot's own body hid from every
+camera that could have shown it free, where it lies inside an object the cameras saw, runs on
+from a row of one where the self filter took the rest for the robot, or lies between two objects
+the robot's shadow cut apart (``_RobotShadow``, ``height_map``). A camera over a bin beside the
+base cannot see the rim under the shoulder housing, and that rim is the one the housing meets. It
+stands as high as what was seen beside it, and each box says how many of its cells the robot hid
+(``hidden_cells``).
+
 And two things it leaves to the geometry somebody declared, because registering them again would
 make a hollow solid:
 
@@ -70,6 +78,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from src.robot.core.keep_out import KeepOutBox
+from src.robot.safety.planning.height_map import Column, bridge_columns, coarsen, height_map_columns, turn_of
 
 __all__ = [
     "DECLARED_SURFACE_MM",
@@ -119,6 +128,28 @@ MAX_DECLARED_BAND_MM = 25.0
 #: about 60 mm of a declared tote out of the world (review of 2026-09-23). It never exceeds the
 #: bench band, so the slab, which is declared too, takes nothing the plane test did not.
 DECLARED_SURFACE_MM = 5.0
+
+#: How far past the self filter's padding every point of a box may lie from the robot's own links for the box to be
+#: named as maybe the robot itself, seen off where its model stands (``PerceivedBox.robot_gap_mm``), millimetres.
+#:
+#: A choice, for a refusal to say something an operator can act on. The filter takes a point within the padding
+#: (``margin_mm``, 15) of a link's surface for the link, and a camera placed a degree off sees a link 15 mm off at
+#: 0.85 m (review of 2026-09-30): past the padding, a box of it is refused where the arm stands, and nothing in the
+#: refusal said it might be the arm. Nothing is dropped or kept by it.
+_ROBOT_GAP_MM = 15.0
+
+#: How much nearer than a point the robot's own body has to be seen along a camera's ray before the point counts as
+#: hidden by it, and how much further the cell's surface has to be seen before the point counts as seen free, as a
+#: share of the thinning voxel (``_RobotShadow``): half of it, the resolution the robot's pixels were judged at.
+_SHADOW_TOLERANCE_SHARE = 0.5
+
+#: How far past what the cameras saw of an object the robot's shadow is filled, millimetres: a row of it running on
+#: into what the robot hides (``height_map.height_map_columns``, ``reach_mm``), and the shadow between two objects
+#: (``height_map.bridge_columns``). About the diameter of the UR10's shoulder housing, 150 mm, the widest of its links,
+#: whose shadow cut the owner's bin beside the base in two for a camera over the base (review of 2026-09-30), and
+#: more than the Hand-E's fingers hide of a wall beside them. A choice; only space the robot hides and no camera saw is
+#: filled.
+_HIDDEN_REACH_MM = 150.0
 
 
 class DropReason(StrEnum):
@@ -230,9 +261,11 @@ class WorldBuildTuning:
     #: Grown on every side of every box. A box that is exactly the measured hull is a box the
     #: planner will graze, and depth noise is one-sided at an edge.
     margin_mm: float = 15.0
-    #: Boxes the caller has slots for. The nearest survive; the rest are reported, never dropped in
-    #: silence.
-    max_boxes: int = 8
+    #: Boxes the caller has slots for. Every cluster is a height map of several boxes
+    #: (``height_map``), so this is room for a few bins and their parts. Past it boxes merge into
+    #: the boxes that hold them first; only what still does not fit, one box per object, is left
+    #: out, the nearest surviving, and the rest are reported, never dropped in silence.
+    max_boxes: int = 64
     #: Prefix every emitted name carries, so a perceived box can never collide with a declared
     #: fixture and silently replace it during the merge.
     name_prefix: str = "seen_"
@@ -247,12 +280,12 @@ class WorldBuildTuning:
     #: link through the part underneath it.
     #:
     #: Carrying the box down to the plane is the conservative reading: the space under a surface is
-    #: either the object or somewhere the arm has no business being. It has one cost, and it is the
-    #: cost worth knowing before switching this on. A container whose rim the camera sees becomes a
-    #: solid block from the rim to the bench, and the cell can then never reach into it. A declared
-    #: container does not have this problem only because what the camera sees of it is dropped as
-    #: declared (``DropReason.DECLARED``) before anything is clustered: its walls are already boxes
-    #: or a mesh with a hollow between them. This is about a container nobody declared.
+    #: either the object or somewhere the arm has no business being. Each box is one column of the
+    #: cluster's height map (``height_map``), carried down from the highest point seen over it, so
+    #: a container whose rim and floor the camera sees is its walls, carried down, with its inside
+    #: free; a floor above the bench band comes back as a low slab. What the camera did not see
+    #: beside what it saw, the floor behind a wall it looked over, is free, as unseen space is
+    #: everywhere else in the world, unless the robot's own body is what hid it (``_RobotShadow``).
     floor_to_plane: bool = True
 
     def __post_init__(self) -> None:
@@ -479,6 +512,10 @@ class LinkCapsule:
     end_mm: tuple[float, float, float]
     #: Radius before any padding, millimetres.
     radius_mm: float
+    #: The link's own surface, in that frame, where the capsule is fitted round a link's mesh: a point
+    #: inside the padded capsule is the link only within the padding of this surface
+    #: (:meth:`SelfBody.contains`). ``None`` takes the capsule as it is: a hand sphere, a carried part.
+    surface: "DeclaredBody | None" = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,12 +588,29 @@ class SelfBody:
     a joint vector. This module then needs no kinematics, no vendor and no config, and a driver that
     cannot describe its own links is a refusal for its caller to make rather than a guess for this
     one.
+
+    A capsule fitted round an arm link holds all of it and a good deal more: the UR10 upper arm's
+    reaches 118 mm about its shoulder end at the height of a bin's rim, where the housing hangs 52 mm
+    over the base plate, so a rim 6 mm under the housing was the robot. Such a capsule carries the
+    link's own surface (``LinkCapsule.surface``), and a point inside it is the link only within the
+    padding of that surface (``surfaces``). The padding is then all that is added around the link, as
+    everywhere else in the body: what the camera sees past it is an obstacle, and the box grown round
+    it by the same margin reaches back to the link (2026-09-30). What the filter took of an object it
+    also saw past the padding stands again as high as what was seen of it, a stretch of it or a row
+    run on (``height_map``); an object the cameras saw only within the padding of the robot is taken
+    for the robot, as it always was, and a camera placed so far off that it sees a link past the
+    padding sees it as an obstacle (``PerceivedBox.robot_gap_mm`` says so).
     """
 
     #: `(K, 2, 3)` segment endpoints in BASE millimetres.
     segments_mm: np.ndarray
     #: `(K,)` radius per segment, millimetres, generous rather than exact.
     radii_mm: np.ndarray
+    #: Per capsule, BASE to the frame of the link it holds and that link's surface, or ``None`` for a
+    #: capsule taken as it is. Empty takes every capsule as it is.
+    surfaces: "tuple[tuple[np.ndarray, DeclaredBody] | None, ...]" = ()
+    #: How far from a link's surface a point is still that link, millimetres: the padding.
+    surface_padding_mm: float = 0.0
 
     def __post_init__(self) -> None:
         segments = np.asarray(self.segments_mm, dtype=np.float64)
@@ -573,6 +627,10 @@ class SelfBody:
             raise PerceptionGeometryError("segments_mm must be finite")
         if radii.size and np.any(radii < 0.0):
             raise PerceptionGeometryError("radii_mm cannot be negative")
+        if self.surfaces and len(self.surfaces) != segments.shape[0]:
+            raise PerceptionGeometryError(
+                f"surfaces must name one surface or None per capsule, {segments.shape[0]}, got {len(self.surfaces)}"
+            )
         object.__setattr__(self, "segments_mm", segments)
         object.__setattr__(self, "radii_mm", radii)
 
@@ -613,7 +671,9 @@ class SelfBody:
 
         This is what a driver hands over: the pose of every frame from its kinematics, and capsules
         fitted once in those frames. The padding is the one number added around the body, so a point
-        just outside the robot is kept.
+        just outside the robot is kept. A capsule that carries its link's surface is taken to that
+        surface wherever the padding is at least as wide as the surface's own spacing; below that the
+        link's own surface between two of its points could be left in, and the capsule stands as it is.
         """
         if float(padding_mm) < 0.0:
             raise PerceptionGeometryError(f"padding_mm cannot be negative, got {padding_mm}")
@@ -621,6 +681,7 @@ class SelfBody:
             raise PerceptionGeometryError("a self body needs at least one capsule")
         segments = np.empty((len(capsules), 2, 3), dtype=np.float64)
         radii = np.empty(len(capsules), dtype=np.float64)
+        surfaces: list[tuple[np.ndarray, DeclaredBody] | None] = []
         for index, capsule in enumerate(capsules):
             if not 0 <= int(capsule.frame) < len(frames_mm):
                 raise PerceptionGeometryError(
@@ -632,19 +693,28 @@ class SelfBody:
             ends = np.asarray((capsule.start_mm, capsule.end_mm), dtype=np.float64)
             segments[index] = (frame[:3, :3] @ ends.T).T + frame[:3, 3]
             radii[index] = float(capsule.radius_mm) + float(padding_mm)
-        return cls(segments_mm=segments, radii_mm=radii)
+            surface = capsule.surface
+            refined = surface is not None and float(padding_mm) >= float(surface.spacing_mm)
+            surfaces.append((np.linalg.inv(frame), surface) if refined and surface is not None else None)
+        if not any(entry is not None for entry in surfaces):
+            return cls(segments_mm=segments, radii_mm=radii)
+        return cls(segments_mm=segments, radii_mm=radii, surfaces=tuple(surfaces),
+                   surface_padding_mm=float(padding_mm))
 
     def contains(self, points_mm: np.ndarray) -> np.ndarray:
         """Which of `points_mm` lie inside the body. `(N,)` boolean.
 
         Point to segment, capsule by capsule. Six or seven capsules against a thinned cloud is one
-        small matrix per capsule, which keeps the cost flat and predictable in front of a plan.
+        small matrix per capsule, which keeps the cost flat and predictable in front of a plan. A
+        point inside a capsule that carries its link's surface is asked that surface too, and is the
+        link only within the padding of it: a nearest neighbour among the points laid over the link,
+        never nearer than the surface, so no point further than the padding is ever taken out.
         """
         points = np.asarray(points_mm, dtype=np.float64)
         if points.size == 0:
             return np.zeros(points.shape[0], dtype=bool)
         inside = np.zeros(points.shape[0], dtype=bool)
-        for (start, end), radius in zip(self.segments_mm, self.radii_mm):
+        for index, ((start, end), radius) in enumerate(zip(self.segments_mm, self.radii_mm)):
             axis = end - start
             length_squared = float(axis @ axis)
             if length_squared <= 0.0:
@@ -652,18 +722,55 @@ class SelfBody:
             else:
                 travel = np.clip(((points - start) @ axis) / length_squared, 0.0, 1.0)
                 closest = start + travel[:, None] * axis
-            inside |= np.linalg.norm(points - closest, axis=1) <= radius
+            near = np.linalg.norm(points - closest, axis=1) <= radius
+            refined = self.surfaces[index] if self.surfaces else None
+            if refined is not None:
+                asked = np.nonzero(near & ~inside)[0]
+                near[:] = False
+                if asked.size:
+                    to_link, surface = refined
+                    local = points[asked] @ to_link[:3, :3].T + to_link[:3, 3]
+                    near[asked] = surface.distance_mm(local) <= self.surface_padding_mm
+            inside |= near
         return inside
+
+    def surface_gap_mm(self, points_mm: np.ndarray, *, within_mm: float) -> np.ndarray:
+        """How far each of ``points_mm`` lies from the nearest link surface this body carries, millimetres, where it lies
+        within ``within_mm`` of one; ``inf`` elsewhere, and everywhere for a body that carries no link's surface.
+
+        Never short of the true distance (``DeclaredBody.distance_mm``). It decides nothing; a refusal says with it
+        that a box may be the robot itself (``PerceivedBox.robot_gap_mm``).
+        """
+        points = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)
+        gap = np.full(points.shape[0], np.inf)
+        for index, refined in enumerate(self.surfaces):
+            if refined is None or points.shape[0] == 0:
+                continue
+            start, end = self.segments_mm[index]
+            axis = end - start
+            length_squared = float(axis @ axis)
+            travel = (np.clip(((points - start) @ axis) / length_squared, 0.0, 1.0) if length_squared > 0.0
+                      else np.zeros(points.shape[0]))
+            # The link lies inside its capsule, so a point within ``within_mm`` of it lies within that of the capsule.
+            asked = np.nonzero(np.linalg.norm(points - (start + travel[:, None] * axis), axis=1)
+                               <= float(self.radii_mm[index]) + float(within_mm))[0]
+            if asked.size:
+                to_link, surface = refined
+                local = points[asked] @ to_link[:3, :3].T + to_link[:3, 3]
+                gap[asked] = np.minimum(gap[asked], surface.distance_mm(local))
+        gap[gap > float(within_mm)] = np.inf
+        return gap
 
 
 @dataclass(frozen=True, slots=True)
 class PerceivedBox:
-    """One obstacle, upright, turned about BASE Z to sit closest around its cluster.
+    """One obstacle, upright, turned about BASE Z the way its cluster lies: one column of the cluster's height map.
 
     The rotation is yaw only. A cell's obstacles stand on a floor, so the two axes worth fitting are
     the ones in the plane of the bench; a full three-axis fit on a noisy cluster tumbles between one
     frame and the next, and a planner that is handed a differently tumbled world every 50 ms plans a
-    different path for a scene that did not move.
+    different path for a scene that did not move. The planner and the exact mesh guard hold this
+    box as it is, turned (``live_world._guard_boxes``).
     """
 
     name: str
@@ -679,15 +786,23 @@ class PerceivedBox:
     distance_mm: float
     #: The segmentation label that overlaps this cluster, when one does.
     label: str | None = None
+    #: How many of its height map's cells stand where the robot's own body hid them from the cameras, filled to the
+    #: height seen beside them (``height_map``); 0 for a box of what the cameras saw alone.
+    hidden_cells: int = 0
+    #: The farthest any of its points lies from the robot's own links, millimetres, where every one of them lies
+    #: within the padding and :data:`_ROBOT_GAP_MM` of a link: it may be the robot itself, seen off where its model
+    #: stands. ``None`` otherwise, or for a box with no point.
+    robot_gap_mm: float | None = None
 
     @property
     def enclosing_half_extents_mm(self) -> tuple[float, float, float]:
         """Half extents of the axis-aligned box that contains this turned one.
 
-        For a consumer whose geometry has no rotation, which is what the capsule guards use. It is
-        bigger than the turned box, never smaller, so a guard fed this can refuse a path the planner
-        allowed but can never allow one the planner refused. That is the only direction of
-        disagreement worth having between the thing that plans and the thing that decides.
+        For a consumer whose geometry has no rotation, which is what the capsule guard falls back to;
+        the exact mesh guard holds the turned box itself. It is bigger than the turned box, never
+        smaller, so a guard fed this can refuse a path the planner allowed but can never allow one
+        the planner refused. That is the only direction of disagreement worth having between the
+        thing that plans and the thing that decides.
         """
         cos_yaw, sin_yaw = abs(math.cos(self.yaw_rad)), abs(math.sin(self.yaw_rad))
         half_x, half_y, half_z = (d / 2.0 for d in self.dims_mm)
@@ -707,7 +822,22 @@ class PerceivedBox:
             "points": int(self.points),
             "distance_mm": float(self.distance_mm),
             "label": self.label,
+            "hidden_cells": int(self.hidden_cells),
+            "robot_gap_mm": None if self.robot_gap_mm is None else float(self.robot_gap_mm),
         }
+
+    def note(self) -> str:
+        """What a refusal against this box should add, as text, ASCII; empty for a box of what was seen and nothing
+        more."""
+        said = []
+        if self.hidden_cells:
+            said.append(f"{self.hidden_cells} of its cells the robot's own body hid from the cameras, filled to the "
+                        "height seen beside them")
+        if self.robot_gap_mm is not None:
+            said.append(f"all {self.points} of its points lie within {self.robot_gap_mm:.0f} mm of the robot's own "
+                        "links: it may be the robot itself, seen that far off where its model stands (check the "
+                        "hand-eye calibration and the DH table), or something standing that close to the arm")
+        return "; ".join(said)
 
 
 @dataclass(frozen=True, slots=True)
@@ -800,6 +930,14 @@ class PerceivedWorld:
     #: How many clusters were cut around each keep-out box so that no box covers it, by the box's name.
     #: Empty when nothing had to be cut.
     keep_out_cuts: dict[str, int] = field(default_factory=dict)
+    #: How many boxes the slot budget merged into the boxes that hold them (``height_map.coarsen``), 0
+    #: when every column of every height map fitted. Nothing is lost by a merge; the world is only
+    #: coarser than the cameras saw it, and more room is ``max_boxes``.
+    merged_to_fit: int = 0
+    #: How many cells of the boxes stand where the robot's own body hid them from every camera that could have shown
+    #: them free, filled to the height seen beside them (``PerceivedBox.hidden_cells``); 0 when the robot hid nothing
+    #: of what the cameras saw.
+    hidden_cells: int = 0
 
     @property
     def is_empty(self) -> bool:
@@ -845,6 +983,15 @@ class PerceivedWorld:
                 tail.append(f"  {count} point(s) on the declared {name!r}, left to what was declared")
         for name, count in self.keep_out_cuts.items():
             tail.append(f"  {count} cluster(s) cut around {name!r}, so no box covers it")
+        if self.merged_to_fit:
+            tail.append(f"  {self.merged_to_fit} box(es) merged into the boxes holding them to fit the slot budget")
+        if self.hidden_cells:
+            tail.append(f"  {self.hidden_cells} cell(s) the robot hid from the cameras stand as high as what was "
+                        "seen beside them")
+        for box in self.boxes:
+            if box.robot_gap_mm is not None:
+                tail.append(f"  {box.name}: every point within {box.robot_gap_mm:.0f} mm of the robot's own links, "
+                            "maybe the robot seen off where its model stands")
         return "\n".join([head, *rows, *tail])
 
     def to_dict(self) -> dict[str, Any]:
@@ -862,6 +1009,8 @@ class PerceivedWorld:
             "bench_band_mm": {name: [float(low), float(high)] for name, (low, high) in self.bench_band_mm.items()},
             "declared_points": dict(self.declared_points),
             "keep_out_cuts": dict(self.keep_out_cuts),
+            "merged_to_fit": int(self.merged_to_fit),
+            "hidden_cells": int(self.hidden_cells),
         }
 
 
@@ -956,6 +1105,7 @@ def build_perceived_boxes(
     per_view_pixels: list[np.ndarray] = []
     per_view_index: list[np.ndarray] = []
     per_view_band: list[np.ndarray] = []
+    per_view_read: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
     lookups: list[list[tuple[str, np.ndarray]]] = []
     clearance = float(limits.plane_clearance_mm)
 
@@ -1004,7 +1154,7 @@ def build_perceived_boxes(
             )
         depth_coverage[where] = measured / asked if asked else 0.0
 
-        points, pixels, ranges = _base_points(
+        points, pixels, ranges, read = _base_points(
             depth, view.intrinsics, transform, keep_mask, tuning.voxel_size_mm,
             stride=int(tuning.pixel_stride),
         )
@@ -1016,6 +1166,7 @@ def build_perceived_boxes(
         per_view_pixels.append(pixels)
         per_view_index.append(np.full(points.shape[0], index, dtype=np.int64))
         per_view_band.append(band)
+        per_view_read.append(read)
 
     # The age of a fused world is the age of its oldest half. One unstamped view makes the whole
     # thing unstamped, because a world is only as current as the part of it nobody can date.
@@ -1045,11 +1196,17 @@ def build_perceived_boxes(
     if points_base.shape[0] == 0:
         return _empty()
 
+    # Which of the points read were the robot's own body, by where each stood before any was taken out: what the
+    # robot hides from a camera is not free (``_RobotShadow``).
+    robot_read = np.zeros(points_base.shape[0], dtype=bool)
+    read_as = np.arange(points_base.shape[0])
+    read_points = points_base
     if self_body is not None:
         on_self = self_body.contains(points_base)
         dropped_points[DropReason.SELF] = int(np.count_nonzero(on_self))
-        points_base, pixels, view_of, band_of = (
-            points_base[~on_self], pixels[~on_self], view_of[~on_self], band_of[~on_self]
+        robot_read[read_as[on_self]] = True
+        points_base, pixels, view_of, band_of, read_as = (
+            points_base[~on_self], pixels[~on_self], view_of[~on_self], band_of[~on_self], read_as[~on_self]
         )
         if points_base.shape[0] == 0:
             return _empty()
@@ -1065,11 +1222,18 @@ def build_perceived_boxes(
             if member.size:
                 on_own[member[own.contains(points_base[member])]] = True
         dropped_points[DropReason.SELF] = dropped_points.get(DropReason.SELF, 0) + int(np.count_nonzero(on_own))
+        robot_read[read_as[on_own]] = True
         points_base, pixels, view_of, band_of = (
             points_base[~on_own], pixels[~on_own], view_of[~on_own], band_of[~on_own]
         )
         if points_base.shape[0] == 0:
             return _empty()
+    # What a keep-out left out stays out: nothing is filled within the margin of one, as no box reaches further in.
+    shadow = (
+        _RobotShadow.of(views, per_view_read, [points.shape[0] for points in per_view_points], robot_read, tuning,
+                        clear_of=_cutters(keep_out), taken_mm=read_points[robot_read])
+        if bool(robot_read.any()) else None
+    )
 
     if keep_out:
         kept_out = np.zeros(points_base.shape[0], dtype=bool)
@@ -1126,11 +1290,13 @@ def build_perceived_boxes(
     if reference.shape != (3,):
         raise PerceptionGeometryError(f"near_point_mm must be three numbers, got {near_point_mm!r}")
 
-    candidates: list[PerceivedBox] = []
     dropped_clusters: dict[str, int] = {}
     cutters = _cutters(keep_out if cut_around is None else cut_around)
     keep_out_cuts: dict[str, int] = {}
     floor = float(limits.support_plane_top_mm) if tuning.floor_to_plane else None
+    # Every part of every cluster is a height map of columns in the part's own turn (``height_map``): a bin is its
+    # walls, a low part beside a tall one keeps its height, and every point stays inside a column by the margin.
+    mapped: list[tuple[np.ndarray, float, list[Column]]] = []
     for cluster_id in np.unique(labels):
         member = np.nonzero(labels == cluster_id)[0]
         if member.size < int(tuning.min_points):
@@ -1145,18 +1311,47 @@ def build_perceived_boxes(
             keep_out_cuts[name] = keep_out_cuts.get(name, 0) + 1
         for part, part_floor, part_yaw in parts:
             chosen_points = member[part]
-            centre, dims, yaw = _oriented_box(
-                points[chosen_points], float(tuning.margin_mm), floor_mm=part_floor, yaw_rad=part_yaw,
-            )
+            mapped.append((chosen_points, part_yaw, height_map_columns(
+                points[chosen_points], yaw_rad=part_yaw, floor_mm=part_floor, margin_mm=float(tuning.margin_mm),
+                cell_mm=float(tuning.cluster_voxel_mm), step_mm=float(tuning.voxel_size_mm),
+                hidden=None if shadow is None else shadow.hides, reach_mm=_HIDDEN_REACH_MM,
+                taken_mm=None if shadow is None else shadow.taken_mm,
+            )))
+    if shadow is not None and len(mapped) > 1:
+        # What the robot hid between two parts, a bin its shadow cut in two, is in neither's height map: boxes of its own.
+        bridged = bridge_columns(
+            [points[chosen_points] for chosen_points, _, _ in mapped], floor_mm=floor,
+            margin_mm=float(tuning.margin_mm), cell_mm=float(tuning.cluster_voxel_mm),
+            step_mm=float(tuning.voxel_size_mm), hidden=shadow.hides, reach_mm=_HIDDEN_REACH_MM,
+        )
+        if bridged:
+            mapped.append((np.zeros(0, dtype=np.int64), 0.0, bridged))
+    # Past the slot budget the columns merge into the boxes that hold them, never into less.
+    merged_to_fit = coarsen([columns for _, _, columns in mapped], int(tuning.max_boxes))
+    # How far each point lies from the robot's own links, where it lies close: a box of nothing else may be the robot,
+    # seen off where its model stands, which a refusal then says (``PerceivedBox.robot_gap_mm``).
+    gaps = (
+        self_body.surface_gap_mm(points, within_mm=float(tuning.margin_mm) + _ROBOT_GAP_MM)
+        if self_body is not None else np.full(points.shape[0], np.inf)
+    )
+
+    candidates: list[PerceivedBox] = []
+    for chosen_points, part_yaw, columns in mapped:
+        for column in columns:
+            held = chosen_points[column.members]
+            centre, dims = column.placed(part_yaw)
             candidates.append(
                 PerceivedBox(
                     name="",  # named once the survivors are known, so the numbering has no holes
                     center_mm=centre,
                     dims_mm=dims,
-                    yaw_rad=yaw,
-                    points=int(chosen_points.size),
+                    yaw_rad=part_yaw,
+                    points=int(held.size),
                     distance_mm=float(np.linalg.norm(np.asarray(centre) - reference)),
-                    label=_dominant_label(lookups, kept_pixels[chosen_points], kept_view[chosen_points]),
+                    label=_dominant_label(lookups, kept_pixels[held], kept_view[held]),
+                    hidden_cells=int(column.hidden_cells),
+                    robot_gap_mm=(float(gaps[held].max()) if held.size and bool(np.isfinite(gaps[held]).all())
+                                  else None),
                 )
             )
 
@@ -1174,6 +1369,8 @@ def build_perceived_boxes(
             points=box.points,
             distance_mm=box.distance_mm,
             label=box.label,
+            hidden_cells=box.hidden_cells,
+            robot_gap_mm=box.robot_gap_mm,
         )
         for index, box in enumerate(survivors)
     )
@@ -1192,6 +1389,8 @@ def build_perceived_boxes(
         bench_band_mm=bench_band_mm,
         declared_points=declared_points,
         keep_out_cuts=keep_out_cuts,
+        merged_to_fit=merged_to_fit,
+        hidden_cells=sum(box.hidden_cells for box in boxes),
     )
 
 
@@ -1370,12 +1569,15 @@ def _base_points(
     voxel_size_mm: float,
     *,
     stride: int = 1,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, "tuple[np.ndarray, np.ndarray, np.ndarray]"]:
     """Back-project the kept pixels, thin them, and carry them into BASE with their pixel coordinates.
 
     The pixels travel with the points because a cluster's label comes from which segmentation its
     pixels fell in, and after a thinning there is no way back from a point to a pixel. Each point's
-    range from the camera, millimetres, travels too, because the bench band grows with it.
+    range from the camera, millimetres, travels too, because the bench band grows with it. And every
+    pixel read, as its row and column in the strided image with the point that stands for it after the
+    thinning, so what the self filter says of that point can be said of every pixel it stands for
+    (``_RobotShadow``).
 
     The back-projection and the voxel thinning are written out here rather than taken from the
     grasping package's point-cloud helpers, which do the same two things. The dependency stack runs
@@ -1399,9 +1601,12 @@ def _base_points(
     valid = sampled_keep & has_depth(sampled_depth)
     rows, cols = np.nonzero(valid)
     if rows.size == 0:
-        return np.empty((0, 3), dtype=np.float64), np.empty((0, 2), dtype=np.int32), np.empty((0,), dtype=np.float64)
+        none = np.empty((0,), dtype=np.int64)
+        return (np.empty((0, 3), dtype=np.float64), np.empty((0, 2), dtype=np.int32), np.empty((0,), dtype=np.float64),
+                (none, none, none))
 
     z = sampled_depth[rows, cols]
+    read = (rows, cols)
     rows, cols = rows * step, cols * step
     camera = np.column_stack((
         (cols.astype(np.float64) - cx) * z / fx,
@@ -1421,13 +1626,17 @@ def _base_points(
     cells -= cells.min(axis=0)
     span = cells.max(axis=0) + 1
     keys = (cells[:, 0] * span[1] + cells[:, 1]) * span[2] + cells[:, 2]
-    _, keep = np.unique(keys, return_index=True)
-    keep.sort()
+    _, first, voxel = np.unique(keys, return_index=True, return_inverse=True)
+    order = np.argsort(first, kind="stable")
+    keep = first[order]
+    # Which kept point stands for each pixel read: the kept points are in the order their first pixel was read.
+    rank = np.empty_like(order)
+    rank[order] = np.arange(order.size)
     camera, pixels = camera[keep], pixels[keep]
 
     homogeneous = np.column_stack((camera, np.ones(camera.shape[0], dtype=np.float64)))
     base = (np.asarray(camera_to_base, dtype=np.float64) @ homogeneous.T).T[:, :3]
-    return base, pixels, np.linalg.norm(camera, axis=1)
+    return base, pixels, np.linalg.norm(camera, axis=1), (read[0], read[1], rank[np.asarray(voxel).reshape(-1)])
 
 
 def _cluster(points_mm: np.ndarray, cell_mm: float) -> np.ndarray:
@@ -1472,40 +1681,23 @@ def _cluster(points_mm: np.ndarray, cell_mm: float) -> np.ndarray:
     return labels
 
 
-#: The share of its larger variance in the bench plane that a cluster's smaller one must stay under for
-#: the cluster to have a direction to be turned by: 0.8 is a footprint whose short side is within about
-#: 10 % of its long one. A choice, not a measurement.
-_NO_DIRECTION = 0.8
-
-
 def _oriented_box(
     points_mm: np.ndarray, margin_mm: float, *, floor_mm: float | None = None, yaw_rad: float | None = None,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float], float]:
     """Fit an upright box turned about Z to sit closest around a cluster, or turned by ``yaw_rad`` where given.
 
-    The yaw comes from the principal direction of the points in the bench plane, which is the axis a
-    long part lies along. Z is left alone: an obstacle in a cell stands on something, and a box that
-    leans is both harder to reason about and unstable frame to frame.
+    The yaw is the turn of the smallest rectangle about the points in the bench plane, along its
+    longer side (``height_map.turn_of``): a long part is boxed along its length, a square part
+    turned on the bench in its own turn, and two walls of a bin seen at a corner along the walls
+    rather than between them, where their principal direction runs. Z is left alone: an obstacle in a
+    cell stands on something, and a box that leans is both harder to reason about and unstable frame
+    to frame.
 
-    A cluster of one point, or a cluster on a line, yields a zero-variance direction. That is not an
-    error and is not worth a special case in the caller, so the fit falls back to no rotation, which
-    for such a cluster is the same box.
-
-    A cluster that spreads about as far one way as the other in the bench plane, a square part or a
-    round one, has no principal direction: its smaller variance is at least :data:`_NO_DIRECTION` of
-    its larger one, and which way the fit would turn is decided by noise. It is fitted square with BASE. A box
-    turned by noise is no tighter for the planner, and the path guard, which holds every box as the
-    axis-aligned box enclosing it, holds a square part turned by 45 degrees as a box 1.4 times as wide.
+    A cluster that is about as small square with BASE as turned, a round part or a noisy square one,
+    is fitted square with BASE: which way it would turn is decided by noise, and a box turned by noise
+    is a different world for a scene that did not move. So is a cluster of one point.
     """
-    centred_xy = points_mm[:, :2] - points_mm[:, :2].mean(axis=0)
-    yaw = 0.0 if yaw_rad is None else float(yaw_rad)
-    if yaw_rad is None and points_mm.shape[0] >= 2:
-        covariance = np.cov(centred_xy, rowvar=False)
-        if np.all(np.isfinite(covariance)) and float(np.abs(covariance).max()) > 0.0:
-            values, vectors = np.linalg.eigh(covariance)
-            if float(values.min()) < _NO_DIRECTION * float(values.max()):
-                principal = vectors[:, int(np.argmax(values))]
-                yaw = float(math.atan2(float(principal[1]), float(principal[0])))
+    yaw = turn_of(points_mm[:, :2]) if yaw_rad is None else float(yaw_rad)
 
     cos_yaw, sin_yaw = math.cos(-yaw), math.sin(-yaw)
     rotation = np.array([[cos_yaw, -sin_yaw], [sin_yaw, cos_yaw]], dtype=np.float64)
@@ -1535,9 +1727,10 @@ class _Upright:
     """An upright box turned about Z that encloses a keep-out box, which a cluster is cut around.
 
     Two of them stand for each keep-out (:func:`_cutters`): the one square with BASE, whose cut pieces are fitted
-    square with BASE, and the one turned with the keep-out. A cut square with BASE is the one the path guard reads
-    exactly, because it holds every perceived box as the axis-aligned box that encloses it. A keep-out turned against
-    BASE is a long part's, turned along its length, or the space between a jaw's pads at a turned grasp.
+    square with BASE, and the one turned with the keep-out. A cut square with BASE is the one a guard that cannot turn
+    a box reads exactly, because it holds every perceived box as the axis-aligned box that encloses it: the capsule
+    fallback does. A keep-out turned against BASE is a long part's, turned along its length, or the space between a
+    jaw's pads at a turned grasp.
     """
 
     name: str
@@ -1617,7 +1810,7 @@ def _overlap(
 
 def _cut_around(
     points_mm: np.ndarray, cutters: Sequence[_Upright], floor_mm: float | None, cut: set[str],
-) -> list[tuple[np.ndarray, float | None, float | None]]:
+) -> list[tuple[np.ndarray, float | None, float]]:
     """The parts of one cluster to fit a box each, as ``(indices, floor, yaw)``; the whole cluster when none is cut.
 
     A part is cut around a keep-out box when the box it would be fitted with, before its margin and carried down
@@ -1628,12 +1821,13 @@ def _cut_around(
     fitted in the enclosure's turn. A part beyond one face is fitted wholly beyond it, so its box reaches back into
     the keep-out by no more than its margin. What lies beside a keep-out turned against BASE is cut again around the
     keep-out's own turn. A part is cut around each enclosure at most once, so the cut ends. ``cut`` collects the
-    names of the keep-out boxes this cluster was cut around.
+    names of the keep-out boxes this cluster was cut around. A part's yaw is the one its box was tested in, so every
+    box later fitted to its points in that turn lies within that box and the cut holds for them too.
     """
     work: list[tuple[np.ndarray, float | None, float | None, frozenset[int]]] = [
         (np.arange(points_mm.shape[0]), floor_mm, None, frozenset())
     ]
-    parts: list[tuple[np.ndarray, float | None, float | None]] = []
+    parts: list[tuple[np.ndarray, float | None, float]] = []
     while work:
         index, floor, yaw, done = work.pop()
         centre, dims, fitted_yaw = _oriented_box(points_mm[index], 0.0, floor_mm=floor, yaw_rad=yaw)
@@ -1659,9 +1853,132 @@ def _cut_around(
                     work.append((index[piece], piece_floor, cutter.yaw, done | {number}))
             break
         else:
-            parts.append((index, floor, yaw))
+            parts.append((index, floor, fitted_yaw))
     parts.sort(key=lambda part: int(part[0].min()))
     return parts
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _ShadowView:
+    """One camera's frame as :class:`_RobotShadow` reads it: the depth of every pixel read, and which were the robot."""
+
+    #: BASE to CAMERA, 4x4, millimetres.
+    to_camera: np.ndarray
+    #: The 3x3 the depth was captured with.
+    intrinsics: np.ndarray
+    #: Every how many pixels the frame was read (``WorldBuildTuning.pixel_stride``).
+    stride: int
+    #: The depth each pixel read measured, the frame strided, CAMERA millimetres; no depth where none was measured.
+    depth: np.ndarray
+    #: Which of those pixels the self filter took for the robot's own body, the strided frame's shape.
+    robot: np.ndarray
+
+    def judge(self, points_mm: np.ndarray, tolerance_mm: float) -> "tuple[np.ndarray, np.ndarray]":
+        """Per point, whether this camera saw as far as it, and whether it saw the robot's own body in front of it.
+
+        Each point is read at the pixel its ray passes nearest, in the strided frame. As far as it: a depth measured
+        no nearer than the point less ``tolerance_mm``, so the ray reached where the point is, the bench a point just
+        over it stands on included. The robot in front: a pixel the self filter took for the robot, measured nearer
+        than the point by more than that. A point outside the frame, behind the camera or at a pixel with no depth is
+        neither.
+        """
+        local = points_mm @ self.to_camera[:3, :3].T + self.to_camera[:3, 3]
+        free = np.zeros(points_mm.shape[0], dtype=bool)
+        robot = np.zeros(points_mm.shape[0], dtype=bool)
+        ahead = np.nonzero(local[:, 2] > 1.0)[0]
+        if ahead.size == 0:
+            return free, robot
+        z = local[ahead, 2]
+        matrix = np.asarray(self.intrinsics, dtype=np.float64)
+        col = np.rint((matrix[0, 0] * local[ahead, 0] / z + matrix[0, 2]) / self.stride)
+        row = np.rint((matrix[1, 1] * local[ahead, 1] / z + matrix[1, 2]) / self.stride)
+        rows, cols = self.depth.shape
+        inside = (col >= 0.0) & (col < cols) & (row >= 0.0) & (row < rows)
+        ahead, z = ahead[inside], z[inside]
+        row, col = row[inside].astype(np.int64), col[inside].astype(np.int64)
+        measured = self.depth[row, col]
+        read = has_depth(measured)
+        reached = measured >= z - tolerance_mm
+        free[ahead] = read & reached
+        robot[ahead] = read & self.robot[row, col] & ~reached
+        return free, robot
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _RobotShadow:
+    """What the robot's own body hid from the cameras, asked point by point (``height_map.height_map_columns``).
+
+    A camera sees the cell past the robot, and the robot hides what stands behind it: a camera over a bin beside the
+    UR10's base cannot see the rim under the shoulder housing. A point is hidden where some camera saw the robot's
+    own body in front of it and no camera saw as far as it. What the scene hides from itself, the floor behind a
+    wall, is not hidden here, nor is what a camera measured nothing at: both are unseen space, which the planner
+    receives as free everywhere else (``DropReason.NO_DEPTH``).
+
+    The robot is what the self filter took out, the body now and each held view's own (``DropReason.SELF``), read
+    back to every pixel through the point that stood for it after the thinning, so a pixel is the robot to the
+    thinning's resolution. What the filter took out beside a link as the link, the padding, counts as the robot too:
+    what stands behind it was not seen either.
+
+    Nothing within the margin of a keep-out box is hidden: the target a pick closes on and the space between the jaws
+    at a goal are left out of the world on purpose, and the hand that closes on them is what hides them.
+    """
+
+    views: tuple[_ShadowView, ...]
+    #: :data:`_SHADOW_TOLERANCE_SHARE` of the thinning voxel.
+    tolerance_mm: float
+    #: The keep-out boxes' enclosures (``_cutters``), and how far about them nothing is hidden: the margin.
+    clear_of: tuple["_Upright", ...] = ()
+    clearance_mm: float = 0.0
+    #: The points the self filter took for the robot, ``(N, 3)`` BASE millimetres: where it may have taken the rest of
+    #: a wall for the hand beside it (``height_map.height_map_columns``, ``taken_mm``).
+    taken_mm: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+
+    @classmethod
+    def of(
+        cls,
+        views: Sequence[DepthView],
+        read: Sequence["tuple[np.ndarray, np.ndarray, np.ndarray]"],
+        counts: Sequence[int],
+        robot_read: np.ndarray,
+        tuning: WorldBuildTuning,
+        *,
+        clear_of: Sequence["_Upright"] = (),
+        taken_mm: "np.ndarray | None" = None,
+    ) -> "_RobotShadow":
+        """The shadow of ``views``: ``read`` is each view's pixels read and the point each stands for
+        (``_base_points``), ``counts`` how many points each view kept, ``robot_read`` which of all those points, the
+        views' in order, were the robot, ``clear_of`` the keep-out boxes' enclosures, ``taken_mm`` those points
+        themselves."""
+        stride = max(1, int(tuning.pixel_stride))
+        shadow_views: list[_ShadowView] = []
+        offset = 0
+        for view, (rows, cols, owner), count in zip(views, read, counts):
+            strided = np.asarray(view.surface_depth_mm, dtype=np.float64)[::stride, ::stride]
+            robot = np.zeros(strided.shape, dtype=bool)
+            robot[rows, cols] = robot_read[offset:offset + int(count)][owner]
+            offset += int(count)
+            shadow_views.append(_ShadowView(
+                to_camera=np.linalg.inv(np.asarray(view.camera_to_base, dtype=np.float64)),
+                intrinsics=np.asarray(view.intrinsics, dtype=np.float64), stride=stride, depth=strided, robot=robot,
+            ))
+        return cls(views=tuple(shadow_views), tolerance_mm=_SHADOW_TOLERANCE_SHARE * float(tuning.voxel_size_mm),
+                   clear_of=tuple(clear_of), clearance_mm=float(tuning.margin_mm),
+                   taken_mm=np.zeros((0, 3)) if taken_mm is None else np.asarray(taken_mm, dtype=np.float64))
+
+    def hides(self, points_mm: np.ndarray) -> np.ndarray:
+        """Which of ``(N, 3)`` BASE points some camera saw the robot in front of and no camera saw as far as, outside
+        the margin of every keep-out box."""
+        points = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)
+        free = np.zeros(points.shape[0], dtype=bool)
+        robot = np.zeros(points.shape[0], dtype=bool)
+        for view in self.views:
+            seen_past, behind_robot = view.judge(points, self.tolerance_mm)
+            free |= seen_past
+            robot |= behind_robot
+        for enclosure in self.clear_of:
+            local = enclosure.local(points)
+            free |= np.all(np.abs(local) <= enclosure.half + self.clearance_mm, axis=1)
+        return robot & ~free
 
 
 def _label_lookup(

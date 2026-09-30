@@ -153,13 +153,13 @@ robot:
       # Clearance handed to the trajectory planner so it stops proposing configurations the
       # exact-mesh guard then rejects. Per-robot and explicit, never derived from
       # `min_distance_mm`: how much margin a planner can absorb depends on how tightly its
-      # sphere model fits that arm. A UR5e plans at 10 mm; a UR3e's thinner links read as
-      # permanently self-colliding once every sphere is inflated by half the margin, and it
-      # finds no plan at all above roughly 6 mm. 4.0 keeps a clear gap under that ceiling while
-      # still narrowing the disagreement between planner and guard that the margin exists to
-      # close. Every other layer declares 4.0 as well: this arm measured the number first, its
-      # thinner links being unable to absorb 10, and the fitted sphere map put the UR5 and the
-      # UR10 in the same position. robot.sim.yaml carries that measurement.
+      # sphere model fits that arm. No UR arm has a retract at 10 mm on the refitted maps; a
+      # UR3e's thinner links read as permanently self-colliding once every sphere is inflated
+      # by half the margin, and it finds no plan at all above roughly 6 mm. 4.0 keeps a clear
+      # gap under that ceiling while still narrowing the disagreement between planner and guard
+      # that the margin exists to close. Every other layer declares 4.0 as well: this arm measured
+      # the number first, its thinner links being unable to absorb 10, and the fitted sphere map
+      # put the UR5 and the UR10 in the same position. robot.sim.yaml carries that measurement.
       planner_margin_mm: 4.0
     payload:
       # UR3e rated payload is 3 kg (UR5e: 5 kg). The schema refuses a `payload.mass_kg`

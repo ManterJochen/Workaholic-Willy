@@ -68,8 +68,9 @@ unable to choose between retry, rescan, escalation and abort, so the result carr
 
 The enum is coarse on purpose: enough for an execution layer to branch on. The full root-cause
 classification lives offline in [`replay/failure_taxonomy.py`](../replay/failure_taxonomy.py). The last
-two change what a cell does: a planner refusal is recovered by a rescan alone, and a controller that has
-protective-stopped ends the loop instead of being retried.
+two change what a cell does: a planner refusal is recovered only by what moves nothing, skipping that
+part for another of the same label and then a rescan, and a controller that has protective-stopped ends
+the loop instead of being retried.
 
 ## `GraspSamplingMode`
 
@@ -111,7 +112,7 @@ dropped and named, never fused at a guessed position.
 | --- | --- |
 | The carriers and the reasons | measured in simulation: every Isaac pick carries them |
 | `CONTROLLER_NOT_OPERATIONAL` | measured against real controller software: a protective stop in URSim |
-| A real camera through `PerceptionSource` | never touched hardware: the RealSense source has never been fed a real frame |
+| A real camera through `PerceptionSource` | run on a physical cell: the RealSense source fed the camera picks of a wrist D415 on a UR10 (CB3) |
 
 ## Files
 

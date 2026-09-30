@@ -11,7 +11,8 @@ Three refusals live here because the engine, the voice detector and the upload p
 
 * `SpeechStackUnavailable`: a package this machine cannot import, answered with the requirements file
   that installs it, or, for a DLL Windows refused, with the file Windows refused.
-* `SpeechModelMissing`: a model file or directory the config names that this machine has not fetched.
+* `SpeechModelMissing`: a model file or directory the config names that this machine has not fetched, and
+  its `SpeechModelIncomplete`: a directory that is there without files the engine loads from it.
 * `RecordingTooLong`: a recording longer than Whisper's 30 s window.
 
 stdlib only at import.
@@ -32,6 +33,7 @@ __all__ = [
     "WHISPER_WINDOW_S",
     "RecordingTooLong",
     "SpeechEngine",
+    "SpeechModelIncomplete",
     "SpeechModelMissing",
     "SpeechStackUnavailable",
     "code_integrity_refusal",
@@ -168,6 +170,22 @@ class SpeechModelMissing(FileNotFoundError):
             f"{key} is {path!r}, but there is no such {kind} (resolved: {Path(path).resolve()}).{path_note(path)} "
             f"Nothing is downloaded on its own; {fetch}."
         )
+
+
+class SpeechModelIncomplete(SpeechModelMissing):
+    """A model the config names is on this machine without files the engine loads from it.
+
+    A Whisper directory holding its weights and few of its JSON files is answered by transformers with errors
+    about building a tokenizer rather than with the files it lacks. A
+    `SpeechModelMissing`, so every place that answers a missing model (the console's 501) answers this one.
+    ``missing`` names the files that are not there, and is empty when every file is there and disagrees.
+    """
+
+    def __init__(self, *, key: str, path: str, missing: "tuple[str, ...]", problem: str, fetch: str) -> None:
+        self.key = key
+        self.path = path
+        self.missing = missing
+        FileNotFoundError.__init__(self, f"{key} is {path!r}, and {problem}. Nothing is downloaded on its own; {fetch}.")
 
 
 class RecordingTooLong(ValueError):

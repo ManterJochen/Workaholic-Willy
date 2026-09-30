@@ -59,6 +59,7 @@ __all__ = [
     "fuse_scene_clouds",
     "fuse_target_cloud",
     "label_agreement",
+    "label_agreement_said",
     "nearest_surface_distances_mm",
 ]
 
@@ -156,6 +157,20 @@ def label_agreement(
         else:
             disagree.append((look, said))
     return agreed, tuple(disagree)
+
+
+def label_agreement_said(label: str, others: Sequence[tuple[str, str]]) -> str:
+    """How one part's looks agreed on its label, as the account of a pick and of a look around says it (the owner's
+    decision 4, 2026-09-30): ``label agreed in N of M looks``.
+
+    M is the looks that saw the part: the one that calls it ``label`` and ``others``, the ``(look, label)`` pairs of
+    every other look whose view of it is in its cloud. N is those that call it ``label`` (:func:`label_agreement`'s
+    count), that look among them where it has a label. Said, never acted on: only a disagreement acts.
+    """
+    agreed, _ = label_agreement(label, others)
+    looks = 1 + len(others)
+    named = agreed + (1 if str(label or "").strip() else 0)
+    return f"label agreed in {named} of {looks} look{'' if looks == 1 else 's'}"
 
 
 def nearest_surface_distances_mm(

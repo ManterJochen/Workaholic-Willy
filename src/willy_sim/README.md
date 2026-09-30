@@ -68,8 +68,8 @@ their result JSON.
 | `run_m2_pick` | real vision: detector and segmenter in the loop, planning against a live world from the overhead camera |
 | `run_eih_pick` | eye-in-hand: the camera rides the wrist and perceives again from where it moved |
 | `run_dense_pick` | dense clutter; `--vision` for real perception |
-| `run_fused_pick` | overhead coarse scan, then wrist refine and grasp |
-| `run_multiview_pick` | fixed cameras localize, the wrist refines; `--mode eth1`, `eth2`, `eth3` or `sides` |
+| `run_fused_pick` | overhead coarse scan, then the wrist camera perceives from above the part and grasps |
+| `run_multiview_pick` | fixed cameras localize, then the wrist camera perceives from above the fused centroid and grasps; `--mode eth1`, `eth2`, `eth3` or `sides` |
 | `run_industrial_bin_pick` | two side cameras find the prompted part in a tray of mixed parts |
 | `run_attribute_pick` | four objects the noun alone cannot tell apart, compared per route |
 | `run_eth_calibrate`, `run_eih_calibrate` | eye-to-hand and eye-in-hand calibration through the real `CalibrationRoutine` |
@@ -99,6 +99,9 @@ are `run_eih_demo`, `run_dense_demo`, `run_dense_demo_endgame`, `run_sorting_dem
 - **The detector runs fp32 weights in the simulator.** The sim model overlays leave the dtype unset, which
   holds recall on small objects in the overhead view.
 - **Record logging is opt-in**: `run_m1_pick --record-log <file>` appends one `GraspAttemptRecord` per pick.
+- **No generated view in Isaac.** The Isaac arm names no configuration for a pose and drives no straight
+  joint line alone, so a wrist pick's looks end there without the one generated view a real UR may take,
+  and the log says why ([robot/drivers/sim](../robot/drivers/sim/README.md)).
 - **Logs.** Library modules write under `logs/willy_sim/`. The runners print to stdout, so a run's narrative
   lands in that run's redirect; the ones that leave an artifact (the calibrations, the mode matrix, the shake
   labeller, the pile baseline, the occlusion probe) also log the conditions the artifact cannot carry.

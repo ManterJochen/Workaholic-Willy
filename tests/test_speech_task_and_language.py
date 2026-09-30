@@ -51,10 +51,11 @@ def _generate_kwargs(language: str) -> dict[str, Any]:
     import transformers
 
     from src.models.speech.whisper_transformers import WhisperTransformersEngine
-    from tests._speech_fakes import whisper_parts
+    from tests._speech_fakes import whisper_directory, whisper_parts
 
     processor, model = whisper_parts()
     with tempfile.TemporaryDirectory() as weights:
+        whisper_directory(Path(weights))
         config = SpeechToTextConfig.model_validate(
             {**_shipped_stt(), "language": language, "task": "transcribe", "model_path": weights}
         )

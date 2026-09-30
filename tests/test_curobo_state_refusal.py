@@ -364,6 +364,210 @@ class TheGateAsksWhyTests(unittest.TestCase):
             client.explain_joints([[0.0] * 6])
 
 
+#: Answers check_js the way the sidecar does, from the rows it receives: a row whose first joint reaches 1.0 rad is a self
+#: collision of forearm_link and wrist_2_link (1.2 mm padded, 2.8 mm apart unpadded), one whose second joint reaches
+#: 1.0 rad is outside the bounds, and one whose third reaches 1.0 rad is in the world. With report_refused it lists every
+#: refused row; the reply echoes the keys it was sent, so a test reads exactly what was asked.
+_REPORTS = textwrap.dedent("""
+    import json, sys
+    sys.stdout.write(json.dumps({"status": "ready", "joint_names": ["j%d" % i for i in range(6)], "dt": 0.02}) + chr(10))
+    sys.stdout.flush()
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        req = json.loads(line)
+        if req.get("cmd") == "shutdown":
+            break
+        rows = req["joints"]
+        terms = [(row[1] < 1.0, row[0] < 1.0, row[2] < 1.0) for row in rows]
+        bad = [i for i, (bound, self_ok, world) in enumerate(terms) if not (bound and self_ok and world)]
+        reply = {"success": True, "valid": not bad, "first_invalid": bad[0] if bad else None, "checked": len(rows),
+                 "clearance_m": float(req.get("clearance_m", 0.0)), "asked": sorted(req)}
+        if req.get("report_refused"):
+            named = bool(req.get("name_pairs", True))
+            reply["refused"] = [{
+                "index": i, "bound_ok": terms[i][0], "self_ok": terms[i][1], "world_ok": terms[i][2],
+                "pairs": ([["forearm_link", "wrist_2_link", 1.21, -2.79]] if not terms[i][1] else []) if named else None,
+            } for i in bad]
+            reply["pairs_named"] = named
+        if req.get("id") is not None:
+            reply["id"] = req["id"]
+        sys.stdout.write(json.dumps(reply) + chr(10)); sys.stdout.flush()
+""")
+
+_IN_BAND = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+_OUT_OF_BOUNDS = [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+_IN_THE_WORLD = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+_CLEAR = [0.0] * 6
+
+
+class TheCheckReportsEveryRefusedSampleTests(unittest.TestCase):
+    """F1 (the owner, 2026-09-30): the exact guard decides the planner's self pairs it judges, where it accepted the
+    configuration. The driver can only do that knowing every configuration the planner refused and every pair of links
+    in each, with the three terms apart, so ``judge_joints`` asks check_js for all of them.
+
+    Nothing about ``check_joints`` changes: a request without the key is the request it always was.
+    """
+
+    def _client(self) -> CuroboPlanClient:
+        path = Path(tempfile.mkdtemp()) / "sidecar.py"
+        path.write_text(_REPORTS, encoding="utf-8")
+        client = CuroboPlanClient(python_path=sys.executable, server_script=str(path),
+                                  robot_config="unused-by-the-stub", scene_config=None)
+        self.addCleanup(client.close)
+        return client
+
+    def test_a_plain_check_is_the_request_it_always_was(self) -> None:
+        """⭐ THE CONTROL: check_joints sends no report key, so every caller that did not ask is answered as before."""
+        client = self._client()
+        verdict = client.check_joints([_CLEAR, _IN_BAND])
+        self.assertFalse(verdict.valid)
+        self.assertEqual(verdict.first_invalid, 1)
+        want = self._asked(client, [_CLEAR])
+        self.assertEqual(want, ["cmd", "id", "joints"])
+
+    def _asked(self, client: CuroboPlanClient, rows: "list[list[float]]") -> "list[str]":
+        want = client._send({"cmd": "check_js", "joints": rows})  # noqa: SLF001 (reads the stub's echo)
+        reply = client._recv(_TIMEOUT_S * 5, want=want)  # noqa: SLF001
+        assert reply is not None
+        return reply["asked"]
+
+    def test_every_refused_sample_comes_back_with_its_terms_and_every_pair(self) -> None:
+        judged = self._client().judge_joints([_CLEAR, _IN_BAND, _OUT_OF_BOUNDS, _CLEAR, _IN_THE_WORLD])
+        self.assertFalse(judged.valid)
+        self.assertEqual(judged.checked, 5)
+        self.assertTrue(judged.pairs_named)
+        self.assertEqual([row.index for row in judged.refused], [1, 2, 4])
+        band, bound, world = judged.refused
+        self.assertEqual((band.bound_ok, band.self_ok, band.world_ok), (True, False, True))
+        assert chosen(band.pairs)
+        (pair,) = band.pairs
+        self.assertEqual((pair.link_a, pair.link_b), ("forearm_link", "wrist_2_link"))
+        self.assertAlmostEqual(pair.depth_mm, 1.21, places=6)
+        self.assertAlmostEqual(pair.unpadded_depth_mm, -2.79, places=6)
+        self.assertEqual((bound.bound_ok, bound.self_ok), (False, True))
+        self.assertEqual(bound.pairs, ())
+        self.assertFalse(world.world_ok)
+        self.assertIn("forearm_link", judged.render())
+
+    def test_the_request_names_the_report_and_the_clearance(self) -> None:
+        client = self._client()
+        judged = client.judge_joints([_CLEAR], clearance_mm=15.0, name_pairs=False)
+        self.assertTrue(judged.valid)
+        self.assertEqual(judged.clearance_mm, 15.0)
+        self.assertFalse(judged.pairs_named)
+
+    def test_a_sample_whose_names_were_not_asked_carries_none(self) -> None:
+        judged = self._client().judge_joints([_IN_BAND], name_pairs=False)
+        (row,) = judged.refused
+        self.assertFalse(row.self_ok)
+        self.assertIs(row.pairs, UNSET)
+        self.assertFalse(judged.pairs_named)
+
+    def test_a_long_path_is_judged_whole_and_every_index_is_the_whole_paths(self) -> None:
+        """⭐ Batched at 1000 like every check, and not stopped at the first refused batch: the driver needs them all."""
+        rows = [list(_CLEAR) for _ in range(1500)]
+        rows[3] = list(_IN_BAND)
+        rows[1200] = list(_IN_BAND)
+        rows[1499] = list(_IN_THE_WORLD)
+        judged = self._client().judge_joints(rows)
+        self.assertEqual(judged.checked, 1500)
+        self.assertEqual([row.index for row in judged.refused], [3, 1200, 1499])
+
+    def test_an_answer_that_is_not_a_whole_report_is_not_an_answer(self) -> None:
+        """⭐ Fail closed: anything the client cannot read whole raises, and the driver's refusal then stands."""
+        base = {"success": True, "valid": False, "first_invalid": 0, "checked": 1, "clearance_m": 0.0,
+                "pairs_named": True}
+        row = {"index": 0, "bound_ok": True, "self_ok": False, "world_ok": True,
+               "pairs": [["forearm_link", "wrist_2_link", 1.21, -2.79]]}
+        broken = {
+            "an old sidecar": {k: v for k, v in base.items() if k != "pairs_named"},
+            "no rows for a refused path": dict(base, refused=[]),
+            "a row past the path": dict(base, refused=[dict(row, index=1)]),
+            "a row the verdict does not open with": dict(base, first_invalid=0, checked=2,
+                                                          refused=[dict(row, index=1)]),
+            "the same row twice": dict(base, checked=2, refused=[row, row]),
+            "a pair that is not four fields": dict(base, refused=[dict(row, pairs=[["forearm_link", 1.21]])]),
+            "a depth that is no number": dict(base, refused=[dict(row, pairs=[["a", "b", "deep", -1.0]])]),
+            "a term that is no bool": dict(base, refused=[dict(row, world_ok="yes")]),
+            "names missing where they were named": dict(base, refused=[dict(row, pairs=None)]),
+            "rows for a valid path": dict(base, valid=True, first_invalid=None, refused=[row]),
+            "a row that is every term clear": dict(base, refused=[dict(row, self_ok=True, pairs=[])]),
+        }
+        for what, reply in broken.items():
+            with self.subTest(what=what):
+                sent = int(reply["checked"])
+                with _Stubbed(_READY, [reply]) as client, self.assertRaises(CuroboUnavailableError):
+                    client.judge_joints([_CLEAR] * sent)
+
+    def test_names_nobody_asked_for_are_not_read(self) -> None:
+        """⭐ Fail closed on anything unexpected: pairs where the question asked for none, or a row carrying pairs its
+        reply says were not named, is not a report."""
+        row = {"index": 0, "bound_ok": True, "self_ok": False, "world_ok": True,
+               "pairs": [["forearm_link", "wrist_2_link", 1.21, -2.79]]}
+        base = {"success": True, "valid": False, "first_invalid": 0, "checked": 1, "clearance_m": 0.0}
+        with _Stubbed(_READY, [dict(base, pairs_named=True, refused=[row])]) as client, \
+                self.assertRaises(CuroboUnavailableError):
+            client.judge_joints([_IN_BAND], name_pairs=False)
+        with _Stubbed(_READY, [dict(base, pairs_named=False, refused=[row])]) as client, \
+                self.assertRaises(CuroboUnavailableError):
+            client.judge_joints([_IN_BAND])
+
+    def test_a_sidecar_older_than_the_report_is_refused_by_name(self) -> None:
+        old = {"success": True, "valid": False, "first_invalid": 0, "checked": 1, "clearance_m": 0.0}
+        with _Stubbed(_READY, [old]) as client, self.assertRaises(CuroboUnavailableError) as caught:
+            client.judge_joints([_IN_BAND])
+        self.assertIn("restart", str(caught.exception))
+
+    def test_a_failed_call_is_never_a_report(self) -> None:
+        failed = {"success": False, "planner_error": True, "reason": "no checker was built"}
+        with _Stubbed(_READY, [failed]) as client, self.assertRaises(CuroboUnavailableError):
+            client.judge_joints([_CLEAR])
+
+
+def _check_block(source: str) -> str:
+    """The sidecar's check_js branch, as text: from its dispatch to the next command's."""
+    start = source.find('if cmd == "check_js":')
+    end = source.find('if cmd == "explain_js":', start)
+    return source[start:end] if 0 <= start < end else ""
+
+
+def _reports_only_when_asked(block: str) -> bool:
+    """True when every write of the report keys sits after the one test of the request key, each written once."""
+    ask = block.find("if req.get(REPORT_REFUSED_KEY):")
+    if ask < 0:
+        return False
+    writes = ("_reply[REFUSED_KEY]", "_reply[PAIRS_NAMED_KEY]")
+    return all(block.count(key) == 1 and block.find(key) > ask for key in writes)
+
+
+class TheSidecarReportsOnlyWhenAskedTests(unittest.TestCase):
+    """The sidecar's half runs only in the cuRobo environment, so it is read as source (the GPU half is
+    ``scripts/curobo/probe_band_admission.py``): the report joins a check_js reply only under its request key, so every
+    other check is answered byte for byte as before, and its rows are ``refused_rows``, the CPU suite's own
+    arithmetic (``tests/test_curobo_pair_depth.py``), whose pairs are ``overlapping_pairs``, every one."""
+
+    def setUp(self) -> None:
+        self.block = _check_block((_ROOT / "src" / "robot" / "safety" / "planning" / "curobo_planner_server.py")
+                                  .read_text(encoding="utf-8"))
+
+    def test_the_report_is_written_only_under_its_key(self) -> None:
+        self.assertTrue(self.block, "the sidecar has no check_js branch")
+        self.assertTrue(_reports_only_when_asked(self.block))
+        self.assertIn("refused_rows(", self.block)
+        self.assertIn("NAME_PAIRS_KEY", self.block)
+
+    def test_the_scan_can_fail(self) -> None:
+        """⭐ THE CONTROL: a report written whatever was asked, or twice, reads False."""
+        always = '_reply[REFUSED_KEY] = []\nif req.get(REPORT_REFUSED_KEY):\n    _reply[PAIRS_NAMED_KEY] = True\n'
+        self.assertFalse(_reports_only_when_asked(always))
+        twice = ('if req.get(REPORT_REFUSED_KEY):\n    _reply[REFUSED_KEY] = []\n    _reply[PAIRS_NAMED_KEY] = True\n'
+                 '_reply[REFUSED_KEY] = []\n')
+        self.assertFalse(_reports_only_when_asked(twice))
+        self.assertFalse(_reports_only_when_asked("_emit(_reply)\n"))
+
+
 def _reports_the_pair(source: str) -> bool:
     """True when the sim's no-plan branch reads the client's refusal before it returns the fail safe result."""
     opening = source.find('"cuRobo found NO plan:')

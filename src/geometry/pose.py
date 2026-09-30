@@ -34,7 +34,7 @@ from .validation import (
     validate_position_mm,
 )
 
-__all__ = ["CLOSING_AXES", "Pose"]
+__all__ = ["CLOSING_AXES", "Pose", "closing_axis_heading_deg"]
 
 #: Below this the tool and its target are the same point, which names no direction to aim along.
 _AIM_MIN_DISTANCE_MM = 1e-6
@@ -65,8 +65,14 @@ CLOSING_AXES: tuple[str, ...] = (
 _RADIAL_MIN_MM = 1e-6
 
 
-def _closing_axis_deg(closing_axis: str, x_mm: float, y_mm: float) -> float:
-    """The heading of ``closing_axis`` about the frame's +Z at (``x_mm``, ``y_mm``), in degrees."""
+def closing_axis_heading_deg(closing_axis: str, x_mm: float, y_mm: float) -> float:
+    """The heading of ``closing_axis`` about the frame's +Z at (``x_mm``, ``y_mm``), in degrees.
+
+    The one rule for what a name of :data:`CLOSING_AXES` points at: :meth:`Pose.tool_down` and :meth:`Pose.aimed_at` turn
+    the tool's +X onto it, and a pick that names the axis its grasps close along reads it at each grasp's position.
+    Raises ``ValueError`` for a name that is not one of them, and for ``radial`` or ``tangential`` on the frame's
+    vertical axis, which names no direction.
+    """
     axis = str(closing_axis)
     turn = 0.0
     if axis[:1] in ("+", "-"):
@@ -151,7 +157,7 @@ class Pose:
         if closing_axis == "x":
             heading = float(yaw_deg)
         else:
-            heading = _closing_axis_deg(closing_axis, x_mm, y_mm) + float(yaw_deg)
+            heading = closing_axis_heading_deg(closing_axis, x_mm, y_mm) + float(yaw_deg)
         half = math.radians(heading) / 2.0
         # Rz(yaw) * Rx(pi), as (x, y, z, w).
         return cls(
@@ -223,7 +229,7 @@ class Pose:
         forward /= distance
 
         if closing_axis is not None:
-            heading = math.radians(_closing_axis_deg(closing_axis, x_mm, y_mm))
+            heading = math.radians(closing_axis_heading_deg(closing_axis, x_mm, y_mm))
             wanted = np.array([math.cos(heading), math.sin(heading), 0.0])
             right = wanted - float(np.dot(wanted, forward)) * forward
             if float(np.linalg.norm(right)) < _AIM_MIN_UP_CROSS:

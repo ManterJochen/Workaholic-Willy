@@ -123,6 +123,19 @@ gate: `limits`, `joint_limits`, `ik_quality`, `motion_continuity`, `payload` and
 build `SafetyPreflight` from it. The emergency stop is a hardware and controller function, and
 nothing in this package can enable, disable or observe it.
 
+`robot.look_joint_positions_deg` is where the camera looks from before each pick whose program names no
+look: one list per look, in **degrees** as the pendant shows the joints, visited in order. It has no
+radians twin, because a look is where the arm goes next and its unit must be said, and a program's own
+looks override it. A wrist camera fuses the looks until its grasp is safe; a fixed camera's arm is moved
+to them too, and its pick stops at the first look that finds something. The loader cannot tell radians
+from small degrees, so the desk check (`real_cell --check`) flags a look that reads as radians.
+
+`robot.natural_closing_axis` says how the hand and its camera naturally stand: a name (`"-y"`, `radial`,
+...) or a quaternion `[x, y, z, w]`, of which only the heading of the tool +X counts. Every camera grasp
+and push closes the way round nearer it and none is left out; `robot.tool_down` builds fixed poses along
+it. It is read by `src.geometry.closing_axis`, so validating a tree that names it loads no grasping
+package. Unset by default and in every shipped profile.
+
 `config/grasping_presets/` holds `easy` (a single pick at the least risk) and `dense_clutter` (bin
 picking with a bounded rescan recovery). `verification_heavy` set the `closed_loop` mode; it was
 deleted on 2026-09-29 with that mode, whose two-scan refinement was the only path that ran the check
@@ -144,6 +157,9 @@ that the merge validates, and refuses a preset that names a removed mode, a remo
 | a switch that would do nothing | `occlusion.hard_reject_enabled: true` (`UNWIRED_SWITCHES`) | leave it off |
 | a perception stack that would ground the wrong thing | `kind: closed_set` with the router on, or the router on a backend other than `vlm` | use the combination the message names |
 | a fused camera with no rig | `grasping.fusion.cameras` names an id `camera.cameras.rigs` does not have | fix the id |
+| a look that is no look | `robot.look_joint_positions_deg` names no look, a look with no joint or a value that is not finite, looks of different lengths, a length unlike the home's, or a joint past a full turn (360) | one list of joint degrees per look, one value per joint |
+| a closing direction that names none | `robot.natural_closing_axis` an unknown name, `""`, a quaternion that is none, a 3-vector, a number, or a quaternion whose tool +X stands within 10 degrees of the vertical | a name `Pose.tool_down` takes, or a taught pose's `[x, y, z, w]` |
+| a recovery that could not act | a physical action (`nudge_target`, `container_agitate`) with no `recovery.fixture`; `container_agitate` while `grasping.support.container` declares no interior box; `recovery.fixture.max_nudge_mm` or `push_distance_mm` under 10 or over 50 mm, or the distance above the ceiling | declare what the sentence names; an old `max_nudge_mm: 5` is refused on purpose: delete it to take 50 mm, or write 10 to 50 with a `push_distance_mm` no longer than it |
 | a write outside the allowlist | `ConfigTree.write` of a limit, a threshold or a safety toggle | edit the profile by hand |
 
 `ConfigTree.write` takes the bench measurements and site facts only: the payload mass and centre of

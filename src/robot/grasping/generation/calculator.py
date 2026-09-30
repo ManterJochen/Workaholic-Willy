@@ -505,6 +505,9 @@ class GraspCalculator:
         # console serves it over its overlay socket (api/routers/media.py,
         # api/viewfinder.py).
         self.last_debug_image_png: bytes | None = None
+        # What that overlay was drawn from, all but its candidates: what redraw_debug_image draws again over the
+        # candidates a caller kept. None where the last compute() drew no overlay.
+        self._last_draw: dict[str, Any] | None = None
         # Opt-in switch so the live pick path (``pick_loop``) forwards the
         # perception frame's rgb into ``compute`` and the grasp-point overlay above is rendered
         # per pick. Default False: pick_loop forwards ``rgb_image=None``, which is byte-identical
@@ -726,6 +729,7 @@ class GraspCalculator:
         # Reset per-call debug surface so a stale image cannot leak into
         # the next read of ``last_debug_image_png`` if this call returns early.
         self.last_debug_image_png = None
+        self._last_draw = None
         # Snapshot SAM2/segmentation metadata so it can be attached to
         # every resulting GraspPoint for traceability.
         seg_meta = _segmentation_metadata(segmentation)
@@ -1226,17 +1230,17 @@ class GraspCalculator:
         )
         self.last_telemetry = telemetry
         if rgb_image is not None:
-            self.last_debug_image_png = self._debug_renderer.draw(
-                rgb_image=rgb_image,
-                segmentation=segmentation,
-                candidates=candidates,
-                intrinsics=intrinsics,
-                gripper_model=gripper_model,
-                config=debug_config,
-                label=debug_label,
-                telemetry=telemetry,
-                transform=transform,
-            )
+            self._last_draw = {
+                "rgb_image": rgb_image,
+                "segmentation": segmentation,
+                "intrinsics": intrinsics,
+                "gripper_model": gripper_model,
+                "config": debug_config,
+                "label": debug_label,
+                "telemetry": telemetry,
+                "transform": transform,
+            }
+            self.last_debug_image_png = self._debug_renderer.draw(candidates=candidates, **self._last_draw)
         self.logger.info(
             "Generated %d grasp candidates (best score=%.3f); telemetry=%s",
             len(candidates),
@@ -1633,6 +1637,22 @@ class GraspCalculator:
         """
         self.compute(*args, **kwargs)
         return self.last_result
+
+    def redraw_debug_image(self, candidates: Sequence[GraspPoint]) -> bytes | None:
+        """Draw the last overlay again over ``candidates``, best first, and keep it as ``last_debug_image_png``.
+
+        For a caller that kept only some of the last :meth:`compute`'s candidates, or turned some: the pick loop, where
+        the closing axis its program named (``GraspMotion(closing_axis=...)``) left some out or turned some half a turn
+        about their approach, so the overlay shows the grasps the pick chooses among, each the way round it closes, and
+        its ``final`` and ``best_score`` count those. ``None``, and nothing drawn, where the last compute drew none.
+        """
+        if self._last_draw is None:
+            return None
+        kept = list(candidates)
+        drawn = {**self._last_draw, "telemetry": {**self._last_draw["telemetry"], "final": len(kept),
+                                                  "best_score": float(kept[0].score) if kept else 0.0}}
+        self.last_debug_image_png = self._debug_renderer.draw(candidates=kept, **drawn)
+        return self.last_debug_image_png
 
     def plan_multifinger(
         self,

@@ -20,6 +20,30 @@ print(motion.to_dict())
 [`examples/real_robot/12_pick_with_the_camera.py`](../../../../examples/real_robot/12_pick_with_the_camera.py)
 runs a campaign of picks with it. Everything else here is internal: the pick service and the pick loop call it.
 
+## Choosing the closing axis
+
+`GraspMotion(closing_axis="-y")` names the axis the jaws close along. Only grasps whose closing axis
+already **heads within 30 degrees** of it, either way round, are taken, each turned half a turn about its
+approach where that puts it the named way round: the same two contact faces, the jaws swapped. **Choose,
+don't twist.** The heading counts, the tilt stays free. The choosing runs in the pick loop before anything
+judges or ranks the grasps, so the grasp judged is the grasp gripped and `both_faces` works with it
+([loop/](../loop/README.md)).
+
+- **Values.** A name `Pose.tool_down` takes (`x`, `-x`, `y`, `-y`, `radial`, `-radial`, `tangential`,
+  `-tangential`, a leading `+` allowed; `radial` and `tangential` read at each grasp's place), or a taught
+  orientation, a quaternion `(x, y, z, w)` or a BASE `Pose`, whose tool +X laid onto the base XY plane is
+  the heading. `closing_axis="-y"` and `closing_axis=Pose.tool_down(x, y, z, closing_axis="-y")` pick the
+  same grasps.
+- **None along it.** A pick with no grasp along the axis ends `no_valid_grasp`, its failure line naming
+  the axis and the 30 degrees.
+- **The cell's own direction** is `robot.natural_closing_axis`, which turns every grasp the nearer way round
+  and leaves none out; a named `closing_axis` wins over it.
+- **The simulator's twist.** `align_closing_to_base_x` turns a chosen grasp afterwards (the simulator's aid
+  for symmetric parts); beside a `closing_axis` it raises `ValueError` before anything moves, whatever true
+  value it holds.
+- There is no config key: the axis is a program's choice. `build_execution_policy` hands it to
+  `GraspExecutionPolicy.closing_axis`, which `execute()` does not act on; the pick loop reads it.
+
 ## The nouns
 
 | Noun | Built by | Verb | Returns |
@@ -104,6 +128,9 @@ different answers.
 | `TypeError` or `ValueError` from `GraspMotion` | a negative distance, `pre_open_width_mm` of `None` or 0, `close_speed` above 1 | fix the field or leave it unset |
 | `ValueError` at the build | a pre-open wider than the hand opens, or any pre-open on a service with no hand | leave `pre_open_width_mm` unset |
 | `ValueError` at the build | a `policy=` built around another arm or hand | pass `motion=GraspMotion(...)` instead |
+| `ValueError` before anything moves | `both_faces` asked on a pick whose motion sets `align_closing_to_base_x=True`: that yaw turns a symmetric top-down grasp to close along base X, onto faces nobody judged | ask for one or the other; to close along one axis with `both_faces`, name it with `closing_axis` (`robot.natural_closing_axis` chooses only the way round); `run_dense_pick` sets the yaw whenever its planner is not cuRobo |
+| `ValueError` from `GraspMotion`, `GraspExecutionPolicy`, or `run()` before anything moves | a `closing_axis` beside the twist (any true value); a name `Pose.tool_down` does not take; a `Pose` not in BASE; an orientation whose tool +X lies within 10 degrees of the vertical; an axis set on the policy later that names none | name one axis, and no twist |
+| `TypeError` from `GraspMotion` | a `closing_axis` that is none of the values above, `None` included | leave it unset instead |
 | `TypeError` at the build | both `motion=` and `policy=` | pass one |
 | `MOTION_FAILED`, status `unsupported` | the arm keeps no straight line for the final descent | use an arm driver that keeps lines |
 | `CAMERA_FRAME_REJECTED` | a grasp still in the camera frame on a cell with a resolver | check the rig's declared calibration |
@@ -135,7 +162,7 @@ different answers.
 | File | Holds |
 | --- | --- |
 | `grasp_motion.py` | `GraspMotion`, `build_execution_policy`, `foreign_policy_refusal` |
-| `execution_policy.py` | `GraspExecutionPolicy`, `PolicyOutcome`, `PolicyReport` |
+| `execution_policy.py` | `GraspExecutionPolicy`, `PolicyOutcome`, `PolicyReport`, `closing_axis_twisted` |
 | `frame_resolver.py` | `FrameResolver` and the three resolvers |
 | `trajectory_safety.py` | `ApproachPathPolicy`, `ApproachPathOutcome`, `ApproachPathReport` and the sweep functions |
 
@@ -149,4 +176,4 @@ different answers.
   [the grasping config reference](../../../../docs/grasping-config-reference.md) for `approach_validation`.
 - Tests: `tests/test_grasp_motion.py`, `tests/test_grasp_execution_policy.py`,
   `tests/test_frame_resolver.py`, `tests/test_grasp_trajectory_safety.py`,
-  `tests/test_what_the_hand_verbs_read.py`.
+  `tests/test_what_the_hand_verbs_read.py`, `tests/test_a_pick_closes_along_the_axis_its_program_names.py`.

@@ -259,6 +259,11 @@ class EffectiveRecoveryOrchestratorConfig:
     #: and three keys appended after them, and a nested box is not a scalar. Widening it is a
     #: separate decision with telemetry-catalog consequences.
     fixture: "tuple[tuple[float, float, float], tuple[float, float, float], float] | None" = None
+    #: How far a push of the failed part moves it when nobody asks for another distance, in mm:
+    #: ``recovery.fixture.push_distance_mm`` (30 by default, never above the fixture's
+    #: ``max_nudge_mm``, the third number above, which is the ceiling a request is held to). 30 without a
+    #: fixture, which pushes nothing. Not in :meth:`EffectiveGraspingConfig.to_dict`, like the fixture.
+    push_distance_mm: float = 30.0
 
 
 @dataclass(frozen=True, slots=True)

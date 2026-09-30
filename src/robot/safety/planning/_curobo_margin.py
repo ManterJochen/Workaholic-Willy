@@ -5,9 +5,10 @@ same geometry:
 
   * cuRobo plans against a sphere model of the links and returns the first path it
     believes is collision-free;
-  * ``SelfCollisionGuard`` then re-checks the final configuration of that path against
-    the exact link meshes and rejects anything closer than
-    ``safety.self_collision.min_distance_mm``.
+  * ``SelfCollisionGuard`` then judges every sample of that path, at steps of its own
+    margin (``SafetyPreflight.gate_planned_path``), against the exact link meshes and
+    rejects anything closer than ``safety.self_collision.min_distance_mm``; nothing is
+    sent before every sample passed.
 
 A planner that knows nothing of that margin returns configurations the guard was
 always going to refuse. Measured on-box on a UR5e with radial closing, three of ten
@@ -23,7 +24,9 @@ each link and a pair gets the whole of it.
 
 The limit is real: this reduces the disagreement and does not remove it. Spheres are
 not meshes, so the two models still differ locally, and the buffer is a cushion rather
-than a proof. The guard and never the planner decides what executes.
+than a proof. The guard and never the planner decides what executes, and where the
+padded spheres alone refuse a pose the guard accepts, on a pair the guard judges, the
+guard decides that too (``band.py``); the cushion stays in every plan cuRobo makes.
 
 The module is imported from both sides of the process boundary: as part of this
 package under python 3.11, and as a plain sibling module by

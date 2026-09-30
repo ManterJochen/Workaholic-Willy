@@ -35,9 +35,10 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Iterator, Mapping, Optional
 
 
 from src.contracts import UNSET, Maybe, chosen
@@ -50,7 +51,7 @@ from src.robot.core import (
     RobotError,
 )
 from src.robot.core.errors import CameraWorldUnavailable
-from src.robot.core.gripper import toggle_without_sensor_of
+from src.robot.core.gripper import toggle_without_sensor_of, why_toggle_count_unknown
 from src.robot.execution.looks import Look, LookPose, look_label, looks_of, move_to_look
 from src.robot.execution.motion import MotionOutcome, MotionReport
 from src.robot.grasping.types.feedback import GraspFailureReason
@@ -76,11 +77,14 @@ from src.robot.grasping.recovery.policy import (
     SceneRecoveryPolicy,
 )
 from src.robot.grasping.recovery.orchestrator import (
+    OUTCOME_RECOVERY_EXHAUSTED,
+    OUTCOME_UNSAFE_RECOVERY_REFUSED,
     RecoveryDispatcher,
     RecoveryOrchestrator,
     RecoveryTrail,
-    recovery_actions_from_trail,
+    RecoveryTrailEntry,
     run_recovery_loop,
+    terminal_outcome_for_trail,
 )
 
 from .builders import (
@@ -150,6 +154,8 @@ if TYPE_CHECKING:
     from src.config.schema.robot import RobotConfig
     from src.robot.execution.handling import HandlingReport
     from src.robot.grasping.loop.pick_loop import LookedAround
+    from src.robot.grasping.recovery.push_gate import PickPush, PushCampaign, PushCell, PushGate
+    from src.robot.grasping.recovery.push_planner import AxisBox, PushRefusal
     from src.robot.grasping.loop.progress import (
         PickProgressListener,
         ShouldCancel,
@@ -223,10 +229,12 @@ class _RecoveryReportAdapter:
         self.outcome = report.outcome
         reasons: tuple[Any, ...] = ()
         psr = report.pick_report
-        if psr is not None and psr.attempts:
+        # A recovery that stopped where the arm stands (a push that stopped) leaves nothing to recover from: the loop
+        # ends on it with no reason to act on, and no further pick drives the arm back to a look. A person decides.
+        if getattr(report, "needs_person", False) is not True and psr is not None and psr.attempts:
             last = psr.attempts[-1]
             reasons = tuple(last.reasons)
-            if not reasons and _is_motion_plan_refusal(last):
+            if not reasons and _is_motion_plan_refusal(last) and getattr(last, "action", "") != "push":
                 # Narrow on purpose. It fires only when the attempt carries no reason of its own
                 # (so it can never displace a real one) and only for the refusal the drivers emit
                 # before any command reaches the controller. ``MotionStatus.TIMEOUT`` alone is not
@@ -389,6 +397,12 @@ class AutonomousGraspService:
     #: stops at the first that finds something. :meth:`pick` itself is handed its looks and reads none from here.
     #: Empty for a cell that declares none, and for :meth:`from_components`.
     configured_looks: tuple[LookPose, ...] = ()
+    #: What the cell is as a push of a failed part needs it (``nudge_target``, pushed inside the pick attempt): the open
+    #: hand from the gripper registry, the workspace, the clearance the arm's line judge keeps and a declared container
+    #: (:class:`~src.robot.grasping.recovery.push_gate.PushCell`). :meth:`from_robot_config` reads it where
+    #: ``grasping.recovery.allowed_actions`` names ``nudge_target``, and keeps the refusal where it cannot be read;
+    #: ``None`` otherwise and for :meth:`from_components`, and then nothing is pushed.
+    push_cell: "PushCell | PushRefusal | None" = None
 
     def __post_init__(self) -> None:
         # Per-attempt latency/SLO coordinator.
@@ -408,6 +422,15 @@ class AutonomousGraspService:
         #: above the orchestrator's attempt loop and would otherwise start a fresh pick right after a
         #: cancelled one. Default ``None`` leaves the loop unchanged.
         self._should_cancel: Optional["ShouldCancel"] = None
+        #: The campaign the picks belong to (:meth:`start_campaign`): its push budgets, the parts next_target skips
+        #: and the push distance. Started on the first pick where no caller started one.
+        self._campaign: Optional["PushCampaign"] = None
+        #: Why the last pick stopped where the arm stands, a person to decide (its report's ``needs_person``), in that
+        #: report's words; ``""`` while nothing waits for a person. Set, it refuses every pick with nothing asked or
+        #: commanded until :meth:`start_campaign` or :meth:`acknowledge_needs_person` clears it.
+        self._needs_person: str = ""
+        #: Why this service's picks cannot push, each said once (a WARNING per reason, not per pick).
+        self._push_said: set[str] = set()
         # Push the wired :class:`ShadowRouter` (if any) onto the
         # underlying orchestrator so the ranking-shadow producer can
         # fire at the pick_loop seam. Never raises: a runtime stack that
@@ -630,9 +653,13 @@ class AutonomousGraspService:
           the effective-config snapshot, and a physical action it allows
           (``nudge_target`` / ``container_agitate``) needs the fixture
           envelope declared beside it, ``recovery.fixture``, which the
-          schema refuses to go without. The ``verification`` and
-          ``dense_recovery`` sub-policies, and the ``recovery_fixture``
-          argument the second one took, left on 2026-09-29.
+          schema refuses to go without. Where ``nudge_target`` is allowed,
+          the cell's push inputs are read here too (:attr:`push_cell`: the
+          hand from the gripper registry, the workspace, the clearance the
+          arm's line judge keeps, a declared container). The
+          ``verification`` and ``dense_recovery`` sub-policies, and the
+          ``recovery_fixture`` argument the second one took, left on
+          2026-09-29.
 
         ``frame_resolver`` is plumbed through identically to
         :meth:`from_components`. See that method's docstring for the
@@ -787,6 +814,7 @@ class AutonomousGraspService:
             # In degrees in the tree, as the pendant shows them; the one place they become joints.
             configured_looks=tuple(
                 JointPositions.deg(*row) for row in getattr(robot_cfg, "look_joint_positions_deg", None) or ()),
+            push_cell=_push_cell_of(robot_cfg, grasping_cfg),
         )
         # Opt into production record logging from config (grasping.record_log_path; default
         # None / empty is off). The loader already applied ${ENV} substitution, so an unset env
@@ -866,9 +894,10 @@ class AutonomousGraspService:
 
             A wrist pick handed looks has had its rescans: its looks and the
             one view they may generate. Where the cell arms the recovery loop
-            (``grasping.recovery``), that loop rescans nothing for it, so the
-            looks and the generated view run once per pick; a pick handed no
-            look rescans where it stands, as it always did.
+            (``grasping.recovery``), that loop rescans nothing for it, so a
+            rescan never drives them again; only ``next_target`` runs the
+            looks again within this call, for another part of the label. A
+            pick handed no look rescans where it stands, as it always did.
 
             Nothing is said to the hand before or between looks, and a
             camera that could not vouch on the way is a fault. Unset
@@ -893,8 +922,12 @@ class AutonomousGraspService:
             them) showed both faces of, and ends the same way otherwise. The
             grasp gripped is then the one whose faces were judged: the
             reranks and the approach check's fall-back to another candidate
-            stand down. A motion that turns every grasp about base Z before it
-            closes (``GraspMotion(align_closing_to_base_x=True)``) would close
+            stand down. The cell's natural orientation
+            (``robot.natural_closing_axis``) and a motion naming a closing axis
+            (``GraspMotion(closing_axis=...)``) choose the way round before the
+            faces are judged, so both work with it. A motion that turns every
+            grasp about base Z before it closes
+            (``GraspMotion(align_closing_to_base_x=True)``) would close
             the jaws on faces nobody judged, so asking for both together raises
             ``ValueError`` before anything moves. Off, the default and the fast
             one, a look is good enough when its grasp is valid and certain. A
@@ -943,6 +976,29 @@ class AutonomousGraspService:
             believes its jaws closed and nobody at a terminal said
             otherwise) is ``EXECUTION_FAILED`` with
             :attr:`AutonomousGraspReport.gripper_fault` saying why.
+
+            Every pick belongs to a campaign (:meth:`start_campaign`):
+            where the cell's recovery allows it, a wrist pick in
+            ``dense_clutter`` pushes a part every grasp of which collided
+            with a neighbour within 25 mm (``nudge_target``, inside the
+            pick attempt, the jaws read and never switched), within the
+            campaign's budgets, and ``next_target`` skips a failed part of
+            the label for this pick and the next two. A toggle's count
+            nobody can vouch for when the push reads it, or a gripper that
+            measures its width found not connected or unreadable then, ends
+            the pick as a gripper fault, nothing pushed; so does a toggle's
+            count nobody can vouch for before ``next_target`` drives the
+            looks again, before any look is driven again. One nobody can
+            vouch for before a contact leg of the push, or once the arm is
+            up, stops the push where the arm stands.
+            A push that stopped
+            once something may have moved leaves the arm where it is and
+            the report :attr:`AutonomousGraspReport.needs_person`; a
+            campaign stops on it, and so does this service: every later
+            pick is refused ``UNSAFE_RECOVERY_REFUSED``, needing a person,
+            with nothing asked, perceived or commanded, until a person
+            decides (:meth:`start_campaign`, which every ``PickRun`` and
+            console run calls, or :meth:`acknowledge_needs_person`).
         """
 
         # A wrong look list is the program's error, raised before anything moves.
@@ -962,6 +1018,11 @@ class AutonomousGraspService:
         # Default ``None`` costs one attribute read and leaves the body below unchanged.
         if self._should_cancel is not None and self._should_cancel():
             return self._cancelled_report(mode=mode)
+        # A recovery of an earlier pick stopped where the arm stands (a push that stopped once something may have moved):
+        # a person decides first. The next pick would drive the arm to its look from there, the escape the owner ruled
+        # out (2026-09-29), so none starts, and nothing is read off the cell, asked or commanded.
+        if self._needs_person:
+            return self._needs_person_report(mode=mode)
         # The controller is asked before the hand, as Robot.pick asks it: a toggle that believes its jaws closed asks
         # the person, and a person's 'p' switches DO0, which on an arm still protective-stopped with the part in the
         # jaws drops it from wherever the lift stopped (found auditing the owner's toggle cell, 2026-09-24). A stopped
@@ -980,6 +1041,8 @@ class AutonomousGraspService:
             return self._fault_report(exc, mode=mode)
         if hand:
             return self._hand_refused_report(hand, mode=mode)
+        # A pick of the campaign starts: its own two pushes are available again, and the parts next_target skips age.
+        self.campaign.start_pick()
         # Install a per-attempt LatencyTracker so the decision seam can record
         # its span via ``self._current_latency_tracker``, and the ranking and
         # fusion seams theirs through the orchestrator. The tracker is always
@@ -1000,6 +1063,9 @@ class AutonomousGraspService:
         pick_attempt_id = f"pick-{uuid.uuid4().hex[:12]}"
         wall_t0_ns = time.monotonic_ns()
         fault: Optional[Exception] = None
+        # What the pick loop kept of its pushes before this pick: a fault below leaves the pushes of the pick that
+        # raised there, and only those are this pick's.
+        pushes_before = _pushes_of(_orch)
         try:
             report = self._look_and_pick(looks, mode=mode, both_faces=both_faces)
         except _CELL_FAULTS as exc:
@@ -1008,9 +1074,12 @@ class AutonomousGraspService:
             # A fault of the cell is this pick's answer, not an exception out of it: a verb that
             # promises a report never raises for a domain refusal, and a programmer error still does.
             # A campaign still stops on it, because the report carries the fault and `PickRun`
-            # reads it.
+            # reads it. A push the fault stopped where the arm stands (a camera world that could not vouch mid-push)
+            # is said on it too, so the report needs a person.
             fault = exc
-            report = self._fault_report(exc, mode=mode)
+            report = _with_the_pushes_of_a_fault(
+                self._fault_report(exc, mode=mode),
+                tuple(push for push in _pushes_of(_orch) if not any(push is kept for kept in pushes_before)))
         finally:
             # Always tear the tracker down on the way out; subsequent
             # pick() calls install a fresh one.
@@ -1023,6 +1092,9 @@ class AutonomousGraspService:
             wall_elapsed_s=wall_elapsed_s,
             attempt_id=pick_attempt_id,
         )
+        if getattr(report, "needs_person", False) is True:
+            # The arm stands where a recovery stopped it: no pick of this service starts until a person decides.
+            self._needs_person = str(report.telemetry.get("push_stopped") or report.failure_summary())
         if fault is not None:
             # What the raise left behind, and nothing more: no SLO sample, no shadow annotation and no
             # record. The corpus counts grasps, and a camera that stopped delivering is not a grasp
@@ -1331,25 +1403,64 @@ class AutonomousGraspService:
                        "controller": why},
         )
 
+    def _needs_person_report(self, *, mode: "GraspMode | str | None") -> AutonomousGraspReport:
+        """The report for a pick refused because a recovery of an earlier pick stopped where the arm stands.
+
+        Nothing is read off the cell, asked or commanded. ``UNSAFE_RECOVERY_REFUSED``, so it needs a person as the report
+        it follows did (:attr:`AutonomousGraspReport.needs_person`), with that report's words
+        (``stopped_where_the_arm_stands``), and ``PickRun`` and the console stop on it as they stop on that report. No
+        ``pick_report`` and no record: no pick ran. :meth:`start_campaign` or :meth:`acknowledge_needs_person` lets the
+        next pick start.
+        """
+        effective_mode = resolve_grasp_mode(mode) if mode is not None else self.default_mode
+        return AutonomousGraspReport(
+            outcome=AutonomousGraspOutcome.UNSAFE_RECOVERY_REFUSED,
+            mode=effective_mode,
+            profile=_profile_for(effective_mode),
+            effective_config=self.effective_config,
+            telemetry={"stage": "before_start", "stopped_where_the_arm_stands": self._needs_person},
+        )
+
+    @property
+    def stopped_where_the_arm_stands(self) -> str:
+        """Why a pick of this service stopped where the arm stands, a person to decide, in its report's words; ``""``
+        while nothing waits for a person. While it is set, :meth:`pick` starts nothing."""
+        return self._needs_person
+
+    def acknowledge_needs_person(self) -> None:
+        """A person decided what happens after a recovery that stopped where the arm stands (a report's
+        :attr:`~AutonomousGraspReport.needs_person`): the next pick may start. :meth:`start_campaign` does the same, and
+        every ``PickRun`` and console run starts a campaign."""
+        if self._needs_person:
+            _LOG.info("a person decided after a recovery that stopped where the arm stands; picks may start again")
+        self._needs_person = ""
+
     def _hand_refusal(self) -> str:
         """Why the hand will not start a pick, or ``""``: asked of a hand that toggles with no sensor, and no other."""
         toggle = toggle_without_sensor_of(getattr(getattr(self.runtime, "orchestrator", None), "gripper", None))
         return toggle.jaws_open_for_a_pick() if toggle is not None else ""
 
-    def _hand_refused_report(self, why: str, *, mode: "GraspMode | str | None") -> AutonomousGraspReport:
+    def _hand_refused_report(
+        self, why: str, *, mode: "GraspMode | str | None", stage: str = "before_start",
+    ) -> AutonomousGraspReport:
         """The report for a pick a hand that toggles would not start: nothing moved and nothing was sent.
 
         EXECUTION_FAILED with the pick loop's ``gripper_fault`` underneath, as the policy's own refusal reports it
         (:attr:`AutonomousGraspReport.gripper_fault`), so a campaign stops on either. No ``pick_report``: no pick ran.
+        ``stage`` says where: ``before_start``, or ``before_the_re_pick`` where the pick's recovery would have picked
+        again (:meth:`_run_with_recovery`). There ``re_pick_refused`` says so too, ``gripper_fault``: the recovery
+        trail's last step names the action whose pick this refused, and that pick never ran.
         """
         effective_mode = resolve_grasp_mode(mode) if mode is not None else self.default_mode
+        telemetry = {"stage": stage, "low_level_outcome": str(PickOutcome.GRIPPER_FAULT), "gripper_fault": why}
+        if stage == "before_the_re_pick":
+            telemetry["re_pick_refused"] = PickOutcome.GRIPPER_FAULT.value
         return AutonomousGraspReport(
             outcome=AutonomousGraspOutcome.EXECUTION_FAILED,
             mode=effective_mode,
             profile=_profile_for(effective_mode),
             effective_config=self.effective_config,
-            telemetry={"stage": "before_start", "low_level_outcome": str(PickOutcome.GRIPPER_FAULT),
-                       "gripper_fault": why},
+            telemetry=telemetry,
         )
 
     def _fault_report(self, fault: Exception, *, mode: "GraspMode | str | None") -> AutonomousGraspReport:
@@ -1453,6 +1564,72 @@ class AutonomousGraspService:
             source.set_prompt(wanted.phrase, object_labels=wanted.object_labels)
         orchestrator.target_label = wanted.target_label
         return previous
+
+    def push_distance(self, push_mm: "Maybe[float]" = UNSET) -> float:
+        """How far a push of a campaign asking ``push_mm`` moves its part, in mm: ``ValueError`` with the sentence
+        where the request is refused.
+
+        Unset, the config's ``recovery.fixture.push_distance_mm`` (30 mm unless the cell says otherwise). A request is
+        taken as asked up to the cell's ceiling, ``recovery.fixture.max_nudge_mm`` (50 mm unless the cell says less),
+        and refused above it or above the owner's hard cap of 50 mm, never shortened; one under 10 mm is refused too,
+        since it cannot open room for a finger (``push_planner.resolve_push_distance``). A cell that declares no fixture
+        is held to the hard cap alone: it pushes nothing, whatever it is asked.
+        """
+        from src.robot.grasping.recovery.push_planner import (  # noqa: PLC0415
+            DEFAULT_PUSH_DISTANCE_MM,
+            PUSH_DISTANCE_CAP_MM,
+            PushRefusal,
+            resolve_push_distance,
+        )
+
+        recovery = getattr(self.effective_config, "recovery_orchestrator", None)
+        fixture = getattr(recovery, "fixture", None)
+        default = float(getattr(recovery, "push_distance_mm", DEFAULT_PUSH_DISTANCE_MM))
+        ceiling = float(fixture[2]) if fixture is not None else PUSH_DISTANCE_CAP_MM
+        if chosen(push_mm):
+            try:
+                requested: Optional[float] = float(push_mm)
+            except (TypeError, ValueError):
+                raise ValueError(f"a push distance is a number of mm, not {push_mm!r}") from None
+        else:
+            requested = None
+        resolved = resolve_push_distance(requested, default_mm=default, ceiling_mm=ceiling)
+        if isinstance(resolved, PushRefusal):
+            raise ValueError(resolved.sentence)
+        return float(resolved)
+
+    def start_campaign(self, *, push_mm: "Maybe[float]" = UNSET) -> "PushCampaign":
+        """Start a campaign of picks: fresh push budgets (1 per part, 2 per pick, 5 per campaign), no part skipped, and
+        the push distance ``push_mm`` settles to (:meth:`push_distance`, whose ``ValueError`` it raises before
+        anything changes). ``PickRun`` and a console run each start one; a pick no caller started one for starts it.
+        Starting one is a person's decision too: after a recovery that stopped where the arm stands
+        (:attr:`stopped_where_the_arm_stands`), picks may start again."""
+        from src.robot.grasping.recovery.push_gate import PushCampaign  # noqa: PLC0415
+
+        self._campaign = PushCampaign(distance_mm=self.push_distance(push_mm))
+        self.acknowledge_needs_person()
+        return self._campaign
+
+    @property
+    def campaign(self) -> "PushCampaign":
+        """The campaign the picks belong to: the one :meth:`start_campaign` started, else one started now with the
+        config's push distance. Where the config's own distance is refused (a hand-built snapshot, since the schema
+        refuses one at load), the campaign still counts and skips, and pushes nothing."""
+        if self._campaign is None:
+            from src.robot.grasping.recovery.push_gate import PushCampaign  # noqa: PLC0415
+
+            try:
+                self._campaign = PushCampaign(distance_mm=self.push_distance())
+            except ValueError as refused:
+                self._say_once("distance", "no part is pushed: %s", refused)
+                self._campaign = PushCampaign(distance_mm=None)
+        return self._campaign
+
+    def _say_once(self, key: str, message: str, *args: Any) -> None:
+        """A WARNING about why picks cannot push, said once per service for each ``key``."""
+        if key not in self._push_said:
+            self._push_said.add(key)
+            _LOG.warning(message, *args)
 
     def _extra_with_route(self) -> Optional[dict[str, Any]]:
         """Record provenance, plus which perception route grounded this pick when one did.
@@ -1694,11 +1871,37 @@ class AutonomousGraspService:
 
         ``rescans`` false takes ``rescan`` out of the actions the loop may plan: a wrist pick handed looks, whose looks
         and one generated view were its rescans (:meth:`_look_around_and_pick`). The loop still runs on what is left.
+
+        The owner's recovery (2026-09-29), wired here:
+
+        * The loop plans ``rescan`` and ``next_target`` directly and every other action through a strategy, of which
+          there is none for the push: the push runs inside the pick attempt (the pick loop's ``push_gate``), and a
+          ``nudge_target`` this loop plans is refused before anything moves and falls through.
+        * ``next_target`` is a rescan that skips the part that failed: the pick loop names it (``failed_part``), it is
+          added to the campaign's exclusion zones (same label only, this pick and the next two), and the pick runs
+          again, a wrist pick handed looks with its looks again, for another part of the label.
+        * Before ``next_target`` or a rescan drives the looks again (a wrist pick handed looks), a hand that toggles
+          with no sensor is read (``why_toggle_count_unknown``: nothing asked, nothing sent). A count nobody can vouch
+          for ends the pick there as a gripper fault (``stage`` ``before_the_re_pick``, ``re_pick_refused``
+          ``gripper_fault``: the trail's last step never picked), before any look is driven again, and ``PickRun`` and
+          the console stop on it (the owner, 2026-09-30). A re-pick that drives no look, a fixed camera's or that of a
+          wrist pick handed no look, reads nothing more: its own check before the arm moves asks where the jaws stand,
+          as at every pick start.
+        * The pick loop is handed the campaign's zones and, where the policy lets this pick push
+          (:func:`~src.robot.grasping.recovery.policy.push_permitted`: dense_clutter only), a push gate
+          (:meth:`_push_gate`), both taken back after the pick.
+        * A push that stopped where the arm stands ends the loop there (``needs_person``), ``unsafe_recovery_refused``
+          unless the controller stopped. A loop that ran at least one action and ended for want of another is
+          ``recovery_exhausted``, and one whose recovery motion failed ``unsafe_recovery_refused``
+          (``terminal_outcome_for_trail``).
         """
 
         policy = self._build_recovery_orchestrator_policy()
+        campaign = self.campaign
+        loop = self.runtime.orchestrator
         if not policy.enabled:
-            return self._pick_inner(mode=mode)
+            with _handed(loop, zones=campaign.zones, gate=None):
+                return self._pick_inner(mode=mode)
 
         cfg = self.effective_config
         assert cfg is not None  # guaranteed by policy.enabled above
@@ -1707,7 +1910,8 @@ class AutonomousGraspService:
         )
         profile = _profile_for(effective_mode)
         if profile.mode.value not in policy.apply_modes:
-            return self._pick_inner(mode=mode)
+            with _handed(loop, zones=campaign.zones, gate=None):
+                return self._pick_inner(mode=mode)
         if not rescans and SceneRecoveryAction.RESCAN in policy.allowed_actions:
             _LOG.info("recovery rescans nothing for a wrist pick handed looks: its looks, and the one view they may "
                       "generate, were its rescans, and driving them again is not a recovery")
@@ -1716,12 +1920,34 @@ class AutonomousGraspService:
 
         threshold = float(cfg.uncertainty.recovery_aggressive_threshold)
         orchestrator = RecoveryOrchestrator(
-            dispatcher=RecoveryDispatcher(), strategies={}, bypass_strategies=True
+            dispatcher=RecoveryDispatcher(), strategies={},
+            direct_actions=frozenset({SceneRecoveryAction.RESCAN, SceneRecoveryAction.NEXT_TARGET}),
         )
-        arm = getattr(self.runtime.orchestrator, "arm", None)
+        arm = getattr(loop, "arm", None)
+        gate = self._push_gate(profile, policy, campaign)
+        pushes_by_pick: list[tuple["PickPush", ...]] = []
+        # What picks again: next_target where it skipped the failed part (`_skip_failed_part`), a rescan otherwise.
+        again = ["a rescan"]
 
         def _pick_once() -> _RecoveryReportAdapter:
-            return _RecoveryReportAdapter(self._pick_inner(mode=mode))
+            if pushes_by_pick and self.perceives_from_the_wrist and bool(getattr(loop, "looks", None)):
+                # next_target or a rescan drives the looks again (the owner, 2026-09-30): a toggle's count nobody can
+                # vouch for (DO0 switched at the pendant since the pick began, a count lost or unreadable) ends the pick
+                # here, as a gripper fault, before any look is driven again. Read only: nobody is asked, nothing is
+                # sent. A re-pick that drives no look (a fixed camera's, a wrist pick's handed none) reads nothing
+                # more: its own check before the arm moves asks where the jaws stand, as at every pick start.
+                unknown = why_toggle_count_unknown(getattr(loop, "gripper", None))
+                if unknown:
+                    said = (f"the pick ends before {again[0]} picks again, with nothing commanded: nobody can say where "
+                            f"the jaws stand ({unknown}), and nobody is asked")
+                    _LOG.error("%s", said)
+                    pushes_by_pick.append(())
+                    return _RecoveryReportAdapter(self._hand_refused_report(said, mode=mode, stage="before_the_re_pick"))
+            again[0] = "a rescan"
+            report = self._pick_inner(mode=mode)
+            pushed = _pushes_of(loop)
+            pushes_by_pick.append(pushed)
+            return _RecoveryReportAdapter(_with_pushes(report, pushed))
 
         def _aggressive(adapter: _RecoveryReportAdapter) -> bool:
             # Single source of truth: the canonical gate requires fused_available and
@@ -1731,25 +1957,77 @@ class AutonomousGraspService:
                 snapshot, recovery_aggressive_threshold=threshold,
             )
 
-        final, trail = run_recovery_loop(
-            pick=_pick_once,
-            profile=profile,
-            policy=policy,
-            orchestrator=orchestrator,
-            frame_acquirer=lambda: None,  # the next _pick_inner re-perceives the scene
-            arm=arm,
-            aggressive_recovery_bias=_aggressive,
+        def _skip_failed_part(adapter: _RecoveryReportAdapter) -> bool:
+            # The part the pick that just failed went for, as the pick loop names it: skipped by the next picks.
+            from src.robot.grasping.recovery.push_gate import FailedPart  # noqa: PLC0415
+
+            part = getattr(loop, "failed_part", None)
+            if not isinstance(part, FailedPart):
+                return False
+            zone = campaign.zones.exclude(label=part.label, centre_mm=part.centre_mm,
+                                          footprint_diagonal_mm=part.footprint_diagonal_mm)
+            _LOG.info("next_target skips the %r at (%.0f, %.0f) mm, within %.0f mm, for this pick and the next %d",
+                      part.label, zone.centre_xy_mm[0], zone.centre_xy_mm[1], zone.radius_mm,
+                      zone.last_pick - zone.added_pick)
+            again[0] = "next_target"
+            return True
+
+        with _handed(loop, zones=campaign.zones, gate=gate):
+            final, trail = run_recovery_loop(
+                pick=_pick_once,
+                profile=profile,
+                policy=policy,
+                orchestrator=orchestrator,
+                frame_acquirer=lambda: None,  # the next _pick_inner re-perceives the scene
+                arm=arm,
+                aggressive_recovery_bias=_aggressive,
+                skip_failed_part=_skip_failed_part,
+            )
+        report = self._attach_recovery_trail(final.report, trail, pushes=tuple(pushes_by_pick))
+        return _with_the_recovery_outcome(report, trail)
+
+    def _push_gate(
+        self, profile: GraspBehaviorProfile, policy: SceneRecoveryPolicy, campaign: "PushCampaign",
+    ) -> "PushGate | None":
+        """What lets this pick push its failed part, or ``None``: the policy must permit it
+        (:func:`~src.robot.grasping.recovery.policy.push_permitted`: enabled, the mode's profile lists ``nudge_target``,
+        which only dense_clutter's does, ``recovery.allowed_actions`` lists it with a fixture declared, a budget above
+        zero), the cell's push inputs must be known (:attr:`push_cell`), the campaign must have a push distance, and
+        the fixture box must leave room. Why a pick that is permitted cannot push is said once, as a WARNING."""
+        from src.robot.grasping.recovery.policy import push_permitted  # noqa: PLC0415
+        from src.robot.grasping.recovery.push_gate import PushCell, PushGate  # noqa: PLC0415
+
+        if not push_permitted(profile, policy):
+            return None
+        cell = self.push_cell
+        if not isinstance(cell, PushCell):
+            why = getattr(cell, "sentence", "") or "the cell's hand, workspace and clearance were not read (push_cell)"
+            self._say_once("cell", "nudge_target is allowed and no part is pushed: %s", why)
+            return None
+        if campaign.distance_mm is None:
+            return None
+        operator_box = _operator_box(policy.fixture)
+        if isinstance(operator_box, str):
+            self._say_once("fixture", "nudge_target is allowed and no part is pushed: %s", operator_box)
+            return None
+        cfg = self.effective_config
+        return PushGate(
+            budgets=campaign.budgets, distance_mm=campaign.distance_mm, cell=cell, operator_box=operator_box,
+            on_approach_blocked=bool(getattr(cfg, "approach_validation_enabled", False)),
         )
-        return self._attach_recovery_trail(final.report, trail)
 
     @staticmethod
     def _attach_recovery_trail(
-        report: AutonomousGraspReport, trail: RecoveryTrail
+        report: AutonomousGraspReport, trail: RecoveryTrail, *, pushes: "tuple[tuple[PickPush, ...], ...]" = (),
     ) -> AutonomousGraspReport:
         """Fold the recovery-trail summary into a report's telemetry for operator
         visibility. Only called on the opt-in recovery path, so the default path
         stays byte-identical. Values are simple types (str + list[str]) so the
         telemetry audit (which checks required-key presence, not extras) is safe.
+
+        ``pushes`` are what the pushes of each pick of the loop came to, pick by pick: every push that moved anything
+        is a ``nudge_target`` step of the trail the record carries (``recovery_actions``), in the order it ran, and
+        every push the picks considered is on the telemetry (``pushes``).
         """
 
         merged = dict(report.telemetry)
@@ -1757,12 +2035,15 @@ class AutonomousGraspService:
         merged["recovery_trail_actions"] = [
             entry.plan_action.value for entry in trail.entries
         ]
+        considered = [push.to_dict() for pick in pushes for push in pick]
+        if considered:
+            merged["pushes"] = considered
         # Carry the per-step recovery trail on the typed report field so the serializer writes it into
         # GraspAttemptRecord.recovery_actions (the per-step action+reward source for offline recovery training).
         return replace(
             report,
             telemetry=merged,
-            recovery_actions=recovery_actions_from_trail(trail),
+            recovery_actions=_recovery_rows(trail, pushes),
         )
 
     # Fused-uncertainty helpers
@@ -2481,6 +2762,9 @@ def _found_nothing(report: AutonomousGraspReport) -> bool:
     """
     if report.outcome is AutonomousGraspOutcome.NO_TARGET:
         return True
+    # The pick loop's own word underneath, where a recovery loop that ran out of actions reports recovery_exhausted.
+    if getattr(report.pick_report, "outcome", None) is PickOutcome.NO_PERCEPTION:
+        return True
     not_found = GraspFailureReason.TARGET_LABEL_NOT_FOUND.value
     telemetry = report.telemetry or {}
     said = tuple(str(reason) for reason in (telemetry.get("reasons") or ()))
@@ -2512,3 +2796,161 @@ def _controller_stop_telemetry(orchestrator: Any) -> dict[str, Any]:
     if not isinstance(reason, str) or not reason:
         return {}
     return {"low_level_outcome": str(PickOutcome.CONTROLLER_NOT_OPERATIONAL), "controller": reason}
+
+
+@contextmanager
+def _handed(orchestrator: Any, *, zones: Any, gate: Any) -> Iterator[None]:
+    """Hand the pick loop the campaign's exclusion zones and this pick's push gate, and take both back after it, as the
+    looks and ``both_faces`` are handed: the next pick inherits neither."""
+    before = (getattr(orchestrator, "exclusion_zones", None), getattr(orchestrator, "push_gate", None))
+    orchestrator.exclusion_zones = zones
+    orchestrator.push_gate = gate
+    try:
+        yield
+    finally:
+        orchestrator.exclusion_zones, orchestrator.push_gate = before
+
+
+def _pushes_of(orchestrator: Any) -> "tuple[PickPush, ...]":
+    """What the pushes of the pick that just ran came to, as the pick loop keeps them (``pushes``); none from a loop
+    that keeps none."""
+    from src.robot.grasping.recovery.push_gate import PickPush  # noqa: PLC0415
+
+    kept = getattr(orchestrator, "pushes", ())
+    return tuple(push for push in kept if isinstance(push, PickPush)) if isinstance(kept, tuple) else ()
+
+
+def _with_pushes(report: AutonomousGraspReport, pushes: "tuple[PickPush, ...]") -> AutonomousGraspReport:
+    """``report`` with what its pick's pushes came to: every push it considered on the telemetry (``pushes``), and a
+    push that stopped where the arm stands said (``push_stopped``), the pick then ``unsafe_recovery_refused`` unless
+    its controller stopped (``CANCELLED``, :attr:`AutonomousGraspReport.controller_stopped`). Either way the report
+    needs a person (:attr:`AutonomousGraspReport.needs_person`), and nothing more moves."""
+    if not pushes:
+        return report
+    telemetry = dict(report.telemetry)
+    telemetry["pushes"] = [push.to_dict() for push in pushes]
+    stopped = next((push for push in pushes if push.stopped), None)
+    if stopped is None:
+        return replace(report, telemetry=telemetry)
+    telemetry["push_stopped"] = stopped.sentence
+    outcome = report.outcome if stopped.controller_stopped else AutonomousGraspOutcome.UNSAFE_RECOVERY_REFUSED
+    return replace(report, telemetry=telemetry, outcome=outcome)
+
+
+def _with_the_pushes_of_a_fault(
+    report: AutonomousGraspReport, pushes: "tuple[PickPush, ...]",
+) -> AutonomousGraspReport:
+    """A fault's ``report`` with the pushes of the pick that raised it: every push it considered on the telemetry
+    (``pushes``), and a push the fault stopped where the arm stands said (``push_stopped``), so the report needs a person
+    (:attr:`AutonomousGraspReport.needs_person`). The outcome stays the fault's."""
+    if not pushes:
+        return report
+    telemetry = dict(report.telemetry)
+    telemetry["pushes"] = [push.to_dict() for push in pushes]
+    stopped = next((push for push in pushes if push.stopped), None)
+    if stopped is not None:
+        telemetry["push_stopped"] = stopped.sentence
+    return replace(report, telemetry=telemetry)
+
+
+def _with_the_recovery_outcome(report: AutonomousGraspReport, trail: RecoveryTrail) -> AutonomousGraspReport:
+    """``report`` with the outcome the recovery loop stands for, where it stands for one
+    (``terminal_outcome_for_trail``): ``unsafe_recovery_refused`` where a recovery motion started and failed,
+    ``recovery_exhausted`` where at least one action ran and the loop ended for want of another. A report that
+    succeeded, stopped for a person (a push that stopped, a stopped controller, a hand that needs one), was cancelled
+    or carries a fault keeps its own, and so does one that found nothing (``no_target``): an empty bench is no dead
+    loop, whatever the recovery rescanned (the KPI roll-up counts ``recovery_exhausted`` as one), and its own outcome
+    says more, the rule ``terminal_outcome_for_trail`` keeps for a failure no action recovers."""
+    outcome = getattr(report, "outcome", None)
+    hand = getattr(report, "gripper_fault", "")
+    kept = (AutonomousGraspOutcome.SUCCEEDED, AutonomousGraspOutcome.CANCELLED, AutonomousGraspOutcome.NO_TARGET)
+    if (outcome in kept
+            or getattr(report, "needs_person", False) is True or getattr(report, "controller_stopped", False) is True
+            or (isinstance(hand, str) and hand) or getattr(report, "fault", None) is not None):
+        return report
+    terminal = terminal_outcome_for_trail(trail)
+    if terminal == OUTCOME_UNSAFE_RECOVERY_REFUSED:
+        return replace(report, outcome=AutonomousGraspOutcome.UNSAFE_RECOVERY_REFUSED)
+    if terminal == OUTCOME_RECOVERY_EXHAUSTED:
+        return replace(report, outcome=AutonomousGraspOutcome.RECOVERY_EXHAUSTED)
+    return report
+
+
+def _trail_row(entry: RecoveryTrailEntry) -> dict[str, Any]:
+    """One step of the recovery loop, as ``recovery_actions_from_trail`` writes it."""
+    return {
+        "action": str(entry.plan_action.value),
+        "outcome": str(entry.outcome),
+        "step_result": str(entry.outcome),
+        "executed": bool(entry.executed),
+        "failure_reason": str(entry.failure_reason.value),
+        "plan_reason": str(entry.plan_reason),
+    }
+
+
+def _push_row(push: "PickPush") -> dict[str, Any]:
+    """One push whose arm left the look, as a ``nudge_target`` step of the trail (the same six keys)."""
+    return {
+        "action": SceneRecoveryAction.NUDGE_TARGET.value,
+        "outcome": push.code,
+        "step_result": push.code,
+        "executed": push.pushed,
+        "failure_reason": push.trigger,
+        "plan_reason": "push_in_the_pick",
+    }
+
+
+def _recovery_rows(
+    trail: RecoveryTrail, pushes: "tuple[tuple[PickPush, ...], ...]",
+) -> tuple[dict[str, Any], ...]:
+    """The recovery a pick ran, step by step, as the record's ``recovery_actions`` carries it.
+
+    The loop's steps (``recovery_actions_from_trail``'s rows) with every push whose arm left the look among them (one
+    that moved the part, one that stopped where the arm stands, and P0 in the air above a part nothing touched), in the
+    order they ran: the pushes of the loop's first pick, then the loop's steps up to the one that ran the pick again,
+    then that pick's pushes, and so on. As ``recovery_actions_from_trail`` has it, the last step's outcome reads
+    ``recovered_success`` where the recovery ended in a success. With no push this is that function's output exactly.
+    """
+    entries = list(trail.entries)
+    rows: list[dict[str, Any]] = []
+    index = 0
+    for pick in pushes:
+        rows.extend(_push_row(push) for push in pick if push.arm_moved or push.stopped)
+        while index < len(entries):
+            entry = entries[index]
+            index += 1
+            rows.append(_trail_row(entry))
+            if entry.executed:
+                break
+    rows.extend(_trail_row(entry) for entry in entries[index:])
+    if rows and trail.terminal_reason == "recovered_success":
+        rows[-1]["outcome"] = "recovered_success"
+    return tuple(rows)
+
+
+def _operator_box(fixture: Any) -> "AxisBox | None | str":
+    """The declared fixture box (``recovery.fixture``) as the push planner's operator box, which only narrows where a
+    push may land; ``None`` without a fixture, and why not, as a sentence, where the box leaves no room in BASE XY."""
+    if fixture is None:
+        return None
+    from src.robot.grasping.recovery.push_planner import AxisBox  # noqa: PLC0415
+
+    (cx, cy, cz), (hx, hy, hz) = fixture.center_mm, fixture.half_extents_mm
+    if not (float(hx) > 0.0 and float(hy) > 0.0):
+        return (f"the recovery fixture box (recovery.fixture) is {2.0 * float(hx):g} x {2.0 * float(hy):g} mm in BASE "
+                "XY, which leaves a pushed part nowhere to land")
+    # Only its XY narrows the push box; a flat box is given a millimetre of height so it is a box.
+    half_z = max(float(hz), 1.0)
+    return AxisBox((float(cx) - float(hx), float(cy) - float(hy), float(cz) - half_z),
+                   (float(cx) + float(hx), float(cy) + float(hy), float(cz) + half_z))
+
+
+def _push_cell_of(robot_cfg: Any, grasping_cfg: Any) -> "PushCell | PushRefusal | None":
+    """What the cell is as a push needs it, read where the config lets a push happen at all (``nudge_target`` in
+    ``grasping.recovery.allowed_actions``); ``None`` otherwise, so a cell that never pushes reads no gripper registry."""
+    recovery = getattr(grasping_cfg, "recovery", None)
+    if recovery is None or "nudge_target" not in tuple(getattr(recovery, "allowed_actions", ()) or ()):
+        return None
+    from src.robot.grasping.recovery.push_gate import PushCell  # noqa: PLC0415
+
+    return PushCell.from_robot_config(robot_cfg)

@@ -79,7 +79,7 @@ with `code` a string your client can branch on.
 | `GET /v1/cell/status` | live pose, joints and wrench; `?include_controller_state=true` adds modes |
 | `GET /v1/diagnostics` | SDKs, motion stack, perception stack, controller reachability; moves nothing |
 | `GET /v1/diagnostics/route?prompt=` | which perception route a prompt would take, from the text alone |
-| `POST /v1/pick` | `{prompt, picks}`: starts a run, answers `202` with its id. This moves |
+| `POST /v1/pick` | `{prompt, picks}`, and `push_mm` for a `dense_clutter` push: starts a run, answers `202` with its id. This moves |
 | `POST /v1/pick/stop` | do not start the next attempt; the motion in flight completes |
 | `GET /v1/runs`, `GET /v1/runs/{id}` | recent runs, and one run |
 | `WS /v1/events?run_id=&since_seq=` | replay a run's events from a sequence number, then follow it live |
@@ -118,6 +118,7 @@ leaves every file byte-identical.
 | `not_connected` | 409 | a pick before the cell is connected | connect first |
 | `prompt_not_routable` | 422 | the prompt needs the VLM route and this cell has none | configure the VLM, or set `on_unavailable: degrade` |
 | `run_active` | 409 | a second pick, or a config write, while a run owns the cell | wait for the run, or stop it |
+| `push_distance_refused` | 422 | a `push_mm` above the cell's `recovery.fixture.max_nudge_mm` or 50 mm, or under 10 mm; no run starts | ask within the ceiling; the message says it |
 | `not_writable`, `unknown_key` | 403, 404 | a key outside the allowlist, or no such key | edit it in YAML |
 | `invalid_value` | 422 | the loader rejected the written tree; every file is restored | the message is the loader's |
 | `cell_connected` | 409 | the primary rig or a controller address, while connected | disconnect first |
@@ -154,6 +155,29 @@ reachability check in `GET /v1/diagnostics` covers that.
 - `POST /v1/pick` returns a run id at once. A run continues when the browser closes, so an arm holding
   a part finishes the pick and puts it down.
 - The prompt is what the detector grounds for this run. An empty prompt keeps the cell's own phrase.
+- Every pick of a run looks from the cell profile's looks (`robot.look_joint_positions_deg`), else, on a
+  wrist camera, from home, as a `PickRun` does. A wrist camera fuses its looks until the grasp is safe.
+  `both_faces` stays off here: the console runs the fast rule, and the switch belongs to a program
+  (`PickRun`, `service.pick`).
+- `push_mm` sets how far a `dense_clutter` push of a wrist camera's pick moves the part in this run:
+  taken as asked up to the cell's `recovery.fixture.max_nudge_mm`, refused above it or under 10 mm
+  (`422 push_distance_refused`, no run started), never shortened. Without it a push is the cell's
+  `push_distance_mm`, 30 mm unless the cell says otherwise. A run is one campaign: its push budgets and
+  the parts `next_target` skips are its own, and `run_started` carries `push_mm` where the run asked for
+  one.
+- Nobody is asked anything at the server's terminal during a run, where nobody watching the console
+  would see the question. A toggle hand whose jaws the program believes closed, or cannot place, ends the
+  run before its next pick, and a question inside a pick is a refusal: the hand needs a person. So is a
+  hand nobody can vouch for, at a push or before a re-pick drives the looks: a toggle's count, or a width
+  gripper not connected or unreadable. To bring a toggle's count back to open, Disconnect and Connect: the
+  connect asks where the jaws stand.
+- A run stops, `failed`, on a pick whose controller cannot move, whose hand needs a person, or whose push
+  stopped once something may have moved: the arm stays where it stopped and a person decides. Clear the
+  cell before the next run, whose first pick drives the arm to its first look from there. A push's
+  attempt says what the push did, in its own words.
+- Each `pick_result` event carries `looks` (the looks perceived from; a fixed camera's, the looks it
+  moved to) and `looks_fused` (a wrist camera's, the looks the grasp's cloud was fused from), and, only
+  where the pick says them, `jaw_faces_seen`, `generated_view_deg`, `hand_eye_gap_mm` and `refused_look`.
 - `WS /v1/events` sends every event with a sequence number. A client that reconnects with `since_seq`
   gets what it missed. If the per-run buffer dropped some, it first gets a `gap` frame with the count.
 - Each event carries `human`, a sentence for the operator, and `data`, the machine payload. An

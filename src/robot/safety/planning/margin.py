@@ -4,10 +4,12 @@ Two margins live next to one another and are not the same number. The guard's ``
 mesh check demands of a configuration before the arm moves. The planner's margin is padding inside the descriptor the
 sidecar plans with, so cuRobo stops proposing configurations the guard was always going to refuse.
 
-Neither can be derived from the other. A UR5e plans fine at 10 mm; a UR3e finds no plan at all at 10 mm, because its
-thinner links make the inflated spheres read as permanent self collision, and a UR3e whose margin is set from
-``min_distance_mm`` picks 0 of 10 where it picks 10 of 10 at 4 mm. How much margin a planner can absorb is a property
-of how tightly its spheres fit that arm with that hand, which is what the matrix evidence measures.
+Neither can be derived from the other. On the refitted sphere maps no UR arm has a retract at all at 8 or 10 mm, while
+the UR5 finds one at 4 and at 6 mm and the UR3e measured about 6 mm as its ceiling (``config/robot/robot.sim.yaml``), so
+a margin set from ``min_distance_mm`` leaves a cell no planner at all. How much margin a planner can absorb is a
+property of how tightly its spheres fit that arm with that hand, which is what the matrix evidence measures. And the
+margin pads the planner's model alone: where its padded spheres refuse a pose the exact guard accepts, on a pair that
+guard judges, the guard decides (``band.py``).
 
 So there is no default. A UR cell that plans with cuRobo and declares nothing gets a refusal naming the key, not a
 planner with no margin.
@@ -54,8 +56,9 @@ def planner_margin_refusal(robot_cfg: "RobotConfig") -> "tuple[str, str] | None"
     )
     fix = (
         "Declare it in the cell profile: robot.safety.self_collision.planner_margin_mm. It is not this guard's "
-        f"{guard_mm:g} mm and is not derived from it: a UR5e plans fine at 10, a UR3e finds no plan at all at 10 and "
-        "is fine at 4. Measure the pair with scripts/curobo/matrix_gate.py and declare what it measured."
+        f"{guard_mm:g} mm and is not derived from it: on the refitted sphere maps no UR arm has a retract at 8 or 10, "
+        "and every one plans at 4, the family's value. Measure the pair with scripts/curobo/matrix_gate.py and "
+        "declare what it measured."
     )
     return what, fix
 

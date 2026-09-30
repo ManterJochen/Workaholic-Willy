@@ -39,6 +39,9 @@ standard machine sets no environment variable ([ext_deps/README.md](../../../../
 | `CuroboPlanClient` | the driver, sized by the cell's reservation | `plan(goal)`, `check_joints(configs)` | joint waypoints; a verdict per sample |
 | `LivePlannerWorld` | the driver, from the cell's cameras and declared world | `world_for(...)` | a `PlannerWorldSnapshot` with its verdict |
 | `PlannerHand` | `planner_hand(robot, data_dir=...)` | read | the hand the planner and the guard model |
+| `ExactPairs` | the exact guard, `SelfCollisionGuard.exact_pairs(arm)` | `decides(link_a, link_b)`, `distance_mm(joints, link_a, link_b)` | the guard's pair rule and distances in the planner's link names |
+| `PathJudgement` | `CuroboPlanClient.judge_joints(configs, clearance_mm=, name_pairs=)` | read `refused` | one `RefusedSample` per refused configuration: its three terms apart and every pair of links it found |
+| `PoseScreen` | `URRobotArm.screen_configuration(joints)` | `line(label)` | `clear`, `band`, `guard_refused`, `planner_refused` or `unscreened`, with a pose nearby both clear where one exists |
 
 
 ## What it refuses
@@ -54,6 +57,8 @@ standard machine sets no environment variable ([ext_deps/README.md](../../../../
 | a move fails `CONTROLLER_REJECTED`, world `unseen` | cameras look at the motion's goal and none holds a depth on half the 200 mm about it | look from further away, or use a depth mode with a shorter minimum range |
 | a planner that does not start | no committed evidence file for this arm, hand, coupling, placement and margin | measure one, see [`robot/evidence/`](robot/evidence/README.md) |
 | a planner that does not start, `..._a16.json` | a declared carried part (`planning_world.payload.length_mm`) reserves 16 attach slots, and nobody measured the combination with them | the refusal's `matrix_gate.py ... --attach 16` command, about a minute on the cell's GPU; the UR10 files are committed |
+| a move refused naming `safety.planning_world.perceived.max_boxes` | the camera world still does not fit its slots once every object is one box | give the planner more slots (`max_boxes`, then restart it), or clear the cell |
+| `CuroboUnavailableError` from `judge_joints` | a sidecar older than the report, rows out of order, a verdict and a report that disagree, or pair names nobody asked for | restart the sidecar from this tree; the refusal the report was asked about stands |
 
 
 ## What the planner is told about the cell
@@ -69,13 +74,58 @@ geometry reach the planner:
 | A distance field | the whole scene at the resolution it is cut to, with nothing dropped for want of a slot | 13.7 ms to build 179,560 cells, 1.9 ms to register |
 
 The field is a signed distance in metres, negative inside an obstacle. The guards read boxes only, so a
-declared mesh is known to the planner alone, and the path guard gets the perceived boxes. That points
-the safe way: a box that encloses a turned box is bigger, so a guard is never more permissive than the
-planner. The path guard hears the same refresh, so the guard and the planner judge the same cell, and a
-move planned on a vouched world is stamped `PLANNED` with its cameras and the capture time of its oldest
-image. A pick's goal keeps the space between the open jaws out of every view (`goal_keep_out`), so a
-world that registered the part still has a plan to it; `WorldRefresh.keep_out` records what was left
-out, or why nothing was.
+declared mesh is known to the planner alone. The path guard hears the same refresh and gets the same
+perceived boxes, **turned as cuRobo holds them**, and judges them at
+`self_collision.perceived_min_distance_mm` (5 mm), each already grown by `perceived.margin_mm`; the arm and
+a declared fixture keep `min_distance_mm` (10). The capsule fallback cannot turn a box and judges its
+axis-aligned enclosure, the safe side. So the guard and the planner judge the same cell, and a move planned
+on a vouched world is stamped `PLANNED` with its cameras and the capture time of its oldest image. A pick's
+goal keeps the space between the open jaws out of every view (`goal_keep_out`), so a world that registered
+the part still has a plan to it; `WorldRefresh.keep_out` records what was left out, or why nothing was.
+
+### The camera world is a height map
+
+[`height_map.py`](height_map.py) turns each object the cameras saw, each cluster or each piece a keep-out
+cut, into a few upright boxes. The object is laid on a grid in its own turn, cells at least
+`perceived.cluster_voxel_mm` (25 mm), fitted so its span splits into whole cells; every cell keeps its
+highest seen point, and cells whose tops lie within `perceived.voxel_size_mm` (10 mm) merge into rectangles.
+Each rectangle is one box turned about base Z, its points' extent plus 15 mm on every side, from its floor
+(the bench, or a keep-out's top) up to its highest point plus 15 mm. The turn is the long side of the
+smallest-area hull rectangle, snapped square to base X/Y unless the turned one is at least 5 % smaller:
+
+- an **open bin** is its walls with a **free inside**;
+- a **low part beside a tall one** keeps its own height;
+- a **turned object** is a turned box.
+
+Every thinned point the world keeps lies inside a box, at least the margin from its four sides and its top,
+and the same frame always gives the same world. A pixel the thinning dropped can lie nearer a face
+([guide 04](../../../../docs/guide/04-robot-and-safety.md), 5.5).
+
+**The budget.** `perceived.max_boxes` defaults to **64**; the reservation follows, 1 + declared + 64 box
+slots, so **restart the planner after changing it**. Over budget, `coarsen()` merges two boxes of one object
+into the box that holds both, the least added volume first, until the world fits or every object is one
+box; the refresh says `N box(es) merged into the boxes holding them to fit the slots`
+(`PerceivedWorld.merged_to_fit`, `WorldRefresh`). What still does not fit keeps the nearest boxes, empties
+the guard's and refuses the motion naming `safety.planning_world.perceived.max_boxes`.
+
+**The self filter** ([`self_envelope.py`](self_envelope.py), `SelfBody`) takes a point out as the robot only
+within `perceived.margin_mm` (15 mm) of a link's own surface, laid over the committed bundle at 4 mm
+(188,000 points on a UR10, built once in half a second); the link capsule alone took up to 118 mm around the
+UR10's shoulder end. What it took of an object also seen past those 15 mm is put back at the height seen
+beside it. The Hand-E is still its padded sphere map, up to 27 mm around the hand, because its fingers move.
+About 1 degree of hand-eye or DH error, 15 mm at 0.85 m, makes the arm's own surface an obstacle, and the
+box says so (`PerceivedBox.robot_gap_mm`, `note()`: `it may be the robot itself ... check the hand-eye
+calibration and the DH table`).
+
+**What the robot hides is not free** (`perceived._RobotShadow`). A base point counts as hidden where some
+camera saw the robot more than 5 mm in front of it and no camera saw as far as it. Inside an object's grid a
+hidden stretch stands as high as the highest cell seen in it or beside it, never past the one box the object
+would have been; a row the self filter took for the hand runs on into hidden cells, at most 150 mm and never
+across itself; and `height_map.bridge_columns` fills the robot's shadow between two parts it cut apart, cut
+back to the parts' extent. Nothing within a keep-out's enclosure plus the margin is filled, and a cell
+another camera saw is not. Boxes and the world count `hidden_cells`, and a refusal says `(N of its cells the
+robot's own body hid from the cameras, filled to the height seen beside them)`. What the scene hides from
+itself, pixels with no depth and a lone object the robot hides from every camera stay free.
 
 ### What the camera world does not see
 
@@ -123,6 +173,32 @@ throws away five frames (`depth_source.WRIST_WARMUP_GRABS`, as the pick frame do
 a frame the stream queued during the move, and holes a temporal filter filled with the depth of the
 pose before, are among the ones thrown away. A fixed camera grabs once.
 
+### The frames of a wrist pick
+
+A wrist camera sees only where it points, so a pick that looks from several poses keeps **every frame**
+it took from its first look. While a pick holds (`LivePlannerWorld.hold_pick_views`, or
+`keep_out.holding_views(arm)` as a block), every wrist frame a world was built from is kept, one per pose
+the arm stood at: the looks, the generated view, the standoff, the grasp and the retreat. The hold starts
+once the arm stands at the first look it reached, never at the pose the pick started from, and a first look
+refused before anything was sent starts none. Each goes into every world built until the pick
+ends, placed by the tool pose it was stamped with, the robot taken out where it stood then and where it
+stands now; what only an older frame saw stays an obstacle. A pick holds 12 frames at most, and a frame of
+a new pose past that is not held and is counted on the snapshot (`held_not_kept`). A fixed camera holds
+nothing: its newest frame supersedes the one before.
+
+Who starts and ends the hold:
+
+- **The pick loop's looks.** `look_around` starts it for a pick handed looks, and `run()` ends it when
+  the pick ends, however it ends; `look_around` lets go itself when it raises.
+- **`Locator.look_around`.** It lets go of an earlier look around's hold before it moves
+  (`LivePlannerWorld.holds_pick_views`), starts its own at its first look, lets go itself when it raises,
+  and `Robot.pick`, the next `look_around` or the disconnect (`Robot.connected()`, `Cell.connected()`) ends
+  it. A place does not need the frames.
+
+The one view a wrist pick generates, and its move back, run only against a world that holds them: with
+no live world, no wrist camera in it or a camera world that is declined, none is generated
+([execution](../../execution/README.md)).
+
 `check_js` judges a whole joint path in one request: up to 1000 configurations, each against the joint
 limits, the robot itself and the world the planner holds, with an attached payload counted. A sample
 passes when no sphere penetrates; that is not a kept clearance. A request may name one instead
@@ -135,6 +211,59 @@ Every plan starts from the same seed, so the same request in the same world gets
 graph planner seeds its roadmaps from the start and the goal alone: cuRobo's shipped config links both
 through the retract, which the sidecar switches off (`_curobo_plan_policy.py`). The UR driver asks only
 for joint plans (`plan_js`); the pose plan remains for the Isaac driver.
+
+### When the planner's spheres refuse what the meshes keep clear
+
+The owner, 2026-09-30: for the arm's own pairs the exact guard judges, the exact guard decides
+([`band.py`](band.py)). cuRobo's sphere cover reaches past the meshes and `planner_margin_mm` pads it
+further, so a tilted look can be a pose the padded spheres refuse while the meshes keep 19 mm.
+
+- **The report.** `check_js` takes `report_refused` (and `name_pairs`): the reply then lists every refused
+  sample, in order, with `bound_ok`, `self_ok` and `world_ok` and, for a self hit, every overlapping pair
+  of links with its padded and unpadded depth, and says `pairs_named`. `_curobo_pairs.refused_rows` builds
+  the rows, and `_curobo_pairs.overlapping_pairs` names every pair the kernel counts (padded radius not
+  negative, within 0.01 mm of contact). Without the key the request and the reply are byte for byte what
+  they were. `CuroboPlanClient.judge_joints(configs, clearance_mm=, name_pairs=)` returns a
+  `PathJudgement` of `RefusedSample` rows (`findings()`), batched at 1000 and indexed over the whole path,
+  and refuses anything it cannot read whole.
+- **The admission.** `band.admission_refusal(sample, exact, margin_mm=)` says why a refusal stands: a
+  joint outside the planner's bounds, its world, the carried part, a self hit with no named pair, a pair the
+  guard does not judge (the `shoulder_link`, the planner's only model of the robot's base, is never one),
+  or padding past `planner_margin_mm`. `None` leaves the sample to the exact guard, which the driver asks
+  about that very sample again (`URRobotArm._exact_guard_decides`). `ExactPairs` carries the guard's own
+  rule (`MeshSelfCollisionBackend.checks`, the rule `evaluate` skips pairs by) and its exact distances.
+- **The legs.** `band.band_neighbours` lays a grid of at most `NEIGHBOUR_BUDGET` (1000) configurations,
+  one check request, over the joints between the colliding links, at most `BAND_LEG_MAX_DEG` (**20**) each,
+  nearest first by the path gate's measure: 0.5 degrees a step on one joint, 1.33 on two, 5 on three, 10 on
+  four, 20 on five or six. A planned move out of a band pose or into one takes a straight leg to the nearest
+  pose both clear, judged by both; `PoseScreen` says the verdict of a pose before anything goes there.
+
+The composed robot, its `composed_sha256` and every evidence file are unchanged.
+
+### The probes on a GPU
+
+```bash
+python scripts/curobo/probe_band_admission.py                  # the exact guard decides the arm's own pairs
+python scripts/curobo/probe_turned_boxes.py                    # 65 box slots, turned boxes, a plan in a full world
+python scripts/curobo/probe_turned_boxes.py --cpu-replica ext_deps/curobo/curobo/content   # where the kernels cannot load
+```
+
+Both start the planner through the driver's own start, which checks the committed evidence, drive nothing,
+and exit 0 when every expectation held. Each starts a sidecar of its own and never looks for one already
+running, so stop the console, the API and every other planner first. Both run **a fixed owner-like cell**,
+built in code (a UR10, a Hand-E on a 20 mm plate, no wrist camera and so no housing), and read nothing of
+the cell's tree. `probe_band_admission.py` holds LOOK[0] and LOOK[1] admitted with their escape legs on that
+cell, LOOK[1]'s exactly at the 20-degree cap (wrist_1 +20.0, its nearest clear pose +19.5), and the folded
+wrist, a box through the forearm, a joint at 354.6 degrees and the Hand-E at the robot's base refused, plus
+the kernel's self term against the pair naming over a 5-degree wrist_1 x wrist_2 torus.
+`probe_turned_boxes.py` fills 65 slots from a synthetic camera, compares turned boxes with their
+enclosures, records where the planner and the guard clear a bin beside the shoulder housing, and plans out
+of the cushion band in that world. `--cpu-replica` judges with a CPU replica of the sidecar (cuRobo's
+spheres by forward kinematics, the kernel's rules, the sidecar's own row builder). Every line it prints
+starts with `[replica]` and every log record it makes carries the same tag; its `planner under test` line
+says CPU REPLICA, and its JSON names the replica. It plans nothing, so `probe_turned_boxes.py` skips its plan
+and says so. It proves the driver's decisions on the real geometry, and only the GPU run holds the kernel.
+The cell's own looks are screened by `real_cell --start-planner`, one line per look.
 
 ```bash
 python scripts/curobo/probe_live_world.py
@@ -172,6 +301,7 @@ variables, and the client warns when one disagrees with it.
 | The live world and the batch check | measured against a UR10 |
 | Exact mesh collision through Coal or python-fcl | measured against a UR10 |
 | A planned move on a physical arm | measured against a UR10 |
+| The band admission, the escape legs, 65 slots of turned camera boxes and a plan in them | measured on a GPU with the two probes (2026-09-30, the development box), not yet on the cell PC |
 
 `--check` reports that the sidecar's interpreter exists; it does not report that the descriptor beside
 it was built, because that lives in an environment this process does not spawn. `--doctor` closes that
@@ -186,6 +316,8 @@ gap. Planner collision awareness is not a certified functional-safety stop.
 | [`doctor.py`](doctor.py) | `--doctor`: loads every engine and classifies an OS policy block |
 | [`curobo_client.py`](curobo_client.py), [`curobo_planner_server.py`](curobo_planner_server.py) | the client, and the sidecar it runs in the planner's interpreter |
 | [`world.py`](world.py), [`perceived.py`](perceived.py), [`live_world.py`](live_world.py) | declared geometry, camera geometry, and the world rebuilt before every plan |
+| [`height_map.py`](height_map.py) | an object's boxes: its height map in its own turn, the fill of what the robot hid, the merge to fit the slots |
+| [`band.py`](band.py) | the planner's cushion band: which refusals the exact guard decides, the escape and approach legs' neighbours, the pose screen |
 | [`depth_source.py`](depth_source.py) | a camera rig asked for depth alone |
 | [`reservation.py`](reservation.py), [`margin.py`](margin.py) | the slots the sidecar allocates, and the clearance the planner keeps |
 | [`hand.py`](hand.py), `_hand_placement.py`, `_hand_bundle.py` | the hand from `robot.gripper.model`, where it sits, and its bundle checked |
@@ -193,7 +325,7 @@ gap. Planner collision awareness is not a certified functional-safety stop.
 | [`self_envelope.py`](self_envelope.py) | the robot's own body, filtered out of the camera view |
 | [`evidence.py`](evidence.py), [`bundle_index.py`](bundle_index.py) | the measured combination files, and the index of committed bundles |
 | `_declared_body.py` | a declared box as bundle arrays, and the proof that a sphere fill covers it |
-| `_curobo_*.py` | the sidecar's descriptor, attachment, margin, pair and protocol helpers |
+| `_curobo_*.py` | the sidecar's descriptor, attachment, margin, pair and protocol helpers; `_curobo_pairs.py` names the overlapping pairs and builds the refused rows |
 | [`robot/`](robot/PROVENANCE.md) | sphere maps per arm and hand, the retract table, the hand writers, the evidence |
 
 ## Details
@@ -204,4 +336,10 @@ gap. Planner collision awareness is not a certified functional-safety stop.
 - [Robot and safety guide](../../../../docs/guide/04-robot-and-safety.md), section 6; [safety-math.md](../../../../docs/safety-math.md)
 - New hand: `scripts/grippers/write_hand_from_mesh.py`, then [your_own_gripper.md](../../../../docs/runbooks/your_own_gripper.md)
 - Descriptors: `scripts/curobo/build_ur_config.py` builds `willy_{arm}.yml` inside `ext_deps/`
-- Tests: `tests/test_motion_stack.py`, `tests/test_planning_doctor.py`, `tests/test_curobo_batch_check.py`
+- Tests: `tests/test_motion_stack.py`, `tests/test_planning_doctor.py`, `tests/test_curobo_batch_check.py`,
+  `tests/test_the_exact_guard_decides_the_planners_self_pairs.py`,
+  `tests/test_a_pose_only_the_planners_spheres_refuse_is_the_exact_guards.py`,
+  `tests/test_the_camera_world_is_a_height_map_of_what_it_saw.py`,
+  `tests/test_the_guard_holds_the_boxes_the_planner_holds.py`,
+  `tests/test_what_the_robot_hides_from_a_camera_is_not_free.py`,
+  `tests/test_the_band_admission_judges_with_the_boxes_the_camera_saw.py`

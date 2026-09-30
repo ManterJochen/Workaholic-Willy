@@ -8,7 +8,10 @@ upper arm is offset from its joint axes.
 So the body is built from the files the guard and the planner check against:
 
 * the arm, one capsule per link, fitted once to the committed bundle in the link's own DH frame so
-  that it holds every vertex of that link;
+  that it holds every vertex of that link, and carrying the link's own surface, points laid over its
+  triangles: a capsule holds a link and a good deal more (the UR10 upper arm's reaches 118 mm about its
+  shoulder end at the height of a bin's rim), so a point inside it is the link only within the padding
+  of that surface (``perceived.SelfBody``);
 * the hand, the spheres of its resolved sphere map, each grown just enough to hold the hand's
   committed mesh, placed on the flange frame the way the guard places the hand: one plate out along
   the model's approach where the hand starts at its mounting face, then turned by the rotation the
@@ -27,6 +30,7 @@ The padding is added where the world is built, from ``perceived.margin_mm``.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -38,7 +42,7 @@ from src.contracts import chosen
 
 from .._ur_kinematics import ur_link_transforms_mm
 from .environment import collision_mesh_bundle, hand_mesh_bundle
-from .perceived import LinkCapsule, SelfEnvelope
+from .perceived import DeclaredBody, LinkCapsule, SelfEnvelope
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.core.keep_out import GoalKeepOut
@@ -60,6 +64,11 @@ _ARM_LINKS: Final = (
 _FLANGE_FRAME: Final = 6
 #: Added to a fitted radius so a vertex exactly on the surface is not lost to rounding, millimetres.
 _ROUNDING_MM: Final = 1e-6
+#: How far any point of an arm link's surface lies at most from the nearest point laid over it,
+#: millimetres. The filter takes a point within the padding of the nearest laid point, so the link's
+#: own surface leaves the world wherever the padding (``perceived.margin_mm``, 15) is at least this, and
+#: a point the camera placed up to the padding less this off the link leaves with it. A choice.
+_SURFACE_SPACING_MM: Final = 4.0
 #: The bundle arrays that are the hand, and the stamp that puts them one plate out, as the
 #: self-collision guard reads them (src/robot/safety/_fcl_self_collision.py).
 _HAND_PARTS: Final = ("gripper", "lfinger", "rfinger")
@@ -103,18 +112,54 @@ def _fit_link(vertices: np.ndarray, frame: int) -> LinkCapsule:
     )
 
 
+def _link_surface(name: str, vertices: np.ndarray, faces: np.ndarray) -> DeclaredBody:
+    """A link's surface in its own frame, as points no point of its triangles lies further than the spacing from.
+
+    Each triangle is laid in rows parallel to its longest edge, the rows and the points along each row
+    :data:`_SURFACE_SPACING_MM` over the square root of two apart. The angles at the longest edge are acute, so a
+    point of the triangle stands over the row below it within that row's ends: at most one row from it and half a
+    step along it from a laid point, 0.79 of the spacing in all. A long thin triangle, which the bundles' tubes are made of, costs points by
+    its area and not by the square of its length, as a grid laid across it would (2026-09-30: 188,000 points
+    over the UR10's six links, laid in 0.6 s).
+    """
+    step = _SURFACE_SPACING_MM / math.sqrt(2.0)
+    laid: list[np.ndarray] = []
+    for corners in np.asarray(vertices, dtype=np.float64)[np.asarray(faces, dtype=np.int64)]:
+        edges = np.linalg.norm(np.roll(corners, -1, axis=0) - corners, axis=1)
+        longest = int(np.argmax(edges))
+        first, second, apex = corners[longest], corners[(longest + 1) % 3], corners[(longest + 2) % 3]
+        if float(edges[longest]) <= 0.0:
+            laid.append(first[None, :])
+            continue
+        height = float(np.linalg.norm(np.cross(second - first, apex - first))) / float(edges[longest])
+        for share in np.linspace(0.0, 1.0, max(1, math.ceil(height / step)) + 1):
+            start, end = first + share * (apex - first), second + share * (apex - second)
+            count = max(1, math.ceil(float(np.linalg.norm(end - start)) / step))
+            laid.append(start + np.linspace(0.0, 1.0, count + 1)[:, None] * (end - start))
+    points = np.unique(np.round(np.concatenate(laid), 6), axis=0)
+    return DeclaredBody(name=name, surface_mm=points, spacing_mm=_SURFACE_SPACING_MM)
+
+
 @lru_cache(maxsize=None)
 def arm_capsules(model: str) -> tuple[LinkCapsule, ...] | None:
-    """One capsule per arm link of ``model``, in each link's DH frame, or ``None`` without a committed bundle."""
+    """One capsule per arm link of ``model``, in each link's DH frame, or ``None`` without a committed bundle.
+
+    Each carries its link's surface (:func:`_link_surface`) where the bundle holds the link's triangles.
+    """
     bundle = collision_mesh_bundle(model)
     if not bundle.is_file():
         return None
     with np.load(bundle) as data:
         if any(f"{name}__v" not in data.files for name, _ in _ARM_LINKS):
             return None
-        return tuple(
-            _fit_link(np.asarray(data[f"{name}__v"], dtype=np.float64), frame) for name, frame in _ARM_LINKS
-        )
+        capsules: list[LinkCapsule] = []
+        for name, frame in _ARM_LINKS:
+            vertices = np.asarray(data[f"{name}__v"], dtype=np.float64)
+            capsule = _fit_link(vertices, frame)
+            if f"{name}__f" in data.files:
+                capsule = replace(capsule, surface=_link_surface(name, vertices, np.asarray(data[f"{name}__f"])))
+            capsules.append(capsule)
+        return tuple(capsules)
 
 
 @lru_cache(maxsize=16)

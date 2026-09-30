@@ -79,6 +79,9 @@ select one, and the sim runners build them against this arm's `session`.
 - In mock mode `move`, `move_linear` and `move_to` commit the requested pose, `move_joint` updates the
   joints but not the pose, `fk` and `ik` raise, and the capabilities report no native FK or IK, so no
   guard calls them.
+- It names no configuration for a pose (`ChoosesConfigurations`) and drives no straight joint line
+  alone (`DrivesJointLines`), so a wrist pick on it generates no view after its looks, and the log says
+  why.
 - `IsaacSimSession.stop()` can crash Isaac at a headless shutdown. Keep what you need before you call it.
 
 ## Status

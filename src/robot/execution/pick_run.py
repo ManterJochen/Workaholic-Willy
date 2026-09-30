@@ -14,7 +14,9 @@ things around it.
    A pick that ended on a controller that cannot move (a protective or emergency stop) stops the
    campaign as a fault of the cell does: the next run would otherwise start on an arm a person has
    to walk up to. So does a pick that ended on a hand that needs a person (a gripper that raised, a
-   toggle that would not start on jaws it believes closed with nobody at a terminal to say otherwise).
+   toggle that would not start on jaws it believes closed with nobody at a terminal to say otherwise),
+   and one whose recovery stopped where the arm stands (a push of a failed part that stopped once
+   something may have moved: ``needs_person``), since the next pick would drive the arm back to its look.
 
 2. The connect belongs outside the loop. Connecting is motion: Robotiq activation is a calibration
    sweep of the full finger travel, the cross-process `CellLock` is taken and released once, and on
@@ -50,6 +52,11 @@ faces of its chosen grasp before it grips, for safety-critical processes: a wris
 a pick no view showed both of ends ``no_valid_grasp`` with nothing gripped, on a fixed camera as on the wrist.
 ``record_views`` keeps each pick's looks for training, one file per pick
 (`src.robot.execution.record_views`), named after the pick's record.
+
+And one of 2026-09-30: a campaign is what a cell's recovery counts across (``service.start_campaign``): the push
+budgets of ``nudge_target`` (1 per part, 2 per pick, 5 per campaign) and the parts ``next_target`` skips.
+``push_mm`` is how far a push moves a part, the config's 30 mm when unset, refused with a sentence above the cell's
+ceiling or the hard cap of 50 mm and under 10 mm.
 """
 
 from __future__ import annotations
@@ -498,7 +505,9 @@ class PickRun:
     #: Ask every pick to see both jaw contact faces of its chosen grasp before it grips (`service.pick`'s `both_faces`,
     #: which says how a pick whose looks show both nowhere ends): the owner's switch for safety-critical processes.
     #: Off, the default and the fast one. A wrist camera looks on for both; a fixed camera grips only a grasp its
-    #: cameras showed both faces of. A cell whose motion turns every grasp about base Z before it closes
+    #: cameras showed both faces of. The cell's natural orientation (`robot.natural_closing_axis`) and a motion naming a
+    #: closing axis (`GraspMotion(closing_axis=...)`) choose the way round before the faces are judged, so both work
+    #: with it. A cell whose motion turns every grasp about base Z before it closes
     #: (`GraspMotion(align_closing_to_base_x=True)`) would grip faces nobody judged: its first pick raises before anything
     #: moves, and the campaign stops on it.
     both_faces: bool = False
@@ -507,6 +516,12 @@ class PickRun:
     #: under `RECORD_VIEWS_DIR`, named after the pick's record (`attempt_id`). Off by default. A fixed camera has no looks
     #: to keep; a file that cannot be written is said and the campaign goes on.
     record_views: bool = False
+    #: How far a push of a failed part moves it, in mm, on a cell whose recovery pushes (`nudge_target`, dense_clutter):
+    #: unset, the config's `recovery.fixture.push_distance_mm` (30 mm). A request up to the cell's
+    #: `recovery.fixture.max_nudge_mm` is taken as asked; above it, above the hard cap of 50 mm, or under 10 mm it is
+    #: refused with a sentence, never shortened: the last two at the factory, the cell's ceiling as the campaign starts,
+    #: before anything moves. The campaign's push budgets (1 per part, 2 per pick, 5 per campaign) start with it.
+    push_mm: "Maybe[float]" = UNSET
 
     # --- two doors -----------------------------------------------------------------------------
 
@@ -528,6 +543,7 @@ class PickRun:
         view: Any = None,
         both_faces: bool = False,
         record_views: bool = False,
+        push_mm: "Maybe[float]" = UNSET,
     ) -> "PickRun":
         """A cell this campaign will build, connect, drive and take down.
 
@@ -536,7 +552,8 @@ class PickRun:
         campaigns of one are not one campaign of ten. A look list that names nothing raises here,
         before any cell is built. ``view`` (a `LiveView`) shows every camera the build opened and
         each attempt's grasp overlay; ``both_faces`` asks each pick to see both jaw contact faces of
-        its chosen grasp before gripping; ``record_views`` keeps each pick's looks; see the fields.
+        its chosen grasp before gripping; ``record_views`` keeps each pick's looks; ``push_mm`` is how
+        far a push moves a part, and one above 50 mm or under 10 mm raises here; see the fields.
         """
         return cls(
             cell=cell,
@@ -553,6 +570,7 @@ class PickRun:
             view=view,
             both_faces=bool(both_faces),
             record_views=bool(record_views),
+            push_mm=_checked_push_mm(push_mm),
         )
 
     @classmethod
@@ -572,12 +590,13 @@ class PickRun:
         view: Any = None,
         both_faces: bool = False,
         record_views: bool = False,
+        push_mm: "Maybe[float]" = UNSET,
     ) -> "PickRun":
         """An already-connected service. The caller owns the connect and the teardown.
 
         `teardown` stays `None` on the report: this factory did not bring the cell up and must not
-        claim to know how it came down. ``view``, ``both_faces`` and ``record_views`` are
-        `from_cell`'s.
+        claim to know how it came down. ``view``, ``both_faces``, ``record_views`` and ``push_mm``
+        are `from_cell`'s.
         """
         return cls(
             service=service,
@@ -593,6 +612,7 @@ class PickRun:
             view=view,
             both_faces=bool(both_faces),
             record_views=bool(record_views),
+            push_mm=_checked_push_mm(push_mm),
         )
 
     # --- the verb ------------------------------------------------------------------------------
@@ -639,6 +659,20 @@ class PickRun:
     def _announce(self, attempt: PickAttempt) -> None:
         if self.on_attempt is not None:
             self.on_attempt(attempt)
+
+    def _start_campaign(self, service: Any) -> str:
+        """Start the campaign on ``service`` (``start_campaign``: fresh push budgets, no part skipped, the push
+        distance); why it was refused, or ``""``. A service that starts none is driven as it always was, unless a push
+        distance was asked for, which it could not honour."""
+        start = getattr(service, "start_campaign", None)
+        if not callable(start):
+            return ("this service takes no push distance (it has no start_campaign), so push_mm cannot be honoured"
+                    if chosen(self.push_mm) else "")
+        try:
+            start(**({"push_mm": self.push_mm} if chosen(self.push_mm) else {}))
+        except ValueError as refused:
+            return f"push_mm refused: {refused}"
+        return ""
 
     def _looks_for(self, service: Any) -> "Look | None":
         """What every pick of this campaign looks from: the program's looks, else the ones the cell profile configures,
@@ -710,7 +744,13 @@ class PickRun:
 
     def _drive(self, service: Any, *, teardown: "TeardownReport | None") -> PickRunReport:
         """The loop, and the three per-campaign settings that must be put back afterwards."""
-        # The prompt first: it is the one setting that can refuse, and a refusal here leaves the other
+        # The campaign first: its push distance is the first thing that can be refused against the cell's own ceiling,
+        # before anything else is set. It starts the campaign's push budgets and the parts next_target skips.
+        refused = self._start_campaign(service)
+        if refused:
+            return PickRunReport(requested=self.runs, attempts=(), rule=self.rule, recording=self.recording,
+                                 teardown=teardown, error=refused)
+        # The prompt next: it is the other setting that can refuse, and a refusal here leaves the other
         # two untouched. `set_prompt` returns what it replaced, and that is what goes back.
         previous_prompt: Any = None
         if chosen(self.prompt):
@@ -728,6 +768,7 @@ class PickRun:
         # Asked once: whether a camera sits on the wrist does not change between two picks. A service
         # handed no look is called as it always was, so a service that takes none still runs.
         look = self._looks_for(service)
+        _screen_looks(service, look)
         # The cameras' windows, where the caller handed a view: every camera of the cell, the overlay rendered.
         shown = None if self.view is None else _OnTheView(self.view, service)
         try:
@@ -764,12 +805,22 @@ class PickRun:
                             + str(report_i.failure_summary())
                         )
                     # And so does a hand that needs a person: a gripper that raised, or a toggle that would not
-                    # start the pick on jaws it believes closed with nobody at a terminal to say otherwise. The
-                    # next run would perceive again for a hand that still cannot start (owner's decision,
-                    # 2026-09-24). A string, so a double that answers every attribute is not read as one.
+                    # start the pick on jaws it believes closed with nobody at a terminal to say otherwise, or a hand
+                    # nobody can vouch for mid-pick (a toggle's count, read by a push or before next_target drives
+                    # the looks again; a gripper that measures its width, found not connected or unreadable by a
+                    # push). The next run would perceive again for a hand that still cannot start (owner's decisions,
+                    # 2026-09-24 and 2026-09-30). A string, so a double that answers every attribute is not read as one.
                     hand = getattr(report_i, "gripper_fault", "")
                     if not stopped_by and isinstance(hand, str) and hand:
                         stopped_by = f"the gripper needs a person, so the campaign stops: {hand}"
+                    # And so does a recovery that stopped where the arm stands: a push of a failed part that stopped
+                    # once something may have moved, or whose move back to the look failed. The next pick would drive
+                    # the arm back to its look, the escape the owner ruled out (2026-09-29). `is True`, as above.
+                    if not stopped_by and getattr(report_i, "needs_person", False) is True:
+                        stopped_by = (
+                            "a recovery stopped where the arm stands, so the campaign stops; nothing more is "
+                            "commanded and a person decides what happens next: " + str(report_i.failure_summary())
+                        )
                 if stopped_by:
                     attempts.append(
                         PickAttempt(index=index, outcome=PickOutcome.RAISED, detail=stopped_by,
@@ -916,11 +967,64 @@ def configured_looks_of(service: Any) -> "tuple[LookPose, ...]":
     return ()
 
 
+def _checked_push_mm(push_mm: "Maybe[float]") -> "Maybe[float]":
+    """A campaign's push distance, refused at the factory above the hard cap of 50 mm or under 10 mm, before a cell is
+    built (``push_planner.resolve_push_distance`` against the cap alone; the cell's own ceiling is the campaign's)."""
+    if not chosen(push_mm):
+        return push_mm
+    from src.robot.grasping.recovery.push_planner import (  # noqa: PLC0415
+        DEFAULT_PUSH_DISTANCE_MM,
+        PUSH_DISTANCE_CAP_MM,
+        PushRefusal,
+        resolve_push_distance,
+    )
+
+    try:
+        requested = float(push_mm)
+    except (TypeError, ValueError):
+        raise ValueError(f"PickRun(push_mm=...) is a number of mm, not {push_mm!r}") from None
+    resolved = resolve_push_distance(requested, default_mm=DEFAULT_PUSH_DISTANCE_MM, ceiling_mm=PUSH_DISTANCE_CAP_MM)
+    if isinstance(resolved, PushRefusal):
+        raise ValueError(f"PickRun(push_mm={push_mm!r}) refused: {resolved.sentence}")
+    return requested
+
+
 def _checked_looks(look: "Maybe[Look]") -> "tuple[LookPose, ...]":
     """A campaign's looks, in order, refused at the factory when they name nothing, before a cell is built."""
     from src.robot.execution.looks import looks_of  # noqa: PLC0415
 
     return looks_of(look) if chosen(look) else ()
+
+
+def _screen_looks(service: Any, look: "Look | None") -> None:
+    """Screen every look of a starting campaign with the exact guard and the planner, and say each verdict; nothing moves.
+
+    The owner, 2026-09-30 (``planning.band``): a look the planner's padded spheres alone refuse runs on straight lines,
+    and a planned move out of it takes a short escape leg; a look the exact guard refuses is never reached. Said at
+    the start of the campaign, in the log, one line a look (an ERROR where no move goes there), with a pose nearby both
+    clear. Only an arm whose class screens (``URRobotArm.screen_configuration``) is asked; the campaign runs the same
+    either way, and a screen that raises is said and passed over.
+    """
+    arm = getattr(getattr(getattr(service, "runtime", None), "orchestrator", None), "arm", None)
+    if arm is None or look is None or not callable(getattr(type(arm), "screen_configuration", None)):
+        return
+    from src.robot.core.joint_positions import JointPositions  # noqa: PLC0415
+    from src.robot.execution.looks import look_label, looks_of  # noqa: PLC0415
+    from src.robot.safety.planning.band import PoseScreen  # noqa: PLC0415
+
+    ask_planner = True
+    for pose in looks_of(look):
+        joints = pose if isinstance(pose, JointPositions) else JointPositions(tuple(arm.home_joint_positions))
+        label = f"look {look_label(pose)}"
+        try:
+            screen = arm.screen_configuration(joints, ask_planner=ask_planner)
+        except Exception as exc:  # noqa: BLE001 (a screen never stops a campaign; the move judges the look again)
+            logger.warning("pick run: %s was not screened: %s: %s", label, type(exc).__name__, exc)
+            continue
+        if not isinstance(screen, PoseScreen):
+            continue
+        (logger.error if screen.is_error else logger.info)("pick run: %s", screen.line(label))
+        ask_planner = ask_planner and not screen.planner_unavailable
 
 
 def _what_the_attempt_saw(report: Any) -> dict[str, Any]:

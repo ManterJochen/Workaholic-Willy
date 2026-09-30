@@ -2,9 +2,9 @@
 
 The planner margin is the clearance the sidecar plans WITH so that it stops proposing configurations the exact mesh
 guard then refuses. It is not derived from the guard's own ``min_distance_mm``, and it cannot be: how much margin a
-planner can absorb depends on how tightly its spheres fit THAT arm with THAT hand. Measured, and it cost a cell: a UR5e
-plans fine at 10 mm, a UR3e finds no plan at all at 10 mm and is fine at 4 to 6 mm, and deriving one from the other
-took the UR3e from 10 of 10 to 0 of 10.
+planner can absorb depends on how tightly its spheres fit THAT arm with THAT hand. Measured, and it cost a cell: a UR3e
+finds no plan at all at 10 mm and is fine at 4 to 6 mm, and deriving one from the other took the UR3e from 10 of 10 to
+0 of 10; on the refitted sphere maps no UR arm has a retract at 8 or 10 mm, and every one plans at 4.
 
 So the schema's old default of ``0.0`` was an implied answer to a safety question nobody asked: a real UR cell that
 says nothing got a planner with NO margin, planned to 9.44 mm against a 10 mm guard, and lost picks to what read like

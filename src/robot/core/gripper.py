@@ -28,7 +28,8 @@ A hand that toggles
 -------------------
 * :class:`TogglesWithoutSensor` is a hand whose every command is one change of its output that moves its
   jaws, with no sensor to say where they stand. A pick asks it before the arm moves instead of commanding an open
-  (:func:`toggle_without_sensor_of`), so the pick code needs no driver import.
+  (:func:`toggle_without_sensor_of`), so the pick code needs no driver import. Mid-pick, where nobody may be asked,
+  :func:`why_toggle_count_unknown` reads whether anybody can still vouch for its count.
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ __all__ = [
     "TwoStateGripper",
     "hold_evidence_of",
     "toggle_without_sensor_of",
+    "why_toggle_count_unknown",
     "width_is_measured_of",
 ]
 
@@ -269,6 +271,35 @@ def toggle_without_sensor_of(gripper: object) -> TogglesWithoutSensor | None:
     if isinstance(gripper, TogglesWithoutSensor) and getattr(gripper, "toggles_without_sensor", False) is True:
         return gripper
     return None
+
+
+def why_toggle_count_unknown(gripper: object) -> str:
+    """Why nobody can vouch for the count of a hand that toggles with no sensor, read now, without asking a person or
+    sending anything; ``""`` where its count stands, and for every other gripper.
+
+    The count stands for nothing where the hand is not connected (it ends at a disconnect, and the next connect asks a
+    person), where the hand cannot say (no ``why_jaws_unknown``), where a change of its output failed
+    (:attr:`TogglesWithoutSensor.edge_unknown`), and where ``why_jaws_unknown()`` reads the output switched by hand
+    since the program's last command, or cannot read it. A read that raises vouches for nothing either. A count that
+    says closed stands: the jaws are where the program left them. What the pick reads before ``next_target`` or a
+    rescan drives the looks again, and the push before each of its contact legs and once its up leg ended (the owner,
+    2026-09-30).
+    """
+    toggle = toggle_without_sensor_of(gripper)
+    if toggle is None:
+        return ""
+    try:
+        if getattr(gripper, "is_connected", False) is not True:
+            return ("the hand is not connected, so its count stands for nothing: the count ends at a disconnect and "
+                    "the next connect asks a person where the jaws stand")
+        why_unknown = getattr(toggle, "why_jaws_unknown", None)
+        if not callable(why_unknown):
+            return "this toggle hand cannot say whether its count stands (no why_jaws_unknown)"
+        if bool(toggle.edge_unknown):
+            return str(why_unknown() or "its count is unknown")
+        return str(why_unknown() or "")
+    except Exception as exc:  # noqa: BLE001 (a read that fails vouches for nothing: said, never raised)
+        return f"the jaws could not be read ({type(exc).__name__}: {exc})"
 
 
 def hold_evidence_of(gripper: object) -> HoldEvidence:

@@ -43,8 +43,8 @@ authority.
 | Mode | Sampling | Recovery actions allowed |
 |---|---|---|
 | `easy` | single object | none, and that is a guarantee rather than a default |
-| `auto` | auto | `rescan` |
-| `dense_clutter` | dense point cloud | `rescan`, `nudge_target` |
+| `auto` | auto | `rescan`, `next_target` |
+| `dense_clutter` | dense point cloud | `rescan`, `next_target`, `nudge_target` |
 
 `config/robot/robot.yaml` ships `auto`. The simulation runners default to `easy`.
 
@@ -60,14 +60,15 @@ to name instead: `auto` for `closed_loop`, `dense_clutter` for `dense_autonomous
 only `dense_autonomous` allowed, moved to `dense_clutter`; it still needs `recovery.allowed_actions` to
 name it and a declared `recovery.fixture`.
 
-A cell built from config pushes nothing even then. The mode's profile is an outer gate that
-`recovery.allowed_actions` cannot widen: `auto` allows `rescan`, `dense_clutter` allows `rescan` and
-`nudge_target`, and no profile allows `next_target` or `container_agitate`, so those two pass the load
-and are never planned. Its recovery loop plans from the dispatcher alone, so a nudge carries no offset
-and is refused before the arm moves (`refused_no_offset`); the loop then escalates. Its `rescan` re-runs
-the pick, which perceives and ranks afresh without excluding the part that failed. Only a caller that
-widens the profile and builds the recovery strategies itself, as the simulator runner
-`run_dense_pick --g6` does for `container_agitate`, moves the arm to recover.
+**The mode's profile is an outer gate** that `recovery.allowed_actions` cannot widen: `auto` allows
+`rescan` and `next_target`, `dense_clutter` adds `nudge_target`, and no profile allows
+`container_agitate`. `rescan` re-runs the pick, which perceives and ranks afresh. `next_target` is a
+rescan that **skips the part that failed** for another part of the same label, never another object, and
+moves nothing itself. `nudge_target` is **the push**, and it runs inside a wrist camera's pick attempt
+only: the service's recovery loop never plans a nudge step, and one another caller's loop plans is
+refused before anything moves (`refused_push_runs_in_the_pick`). `container_agitate` is refused at load unless a container is declared
+(6.2). The simulator runner `run_dense_pick --g6` still widens a profile itself to film
+`container_agitate`; a cell built from config never does. Section 4.1 is the recovery block, key by key.
 
 **This is why a block measurement can be worth nothing.** Each mode-gated block declares its own
 `apply_modes`, and `build_effective_config` enforces that filter. `easy` appears in the `apply_modes`
@@ -99,8 +100,8 @@ it built. The hold an attempt reports is the execution policy's own check after 
 the gripper's `is_object_detected` and `hold_evidence` (a Robotiq's gOBJ). A tree that still writes the
 block is refused at load with the sentence that says so.
 
-`recovery` runs in its modes, and its physical half moves nothing from config: see the note under the
-mode table above.
+`recovery` runs in its modes, and its one motion, the push, runs in `dense_clutter` alone, inside a
+wrist camera's pick attempt (4.1).
 
 That last shape, a carrier that is set and never read, is the one the wiring guard cannot see. The
 guard's claim is that a flag reaches a runtime carrier, and `EffectiveGraspingConfig` is a runtime
@@ -186,6 +187,91 @@ The always-on tunings are a separate family and are not gated by mode:
 * `watchdog` has a `mode` rather than an `enabled`, and it ships `shadow`.
 * `isotropic_radial_closing`, `max_attempts` and `record_log_path` sit at the top of the block.
 
+**The closing direction has no `grasping` key, on purpose.** A program's `closing_axis`, the opt-in filter
+that keeps only the grasps heading within 30 degrees of an axis, is its own choice, through `GraspMotion`,
+`Locator.look_around` or `Scene.grasps`. The cell-level key is `robot.natural_closing_axis`
+([01](guide/01-configuration.md)): it chooses the way round of every camera grasp and push, and never
+filters one out ([05](guide/05-pick-loop.md), 5.2).
+
+### 4.1 `recovery`, key by key
+
+`recovery` is what a pick does after an attempt failed. Nothing of it runs until `enabled: true`, and then
+only the actions both the mode's profile (section 2) and `allowed_actions` name.
+
+| Key | Ships | What it does |
+|---|---|---|
+| `enabled` | `false` | arms the loop that runs after a failed attempt |
+| `apply_modes` | `auto`, `dense_clutter` | the modes it runs in; `easy` never |
+| `allowed_actions` | `()` | the actions it may plan, inside the profile: `rescan`, `next_target`, `nudge_target`, `container_agitate` |
+| `max_recovery_actions` | `2` | how many actions one pick may run |
+| `per_action_budget` | `()` | `(action, count)` caps; a count of `0` switches that action off |
+| `fixture` | unset | the operator's box (`center_mm`, `half_extents_mm`), required for a physical action |
+| `fixture.push_distance_mm` | `30` | how far a push moves the part when nobody asks |
+| `fixture.max_nudge_mm` | `50` | the longest push the cell allows |
+
+**A refusal before anything moved falls through** to the next action for the same failure: it stays in
+the trail, spends no budget and never re-runs the pick. A motion that failed once the arm moved ends the
+loop. The service ends a pick the loop ran out on as `recovery_exhausted` (a pick that found nothing
+keeps `no_target`), and one whose push stopped once something may have moved as
+`unsafe_recovery_refused`: the campaign ends, and the service refuses every pick until a new `PickRun` or
+console run starts. Clear the cell first; that run's first pick drives the arm from where it stopped.
+
+**`rescan` on a wrist cell.** A pick handed looks has had its rescans, its looks and its one generated
+view, so recovery takes `rescan` out of that pick's actions and says so at INFO. A look-less wrist pick and
+a fixed camera keep their rescan where they stand.
+
+**`next_target` skips the part that failed.** It gets an exclusion zone: its BASE XY centre, a radius of
+30 mm or half its footprint diagonal, whichever is larger, for this pick and the next two, same label
+only. The next attempt skips any segmentation of that label whose centre lies in a zone, beside the label
+gate, and on a wrist cell looks around again for the new part. It also follows a `motion_plan_refused`,
+because the new part's motions are judged in full. Where only excluded parts of the label are left, the
+pick stops and says so. Before it drives a wrist pick's looks again, a toggle's count is read: one
+**nobody can vouch for** ends the pick as a gripper fault before any look is driven again, and `PickRun`
+and the console run stop on it.
+
+**`nudge_target`, the push, is `dense_clutter` only, and a wrist camera's.** It runs inside a wrist
+camera's pick attempt, after the looks judged the grasp: **a fixed-camera cell never pushes.** It needs
+every one of these, none of which asks a person:
+
+- the attempt failed `all_collided`, or its approach was blocked where `approach_validation` is on, and a
+  neighbour stands within 25 mm of the part in the fused clouds of the looks; never on `no_valid_grasp` or
+  `no_candidates_generated`;
+- `nudge_target` in `allowed_actions`, a declared `fixture`, and a budget left: one push per part, two per
+  pick, five per campaign; a spent budget means no more pushes, never a stop; and an attempt left to pick
+  the part from afterwards, so `max_attempts: 1` never pushes;
+- jaws that read open: a toggle's count says open and knows it, a hand that measures its width stands
+  within 2 mm of fully open; the push reads the hand and never writes it. A count that says closed is no
+  push; a toggle's count **nobody can vouch for** when the push reads it, once its plan and budgets
+  passed (DO0 switched at the pendant mid-pick, or unreadable), ends the pick as a gripper fault, and so
+  does a hand that measures its width found **not connected** or unreadable; `PickRun` and the console run
+  stop on it. A push refused before that read falls through, and `next_target` reads the count before it
+  drives the looks again. The count is read again before each contact leg and once the arm is up, and one
+  nobody can vouch for there stops the push where the arm stands;
+- a controller that can move: one found stopped, or unreadable, ends the pick
+  `controller_not_operational` with nothing commanded;
+- a planned direction: the landing plus 15 mm inside an **automatic push box**, the workspace box
+  intersected with the table the camera saw, shrunk by the push plus 30 mm, or a declared container's
+  interior; the `fixture` box can only narrow it;
+- a part at least 15 mm tall, resting on the support, and not reaching up to the palm.
+
+**The distance.** A push moves the part `push_distance_mm`, 30 by default. `push_mm` on `PickRun` or the
+API request asks for another distance up to `max_nudge_mm`; longer, or under 10 mm, is refused with a
+sentence, never shortened (`422 push_distance_refused` on the console). To let a request reach 50 mm with
+a 30 mm default, leave `max_nudge_mm` at its 50.
+
+**After a stop.** A down leg refused before it was sent is a fall-through, the arm back at the look
+first (the lead's ruling, pending the owner); one refused with a status not known as "nothing sent"
+(`unsupported`, `connection_error`, `controller_rejected`) stops, a safe stop URSim will count.
+
+**Check `z_min` on the cell.** Every TCP point of a push stays 20 mm above the workspace's `z_min` and 20
+mm inside its other faces, so the base tree's `z_min: 100` refuses every push on a table level with the
+robot's base. **And give it more than one view.** A push needs table the camera saw wherever the part may
+land and wherever the open hand comes down: from one 45-degree wrist view the shadow behind a part
+usually refuses it, the fused looks of a wrist pick pass it, and a declared container answers it
+outright. A part whose lower side no view saw fails closed.
+
+**`container_agitate`** is refused at load unless `support.container` declares its interior box (6.2).
+
 ## 5. How to measure a block
 
 One block per run, each against a baseline in the same mode with the same flags:
@@ -250,6 +336,21 @@ overhead top-down grasp is itself near singular, meaning a high Jacobian conditi
 re-measured through config, and it stays off in the shipped tree. Note also that its carrier is
 installed only when `enabled` is true, `weight` is above zero, and the mode is in `apply_modes`, so
 this block needs all three of section 2 and section 3.1 satisfied at once.
+
+### 6.2 What recovery refuses at load
+
+Each of these is refused at load, so a cell never boots believing it can recover in a way it cannot:
+
+- a physical action (`nudge_target`, `container_agitate`) in `allowed_actions` without a `fixture`;
+- `container_agitate`, in `allowed_actions` or in `per_action_budget`, unless `support.container`
+  declares `interior_min_mm` and `interior_max_mm`; a `floor_height_mm` alone does not count. A config
+  with neither a fixture nor a declared container is told both in its first refusal;
+- `push_distance_mm` or `max_nudge_mm` under 10 mm or over 50 mm, and a `push_distance_mm` longer than
+  `max_nudge_mm`. A local tree that still writes the old `max_nudge_mm: 5`, or a `max_nudge_mm` under 30
+  with no `push_distance_mm`, no longer loads, on purpose: delete the line to take 50 mm, or write 10 to
+  50 mm with a `push_distance_mm` no longer than it;
+- a removed action or mode, `next_viewpoint` or `dense_autonomous` among them, with the name to use
+  instead.
 
 ## See also
 

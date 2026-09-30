@@ -8,6 +8,12 @@ from pydantic import Field, model_validator
 
 from .._base import ConfigPath, StrictModel
 
+#: The thinning voxel, millimetres, at which a seen box held nearer than ``self_collision.min_distance_mm`` was
+#: measured (``RobotSafetyConfig._check_seen_box_clearance``): at 10 no pixel the camera measured lay less than 4.07 mm
+#: inside its box over 3,400 noise-free synthetic scenes, and at 20 one lay 5.6 mm outside every box (review of
+#: 2026-09-30). A measurement, not a bound.
+_SEEN_BOX_VOXEL_MM = 10.0
+
 
 class LimitsSafetyConfig(StrictModel):
     """Workspace-margin safety config.
@@ -154,9 +160,11 @@ class SelfCollisionSafetyConfig(StrictModel):
     #: will reject: cuRobo plans against a sphere model, the guard re-checks the exact meshes, and the
     #: two disagree. cuRobo returns UR5e plans at 9.44-9.47 mm against this guard's 10.000 mm, losing
     #: 3 of 10 picks to what reads as bad grasping. Not derived from ``min_distance_mm``: the margin a
-    #: planner can absorb depends on how tightly its spheres fit that robot. A UR5e plans fine at
-    #: 10 mm; a UR3e plans fine to 6 mm and finds no plan at all at 10 mm, its thinner links reading as
-    #: permanent self-collision, which takes a UR3e cell from 10/10 to 0/10.
+    #: planner can absorb depends on how tightly its spheres fit that robot. On the refitted sphere maps
+    #: no UR arm has a retract at all at 8 or 10 mm, the UR5 finds one at 4 and at 6 mm, and the UR3e
+    #: measured about 6 mm as its ceiling, so 4.0 is the family's value (``config/robot/robot.sim.yaml``).
+    #: It pads the planner's model only: where the padded spheres alone refuse a pose the exact guard
+    #: accepts, on a pair that guard judges, the guard decides (``safety/planning/band.py``).
     #:
     #: The default ``None`` means undeclared, and a UR cell that plans with cuRobo then refuses to
     #: start a planner, naming this key (``safety/planning/margin.py``). It is not 0.0: 0.0 is a cell
@@ -165,6 +173,21 @@ class SelfCollisionSafetyConfig(StrictModel):
     planner_margin_mm: float | None = Field(default=None, ge=0.0, le=100.0)
     link_radii_mm: list[float] | None = Field(default=None)
     fixtures: list[FixtureBoxConfig] = Field(default_factory=list)
+    #: The distance the exact mesh guard keeps from a box a camera saw, in mm. Such a box holds the
+    #: camera world's thinned cloud, one point per 10 mm camera voxel, grown by
+    #: ``planning_world.perceived.margin_mm`` (15), so 5 keeps the arm 20 mm from every point of that
+    #: cloud; a declared fixture is measured and keeps ``min_distance_mm``, and so does the arm against
+    #: itself. This distance plus the margin has to reach ``min_distance_mm``, the step every path is
+    #: sampled at, or the arm could reach a point of the cloud between two samples that both passed: a
+    #: load refuses a config where it does not.
+    #:
+    #: A pixel the thinning dropped can lie nearer a box face than the margin. Over 3,400 noise-free
+    #: synthetic scenes at the shipped tuning the nearest lay 4.07 mm inside its box, at least 9 mm from
+    #: a sample this guard passes (review of 2026-09-30). A measurement, not a bound: the voxel's
+    #: diagonal, 17.3 mm, is longer than the margin. At a 20 mm voxel a measured pixel lay 5.6 mm
+    #: outside every box, so while this is below ``min_distance_mm`` a load also refuses a
+    #: ``planning_world.perceived.voxel_size_mm`` coarser than 10.
+    perceived_min_distance_mm: float = Field(default=5.0, ge=0.0, le=500.0)
     mesh_dir: ConfigPath | None = Field(default=None)
 
     # Which bundled arm kinematics (DH) table supplies the per-link arm-vs-arm capsules. Under the
@@ -280,8 +303,10 @@ class PlannedMotionSafetyConfig(StrictModel):
     grazes one by a millimetre passes a check that asks only for no penetration. The default is 10 mm, the distance at
     which cuRobo's own optimiser starts pushing its plans away from an obstacle (``optimizer_collision_activation_
     distance`` at its default of 0.01 m, which the sidecar does not change), so a line is held to the clearance a plan
-    is shaped to keep; it is also the local guard's shipped ``self_collision.min_distance_mm``, so both authorities ask
-    a line for the same 10 mm. It is not a certified distance, and 0 judges a line at no penetration, which is how a
+    is shaped to keep; it is also the local guard's shipped ``self_collision.min_distance_mm``, which the guard keeps
+    from the arm itself and from a declared fixture. From a box a camera saw, already its surface grown by
+    ``planning_world.perceived.margin_mm``, the guard keeps ``self_collision.perceived_min_distance_mm`` (5 mm) and a
+    line is held the full 10 mm. It is not a certified distance, and 0 judges a line at no penetration, which is how a
     planned path is judged.
 
     ``max_detour_deg`` is how far any joint of a cuRobo path may swing beyond the span between where it starts and
@@ -457,6 +482,12 @@ class PerceivedWorldConfig(StrictModel):
     pixel_stride: int = Field(default=2, ge=1, le=16)
 
     #: Cloud thinning before anything else, millimetres. Smaller keeps more shape and costs more time.
+    #:
+    #: It keeps the first pixel of each voxel in the camera's frame and the boxes are fitted to those, so
+    #: a coarser voxel lets a pixel it dropped lie further out of its box: at 20 a measured pixel lay
+    #: 5.6 mm outside every box. The 5 mm ``self_collision.perceived_min_distance_mm`` was measured at 10,
+    #: and while seen boxes are held nearer than ``self_collision.min_distance_mm`` a load refuses a
+    #: coarser voxel.
     voxel_size_mm: float = Field(default=10.0, gt=0.0, le=200.0)
 
     #: Edge length of a voxel in the distance field handed to the planner, millimetres. 0 sends none.
@@ -490,26 +521,32 @@ class PerceivedWorldConfig(StrictModel):
     #: How many perceived boxes there is room for beside the declared ones.
     #:
     #: The planner reserves a fixed number of collision slots when it starts, so this is a real
-    #: ceiling and not a preference. The nearest survive and the rest are counted and named in the
-    #: report, because an obstacle the planner never received is one it will route straight through.
-    max_boxes: int = Field(default=8, ge=0, le=64)
+    #: ceiling and not a preference. Every object is a height map of a few boxes (a bin is its walls),
+    #: so 64 leaves room for a few bins and their parts. Past it the boxes merge into the boxes that
+    #: hold them, down to one box per object; only what still does not fit is left out, the nearest
+    #: surviving, and the motion is refused naming this key, because an obstacle the planner never
+    #: received is one it will route straight through.
+    max_boxes: int = Field(default=64, ge=0, le=256)
 
     #: Carry each box down to the support plane instead of stopping at the surface that was seen.
     #:
     #: A depth camera measures surfaces, not bodies: a part on a bench comes back as its top face and
     #: nothing else, and a planner routing around that sheet will drive a link through the part under
-    #: it. Carrying the box down is the conservative reading. It has one cost worth knowing: a
-    #: container whose rim the camera sees and that nobody declared becomes a solid block from rim to
-    #: bench, and the cell can then never reach into it. Declaring the container as a mesh is the
-    #: fix, and turning this off is the other one.
+    #: it. Carrying the box down is the conservative reading. Each box is one column of the object's
+    #: height map, so a container nobody declared comes back as its walls, each carried down to the
+    #: bench, with its inside free as long as the camera sees its floor within ``plane_clearance_mm`` of
+    #: the bench. Off, a box ends ``margin_mm`` under the lowest point seen in it, and what stands under
+    #: a seen surface is in no box.
     floor_to_plane: bool = Field(default=True)
 
     #: How far above the declared plane a point still counts as the plane, millimetres.
     plane_clearance_mm: float = Field(default=5.0, ge=0.0, le=200.0)
 
-    # The robot's own body is not a pair of radii here. The self filter fits one capsule per link to
-    # the committed arm bundle and takes the hand's sphere map, padded by ``margin_mm``;
-    # ``schema/_removed.py`` refuses a tree that still writes ``self_radius_mm`` or ``tool_radius_mm``.
+    # The robot's own body is not a pair of radii here. The self filter takes a point for an arm link
+    # only within ``margin_mm`` of that link's own surface, laid over the committed arm bundle, and for
+    # the hand, a wrist camera's housing or a carried part where it falls inside their spheres or
+    # capsule grown by ``margin_mm``: up to 27 mm off the Hand-E's mesh. ``schema/_removed.py`` refuses
+    # a tree that still writes ``self_radius_mm`` or ``tool_radius_mm``.
 
     @model_validator(mode="after")
     def _check_grids(self) -> PerceivedWorldConfig:
@@ -606,4 +643,40 @@ class RobotSafetyConfig(StrictModel):
     planned_motion: PlannedMotionSafetyConfig = Field(default_factory=PlannedMotionSafetyConfig)
     dwell: DwellSafetyConfig = Field(default_factory=DwellSafetyConfig)
     planning_world: PlanningWorldConfig = Field(default_factory=PlanningWorldConfig)
+
+    @model_validator(mode="after")
+    def _check_seen_box_clearance(self) -> RobotSafetyConfig:
+        """What the camera world keeps stays clear between two path samples: the guard's distance to a seen box,
+        plus the margin the box is grown by, is at least the step every path is sampled at,
+        ``self_collision.min_distance_mm``.
+
+        What it keeps is the thinned cloud, one point per ``perceived.voxel_size_mm`` camera voxel, and a pixel the
+        thinning dropped can lie nearer a box face than the margin, which this sum does not see. A seen box held nearer
+        than the step was measured at a 10 mm voxel, where no pixel lay less than 4.07 mm inside its box; at 20 mm one
+        lay 5.6 mm outside every box, where a sample the guard passes can touch it (review of 2026-09-30). So while a
+        seen box is held nearer than the step, a voxel coarser than :data:`_SEEN_BOX_VOXEL_MM` is refused as well.
+
+        Checked whether or not a camera world is on, so turning one on later cannot bring the gap in with it.
+        """
+        seen = float(self.self_collision.perceived_min_distance_mm)
+        margin = float(self.planning_world.perceived.margin_mm)
+        step = float(self.self_collision.min_distance_mm)
+        voxel = float(self.planning_world.perceived.voxel_size_mm)
+        if seen + margin < step:
+            raise ValueError(
+                f"safety.self_collision.perceived_min_distance_mm ({seen:g}) plus "
+                f"safety.planning_world.perceived.margin_mm ({margin:g}) is {seen + margin:g} mm, less than "
+                f"safety.self_collision.min_distance_mm ({step:g}), the step every path is sampled at: between two "
+                "samples that both passed, the arm could reach a surface the camera saw. Raise either of the first two "
+                "until they add up to the step."
+            )
+        if seen < step and voxel > _SEEN_BOX_VOXEL_MM:
+            raise ValueError(
+                f"safety.planning_world.perceived.voxel_size_mm ({voxel:g}) is coarser than the "
+                f"{_SEEN_BOX_VOXEL_MM:g} mm that safety.self_collision.perceived_min_distance_mm ({seen:g}), nearer "
+                f"than safety.self_collision.min_distance_mm ({step:g}), was measured at: the boxes are fitted to one "
+                "pixel per voxel, and at 20 mm a pixel the camera measured lay 5.6 mm outside every box, where a "
+                f"sample the guard passes can touch it. Keep voxel_size_mm at {_SEEN_BOX_VOXEL_MM:g} or finer."
+            )
+        return self
 

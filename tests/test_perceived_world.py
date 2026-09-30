@@ -149,9 +149,11 @@ class ConverterGeometryTests(unittest.TestCase):
             views=(_view(depth),), limits=_LIMITS, tuning=WorldBuildTuning(floor_to_plane=False)
         ).boxes[0]
 
-        # Floored: the box spans the block's real height. Surface only: it is the margin and nothing
-        # else, which is the sheet a single overhead view actually measures.
-        self.assertAlmostEqual(floored.dims_mm[2], 120.0 + 2.0 * 15.0, delta=10.0)
+        # Floored: the box spans the block's real height, from the bench up to its top and the margin
+        # (2026-09-30: no margin below the bench, which is declared). Surface only: it is the margin
+        # and nothing else, which is the sheet a single overhead view actually measures.
+        self.assertAlmostEqual(floored.dims_mm[2], 120.0 + 15.0, delta=10.0)
+        self.assertAlmostEqual(floored.center_mm[2] - floored.dims_mm[2] / 2.0, 0.0, places=6)
         self.assertAlmostEqual(surface_only.dims_mm[2], 2.0 * 15.0, delta=5.0)
         self.assertLess(surface_only.dims_mm[2], floored.dims_mm[2])
 
@@ -193,14 +195,16 @@ class TwoCameraTests(unittest.TestCase):
 
         Its transform maps camera +z onto base -x, so a patch in its image lands beside the bench
         rather than above it. A depth of 850 mm is therefore a point at base x = 150, and its
-        optical axis runs at 100 mm above the bench, which is the height of the block in these
-        tests: a camera aimed somewhere else would see a different object, not the same one twice.
+        optical axis runs at 70 mm above the bench, so the patch, 40 mm tall, lies on the side of
+        the 100 mm block in these tests: a camera aimed somewhere else would see a different object,
+        not the same one twice. (At 100 mm, as it was, the patch stood 20 mm over the block's top,
+        which the one box per cluster took in and a height map keeps as a column of its own.)
         """
         transform = np.array(
             [
                 [0.0, 0.0, -1.0, 1000.0],
                 [-1.0, 0.0, 0.0, 0.0],
-                [0.0, -1.0, 0.0, 100.0],
+                [0.0, -1.0, 0.0, 70.0],
                 [0.0, 0.0, 0.0, 1.0],
             ],
             dtype=np.float64,

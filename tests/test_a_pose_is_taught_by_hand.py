@@ -1115,14 +1115,28 @@ class Example11TeachesForOneCameraTests(unittest.TestCase):
             return ()
 
         robot = SimpleNamespace(connected=lambda: nullcontext())
+        built: list[dict[str, Any]] = []
+
+        def robot_from_tree(given: Any, **keywords: Any) -> Any:
+            # The arm alone, carrying the housing of every wrist camera the tree declares, so each pose is screened
+            # with it once taught (review of F1, 2026-09-30); a housing not placeable yet is moved without, and said.
+            self.assertIs(given, tree)
+            built.append(keywords)
+            return robot
+
         doubles = {"load_tree": lambda: tree, "Camera": SimpleNamespace(from_tree=from_tree), "teach_poses": teach,
-                   "Robot": SimpleNamespace(from_config=lambda _section, gripper: robot)}
+                   "Robot": SimpleNamespace(from_tree=robot_from_tree)}
         out = io.StringIO()
         import willy
 
         with patch.dict(vars(willy), doubles), patch("sys.stdout", out):
             exec(compile(source, str(_EXAMPLE_11), "exec"), {"__name__": "__main__"})  # noqa: S102 (the example itself)
         (keywords,) = taught
+        (robot_keywords,) = built
+        self.assertIsNone(robot_keywords.pop("gripper"), "the arm alone: no hand is built")
+        self.assertTrue(str(robot_keywords.pop("unmodelled_wrist_body")).strip(),
+                        "a housing that cannot be placed yet is moved without, for a reason the robot says")
+        self.assertEqual(robot_keywords, {})
         return {"log": log, "keywords": keywords, "printed": out.getvalue(), "tree": tree}
 
     def test_the_switches_are_the_first_two_lines_after_the_imports(self) -> None:

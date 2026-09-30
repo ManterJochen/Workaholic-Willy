@@ -118,12 +118,12 @@ a wrong solve. Check what it is compared against before you touch the solver.
 
 ## Status
 
-The legend is the root README's [Status and honest scope](../../../README.md#status-and-honest-scope).
+The legend is the guide's [evidence levels](../../../docs/guide/README.md#what-verified-means-on-these-pages).
 
 | Capability | Evidence |
 |---|---|
 | Both workflows, the solve and the saved file | measured in simulation, through the calibration sweep ([guide 03](../../../docs/guide/03-calibration.md)) |
-| The RGB-D marker source a real RGB-D cell sweeps with | never touched hardware; posed only a rendered marker, so its distortion residual is unconfirmed |
+| The RGB-D marker source a real RGB-D cell sweeps with | run on a physical cell: a wrist D415 on a UR10 (CB3); no residual is kept here, so its distortion residual is unconfirmed |
 
 ## Files
 

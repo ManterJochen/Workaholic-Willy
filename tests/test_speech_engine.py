@@ -42,6 +42,8 @@ from tests._speech_fakes import (
     NO_TIMESTAMPS,
     START,
     TRANSCRIBE,
+    WHISPER_FILES,
+    whisper_directory,
     whisper_parts,
 )
 
@@ -141,7 +143,7 @@ class TheEngineIsLoadedOnceTests(unittest.TestCase):
     def _weights_dir(self) -> str:
         folder = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, folder, True)
-        return str(folder)
+        return str(whisper_directory(folder))
 
     def test_importing_the_speech_package_imports_no_heavy_library(self) -> None:
         """Weights and their libraries load on first use, never at import: a console without the speech
@@ -223,6 +225,111 @@ class TheEngineIsLoadedOnceTests(unittest.TestCase):
         self.assertIsInstance(caught.exception, FileNotFoundError)
         for fragment in ("no-such-whisper-for-willy", "models.stt.model_path", "fetch.py"):
             self.assertIn(fragment, str(caught.exception))
+
+
+class AnIncompleteDirectoryIsRefusedTests(unittest.TestCase):
+    """Found on the robot's box: a Whisper directory with its weights and almost none of its JSON
+    files. transformers answered first that protobuf was missing, then "vocab and merges must be both from memory
+    or both filenames", and neither sentence named a file. The engine now names every file it lacks before any
+    loader runs, and a tokenizer that does not hold the decoder prompt after one has."""
+
+    def _refusal(self, folder: Path) -> Any:
+        """What `load()` raises for ``folder``; the loaders raise a sentinel if the directory check lets it through."""
+        import transformers
+
+        from src.models.speech.whisper_transformers import WhisperTransformersEngine
+
+        engine = WhisperTransformersEngine.from_parts(source=str(folder), device="cpu")
+        with patch.object(transformers.WhisperProcessor, "from_pretrained",
+                          side_effect=LookupError("reached the loader")) as processors:
+            with self.assertRaises(Exception) as caught:
+                engine.load()
+        self.assertEqual(processors.called, isinstance(caught.exception, LookupError))
+        return caught.exception
+
+    def test_each_file_the_engine_loads_is_named_when_it_is_absent(self) -> None:
+        from src.models.speech.engine import SpeechModelIncomplete, SpeechModelMissing
+
+        robot = tuple(name for name in WHISPER_FILES if name not in ("model.safetensors", "vocab.json", "merges.txt"))
+        cases: tuple[tuple[str, tuple[str, ...], tuple[str, ...] | None], ...] = (
+            ("every file", (), None),
+            ("no preprocessor_config.json", ("preprocessor_config.json",), ("preprocessor_config.json",)),
+            ("no config and no generation config", ("config.json", "generation_config.json"),
+             ("config.json", "generation_config.json")),
+            ("no tokenizer.json, the vocabulary builds one", ("tokenizer.json",), None),
+            ("no tokenizer.json and no merges", ("tokenizer.json", "merges.txt"), ("merges.txt",)),
+            ("no tokenizer.json and nothing naming the special tokens",
+             ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json"), ("tokenizer_config.json",)),
+            ("no tokenizer.json, the special tokens map is enough", ("tokenizer.json", "tokenizer_config.json"), None),
+            ("no weights", ("model.safetensors",), ("model.safetensors",)),
+            ("the robot's box: weights, vocabulary and merges", robot,
+             ("config.json", "generation_config.json", "preprocessor_config.json", "tokenizer_config.json")),
+        )
+        for name, without, expected in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                found = self._refusal(whisper_directory(Path(tmp) / "whisper", without=without))
+                if expected is None:
+                    self.assertIsInstance(found, LookupError, f"a directory the engine loads was refused: {found}")
+                    continue
+                self.assertIsInstance(found, SpeechModelIncomplete)
+                self.assertIsInstance(found, SpeechModelMissing, "the console answers a missing model with 501")
+                self.assertEqual(found.missing, expected)
+                message = str(found)
+                for fragment in (*expected, "models.stt.model_path", "fetch.py whisper-turbo", str(Path(tmp).resolve())):
+                    self.assertIn(fragment, message)
+
+    def test_sharded_weights_are_weights(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = whisper_directory(Path(tmp), without=("model.safetensors",))
+            (folder / "model.safetensors.index.json").write_text("{}", encoding="utf-8")
+            self.assertIsInstance(self._refusal(folder), LookupError)
+
+    def test_a_hub_id_is_not_checked_as_a_directory(self) -> None:
+        import transformers
+
+        from src.models.speech.whisper_transformers import WhisperTransformersEngine
+
+        engine = WhisperTransformersEngine.from_parts(source="org/whisper", local_files_only=False, device="cpu")
+        with patch.object(transformers.WhisperProcessor, "from_pretrained", side_effect=LookupError("reached")):
+            with self.assertRaises(LookupError):
+                engine.load()
+
+    def _load_with(self, processor: Any, model: Any, folder: Path) -> None:
+        import transformers
+
+        from src.models.speech.whisper_transformers import WhisperTransformersEngine
+
+        with patch.object(transformers.WhisperProcessor, "from_pretrained", return_value=processor), \
+                patch.object(transformers.WhisperForConditionalGeneration, "from_pretrained", return_value=model):
+            WhisperTransformersEngine.from_parts(source=str(folder), device="cpu").load()
+
+    def test_a_tokenizer_that_does_not_hold_the_prompt_is_refused_naming_the_tokens(self) -> None:
+        """The two ways measured on the real files: every prompt token read as one id, and prompt tokens that are
+        not special, so `batch_decode(skip_special_tokens=True)` would leave them in the text."""
+        from src.models.speech.engine import SpeechModelIncomplete
+
+        cases = (
+            ("read as <|endoftext|>", lambda p: setattr(p.tokenizer.convert_tokens_to_ids, "side_effect",
+                                                        lambda token: END), "reads as 50257"),
+            ("not special", lambda p: setattr(p.tokenizer.decode, "return_value", "<|de|>"),
+             "is not special and would stay in the text"),
+        )
+        for name, spoil, expected in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                folder = whisper_directory(Path(tmp), without=("tokenizer.json",))
+                processor, model = whisper_parts()
+                spoil(processor)
+                with self.assertRaises(SpeechModelIncomplete) as caught:
+                    self._load_with(processor, model, folder)
+                message = str(caught.exception)
+                for fragment in ("<|startoftranscript|>", "<|de|>", "<|en|>", expected, "tokenizer.json"):
+                    self.assertIn(fragment, message)
+                self.assertEqual(caught.exception.missing, ("tokenizer.json",))
+
+    def test_the_fakes_tokenizer_holds_the_prompt(self) -> None:
+        """The control for the test above: the unspoilt stand-in loads, so the refusal comes from the spoiling."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._load_with(*whisper_parts(), whisper_directory(Path(tmp)))
 
 
 class TheEngineTranscribesTests(unittest.TestCase):
@@ -577,6 +684,62 @@ class TheShippedWeightsTests(unittest.TestCase):
         self.assertIn(transcript.language, ("de", "en"))
         self.assertEqual(transcript.language_source.value, "detected")
         self.assertGreater(transcript.latency_ms, 0.0)
+
+    def test_the_engine_refuses_exactly_the_file_sets_whose_tokenizer_does_not_hold_the_prompt(self) -> None:
+        """The directory rule against transformers itself, on copies of the checkpoint's own files.
+
+        The rule in `_refuse_an_incomplete_directory` names files, and names are a claim about one transformers
+        release. Here that release judges each set: this test loads the real processor and asks whether every
+        prompt token reads as the generation config's id and is skipped as special, and the engine must refuse
+        exactly the sets where it does not. The weights are an empty stand-in; the model loader is patched.
+        """
+        import transformers
+
+        from src.models.speech.engine import SpeechModelIncomplete
+        from src.models.speech.whisper_transformers import WhisperTransformersEngine
+
+        assert _SHIPPED_WEIGHTS is not None
+        generation = transformers.GenerationConfig.from_pretrained(str(_SHIPPED_WEIGHTS), local_files_only=True)
+        prompt = {"<|startoftranscript|>": generation.decoder_start_token_id,
+                  "<|transcribe|>": generation.task_to_id["transcribe"],
+                  "<|notimestamps|>": generation.no_timestamps_token_id,
+                  "<|de|>": generation.lang_to_id["<|de|>"], "<|en|>": generation.lang_to_id["<|en|>"]}
+        model = MagicMock(name="WhisperForConditionalGeneration")
+        model.to.return_value = model
+        model.generation_config = generation
+        base = ("config.json", "generation_config.json", "preprocessor_config.json", "model.safetensors")
+        sets = {
+            "tokenizer.json": ("tokenizer.json",),
+            "vocab, merges": ("vocab.json", "merges.txt"),
+            "vocab, merges, added tokens": ("vocab.json", "merges.txt", "added_tokens.json"),
+            "vocab, merges, tokenizer config": ("vocab.json", "merges.txt", "tokenizer_config.json"),
+            "vocab, merges, special tokens map": ("vocab.json", "merges.txt", "special_tokens_map.json"),
+            "every file": tuple(name for name in WHISPER_FILES if name not in base),
+        }
+        for name, files in sets.items():
+            with self.subTest(files=name), tempfile.TemporaryDirectory() as tmp:
+                folder = Path(tmp)
+                for file in (*base, *files):
+                    if file == "model.safetensors":
+                        (folder / file).write_bytes(b"")
+                    else:
+                        shutil.copyfile(_SHIPPED_WEIGHTS / file, folder / file)
+                try:
+                    tokenizer = transformers.WhisperProcessor.from_pretrained(str(folder), local_files_only=True).tokenizer
+                    holds = all(tokenizer.convert_tokens_to_ids(token) == token_id
+                                and not tokenizer.decode([token_id], skip_special_tokens=True).strip()
+                                for token, token_id in prompt.items())
+                except (ImportError, OSError, ValueError, TypeError):
+                    holds = False
+                engine = WhisperTransformersEngine.from_parts(source=str(folder), device="cpu")
+                with patch.object(transformers.WhisperForConditionalGeneration, "from_pretrained", return_value=model):
+                    try:
+                        engine.load()
+                        refused = False
+                    except SpeechModelIncomplete:
+                        refused = True
+                self.assertEqual(refused, not holds, f"transformers says the prompt {'holds' if holds else 'fails'}")
+
 
 
 if __name__ == "__main__":  # pragma: no cover

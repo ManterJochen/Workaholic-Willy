@@ -217,9 +217,11 @@ robot:
     # line_clearance_mm is how far every configuration of such a line has to stay from the planner's
     # world, the declared cell and the camera's, before it runs instead of a plan: 10 mm is the distance
     # cuRobo's own optimiser keeps its plans from an obstacle, and the self_collision.min_distance_mm the
-    # local guard holds. max_detour_deg is how far any joint of a cuRobo plan may swing beyond the span
-    # between where it starts and where it ends; a plan past it is not run, the next configuration is
-    # planned to instead, and with none left the move is refused naming the joint.
+    # local guard holds from the arm itself and a declared fixture (from a box the camera saw, already grown
+    # by perceived.margin_mm, it holds self_collision.perceived_min_distance_mm, 5 mm). max_detour_deg is
+    # how far any joint of a cuRobo plan may swing beyond the span between where it starts and where it
+    # ends; a plan past it is not run, the next configuration is planned to instead, and with none left
+    # the move is refused naming the joint.
     planned_motion:
       line_clearance_mm: 10.0
       max_detour_deg: 45.0
@@ -268,10 +270,20 @@ robot:
       # and the hand: every UR plans at 4, and the UR5 finds no retract at all at 8 or 10. A UR
       # cell that plans with cuRobo declares it in its own profile, or it refuses to start a
       # planner rather than inheriting a number nobody measured for that pair, and a committed
-      # evidence file has to have measured the combination at that margin.
+      # evidence file has to have measured the combination at that margin. It pads the planner's
+      # model only: where the padded spheres alone refuse a pose this guard accepts, on the arm's
+      # own pairs, this guard decides (docs/guide/04-robot-and-safety.md, section 6).
       link_radii_mm: null
       mesh_dir: null
       fixtures: []
+      # How close the arm may come to a box a camera saw. That box holds the thinned cloud, one point per
+      # 10 mm camera voxel, grown by `planning_world.perceived.margin_mm` (15 mm), so 5 keeps the arm 20 mm
+      # from every point of it. A pixel the thinning dropped can lie nearer: measured down to 4.07 mm inside
+      # its box, at least 9 mm from a sample the guard passes (docs/guide/04-robot-and-safety.md, section
+      # 5.5). `min_distance_mm` stays for the arm against itself and for every declared fixture. This, plus
+      # the margin, has to reach `min_distance_mm`, the step every path is sampled at, and the voxel may be
+      # no coarser than the 10 mm this was measured at, or the load refuses.
+      perceived_min_distance_mm: 5.0
 
     # Steady-state gating, consumed by the grasp execution policy rather than by the per-move
     # pipeline: before each commanded approach, grasp and retreat move it blocks on the driver's
@@ -374,7 +386,9 @@ robot:
         cluster_voxel_mm: 25.0
         min_points: 12
         margin_mm: 15.0
-        max_boxes: 8
+        # Every object is a height map of a few boxes (a bin is its walls), so there is room for a few bins and
+        # their parts. Past it boxes merge, down to one per object, before a motion is refused.
+        max_boxes: 64
         floor_to_plane: true
         # How far above the support plane a point still counts as the bench, and so the height of
         # the lowest thing the planner is told about. It has to hold what nothing declares: how

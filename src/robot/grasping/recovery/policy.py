@@ -21,7 +21,10 @@ Scope and non-goals
   :func:`execute_recovery_motion`, which runs through the same
   :class:`SafetyPreflight`-aware typed :meth:`RobotArm.move` surface
   the rest of the grasping pipeline uses and refuses to proceed when
-  the driver reports any status other than ``EXECUTED``.
+  the driver reports any status other than ``EXECUTED``. It drives
+  only ``CONTAINER_AGITATE``: the push that ``NUDGE_TARGET`` stands for
+  runs inside the pick attempt (:mod:`push_motion`), and the executor
+  refuses a nudge before anything moves.
 * Recovery is allowed only when the active
   :class:`GraspBehaviorProfile` has a non-empty
   :attr:`recovery_allowed_actions` tuple. The locked contract
@@ -32,7 +35,7 @@ Scope and non-goals
   :attr:`SceneRecoveryAction.CONTAINER_AGITATE`) require an explicit
   :class:`FixtureEnvelope`. Without one the policy refuses to be
   constructed; this prevents a future config drift from quietly
-  enabling shake/nudge motion outside a known-safe workspace.
+  enabling shake/push motion outside a known-safe workspace.
 * :class:`ContainerAgitateStrategy` is disabled by default: it
   returns :attr:`SceneRecoveryAction.NONE` until the operator explicitly
   opts in via a non-zero :attr:`FixtureEnvelope.max_agitate_amplitude_mm`.
@@ -41,10 +44,9 @@ Scope and non-goals
   oscillation while :attr:`FixtureEnvelope.agitate_contact_depth_mm` is
   at its ``0.0`` default, and above it a contact redistribute that
   descends, sweeps and retracts. The executor cuts the amplitude to
-  :attr:`FixtureEnvelope.max_agitate_amplitude_mm` and the nudge to
-  :attr:`FixtureEnvelope.max_nudge_mm`. It then checks every waypoint
-  against the fixture box before it moves any, and refuses the whole
-  plan when one lies outside. Any non-EXECUTED :class:`MotionResult`
+  :attr:`FixtureEnvelope.max_agitate_amplitude_mm`. It then checks every
+  waypoint against the fixture box before it moves any, and refuses the
+  whole plan when one lies outside. Any non-EXECUTED :class:`MotionResult`
   aborts, so the safety layer can still veto each move and a config drift
   cannot inject an out-of-box waypoint. A config names
   ``container_agitate`` only on a cell that declares a container (refused
@@ -65,13 +67,14 @@ Scope and non-goals
   ``NUDGE_TARGET`` in dense_clutter only, and ``CONTAINER_AGITATE`` in no
   built-in profile. The perception-based push that ``NUDGE_TARGET`` now
   stands for runs inside the pick attempt, not in this executor;
-  :func:`push_permitted` is the gate the service hands it. The
-  executor's own nudge moves the TCP by a planned offset from where the
-  arm stands, and only :class:`SmallNudgeStrategy` plans one; nothing in
-  ``src`` builds that strategy. The strategies here move the arm only for
-  a caller that widens the profile and builds the orchestrator with them
-  (the simulator runner ``run_dense_pick --g6``, for
-  ``CONTAINER_AGITATE``). The service's ``recovery_policy`` and
+  :func:`push_permitted` is the gate the service hands it. The executor
+  refuses a nudge (``refused_push_runs_in_the_pick``) before anything
+  moves, so the loop falls through to its next action. The scene-blind
+  nudge it used to drive, a TCP offset from wherever the arm stood,
+  planned +X by ``SmallNudgeStrategy``, left on 2026-09-29: the owner
+  ruled blind moves out on the real cell. The agitate strategy here
+  moves the arm only for a caller that widens the profile and builds the
+  orchestrator with it (the simulator runner ``run_dense_pick --g6``). The service's ``recovery_policy`` and
   ``recovery_strategy`` slots, which held what
   ``robot.grasping.dense_recovery`` built and no pick consulted, left
   with that block on 2026-09-29, and with them the strategies only it
@@ -88,7 +91,7 @@ Public surface
 * :class:`SceneRecoveryPlan`: frozen aggregate of a single decision.
 * :class:`SceneRecoveryReport`: frozen aggregate of an executed plan.
 * :class:`SceneRecoveryStrategy`: Protocol.
-* :class:`SmallNudgeStrategy`, :class:`ContainerAgitateStrategy`: built-ins.
+* :class:`ContainerAgitateStrategy`: the built-in physical strategy.
 * :func:`execute_recovery_motion`: typed motion executor for plans
   whose :meth:`SceneRecoveryPlan.is_motion_action` is :data:`True`.
 * :func:`refused_before_motion`: whether an executor outcome was reached
@@ -122,13 +125,13 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 __all__ = [
     "ContainerAgitateStrategy",
     "FixtureEnvelope",
+    "REFUSED_PUSH_RUNS_IN_THE_PICK",
     "SceneRecoveryAction",
     "SceneRecoveryContext",
     "SceneRecoveryPlan",
     "SceneRecoveryPolicy",
     "SceneRecoveryReport",
     "SceneRecoveryStrategy",
-    "SmallNudgeStrategy",
     "execute_recovery_motion",
     "push_permitted",
     "refused_before_motion",
@@ -188,11 +191,14 @@ class FixtureEnvelope:
         ``(dx, dy, dz)`` non-negative half extents. The box is
         ``[center - half, center + half]`` per axis.
     max_nudge_mm
-        How far a push moves the part, and the longest nudge the
-        executor commands: a longer planned offset is cut to it.
-        ``recovery.fixture.max_nudge_mm``, default 30 mm, at most 50
+        The longest push the cell allows,
+        ``recovery.fixture.max_nudge_mm``: 50 mm by default and at most
         (owner, 2026-09-29; it was 5 mm, less than the Hand-E finger's
-        10.8 mm thickness, so no push could open room for a finger).
+        10.8 mm thickness, so no push could open room for a finger). The
+        push runs inside the pick attempt and settles its distance with
+        :func:`~src.robot.grasping.recovery.push_planner.resolve_push_distance`
+        (``recovery.fixture.push_distance_mm``, 30 mm, when nobody asks);
+        this executor drives no nudge.
     max_agitate_amplitude_mm
         Largest permissible single-step agitation amplitude; the executor
         cuts a larger planned amplitude to it. Default ``0.0`` keeps
@@ -202,7 +208,7 @@ class FixtureEnvelope:
 
     center_mm: tuple[float, float, float]
     half_extents_mm: tuple[float, float, float]
-    max_nudge_mm: float = 30.0
+    max_nudge_mm: float = 50.0
     max_agitate_amplitude_mm: float = 0.0
     # When >0 the CONTAINER_AGITATE executor runs a contact redistribute instead of the air-shake
     # oscillation: it descends ``agitate_contact_depth_mm`` toward the object layer and sweeps the approach
@@ -405,8 +411,10 @@ class SceneRecoveryPlan:
         keys; safe to log to JSONL.
     nudge_offset_mm
         ``(dx, dy, dz)`` offset for :attr:`SceneRecoveryAction.NUDGE_TARGET`.
-        The executor cuts it to :attr:`FixtureEnvelope.max_nudge_mm`
-        whoever planned it. ``None`` for other actions.
+        Nothing drives it any more: the push runs inside the pick attempt,
+        and the executor refuses a nudge plan whatever it carries. Kept so
+        a plan and its telemetry row keep their shape. ``None`` for other
+        actions.
     agitate_amplitude_mm
         Amplitude for :attr:`SceneRecoveryAction.CONTAINER_AGITATE`.
         ``0.0`` for other actions or a disabled fixture.
@@ -443,7 +451,7 @@ class SceneRecoveryReport:
     outcome
         Stable string: one of ``"completed"``, ``"skipped_no_action"``,
         ``"refused_envelope_violation"``, ``"refused_no_tcp"``,
-        ``"refused_no_offset"``, ``"refused_no_fixture"``,
+        ``"refused_push_runs_in_the_pick"``,
         ``"refused_agitate_disabled"``, ``"refused_no_typed_move"``,
         ``"refused_unknown_action"``, ``"aborted_motion_failed"``. Every
         ``refused_*`` is reached before the arm is commanded;
@@ -559,96 +567,9 @@ def refused_before_motion(outcome: str) -> bool:
     return str(outcome).startswith(_REFUSED_PREFIX)
 
 
-@dataclass(frozen=True, slots=True)
-class SmallNudgeStrategy:
-    """Plan a bounded nudge along a chosen axis.
-
-    The nudge magnitude is the policy fixture's
-    :attr:`FixtureEnvelope.max_nudge_mm`. Direction is taken from
-    :attr:`offset_axis` (a unit-ish 3-vector); the strategy
-    re-normalises and scales it. The resulting offset is rejected
-    when the displaced position would fall outside the fixture
-    envelope.
-
-    The strategy does not pick the "best" nudge direction from the
-    scene. An active-perception scoring pass can replace it without
-    changing this surface.
-
-    It is the legacy, scene-blind nudge: a TCP offset from wherever the
-    arm stands, +X unless told otherwise. Nothing in ``src`` builds it,
-    and the owner ruled out blind moves on the real cell (2026-09-29);
-    the perception-based push (:mod:`push_planner`) replaces it. Since
-    ``max_nudge_mm`` became the longest push the cell allows (default
-    30 mm, was 5 mm), a fixture left at its default makes this strategy
-    plan 30 mm. Pass a fixture with the magnitude meant, or do not build
-    it.
-    """
-
-    offset_axis: tuple[float, float, float] = (1.0, 0.0, 0.0)
-
-    def plan(self, context: SceneRecoveryContext) -> SceneRecoveryPlan:
-        blocked = _gate(context, SceneRecoveryAction.NUDGE_TARGET)
-        if blocked is not None:
-            return blocked
-        fixture = context.policy.fixture
-        # _gate already accepted the action, which means the policy
-        # has a fixture (construction enforces it). The check below
-        # is a defensive runtime guard that also narrows the type.
-        if fixture is None:  # pragma: no cover (defensive)
-            return SceneRecoveryPlan(
-                action=SceneRecoveryAction.NONE,
-                reason="no_fixture_envelope",
-                telemetry={"strategy": "small_nudge"},
-            )
-        axis = np.asarray(self.offset_axis, dtype=np.float64)
-        norm = float(np.linalg.norm(axis))
-        if norm <= 0.0:
-            return SceneRecoveryPlan(
-                action=SceneRecoveryAction.NONE,
-                reason="zero_offset_axis",
-                telemetry={"strategy": "small_nudge"},
-            )
-        unit = axis / norm
-        scaled = unit * float(fixture.max_nudge_mm)
-        # Validate that the displacement lands inside the envelope.
-        # Without a known target position the current TCP is the
-        # fallback anchor. If neither is available, refuse.
-        anchor: Optional[np.ndarray] = None
-        if context.last_grasp is not None:
-            anchor = np.asarray(context.last_grasp.position, dtype=np.float64)
-        elif context.current_tcp is not None:
-            anchor = np.asarray(
-                context.current_tcp.position_mm, dtype=np.float64
-            )
-        if anchor is None:
-            return SceneRecoveryPlan(
-                action=SceneRecoveryAction.NONE,
-                reason="no_anchor_pose",
-                telemetry={"strategy": "small_nudge"},
-            )
-        target_position = (anchor + scaled).tolist()
-        if not fixture.contains(target_position):
-            return SceneRecoveryPlan(
-                action=SceneRecoveryAction.NONE,
-                reason="nudge_would_leave_envelope",
-                telemetry={
-                    "strategy": "small_nudge",
-                    "candidate_position_mm": tuple(target_position),
-                    "fixture_center_mm": fixture.center_mm,
-                    "fixture_half_extents_mm": fixture.half_extents_mm,
-                },
-            )
-        return SceneRecoveryPlan(
-            action=SceneRecoveryAction.NUDGE_TARGET,
-            reason="bounded_nudge",
-            nudge_offset_mm=(float(scaled[0]), float(scaled[1]), float(scaled[2])),
-            telemetry={
-                "strategy": "small_nudge",
-                "magnitude_mm": float(fixture.max_nudge_mm),
-                "anchor_position_mm": tuple(float(x) for x in anchor),
-                "target_position_mm": tuple(target_position),
-            },
-        )
+#: The executor's answer to a ``NUDGE_TARGET`` plan: the push runs inside the pick attempt, never here, so the
+#: loop's nudge is refused before anything moves and the loop falls through to its next action.
+REFUSED_PUSH_RUNS_IN_THE_PICK = "refused_push_runs_in_the_pick"
 
 
 @dataclass(frozen=True, slots=True)
@@ -722,15 +643,11 @@ def execute_recovery_motion(
       ``executed=True, outcome="completed"`` without touching the arm;
       the caller is responsible for re-acquiring perception or
       switching target.
-    * For :attr:`SceneRecoveryAction.NUDGE_TARGET` commands a single
-      typed :meth:`RobotArm.move` to ``current_tcp + nudge``, the nudge
-      cut to :attr:`FixtureEnvelope.max_nudge_mm`. Any
-      :class:`MotionResult` whose status is not ``EXECUTED`` aborts
-      the recovery with ``outcome="aborted_motion_failed"``. It refuses
-      with ``"refused_no_tcp"`` (no ``current_tcp``),
-      ``"refused_no_offset"`` (no offset, or one cut to nothing),
-      ``"refused_no_fixture"`` (nothing to cut it to) or
-      ``"refused_envelope_violation"``.
+    * For :attr:`SceneRecoveryAction.NUDGE_TARGET` refuses with
+      :data:`REFUSED_PUSH_RUNS_IN_THE_PICK` and touches nothing: the push
+      runs inside the pick attempt (``push_motion.execute_push``), where
+      the part and its neighbours are known. The scene-blind offset this
+      executor used to drive left on 2026-09-29.
     * For :attr:`SceneRecoveryAction.CONTAINER_AGITATE` drives three
       bounded waypoints via :meth:`RobotArm.move`, the amplitude cut to
       :attr:`FixtureEnvelope.max_agitate_amplitude_mm`: a there-and-back
@@ -766,11 +683,11 @@ def execute_recovery_motion(
             telemetry={"action": str(plan.action)},
         )
     if plan.action is SceneRecoveryAction.CONTAINER_AGITATE:
-        # A bounded three-waypoint motion that redistributes clutter, driven through the same
-        # SafetyPreflight-gated arm.move surface as the nudge. The amplitude is cut to the fixture's limit and
-        # every waypoint is checked against the fixture envelope before the first one moves (defence-in-depth,
-        # like NUDGE_TARGET), so a hand-built plan or config drift cannot inject an out-of-box waypoint, a
-        # refusal always means nothing moved, and the safety layer can still veto each move.
+        # A bounded three-waypoint motion that redistributes clutter, driven through the
+        # SafetyPreflight-gated arm.move surface. The amplitude is cut to the fixture's limit and every
+        # waypoint is checked against the fixture envelope before the first one moves (defence-in-depth), so
+        # a hand-built plan or config drift cannot inject an out-of-box waypoint, a refusal always means
+        # nothing moved, and the safety layer can still veto each move.
         if current_tcp is None:
             return SceneRecoveryReport(
                 plan=plan,
@@ -865,96 +782,15 @@ def execute_recovery_motion(
             },
         )
     if plan.action is SceneRecoveryAction.NUDGE_TARGET:
-        if current_tcp is None:
-            return SceneRecoveryReport(
-                plan=plan,
-                executed=False,
-                outcome="refused_no_tcp",
-                telemetry={"action": str(plan.action)},
-            )
-        if plan.nudge_offset_mm is None:
-            return SceneRecoveryReport(
-                plan=plan,
-                executed=False,
-                outcome="refused_no_offset",
-                telemetry={"action": str(plan.action)},
-            )
-        fixture = policy.fixture
-        if fixture is None:
-            return SceneRecoveryReport(
-                plan=plan,
-                executed=False,
-                outcome="refused_no_fixture",
-                telemetry={"action": str(plan.action)},
-            )
-        requested_offset = np.asarray(plan.nudge_offset_mm, dtype=np.float64)
-        # Cut the offset to the fixture's limit whoever planned it, then check the destination against the
-        # fixture envelope: both here, so the safety guarantee stays local to the motion.
-        length = float(np.linalg.norm(requested_offset))
-        limit = float(fixture.max_nudge_mm)
-        clamped = length > limit
-        offset = requested_offset * (limit / length) if clamped else requested_offset
-        # A NaN offset would pass every envelope comparison (each one is False), so it is refused here.
-        if not bool(np.all(np.isfinite(offset))) or float(np.linalg.norm(offset)) <= 0.0:
-            return SceneRecoveryReport(
-                plan=plan,
-                executed=False,
-                outcome="refused_no_offset",
-                telemetry={"action": str(plan.action), "max_nudge_mm": limit},
-            )
-        destination = (
-            np.asarray(current_tcp.position_mm, dtype=np.float64) + offset
-        )
-        if not fixture.contains(destination.tolist()):
-            return SceneRecoveryReport(
-                plan=plan,
-                executed=False,
-                outcome="refused_envelope_violation",
-                telemetry={
-                    "action": str(plan.action),
-                    "destination_mm": tuple(float(x) for x in destination),
-                },
-            )
-        target_pose = Pose(
-            position_mm=destination,
-            quaternion_xyzw=np.asarray(
-                current_tcp.quaternion_xyzw, dtype=np.float64
-            ).copy(),
-            frame=Frame.BASE,
-            label="recovery_nudge",
-        )
-        typed_move = getattr(arm, "move", None)
-        if not callable(typed_move):
-            return SceneRecoveryReport(
-                plan=plan,
-                executed=False,
-                outcome="refused_no_typed_move",
-                telemetry={"action": str(plan.action)},
-            )
-        result = typed_move(target_pose)
-        status = getattr(result, "status", None)
-        executed = _motion_executed(status)
-        if not executed:
-            return SceneRecoveryReport(
-                plan=plan,
-                executed=False,
-                outcome="aborted_motion_failed",
-                telemetry={
-                    "action": str(plan.action),
-                    "motion_status": str(status),
-                },
-            )
+        # The push runs inside the pick attempt, where the part, its neighbours and the keep-out are known
+        # (push_motion.execute_push). The scene-blind offset this branch used to drive from wherever the arm
+        # stood left on 2026-09-29 (owner: no blind moves on the real cell), so a nudge here is refused before
+        # anything moves and the loop falls through to its next action.
         return SceneRecoveryReport(
             plan=plan,
-            executed=True,
-            outcome="completed",
-            telemetry={
-                "action": str(plan.action),
-                "destination_mm": tuple(float(x) for x in destination),
-                "requested_offset_mm": tuple(float(x) for x in requested_offset),
-                "clamped": clamped,
-                "motion_status": str(status),
-            },
+            executed=False,
+            outcome=REFUSED_PUSH_RUNS_IN_THE_PICK,
+            telemetry={"action": str(plan.action)},
         )
     # Unknown action: refuse rather than silently completing.
     return SceneRecoveryReport(  # pragma: no cover (defensive)

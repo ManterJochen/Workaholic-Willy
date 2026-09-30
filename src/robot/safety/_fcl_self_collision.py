@@ -34,7 +34,8 @@ and byte-identical otherwise. Its design:
     are the adjacent ones and the rigid wrist cluster that always touch by
     construction. Every farther pair is checked exactly, which covers the wrist pairs
     the capsule path has to skip and does so without its false positives.
-  * Each link is also checked against the fixtures, which are axis-aligned boxes.
+  * Each link is also checked against the fixtures, which are boxes: axis-aligned where
+    declared, and turned about base Z as the planner holds them where a camera saw them.
 
 Neither engine is a hard dependency. Where neither Coal nor python-fcl imports, or the
 mesh bundle is absent, :func:`make_backend` returns ``None`` and the guard falls back
@@ -143,10 +144,13 @@ class _EngineAdapter:
     def set_transform(self, obj: Any, R: np.ndarray, t: np.ndarray) -> None:
         obj.setTransform(self._transform(R, t))
 
-    def box_object(self, half_extents: np.ndarray, center: np.ndarray) -> Any:
+    def box_object(self, half_extents: np.ndarray, center: np.ndarray, yaw_rad: float = 0.0) -> Any:
+        """A box of ``half_extents`` about ``center``, turned about base Z by ``yaw_rad``."""
         m = self._m
         size = 2.0 * np.asarray(half_extents, dtype=np.float64)
-        return m.CollisionObject(m.Box(*size), self._transform(np.eye(3), np.asarray(center, dtype=np.float64)))
+        c, s = float(np.cos(yaw_rad)), float(np.sin(yaw_rad))
+        turn = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+        return m.CollisionObject(m.Box(*size), self._transform(turn, np.asarray(center, dtype=np.float64)))
 
     def distance(self, a: Any, b: Any) -> float:
         m = self._m
@@ -182,6 +186,35 @@ class MeshSelfCollisionBackend:
             self._sph_r[name] = float(np.linalg.norm(v - c, axis=1).max())
         self._names = list(self._models)
 
+    def checks(self, part_a: str, part_b: str) -> bool:
+        """Whether :meth:`evaluate` judges ``part_a`` against ``part_b``: its pair rule, asked of one pair.
+
+        Two different parts this backend holds, more than one DH frame apart, or one frame apart where either is a
+        wrist camera's part, which stays checked against wrist_2. It is the rule :meth:`evaluate` skips by, so the
+        planner's self pairs left to this guard (``planning.band``) are pairs it judged.
+        """
+        if part_a == part_b or part_a not in self._frame or part_b not in self._frame:
+            return False
+        gap = abs(self._frame[part_a] - self._frame[part_b])
+        return not (gap == 0 or (gap == 1 and part_a not in self._wrist and part_b not in self._wrist))
+
+    @property
+    def part_frames(self) -> dict[str, int]:
+        """The DH frame every part this backend holds hangs from, by name."""
+        return dict(self._frame)
+
+    def distance_mm(self, transforms_dh_mm: list[np.ndarray], yaw_deg: float, part_a: str, part_b: str) -> float:
+        """The exact distance of two held parts at one configuration, in millimetres: for a sentence, never a verdict.
+
+        :meth:`evaluate` names only the first pair closer than its limit; a person told that the planner refused a pose
+        the meshes accept wants the distance the meshes keep on the pair the planner named.
+        """
+        rotation = _yaw_matrix(yaw_deg)
+        for name in (part_a, part_b):
+            frame = transforms_dh_mm[self._frame[name]]
+            self._a.set_transform(self._models[name], rotation @ frame[:3, :3], rotation @ frame[:3, 3])
+        return self._a.distance(self._models[part_a], self._models[part_b])
+
     def evaluate(
         self,
         transforms_dh_mm: list[np.ndarray],
@@ -189,16 +222,20 @@ class MeshSelfCollisionBackend:
         fixtures: tuple,
         min_distance_mm: float,
         broadphase: bool = False,
+        *,
+        arm_pairs: bool = True,
     ) -> tuple[str, float] | None:
         """Return ``(pair, signed_distance_mm)`` for the first violating pair, else ``None``.
 
         ``transforms_dh_mm`` is the full per-frame DH FK from ``ur_link_transforms_mm``.
         ``fixtures`` are :class:`AxisAlignedBox` values, centre and half-extents in mm,
-        in the system base frame. ``broadphase``, which the continuous monitor uses,
+        in the system base frame; one that carries its ``turned`` box is judged as that
+        box, turned, which the enclosure holds. ``broadphase``, which the continuous monitor uses,
         drops a pair on its bounding spheres before the exact query where the two
         cannot be within ``min_distance_mm``. The cull is conservative, because the
         spheres bound the meshes, so the verdict matches the brute path exactly, and
-        the default of ``False`` leaves the one-shot guard unchanged.
+        the default of ``False`` leaves the one-shot guard unchanged. ``arm_pairs`` false
+        judges the fixtures alone, for a caller that judged the arm against itself already.
         """
         a = self._a
         Rb = _yaw_matrix(yaw_deg)
@@ -215,12 +252,11 @@ class MeshSelfCollisionBackend:
         # adjacent joints and the rigid wrist and gripper cluster ----
         # A wrist camera's part is skipped only on its own frame, so against wrist_2, one frame in, it
         # stays checked.
-        for i in range(len(self._names)):
+        for i in range(len(self._names) if arm_pairs else 0):
             ni = self._names[i]
             for j in range(i + 1, len(self._names)):
                 nj = self._names[j]
-                gap = abs(self._frame[ni] - self._frame[nj])
-                if gap == 0 or (gap == 1 and ni not in self._wrist and nj not in self._wrist):
+                if not self.checks(ni, nj):
                     continue
                 if broadphase and (float(np.linalg.norm(wc[ni] - wc[nj]))
                                    - self._sph_r[ni] - self._sph_r[nj] > min_distance_mm):
@@ -228,11 +264,15 @@ class MeshSelfCollisionBackend:
                 d = a.distance(self._models[ni], self._models[nj])
                 if d < min_distance_mm:
                     return (f"{ni}|{nj}", d)
-        # ---- link against fixture, the axis-aligned boxes ----
+        # ---- link against fixture: the box as it stands, turned where it is; the sphere about its enclosure ----
         for fx in fixtures:
             fc = np.asarray(fx.center_mm, dtype=np.float64)
             fr = float(np.linalg.norm(np.asarray(fx.half_extents_mm, dtype=np.float64)))
-            box = a.box_object(np.asarray(fx.half_extents_mm, dtype=np.float64), fc)
+            turned = getattr(fx, "turned", None)
+            if turned is None:
+                box = a.box_object(np.asarray(fx.half_extents_mm, dtype=np.float64), fc)
+            else:
+                box = a.box_object(np.asarray(turned.half_extents_mm, dtype=np.float64), fc, float(turned.yaw_rad))
             for name in self._names:
                 if broadphase and (float(np.linalg.norm(wc[name] - fc))
                                    - self._sph_r[name] - fr > min_distance_mm):

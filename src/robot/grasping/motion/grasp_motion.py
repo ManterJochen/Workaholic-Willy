@@ -20,14 +20,25 @@ from dataclasses import dataclass, fields
 from typing import Any
 
 from src.contracts import UNSET, Maybe, chosen
+from src.geometry import Pose
 from src.robot.core import Gripper, RobotArm
 from src.robot.core.gripper import toggle_without_sensor_of
-from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
+from src.robot.grasping.geometry.closing_axis import ClosingAxis, ClosingAxisLike, closing_axis_of
+from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy, closing_axis_twisted
 
 __all__ = ["GraspMotion", "build_execution_policy", "foreign_policy_refusal"]
 
 #: Fields in millimetres or newtons: finite and not negative.
 _NON_NEGATIVE = ("standoff_mm", "retreat_mm", "close_squeeze_mm", "close_force_n")
+
+
+def _closing_axis_kept(value: object) -> "str | Pose | ClosingAxis | tuple[float, ...]":
+    """``value``, refused unless it names a closing axis (``closing_axis_of``), kept as a value: a name, a ``Pose`` or a
+    ``ClosingAxis`` as given, a quaternion as a tuple of floats, so a motion still compares and hashes."""
+    closing_axis_of(value)
+    if isinstance(value, (str, Pose, ClosingAxis)):
+        return value
+    return tuple(float(part) for part in value)  # type: ignore[attr-defined]  # a quaternion closing_axis_of took
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -44,7 +55,15 @@ class GraspMotion:
     is how far below the measured width the jaws close, ``close_speed`` (0 to 1) and ``close_force_n`` what the hand
     is asked for, and ``align_closing_to_base_x`` yaws a symmetric top-down grasp so it closes along base X. That yaw
     closes the jaws on faces other than the ones the grasp was chosen on, so a pick that asks for both jaw contact faces
-    (``both_faces``) refuses it before anything moves (``pick_loop.judged_faces_turned_away``).
+    (``both_faces``) refuses it before anything moves (``pick_loop.judged_faces_turned_away``): it is the simulator's aid.
+
+    ``closing_axis`` chooses instead of twisting (the owner, 2026-09-30): only the grasps that already close along the
+    named axis, within ``CLOSING_AXIS_TOLERANCE_DEG`` (30 degrees) either way round, are taken, each turned half a turn
+    about its approach where that puts its closing axis the named way round, before anything judges or ranks them. So
+    the grasp judged is the grasp executed, and ``both_faces`` keeps working. A name ``Pose.tool_down`` takes (``"-y"``
+    on the owner's cell; ``radial`` and ``tangential`` read at each grasp's place) or an orientation, a quaternion
+    (x, y, z, w) or a BASE ``Pose``, whose tool +X laid onto the base XY plane is the heading. A pick none of whose
+    grasps closes along it ends ``no_valid_grasp``, saying so. Refused beside ``align_closing_to_base_x``.
     """
 
     standoff_mm: Maybe[float] = UNSET
@@ -56,6 +75,7 @@ class GraspMotion:
     close_speed: Maybe[float] = UNSET
     close_force_n: Maybe[float] = UNSET
     align_closing_to_base_x: Maybe[bool] = UNSET
+    closing_axis: "Maybe[ClosingAxisLike]" = UNSET
 
     def __post_init__(self) -> None:
         if self.pre_open_width_mm is None:
@@ -84,6 +104,11 @@ class GraspMotion:
                 raise ValueError(f"GraspMotion.{name} must be at least {least}, got {value}")
         if chosen(self.align_closing_to_base_x) and not isinstance(self.align_closing_to_base_x, bool):
             raise TypeError(f"GraspMotion.align_closing_to_base_x is True or False, not {self.align_closing_to_base_x!r}")
+        if chosen(self.closing_axis):
+            object.__setattr__(self, "closing_axis", _closing_axis_kept(self.closing_axis))
+        twisted = closing_axis_twisted(self)
+        if twisted:
+            raise ValueError(f"GraspMotion: {twisted}")
 
     def standoff_and_retreat(self, standoff_mm: float, retreat_mm: float) -> tuple[float, float]:
         """This motion's standoff and retreat where it sets them, the service's own where it does not.
@@ -138,7 +163,7 @@ def build_execution_policy(
     chosen_fields: dict[str, Any] = {
         name: getattr(motion, name)
         for name in ("approach_steps", "retreat_steps", "close_squeeze_mm", "close_speed", "close_force_n",
-                     "align_closing_to_base_x")
+                     "align_closing_to_base_x", "closing_axis")
         if chosen(getattr(motion, name))
     }
     policy = GraspExecutionPolicy(

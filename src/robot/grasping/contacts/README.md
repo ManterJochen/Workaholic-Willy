@@ -74,7 +74,7 @@ normal, and it carries its own seal physics, so it lives in [`suction/`](../suct
 | Capability | Evidence |
 | --- | --- |
 | Dense sampling, the antipodal search, the collision cloud | measured in simulation: the grasp calculator runs them on the Isaac picks |
-| On a physical depth camera | never touched hardware: no real frame has reached them |
+| On a physical depth camera | run on a physical cell: the calculator ran them on the camera picks of a wrist D415 on a UR10 (CB3); nothing measured there is kept here |
 
 ## Files
 

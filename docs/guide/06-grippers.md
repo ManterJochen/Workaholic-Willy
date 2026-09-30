@@ -17,10 +17,12 @@ with robot.connected():                # the lock, the arm, then the hand
 That is [`examples/real_robot/04_open_and_close_the_hand.py`](../../examples/real_robot/04_open_and_close_the_hand.py);
 at a desk, `load_tree("console_dummy")` runs it on a dummy hand.
 
-The gripper drivers never touched hardware. The wire formats are pinned against reference clients, and the
-OnRobot framing and the digital-I/O pins are measured against real controller software. The wiring, the
-register meanings on a live tool and the end-effector itself are measurements you make. Every section says
-which is which.
+Two gripper drivers were measured with a UR: `jaw_io` as `single_toggle`, switching a Hand-E over one
+tool output of a UR10 (CB3), and the Robotiq driver over its URCap socket (on that UR10 the socket on port
+63352 was refused, so its Hand-E runs as `jaw_io`). OnRobot and suction never touched hardware. The wire
+formats are pinned against reference clients, and the OnRobot framing and the digital-I/O pins are
+measured against real controller software. The wiring, the register meanings on a live tool and the
+end-effector itself are measurements you make. Every section says which is which.
 
 > [!WARNING]
 > **The first command you send a gripper should never be a closing one.** Two of the drivers have
@@ -97,9 +99,10 @@ Rungs 1 and 2 are read-only by construction: none of the probe entry points has 
 
 ## 3. Robotiq (2F-85, 2F-140, Hand-E)
 
-Never touched hardware. The wire format is pinned against a reference client's grammar, and the client runs
-against a TCP server that implements that grammar. No real URCap has answered it, and URSim cannot stand in,
-because port 63352 is opened by the URCap rather than by the robot interface.
+Measured with a UR over its URCap socket. On the UR10 (CB3) where this code has run, the socket on port
+63352 was refused, so that Hand-E runs as `jaw_io` (section 5). The wire format is pinned against a reference
+client's grammar, and the client runs against a TCP server that implements that grammar. URSim cannot
+stand in, because port 63352 is opened by the URCap rather than by the robot interface.
 
 ### Rung 1: does anything answer
 
@@ -143,6 +146,15 @@ vendor's own numbers do not close: a 2F-85 manual states 0.4 mm per count over a
 counts at 0.4 mm is 102 mm. The real endpoints are a per-unit measurement, which is why other projects ship
 an auto-calibration for exactly this. Treat a commanded millimetre as approximate until you have measured
 your unit.
+
+### In a push
+
+A push ([05](05-pick-loop.md), 6.4) reads the fingers' measured width before its first motion and never
+commands them: within 2 mm of fully open it pushes, narrower is no push and the pick goes on. A gripper
+found **not connected** there, or whose width read fails, ends the pick as a **gripper fault** with nothing
+moved, as a toggle nobody can vouch for does, and `PickRun` and the console stop on it. The driver counts
+itself connected until the program disconnects it, so a socket that stopped answering shows as a read that
+fails.
 
 ---
 
@@ -218,7 +230,9 @@ That is why `connect()` refuses on it: a message now rather than a dropped part 
 ## 5. Digital-I/O grippers (`jaw_io`, `vacuum`)
 
 The logic is exercised against a fake I/O port, and the controller pins were measured switching against real
-controller software. The wiring never touched hardware; measuring it is what the bench tool is for.
+controller software. One wiring has run on a physical cell: a Hand-E on the Robotiq I/O coupling, switched
+as `single_toggle` on tool DO0 of a UR10 (CB3). Your wiring is yours to measure, which is what the bench
+tool is for.
 
 This is the family where the numbers are yours: which pin, which bank, active high or low, how long the
 cylinder takes. All of it is config on purpose, so the drivers work with whatever hardware you chose, and
@@ -306,6 +320,9 @@ From there every change flips the count, whatever verb sent it:
 | a pick, before the arm moves | **none**, whatever `pre_open_mm` says; where the count says closed (a pick with no place before it) or cannot say, the pick asks again, and with nobody to ask it is refused before any motion |
 | a pick, at the part | exactly one, then `close_settle_s` |
 | a place or a release | one where the count says closed, then `close_settle_s`; none where it says open, and the report says `already open` |
+| a look of a wrist camera, the view it generates, the move back | **none**: a look is a motion of the arm, and the jaws stay as the last command left them |
+| a push (the `dense_clutter` recovery of a wrist camera's pick, [05](05-pick-loop.md)) | **none**: it pushes with the open jaws, and only where the count says open and knows it (`why_jaws_unknown()` empty, the hand connected). A count that says closed means no push; one that cannot say when the push reads it, once its plan and budgets passed (DO0 switched at the pendant mid-pick, the count lost, the output unreadable), ends the pick as a gripper fault, as the pick-start refusal does. The count is read again before each contact leg and once the arm is up: one nobody can vouch for there **stops the push where the arm stands**, and a person decides. The push asks nobody either way |
+| `next_target`, before it drives a wrist pick's looks again | **none**: the count is read first, and one nobody can vouch for (a push refused before it read the jaws, then DO0 switched) ends the pick as a gripper fault before any look is driven again. `PickRun` and the console stop on it. A re-pick that drives no look, a fixed camera's or a look-less wrist pick's rescan, is a pick like any other: it asks before the arm moves (first row) |
 
 At a pick start the question takes a word, not Enter:
 
@@ -404,11 +421,11 @@ A pick and a place are one call each, for a part whose pose you already know in 
 ([`examples/real_robot/05_pick_and_place_a_known_part.py`](../../examples/real_robot/05_pick_and_place_a_known_part.py)):
 
 ```python
-from willy import Pose, Robot, load_tree
+from willy import Robot, load_tree
 
 robot = Robot.from_tree(load_tree())
-part = Pose.tool_down(450.0, 100.0, 120.0, yaw_deg=90.0)   # millimetres in BASE, inside your workspace
-tray = Pose.tool_down(300.0, -250.0, 140.0)
+part = robot.tool_down(450.0, 100.0, 120.0, yaw_deg=90.0)   # millimetres in BASE, inside your workspace
+tray = robot.tool_down(300.0, -250.0, 140.0)
 bench = "a known part on a clear table, no camera"
 
 with robot.connected():
@@ -418,9 +435,12 @@ with robot.connected():
         print(robot.place(tray, decline=bench))
 ```
 
-The pose's own +Z is the approach. `pick` opens the jaws to the hand's width, makes a planned move to a
-standoff `standoff_mm` (80) back along the approach, drives a straight line to the pose, closes to
-`width_mm` less `squeeze_mm` (1), and drives the line back out. `place` does the same with a release.
+The pose's own +Z is the approach. `robot.tool_down` points it straight down, the fingers closing along
+the cell's `robot.natural_closing_axis`, along base x where it names none; `yaw_deg` counts from that
+direction, so on a cell that names `"-y"`, `yaw_deg=90.0` closes along base x. `pick` opens the jaws to the
+hand's width, makes a planned move to a standoff `standoff_mm` (80) back along the approach, drives a
+straight line to the pose, closes to `width_mm` less `squeeze_mm` (1), and drives the line back out.
+`place` does the same with a release.
 
 Before any command both verbs refuse a robot with no usable gripper, a closed link, a pose not in BASE, a
 camera world the arm would refuse the motion for, and an arm whose motions do not go through cuRobo and the
@@ -518,8 +538,9 @@ the hand verbs refuse a gripper that holds nothing before anything moves.
   works through `jaw_io`. In simulation the EGU-50 is `robot.gripper.model: schunk_egu50`, mounted standalone
   and driven by the vendor-neutral simulated jaw gripper through its profile.
 - **No force or current reading from any real driver.**
-- **No gripper driver has touched hardware.** The bench, the probes and the read-only rungs exist because the
-  measurement is yours to make.
+- **Two gripper drivers were measured with a UR**, `jaw_io` switching a Hand-E as `single_toggle` and the
+  Robotiq driver over its URCap socket; OnRobot and suction never touched hardware. The bench, the probes
+  and the read-only rungs exist because the measurement is yours to make.
 
 ## Where to look next
 

@@ -438,7 +438,9 @@ class MediaTests(unittest.TestCase):
         shared_speech().forget()
 
     @contextlib.contextmanager
-    def _speech(self, *, speech: bool = True, weights: bool = True) -> Iterator[dict[str, Any]]:
+    def _speech(
+        self, *, speech: bool = True, weights: bool = True, without: tuple[str, ...] = ()
+    ) -> Iterator[dict[str, Any]]:
         """Whisper and Silero behind their real loaders, from paths written into this test's own tree.
 
         ⛔ THE FAILURE TEST BELOW WAS NOT HERMETIC. It counted on no Whisper weights being on the box
@@ -446,18 +448,18 @@ class MediaTests(unittest.TestCase):
         `AssertionError: 200 not found in (422, 501) : {"text":"you","language":"en",...}`. Every model
         path is now written into the temporary tree, both loaders are stand-ins, and the device is the
         CPU. ``speech`` is what the stand-in voice detector hears; ``weights`` False leaves the Whisper
-        directory absent.
+        directory absent, and ``without`` leaves those of its files out.
         """
         import os
 
         import torch
         import transformers
 
-        from tests._speech_fakes import FakeSileroModel, whisper_parts
+        from tests._speech_fakes import FakeSileroModel, whisper_directory, whisper_parts
 
         whisper = self.tmp.parent / "whisper"
         if weights:
-            whisper.mkdir(exist_ok=True)
+            whisper_directory(whisper, without=without)
         vad = self.tmp.parent / "silero_vad.jit"
         vad.write_bytes(b"stand-in")
         stt = self.tmp / "models" / "stt.yaml"
@@ -514,6 +516,19 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(response.json()["code"], "speech_model_missing")
         self.assertIn("whisper", response.json()["message"])
         self.assertIn("fetch.py", response.json()["message"])
+        self.assertEqual(fakes["processors"].call_count, 0)
+
+    def test_a_whisper_directory_without_its_json_files_is_answered_naming_them(self) -> None:
+        """The robot's box: the weights there and the files that describe them not. A capability this
+        host lacks (501), with the files named, and no loader asked."""
+        with self._speech(without=("config.json", "preprocessor_config.json")) as fakes:
+            response = self.client.post(
+                "/v1/voice/transcribe", files={"audio": ("a.wav", self._wav(), "audio/wav")}
+            )
+        self.assertEqual(response.status_code, 501, response.text)
+        self.assertEqual(response.json()["code"], "speech_model_missing")
+        for fragment in ("config.json", "preprocessor_config.json", "fetch.py whisper-turbo"):
+            self.assertIn(fragment, response.json()["message"])
         self.assertEqual(fakes["processors"].call_count, 0)
 
     def test_speech_returns_text_and_never_starts_a_run(self) -> None:

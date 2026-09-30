@@ -394,8 +394,9 @@ def _build_g6_recovery(agitate_amplitude_mm: float = 30.0, center_mm=(300.0, 0.0
                        contact_depth_mm: float = 0.0, sweep_offset_mm: float = 0.0):
     """A recovery setup that permits the container-agitate motion on a clutter jam (ALL_COLLIDED).
 
-    Reuses the real recovery machinery: the same ``run_recovery_loop`` and
-    ``RecoveryOrchestrator(bypass_strategies)`` the service's ``_run_with_recovery`` uses. Opt-in via
+    Reuses the real recovery machinery: the same ``run_recovery_loop`` and ``RecoveryOrchestrator`` the service's
+    ``_run_with_recovery`` uses, here with the agitate's strategy (the service plans rescan and next_target directly
+    and has no strategy for a physical action). Opt-in via
     ``--g6`` only; without it the pick path is unchanged. Agitate passes four gates. First a profile
     allow-list: a copy of the DENSE_CLUTTER profile with "container_agitate" added, because the locked
     profiles omit it and are not mutated. Second a policy allow-list of CONTAINER_AGITATE alone, so the
@@ -1186,7 +1187,8 @@ def _wire_collection_carriers(service, cfg, grasp_mode, *, collect: bool, recove
                 # on 2026-09-28) accumulated across reset-picks and starved candidates. Fixture-free
                 # recovery actions only, because NUDGE_TARGET and CONTAINER_AGITATE are physical and
                 # need a FixtureEnvelope the service-config recovery path does not supply. next_target
-                # is named but never planned: no built-in mode profile lists it, so rescan is what runs.
+                # is planned first: a rescan that skips the part that failed (the service hands the loop
+                # the campaign's exclusion zones), same label only, then rescan.
                 ro = _dc_replace(
                     eff.recovery_orchestrator, enabled=True,
                     allowed_actions=("rescan", "next_target"),
@@ -1202,7 +1204,7 @@ def _apply_rl3_substrate(specs: list, target_idx: int, env: RunnerEnv) -> list:
     """Failure-injection substrate, off by default, that makes the service recovery loop fire.
 
     The failures the sim produces on its own, slips and approach blocks, do not trigger the loop's rescan
-    (next_target is allowed too, but no built-in mode profile lists it, so it is never planned), so this
+    (nor its next_target, which skips the failed part of a no-candidate failure), so this
     engineers failures that do, and ``recovery_actions`` then populate. ``WILLY_RL3_SUBSTRATE`` takes
     ``unreachable``, an oversized target that yields NO_CANDIDATES_GENERATED and so a rescan
     (``next_viewpoint``, which it reached before 2026-09-29, was merged into rescan then); ``occlusion``, an occluder over

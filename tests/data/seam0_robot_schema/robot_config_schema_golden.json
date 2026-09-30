@@ -1018,7 +1018,7 @@
     },
     "GraspingRecoveryFixtureConfig": {
       "additionalProperties": false,
-      "description": "Operator-bounded envelope for physical recovery actions.\n\nA recovery action is the robot deliberately pushing something: nudging a part that will not\nseparate, agitating a container. That is motion aimed at the scene rather than at a grasp, so\nits reach is declared by the operator rather than inferred, and the recovery planner may not\nexceed these three numbers.\n\n``max_nudge_mm`` is the longest push the cell allows, 50 mm at most, and above that the config\nis refused (owner, 2026-09-29). A ``nudge_target`` push moves the part 30 mm unless asked for\nanother distance, and never more than this: with the default of 30 mm, a request for more is\nrefused, never shortened. Below 10 mm no push can open room for a finger, so none is planned. The\npush's landing is bounded by what the camera saw (the workspace box intersected with the seen\ntable, shrunk by the push plus 30 mm), and this box can only narrow it.",
+      "description": "Operator-bounded envelope for physical recovery actions.\n\nA recovery action is the robot deliberately pushing something: nudging a part that will not\nseparate, agitating a container. That is motion aimed at the scene rather than at a grasp, so\nits reach is declared by the operator rather than inferred, and the recovery planner may not\nexceed these numbers.\n\n``push_distance_mm`` is how far a ``nudge_target`` push moves the part when nobody asks for\nanother distance, 30 mm by default. ``max_nudge_mm`` is the longest push the cell allows, 50 mm by\ndefault and at most, and above that the config is refused (owner, 2026-09-29). A request (the API,\na ``PickRun``) up to ``max_nudge_mm`` is taken as asked, and one above it is refused, never\nshortened. ``push_distance_mm`` longer than ``max_nudge_mm`` is refused at load. Below 10 mm no\npush can open room for a finger, so both are at least 10 and a shorter request is refused. The\npush's landing is bounded by what the camera saw (the workspace box intersected with the seen\ntable, shrunk by the push plus 30 mm), and this box can only narrow it.",
       "properties": {
         "center_mm": {
           "maxItems": 3,
@@ -1055,10 +1055,17 @@
           "type": "array"
         },
         "max_nudge_mm": {
+          "default": 50.0,
+          "maximum": 50.0,
+          "minimum": 10.0,
+          "title": "Max Nudge Mm",
+          "type": "number"
+        },
+        "push_distance_mm": {
           "default": 30.0,
           "maximum": 50.0,
-          "minimum": 0.0,
-          "title": "Max Nudge Mm",
+          "minimum": 10.0,
+          "title": "Push Distance Mm",
           "type": "number"
         }
       },
@@ -2117,8 +2124,8 @@
           "type": "number"
         },
         "max_boxes": {
-          "default": 8,
-          "maximum": 64,
+          "default": 64,
+          "maximum": 256,
           "minimum": 0,
           "title": "Max Boxes",
           "type": "integer"
@@ -2164,7 +2171,7 @@
     },
     "PlannedMotionSafetyConfig": {
       "additionalProperties": false,
-      "description": "How a cuRobo UR cell chooses the path of a move, and how far a planned path may wander.\n\nA move goes to the configuration of its goal nearest the arm, on the branch the arm holds, and it runs the\nstraight joint line there wherever that line is clear; cuRobo plans only where it is not, and never chooses the\ngoal. Both keys bound that choice.\n\n``line_clearance_mm`` is how far every configuration of a straight joint line has to stay from the planner's\nworld, the declared cell and the camera's, before the line runs instead of a plan. A line that comes closer is\nplanned around rather than driven along: the camera sees obstacles that only the planner holds, and a line that\ngrazes one by a millimetre passes a check that asks only for no penetration. The default is 10 mm, the distance at\nwhich cuRobo's own optimiser starts pushing its plans away from an obstacle (``optimizer_collision_activation_\ndistance`` at its default of 0.01 m, which the sidecar does not change), so a line is held to the clearance a plan\nis shaped to keep; it is also the local guard's shipped ``self_collision.min_distance_mm``, so both authorities ask\na line for the same 10 mm. It is not a certified distance, and 0 judges a line at no penetration, which is how a\nplanned path is judged.\n\n``max_detour_deg`` is how far any joint of a cuRobo path may swing beyond the span between where it starts and\nwhere it ends. A plan past it is not run: the next nearest configuration is planned to instead, and where none\nis left the move is refused naming the joint. 45 degrees admits a plan that bends a joint around a bin wall and\nrefuses the plan that swings the base or a wrist the long way round, which is what twisted a cable-carrying arm on\nthe owner's cell (2026-09-24).",
+      "description": "How a cuRobo UR cell chooses the path of a move, and how far a planned path may wander.\n\nA move goes to the configuration of its goal nearest the arm, on the branch the arm holds, and it runs the\nstraight joint line there wherever that line is clear; cuRobo plans only where it is not, and never chooses the\ngoal. Both keys bound that choice.\n\n``line_clearance_mm`` is how far every configuration of a straight joint line has to stay from the planner's\nworld, the declared cell and the camera's, before the line runs instead of a plan. A line that comes closer is\nplanned around rather than driven along: the camera sees obstacles that only the planner holds, and a line that\ngrazes one by a millimetre passes a check that asks only for no penetration. The default is 10 mm, the distance at\nwhich cuRobo's own optimiser starts pushing its plans away from an obstacle (``optimizer_collision_activation_\ndistance`` at its default of 0.01 m, which the sidecar does not change), so a line is held to the clearance a plan\nis shaped to keep; it is also the local guard's shipped ``self_collision.min_distance_mm``, which the guard keeps\nfrom the arm itself and from a declared fixture. From a box a camera saw, already its surface grown by\n``planning_world.perceived.margin_mm``, the guard keeps ``self_collision.perceived_min_distance_mm`` (5 mm) and a\nline is held the full 10 mm. It is not a certified distance, and 0 judges a line at no penetration, which is how a\nplanned path is judged.\n\n``max_detour_deg`` is how far any joint of a cuRobo path may swing beyond the span between where it starts and\nwhere it ends. A plan past it is not run: the next nearest configuration is planned to instead, and where none\nis left the move is refused naming the joint. 45 degrees admits a plan that bends a joint around a bin wall and\nrefuses the plan that swings the base or a wrist the long way round, which is what twisted a cable-carrying arm on\nthe owner's cell (2026-09-24).",
       "properties": {
         "line_clearance_mm": {
           "default": 10.0,
@@ -2809,6 +2816,13 @@
           "maximum": 500.0,
           "minimum": 0.0,
           "title": "Min Distance Mm",
+          "type": "number"
+        },
+        "perceived_min_distance_mm": {
+          "default": 5.0,
+          "maximum": 500.0,
+          "minimum": 0.0,
+          "title": "Perceived Min Distance Mm",
           "type": "number"
         },
         "planner_margin_mm": {
@@ -3927,6 +3941,37 @@
     },
     "motion_limits": {
       "$ref": "#/$defs/MotionLimitsConfig"
+    },
+    "natural_closing_axis": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Natural Closing Axis"
     },
     "rl": {
       "$ref": "#/$defs/RobotRLConfig"

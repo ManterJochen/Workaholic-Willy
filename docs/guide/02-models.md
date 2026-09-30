@@ -41,7 +41,8 @@ depth-noise decorator; the rehearsal uses a synthetic scene; and a real cell use
 adapter in [`src/robot/perception/`](../../src/robot/perception/README.md), whose streamer, detector and
 segmenter are injected, so it imports with neither `pyrealsense2` nor torch.
 `python -m src.robot.perception --prompt "a red cube"` runs that adapter against a real RGB-D camera
-with no robot. It has only been driven by a fake streamer: never touched hardware.
+with no robot. The adapter has been measured on a real camera setup (the
+[perception status](../../src/robot/perception/README.md#status)).
 
 **There is no depth model here.** Depth comes from the simulator's rendered annotator, from stereo
 block matching in [`src/calibration/`](../../src/calibration/README.md), or from an RGB-D stream. See
@@ -209,9 +210,9 @@ grounder does not fail on a prompt it cannot represent**. It returns a confident
 object, and nothing downstream (not the gate, not the record, not the operator) can tell that from a
 correct answer. Negation, comparatives, relative clauses, quantifiers and non-English wording are that
 class of prompt. For the same reason there is no cheap-first cascade: a cascade needs the cheap stage
-to fail loudly. **The VLM package has never run against real weights here**, so its grounding quality,
-its VRAM cost and the choice between the 4B and 8B checkpoints are yours to measure
-([`src/models/vlm/README.md`](../../src/models/vlm/README.md)).
+to fail loudly. **The VLM route has run on a physical cell**, on a wrist D415, and nothing measured there
+is kept here: its grounding quality, its VRAM cost and the choice between the 4B and 8B checkpoints are
+yours to measure ([`src/models/vlm/README.md`](../../src/models/vlm/README.md)).
 
 **`router.enabled`** routes each prompt from its text alone, before any weights load: plain English
 noun phrases go to the phrase grounder, everything else to the VLM. It is deterministic: the first
@@ -491,7 +492,8 @@ constructs, and the VLM response parser with its coordinate-space contract.
 | GroundingDINO and SAM2 on rendered images | measured in simulation: the real-vision pick in section 8 |
 | RT-DETR, OneFormer, the MediaPipe detectors, the RT-DETR training script | never touched hardware: unit tests only; SAM2 against OneFormer is not compared |
 | Whisper and the Silero voice detector | never touched hardware: fakes, a random Whisper, and the real weights for load time, latency and memory only |
-| Every model against a physical camera, and the live RGB-D adapter | never touched hardware: the adapter has seen only a fake streamer |
+| GroundingDINO, SAM2 and the VLM route on a physical camera | run on a physical cell: a wrist D415 on a UR10 (CB3); no measurement is kept here |
+| The live RGB-D adapter | measured on a real camera setup ([perception status](../../src/robot/perception/README.md#status)) |
 | A learned depth model | does not exist |
 
 No recording of a spoken command exists here to be right or wrong about, so speech accuracy is

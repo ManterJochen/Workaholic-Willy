@@ -5,13 +5,13 @@ The driver for Universal Robots arms. It speaks RTDE to the controller through `
 poses. `robot.ur.model` names the arm: `ur3`, `ur3e`, `ur5`, `ur5e`, `ur10` or `ur10e`.
 
 ```python
-from willy import Pose, Robot, load_tree
+from willy import Robot, load_tree
 
 robot = Robot.from_tree(load_tree())    # a cell with robot.vendor: ur
 print(robot.route())                    # cuRobo with the mesh guard, or the controller's own line
 with robot.connected(), robot.without_camera_world("bench run, the table is clear"):
     print(robot.home())                 # connect has already run the refusals below
-    print(robot.move(Pose.tool_down(450.0, 100.0, 300.0)))
+    print(robot.move(robot.tool_down(450.0, 100.0, 300.0)))   # the cell's natural closing axis
 ```
 
 The whole walk at a cell is [examples/real_robot/03_connect_and_move.py](../../../../examples/real_robot/03_connect_and_move.py);
@@ -32,6 +32,11 @@ python -m src.robot.drivers.ur --read             # every pin on the tool I/O ba
 
 Without connecting, `line_motion()` says what `move(pose, linear=True)` keeps of the line. Wrench,
 digital I/O, robot status and hand guiding are optional capabilities in [robot/core](../../core/README.md).
+Two more serve a wrist pick's one generated view and its move back. `nearest_configuration(pose)` names
+the joints a pose goes to, as the endpoint gate judges them, and moves nothing; it answers on the `ik`
+planner too. `move_to_joints_on_the_line(joints)` drives the straight joint line from where the arm
+stands and nothing else: a line that is not clear is refused with nothing sent, never planned around,
+and on the `ik` planner, where nobody judges a path, every such motion is refused `UNSUPPORTED`.
 
 ## What `connect()` refuses
 
@@ -64,7 +69,8 @@ check needs the dashboard: a dashboard that does not answer is logged, not refus
 | `JOINT_LIMIT_REJECTED`, no configuration in the window | on `curobo`, no configuration of the goal lies inside the planner's and the joint-limit guard's window | Move the goal; with `within_half_turn_of_home`, it lies behind home |
 | `JOINT_LIMIT_REJECTED`, a detour | on `curobo`, every plan cuRobo found swings a joint more than `safety.planned_motion.max_detour_deg` past its span | Clear the way, or raise the bound; the message names the joint |
 | `JOINT_LIMIT_REJECTED`, a joint target past a full turn | a joint target holds a value beyond 2 pi, which reads as degrees | Joint targets are radians |
-| `SELF_COLLISION_REJECTED` or `JOINT_LIMIT_REJECTED`, the start | the planner will not start from where the arm stands | Jog the arm out of that configuration; the message names what the planner found |
+| `SELF_COLLISION_REJECTED` or `JOINT_LIMIT_REJECTED`, the start | the planner will not start from where the arm stands, for more than its cushion band or with no escape leg out of it | Jog the arm out of that configuration; the message names the pair, the planner's depth, the distance the exact meshes keep and why no leg was taken |
+| `SELF_COLLISION_REJECTED`, the band's goal | a goal in the planner's cushion band that no approach leg of at most 20 degrees per joint reaches: `no plan reaches it` | Reach it on a straight line, or re-teach it by hand where both authorities clear it and screen it again |
 | `SELF_COLLISION_REJECTED` or `JOINT_LIMIT_REJECTED`, a leg | the path gate or the planner refuses a leg of the plan that would run | Read the message; nothing has moved |
 | `INVALID_TARGET`, a waypoint | `ur_rtde` refused a speed or acceleration before sending that waypoint's `moveJ` | The message says which waypoint and what ran before it |
 | `UNSUPPORTED`, camera world MISSING | on `curobo`, a motion with neither a live camera world nor a stated decline | Hand the robot its cameras, or `without_camera_world(reason)` |
@@ -98,6 +104,32 @@ endpoint gate screen each. Then, on the arm's branch first:
 A goal on another branch is tried only once every goal on the arm's own failed, and taking one is a
 warning naming both branches. A goal that nothing reaches costs up to three failed joint plans, 7 to
 9 s each measured on the UR10 descriptor.
+
+**The planner's cushion band.** cuRobo's padded spheres refuse some poses the exact meshes keep well clear,
+such as the owner's LOOK[0], forearm|wrist_2 1.2 mm deep for the spheres and 19.0 mm apart for the meshes.
+On the arm's own pairs the exact guard decides (the owner, 2026-09-30,
+[`planning/band.py`](../../safety/planning/band.py)): where the planner refuses a sample of a line, a leg or
+a moveL as a self collision, the arm asks it for every refused sample (`judge_joint_path`, which refreshes
+nothing), leaves to the exact guard only the pairs that guard judges, padded by no more than
+`planner_margin_mm`, and has the exact guard judge each of those samples again. The world, the bounds, the
+carried part and the `shoulder_link` stay the planner's, and a report it cannot read whole leaves the
+refusal standing. Such a refusal names the sample and the term it stands on; a bound reads
+`JOINT_LIMIT_REJECTED`.
+
+A **planned** move out of a band pose, or into one, takes a straight **escape** or **approach** leg of at
+most 20 degrees per joint, only the joints between the colliding links, to the nearest configuration both
+authorities clear; both judge the leg as a straight line, and cuRobo plans between clear configurations
+(`CuroboUrPlanner.plan_joint(goal, start_ur=...)`, whose explicit start is never read from the controller).
+The route is judged whole again, and the shortening keeps each leg as the one `moveJ` it was judged as; the
+route's log line says the leg. Once a leg left the start, a goal that still does not plan is that goal's
+failure, and the next goal is planned from the leg's end; only a start no leg leaves is refused as the
+start's. The generated view and its move back never take a leg. The glue logs a refused start as `cuRobo
+refused the start of this joint move`, a refused goal as `this joint goal`.
+
+`screen_configuration(joints)` asks both authorities about a pose and moves nothing: `clear`, `band`,
+`guard_refused`, `planner_refused` or `unscreened`, with the nearest pose within 20 degrees per joint
+both clear where one exists (`planning.band.PoseScreen`). Teaching, the desk start and every campaign's
+start ask it.
 
 A joint target (`move_to_joints`, `move_home`, a joint station) goes the same way: a joint outside the
 window runs as its full turn inside it, the same pose, and the log says so; a joint inside is left as
@@ -160,7 +192,8 @@ or `gripper.vacuum.io_port`; the `io_bench.py` functions under it confirm nothin
 | Power-on and brake release through the dashboard, `moveJ`, the RTDE reads of pose, joints, modes and wrench | measured against real controller software (URSim) |
 | Digital outputs that read back changed; the tool-frame check, including a disagreement that refuses | measured against real controller software (URSim) |
 | `setPayload` with its rollback; a protective stop, with the commanded motions refused | measured against real controller software (URSim) |
-| Torque, payload dynamics, a real tool frame, a physical emergency stop, the gripper wiring | never touched hardware |
+| Connect, moves on the straight joint line and cuRobo plans, home, and a tool output switching a Hand-E, on a UR10 (CB3) | run on a physical cell |
+| Torque, payload dynamics, a physical emergency stop | never touched hardware |
 
 The container and the probes behind those measurements are in
 [scripts/ursim/](../../../../scripts/ursim/README.md). Their profile is
@@ -191,7 +224,7 @@ first pick is [real_cell_first_pick.md](../../../../docs/runbooks/real_cell_firs
 | `connection.py` | `URConnection`, the RTDE boundary |
 | `freedrive.py` | `URFreedriveSession`: hand guiding on teach mode behind an RTDE watchdog, held again on every way out |
 | `motion.py` | `MotionController`: clamped, workspace-checked point-to-point moves for `move_to` |
-| `curobo_motion.py` | `CuroboUrPlanner`: a collision-free plan to a pose or a joint goal, run as one `moveJ` per waypoint of the list the arm judged |
+| `curobo_motion.py` | `CuroboUrPlanner`: a collision-free plan to a pose or a joint goal, from where the arm stands or an explicit `start_ur`, run as one `moveJ` per waypoint of the list the arm judged; `judge_joint_path`, every refused sample of a path with its terms and pairs |
 | `planner_frame.py` | `PlannerFrameClient`: the planner's base is the controller's turned half a turn about Z |
 | `tool_frame.py` | the derived tool frame and its comparison with the declared one |
 | `pose.py`, `pose_adapter.py` | `URPose` in millimetres and axis-angle, and its bridge to `Pose` |

@@ -171,7 +171,15 @@ These are **deliberately absent** and inherit a tree authored for a UR5e:
 - `home_joint_positions` — the UR5e default puts a UR3e grasp centre at 93.4 % of its reach, past the
   85 % this project treats as near-singular. Measured, in `robot_schema.py`. Write it in radians, or
   in degrees as the pendant shows it with `home_joint_positions_deg` (one of the two, never both).
-- `park_joint_positions`, the camera poses, the scene layout.
+- `park_joint_positions`, the camera poses and a wrist camera's looks
+  (`robot.look_joint_positions_deg`, in degrees), the scene layout.
+- `robot.natural_closing_axis`, how the hand and its camera naturally stand: a name (`"-y"` on the
+  owner's UR10, tool +X along base -y, where its wrist D415 image stands upright) or a taught pose's
+  `quaternion_xyzw`, of which only the heading of its tool +X counts. Every camera grasp and every push
+  then closes the way round nearer it, none left out or tilted, and `robot.tool_down` builds fixed poses
+  along it. A program's `closing_axis` wins, beside `align_closing_to_base_x` no grasp is turned (a push
+  still takes the natural way round), a value that names no axis is refused at load, and reading it loads
+  no grasping package. Unset in every shipped profile: the cell behaves as before.
 
 Set them from your own cell before a real pick. [real_cell_first_pick.md](real_cell_first_pick.md)
 is the procedure.

@@ -254,7 +254,7 @@ The score a slot carries is not a calibrated probability of a hold. The generato
 
 | Path | Holds |
 | --- | --- |
-| `protocol.py`, `calculator.py` | the seam a cell sees; the runtime generator, which never raises from `compute` |
+| `protocol.py`, `calculator.py` | the seam a cell sees; the runtime generator, which never raises from `compute`. `camera_matrix`, `redraw_debug_image` and `max_candidates` are optional members the pick loop reads duck-typed, outside the protocol: the last two let it redraw the overlay over the grasps a closing axis kept and ask for 36 candidates while one is named |
 | `set_artifact.py`, `set_decode.py`, `hands.py` | weights plus a model card; one slot to a pose; a hand's name to its vector |
 | `__main__.py` | the command line |
 | `net/` | backbone, slot head, losses, targets, assignment, rotation, gripper vector, local crop, generative head |

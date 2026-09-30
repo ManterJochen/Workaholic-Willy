@@ -38,9 +38,21 @@ from src.contracts import UNSET, Maybe, chosen
 
 from src.robot.grasping.collision import resolve_support_plane
 from src.robot.grasping.generation.support_footprint import (
+    DEFAULT_MAX_CANDIDATES,
     SupportFootprintCandidate,
     SupportFootprintJaw,
     generate_support_footprint_grasps,
+)
+from src.robot.grasping.geometry.closing_axis import (
+    CANDIDATES_THE_AXIS_CHOOSES_AMONG,
+    ClosingAxis,
+    ClosingAxisLike,
+    closing_along,
+    closing_axis_of,
+    closing_axis_said,
+    natural_closing_axis_of,
+    same_closing_axis,
+    turned_nearer,
 )
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
@@ -112,6 +124,9 @@ class SceneGrasps:
     #: How many points the target cloud holds. An empty result over a sparse cloud and an empty
     #: result over a dense one are different findings, and this count is what separates them.
     points: int
+    #: What the closing axis the caller asked for (``Scene.grasps(closing_axis=...)``) left out of what the generator
+    #: found, and why, in one sentence; ``""`` when no axis was asked for or it left nothing out.
+    withheld: str = ""
 
     @property
     def best(self) -> SupportFootprintCandidate | None:
@@ -125,6 +140,9 @@ class SceneGrasps:
         """The ranked list, for a person. ASCII, no trailing newline, no arguments."""
         head = (f"  {len(self.candidates)} grasp(s) from the {self.generator} generator "
                 f"over {self.points} point(s)")
+        if not self.candidates and self.withheld:
+            # The generator found grasps and none closes along the axis asked for: that is the answer, not the cloud.
+            return "\n".join((head, f"  none. {self.withheld}"))
         if not self.candidates:
             # An empty result is an answer. The primitive returns nothing when the cloud is too
             # sparse to reconstruct or admits no legal grasp, and refusing beats proposing a grasp
@@ -135,6 +153,8 @@ class SceneGrasps:
                 "gone under the support.",
             ))
         lines = [head, f"  {'#':<3}{'score':<8}{'width':<9}{'clearance':<11}position (mm)"]
+        if self.withheld:
+            lines.insert(1, f"  {self.withheld}")
         for index, candidate in enumerate(self.candidates):
             x, y, z = (float(v) for v in candidate.position_mm[:3])
             lines.append(
@@ -148,7 +168,7 @@ class SceneGrasps:
 
         The numpy arrays on each candidate become lists of floats here.
         `dataclasses.asdict` would hand a consumer an `ndarray`, which fails on
-        the first `json.dumps`.
+        the first `json.dumps`. ``withheld`` is there only where a closing axis left something out.
         """
         return {
             "generator": self.generator,
@@ -166,6 +186,7 @@ class SceneGrasps:
                 }
                 for c in self.candidates
             ],
+            **({"withheld": self.withheld} if self.withheld else {}),
         }
 
 
@@ -207,6 +228,14 @@ class Scene:
     #: :attr:`part_bottom_mm` may lower the part's bottom to where they measured it: set by ``Located.scene`` for object
     #: 0 of a look around, ``False`` for one view.
     _bottom_from_looks: bool = field(default=False, repr=False)
+    #: The closing axis a look around judged this part's grasp along (``Locator.look_around(closing_axis=...)``, ``None``
+    #: for the best grasp of any), set by ``Located.scene`` for object 0 of a look around that judged it: what
+    #: :meth:`grasps` takes when asked for none, and the only axis it takes, so the grasp gripped is the grasp judged.
+    #: ``UNSET`` for a scene no look around judged, which takes any axis it is asked for.
+    _judged_along: "Maybe[ClosingAxis | None]" = field(default=UNSET, repr=False)
+    #: How the cell's hand and camera naturally stand (``robot.natural_closing_axis``), set by :meth:`from_robot_config`:
+    #: where no closing axis is asked for, :meth:`grasps` turns every grasp the way round nearer it. ``None``: none is.
+    _natural: "ClosingAxis | None" = field(default=None, repr=False)
 
     @property
     def declared_support_height_mm(self) -> float:
@@ -331,6 +360,8 @@ class Scene:
           the part. Not ``safety.planning_world.perceived.plane_clearance_mm``: that is measured from
           the planner's slab, which a cell may sink below the table, and raised by the sink.
         * The inflation is ``grasping.geometry.inflate_mm``, which the cell hands its calculator.
+        * The natural orientation is ``robot.natural_closing_axis``: where no closing axis is asked for, :meth:`grasps`
+          turns every grasp the way round nearer it, as the cell's pick loop turns its own.
 
         It does not yet select the generator. `grasping.calculator: deep` is honoured by
         `build_calculator`, which needs a camera matrix and an artifact and belongs to a cell rather
@@ -357,13 +388,15 @@ class Scene:
             floor_margin_mm=SUPPORT_READ_ERROR_MM,
             inflate_mm=float(robot_config.grasping.geometry.inflate_mm),
         )
-        return replace(scene, _declared_support_mm=float(resolution.declared_mm))
+        return replace(scene, _declared_support_mm=float(resolution.declared_mm),
+                       _natural=natural_closing_axis_of(robot_config))
 
     def grasps(
         self,
         *,
         max_candidates: "Maybe[int]" = UNSET,
         palm_aware: "Maybe[bool]" = UNSET,
+        closing_axis: "Maybe[ClosingAxisLike]" = UNSET,
     ) -> SceneGrasps:
         """Ranked grasps in BASE millimetres, best first.
 
@@ -375,7 +408,26 @@ class Scene:
         ``max_candidates=12`` and ``palm_aware=False``; repeating those numbers in this signature
         would be a second declaration of one fact, and the drift would be invisible because both
         sides are valid values of the right type. An omitted knob is not forwarded at all.
+
+        ``closing_axis`` takes only the grasps that close along the axis named (the owner's "choose, don't twist",
+        2026-09-30): within ``CLOSING_AXIS_TOLERANCE_DEG`` (30 degrees) of it either way round, each turned half a turn
+        about its approach where that puts its closing axis the named way round. A name ``Pose.tool_down`` takes
+        (``"-y"`` on the owner's cell) or an orientation, a quaternion or a BASE ``Pose``, whose tool +X is the heading
+        (``src.robot.grasping.geometry.closing_axis``). They are chosen among the best
+        ``CANDIDATES_THE_AXIS_CHOOSES_AMONG`` (36) the generator finds, as the cell's pick loop chooses (among
+        ``max_candidates`` where that is more), and the best ``max_candidates`` of them that close along it come back.
+        What it left out is said in :attr:`SceneGrasps.withheld`, and a result it left empty says so.
+
+        Asked for no axis, a scene from :meth:`from_robot_config` whose cell names how its hand and camera naturally
+        stand (``robot.natural_closing_axis``) turns every grasp, of its two equivalent wrist turns (half a turn about its
+        approach: the same two contact faces, the jaws swapped), to the one whose closing axis lies nearer that
+        direction at its place. None is left out or tilted.
+
+        The scene of a part a look around judged (``Located.scene(0, ...)`` after ``Locator.look_around``) takes the axis
+        the looks judged its grasp along when asked for none, and refuses (``ValueError``) any other, the best grasp of
+        any axis included, since its grasp is one the looks did not judge: its early stop, its jaw faces.
         """
+        wanted = self._closing_axis_asked(closing_axis)
         chosen_options: dict[str, Any] = {}
         if chosen(max_candidates):
             chosen_options["max_candidates"] = max_candidates
@@ -385,6 +437,9 @@ class Scene:
             chosen_options["floor_margin_mm"] = self.floor_margin_mm
         if chosen(self.inflate_mm):
             chosen_options["inflate_mm"] = self.inflate_mm
+        cap = int(chosen_options.get("max_candidates", DEFAULT_MAX_CANDIDATES))
+        if wanted is not None:
+            chosen_options["max_candidates"] = max(CANDIDATES_THE_AXIS_CHOOSES_AMONG, cap)
         candidates = generate_support_footprint_grasps(
             self.target_points_base_mm,
             support_height_mm=self.support_height_mm,
@@ -393,9 +448,62 @@ class Scene:
             rigid_obstacle_points_base_mm=self.rigid_obstacle_points_base_mm,
             **chosen_options,
         )
+        withheld = ""
+        if wanted is not None:
+            candidates, withheld = _closing_along(candidates, wanted, cap)
+        elif self._natural is not None:
+            candidates = _closing_toward(candidates, self._natural)
         return SceneGrasps(
             generator=_GEOMETRIC,
             candidates=tuple(candidates),
             points=int(self.target_points_base_mm.shape[0])
             if self.target_points_base_mm.ndim == 2 else 0,
+            withheld=withheld,
         )
+
+    def _closing_axis_asked(self, closing_axis: "Maybe[ClosingAxisLike]") -> "ClosingAxis | None":
+        """The closing axis :meth:`grasps` chooses along: the one asked for, else the one a look around judged this
+        part's grasp along (:attr:`_judged_along`); ``None`` for any. Refused where a look around judged the grasp along
+        another axis, or along any, since the grasp chosen would be one the looks did not judge."""
+        asked = closing_axis_of(closing_axis) if chosen(closing_axis) else None
+        judged = self._judged_along
+        if chosen(judged):
+            if asked is None:
+                return judged
+            points = np.asarray(self.target_points_base_mm, dtype=float).reshape(-1, 3)
+            x_mm, y_mm = (float(value) for value in np.median(points[:, :2], axis=0)) if len(points) else (0.0, 0.0)
+            if judged is None or not same_closing_axis(asked, judged, x_mm, y_mm):
+                along = "of any closing axis" if judged is None else f"closing along {judged}"
+                raise ValueError(
+                    f"the look around judged this part's grasp {along}, and a grasp closing along {asked} is one it "
+                    "did not judge (its early stop, its jaw faces): name that axis to look_around(..., closing_axis="
+                    "...), or ask the scene for none and take the grasp the looks judged")
+        return asked
+
+
+def _closing_toward(
+    candidates: "Sequence[SupportFootprintCandidate]", natural: ClosingAxis,
+) -> "list[SupportFootprintCandidate]":
+    """Every candidate, in its order, turned half a turn about its approach where that puts its closing axis nearer the
+    natural direction at its place (``turned_nearer``): the same two contact faces, the jaws swapped. None is left out."""
+    return [replace(candidate, closing_axis=-candidate.closing_axis)
+            if turned_nearer(natural, candidate.position_mm, candidate.closing_axis) else candidate
+            for candidate in candidates]
+
+
+def _closing_along(
+    candidates: "Sequence[SupportFootprintCandidate]", wanted: ClosingAxis, cap: int,
+) -> "tuple[list[SupportFootprintCandidate], str]":
+    """The best ``cap`` of ``candidates`` that close along ``wanted``, each signed along it (``closing_along``), and what
+    the axis left out, said (``closing_axis_said``)."""
+    kept: list[SupportFootprintCandidate] = []
+    whys: list[str] = []
+    for candidate in candidates:
+        signed, why = closing_along(wanted, candidate.position_mm, candidate.closing_axis)
+        if signed is None:
+            whys.append(why)
+        elif float(np.dot(signed, candidate.closing_axis)) < 0.0:
+            kept.append(replace(candidate, closing_axis=signed))
+        else:
+            kept.append(candidate)
+    return kept[:max(cap, 0)], closing_axis_said(wanted, whys, len(candidates))

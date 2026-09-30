@@ -99,14 +99,18 @@ def rejection_reasons(telemetry: "dict[str, float]") -> "tuple[Any, ...]":
     """Turn a rejection histogram into the failure reasons the recovery orchestrator routes on.
 
     This is what makes the filter useful beyond accuracy. `recovery/orchestrator.py` routes
-    ALL_COLLIDED to a container agitate, and ALL_TABLE_CONFLICT and ALL_OUT_OF_WORKSPACE to
-    NEXT_TARGET with a rescan. A generator that reports only NO_VALID_GRASP collapses all of those
-    into one generic route, and the cell then retries the same thing instead of shaking the bin. (A
-    route is followed only where the mode's profile lists the action: no built-in profile lists
-    NEXT_TARGET or CONTAINER_AGITATE, so a cell built from config rescans, or plans a nudge it then
-    refuses, and only a caller that widens the profile, such as `run_dense_pick --g6`, agitates.) Both
-    calculators build their reasons from these counters through this one mapping, so neither routing
-    table can drift away from the other.
+    ALL_COLLIDED to NEXT_TARGET, the push (NUDGE_TARGET), a container agitate and then a rescan, and
+    ALL_TABLE_CONFLICT and ALL_OUT_OF_WORKSPACE to NEXT_TARGET with a rescan. Of these reasons the
+    pick loop pushes a part only on ALL_COLLIDED; its other trigger, a blocked approach where approach
+    validation runs, is not one of them. A generator that reports only NO_VALID_GRASP collapses all
+    of those into one generic route, and the cell then retries the same thing instead of pushing the
+    part free. (A route is followed only where the mode's profile lists the action: auto and
+    dense_clutter list NEXT_TARGET; only dense_clutter lists NUDGE_TARGET, whose push runs inside a
+    wrist camera's pick attempt, and a nudge a recovery loop plans is refused before anything moves
+    (`refused_push_runs_in_the_pick`); no built-in profile lists CONTAINER_AGITATE, and only a caller
+    that widens the profile, such as `run_dense_pick --g6`, agitates.) The deep calculator builds its
+    reasons through this mapping, and the geometric one maps the same three counters alike in its
+    `_derive_failure_reasons`, so a collision of either triggers the push (pinned for each).
 
     RESCAN_RECOMMENDED is appended whenever anything was rejected: a scene where every candidate died
     geometrically is a scene worth perceiving again.

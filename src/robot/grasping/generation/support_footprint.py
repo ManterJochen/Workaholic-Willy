@@ -53,6 +53,7 @@ from src.robot.grasping.geometry.grasp_frame import pose_from_grasp_axes
 
 __all__ = [
     "DEFAULT_FLOOR_MARGIN_MM",
+    "DEFAULT_MAX_CANDIDATES",
     "SupportFootprintCandidate",
     "SupportFootprintJaw",
     "SupportPrism",
@@ -68,6 +69,10 @@ _EPS = 1e-9
 #: says how high that is in ``safety.planning_world.perceived.plane_clearance_mm``; the config door of
 #: ``Scene`` passes the larger of the two.
 DEFAULT_FLOOR_MARGIN_MM: Final[float] = 2.0
+
+#: How many candidates :func:`generate_support_footprint_grasps` returns at most when the caller does not say, best
+#: first. ``Scene.grasps`` reads it too: a closing axis it is asked for is chosen before the cap, not after it.
+DEFAULT_MAX_CANDIDATES: Final[int] = 12
 
 #: How close two footprint points have to lie to count as one surface, millimetres, for the fragment
 #: trim in :func:`reconstruct_support_prism`. It is the side of a grid cell and two points in touching
@@ -753,7 +758,7 @@ def generate_support_footprint_grasps(
     jaw: SupportFootprintJaw | None = None,
     obstacle_points_base_mm: np.ndarray | None = None,
     rigid_obstacle_points_base_mm: np.ndarray | None = None,
-    max_candidates: int = 12,
+    max_candidates: int = DEFAULT_MAX_CANDIDATES,
     height_offsets_mm: tuple[float, ...] = (4.0, 14.0),
     inflate_mm: float = 0.0,
     palm_aware: bool = False,

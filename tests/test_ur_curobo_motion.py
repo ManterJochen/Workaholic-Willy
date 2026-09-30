@@ -422,3 +422,76 @@ def test_an_empty_path_is_not_sent() -> None:
 
     assert verdict.valid and verdict.checked == 0
     assert "check_joints" not in client.calls
+
+
+class _CountingConn(_FakeConn):
+    """A connection that counts how often it was asked where the arm stands."""
+
+    def __init__(self, joints):
+        super().__init__(joints)
+        self.reads = 0
+
+    def get_joint_positions(self):
+        self.reads += 1
+        return super().get_joint_positions()
+
+
+def test_a_joint_plan_starts_where_it_is_told_and_does_not_read_the_controller() -> None:
+    """F1 (the owner, 2026-09-30): a planned move out of a band pose plans from the escape it reached first, so
+    ``plan_joint`` takes an explicit start; without one it reads the controller as it always did."""
+    client = _FakeClient(list(reversed(UR_ARM_JOINT_NAMES)), [[9.0] * 6])
+    conn = _CountingConn([0.0] * 6)
+    planner = _planner(conn, client)
+
+    planner.plan_joint([0.6, 0.7, 0.8, 0.9, 1.0, 1.1], start_ur=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5], refresh=False)
+
+    start, goal = client.plan_args
+    assert start == pytest.approx([0.5, 0.4, 0.3, 0.2, 0.1, 0.0]), "the start goes over in the planner's order"
+    assert goal == pytest.approx([1.1, 1.0, 0.9, 0.8, 0.7, 0.6])
+    assert conn.reads == 0, "an explicit start is not read off the controller"
+
+    planner.plan_joint([0.6] * 6, refresh=False)
+    assert conn.reads == 1, "the control: without one, the start is where the arm stands"
+
+
+def test_a_refused_start_is_logged_as_the_start_and_not_as_a_joint_goal() -> None:
+    """The line read 'cuRobo refused this joint goal' for a refused START too (research, 2026-09-30), which sent the
+    owner to look at the goal of a move that never left where the arm stood."""
+    from unittest import mock
+
+    from src.robot.safety.planning import StateRefusal, StateRefusalKind, StateWhere
+
+    for where, said, unsaid in ((StateWhere.START, "the start of this joint move", "this joint goal"),
+                                (StateWhere.GOAL, "this joint goal", "the start of")):
+        client = _FakeClient(UR_ARM_JOINT_NAMES, None)
+        client.last_refusal = StateRefusal(where=where, kind=StateRefusalKind.SELF_COLLISION, joints=(0.0,) * 6,
+                                           link_a="forearm_link", link_b="wrist_2_link", depth_mm=1.2)
+        planner = _planner(_FakeConn([0] * 6), client)
+        with mock.patch.object(planner.logger, "warning") as warned:
+            assert not planner.plan_joint([0.1] * 6)
+        text = " ".join(str(call) for call in warned.call_args_list)
+        assert said in text and unsaid not in text, text
+
+
+def test_the_report_on_a_path_goes_to_the_client_in_its_order_and_names_what_was_asked() -> None:
+    from src.robot.safety.planning.curobo_client import PathJudgement
+
+    class _Judging(_FakeClient):
+        def judge_joints(self, configs, *, clearance_mm=0.0, name_pairs=True):
+            self.calls.append("judge_joints")
+            self.judged = ([list(c) for c in configs], clearance_mm, name_pairs)
+            return PathJudgement(checked=len(configs), clearance_mm=clearance_mm, refused=(), pairs_named=name_pairs)
+
+    client = _Judging(list(reversed(UR_ARM_JOINT_NAMES)), [])
+    judged = _planner(_FakeConn([0.0] * 6), client).judge_joint_path(
+        [[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]], clearance_mm=15.0, name_pairs=False)
+
+    assert judged.valid and judged.checked == 1
+    assert client.judged == ([[5.0, 4.0, 3.0, 2.0, 1.0, 0.0]], 15.0, False)
+    assert "set_world" not in client.calls, "no world is refreshed: the caller refreshed it before its own guard"
+
+
+def test_a_client_that_reports_nothing_is_no_report() -> None:
+    """Fail closed: a client older than the report raises, and the driver's refusal then stands."""
+    with pytest.raises(CuroboUnavailableError):
+        _planner(_FakeConn([0.0] * 6), _FakeClient(UR_ARM_JOINT_NAMES, [])).judge_joint_path([[0.0] * 6])

@@ -143,7 +143,6 @@ from .recovery.policy import (
     SceneRecoveryPolicy,
     SceneRecoveryReport,
     SceneRecoveryStrategy,
-    SmallNudgeStrategy,
     execute_recovery_motion,
 )
 from .recovery.orchestrator import (
@@ -295,7 +294,6 @@ __all__ = [
     "SemanticPolicy",
     "should_bias_recovery_for_uncertainty",
     "show_grasp_scene",
-    "SmallNudgeStrategy",
     "stability_grasp_score",
     "stability_score_components",
     "StabilityScoreConfig",

@@ -75,7 +75,11 @@ and hold nothing while the picks report success, which is why the connect refuse
 
 `hold_evidence()` answers `HELD` or `EMPTY` only from a measurement, and `UNMEASURED` otherwise, and
 always while the jaws are open. `width_is_measured()` says whether a width is read or only commanded.
-The hand verbs read these two, never the command echoed back.
+The hand verbs read these two, never the command echoed back. A push reads a measured width before its
+first motion: within 2 mm of fully open it pushes, and a gripper that measures its width found **not
+connected** there, or whose width read fails, ends the pick as a gripper fault, with nothing moved (the
+owner, 2026-09-30). The Robotiq driver counts itself connected until the program disconnects it, so a
+socket that stopped answering shows as a read that fails.
 
 | Driver | A hold is read from | Width |
 |---|---|---|
@@ -111,7 +115,17 @@ output is read before every command: one that no longer stands where the program
 by hand, at the pendant above all, and the command is refused with nothing sent; the next pick asks. It takes
 no width (`set_width_mm` is refused), and a pick with it counts as grasped with the hold not checked,
 because there is no sensor. The bench's `--jaws open|closed` drives the jaws through the driver, which
-asks first.
+asks first. A push (recovery's `nudge_target`, on a wrist camera's pick in `dense_clutter` only) only
+reads the hand: it runs on a connected toggle whose count says open (`jaws_closed` false,
+`why_jaws_unknown()` empty), writes no output and never calls `jaws_open_for_a_pick`. A count that says
+closed means no push. One nobody can vouch for when the push reads it, once its plan and budgets passed
+(the output switched at the pendant mid-pick, the count lost or unreadable), ends the pick as a gripper
+fault, as the pick-start refusal does. The push reads it again before each contact leg and once the arm
+is up, and one nobody can vouch for there stops the push where the arm stands, a person to decide. The push
+asks nobody either way. A push refused before that read falls through, and `next_target` reads the count
+before it drives a wrist pick's looks again: one nobody can vouch for ends the pick as a gripper fault before
+any look is driven (`core.gripper.why_toggle_count_unknown`, read before each contact leg, once the arm is
+up and before the looks run again; the push's first read applies the same rule).
 
 At the terminal the console's typeahead is discarded before each question (`msvcrt` on Windows,
 `termios.tcflush` on POSIX), so an Enter pressed earlier cannot answer it; an `ask=` handed in is not
@@ -152,11 +166,13 @@ not seal quality, which is scored in [grasping/suction](../grasping/suction/READ
 |---|---|
 | `IsaacGripper` and `IsaacSuctionGripper` | measured in simulation |
 | The `jaw_io` and `vacuum` pins switching on a controller | measured against real controller software: URSim |
-| Robotiq, OnRobot, `jaw_io` and `vacuum` on a real hand | never touched hardware |
+| `jaw_io` on a real hand: a Hand-E switched as `single_toggle` on tool DO0 of a UR10 (CB3) | run on a physical cell |
+| The Robotiq driver on a real Hand-E over its URCap socket | run on a physical cell: measured with a UR; on the UR10 (CB3) above the socket on port 63352 was refused, so its Hand-E runs as `jaw_io` |
+| OnRobot and `vacuum` on a real hand | never touched hardware |
 
-The Robotiq arithmetic runs against a fake driver, and it is the one path URSim cannot cover, because
-the URCap opens port 63352. The OnRobot driver runs against a fake Modbus client, and the I/O drivers
-against a fake I/O port. None of the real drivers reports force or current.
+In the suite the Robotiq arithmetic runs against a fake driver, and it is the one path URSim cannot
+cover, because the URCap opens port 63352. The OnRobot driver runs against a fake Modbus client, and the
+I/O drivers against a fake I/O port. None of the real drivers reports force or current.
 
 ## Files
 

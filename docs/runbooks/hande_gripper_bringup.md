@@ -200,7 +200,9 @@ print(mesh_backend_status(c.robot.ur.model, None, h.guard_variant))"
 `ok`. Anything else means the whole cell is on the capsule proxy, arm included, not just the hand.
 
 Then the arm, from [real_cell_first_pick.md](real_cell_first_pick.md), and one bench check of the
-driver: command a width, read it back, and confirm the two agree within a millimetre.
+driver: command a width, read it back, and confirm the two agree within a millimetre. A Hand-E switched
+over its I/O coupling (`jaw_io`, `single_toggle`) reads no width back: time its stroke both ways
+instead and set `close_settle_s` (real_cell_first_pick.md, Diagnose 2).
 
 ---
 
@@ -217,8 +219,14 @@ refused rather than applied.
 
 ## What this cannot do for you
 
-- **Nothing here has run on physical hardware.** Every number is measured off the vendor asset and
-  against the committed bundles. A bench day is a different measurement.
+- **One Hand-E has run on a physical arm**: a UR10 (CB3), the hand switched over one tool output
+  (`jaw_io`, `single_toggle`), planned with cuRobo. The Robotiq socket driver was measured with a UR, and
+  on that UR10 its port 63352 was refused, which is why the Hand-E runs as `jaw_io` there. Every number
+  here is measured off the vendor asset and against the committed bundles, and a bench day is a
+  different measurement.
+- **The push plans the open hand from the registry file**, the housing's 75 mm along the closing axis
+  (`palm_thickness_mm`) included, so a tall neighbour stays clear of the palm
+  ([real_cell_first_pick.md](real_cell_first_pick.md), Diagnose 9).
 - **Custom fingertips change `closed_width_mm`.** The registry file says `0.0`, which is the bare
   gripper: its carriages meet, measured. Fingertips that do not meet make that a real number, and it
   is the single anchor of the driver's count map. They also change the body the planner refuses

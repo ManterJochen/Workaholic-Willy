@@ -10,8 +10,10 @@
   plan for another action than its own is dropped. And one failure can have no more refusals than its rows
   hold actions: past that the loop stops, whatever the orchestrator says. Each test that could spin has a
   watchdog, so a regression fails instead of hanging the suite.
-* **The executor clamps.** A nudge longer than ``max_nudge_mm`` and an agitate wider than
-  ``max_agitate_amplitude_mm`` are cut to the limit. An agitate checks every waypoint before it moves any.
+* **The executor clamps.** An agitate wider than ``max_agitate_amplitude_mm`` is cut to the limit, and it checks
+  every waypoint before it moves any. A nudge is never driven here: the push runs inside the pick attempt, and the
+  executor refuses the loop's nudge before anything moves (``refused_push_runs_in_the_pick``), so the loop falls
+  through. The scene-blind offset it used to drive left on 2026-09-29.
 * **Dispatcher rows.** The nudge is offered only for ``ALL_COLLIDED``. ``NEXT_TARGET`` is allowed after
   ``MOTION_PLAN_REFUSED``, where the next motion is still judged in full.
 * **NEXT_TARGET is "rescan, skipping the failed part".** It runs only with the caller's memory of failed parts.
@@ -50,6 +52,7 @@ from src.robot.grasping.recovery.orchestrator import (
     terminal_outcome_for_trail,
 )
 from src.robot.grasping.recovery.policy import (
+    REFUSED_PUSH_RUNS_IN_THE_PICK,
     FixtureEnvelope,
     SceneRecoveryAction as A,
     SceneRecoveryContext,
@@ -130,6 +133,17 @@ class _NudgeStrategy:
 
     def plan(self, context: SceneRecoveryContext) -> SceneRecoveryPlan:
         return SceneRecoveryPlan(action=A.NUDGE_TARGET, reason="test_nudge", nudge_offset_mm=self.offset)
+
+
+class _AgitateStrategy:
+    """Plans an agitate of ``amplitude`` for any context: the one physical action the loop still drives."""
+
+    def __init__(self, amplitude: float = 5.0) -> None:
+        self.amplitude = amplitude
+
+    def plan(self, context: SceneRecoveryContext) -> SceneRecoveryPlan:
+        return SceneRecoveryPlan(action=A.CONTAINER_AGITATE, reason="test_agitate",
+                                 agitate_amplitude_mm=self.amplitude)
 
 
 def _ctx(profile: GraspBehaviorProfile, policy: SceneRecoveryPolicy, *reasons: R) -> SceneRecoveryContext:
@@ -232,8 +246,8 @@ class PerActionStrategyMode(unittest.TestCase):
 
 class ARefusalBeforeMotionFallsThrough(unittest.TestCase):
     def test_a_refused_nudge_falls_through_to_the_rescan_and_spends_no_budget(self) -> None:
-        # The bypass plans the nudge with no offset; the executor refuses it before the arm moves. With one
-        # action allowed per pick, the rescan must still run: the refusal spent nothing.
+        # The bypass plans the nudge; the push runs inside the pick attempt, so the loop's nudge is refused before
+        # the arm moves. With one action allowed per pick, the rescan must still run: the refusal spent nothing.
         pick, calls = _script(_failed(R.ALL_COLLIDED))
         arm = _Arm()
         final, trail = run_recovery_loop(
@@ -243,19 +257,25 @@ class ARefusalBeforeMotionFallsThrough(unittest.TestCase):
             frame_acquirer=lambda: None, arm=arm)
         self.assertIs(final.outcome, AutonomousGraspOutcome.SUCCEEDED)
         self.assertEqual([(e.plan_action, e.outcome, e.executed) for e in trail.entries],
-                         [(A.NUDGE_TARGET, "refused_no_offset", False), (A.RESCAN, "completed", True)])
+                         [(A.NUDGE_TARGET, REFUSED_PUSH_RUNS_IN_THE_PICK, False),
+                          (A.RESCAN, "completed", True)])
         self.assertEqual(trail.terminal_reason, "recovered_success")
         self.assertEqual(len(calls), 2)  # the refusal did not re-run the pick
         self.assertEqual(arm.moves, [])
 
-    def test_a_nudge_with_no_arm_falls_through_too(self) -> None:
-        pick, _ = _script(_failed(R.ALL_COLLIDED))
-        _, trail = run_recovery_loop(
-            pick=pick, profile=_profile("rescan", "nudge_target"), policy=_policy(A.NUDGE_TARGET, A.RESCAN),
-            orchestrator=RecoveryOrchestrator(dispatcher=RecoveryDispatcher(),
-                                              strategies={A.NUDGE_TARGET: _NudgeStrategy()}),
-            frame_acquirer=lambda: None, arm=None)
-        self.assertEqual([e.outcome for e in trail.entries], ["refused_no_arm", "completed"])
+    def test_a_planned_nudge_is_refused_with_or_without_an_arm_and_falls_through(self) -> None:
+        # Even a strategy that plans an offset gets no motion from the loop: the push runs inside the pick attempt.
+        for arm in (None, _Arm()):
+            with self.subTest(arm=arm):
+                pick, _ = _script(_failed(R.ALL_COLLIDED))
+                _, trail = run_recovery_loop(
+                    pick=pick, profile=_profile("rescan", "nudge_target"), policy=_policy(A.NUDGE_TARGET, A.RESCAN),
+                    orchestrator=RecoveryOrchestrator(dispatcher=RecoveryDispatcher(),
+                                                      strategies={A.NUDGE_TARGET: _NudgeStrategy()}),
+                    frame_acquirer=lambda: None, arm=arm)  # type: ignore[arg-type]
+                self.assertEqual([e.outcome for e in trail.entries], [REFUSED_PUSH_RUNS_IN_THE_PICK, "completed"])
+                if arm is not None:
+                    self.assertEqual(arm.moves, [])
 
     def test_a_refusal_with_nothing_after_it_ends_escalated_not_anti_loop(self) -> None:
         pick, calls = _script(_failed(R.ALL_COLLIDED))
@@ -263,7 +283,7 @@ class ARefusalBeforeMotionFallsThrough(unittest.TestCase):
             pick=pick, profile=_profile("nudge_target"), policy=_policy(A.NUDGE_TARGET),
             orchestrator=RecoveryOrchestrator(dispatcher=RecoveryDispatcher(), bypass_strategies=True),
             frame_acquirer=lambda: None, arm=_Arm())
-        self.assertEqual([e.outcome for e in trail.entries], ["refused_no_offset"])
+        self.assertEqual([e.outcome for e in trail.entries], [REFUSED_PUSH_RUNS_IN_THE_PICK])
         self.assertEqual(trail.terminal_reason, "escalated_no_recovery")
         self.assertEqual(len(calls), 1)
         self.assertIsNone(terminal_outcome_for_trail(trail))
@@ -322,12 +342,15 @@ class ARefusalBeforeMotionFallsThrough(unittest.TestCase):
         self.assertEqual((len(calls), stuck.calls), (1, 3))
 
     def test_a_motion_that_failed_still_ends_the_loop_as_unsafe(self) -> None:
+        # The agitate is the one physical action the loop still drives; its first waypoint is refused after the
+        # agitate began, so the loop ends there.
         pick, calls = _script(_failed(R.ALL_COLLIDED))
         arm = _Arm(fail=True)
         final, trail = run_recovery_loop(
-            pick=pick, profile=_profile("rescan", "nudge_target"), policy=_policy(A.NUDGE_TARGET, A.RESCAN),
+            pick=pick, profile=_profile("rescan", "container_agitate"),
+            policy=_policy(A.CONTAINER_AGITATE, A.RESCAN),
             orchestrator=RecoveryOrchestrator(dispatcher=RecoveryDispatcher(),
-                                              strategies={A.NUDGE_TARGET: _NudgeStrategy()}),
+                                              strategies={A.CONTAINER_AGITATE: _AgitateStrategy()}),
             frame_acquirer=lambda: None, arm=arm)
         self.assertEqual([e.outcome for e in trail.entries], ["aborted_motion_failed"])
         self.assertEqual(trail.terminal_reason, "escalated_no_recovery")
@@ -336,8 +359,8 @@ class ARefusalBeforeMotionFallsThrough(unittest.TestCase):
         self.assertEqual(terminal_outcome_for_trail(trail), OUTCOME_UNSAFE_RECOVERY_REFUSED)
 
     def test_which_outcomes_count_as_before_motion(self) -> None:
-        for outcome in ("refused_no_offset", "refused_no_arm", "refused_envelope_violation",
-                        "refused_no_part_memory", "refused_no_fixture"):
+        for outcome in (REFUSED_PUSH_RUNS_IN_THE_PICK, "refused_no_arm", "refused_envelope_violation",
+                        "refused_no_part_memory", "refused_agitate_disabled"):
             self.assertTrue(refused_before_motion(outcome), outcome)
         for outcome in ("aborted_motion_failed", "completed", "skipped_no_action", ""):
             self.assertFalse(refused_before_motion(outcome), outcome)
@@ -416,34 +439,23 @@ class TheDispatcherRows(unittest.TestCase):
 
 
 class TheExecutorClamps(unittest.TestCase):
-    def test_a_nudge_longer_than_max_nudge_is_cut_to_it(self) -> None:
-        arm = _Arm()
-        report = execute_recovery_motion(
-            arm=arm,  # type: ignore[arg-type]
-            plan=SceneRecoveryPlan(action=A.NUDGE_TARGET, nudge_offset_mm=(40.0, 0.0, 0.0)),
-            policy=_policy(A.NUDGE_TARGET), current_tcp=_tcp())
-        self.assertTrue(report.executed)
-        np.testing.assert_allclose(arm.moves[0].position_mm, (30.0, 0.0, 200.0))
-        self.assertTrue(report.telemetry["clamped"])
-        self.assertEqual(report.telemetry["requested_offset_mm"], (40.0, 0.0, 0.0))
-
-    def test_a_nudge_within_the_limit_is_not_touched(self) -> None:
-        arm = _Arm()
-        report = execute_recovery_motion(
-            arm=arm,  # type: ignore[arg-type]
-            plan=SceneRecoveryPlan(action=A.NUDGE_TARGET, nudge_offset_mm=(0.0, 12.0, 0.0)),
-            policy=_policy(A.NUDGE_TARGET), current_tcp=_tcp())
-        np.testing.assert_allclose(arm.moves[0].position_mm, (0.0, 12.0, 200.0))
-        self.assertFalse(report.telemetry["clamped"])
-
-    def test_a_nudge_without_a_fixture_is_refused_before_it_moves(self) -> None:
-        arm = _Arm()
-        report = execute_recovery_motion(
-            arm=arm,  # type: ignore[arg-type]
-            plan=SceneRecoveryPlan(action=A.NUDGE_TARGET, nudge_offset_mm=(5.0, 0.0, 0.0)),
-            policy=SceneRecoveryPolicy(enabled=True), current_tcp=_tcp())
-        self.assertEqual((report.executed, report.outcome), (False, "refused_no_fixture"))
-        self.assertEqual(arm.moves, [])
+    def test_a_nudge_is_refused_whatever_it_carries_and_nothing_moves(self) -> None:
+        # Too long, within the limit, with no fixture, NaN: the executor drives none of them any more.
+        cases = {
+            "longer than max_nudge_mm": ((40.0, 0.0, 0.0), _policy(A.NUDGE_TARGET)),
+            "within the limit": ((0.0, 12.0, 0.0), _policy(A.NUDGE_TARGET)),
+            "no fixture": ((5.0, 0.0, 0.0), SceneRecoveryPolicy(enabled=True)),
+            "NaN": ((float("nan"), 0.0, 0.0), _policy(A.NUDGE_TARGET)),
+        }
+        for name, (offset, policy) in cases.items():
+            with self.subTest(case=name):
+                arm = _Arm()
+                report = execute_recovery_motion(
+                    arm=arm,  # type: ignore[arg-type]
+                    plan=SceneRecoveryPlan(action=A.NUDGE_TARGET, nudge_offset_mm=offset),
+                    policy=policy, current_tcp=_tcp())
+                self.assertEqual((report.executed, report.outcome), (False, REFUSED_PUSH_RUNS_IN_THE_PICK))
+                self.assertEqual(arm.moves, [])
 
     def test_an_agitate_wider_than_its_amplitude_limit_is_cut_to_it(self) -> None:
         arm = _Arm()
@@ -456,14 +468,9 @@ class TheExecutorClamps(unittest.TestCase):
         self.assertEqual(report.telemetry["amplitude_mm"], 20.0)
         self.assertTrue(report.telemetry["clamped"])
 
-    def test_a_nan_nudge_or_amplitude_is_refused_before_anything_moves(self) -> None:
+    def test_a_nan_amplitude_is_refused_before_anything_moves(self) -> None:
         # Every envelope comparison with NaN is False, so FixtureEnvelope.contains would let it through.
         arm = _Arm()
-        nudge = execute_recovery_motion(
-            arm=arm,  # type: ignore[arg-type]
-            plan=SceneRecoveryPlan(action=A.NUDGE_TARGET, nudge_offset_mm=(float("nan"), 0.0, 0.0)),
-            policy=_policy(A.NUDGE_TARGET), current_tcp=_tcp())
-        self.assertEqual((nudge.executed, nudge.outcome), (False, "refused_no_offset"))
         agitate = execute_recovery_motion(
             arm=arm,  # type: ignore[arg-type]
             plan=SceneRecoveryPlan(action=A.CONTAINER_AGITATE, agitate_amplitude_mm=float("nan")),
@@ -508,10 +515,10 @@ class TheLoopsEndMapsToAnOutcome(unittest.TestCase):
                                            OUTCOME_RECOVERY_EXHAUSTED),
             "every action tried": (self._trail("anti_loop_blocked", (A.RESCAN, "completed", True)),
                                    OUTCOME_RECOVERY_EXHAUSTED),
-            "only refusals": (self._trail("escalated_no_recovery", (A.NUDGE_TARGET, "refused_no_offset", False)),
-                              None),
+            "only refusals": (self._trail("escalated_no_recovery",
+                                          (A.NUDGE_TARGET, REFUSED_PUSH_RUNS_IN_THE_PICK, False)), None),
             "a motion failed": (self._trail("escalated_no_recovery", (A.RESCAN, "completed", True),
-                                            (A.NUDGE_TARGET, "aborted_motion_failed", False)),
+                                            (A.CONTAINER_AGITATE, "aborted_motion_failed", False)),
                                 OUTCOME_UNSAFE_RECOVERY_REFUSED),
             "escalated after a rescan keeps the pick's own": (
                 self._trail("escalated_no_recovery", (A.RESCAN, "completed", True)), None),

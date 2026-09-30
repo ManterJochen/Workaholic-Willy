@@ -5,12 +5,12 @@ kinematics. The desk profile `console_dummy` builds it, so the library's calls, 
 and the rehearsal run with no robot, no SDK and no GPU.
 
 ```python
-from willy import Pose, Robot, load_tree
+from willy import Robot, load_tree
 
 robot = Robot.from_tree(load_tree("console_dummy"))   # a dummy arm and a dummy hand
 with robot.connected(), robot.without_camera_world("desk run, no camera"):
     print(robot.home())
-    print(robot.move(Pose.tool_down(450.0, 100.0, 300.0)))
+    print(robot.move(robot.tool_down(450.0, 100.0, 300.0)))
     print(robot.arm.get_tcp_pose())      # the pose it was sent, and nothing else
 ```
 

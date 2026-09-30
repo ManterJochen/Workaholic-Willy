@@ -664,6 +664,22 @@ class RobotConfig(StrictModel):
     #: goes next and its unit must be said. A program's own looks override these. ``None`` configures none: a wrist
     #: camera then looks from home, and a fixed camera does not move to look.
     look_joint_positions_deg: tuple[tuple[float, ...], ...] | None = None
+    #: How the hand and its camera naturally stand: the direction the jaws close along where nothing else says (the
+    #: owner's decision, 2026-09-30). A name of ``CLOSING_AXES``, the names ``Pose.tool_down`` takes (``x``, ``-x``,
+    #: ``y``, ``-y``, ``radial``, ``-radial``, ``tangential``, ``-tangential``, a leading "+" allowed; ``radial`` and
+    #: ``tangential`` read at each place), or a quaternion ``[x, y, z, w]``, as a taught pose gives it, whose tool +X
+    #: laid onto the base XY plane is that direction: only its heading counts, not its pitch out of the horizontal.
+    #: Camera grasps stay free, any closing direction and any tilt: of a grasp's two equivalent wrist turns, half a turn
+    #: about its approach apart (the same two contact faces, the jaws swapped), the pick, its push, the Locator and
+    #: ``Scene.grasps`` take the one whose tool +X lies nearer this direction at the grasp's place; none is left out or
+    #: tilted, and a program's own ``closing_axis`` takes precedence. Beside the simulator's twist
+    #: (``GraspMotion(align_closing_to_base_x=True)``), which chooses the way round itself, it turns no grasp (a push
+    #: still takes the natural way round). A pose built
+    #: through the cell, ``robot.tool_down(x, y, z)``, closes along it where the program names no axis. ``None``, the
+    #: default, turns no grasp, and ``robot.tool_down`` closes along ``x``, as ``Pose.tool_down`` does. Refused at load:
+    #: an unknown name, a quaternion that is none, and one whose tool +X stands within 10 degrees of the vertical, which
+    #: names no direction.
+    natural_closing_axis: str | tuple[float, float, float, float] | None = None
 
     safe_pose: SafePoseConfig = Field(default_factory=SafePoseConfig)
     calibration: RobotCalibrationConfig = Field(default_factory=RobotCalibrationConfig)
@@ -725,6 +741,25 @@ class RobotConfig(StrictModel):
                 f"{key}: each look names {lengths[0]} joints and the home (robot.home_joint_positions) {len(home)}; a "
                 "look names one value per joint of the arm, as the home does")
         return self
+
+    @field_validator("natural_closing_axis")
+    @classmethod
+    def _natural_closing_axis_names_one(
+        cls, value: "str | tuple[float, float, float, float] | None",
+    ) -> "str | tuple[float, float, float, float] | None":
+        """``natural_closing_axis`` is read by the one reader of a closing axis (``closing_axis.closing_axis_of``), so a
+        value the pick could not read is refused here, at load, with that reader's sentence."""
+        if value is None:
+            return value
+        # Imported here, and only for a cell that names one. The reader lives with the poses it reads (src.geometry),
+        # not with the grasps it turns, so reading a tree loads no grasping package and no OpenCV.
+        from src.geometry.closing_axis import closing_axis_of  # noqa: PLC0415
+
+        try:
+            closing_axis_of(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"robot.natural_closing_axis: {exc}") from None
+        return value
 
     @model_validator(mode="after")
     def _check_self_collision_model_matches_sim_robot(self) -> "RobotConfig":

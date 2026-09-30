@@ -94,6 +94,13 @@ bad grasp rather than an unreachable one. The shipped UR3e profile sets
 builders do not pass it, so a config-built cell runs without it. Pass it to `build_calculator`
 yourself where you build one.
 
+**Which way round is the pick loop's.** The calculator ranks each grasp as generated. A program's
+`closing_axis` and the cell's `robot.natural_closing_axis` choose the way round afterwards, in the pick
+loop ([loop/](../loop/README.md)); while an axis is named the loop raises `max_candidates` to 36 for that
+ranking and gives it back. So an IK service or a feasibility re-rank wired into the calculator judges each
+candidate before the loop turns it half a turn; no builder wires one today, and the arm's own guards judge
+the grasp executed. Where the loop changed a result it redraws the overlay (`redraw_debug_image`).
+
 ## What it does not do
 
 The deformable seam is inert. No caller passes `deformable_strategy=`, so the gate is skipped, and
@@ -106,13 +113,13 @@ path never pretends otherwise.
 | Capability | Evidence |
 | --- | --- |
 | The calculator in the pick service, both geometry stages | measured in simulation |
-| The calculator at a physical cell | never touched hardware |
+| The calculator at a physical cell | run on a physical cell: the camera picks of a UR10 (CB3) with a wrist D415; no pick rate is kept here |
 
 ## Files
 
 | File | Holds |
 | --- | --- |
-| [calculator.py](calculator.py) | `GraspCalculator`, and the `compute()` and `compute_result()` contract every pipeline relies on |
+| [calculator.py](calculator.py) | `GraspCalculator`, and the `compute()` and `compute_result()` contract every pipeline relies on; `redraw_debug_image(candidates)`, the last overlay drawn again over the grasps a caller kept, as the pick loop does where a closing axis or the natural orientation changed a result |
 | [_candidate_generator.py](_candidate_generator.py) | the silhouette, geometry-first and dense candidate generators |
 | [support_footprint.py](support_footprint.py) | the support-footprint stage; a candidate's `pose()` is the base pose `Robot.pick` takes |
 | [_support_footprint_stage.py](_support_footprint_stage.py) | the adapter that brings that stage's base-frame candidates into the camera frame |

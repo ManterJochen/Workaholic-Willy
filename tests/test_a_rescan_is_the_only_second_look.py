@@ -371,8 +371,10 @@ class NothingBuildsADenseRecoveryPolicyTests(unittest.TestCase):
         ):
             with self.subTest(name=name):
                 self.assertFalse(hasattr(module, name))
-        # The physical strategies stay.
-        self.assertTrue(hasattr(policy, "SmallNudgeStrategy"))
+        # The agitate strategy stays. The scene-blind nudge left too (2026-09-29): the push runs inside the pick
+        # attempt, planned from what the camera saw.
+        self.assertFalse(hasattr(policy, "SmallNudgeStrategy"))
+        self.assertFalse(hasattr(grasping, "SmallNudgeStrategy"))
         self.assertTrue(hasattr(policy, "ContainerAgitateStrategy"))
 
     def test_no_service_takes_or_carries_one(self) -> None:

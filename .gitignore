@@ -31,6 +31,8 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+.claude/worktrees/
+.claude/wf_scripts/
 
 # Generated datasets (datagen). Large; the output path is configurable and defaults to
 # data/datagen under the repository root. Anchored with a leading slash, because an

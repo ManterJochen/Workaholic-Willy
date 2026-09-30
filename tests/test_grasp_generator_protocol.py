@@ -38,6 +38,14 @@ _NOT_THE_SEAM = {
     # analytic calculator DOES expose it since 2026-08-23 -- see the tests at the bottom of this
     # file and the note in protocol.py.
     "camera_matrix",
+    # Read the same way, and optional the same way: the pick loop calls it where the closing axis a
+    # program named changed a result, and a generator without it has its overlay dropped rather than
+    # shown with a grasp the axis left out (2026-09-30). The note in protocol.py says so.
+    "redraw_debug_image",
+    # Read the same way, and optional the same way: where a program names the closing axis the pick
+    # loop raises the cap for that one ranking and gives it back, and a generator without an integer
+    # cap ranks as it always did (2026-09-30). The note in protocol.py says so.
+    "max_candidates",
 }
 
 
@@ -89,6 +97,15 @@ class TheProtocolCoversWhatTheRuntimeActuallyReadsTests(unittest.TestCase):
                     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute):
                         if node.value.attr.endswith("calculator"):
                             found.setdefault(node.attr, where)
+                    # `calculator.attr` on a local name: the pick loop ranks through
+                    # `calculator = self.calculator_for(...)` since its cap is raised around the call
+                    # (2026-09-30), and a sweep blind to the name would lose `compute_result` again.
+                    if (
+                        isinstance(node, ast.Attribute)
+                        and isinstance(node.value, ast.Name)
+                        and node.value.id.endswith("calculator")
+                    ):
+                        found.setdefault(node.attr, where)
                     # `x.calculator_for(...).attr`, the accessor a multi-camera cell reads through.
                     #
                     # ⛔ THE SWEEP WENT BLIND WITHOUT THIS, AND SILENTLY. The pick loop's call used to

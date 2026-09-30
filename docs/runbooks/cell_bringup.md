@@ -73,8 +73,10 @@ sits `d1` above the base. Measuring from the base origin instead would over-stat
 height and wave through poses the arm cannot touch.
 
 Known gap: the audit checks Cartesian points, `scene_setup.object`, `scene_setup.marker`, `safe_pose`,
-the worst eye-in-hand viewpoint and the worst workspace corner. `home_joint_positions` and
-`park_joint_positions` are joint poses and are not covered. Check those by hand. See Mitigate 1.
+the declared eye-in-hand station farthest from the shoulder and the worst workspace corner.
+`home_joint_positions`, `park_joint_positions`, a joint station and a wrist camera's looks
+(`robot.look_joint_positions_deg`) are joint poses and are not covered. Check those by hand. See
+Mitigate 1.
 
 **4. Non-deterministic pick rate on a static scene?**
 
@@ -95,6 +97,30 @@ at the approach.
 spheres and the guard checks exact meshes, so without
 [`planner_margin_mm`](../../src/config/schema/robot/safety_schema.py) the two disagree by fractions of a
 millimetre and the plan loses. See Mitigate 2.
+
+**6. The planner refuses a pose the exact guard accepts?**
+
+The other side of the same disagreement: the planner's padded spheres overlap where the meshes keep well
+clear, as at the owner's LOOK[0] (forearm|wrist_2 1.2 mm deep for the spheres, 19.0 mm apart for the
+meshes). On the arm's own pairs the exact guard decides, so such a pose runs: straight lines reach and
+leave it, and a planned move takes a straight leg of at most 20 degrees per joint to the nearest pose both
+clear, by itself. The screen at teaching, at `--start-planner` and at a campaign's start says `in the
+planner's cushion band`, and while its line names a `Nearby, both clear` pose there is **nothing to
+re-teach**. A band pose whose line names none runs on straight lines only: where a planned move has to
+reach it or leave it, re-teach it by hand where both clear and screen it again. An `ERROR` pose goes
+nowhere: re-teach it at the nearby pose its line names, or by hand where both clear when it names none,
+then screen it again ([04](../guide/04-robot-and-safety.md), section 6).
+
+**7. A bin beside the base refused, while a ruler says it is clear?**
+
+The exact guard keeps a seen bin 20 mm off a face and about 26 mm across a rim edge, and cuRobo's sphere
+cover reaches 25 to 29 mm past the shoulder housing, so the planner wants about 50 mm and a straight line
+about 60. Turned bins need no squaring. Keep about 60 mm between a bin and the housing's ring, or **declare
+the bin**: its walls as fixtures (`safety.self_collision.fixtures`, boxes square to base X/Y) at their
+measured place, which the exact guard keeps 10 mm from. The planner and the guard then hold the real walls
+instead of the camera's boxes grown by 15 mm, while the planner's spheres still reach past the housing; its
+clearance to a declared bin was not measured. [real_cell_first_pick.md](real_cell_first_pick.md),
+Diagnose 10, has the numbers and the refusal lines.
 
 ---
 
@@ -131,9 +157,9 @@ the detector dtype the vision pick depends on, and a second copy will drift.
 
 Re-anchor the scene, and check the joint poses too. Keep every configured position under about 85 % of
 the arm's reach. Past that the arm is near straight with almost no orientation freedom left, which is
-exactly what a top-down grasp needs. Then check `home_joint_positions` and `park_joint_positions` by hand,
-because the audit does not: they are joint poses, and a pose inherited from a longer arm can put the TCP
-outside the shorter arm's sphere while every audit stays quiet.
+exactly what a top-down grasp needs. Then check `home_joint_positions`, `park_joint_positions` and the
+looks by hand, because the audit does not: they are joint poses, and a pose inherited from a longer arm
+can put the TCP outside the shorter arm's sphere while every audit stays quiet.
 
 Protect the calibration artifacts. The simulator writes them under `logs/calibration/<robot_model>/`,
 namespaced per robot so one arm's run cannot overwrite another's in place; the real cell writes under
@@ -155,7 +181,13 @@ anything blocks; the fixes go into your layer. The planner and the guard need th
 planner description and a collision-mesh bundle, built once per arm by the vendor's tooling (see the
 vendor section). `--start-planner` then starts the planner the way the first planned move does, with
 every refusal that move meets, and needs neither a camera nor a controller: it exits 0 when the planner
-started.
+started, and screens every look `robot.look_joint_positions_deg` configures, one line each: `clear`, `in
+the planner's cushion band`, or `ERROR`, with a pose nearby both clear where one exists (Diagnose 6). The
+planner reserves its box slots when it starts, 1 + declared + `perceived.max_boxes` (64), so **restart it
+after an update**. On the cell PC, run the two GPU probes once before the first run, with the console and
+every other planner stopped, since each starts its own sidecar: `python scripts/curobo/probe_band_admission.py`
+and `python scripts/curobo/probe_turned_boxes.py`, each exit 0
+([real_cell_first_pick.md](real_cell_first_pick.md), Diagnose 6).
 
 Tell the planner what the guard will demand, with a measured, per-robot value:
 `safety.self_collision.planner_margin_mm`. Do not derive it from `min_distance_mm`. How much margin a
@@ -244,7 +276,9 @@ The bring-up is additive, and every step is reversible without touching another 
    the base tree again. The `*.<your cell>.yaml` files can stay on disk; an unreferenced layer is inert.
 2. **Drop a behaviour key.** `isotropic_radial_closing` is default off. The planner margin has no neutral
    value: a planner cell starts its planner only with a committed evidence file measured at its margin,
-   so the planner's rollback is the arm's `motion_planner: ik`. Neither needs a code change.
+   so the planner's rollback is the arm's `motion_planner: ik`. That stops the cell rather than degrading
+   it: the robot's verbs (`Robot.move`, `move_joints`, `home`, `pick`, `place`) refuse a UR on the ik
+   planner before any command. Neither needs a code change.
 3. **Restore geometry.** The collision-mesh bundles are committed, so check the previous one back out. A
    planner description lives in the planner's own install; re-run its builder rather than hand-editing
    it.
@@ -339,11 +373,11 @@ the geometry is the collision STL files of Universal Robots, pinned to one upstr
 file a planner starts on is measured by `scripts/curobo/matrix_gate.py`, step 5 of
 [your_own_gripper.md](your_own_gripper.md).
 
-The planner margin was measured across this family. In a planner sweep a UR5e planned at the 10 mm
-`min_distance_mm` the base configuration sets, while a UR3e's thinner links read as permanently
-self-colliding once every sphere is inflated by half the margin, and it found no plan at all above
-roughly 6 mm. That sweep predates the refitted sphere map: against the refitted map every UR runs
-4.0 mm, and `robot.sim.yaml` carries the measurement.
+The planner margin was measured across this family. Against the refitted sphere map no UR arm has a
+retract at 8 or 10 mm, the UR5 finds one at 4 and at 6, and the UR3e measured about 6 as its ceiling, so
+every UR runs **4.0 mm**; `robot.sim.yaml` carries the measurement. The margin pads the planner's model
+only: where the padded spheres alone refuse a pose the exact guard accepts, on the arm's own pairs, the
+guard decides (Diagnose 6).
 
 **The models.** [ur_family_bringup.md](ur_family_bringup.md) lists the UR arms this stack models, what
 each has, how to add one, and the trap between a CB-series arm and its e-series namesake, which report

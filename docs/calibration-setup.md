@@ -5,8 +5,10 @@ this page at the bench. Derivations, solver internals and the simulator procedur
 [guide chapter 03](guide/03-calibration.md).
 
 **How far this is proven.** The routine, the AX=XB solve and both mounting modes run in Isaac Sim and
-in the offline suite. Nothing on this page has run against a physical controller or a physical depth
-camera. Treat your first live sweep as commissioning, not as a validated path.
+in the offline suite. **A wrist camera has been calibrated at a physical cell**: a D415 on a UR10 (CB3),
+against one printed ArUco marker, by hand in freedrive (examples 09 and 10, which drive this page's
+routine). A fixed camera, a ChArUco board and a second camera have not. Treat your first live sweep as
+commissioning, not as a validated path.
 
 ## Why the cell will not move until you do this
 
@@ -277,6 +279,7 @@ and the tab reaches 40 mm further back, to -59.05, so 40.0 about -39.05:
   rgbd_backend: realsense
   serial_number: "<the D415's serial>"
   color_resolution: [1280, 720]
+  depth_resolution: [848, 480]   # a D415 measures from about 310 mm here, from about 450 mm at 1280 x 720
   fps: 30
   align_depth_to_color: true
   body:
@@ -558,9 +561,8 @@ is loud on purpose, because the cell then keeps whatever calibration it had.
 
 **How far the ways by hand are proven.** The console, the stillness gate, the boundaries, the
 countdown and the stations file are exercised against a scripted arm in the offline suite. The teach
-mode behind them, its watchdog and the payload read are the UR driver's; none of it has run beside a
-physical arm yet, so hold the first hand-guided run to a slow, deliberate pace with the pendant in
-reach.
+mode behind them, its watchdog and the payload read are the UR driver's. Hold the first hand-guided run
+on a cell to a slow, deliberate pace with the pendant in reach.
 
 ## 6. Read the residual honestly
 
@@ -733,6 +735,7 @@ Aim at a known object and measure where the TCP actually lands.
 | Solve refuses with "two independent axes" | the poses only rotated about one axis | tilt the tool about more directions: guiding by hand, turn the wrist between poses as well as moving it; in a stations file, add stations tilted another way |
 | Cell refuses every motion, or still behaves single-view | the primary rig declares no `extrinsics`, or `fusion.enabled` still false | section 7, then `real_cell --check` |
 | Cell refuses to build once a rig is calibrated | a cuRobo cell with a calibrated RGB-D rig and `safety.planning_world` off or incomplete | section 7, then `real_cell --check` and its `camera world` row |
+| A wrist pick warns `the looks measure the part's shared surface ... mm apart (median), more than 6.0 mm` | the wrist camera moved against the tool: a loosened bracket, a knock | check the mount, then recalibrate the wrist camera (section 9) |
 
 ## 9. When to recalibrate
 
@@ -743,14 +746,21 @@ Aim at a known object and measure where the TCP actually lands.
 | Camera moved, re-mounted, or re-focused | true for both modes |
 | Robot base moved or re-anchored | eye-to-hand only, and it invalidates everything |
 | Picks start missing by a constant offset | the signature of a bad extrinsic |
+| A wrist pick's looks measure the part more than 6 mm apart | the hand-eye check: the camera may have moved on the wrist |
 | A different physical board, or a planned shift change | a new target is itself a calibration change |
 
-Be honest about drift detection. The watchdog carries `hand_eye_residual_trend` thresholds, but only
-the synthetic replay datasets fill the field it reads, and it needs `grasping.watchdog.mode` plus
-`grasping.decision.enabled` on. The watchdog itself is already on: `mode` defaults to `shadow`,
-which evaluates and emits telemetry, and only `disabled` turns it off. `decision.enabled` is the gate
-that is false, and the watchdog is built inside the decision path. Your drift signal is picks landing
-off target.
+Be honest about drift detection. **A wrist camera checks itself on every pick that takes two or more
+looks**: where two looks saw the same face of the part, the pick measures how far apart they place it,
+the median distance to the nearest point of the other look over the surface both saw (within 15 mm,
+normals within 30 degrees, from 20 shared points up). A healthy cell reads a millimetre or two. Above
+6 mm a WARNING says the hand-eye calibration may have drifted, and the attempt line prints the gap.
+Nothing is changed for it, and it cannot see a camera that slid along the surface it looks at.
+
+The watchdog carries `hand_eye_residual_trend` thresholds, but only the synthetic replay datasets fill
+the field it reads, and it needs `grasping.watchdog.mode` plus `grasping.decision.enabled` on. The
+watchdog itself is already on: `mode` defaults to `shadow`, which evaluates and emits telemetry, and
+only `disabled` turns it off. `decision.enabled` is the gate that is false, and the watchdog is built
+inside the decision path. For a fixed camera, the drift signal is picks landing off target.
 
 Keep the old calibration before you overwrite it. The runner writes atomically, but there is no
 archive and no rollback:

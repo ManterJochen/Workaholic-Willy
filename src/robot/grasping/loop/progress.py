@@ -92,10 +92,13 @@ class PickProgress:
     #: looks, the motion to one (its generated view and its move back included) failed once it may have been
     #: commanded or was refused by its verb before any command, or its controller stopped on the way to one, and
     #: ``faces_unseen`` when a pick, on the wrist or a fixed camera, asked for both jaw contact faces and no view showed
-    #: both, so nothing was gripped) on :attr:`PickStage.ATTEMPT_FINISHED`. The loop
-    #: never switches target on its own: ``next_target`` is a recovery action, which would be recorded on
-    #: the recovery trail, not here, and no built-in mode profile plans one. ``relocate`` is retired with
-    #: the relocate path (2026-09-29) and appears only in events recorded before then.
+    #: both, so nothing was gripped, and ``push`` when a wrist pick pushed its failed part, went back to the look and
+    #: looked again, or its push stopped where the arm stands, or found the controller unable to move before anything
+    #: moved: ``extra['push']`` says which, and ``extra['push_reason']`` in the push's own words) on
+    #: :attr:`PickStage.ATTEMPT_FINISHED`. The loop
+    #: never switches target on its own: ``next_target`` is a recovery action, recorded on the recovery
+    #: trail, not here; the pick it runs again, which skips the failed part, emits its own events. ``relocate``
+    #: is retired with the relocate path (2026-09-29) and appears only in events recorded before then.
     action: str | None = None
     #: The typed ``PickOutcome`` on :attr:`PickStage.PICK_FINISHED`.
     outcome: str | None = None

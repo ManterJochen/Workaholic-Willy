@@ -471,7 +471,8 @@ class TheBenchBandTests(unittest.TestCase):
     def test_the_trap_a_camera_placed_off_and_declaring_nothing_sees_the_bench_as_an_obstacle(self) -> None:
         world = self._bench_seen_off()
 
-        self.assertEqual(1, len(world.boxes), world.render())  # type: ignore[attr-defined]
+        # As boxes of about one height each: the bench seen turned rises across the view (2026-09-30).
+        self.assertGreaterEqual(len(world.boxes), 1, world.render())  # type: ignore[attr-defined]
 
     def test_a_camera_that_declares_its_error_keeps_the_bench_the_bench(self) -> None:
         world = self._bench_seen_off(placement_error_mm=1.0, placement_error_rad=math.radians(0.7))
@@ -536,7 +537,8 @@ class TheBenchBandTests(unittest.TestCase):
 
                 self.assertIs(WorldVerdict.FRESH, snapshot.verdict, snapshot.render())
                 assert snapshot.perceived is not None
-                self.assertEqual(boxes, len(snapshot.perceived.boxes), snapshot.render())
+                # The bench seen turned comes back as boxes of about one height each, or not at all.
+                self.assertEqual(bool(boxes), bool(snapshot.perceived.boxes), snapshot.render())
                 if declared[1]:
                     low, _ = snapshot.perceived.bench_band_mm["wrist"]
                     lever = math.radians(0.7) * 100.0
@@ -652,9 +654,10 @@ class TheReachIsTheBodysTests(unittest.TestCase):
 
         self.assertIs(WorldVerdict.FRESH, snapshot.verdict, snapshot.render())
         assert snapshot.perceived is not None
-        self.assertEqual(1, len(snapshot.perceived.boxes), snapshot.render())
-        box = snapshot.perceived.boxes[0]
-        self.assertLess(box.center_mm[1], -760.7, "the fence stands past the TCP box, and it is kept")
+        # As boxes of the heights the camera saw it to (2026-09-30), every one of them past the TCP box.
+        self.assertGreaterEqual(len(snapshot.perceived.boxes), 1, snapshot.render())
+        for box in snapshot.perceived.boxes:
+            self.assertLess(box.center_mm[1], -760.7, "the fence stands past the TCP box, and it is kept")
 
     def test_the_control_a_fence_past_the_arms_reach_is_dropped_by_name(self) -> None:
         snapshot = self._fence_world(-2400.0).world_for(self_envelope=_ur10_hande_envelope(_REACHING), now=100.1)
@@ -691,7 +694,8 @@ class ASunkSlabTests(unittest.TestCase):
         world = build_perceived_boxes(views=(DepthView(_plane(_TILTED), _K, _TILTED, name="wrist"),),
                                       limits=self._limits(5.0))
 
-        self.assertEqual(1, len(world.boxes), world.render())
+        # The whole bench, as boxes of about one height each (2026-09-30).
+        self.assertGreaterEqual(len(world.boxes), 1, world.render())
 
     def test_the_clearance_raised_by_the_sink_keeps_the_bench_the_bench_and_a_part_a_part(self) -> None:
         bench = build_perceived_boxes(views=(DepthView(_plane(_TILTED), _K, _TILTED, name="wrist"),),

@@ -324,6 +324,11 @@ class PickIn(BaseModel):
     #: target must carry. Empty keeps the phrase the cell was built with and filters no label.
     prompt: str = ""
     picks: int = Field(default=1, ge=1, le=100)
+    #: How far a push of a failed part moves it, in mm, on a cell whose recovery pushes (``nudge_target``,
+    #: dense_clutter). Null: the cell's ``recovery.fixture.push_distance_mm`` (30 mm). A request up to the
+    #: cell's ``max_nudge_mm`` is taken as asked; one above it, above 50 mm or under 10 mm is refused
+    #: (422 ``push_distance_refused``, with the sentence), never shortened.
+    push_mm: float | None = None
 
 
 class RunOut(BaseModel):

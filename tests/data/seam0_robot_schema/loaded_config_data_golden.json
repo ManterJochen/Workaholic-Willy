@@ -516,6 +516,7 @@
     "home_joint_positions": null,
     "home_joint_positions_deg": null,
     "look_joint_positions_deg": null,
+    "natural_closing_axis": null,
     "safe_pose": {
       "x": 0.0,
       "y": -300.0,
@@ -556,6 +557,7 @@
         "planner_margin_mm": null,
         "link_radii_mm": null,
         "fixtures": [],
+        "perceived_min_distance_mm": 5.0,
         "mesh_dir": null,
         "kinematics_model": null,
         "kinematics_base_yaw_deg": 0.0,
@@ -617,7 +619,7 @@
           "cluster_voxel_mm": 25.0,
           "min_points": 12,
           "margin_mm": 15.0,
-          "max_boxes": 8,
+          "max_boxes": 64,
           "floor_to_plane": true,
           "plane_clearance_mm": 5.0
         },

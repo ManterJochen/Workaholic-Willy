@@ -42,6 +42,7 @@ from src.models.speech.capture import to_mono_at_rate
 from src.models.speech.engine import (
     WHISPER_WINDOW_S,
     RecordingTooLong,
+    SpeechModelIncomplete,
     SpeechModelMissing,
     SpeechStackUnavailable,
 )
@@ -89,6 +90,20 @@ def _import_stack() -> tuple[Any, Any]:
     except (ImportError, OSError) as exc:
         raise SpeechStackUnavailable(package="transformers", cause=exc) from exc
     return torch, transformers
+
+
+#: The files the engine loads from a local directory whatever else it holds (measured, see
+#: `WhisperTransformersEngine._refuse_an_incomplete_directory`); the tokenizer and the weights have alternatives.
+_NEEDED_FILES: Final[tuple[str, ...]] = ("config.json", "generation_config.json", "preprocessor_config.json")
+_WEIGHT_FILES: Final[tuple[str, ...]] = ("model.safetensors", "model.safetensors.index.json")
+#: A tokenizer without ``tokenizer.json`` is built from the vocabulary and the merges, and one of these two says
+#: which of its tokens are special.
+_VOCABULARY_FILES: Final[tuple[str, ...]] = ("vocab.json", "merges.txt")
+_SPECIAL_TOKEN_FILES: Final[tuple[str, ...]] = ("tokenizer_config.json", "special_tokens_map.json")
+_FETCH: Final[str] = (
+    "`python scripts/model_weights/fetch.py whisper-turbo` downloads the files that directory lacks at the pinned "
+    "commit and keeps the ones it holds"
+)
 
 
 class WhisperTransformersEngine:
@@ -193,6 +208,7 @@ class WhisperTransformersEngine:
             started = time.perf_counter()
             if self._model is None:
                 self._refuse_a_missing_directory()
+                self._refuse_an_incomplete_directory()
                 self._load_weights(transformers, device)
             self._prepare_decoder()
             self._device = device
@@ -220,6 +236,83 @@ class WhisperTransformersEngine:
                 ),
             )
 
+    def _refuse_an_incomplete_directory(self) -> None:
+        """A local directory that lacks a file the engine loads, refused naming every one.
+
+        Measured on large-v3-turbo with transformers 5.5.4, from copies holding some of its files: without
+        ``config.json`` the model is unrecognised, without ``generation_config.json`` there is no language table,
+        without ``preprocessor_config.json`` no feature extractor. The tokenizer loads from ``tokenizer.json``, or
+        from ``vocab.json`` with ``merges.txt`` and one of ``tokenizer_config.json`` and ``special_tokens_map.json``;
+        from the vocabulary and the merges alone every prompt token reads as ``<|endoftext|>``, and with
+        ``added_tokens.json`` beside them the prompt tokens are not special and land in the text. Left to
+        transformers, such a directory stops with errors about building a tokenizer rather than about the files it
+        lacks.
+        """
+        if not self._local_files_only:
+            return
+        folder = Path(self._source)
+
+        def absent(names: tuple[str, ...]) -> list[str]:
+            return [name for name in names if not (folder / name).is_file()]
+
+        missing = absent(_NEEDED_FILES)
+        if absent(("tokenizer.json",)):
+            missing += absent(_VOCABULARY_FILES)
+            if len(absent(_SPECIAL_TOKEN_FILES)) == len(_SPECIAL_TOKEN_FILES):
+                missing.append(_SPECIAL_TOKEN_FILES[0])
+        if len(absent(_WEIGHT_FILES)) == len(_WEIGHT_FILES):
+            missing.append(_WEIGHT_FILES[0])
+        if missing:
+            raise SpeechModelIncomplete(
+                key="models.stt.model_path", path=self._source, missing=tuple(missing),
+                problem=(
+                    f"that directory lacks {', '.join(missing)} (resolved: {folder.resolve()}). The engine loads "
+                    f"{', '.join(_NEEDED_FILES)}, the weights, and a tokenizer: tokenizer.json, or "
+                    f"{' with '.join(_VOCABULARY_FILES)} and {' or '.join(_SPECIAL_TOKEN_FILES)}"
+                ),
+                fetch=_FETCH,
+            )
+
+    def _refuse_a_tokenizer_without_the_prompt(self, processor: Any, model: Any) -> None:
+        """A tokenizer that does not hold the decoder prompt as the checkpoint writes it, refused.
+
+        The property `transcribe` relies on: every prompt token maps to the id the generation config gives it, and
+        that id decodes to nothing once special tokens are skipped. It fails where the files do not show it: a
+        tokenizer built from another checkpoint's files, or one a transformers release builds differently.
+        """
+        generation = getattr(model, "generation_config", None)
+        table = getattr(generation, "lang_to_id", None) or {}
+        expected = {
+            "<|startoftranscript|>": getattr(generation, "decoder_start_token_id", None),
+            "<|transcribe|>": (getattr(generation, "task_to_id", None) or {}).get(_TASK),
+            "<|notimestamps|>": getattr(generation, "no_timestamps_token_id", None),
+            **{f"<|{code}|>": table.get(f"<|{code}|>") for code in _AUTO_LANGUAGES},
+        }
+        tokenizer = processor.tokenizer
+        wrong: list[str] = []
+        for token, token_id in expected.items():
+            if token_id is None:
+                continue
+            read = tokenizer.convert_tokens_to_ids(token)
+            if read != int(token_id):
+                wrong.append(f"{token} reads as {read}, and the generation config writes {token_id}")
+            elif tokenizer.decode([int(token_id)], skip_special_tokens=True).strip():
+                wrong.append(f"{token} is not special and would stay in the text")
+        if not wrong:
+            return
+        folder = Path(self._source)
+        files = ("tokenizer.json", *_VOCABULARY_FILES, *_SPECIAL_TOKEN_FILES)
+        missing = tuple(name for name in files if not (folder / name).is_file()) if self._local_files_only else ()
+        raise SpeechModelIncomplete(
+            key="models.stt.model_path" if self._local_files_only else "models.stt.model_id",
+            path=self._source, missing=missing,
+            problem=(
+                f"the tokenizer built from it does not hold the decoder prompt as special tokens: {'; '.join(wrong)}"
+                + (f". The directory lacks {', '.join(missing)}" if missing else "")
+            ),
+            fetch=_FETCH,
+        )
+
     def _load_weights(self, transformers: Any, device: Any) -> None:
         from src.models._inference import build_load_kwargs, finalize_model, weight_load_errors
 
@@ -246,6 +339,7 @@ class WhisperTransformersEngine:
         except weight_load_errors():
             self._logger.error("Failed to load Whisper model '%s'", self._source)
             raise
+        self._refuse_a_tokenizer_without_the_prompt(processor, model)
         self._processor = processor
         self._model = finalize_model(model, device, self._optim)
 

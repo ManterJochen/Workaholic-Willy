@@ -16,11 +16,14 @@ must:
 * **fail closed when the policy is disabled** — the documented master switch (``SceneRecoveryPolicy.enabled``
   / ``permits``): "When :data:`False` every strategy in this module returns ``SceneRecoveryAction.NONE``."
 
-The two strategies are constructed exactly as the existing ``tests/test_grasp_recovery.py`` builds them
-(same profile / policy / context / fixture idioms), so this exercises the real shipped strategy set — not
+The strategy is constructed exactly as the existing ``tests/test_grasp_recovery.py`` builds it (same
+profile / policy / context / fixture idioms), so this exercises the real shipped strategy set — not
 hand-built stubs. There were five until 2026-09-29: ``NoRecoveryStrategy``,
 ``ActivePerceptionRecoveryStrategy`` and ``NextTargetRecoveryStrategy`` left with the ``dense_recovery``
 block, the only thing that built them, and ``NEXT_VIEWPOINT`` was merged into ``RESCAN`` the same day.
+``SmallNudgeStrategy``, a scene-blind +X offset from wherever the arm stood, left the same day too: the owner
+ruled blind moves out, and the push runs inside the pick attempt, planned from what the camera saw. The
+agitate strategy is the one left.
 """
 
 from __future__ import annotations
@@ -45,7 +48,6 @@ from src.robot.grasping import (
     SceneRecoveryPlan,
     SceneRecoveryPolicy,
     SceneRecoveryStrategy,
-    SmallNudgeStrategy,
 )
 from src.robot.grasping.types.modes import GraspSamplingMode
 from src.robot.grasping.types.perception import PerceptionFrame
@@ -53,7 +55,7 @@ from src.robot.grasping.types.perception import PerceptionFrame
 # Every valid action vocabulary member — a plan whose action is outside this set is a contract violation.
 _VALID_ACTIONS = frozenset(SceneRecoveryAction)
 
-# A fixture that arms the physical (NUDGE / AGITATE) strategies; matches the test_grasp_recovery idiom.
+# A fixture that arms the physical (AGITATE) strategy; matches the test_grasp_recovery idiom.
 _FIXTURE = FixtureEnvelope(
     center_mm=(0.0, 0.0, 200.0),
     half_extents_mm=(100.0, 100.0, 100.0),
@@ -76,10 +78,7 @@ _ALL_ACTION_STRINGS = tuple(a.value for a in _ALL_ACTIONS)
 def _strategies() -> tuple[SceneRecoveryStrategy, ...]:
     """Every production SceneRecoveryStrategy, built with its real constructor idiom."""
 
-    return (
-        SmallNudgeStrategy(offset_axis=(1.0, 0.0, 0.0)),
-        ContainerAgitateStrategy(),
-    )
+    return (ContainerAgitateStrategy(),)
 
 
 def _profile(actions: tuple[str, ...]) -> GraspBehaviorProfile:
@@ -158,7 +157,7 @@ class SceneRecoveryStrategyConformanceTests(unittest.TestCase):
 
     def test_every_strategy_satisfies_runtime_protocol(self) -> None:
         # SceneRecoveryStrategy is @runtime_checkable; each built-in must structurally satisfy it.
-        self.assertEqual(len(self._strategies), 2, "expected both built-in strategies")
+        self.assertEqual(len(self._strategies), 1, "expected the one built-in strategy")
         for s in self._strategies:
             with self.subTest(strategy=type(s).__name__):
                 self.assertIsInstance(s, SceneRecoveryStrategy)
@@ -247,7 +246,7 @@ class SceneRecoveryStrategyConformanceTests(unittest.TestCase):
                 )
 
     def test_acting_strategies_plan_their_action_when_armed(self) -> None:
-        # Non-vacuity / two-path anchor: both strategies must each plan their NON-NONE action on a context
+        # Non-vacuity / two-path anchor: every strategy must plan its NON-NONE action on a context
         # that fully satisfies their preconditions. Paired with the disabled-policy test, this proves both the
         # accept AND the reject path are genuinely exercised — the suite is not all-NONE (or
         # all-error-swallow) theatre.
@@ -256,7 +255,6 @@ class SceneRecoveryStrategyConformanceTests(unittest.TestCase):
             last_frame=_frame_with_n_segs(3),
         )
         expected = {
-            "SmallNudgeStrategy": SceneRecoveryAction.NUDGE_TARGET,
             "ContainerAgitateStrategy": SceneRecoveryAction.CONTAINER_AGITATE,
         }
         for s in self._strategies:

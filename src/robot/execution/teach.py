@@ -33,6 +33,12 @@ per pose, to paste as it is. What happens, in order:
 4. Leaving the session holds the arm: after ``q``, on Ctrl-C and on an error alike. Every pose taught before is
    printed and in the file by then.
 
+Each pose is screened once it is held, where the arm screens (``URRobotArm.screen_configuration``, the owner,
+2026-09-30): clear, in the planner's cushion band, or refused (an ERROR line), with a pose nearby both clear. Only on
+an arm that carries the housing of every wrist camera the tree hangs on it (``Robot.from_tree`` hands them,
+``Robot.from_config`` none): a screen without a housing that is there reads clear what the housing meets, so on any
+other arm nothing is screened and one line says so.
+
 Nothing here moves the arm by itself. It moves only while a person moves it, and between poses it holds where it was
 left, so no hands-off countdown comes before anything: ``HandGuide.hands_off`` guards an arm that is about to drive
 by itself, and nothing drives here.
@@ -388,6 +394,15 @@ def teach_poses(
                           f"it between poses. Every pose is added to {path} ({already}).")
         guide.console.say(f"Every pose taught here belongs to rig {rig!r}, {_mounted(mounting)}: its line to paste and "
                           "its record say so.")
+        screen = _screens(arm)
+        unscreened = _unscreened_because(robot, arm, tree) if screen else None
+        if unscreened is not None:
+            guide.console.say(unscreened)
+            screen = False
+        elif screen:
+            guide.console.say("Every pose is screened once it is taught, by the exact mesh guard and by the planner, "
+                              "which starts with the first pose (about a minute): a pose the planner's padded spheres "
+                              "alone refuse is said, with a pose nearby both clear. Nothing moves for it.")
         if window is not None:
             # Opened once the payload is confirmed, which is asked at the console alone, with a guide's words on it
             # from its first frame, and the rig it teaches for as its first word.
@@ -395,7 +410,7 @@ def teach_poses(
             window.note(f"teaching poses by hand for rig {rig!r}, {_mounted(mounting)}")
             guide.view = window
             window.start()
-        taught = _session(arm, guide, limits, path, prefix, emit, rig, mounting)
+        taught = _session(arm, guide, limits, path, prefix, emit, rig, mounting, screen=screen)
     finally:
         # The session has held the arm by now, on every way out; the window closes after it and before the caller
         # gives the camera back.
@@ -407,10 +422,12 @@ def teach_poses(
 
 
 def _session(arm: SupportsFreedrive, guide: HandGuide, limits: HandGuidingLimits, path: Path, prefix: str,
-             emit: Callable[[str], None], rig: str, mounting: str | None) -> list[TaughtPose]:
+             emit: Callable[[str], None], rig: str, mounting: str | None, *, screen: bool) -> list[TaughtPose]:
     """The one hand-guiding session: a name while the arm holds, the arm freed, Enter, held and read, until the person
-    finishes, every pose for ``rig``. Leaving it holds the arm, whatever ended it."""
+    finishes, every pose for ``rig``, each screened once it is held where ``screen``. Leaving it holds the arm,
+    whatever ended it."""
     taught: list[TaughtPose] = []
+    ask_planner = True
 
     def status(_sample: FreedriveSample) -> tuple[list[str], float | None]:
         return [_so_far(taught)], None
@@ -436,7 +453,63 @@ def _session(arm: SupportsFreedrive, guide: HandGuide, limits: HandGuidingLimits
             _keep(taught, pose)
             guide.console.say(f"{name} taught: {pose.tcp_line()}. Added to {path}, which holds "
                               f"{held} {'pose' if held == 1 else 'poses'} now; the arm holds where it stands.")
+            if screen:
+                ask_planner = _say_screen(arm, pose, guide, ask_planner)
     return taught
+
+
+def _screens(arm: Any) -> bool:
+    """Whether ``arm`` screens a configuration with the exact guard and the planner (``URRobotArm.screen_configuration``)."""
+    return callable(getattr(type(arm), "screen_configuration", None))
+
+
+def _unscreened_because(robot: Any, arm: Any, tree: Any) -> str | None:
+    """Why no pose is screened on ``arm``, in one line; ``None`` where it carries every wrist camera the tree hangs on it.
+
+    A screen asks both models, and both hold a wrist camera's housing only where the arm was handed it
+    (``execution.wrist_bodies``): ``Robot.from_tree`` hands every one the tree declares, ``Robot.from_config`` none. A
+    screen without a housing that is there would read clear a pose the housing meets, and building the planner and the
+    guard for it would refuse the housing handed in after them. So a camera the tree hangs on the arm (a declared body,
+    or an enabled eye_in_hand rig) that the arm does not hold, or a run with no tree to say which hang there, screens
+    nothing (review of F1, 2026-09-30).
+    """
+    section = _camera_section(tree if tree is not None else getattr(robot, "tree", None))
+    where = ("The looks are screened where a campaign starts and at the desk: python -m "
+             "src.robot.execution.real_cell --start-planner.")
+    if section is None:
+        return ("Poses are not screened here: no tree says which wrist cameras hang on the arm, and a screen without a "
+                f"housing that is there would miss what it meets. {where}")
+    hung = [str(getattr(rig, "rig_id", "")) for rig in getattr(section, "rigs", None) or ()
+            if getattr(rig, "body", None) is not None
+            or (getattr(rig, "enabled", False)
+                and getattr(getattr(rig, "extrinsics", None), "mounting_mode", None) == "eye_in_hand")]
+    bodies = getattr(getattr(arm, "safety_preflight", None), "wrist_bodies", None)
+    held = {str(getattr(body, "rig_id", "")) for body in (bodies(arm) if callable(bodies) else ())}
+    missing = [rig for rig in hung if rig not in held]
+    if not missing:
+        return None
+    return (f"Poses are not screened here: the tree hangs wrist camera(s) {', '.join(repr(r) for r in missing)} on the "
+            "arm, and this arm was not handed the housing (Robot.from_config hands none, Robot.from_tree every one the "
+            f"tree declares), so both models would judge a pose without it. {where}")
+
+
+def _say_screen(arm: Any, pose: TaughtPose, guide: HandGuide, ask_planner: bool) -> bool:
+    """Screen a pose just taught and say the verdict; whether the planner is still worth asking for the next one.
+
+    The arm holds while it is screened, and nothing moves for it. The pose is taught and kept whatever the verdict: the
+    screen says what a pick would meet there (``planning.band``), and a pose the exact guard refuses is said in an
+    ERROR line with a pose nearby both clear. A planner that could not start is not asked again in this run, and a
+    screen that raises is said and teaching goes on.
+    """
+    if not _screens(arm):
+        return ask_planner
+    try:
+        screen = arm.screen_configuration(pose.joints, ask_planner=ask_planner)  # type: ignore[attr-defined]
+    except Exception as exc:  # noqa: BLE001 (a screen that fails never stops a person teaching)
+        guide.console.say(f"{pose.name} was not screened: {type(exc).__name__}: {exc}")
+        return ask_planner
+    guide.console.say(screen.line(pose.name))
+    return ask_planner and not bool(getattr(screen, "planner_unavailable", False))
 
 
 def _taught_for(robot: Any, tree: Any, for_rig: str | None, camera: Any) -> tuple[str, str | None]:

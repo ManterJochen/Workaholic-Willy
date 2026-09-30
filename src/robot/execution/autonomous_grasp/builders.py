@@ -409,6 +409,13 @@ def build_effective_config(
                 if grasping_cfg.recovery.fixture is not None
                 else None
             ),
+            # The push a campaign makes when nobody asks for another distance; the fixture's max_nudge_mm above is
+            # the ceiling a request is held to (push_planner.resolve_push_distance).
+            push_distance_mm=(
+                float(grasping_cfg.recovery.fixture.push_distance_mm)
+                if grasping_cfg.recovery.fixture is not None
+                else 30.0
+            ),
         ),
         uncertainty=EffectiveUncertaintyConfig(
             enabled=bool(grasping_cfg.uncertainty.enabled),

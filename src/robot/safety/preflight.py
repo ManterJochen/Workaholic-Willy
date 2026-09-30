@@ -66,6 +66,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.core import JointPositions, RobotArm
     from src.robot.safety._capsule import AxisAlignedBox
     from src.robot.safety.path_samples import PathSamples
+    from src.robot.safety.planning.band import ExactPairs
     from src.robot.safety.planning.hand import PlannerHand
 
 __all__ = [
@@ -551,6 +552,12 @@ class SafetyPreflight:
         guard = self._path_authority(arm)
         return guard.wrist_bodies if guard is not None else ()
 
+    def exact_pairs(self, arm: "RobotArm | None" = None) -> "ExactPairs | None":
+        """The exact mesh guard's pair rule and distances for ``arm`` (``SelfCollisionGuard.exact_pairs``), or ``None``
+        where no self-collision guard is wired or it runs no exact mesh backend."""
+        guard = self._path_authority(arm)
+        return guard.exact_pairs(arm) if guard is not None else None
+
     #: The guard whose verdict a judged path rests on. Named once, because three places
     #: ask for it.
     _PATH_AUTHORITY = "self_collision"
@@ -689,9 +696,9 @@ class SafetyPreflight:
                     continue
                 self._logger.warning(
                     "Safety preflight rejected a PLANNED PATH at sample %d of %d "
-                    "(step bound %.3f mm): guard=%s reason=%s message=%s",
+                    "(step bound %.3f mm): guard=%s reason=%s message=%s detail=%s",
                     index + 1, total, samples.step_bound_mm, decision.guard,
-                    decision.reason.value, decision.message or "<empty>",
+                    decision.reason.value, decision.message or "<empty>", decision.detail or {},
                 )
                 located = SafetyDecision.reject(
                     decision.guard,
@@ -900,8 +907,8 @@ class SafetyPreflight:
             decision = guard.evaluate(ctx)
             if decision.rejected:
                 self._logger.warning(
-                    "Safety preflight rejected joint move: guard=%s reason=%s message=%s",
-                    decision.guard, decision.reason.value, decision.message or "<empty>",
+                    "Safety preflight rejected joint move: guard=%s reason=%s message=%s detail=%s",
+                    decision.guard, decision.reason.value, decision.message or "<empty>", decision.detail or {},
                 )
                 rejected = SafetyPreflight.as_motion_result(
                     decision, MotionCommand.MOVE_JOINTS, target_joints=joints,

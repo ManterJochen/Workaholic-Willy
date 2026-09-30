@@ -10,6 +10,8 @@ impossible for no reason.
     render_debug_images      read and written; the operator console flips it       required
     last_debug_image_png     read after a compute when debug rendering is on       required
     camera_matrix            read by the single-view support-plane refinement      optional, below
+    redraw_debug_image(...)  called where a closing axis changed a result          optional, below
+    max_candidates           raised for a ranking a closing axis chooses among     optional, below
 
 The argument list is deliberately untyped. `compute()` takes thirty-odd keyword arguments and the
 orchestrator assembles them conditionally: `camera_to_base`, `scene_points_mm`,
@@ -31,6 +33,19 @@ the single-view branch stood down. `support.refine_from_target` defaults to True
 K is real that branch runs. What a wrong frame costs is recorded on `_target_surface_base_mm`
 itself: a support plane placed at the wrist-camera standoff instead of at the table rejects every
 candidate.
+
+`redraw_debug_image` is optional the same way (2026-09-30). Where the closing axis a program named
+left candidates out or turned them (`GraspMotion(closing_axis=...)`), the pick loop reads it
+duck-typed, `pick_loop._overlay_the_kept`, and calls it with the grasps it kept, so the overlay
+shows the grasps the pick chooses among. A generator without it that drew an overlay has that
+overlay dropped rather than shown with a grasp the axis left out: absence costs the picture, never
+the pick.
+
+`max_candidates` is optional the same way (2026-09-30): the cap on how many candidates a ranking
+returns. Where a program names the closing axis, the pick loop reads it duck-typed,
+`pick_loop._asking_more_along_the_axis`, raises it to 36 for that one ranking, keeps the best of the
+cap along the axis and gives the cap back. A generator without an integer cap ranks as it always
+did, and the axis chooses among what it returned.
 """
 
 from __future__ import annotations

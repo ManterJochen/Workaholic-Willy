@@ -5,12 +5,12 @@ robot and its verbs, a whole cell and its pick campaigns, cameras and calibratio
 Isaac Sim, and offline data and training.
 
 ```python
-from willy import Pose, Robot, load_tree
+from willy import Robot, load_tree
 
 robot = Robot.from_tree(load_tree("console_dummy"))   # the desk profile; load_tree() reads WILLY_PROFILE
 with robot.connected():
     print(robot.home())                               # every verb returns a report that prints as itself
-    print(robot.move(Pose.tool_down(450.0, 100.0, 300.0)))
+    print(robot.move(robot.tool_down(450.0, 100.0, 300.0)))   # straight down, the cell's closing axis
 ```
 
 Install the repository once with `pip install -e . --no-deps` from its root, and this runs from any
@@ -42,7 +42,7 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 
 | Name | What it is | Shown in |
 |---|---|---|
-| `Pose` | A 6-DoF pose tagged with its frame, in millimetres with an XYZW quaternion; `Pose.tool_down(x, y, z)` | `real_robot/03_connect_and_move.py` |
+| `Pose` | A 6-DoF pose tagged with its frame, in millimetres with an XYZW quaternion; `Pose.tool_down(x, y, z)` | `simulation/02_a_robot_at_the_desk.py` |
 | `Pose.aimed_at` | The same, pointing the tool's +Z AT a point instead of straight down: a camera or a board turned to face something | `real_robot/08_calibrate_a_fixed_camera_with_fixed_poses.py` |
 | `Frame` | The frames a pose can be in: `BASE`, `CAMERA`, `TCP`, `TOOL`, `OBJECT`, `GRASP`, `WORLD`, `MARKER` | `Pose.frame` |
 
@@ -50,7 +50,7 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 
 | Name | What it is | Shown in |
 |---|---|---|
-| `Robot` | An arm and its hand: `connected()`, `home`, `move`, `move_joints`, `grasp`, `release`, `is_holding`, `pick`, `place`, `safety()`, `without_camera_world(why)` | `real_robot/03_connect_and_move.py` |
+| `Robot` | An arm and its hand: `connected()`, `home`, `move`, `move_joints`, `grasp`, `release`, `is_holding`, `pick`, `place`, `safety()`, `without_camera_world(why)`; `tool_down(x, y, z, yaw_deg=, closing_axis=)` builds a BASE pose through the cell and moves nothing: straight down, the fingers along `robot.natural_closing_axis` (base x where the cell names none), `yaw_deg` counted from that axis, so on a `"-y"` cell `yaw_deg=90.0` closes along base x; `ValueError` for a value that names no axis, `TypeError` for another type | `real_robot/03_connect_and_move.py` |
 | `MotionReport` | What a motion verb asked, how the arm's motions reach it, and what the arm said | `real_robot/03_connect_and_move.py` |
 | `MotionOutcome` | How a motion verb ended: `EXECUTED`, `MOTION_REFUSED`, `CAMERA_WORLD_UNAVAILABLE`, `REFUSED` | `MotionReport.outcome` |
 | `HandReport` | What `grasp()` or `release()` commanded and measured, and what it did to the carried part model | `real_robot/04_open_and_close_the_hand.py` |
@@ -68,18 +68,18 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 | Name | What it is | Shown in |
 |---|---|---|
 | `Cell` | Cameras, perception, the grasp stack, the arm and the hand: `preflight()`, `build()`, `connected()`, `cameras` (the opened camera owners, primary first); `mode=` picks the grasp mode | `real_robot/12_pick_with_the_camera.py` |
-| `AutonomousGraspService` | What `Cell.build()` returns: one attempt per `pick()` (`look=` where it looks from), `put_back(report)`, `set_prompt()`, `enable_record_logging()` | `cell.service` in `real_robot/12_pick_with_the_camera.py` |
+| `AutonomousGraspService` | What `Cell.build()` returns: one attempt per `pick()` (`look=` where it looks from, `both_faces=True` to grip only once both jaw contact faces of the grasp were seen), `put_back(report)`, `set_prompt()`, `enable_record_logging()` | `cell.service` in `real_robot/12_pick_with_the_camera.py` |
 | `AutonomousGraspReport` | What one pick did: outcome, mode, the profile in effect, and the layers that actually ran | `simulation/06_grasp_modes_and_what_each_needs.py` |
 | `AutonomousGraspOutcome` | How a pick ended: `SUCCEEDED`, `NO_TARGET`, `NO_VALID_GRASP`, `MODE_NOT_AVAILABLE`, ... | `AutonomousGraspReport.outcome` |
 | `GraspMode` | `easy`, `auto`, `dense_clutter`; chosen when the service is built | `simulation/06_grasp_modes_and_what_each_needs.py` |
 | `PickPrompt` | What every camera grounds, the labels it maps onto and the filter; `service.set_prompt(text)` | `PickRun.from_cell(cell, prompt=...)` |
-| `PickRun` | N picks against one cell under one connect: `PickRun.from_cell(cell, runs=...).execute()`; `look=` the joints each pick looks from, `view=` a `LiveView` that shows every camera of the cell, `put_back=True` to put each part back | `real_robot/12_pick_with_the_camera.py` |
+| `PickRun` | N picks against one cell under one connect: `PickRun.from_cell(cell, runs=...).execute()`; `look=` the joints each pick looks from, `view=` a `LiveView` that shows every camera of the cell, `put_back=True` to put each part back, `both_faces=True` to grip only once both jaw contact faces were seen, `record_views=True` to keep each pick's looks for training, `push_mm=` how far a push moves a part | `real_robot/12_pick_with_the_camera.py` |
 | `PickAttempt` | One pick of a campaign as `on_attempt` gets it: the outcome, the looks tried, `object_mm` (where the object was seen, BASE), `grasp_pose` (where the tool closed), `fused_views` (the cameras whose views were fused into the cloud its grasp was planned on; empty for one view) with `fused_objects`, and the put back | `real_robot/12_pick_with_the_camera.py`, `real_robot/17_pick_with_fused_cameras.py` |
 | `PickRunReport` | What a campaign did, whether it passed its rule, and how the cell came down; `exit_code` | `real_robot/12_pick_with_the_camera.py` |
 | `PassRule` | When a campaign passes: a `fraction` of attempts, and `confirm=` for a check of your own | `real_robot/12_pick_with_the_camera.py` |
 | `Recording` | Where a campaign appends one attempt record per line: `Recording.to_file(path)` or `Recording.off()` | `real_robot/12_pick_with_the_camera.py` |
 | `RecordLog` | A record log read back into KPIs, with the audit that says whether they rest on anything | `simulation/05_measure_a_campaign.py` |
-| `GraspMotion` | What a caller may choose about how a pick moves; a field left unset keeps the service's own | `real_robot/12_pick_with_the_camera.py` |
+| `GraspMotion` | What a caller may choose about how a pick moves; a field left unset keeps the service's own; `closing_axis="-y"` takes only the grasps heading within 30 degrees of that axis, each turned that way round | `real_robot/12_pick_with_the_camera.py` |
 | `PlannerStart` | One cell's planner, started and stopped at a desk with no controller | `cell.start_planner()` in `real_robot/02_check_the_cell_at_a_desk.py` |
 
 ### What a build or a connect refuses with
@@ -109,10 +109,10 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 | `HandEyeCalibration` | One camera calibrated against its robot: `check()` at a desk, `run()` at the cell; the stations are your own (`fixed_poses`) or you guide the arm to each pose by hand (`freedrive`) | `real_robot/07_calibrate_a_fixed_camera.py` |
 | `SweepOptions` | What a caller may choose about one calibration sweep: `fixed_poses`, `freedrive`, `adjust` (fine-tune each fixed station by hand), `samples`, the target and the preview; unset takes the tree's value | `real_robot/10_calibrate_a_wrist_camera_with_fixed_poses.py` |
 | `print_sweep_progress` | A sweep's `on_event`: one line per pose as it happens, where the arm goes, what the camera saw, and whether the pose counted or why not | `real_robot/07_calibrate_a_fixed_camera.py` |
-| `Locator` | An open camera and a perception backend that place what they see in the robot's base frame; `Locator.for_cameras(tree, cameras)` gives every camera of a cell one over a single backend, so the models load once; `view=` pins each locate on a `LiveView`, over the image it was made on; `on_the_wrist` says whether the arm must stand at a look pose before it locates | `real_robot/15_speak_pick_and_hand_handover.py` |
-| `Located` | What one frame located: `objects`, `scene(i, robot)` for grasps, `keep_out(i)` for the planner, `set_down(i, grasp=, part_bottom_mm=)` to put a held part on object i | `real_robot/15_speak_pick_and_hand_handover.py` |
-| `SetDown` | Where the tool sets a held part down on a located object, measured: the target's top (95th percentile of its surface), the part's hang below the grasp from the declared table (`scene.declared_support_height_mm`, never the part's lowest seen point, so the part is never pressed in and a part off a raised block drops further), at least 5 mm of air; `pose` for `robot.place`, `None` with a `reason` when it cannot be measured | `real_robot/13_pick_and_place_with_the_camera.py` |
-| `LocatorRefused` | Raised when a locator cannot place what its camera sees, before it grabs or on a frame | `Locator.from_tree(...)`, `locate()` |
+| `Locator` | An open camera and a perception backend that place what they see in the robot's base frame: `locate(prompt)` from one frame, and `look_around(prompt, looks=None, robot=, both_faces=False, record_views=False, closing_axis=)` for a part to grip, where a wrist camera visits each look, fuses it with the ones before and stops once the part's grasp is safe; `Locator.for_cameras(tree, cameras)` gives every camera of a cell one over a single backend, so the models load once; `view=` pins each locate on a `LiveView`, over the image it was made on; `on_the_wrist` says whether the arm must stand at a look pose before it locates | `real_robot/13_pick_and_place_with_the_camera.py`, `real_robot/15_speak_pick_and_hand_handover.py` |
+| `Located` | What one frame located, or what the looks of a look around located, fused: `objects`, `scene(i, robot)` for grasps, `keep_out(i)` for the planner, `set_down(i, grasp=, part_bottom_mm=)` to put a held part on object i. A look around adds `looks`, `looks_fused`, `jaw_faces_seen`, `refused`, `hand_eye_gap_mm`, `generated_view_deg`, `views_file` and `closing_axis`, the axis its looks judged, which `scene(0, ...)` takes and holds to; with `refused` set, `scene(i)` and `set_down(i)` raise `LocatorRefused` | `real_robot/13_pick_and_place_with_the_camera.py`, `real_robot/15_speak_pick_and_hand_handover.py` |
+| `SetDown` | Where the tool sets a held part down on a located object, measured: the target's top (95th percentile of its surface), the part's hang below the grasp from `scene.part_bottom_mm` (the declared table, lowered only where two or more looks measured the part's foot below it, never raised: a foot the camera missed never presses the part in, and a part off a raised block drops further), at least 5 mm of air; `pose` for `robot.place`, `None` with a `reason` when it cannot be measured | `real_robot/13_pick_and_place_with_the_camera.py` |
+| `LocatorRefused` | Raised when a locator cannot place what its camera sees, before it grabs or on a frame; by `look_around` for a hand that is not a parallel jaw; by `scene(i)` or `set_down(i)` of a refused `Located` | `Locator.from_tree(...)`, `locate()` |
 
 ### Hands seen by a camera
 
@@ -132,7 +132,7 @@ it needs a FIXED camera, and refuses a wrist rig rather than composing a transfo
 
 | Name | What it is | Shown in |
 |---|---|---|
-| `Scene` | A segmented target cloud on a support surface in base millimetres; `grasps()` ranks jaw grasps | `offline/grasping/grasps_for_a_cloud.py` |
+| `Scene` | A segmented target cloud on a support surface in base millimetres; `grasps()` ranks jaw grasps, each the way round nearer the tree's `robot.natural_closing_axis`, and `grasps(closing_axis=...)` only those along an axis | `offline/grasping/grasps_for_a_cloud.py` |
 | `synthesize_suction_grasps` | Ranked suction candidates for one segmented object | `offline/grasping/jaw_or_suction.py` |
 | `build_calculator` | The grasp generator a tree's `robot.grasping.calculator` asks for, `geometric` or `deep` | `offline/grasping/select_grasp_generator.py` |
 | `preflight_calculator` | Checks that selector without building anything, and returns what it chose | `offline/grasping/select_grasp_generator.py` |

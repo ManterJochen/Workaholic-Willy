@@ -92,7 +92,7 @@ everything runs slowly. MediaPipe runs on the CPU in any case.
 | GroundingDINO and SAM2 on a prompted pick | measured in simulation (Isaac, real-vision picks) |
 | The VLM route | measured in simulation ([`vlm/`](vlm/README.md) has the numbers) |
 | RT-DETR and OneFormer in a pick | never touched hardware |
-| Perception on a real camera frame | never touched hardware |
+| Perception on a real camera frame | run on a physical cell: GroundingDINO, SAM2 and the VLM route on a wrist D415; no measurement is kept here |
 
 ## Fine-tuning RT-DETR on your own classes
 

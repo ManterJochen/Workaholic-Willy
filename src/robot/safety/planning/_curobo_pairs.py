@@ -14,12 +14,19 @@ order; only a box run naming a pair a probe measured the same way can.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
-__all__ = ["PairDepth", "SphereLayout", "SphereLayoutError", "deepest_pairs"]
+__all__ = ["NAMED_WITHIN_MM", "PairDepth", "PairOverlap", "SphereLayout", "SphereLayoutError", "deepest_pairs",
+           "overlapping_pairs", "refused_rows"]
+
+#: How close to touching a pair of links is still named by :func:`overlapping_pairs`, in millimetres. The kernel judges
+#: in float32 and this in float64 over the same spheres, which differ by about a millionth of a millimetre here; a pair
+#: the kernel reads as just touching must never be one this reads as just apart, so a pair this close is named too.
+NAMED_WITHIN_MM = 0.01
 
 
 class SphereLayoutError(ValueError):
@@ -39,6 +46,34 @@ class PairDepth:
 
     def to_dict(self) -> dict[str, Any]:
         return {"link_a": self.link_a, "link_b": self.link_b, "depth_mm": self.depth_mm}
+
+
+@dataclass(frozen=True)
+class PairOverlap:
+    """Two links whose spheres overlap in one configuration: how deep with the planner's padding, and without any.
+
+    ``depth_mm`` is the deepest sphere pair of the two links as the planner judged it, ``r_i + r_j + pad_i + pad_j -
+    |c_i - c_j|``; ``unpadded_depth_mm`` the same sphere pair with no padding at all, negative where the spheres alone
+    are that far apart. The names are sorted, as :class:`PairDepth`'s are.
+    """
+
+    link_a: str
+    link_b: str
+    depth_mm: float
+    unpadded_depth_mm: float
+
+    def render(self) -> str:
+        return (f"{self.link_a} and {self.link_b} overlap by {self.depth_mm:.1f} mm with the planner's padding "
+                f"({self._spheres_alone()})")
+
+    def _spheres_alone(self) -> str:
+        if self.unpadded_depth_mm > 0.0:
+            return f"{self.unpadded_depth_mm:.1f} mm without it"
+        return f"the spheres alone {-self.unpadded_depth_mm:.1f} mm apart"
+
+    def to_row(self) -> list[Any]:
+        """``[link_a, link_b, depth_mm, unpadded_depth_mm]``, the row a check_js report carries."""
+        return [self.link_a, self.link_b, self.depth_mm, self.unpadded_depth_mm]
 
 
 @dataclass(frozen=True)
@@ -132,3 +167,106 @@ def deepest_pairs(spheres: Any, layout: SphereLayout) -> "tuple[PairDepth | None
         first, second = str(owners[upper[0][best]]), str(owners[upper[1][best]])
         out.append(PairDepth(link_a=min(first, second), link_b=max(first, second), depth_mm=float(depth[best])))
     return tuple(out)
+
+
+def overlapping_pairs(
+    spheres: Any, layout: SphereLayout, *, within_mm: float = NAMED_WITHIN_MM,
+) -> "tuple[tuple[PairOverlap, ...], ...]":
+    """Every pair of links whose spheres overlap, per pose, deepest first; a pose that holds none gets ``()``.
+
+    Where :func:`deepest_pairs` names the one pair an operator reads first, this names all of them, because a driver
+    that leaves a pair to the exact guard has to know every pair the planner's verdict rests on. The pairs are the
+    kernel's: two different links the descriptor does not take out of self collision, each sphere counted where its
+    padded radius is not negative (the kernel's ``valid_mask`` reads the radius after the offset, so an empty slot at
+    -100 m never counts and a zero radius with padding does). A pair is named where its deepest sphere pair reaches
+    deeper than ``-within_mm`` with the loaded padding (:data:`NAMED_WITHIN_MM`).
+
+    Two links far apart are passed over on their bounding spheres, which bound every sphere of the link with its
+    padding, so the shortcut drops no pair a sphere-by-sphere pass would name.
+    """
+    array = np.asarray(spheres, dtype=np.float64)
+    if array.ndim != 3 or array.shape[2] != 4:
+        raise SphereLayoutError(f"spheres must be (poses, slots, 4) in metres, got {array.shape}")
+    if array.shape[1] != layout.slots:
+        raise SphereLayoutError(
+            f"this layout describes {layout.slots} sphere slot(s) and the planner handed over {array.shape[1]}: every "
+            "name after the first difference would belong to another link"
+        )
+    within_m = float(within_mm) / 1000.0
+    owners = np.asarray(layout.owners)
+    pads = np.asarray(layout.pads_m, dtype=np.float64)
+    links = list(dict.fromkeys(layout.owners))
+    slots = {name: np.flatnonzero(owners == name) for name in links}
+    candidates = [
+        (a, b) for index, a in enumerate(links) for b in links[index + 1:]
+        if (min(a, b), max(a, b)) not in layout.ignored
+    ]
+    out: list[tuple[PairOverlap, ...]] = []
+    for pose in array:
+        centres, reach = pose[:, :3], pose[:, 3] + pads
+        held: dict[str, np.ndarray] = {}
+        bound: dict[str, tuple[np.ndarray, float]] = {}
+        for name in links:
+            index = slots[name][reach[slots[name]] >= 0.0]
+            if index.size == 0:
+                continue
+            middle = centres[index].mean(axis=0)
+            held[name] = index
+            bound[name] = (middle, float(np.max(np.linalg.norm(centres[index] - middle, axis=1) + reach[index])))
+        found: list[PairOverlap] = []
+        for a, b in candidates:
+            if a not in held or b not in held:
+                continue
+            (middle_a, radius_a), (middle_b, radius_b) = bound[a], bound[b]
+            if float(np.linalg.norm(middle_a - middle_b)) - radius_a - radius_b >= within_m:
+                continue
+            ia, ib = held[a], held[b]
+            gap = np.linalg.norm(centres[ia][:, None, :] - centres[ib][None, :, :], axis=2)
+            depth = reach[ia][:, None] + reach[ib][None, :] - gap
+            row, column = np.unravel_index(int(np.argmax(depth)), depth.shape)
+            deepest = float(depth[row, column])
+            if deepest <= -within_m:
+                continue
+            padding = float(pads[ia[row]] + pads[ib[column]])
+            found.append(PairOverlap(link_a=min(a, b), link_b=max(a, b), depth_mm=deepest * 1000.0,
+                                     unpadded_depth_mm=(deepest - padding) * 1000.0))
+        found.sort(key=lambda pair: (-pair.depth_mm, pair.link_a, pair.link_b))
+        out.append(tuple(found))
+    return tuple(out)
+
+
+def refused_rows(
+    passes: "Sequence[bool]", bound: Any, self_hit: Any, world_hit: Any,
+    spheres_of: "Callable[[list[int]], Any]", layout: "SphereLayout | None", *, name_pairs: bool,
+) -> "tuple[list[dict[str, Any]], bool]":
+    """Every configuration of one check the planner refused, as the rows a check_js report carries, and whether they
+    name their pairs.
+
+    ``passes`` is the verdict each configuration got, the one the reply's ``first_invalid`` was read from, so the
+    report and the verdict open on the same sample. ``bound``, ``self_hit`` and ``world_hit`` are the three costs of
+    every configuration, indexable and each readable as a float; zero is clear. ``spheres_of(indices)`` gives the
+    planner's own spheres of those configurations, ``(len(indices), slots, 4)`` in metres, and is asked once, for the
+    configurations the self term refused alone. A row is ``{"index", "bound_ok", "self_ok", "world_ok", "pairs"}``,
+    ``pairs`` every overlapping pair of links as ``[link_a, link_b, depth_mm, unpadded_depth_mm]``
+    (:func:`overlapping_pairs`), empty where the self term did not refuse or its spheres name none, and ``None`` for
+    every row where no names were asked or ``layout`` is ``None``. Plain JSON: the sidecar writes it as it stands.
+    """
+    count = len(passes)
+    if not (len(bound) == len(self_hit) == len(world_hit) == count):
+        raise ValueError(f"{count} verdict(s) and {len(bound)}, {len(self_hit)} and {len(world_hit)} term(s): every "
+                         "configuration has one verdict and three terms")
+    named = bool(name_pairs) and layout is not None
+    refused = [index for index, ok in enumerate(passes) if not ok]
+    hits = [index for index in refused if float(self_hit[index]) > 0.0]
+    overlaps: dict[int, tuple[PairOverlap, ...]] = {}
+    if named and hits:
+        assert layout is not None  # noqa: S101 (named says so)
+        overlaps = dict(zip(hits, overlapping_pairs(np.asarray(spheres_of(hits), dtype=np.float64), layout)))
+    rows = [{
+        "index": index,
+        "bound_ok": float(bound[index]) == 0.0,
+        "self_ok": float(self_hit[index]) == 0.0,
+        "world_ok": float(world_hit[index]) == 0.0,
+        "pairs": [pair.to_row() for pair in overlaps.get(index, ())] if named else None,
+    } for index in refused]
+    return rows, named

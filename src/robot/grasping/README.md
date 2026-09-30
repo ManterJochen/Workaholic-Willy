@@ -23,6 +23,15 @@ tree and plans for the library's default jaw. Run it at a desk with
 [grasps_for_a_cloud.py](../../../examples/offline/grasping/grasps_for_a_cloud.py); a camera supplies the
 cloud in [15_speak_pick_and_hand_handover.py](../../../examples/real_robot/15_speak_pick_and_hand_handover.py).
 
+**Which way the jaws close.** `Scene.from_robot_config` reads `robot.natural_closing_axis`: `grasps()`
+asked for no axis turns every grasp, of its two wrist turns half a turn apart, to the one whose tool +X
+lies nearer that direction, and drops none. `grasps(closing_axis="-y")` takes only the grasps whose
+closing axis heads within 30 degrees of the axis, each turned the named way round, chosen before
+`max_candidates` (the generator is asked for 36, or `max_candidates` where that is more);
+`SceneGrasps.withheld` says what the axis left out, and a result it left empty says so instead of "too
+sparse". The scene of a looked-around part (`located.scene(0, ...)`) takes the axis its looks judged and
+refuses any other ([perception/](../perception/README.md)).
+
 ## Usage
 
 | You have | Call | Shown in |
@@ -68,10 +77,11 @@ A stock tree runs an open-loop attempt: perceive, generate and rank candidates, 
 IK, approach, close and retreat, log. Every block under `robot.grasping` with its own `enabled` switch
 ships `false`: `decision`, `feasibility`, `ordering`, `recovery`, `uncertainty`, `success_model`,
 `performance`, `fusion`, `approach_validation` and `deep_ranker`. So the decision gate, recovery,
-multi-view fusion and the learned success model are here, and off the path a fresh cell takes. The
-hold is verified on every path, by the execution policy's own check after its close
-([motion/](motion/README.md)), which reads the gripper's `is_object_detected` and `hold_evidence` (a
-Robotiq's gOBJ). The separate verification stage with its `verification` block, and the
+fixed-camera fusion and the learned success model are here, and off the path a fresh cell takes. A wrist
+camera's looks need no switch: a pick handed several looks fuses them and stops at the first safe grasp
+([loop/](loop/README.md)). The hold is checked after every close by the execution policy, where the
+gripper can report one ([motion/](motion/README.md)): it reads the gripper's `is_object_detected` and
+`hold_evidence` (a Robotiq's gOBJ). The separate verification stage with its `verification` block, and the
 `dense_recovery` block, were removed on 2026-09-29: no pick consulted them, and a tree that still writes
 either is refused at load. `python scripts/checks/grasping_switches.py`
 prints which block is reachable in which grasp mode, and [the config reference](../../../docs/grasping-config-reference.md)
@@ -94,10 +104,11 @@ recovery a mode allows together.
 `verification_heavy`, the preset that set `closed_loop` to refine and verify, was deleted on 2026-09-29
 with that mode and with `dense_autonomous`: a tree, a preset or a call that still names either is refused
 with the mode to name instead (`auto` for `closed_loop`, `dense_clutter` for `dense_autonomous`).
-`dense_clutter` took over `nudge_target`, the one push a built-in profile allows; it still needs
-`recovery.allowed_actions` to name it and a declared fixture, and a cell built from config pushes nothing
-even then: its recovery loop plans the nudge without an offset and refuses it before the arm moves
-([recovery/](recovery/README.md)). `next_viewpoint`, which
+The built-in profiles set what recovery may ever do: `auto` allows `rescan` and `next_target`, and
+`dense_clutter` adds `nudge_target`, the one push a built-in profile allows. The push needs
+`recovery.allowed_actions` to name it and a declared fixture, which the shipped preset does not; it then
+runs inside a wrist camera's pick attempt, planned from what the looks saw, with the jaws open and nobody
+asked ([recovery/](recovery/README.md)). A fixed-camera cell never pushes. `next_viewpoint`, which
 `dense_clutter` allowed until then, was merged into `rescan` the same day, and a preset or a tree that
 still names it is refused with `removed on purpose: use rescan`.
 
@@ -108,8 +119,9 @@ The gate for `easy` is the strictest: `dead_loop_rate` at 0.0 and `false_positiv
 ### KPI triage
 
 `compute_kpis` in [replay/kpi.py](replay/kpi.py) defines every rate from the record log. The three an
-operator meets first: `safety_rejection_rate` (attempts a guard refused), `dead_loop_rate` (attempts
-that ended in `recovery_exhausted`) and `false_positive_grasp_rate` (reported successes that later
+operator meets first: `safety_rejection_rate` (attempts a guard refused, a push that stopped among
+them), `dead_loop_rate` (attempts that ended in `recovery_exhausted`: a recovery loop ran an action and
+had none left) and `false_positive_grasp_rate` (reported successes that later
 failed a re-check). Nothing on this stack writes the field the last one counts, so `--records` withholds
 it rather than printing 0.0. The runbooks in `docs/runbooks/` bring a cell up and take it to its first
 pick; none of them triages a KPI, so start from the rate's definition in `kpi.py`. Never disable a guard
@@ -132,9 +144,10 @@ to move a rate.
 | Capability | Evidence |
 | --- | --- |
 | Analytic generation, scoring and the pick service on a UR5e with a 2F-85 | measured in simulation ([willy_sim](../../willy_sim/README.md)) |
-| Recovery and multi-view fusion | measured in simulation, switched on per flag by the runners |
+| The recovery loop and fixed-camera fusion | measured in simulation, switched on per flag by the runners |
+| A wrist camera's looks and the push | pinned by tests on fake arms and cameras, and the Isaac arm generates no view; never touched hardware |
 | The hold check after the close | pinned by tests on the Robotiq driver's gOBJ seam; never touched hardware |
-| A grasp from this package on a physical arm | never touched hardware |
+| A grasp from this package on a physical arm | run on a physical cell: camera picks on a UR10 (CB3) with a wrist D415 and a `jaw_io` Hand-E; no pick rate is kept here |
 
 The simulation runners build the pick service through `from_components` and switch the advanced blocks
 on in runner code, so a simulation result says nothing about a config-built cell with those blocks
@@ -156,9 +169,9 @@ friction-cone argument under a contact model, not a substitute for force feedbac
 | [scoring/](scoring/README.md) | the deterministic scorers, `rank_grasp_poses`, force closure, the learned success predictor |
 | `decision.py` | `DecisionEngine`: `GRASP_NOW`, `RECOVER` or `FAIL_CLOSED`, once per pick; off by default |
 | [planning/](planning/README.md), [motion/](motion/README.md) | the approach pose, the IK seam; approach, close and retreat, and the CAMERA to BASE resolver |
-| [recovery/](recovery/README.md) | bounded recovery. Off by default. `closed_loop/`, which held the post-grasp verifiers no pick path ran, left on 2026-09-29 |
-| [loop/](loop/README.md), [telemetry/](telemetry/README.md) | `BinPickingOrchestrator`, one attempt across the tiers; the frozen `GraspAttemptRecord` |
-| [multiview/](multiview/README.md), [suction/](suction/README.md) | fusion across camera views; suction candidates |
+| [recovery/](recovery/README.md) | bounded recovery: rescan, skip a failed part, the push. Off by default. `closed_loop/`, which held the post-grasp verifiers no pick path ran, left on 2026-09-29 |
+| [loop/](loop/README.md), [telemetry/](telemetry/README.md) | `BinPickingOrchestrator`, one attempt across the tiers and a wrist camera's looks; the frozen `GraspAttemptRecord` |
+| [multiview/](multiview/README.md), [suction/](suction/README.md) | fusion across fixed cameras and a wrist camera's looks, and which jaw contact faces were seen; suction candidates |
 | [deep/](deep/README.md) | the learned 6-DoF generator; no trained weights ship |
 | `uncertainty.py`, [visualization/](visualization/README.md) | fusion of the uncertainty channels; grasp debug images |
 | [calibration/](calibration/README.md), [replay/](replay/README.md), [rl/](rl/README.md) | the offline tail: reads what the pick path logged, never imported by it at module top level |

@@ -9,17 +9,19 @@ The mode's built-in behaviour profile (`_PROFILES` in `autonomous_grasp/config.p
 * The nudge is offered for `ALL_COLLIDED` only.
 * `container_agitate` without a declared container is refused when the config loads.
 
-MEASURED through `AutonomousGraspService._run_with_recovery` with a scripted pick. The service still plans
-from the dispatcher alone here and hands the loop no memory of failed parts; its wiring of both comes with the
-push and the exclusion zones. So:
+MEASURED through `AutonomousGraspService._run_with_recovery` with a scripted pick. The service plans `rescan`
+and `next_target` directly and every other action through a strategy (per-action mode, part B of 2026-09-30), and
+hands the loop its memory of failed parts: the part the pick loop names (`failed_part`) goes into the campaign's
+exclusion zones. A scripted pick names no part. So:
 
-* `next_target` next to `rescan` is planned and refused before anything moves (no memory of failed parts),
+* `next_target` next to `rescan` is planned and refused before anything moves (the pick named no failed part),
   then the rescan runs.
 * `next_target` alone is planned and refused, and the failed pick is final.
 * `container_agitate` without a declared container is refused at load. With one declared it loads and is
   never planned, because no built-in profile lists it, and the arm never moves.
-* `nudge_target` with a fixture is planned for `ALL_COLLIDED` and refused `refused_no_offset` before the arm
-  moves, then the rescan runs. For `NO_VALID_GRASP` it is not offered at all.
+* `nudge_target` with a fixture is never planned by this loop: no strategy plans it, since the push runs inside
+  the pick attempt (the pick loop's push gate), so for `ALL_COLLIDED` the loop goes on to the rescan and the arm
+  never moves from here. For `NO_VALID_GRASP` it is not offered at all.
 
 The pick itself is scripted (`_pick_inner` replaced on the instance) because what is pinned here is
 the loop around it, not perception or motion; the loop, the orchestrator, the dispatcher, the
@@ -135,8 +137,8 @@ def _run(
 
 class AConfigBuiltRecoveryPlansOnlyWhatItsProfileAllows(unittest.TestCase):
     def test_next_target_beside_rescan_is_refused_then_the_rescan_runs(self) -> None:
-        # The dispatcher lists NEXT_TARGET first for NO_VALID_GRASP and the profile allows it now; with no
-        # memory of failed parts it cannot skip one, so it is refused before anything moves and falls through.
+        # The dispatcher lists NEXT_TARGET first for NO_VALID_GRASP and the profile allows it; the scripted pick
+        # names no failed part to skip, so it is refused before anything moves and falls through.
         service = _service("dense_clutter", ["next_target", "rescan"])
         report, picks = _run(
             service, [_failed(GraspFailureReason.NO_VALID_GRASP), _succeeded()], _CountingArm()
@@ -146,7 +148,7 @@ class AConfigBuiltRecoveryPlansOnlyWhatItsProfileAllows(unittest.TestCase):
         self.assertEqual(report.telemetry["recovery_trail_actions"], ["next_target", "rescan"])
         self.assertEqual(
             [(step["action"], step["step_result"]) for step in report.recovery_actions],
-            [("next_target", "refused_no_part_memory"), ("rescan", "completed")],
+            [("next_target", "refused_no_failed_part"), ("rescan", "completed")],
         )
 
     def test_next_target_alone_is_refused_and_the_pick_is_final(self) -> None:
@@ -182,7 +184,8 @@ class AConfigBuiltRecoveryPlansOnlyWhatItsProfileAllows(unittest.TestCase):
         self.assertEqual(report.recovery_actions, ())
         self.assertEqual(arm.moves, [])
 
-    def test_a_nudge_is_planned_refused_before_the_arm_moves_then_the_rescan_runs(self) -> None:
+    def test_the_loop_never_plans_a_nudge_and_goes_on_to_the_rescan(self) -> None:
+        # The push runs inside the pick attempt; this loop has no strategy for it and never plans it.
         arm = _CountingArm()
         service = _service("dense_clutter", ["nudge_target", "rescan"], fixture=True)
         report, picks = _run(
@@ -190,13 +193,13 @@ class AConfigBuiltRecoveryPlansOnlyWhatItsProfileAllows(unittest.TestCase):
         )
         self.assertIs(report.outcome, AutonomousGraspOutcome.SUCCEEDED)
         self.assertEqual(picks, 2)
-        self.assertEqual(report.telemetry["recovery_trail_actions"], ["nudge_target", "rescan"])
+        self.assertEqual(report.telemetry["recovery_trail_actions"], ["rescan"])
         self.assertEqual(
             report.telemetry["recovery_trail_terminal_reason"], "recovered_success"
         )
         self.assertEqual(
             [(step["action"], step["step_result"]) for step in report.recovery_actions],
-            [("nudge_target", "refused_no_offset"), ("rescan", "completed")],
+            [("rescan", "completed")],
         )
         self.assertEqual(arm.moves, [])
 

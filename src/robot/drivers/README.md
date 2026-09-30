@@ -91,13 +91,13 @@ because importing Isaac starts a renderer. A module that is installed and will n
 
 | Driver | Evidence |
 |---|---|
-| UR over RTDE | measured against real controller software: URSim, see [ur/](ur/README.md) |
+| UR over RTDE | run on a physical cell: a UR10 (CB3), connect, moves, cuRobo plans and home; measured against real controller software in URSim, see [ur/](ur/README.md) |
 | Isaac Sim arm | measured in simulation: the picks and calibrations in [willy_sim](../../willy_sim/README.md) |
 | Dummy arm | measured in simulation: every desk example and the rehearsal run on it |
 | KUKA over EthernetKRL | never touched hardware: no motion has run against a KRC4 or KRC5 |
 | Franka, ROS 2 | no driver |
 
-No line of this package has moved a physical arm.
+The UR driver is the one in this package that has moved a physical arm.
 
 ## Adding a vendor
 

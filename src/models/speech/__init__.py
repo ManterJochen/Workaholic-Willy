@@ -34,6 +34,7 @@ _EXPORTS: dict[str, str] = {
     "SpeechEngine": "src.models.speech.engine",
     "SpeechGate": "src.models.speech.gate",
     "SpeechHolder": "src.models.speech.holder",
+    "SpeechModelIncomplete": "src.models.speech.engine",
     "SpeechModelMissing": "src.models.speech.engine",
     "SpeechStackUnavailable": "src.models.speech.engine",
     "TalkButton": "src.models.speech.push_to_talk",

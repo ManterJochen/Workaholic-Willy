@@ -110,15 +110,21 @@ so in its `does_not_measure` field. For a signal that can fail, run `--records-g
   reads `reobserve_planner_unavailable` where a current one reads `low_confidence`. The audits require a
   decision's keys, never its values, so both audit; the [telemetry README](../telemetry/README.md) lists
   every such string.
-- The failure taxonomy is at version 2 since 2026-09-29, which rewrote the recommendations that advised
-  removed features; the classification is unchanged. A version-1 report on disk keeps its old
-  recommendation wording: re-run `--failure-taxonomy` over its packs for the current one. One reader
-  takes a report back, `--adaptation-plan --taxonomy-in PATH`: it reads per-cause counts and never
-  checks `taxonomy_version`, so a version-1 report stays valid input there, which is harmless because
-  the counts mean the same in both versions. It looks those counts up under
-  `per_root_cause.<cause>.count`, a shape `--failure-taxonomy` does not write (it writes
-  `counts_by_cause.<cause>`), so today its taxonomy rules fire only on a report built in that shape by
-  hand; the mismatch predates version 2 and is still open.
+- The failure taxonomy is at version 3 (`TAXONOMY_VERSION`). Version 2 (2026-09-29) rewrote the
+  recommendations that advised removed features; version 3 rewrote the `occlusion_misread` one for the
+  fused wrist looks: declare a wrist camera's looks from the sides the clutter leaves open, the part's
+  open side first, or fuse a second camera; a wrist pick fuses each look with the ones before, stops at
+  the first valid and certain grasp, and takes one generated view only as the last resort. The
+  classification is unchanged. A report of an older version keeps its old recommendation wording:
+  re-run `--failure-taxonomy` over its packs for the current one. One reader takes a report back,
+  `--adaptation-plan --taxonomy-in PATH`: it reads per-cause counts and never checks
+  `taxonomy_version`, so an older report stays valid input there, which is harmless because the counts
+  mean the same in every version. It reads those counts from `counts_by_cause.<cause>`, the key
+  `--failure-taxonomy` writes. Until 2026-09-29 it looked under `per_root_cause.<cause>.count`, a shape
+  nothing writes, so its taxonomy rules (`occlusion_misread`, `empty_air_grasp` and `slip_after_grasp`,
+  each firing at 5 or more) never fired on a real report; that shape is no longer read. The planner
+  only proposes: `--adaptation-plan` prints the plan and writes nothing, and only an explicit
+  `--adaptation-apply` of an `apply_with_guardrails` plan writes an overlay.
 
 ## Files
 

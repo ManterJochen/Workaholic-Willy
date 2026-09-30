@@ -2,8 +2,9 @@
 
 A pick is not one behaviour. `easy` is the plain open-loop attempt on one object; `auto` decides per scene
 whether to sample densely; `dense_clutter` samples a bin rather than one object, and is the one mode whose
-profile lists a push (`nudge_target`, and only inside a declared fixture). A cell built from config never
-pushes: its recovery loop plans the nudge without an offset and refuses it before the arm moves.
+profile lists a push (`nudge_target`, and only inside a declared fixture). The push runs inside the pick
+attempt of a wrist camera, never from the recovery loop: a part every grasp of which collided, with a
+neighbour seen within 25 mm, is pushed with the open jaws and picked from the look taken again.
 
 The mode is chosen when the SERVICE IS BUILT, and `pick(mode=...)` only narrows the behaviour of one attempt
 within it -- so a service built for one sampler refuses another by name instead of quietly sampling the other

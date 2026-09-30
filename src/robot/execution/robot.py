@@ -16,7 +16,9 @@ through the pick service, after the grasping-block refusals and after the camera
 The verbs that move the arm (``move``, ``move_joints``, ``home``, ``pick``, ``place``) go through the
 arm's own checked verbs and read, before any command, whether its motions go through cuRobo and the
 exact mesh guard with the camera world (:mod:`src.robot.execution.motion`). Each returns a frozen
-report and raises only for a programmer's error.
+report and raises only for a programmer's error. ``tool_down`` builds the pose they take through the
+cell: ``Pose.tool_down``, closing the way the cell's hand naturally stands (``robot.natural_closing_axis``)
+where the program names no axis.
 
 Importing this module loads no grasping stack, no perception, no model and no camera package.
 """
@@ -50,6 +52,7 @@ if TYPE_CHECKING:
     from src.config.schema.robot import RobotConfig
     from src.config.tree import LoadedTree
     from src.geometry import Pose
+    from src.geometry.closing_axis import ClosingAxisLike
     from src.robot.core.keep_out import SegmentationOffer
     from src.robot.execution.camera_world_wiring import CameraWorldWiring
     from src.robot.execution.real_cell.preflight import PreflightReport
@@ -365,6 +368,37 @@ class Robot:
             "safety": self.safety().posture.value,
             "tree": None if self.tree is None else {"chain": self.tree.chain, "root": str(self.tree.root)},
         }
+
+    # ---- poses through the cell --------------------------------------------------------------
+
+    def tool_down(
+        self, x_mm: float, y_mm: float, z_mm: float, *, yaw_deg: float = 0.0,
+        closing_axis: "Maybe[ClosingAxisLike]" = UNSET,
+    ) -> "Pose":
+        """The tool at (``x_mm``, ``y_mm``, ``z_mm``) in BASE, pointing straight down, its jaws closing the way this
+        cell's hand and camera naturally stand where the program names no axis: ``Pose.tool_down`` through the cell.
+
+            above = robot.tool_down(450.0, 100.0, 300.0)              # along robot.natural_closing_axis
+            part = robot.tool_down(450.0, 100.0, 120.0, yaw_deg=90.0)  # a quarter turn further about the vertical
+
+        ``closing_axis`` is a name ``Pose.tool_down`` takes or an orientation, a quaternion (x, y, z, w) or a BASE
+        ``Pose``, whose tool +X laid onto the base XY plane is the direction. Unset, it is the cell's
+        ``robot.natural_closing_axis`` (the owner's decision, 2026-09-30), and ``"x"`` where the cell names none, which
+        is ``Pose.tool_down`` exactly. ``yaw_deg`` turns the closing axis further about the vertical, counted from that
+        axis: on a cell whose hand stands along ``-y``, ``yaw_deg=90.0`` closes along base x. The config is the tree this
+        robot was built from, else the one its arm keeps (``arm.config``), as :meth:`preflight` reads it. Raises
+        ``ValueError`` for a name or an orientation that names no axis, and ``TypeError`` for a value of another type,
+        ``None`` included. Commands nothing, and loads no grasping package: the reader is the geometry's
+        (``src.geometry.closing_axis``).
+        """
+        from src.geometry import Pose  # noqa: PLC0415
+        from src.geometry.closing_axis import closing_axis_of, natural_closing_axis_of  # noqa: PLC0415
+
+        config = self.robot_config if self.robot_config is not None else getattr(self.arm, "config", None)
+        axis = closing_axis_of(closing_axis) if chosen(closing_axis) else natural_closing_axis_of(config)
+        if axis is not None and axis.heading_deg is not None:
+            return Pose.tool_down(x_mm, y_mm, z_mm, yaw_deg=axis.heading_deg + float(yaw_deg))
+        return Pose.tool_down(x_mm, y_mm, z_mm, yaw_deg=yaw_deg, closing_axis=axis.name if axis is not None else "x")
 
     # ---- the verbs that move the arm ----------------------------------------------------------
 

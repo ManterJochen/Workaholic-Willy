@@ -590,9 +590,11 @@ def _print_block_carriers(report: Any) -> None:
         f"shadow_p={getattr(shadow, 'predicted_success_probability', None)}",
         f"shadow_phase={getattr(shadow, 'model_lifecycle_phase', None)}",
         # Count and names. "1 action" is not an answer when the safety rule is about which action: a
-        # `rescan` after a planner refusal re-perceives and moves nothing, while a `nudge_target`
-        # drives the arm somewhere the operator did not name. The trail carries the names, so print
-        # them; the count alone cannot tell the two apart, and that distinction is the decision.
+        # `rescan` after a planner refusal re-perceives and moves nothing. The trail carries the loop's
+        # action names, so print them; the count alone cannot tell them apart. A push of the part
+        # (`nudge_target`) runs inside the pick attempt and is never one of the trail's actions: it is
+        # a row of `recovery_actions`, counted first, wherever its arm left the look, and every push the
+        # pick considered is in the telemetry's `pushes`.
         f"recovery_actions={len(getattr(report, 'recovery_actions', ()) or ())}",
         f"recovery_trail={tel.get('recovery_trail_actions')}"
         f"/{tel.get('recovery_trail_terminal_reason')}",

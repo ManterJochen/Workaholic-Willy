@@ -24,8 +24,8 @@ LOOK = [
 ]
 
 # Start 60 mm above the grasp, close 5 mm below the measured width, lift 100 mm. A field left out keeps the service's
-# own, and a value that cannot be a motion raises here, before any cell exists.
-motion = GraspMotion(standoff_mm=60.0, close_squeeze_mm=5.0, retreat_mm=100.0)
+# own, and a value that cannot be a motion raises here, before any cell exists; closing_axis grips along one axis only.
+motion = GraspMotion(standoff_mm=60.0, close_squeeze_mm=5.0, retreat_mm=100.0)  # opt in: closing_axis="-y" (30 deg)
 
 # The whole cell: its cameras, perception, the grasp stack, the arm and the hand. Every motion is checked against the
 # world its calibrated cameras build, and a pick with no such world is refused unmoved.

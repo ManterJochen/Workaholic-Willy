@@ -103,7 +103,8 @@ class RecoverySchemaValidationTests(unittest.TestCase):
                 "fixture": {
                     "center_mm": [0.0, 0.0, 100.0],
                     "half_extents_mm": [200.0, 200.0, 50.0],
-                    "max_nudge_mm": 5.0,
+                    # 5 mm until 2026-09-29; a ceiling under 10 mm allows no push and is refused at load now.
+                    "max_nudge_mm": 30.0,
                 },
             }
         )

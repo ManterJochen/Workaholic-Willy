@@ -74,9 +74,11 @@ Both resolvers live in
 
 **Which one is right.** Eye-to-hand when the scene is fixed and the transform must be valid before the
 arm has moved: static overhead bin picking, or any cell where the camera has to see the workspace
-while the arm is elsewhere. Eye-in-hand when the view has to come from where the tool is going:
-close-range refinement, or deep bins nothing static can see into. Eye-in-hand costs a live TCP read
-every frame and a recalibration on every gripper change. Many cells want both.
+while the arm is elsewhere. Eye-in-hand when the view has to come from where the tool is going: a part
+seen from several **looks**, fused until its grasp is safe ([05](05-pick-loop.md)), or deep bins nothing
+static can see into. Only an eye-in-hand camera looks around; a fixed camera fuses with the others where it
+stands. Eye-in-hand costs a live TCP read every frame and a recalibration on every gripper change. Many
+cells want both.
 
 An eye-in-hand result cannot be saved as `Extrinsics`:
 [`src/calibration/eye_hand/types.py`](../../src/calibration/eye_hand/types.py) raises
@@ -283,6 +285,14 @@ calibrated camera, and measure where the TCP lands. Eye-in-hand gets a second fr
 translation of `result.transform` is the camera origin in the tool frame, and it should match the
 mechanical drawing to a few millimetres.
 
+**And a third, on every wrist pick that fuses two looks: the hand-eye check.** Two looks of one part
+through one hand-eye measure the surface they share in the same place, up to depth noise. The pick takes
+the median distance between them, over the surface both saw facing the same way, and prints it on the
+report's `hand-eye` line. Above **6 mm** a WARNING says the calibration may have drifted (a camera loosened
+on the wrist). It needs 20 shared points, speaks once per pick and changes nothing: the pick goes on. It
+cannot see a slide along a surface, so a quiet check is no proof. A WARNING is your cue for the physical
+check above.
+
 ---
 
 ## 4. How the transform reaches a pick
@@ -446,6 +456,7 @@ every pick that each other camera's view was dropped; with it off, nothing asks 
 | A result rotated by a right angle or 180 degrees | check the reference it is compared against first: a wrong reference is harder to find |
 | Eye-to-hand expected, a `CAMERA -> TOOL` result arrived | settings with no `mode` make `CalibrationRoutine` default to eye-in-hand; pass `calibration_mode=` |
 | Grasps went bad after a **gripper change**, camera untouched | eye-in-hand only: the TCP moved, so `CAMERA` to `TOOL` is stale, and it looks like no camera fault |
+| A wrist pick WARNs that its looks measure the part's shared surface more than 6 mm apart | eye-in-hand only: the hand-eye has drifted, the camera or the tool moved on the flange; run the physical check (3.4) |
 | Fused cameras calibrated, the pick stays single-view, no refusal | `fusion.enabled` is false (section 4.2) |
 
 Random misses are not calibration. Three notes on the rows above:
@@ -466,7 +477,8 @@ marker path is in use, both must describe the board you actually have.
 
 **When to recalibrate:** any collision involving the camera, the mount or the tool; a tool or gripper
 change, eye-in-hand especially; the camera moved, refocused or remounted; the robot base moved; a drift
-alarm on the residual channels; grasps that start missing by a constant offset.
+alarm on the residual channels; a hand-eye WARNING from the looks of a wrist pick; grasps that start
+missing by a constant offset.
 
 ---
 
@@ -478,7 +490,7 @@ torch-free): the solver, the frame contracts, the artifact round trips and the r
 | Capability | Evidence |
 |---|---|
 | Eye-to-hand and eye-in-hand through `CalibrationRoutine` | measured in simulation: both run end to end, and the eye-in-hand wrist-camera pick lands on target |
-| The real-cell sweep through `HandEyeCalibration` | never touched hardware: the mock suite covers its flow; no physical camera or controller has run it |
+| The real-cell sweep through `HandEyeCalibration` | run on a physical cell: a wrist D415 on a UR10 (CB3), against one printed ArUco marker; a fixed camera and a ChArUco board have not, and the mock suite covers the flow |
 
 **Two kinds of simulated run.** The ground-truth marker source is derived from the same oracle the
 result is compared against, so its near-zero residual is **circular**. It validates collection, the
@@ -496,12 +508,13 @@ this repository used to carry, and no Isaac run has been repeated on them since.
 **The real-cell sweep.** [`src/robot/execution/real_cell/calibrate.py`](../../src/robot/execution/real_cell/calibrate.py)
 is a caller of `HandEyeCalibration` in [`src/robot/execution/hand_eye.py`](../../src/robot/execution/hand_eye.py).
 It drives the same `CalibrationRoutine` with a live RGB-D ArUco marker source. `--check` reads the
-config only, and `--dry-run` opens the camera and builds the arm without moving. Past `--dry-run` it
-is unproven: that marker source has never seen a physical camera, and an aligned stream reports
-distortion coefficients near zero, so its residual is unconfirmed on a real bench. The two ways by
-hand, `--freedrive` and `--adjust`, go through the vendor's hand guiding (`SupportsFreedrive`, on a UR
-its teach mode); their console, stillness gate, boundaries and stations file are exercised against a
-scripted arm only.
+config only, and `--dry-run` opens the camera and builds the arm without moving. Past `--dry-run`,
+`HandEyeCalibration` and its RGB-D marker source have calibrated one wrist D415 at a physical cell. An
+aligned stream reports distortion coefficients near zero, so the source's residual stays unconfirmed: no
+bench residual is kept here. The two ways by hand, `--freedrive` and `--adjust`, go through the vendor's
+hand guiding (`SupportsFreedrive`, on a UR its teach mode); that D415 was calibrated by hand in
+freedrive (examples 09 and 10), and their console, stillness gate, boundaries and stations file are
+exercised against a scripted arm in the offline suite.
 
 The sweep builds its arm through `Robot.from_config(robot_config, gripper=None)`, so the arm-vendor
 readiness gate runs and no gripper is built. It takes the cell lock before the arm connects, connects

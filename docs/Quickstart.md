@@ -7,10 +7,11 @@ the section on your own cell says so.
 A camera scene and a text prompt go in; a detector and a segmenter find the object, a geometric
 calculator ranks 6-DoF grasps, a fail-closed safety pipeline gates every motion, a driver executes it,
 and the attempt is written to a structured log. The default pick is open-loop: perceive, rank, gate,
-move, log. The layers above that (the automatic decision gate, multi-view fusion, the learned
-success model and the reinforcement-learning router) are built and ship as `robot.grasping.*` blocks
-with `enabled: false`. No trained weights for the
-learned grasp calculator ship either: a cell that wants one trains it on its own data.
+move, log. The layers above that (the automatic decision gate, recovery, fixed-camera fusion and the
+learned success model) are built and ship as `robot.grasping.*` blocks with `enabled: false`, and the
+reinforcement-learning router loads no policy by default (`robot.rl`). A **wrist camera** needs no
+switch: it looks from its look poses, fuses what it saw and stops as soon as the grasp is safe. No trained
+weights for the learned grasp calculator ship either: a cell that wants one trains it on its own data.
 
 ## Install
 
@@ -215,6 +216,12 @@ Two things the files say about themselves and the table cannot. `easy` is exclud
 carries. In `dense_clutter`, `fail_closed_threshold: 0.4` is the default of
 `decision.auto_uncertainty_threshold`, so arming the layer does not by itself move the gate, and
 nothing is refused at all unless `decision.enabled` is true.
+
+The `dense_clutter` mode also allows `next_target`, a rescan that skips the part that failed, and the
+**push** (`nudge_target`), which slides a boxed-in part aside with the open jaws on a wrist camera's
+pick; a fixed-camera cell never pushes. The preset names `rescan` alone: name the others in
+`recovery.allowed_actions` yourself, the push with a `recovery.fixture`
+([guide 05](guide/05-pick-loop.md), section 6.4).
 
 ## The soak gate
 

@@ -29,6 +29,9 @@ Configuration
 -------------
 * ``min_distance_mm`` is the smallest allowed signed distance between any monitored
   shape pair, and anything below it is a collision.
+* ``perceived_min_distance_mm`` is that distance for a box a camera saw, which the exact
+  mesh guard judges as the planner holds it, turned; it is already grown by the camera
+  world's margin (``SelfCollisionGuard.set_perceived_fixtures``).
 * ``link_radii_mm`` is the per-link capsule radius. Omitted, the guard uses 60 mm, a
   typical UR link cross-section.
 * ``fixtures`` is a list of :class:`FixtureBoxConfig`.
@@ -59,6 +62,7 @@ from .guard import SafetyContext
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import SelfCollisionSafetyConfig
 
+    from .planning.band import ExactPairs
     from .planning.hand import PlannerHand
 
 __all__ = ["SelfCollisionGuard"]
@@ -104,6 +108,11 @@ class SelfCollisionGuard:
                 or f"{hand.model} has no placement on the flange, so no exact mesh guard can model where it is"
             )
         self._min_distance_mm = float(config.min_distance_mm)
+        # A box a camera saw is its surface grown by the camera world's margin, so it is kept at its own,
+        # smaller distance (SelfCollisionSafetyConfig.perceived_min_distance_mm). A config without the key,
+        # a stand-in built by hand, keeps it at min_distance_mm, the stricter side.
+        held = getattr(config, "perceived_min_distance_mm", None)
+        self._perceived_min_distance_mm = self._min_distance_mm if held is None else float(held)
         # What the planner keeps clear, so it stops proposing configurations this guard
         # rejects. It is separate from _min_distance_mm on purpose; SelfCollisionConfig
         # says why.
@@ -165,10 +174,13 @@ class SelfCollisionGuard:
         tote the guard cannot see produces the worst of both: a path that avoids the tote and a gate
         that would have allowed one straight through it, so nothing in the stack is holding the line.
 
-        The boxes are axis-aligned here while the planner takes them turned. That is deliberate and
-        it goes in the safe direction: an axis-aligned box enclosing a turned one is bigger, so this
-        guard is never more permissive than the planner. It can be stricter, and a diagonal part is
-        where that will show.
+        Each box carries the turned box the planner takes (``AxisAlignedBox.turned``), and the exact
+        mesh guard judges that one: the two authorities hold the same box, where the axis-aligned box
+        around it was up to 1.41 times as wide per side and refused bins placed at a turn beside the
+        base (2026-09-30). The capsule proxy cannot turn a box and judges the enclosure, the safe side.
+        A seen box is its surface grown by the camera world's margin, so the exact guard keeps it at
+        ``perceived_min_distance_mm`` rather than ``min_distance_mm``; the schema refuses a cell whose
+        two numbers fall short of the step a path is sampled at.
 
         Never call this with obstacles nobody can vouch for. An empty sequence means the cell is back
         to its declared geometry, which is the honest state when the cameras cannot answer.
@@ -514,6 +526,34 @@ class SelfCollisionGuard:
             return None
         return str(getattr(backend, "engine", "fcl"))
 
+    def exact_pairs(self, arm: "object | None" = None) -> "ExactPairs | None":
+        """This guard's own pair rule and exact distances for ``arm``, in the planner's link names, or ``None``.
+
+        ``None`` wherever the exact mesh backend does not run: the capsule proxy decides nothing the planner refused.
+        Where it runs, the rule is the backend's :meth:`~._fcl_self_collision.MeshSelfCollisionBackend.checks`, the
+        one :meth:`evaluate` skips pairs by, so a planner pair left to this guard (``planning.band``) is one it judges.
+        """
+        if self._backend != "fcl":
+            return None
+        model = self.model_for(arm)
+        if model is None:
+            return None
+        backend = self._exact_mesh_backend(model)
+        if backend is None:
+            return None
+        from .planning.band import ExactPairs
+
+        yaw = float(self._config.kinematics_base_yaw_deg)
+
+        def distance(joints: "Sequence[float]", part_a: str, part_b: str) -> "float | None":
+            transforms = ur_link_transforms_mm(model, np.asarray([float(v) for v in joints], dtype=np.float64))
+            if transforms is None:
+                return None
+            return float(backend.distance_mm(transforms, yaw, part_a, part_b))  # type: ignore[attr-defined]
+
+        return ExactPairs(checks=backend.checks, frames=backend.part_frames,  # type: ignore[attr-defined]
+                          distance=distance, min_distance_mm=self._min_distance_mm)
+
     def _evaluate_fcl(self, ctx: SafetyContext) -> SafetyDecision | None:
         """Exact mesh self-collision. ``None`` where it cannot run, which falls back to capsules."""
         if ctx.target_joints is None or ctx.arm is None:
@@ -534,25 +574,48 @@ class SelfCollisionGuard:
         # and without, it agreed with the brute verdict every time and cost 2.179 ms
         # against 5.812 ms and 1.864 ms against 4.898 ms per configuration. A judged path
         # pays this per sample.
+        #
+        # The arm against itself and the declared fixtures at min_distance_mm, then the boxes a camera
+        # saw, each turned as the planner holds it, at perceived_min_distance_mm: in that order, so a
+        # refusal names the same first pair it always did.
+        yaw = float(self._config.kinematics_base_yaw_deg)
+        limit = self._min_distance_mm
+        seen: tuple[AxisAlignedBox, ...] = ()
         hit = backend.evaluate(  # type: ignore[attr-defined]
-            transforms, float(self._config.kinematics_base_yaw_deg), self._fixtures,
-            self._min_distance_mm, broadphase=True,
+            transforms, yaw, self._declared_fixtures, limit, broadphase=True,
         )
+        if hit is None and self._perceived_fixtures:
+            limit, seen = self._perceived_min_distance_mm, self._perceived_fixtures
+            hit = backend.evaluate(  # type: ignore[attr-defined]
+                transforms, yaw, seen, limit, broadphase=True, arm_pairs=False,
+            )
         if hit is None:
             return SafetyDecision.accept(self.name)
         pair, dmm = hit
         engine = getattr(backend, "engine", "fcl")  # 'coal' preferred, 'fcl' the fallback
+        where = _fixture_detail(pair, seen or self._declared_fixtures, seen=bool(seen))
+        # What the world that built a seen box knows of it beyond its geometry (AxisAlignedBox.note).
+        note = where.get("box_note", "")
         return SafetyDecision.reject(
             self.name,
             SafetyReason.SELF_COLLISION,
-            message=f"{pair}: mesh distance {dmm:.3f} mm < {self._min_distance_mm:.3f} mm",
+            message=f"{pair}: mesh distance {dmm:.3f} mm < {limit:.3f} mm" + (f" ({note})" if note else ""),
             detail={
                 "pair": pair,
                 "signed_distance_mm": f"{dmm:.6f}",
-                "min_distance_mm": f"{self._min_distance_mm:.6f}",
+                "min_distance_mm": f"{limit:.6f}",
                 "backend": engine,
+                # Where the arm stood, which no refusal said before (2026-09-30), and where the box stood.
+                "joints_deg": "(" + ", ".join(
+                    f"{math.degrees(float(v)):.1f}" for v in ctx.target_joints.values) + ")",
+                **where,
             },
         )
+
+    @property
+    def perceived_min_distance_mm(self) -> float:
+        """The distance this guard keeps from a box a camera saw, in mm; the box is already grown by the world's margin."""
+        return float(self._perceived_min_distance_mm)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -586,3 +649,37 @@ class SelfCollisionGuard:
         if {name_a, name_b} == {"tool", "link_5"}:
             return True
         return False
+
+
+def _fixture_detail(pair: str, fixtures: "Sequence[AxisAlignedBox]", *, seen: bool) -> dict[str, str]:
+    """Where the fixture a refusal names stands: its centre, sizes, turn and footprint corners, in mm and degrees.
+
+    ``seen`` says the fixture is a box a camera saw rather than one declared. Only that word for a fixture the refusal
+    cannot pick out by its name, an unnamed one or one of two sharing a name; nothing for a pair of the arm alone.
+    """
+    if "|fixture:" not in pair:
+        return {}
+    kind = {"fixture": "seen" if seen else "declared"}
+    name = pair.split("|fixture:", 1)[1]
+    named = [box for box in fixtures if (box.name or "fixture") == name]
+    if len(named) != 1:
+        return kind
+    box = named[0]
+    turned = box.turned
+    half = np.asarray(box.half_extents_mm if turned is None else turned.half_extents_mm, dtype=np.float64)
+    yaw = 0.0 if turned is None else float(turned.yaw_rad)
+    cx, cy, cz = (float(v) for v in box.center_mm)
+    c, s = math.cos(yaw), math.sin(yaw)
+    corners = " ".join(
+        f"({cx + u * c - v * s:.1f}, {cy + u * s + v * c:.1f})"
+        for u, v in ((-half[0], -half[1]), (half[0], -half[1]), (half[0], half[1]), (-half[0], half[1]))
+    )
+    note = str(getattr(box, "note", "") or "")
+    return {
+        **kind,
+        "box_centre_mm": f"({cx:.1f}, {cy:.1f}, {cz:.1f})",
+        "box_size_mm": f"{2.0 * half[0]:.1f} x {2.0 * half[1]:.1f} x {2.0 * half[2]:.1f}",
+        "box_yaw_deg": f"{math.degrees(yaw):.1f}",
+        "box_corners_mm": f"{corners}, z {cz - half[2]:.1f} to {cz + half[2]:.1f}",
+        **({"box_note": note} if note else {}),
+    }

@@ -116,14 +116,14 @@ BASE file cannot load as a wrist calibration. A cell reads a calibration only wh
 
 ## Status
 
-The legend is the root README's [Status and honest scope](../../README.md#status-and-honest-scope).
+The legend is the guide's [evidence levels](../../docs/guide/README.md#what-verified-means-on-these-pages).
 
 | Capability | Evidence |
 |---|---|
 | Eye-to-hand and eye-in-hand calibration through the sweep | measured in simulation ([guide 03, section 6](../../docs/guide/03-calibration.md)) |
-| `HandEyeCalibration` and the `calibrate` command at a real cell | never touched hardware; `--check` and `--dry-run` command no motion |
+| `HandEyeCalibration` at a real cell, behind the `calibrate` command and examples 07 to 10 | run on a physical cell: a wrist D415 on a UR10 (CB3), against one printed ArUco marker; no fixed camera yet. `--check` and `--dry-run` command no motion |
 | The solvers, the frame checks and the file round trips | measured in simulation within the sweep; also pinned by [`test_calibration_core.py`](../../tests/test_calibration_core.py) |
-| `RGBDArucoMarkerSource`, the marker source of an RGB-D cell | never touched hardware; posed only a rendered marker ([`test_rgbd_marker_source.py`](../../tests/test_rgbd_marker_source.py)) |
+| `RGBDArucoMarkerSource`, the marker source of an RGB-D cell | run on a physical cell: the same wrist D415 and marker, with no residual kept here; the suite poses a rendered marker ([`test_rgbd_marker_source.py`](../../tests/test_rgbd_marker_source.py)) |
 | `CharucoPoseEstimator`, a ChArUco board as the sweep's target | never touched hardware; posed a board rendered with a known camera and pose to within 1 mm at 520 mm, 0.30 px ([`test_calibration_targets.py`](../../tests/test_calibration_targets.py)) |
 
 ## Files

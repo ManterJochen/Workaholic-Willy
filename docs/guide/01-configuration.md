@@ -446,6 +446,47 @@ instead of a layer. A cell that names no hand keeps the default of 85 mm,
 the Robotiq 2F-85. The Robotiq driver anchors its count map on that value, so it must be the real
 physical open width, not a policy ceiling. `python -m src.config where gripper` lists the rest.
 
+**Where the camera looks from.** A wrist camera sees what the arm points it at, so a wrist cell names its
+**looks**: `robot.look_joint_positions_deg`, one list of joint degrees per look, as the pendant shows them
+and `python -m src.robot.drivers.ur --where` prints them, visited in this order.
+
+```yaml
+robot:
+  look_joint_positions_deg:
+    - [-90.0, -100.0, -110.0, -60.0, 90.0, 0.0]    # the part's open side first
+    - [-70.0, -100.0, -110.0, -60.0, 90.0, 0.0]
+```
+
+**Degrees only**, with no radians twin: a look is where the arm goes next, so its unit is said. The load
+refuses a list that names no look, a look that names no joint or holds a value that is not a finite number,
+looks of different lengths, a length unlike the home's, and a joint past a full turn either way. Radians
+written here read as small degrees, which no loader can tell apart: the desk check's `looks` row flags a
+look whose every joint sits within 6.3 of zero. A program's own looks override the key. `PickRun` and the
+console send every pick whose program names no look to these, a fixed camera's arm too: a wrist camera fuses
+them until its grasp is safe, and a fixed camera stops at the first look that finds something
+([05](05-pick-loop.md)). Unset, a wrist camera looks from home and a fixed camera does not move to look.
+
+**How the hand naturally stands.** `robot.natural_closing_axis` names the way round the jaws close where
+nothing else says: a name (`x`, `-x`, `y`, `-y`, `radial`, `-radial`, `tangential`, `-tangential`, a
+leading `+` allowed; `radial` and `tangential` are read at each place), the names `Pose.tool_down` takes,
+or a taught pose's quaternion `[x, y, z, w]`, of which only the heading of its tool +X on the base XY plane
+counts, not its pitch.
+
+```yaml
+robot:
+  natural_closing_axis: "-y"    # the tool +X along base -y: the owner's cell, where its wrist D415's image stands upright
+```
+
+**Camera grasps stay free**, any closing direction and any tilt: of a grasp's two equivalent wrist turns,
+half a turn about its approach apart, the pick, the push, the `Locator` and `Scene.grasps` take the one
+whose tool +X lies nearer this direction, and none is left out ([05](05-pick-loop.md), 5.2). A program's own
+`closing_axis` wins, and beside the simulator's `align_closing_to_base_x` no grasp is turned.
+`robot.tool_down(x, y, z)` builds the cell's fixed poses along it ([04](04-robot-and-safety.md)). The load
+refuses an unknown name, a quaternion that is none, and one whose tool +X stands within 10 degrees of the
+vertical, naming the key; reading it loads no grasping package. Unset, the default, nothing is turned and
+`robot.tool_down` closes along x, exactly as `Pose.tool_down`. No shipped profile sets it: the owner's cell
+sets `"-y"` in its own profile on the cell PC.
+
 **Suction.** A vacuum end-effector uses `robot.gripper.vacuum.*`, read only when `robot.gripper.vendor`
 is `"vacuum"`. Under any other vendor that block validates green and is ignored, and every field in it
 is a number somebody has to measure.
@@ -496,7 +537,7 @@ Then run the bare command, `explain`, and `decisions --section robot.grasping` a
 under the wrong parent, `extra="forbid"` catches it, and the dotted path in the message says where it
 went: `robot.rl.fusion` means you wrote it under `rl:`, not under `grasping:`.
 
-**Two shapes are refused before they can mislead you.** A switch in
+**Some shapes are refused before they can mislead you.** A switch in
 `RobotGraspingConfig.UNWIRED_SWITCHES` would land in the cell's telemetry while nothing reads it, so
 setting one is refused at load; it holds `occlusion.hard_reject_enabled` until the occlusion score is
 trusted. A block removed on purpose, such as `verification` or `dense_recovery` (both 2026-09-29), is
@@ -504,6 +545,19 @@ refused at load with the sentence that says what to do instead. And
 `robot.grasping.support.container.wall_collision_enabled` without both `interior_min_mm` and
 `interior_max_mm` is refused at load, rather than running a cell that believes a bin protects it when
 it cannot locate the walls.
+
+**Recovery refuses what it cannot keep.** A physical action (`nudge_target`, `container_agitate`) in
+`recovery.allowed_actions` needs a `recovery.fixture`, or the load refuses it. `container_agitate`,
+named in `allowed_actions` or `per_action_budget`, is refused at load unless `support.container`
+declares its interior box (`interior_min_mm` and `interior_max_mm`; a floor height alone does not
+count): a container is agitated only where one is declared. **The push distance** is two keys:
+`recovery.fixture.push_distance_mm`, how far a push moves the part when nobody asks (30 mm), and
+`recovery.fixture.max_nudge_mm`, the longest push the cell allows (50 mm). Each lies between 10 and 50
+mm, and a `push_distance_mm` longer than `max_nudge_mm` is refused with the sentence that says which to
+change. A local tree that still writes the old `max_nudge_mm: 5`, or a `max_nudge_mm` under 30 with no
+`push_distance_mm`, no longer loads, on purpose: 5 mm allowed no push a finger fits, and a ceiling under
+30 mm now sits below the 30 mm default `push_distance_mm`. Delete the line to take 50 mm, or write 10 to
+50 mm with a `push_distance_mm` no longer than it.
 
 Several blocks can fire only in some grasp modes, and several ship their operative weight at `0.0`,
 so `enabled: true` alone does nothing. Read
@@ -569,17 +623,22 @@ gripper) and pick. [`python -m src.robot.execution.real_cell`](../../src/robot/e
 and the [examples](../../examples/README.md) go through `Cell`, and the operator console calls the same
 builders, `build_real_cell` and `build_rehearsal_cell`. `Cell.rehearsal(...)` and `--rehearse` run the
 whole path on a dummy arm and a synthetic scene. Under it, `AutonomousGraspService.from_robot_config`
-builds the pick service from `robot:`. No part of this path has run against a physical controller:
-past the rehearsal it has never touched hardware. The procedure is
+builds the pick service from `robot:`. **Its arm, hand and camera have run on a physical cell**: a UR10
+(CB3) with a D415 on the wrist and a Hand-E on one tool output connected, moved, calibrated its wrist
+camera and picked by camera, through the examples; the console has not run there. The wrist looks of
+2026-09-29, their generated view and the push have not run there yet. The procedure is
 [`docs/runbooks/real_cell_first_pick.md`](../runbooks/real_cell_first_pick.md).
 
 **The default pick is open-loop.** Perceive, generate and score candidates on a deterministic
 geometric rank, run the safety preflight and IK, move and close, log. The decision gate, the
 recover path, multi-camera fusion, the rerank stage, the learned success model and the
 reinforcement-learning layer are all built and all default to `enabled: false`. The hold is
-verified on every pick by the execution policy's own check after its close; the separate post-grasp
-verification stage, which no pick path ran, was removed on 2026-09-29 with its `verification` block.
-Check that against the tree rather than this page:
+checked after every close by the execution policy itself, wherever the gripper can report one; the
+separate post-grasp verification stage, which no pick path ran, was removed on 2026-09-29 with its
+`verification` block. **The looks of a wrist camera need no switch**: a pick handed looks goes through
+them and fuses what it saw, and `PickRun` and the console hand every wrist pick its looks, the
+program's, else `robot.look_joint_positions_deg`, else home ([05](05-pick-loop.md)). Check the
+switches against the tree rather than this page:
 
 ```bash
 python -c "from willy import load_tree; g = load_tree(None).robot.grasping; print({n: getattr(g, n).enabled for n in ('fusion', 'decision', 'recovery', 'success_model')})"
@@ -617,6 +676,8 @@ cameras from `robot.sim.cameras`. A green `cam.yaml` is not evidence that a came
 - A relative path in the tree is read against the tree's folder, never the working directory; a
   copied tree's `../` paths need rewriting, its `${WILLY_PROJECT_ROOT}` paths do not.
 - A green `python -m src.config` says nothing about the presets.
+- `robot.look_joint_positions_deg` is degrees; radians there read as small degrees, and only the desk
+  check's `looks` row says so.
 
 **Adding a new field?** The rules are in [`src/config/README.md`](../../src/config/README.md): a
 schema field with a default that changes no behaviour, its documentation on the schema field rather

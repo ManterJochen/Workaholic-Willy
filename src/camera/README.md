@@ -143,12 +143,12 @@ is `None`; its geometry lives in `StereoCam3D`.
 
 ## Status
 
-The legend is the root README's [Status and honest scope](../../README.md#status-and-honest-scope).
+The legend is the guide's [evidence levels](../../docs/guide/README.md#what-verified-means-on-these-pages).
 
 | Capability | Evidence |
 |---|---|
-| One owner per device, serialised grabs, stamped frames | never touched hardware; pinned against device doubles in [`test_camera_noun.py`](../../tests/test_camera_noun.py) |
-| The RealSense driver | never touched hardware; the real librealsense processes its frames, no camera attached ([test](../../tests/test_realsense_sdk_contract.py)), including its filter order and the dropped temporal history after a move ([test](../../tests/test_a_moved_wrist_camera_forgets_the_last_pose.py)) |
+| One owner per device, serialised grabs, stamped frames | run on a physical cell: a wrist D415 on a UR10 (CB3); pinned against device doubles in [`test_camera_noun.py`](../../tests/test_camera_noun.py) |
+| The RealSense driver | run on a physical cell: the same D415; in the suite the real librealsense processes its frames, no camera attached ([test](../../tests/test_realsense_sdk_contract.py)), including its filter order and the dropped temporal history after a move ([test](../../tests/test_a_moved_wrist_camera_forgets_the_last_pose.py)) |
 | Min-Z, USB link and depth units at open | never touched hardware; the Min-Z figures are Intel's, and the USB and depth-unit messages are pinned against an SDK double ([test](../../tests/test_a_realsense_says_what_it_opened.py)) |
 | Device identity by serial and by index | never touched hardware; how a D435 enumerates beside an OpenCV video device is not observed |
 

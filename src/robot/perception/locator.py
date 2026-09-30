@@ -55,6 +55,12 @@ from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
 from src.robot.core.keep_out import SegmentationOffer
 from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
+from src.robot.grasping.geometry.closing_axis import (
+    CLOSING_AXIS_TOLERANCE_DEG,
+    ClosingAxis,
+    ClosingAxisLike,
+    closing_axis_of,
+)
 from src.robot.grasping.multiview.scene_geometry import to_base_mm
 from src.robot.grasping.scene import Scene
 from src.robot.perception.realsense_source import RealSenseVisionPerceptionSource
@@ -363,6 +369,9 @@ class Located:
     #: Where the frames of the looks were kept, for training (``look_around(..., record_views=True)``,
     #: ``src/robot/execution/record_views.py``); ``""`` where they were not.
     views_file: str = ""
+    #: The closing axis :meth:`Locator.look_around` judged object 0's grasp along (``closing_axis``), ``None`` for the best
+    #: grasp of any axis, and for one locate. :meth:`scene` hands it on, so the grasp gripped is the grasp judged.
+    closing_axis: "ClosingAxis | None" = None
 
     def keep_out(self, target: int) -> SegmentationOffer:
         """What a planner world has to leave out to reach object ``target``: its box, and this frame's masks.
@@ -399,12 +408,19 @@ class Located:
         it stands on, and the jaw is the hand ``grasping.gripper_geometry`` describes, both as the cell's pick path
         takes them. The generator is the geometric one whatever ``grasping.calculator`` says, and
         ``SceneGrasps.generator`` says so on every result. An object with no surface under its mask gives a scene
-        with no grasps. A ``Located`` that was :attr:`refused` raises ``LocatorRefused`` with the reason.
+        with no grasps. A ``Located`` that was :attr:`refused` raises ``LocatorRefused`` with the reason. Where the
+        cell names how its hand and camera naturally stand (``robot.natural_closing_axis``), every grasp is turned the
+        way round nearer it, as the pick loop turns its own, and a look around judges the grasp so turned.
 
         The scene's ``part_bottom_mm``, the bottom a set-down hangs the part from, is the declared support, lowered
         where the looks measured the part standing below it only for object 0 of a look around whose part two or more
         looks fused (:attr:`looks_fused`, addendum 7.6); one view, a fixed camera's above all, keeps the declared
         support as before.
+
+        Object 0's scene of a look around that judged its grasp (from :attr:`looks`, on its jaw faces,
+        :attr:`jaw_faces_seen`, or along a closing axis, :attr:`closing_axis`) chooses along the axis the looks judged it
+        along, and among grasps of any axis where they named none: ``grasps()`` does so when asked for no axis, and
+        refuses any other (``ValueError``), so the grasp gripped is the grasp the looks judged.
         """
         self._refuse_if_refused()
         if not 0 <= int(target) < len(self.objects):
@@ -418,6 +434,8 @@ class Located:
         )
         if index == 0 and len(self.looks_fused) >= 2:
             scene = replace(scene, _bottom_from_looks=True)
+        if index == 0 and (self.looks or self.jaw_faces_seen is not None or self.closing_axis is not None):
+            scene = replace(scene, _judged_along=self.closing_axis)
         return scene
 
     def set_down(self, target: int, *, grasp: Pose, part_bottom_mm: float,
@@ -476,6 +494,9 @@ class Located:
             faces = ", ".join(f"jaw {number} {'seen' if seen else 'NOT seen'}"
                               for number, seen in enumerate(self.jaw_faces_seen, start=1))
             lines.append(f"  the contact faces of object 0's best grasp: {faces}")
+        if self.closing_axis is not None:
+            lines.append(f"  object 0's grasp judged closing along {self.closing_axis}, within "
+                         f"{CLOSING_AXIS_TOLERANCE_DEG:g} deg either way round: its scene takes that axis")
         if self.hand_eye_gap_mm is not None:
             lines.append(f"  hand-eye check: the looks measure the part's shared surface {self.hand_eye_gap_mm:.1f} mm "
                          "apart (median)")
@@ -503,6 +524,8 @@ class Located:
             "hand_eye_gap_mm": self.hand_eye_gap_mm,
             "generated_view_deg": self.generated_view_deg,
             "views_file": self.views_file,
+            **({"closing_axis": {"name": self.closing_axis.name, "heading_deg": self.closing_axis.heading_deg}}
+               if self.closing_axis is not None else {}),
         }
 
 
@@ -681,7 +704,7 @@ class Locator:
         return self._placed(prompt).located
 
     def look_around(self, prompt: str, looks: "Look | None" = None, *, robot: Any, both_faces: bool = False,
-                    record_views: bool = False) -> Located:
+                    record_views: bool = False, closing_axis: "Maybe[ClosingAxisLike]" = UNSET) -> Located:
         """Locate the part ``prompt`` names from each of ``looks`` in turn, every look fused with the ones before, until
         its grasp is safe.
 
@@ -732,10 +755,11 @@ class Locator:
         move and a camera that could not vouch for the cell on the way end the looking there with nothing else
         commanded, the reason in :attr:`Located.refused`.
 
-        The frames the looks were taken in are held in the arm's live planner world from here on
-        (``LivePlannerWorld.hold_pick_views``), each placed where it was taken, so the pick that follows plans every
-        motion against all of what the looks saw rather than only the frame where the arm stands. ``Robot.pick``
-        lets them go when it ends, however it ends, as do the next look around and the disconnect (``Robot.connected()``
+        The frames the looks were taken in are held in the arm's live planner world from the first look the arm stands
+        at (``LivePlannerWorld.hold_pick_views``), each placed where it was taken, so the pick that follows plans every
+        motion against all of what the looks saw rather than only the frame where the arm stands; the frame of the pose
+        the look around started from is not held. ``Robot.pick`` lets them go when it ends, however it ends, as do the
+        next look around, before it moves, and the disconnect (``Robot.connected()``
         or ``Cell.connected()``); a place does not need them. A look around that raises lets them go itself. A program
         that tries another candidate after a pick that failed looks around again first, so that the frames are held for
         that pick too.
@@ -754,13 +778,22 @@ class Locator:
 
         A fixed camera locates once, where it stands, and moves nothing: :meth:`locate`, with ``both_faces`` judging
         that one frame's grasp the same way. It has no looks to keep.
+
+        ``closing_axis`` (unset by default) judges only the grasps that close along the axis named, as
+        ``Located.scene(0, ...).grasps(closing_axis=...)`` takes them (the owner's "choose, don't twist", 2026-09-30):
+        the looking stops at a valid grasp along it, and ``both_faces`` asks for its faces. The ``Located`` keeps it
+        (:attr:`Located.closing_axis`), and object 0's scene chooses along it: ``grasps()`` takes it when asked for
+        none and refuses another, so the grasp a program grips is the grasp the looks judged. A look around that judged
+        the part's grasp along any axis refuses a scene asked for one the same way. A value that names no axis raises
+        before anything moves.
         """
+        wanted = closing_axis_of(closing_axis) if chosen(closing_axis) else None
         if not self.on_the_wrist:
             judged_on = _judged_on(robot) if both_faces else None
-            located = self.locate(prompt)
+            located = replace(self.locate(prompt), closing_axis=wanted)
             if judged_on is None or not located.objects:
                 return located
-            verdict = _verdict(located, judged_on, disagree=(), both_faces=True)
+            verdict = _verdict(located, judged_on, disagree=(), both_faces=True, closing_axis=wanted)
             refused = _faces_refusal(verdict)
             if refused:
                 logger.warning("look_around: %s; nothing is to be gripped on the part", refused)
@@ -771,9 +804,12 @@ class Locator:
         plan: list[tuple[str, Any]] = (
             [(look_label(pose), pose) for pose in looks_of(looks)] if looks is not None else [(_HERE, None)])
         arm = getattr(robot, "arm", None)
+        # What an earlier look around held goes before the arm moves; this one holds from its first look on
+        # (:meth:`_look_from_each`), so the frame of the pose it starts from is never held (owner, 2026-09-30).
+        _let_go_of_earlier_looks(arm)
         looking = _Looking(camera=str(getattr(self._camera, "rig_id", "camera")), robot_config=robot_config,
-                           both_faces=both_faces, holding=_hold_the_looks(arm), record_views=record_views,
-                           name=f"look_around-{prompt}")
+                           both_faces=both_faces, record_views=record_views,
+                           name=f"look_around-{prompt}", closing_axis=wanted)
         try:
             return self._look_from_each(prompt, looks, plan, looking, robot, arm)
         except BaseException:
@@ -810,6 +846,9 @@ class Locator:
                         f"the arm reached none of the looks; the first, {label}, was refused before anything was sent "
                         f"({why}):\n{moved.render()}")
                     continue
+            if not looking.hold_started:
+                # The arm stands at its first look: every frame of the pick is held from here on.
+                looking.holding, looking.hold_started = _hold_the_looks(arm), True
             # Where the arm stands for this look, read off it (a declared look may have been twinned into the cable
             # window): what the move back returns to.
             joints = _joints_of(arm) if looks is not None else None
@@ -1062,6 +1101,8 @@ class _Verdict:
     faces: Any
     disagree: "tuple[tuple[str, str], ...]"
     good: bool
+    #: What the closing axis the look around was handed left out of the part's grasps, said; ``""`` for none.
+    withheld: str = ""
 
     @property
     def faces_seen(self) -> "tuple[bool, bool] | None":
@@ -1074,13 +1115,15 @@ def _jaw_number(face: Any) -> int:
 
 
 def _verdict(located: Located, robot_config: Any, *, disagree: "tuple[tuple[str, str], ...]",
-             both_faces: bool) -> _Verdict:
+             both_faces: bool, closing_axis: "ClosingAxis | None" = None) -> _Verdict:
     """Object 0's best grasp on ``located`` as the cell plans it, whether its jaw contact faces were seen, and whether
-    that is safe enough: a valid grasp the looks agree on, and with ``both_faces`` both contact faces seen."""
+    that is safe enough: a valid grasp the looks agree on, and with ``both_faces`` both contact faces seen. With
+    ``closing_axis`` the best of the grasps that close along it (``Scene.grasps(closing_axis=...)``)."""
     from src.robot.grasping.multiview.unseen_side import jaw_faces_seen  # noqa: PLC0415
 
     scene = located.scene(0, robot_config)
-    best = scene.grasps().best
+    grasps = scene.grasps(closing_axis=closing_axis if closing_axis is not None else UNSET)
+    best = grasps.best
     faces = None
     if best is not None and scene.jaw is not None:
         try:
@@ -1093,7 +1136,7 @@ def _verdict(located: Located, robot_config: Any, *, disagree: "tuple[tuple[str,
         except ValueError as exc:
             logger.info("the jaw contact faces of the chosen grasp could not be judged: %s", exc)
     good = best is not None and not disagree and (not both_faces or (faces is not None and faces.both))
-    return _Verdict(best=best, faces=faces, disagree=disagree, good=good)
+    return _Verdict(best=best, faces=faces, disagree=disagree, good=good, withheld=grasps.withheld)
 
 
 def _faces_refusal(verdict: "_Verdict | None") -> str:
@@ -1141,6 +1184,17 @@ def _hold_the_looks(arm: Any) -> bool:
     world = getattr(arm, "live_planner_world", None)
     hold = getattr(world, "hold_pick_views", None)
     return bool(hold()) if callable(hold) else False
+
+
+def _let_go_of_earlier_looks(arm: Any) -> None:
+    """Let go of the frames ``arm``'s live planner world holds for an earlier look around, where it says it holds any
+    (``LivePlannerWorld.holds_pick_views``): the motion to this look around's first look is judged without them, and
+    the frame it is planned on, where the arm stands now, is not held."""
+    world = getattr(arm, "live_planner_world", None)
+    if bool(getattr(world, "holds_pick_views", False)):
+        from src.robot.execution.lifecycle import let_go_of_held_views  # noqa: PLC0415
+
+        let_go_of_held_views(arm)
 
 
 def _sent_nothing(moved: Any) -> bool:
@@ -1289,10 +1343,12 @@ class _Looking:
     how its grasp stood after each look."""
 
     def __init__(self, *, camera: str, robot_config: Any, both_faces: bool, holding: bool = False,
-                 record_views: bool = False, name: str = "") -> None:
+                 record_views: bool = False, name: str = "", closing_axis: "ClosingAxis | None" = None) -> None:
         self.camera = camera
         self.robot_config = robot_config
         self.both_faces = both_faces
+        #: The closing axis the part's grasp is judged along (``look_around(closing_axis=...)``), or ``None`` for any.
+        self.closing_axis = closing_axis
         #: Whether the frames of the looks are kept for training when the looking answers, and the name their file
         #: goes by (``record_views``).
         self.record_views = record_views
@@ -1300,6 +1356,8 @@ class _Looking:
         #: Whether the arm's live planner world holds the frames of the looks (``LivePlannerWorld.hold_pick_views``):
         #: a generated view and a move back refuse to run without it.
         self.holding = holding
+        #: Whether the hold was asked for yet: once, when the arm first stands at a look.
+        self.hold_started = False
         #: The looks located from, in order.
         self.visited: list[str] = []
         #: Every look's frame as the locator placed it, in order: its colour, its depth, its lens, where its camera
@@ -1421,19 +1479,22 @@ class _Looking:
 
         Looks whose detector calls the part by different labels make the grasp uncertain (the owner, 2026-09-29,
         addendum 7.3): one of them saw something else there, and the looking goes on. A look whose detector gave no
-        label says nothing either way, as in the pick loop.
+        label says nothing either way, as in the pick loop. The account of the part says how many looks agreed (``label
+        agreed in N of M looks``, the owner's decision 4, 2026-09-30), and that changes nothing.
         """
-        from src.robot.grasping.multiview.association import label_agreement  # noqa: PLC0415
+        from src.robot.grasping.multiview.association import label_agreement, label_agreement_said  # noqa: PLC0415
 
         sights = self.parts[0].sights
         called = sights[-1].label
-        _, disagree = label_agreement(called, [(sight.look, sight.label) for sight in sights[:-1]])
+        others = [(sight.look, sight.label) for sight in sights[:-1]]
+        _, disagree = label_agreement(called, others)
         if disagree:
             logger.warning("look %s calls the part %r, and %s: the grasp is uncertain", look, called, ", ".join(
                 f"look {earlier} calls it {label!r}" for earlier, label in disagree))
-        verdict = _verdict(self._located(), self.robot_config, disagree=disagree, both_faces=self.both_faces)
+        verdict = _verdict(self._located(), self.robot_config, disagree=disagree, both_faces=self.both_faces,
+                           closing_axis=self.closing_axis)
         if verdict.best is None:
-            said = "no grasp on the part"
+            said = f"no grasp on the part ({verdict.withheld})" if verdict.withheld else "no grasp on the part"
         elif verdict.good:
             said = "a grasp safe enough to stop at"
         elif disagree:
@@ -1443,7 +1504,8 @@ class _Looking:
             said = ("a grasp, " + " and ".join(f"the contact face at jaw {_jaw_number(face)} of the chosen grasp not "
                                                "seen" for face in missing)
                     if missing else "a grasp whose contact faces could not be judged")
-        logger.info("look %s: %s, on the looks %s", look, said, ", ".join(sight.look for sight in sights))
+        logger.info("look %s: %s, on the looks %s; %s", look, said, ", ".join(sight.look for sight in sights),
+                    label_agreement_said(called, others))
         return verdict
 
     def _located(self, *, refused: str = "", hand_eye_gap_mm: "float | None" = None, views_file: str = "") -> Located:
@@ -1463,7 +1525,7 @@ class _Looking:
         return replace(base, objects=objects, looks=tuple(self.visited), looks_fused=fused,
                        jaw_faces_seen=None if self.verdict is None else self.verdict.faces_seen, refused=refused,
                        hand_eye_gap_mm=hand_eye_gap_mm, generated_view_deg=self.generated_view_deg,
-                       views_file=views_file)
+                       views_file=views_file, closing_axis=self.closing_axis)
 
     def faces_refusal(self) -> str:
         """With ``both_faces``, why the part is refused: the contact face(s) of its grasp no look showed."""

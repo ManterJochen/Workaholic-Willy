@@ -356,18 +356,26 @@ class GraspingRecoveryConfig(StrictModel):
         return self
 
 
+#: The shortest push that can open room for a finger (mm): a push opens at most its own length, and the push planner
+#: asks for 10 mm of clearance (``push_planner.MIN_CLEARANCE_GAIN_MM``). A push distance, or a ceiling, below it is
+#: refused at load.
+_SHORTEST_PUSH_MM = 10.0
+
+
 class GraspingRecoveryFixtureConfig(StrictModel):
     """Operator-bounded envelope for physical recovery actions.
 
     A recovery action is the robot deliberately pushing something: nudging a part that will not
     separate, agitating a container. That is motion aimed at the scene rather than at a grasp, so
     its reach is declared by the operator rather than inferred, and the recovery planner may not
-    exceed these three numbers.
+    exceed these numbers.
 
-    ``max_nudge_mm`` is the longest push the cell allows, 50 mm at most, and above that the config
-    is refused (owner, 2026-09-29). A ``nudge_target`` push moves the part 30 mm unless asked for
-    another distance, and never more than this: with the default of 30 mm, a request for more is
-    refused, never shortened. Below 10 mm no push can open room for a finger, so none is planned. The
+    ``push_distance_mm`` is how far a ``nudge_target`` push moves the part when nobody asks for
+    another distance, 30 mm by default. ``max_nudge_mm`` is the longest push the cell allows, 50 mm by
+    default and at most, and above that the config is refused (owner, 2026-09-29). A request (the API,
+    a ``PickRun``) up to ``max_nudge_mm`` is taken as asked, and one above it is refused, never
+    shortened. ``push_distance_mm`` longer than ``max_nudge_mm`` is refused at load. Below 10 mm no
+    push can open room for a finger, so both are at least 10 and a shorter request is refused. The
     push's landing is bounded by what the camera saw (the workspace box intersected with the seen
     table, shrunk by the push plus 30 mm), and this box can only narrow it.
     """
@@ -378,14 +386,29 @@ class GraspingRecoveryFixtureConfig(StrictModel):
     #: Half the side length on each axis (mm), so the box spans ``center +/- half_extents``. Half
     #: extents rather than corners because the recovery planner reasons about distance from the centre.
     half_extents_mm: tuple[float, float, float] = Field(...)
-    #: The longest single push (mm) any recovery action may command: a ``nudge_target`` push asked
-    #: for more is refused, and the legacy nudge executor cuts a longer offset to it. A push is 30 mm
-    #: when nothing asks otherwise, or this when it is lower. It bounds the displacement even where the
-    #: box above would permit more: a large shove can push a part off the seen table, into a neighbour
-    #: or out of the camera's view, so 50 mm is a hard cap and a larger value is refused. The default
-    #: was 5 mm until 2026-09-29, less than the Hand-E finger's 10.8 mm thickness, so no push could open
-    #: room for a finger; the owner set 30 mm.
-    max_nudge_mm: float = Field(default=30.0, ge=0.0, le=50.0)
+    #: The longest single push (mm) the cell allows: a ``nudge_target`` push asked for more is refused,
+    #: never shortened. It bounds the displacement even where the box above would permit more: a large
+    #: shove can push a part off the seen table, into a neighbour or out of the camera's view, so 50 mm
+    #: is a hard cap and a larger value is refused. The default was 5 mm until 2026-09-29, less than the
+    #: Hand-E finger's 10.8 mm thickness, so no push could open room for a finger; the owner set the push
+    #: to 30 mm by default (``push_distance_mm``) and adjustable up to 50 mm, which is this default. Below
+    #: 10 mm it would allow no push at all, so it is refused there too.
+    max_nudge_mm: float = Field(default=50.0, ge=_SHORTEST_PUSH_MM, le=50.0)
+    #: How far (mm) a ``nudge_target`` push moves the part when nobody asks for another distance: 30 mm
+    #: (owner, 2026-09-29). At least 10 mm, since a shorter push cannot open room for a finger, and never
+    #: more than ``max_nudge_mm`` (refused at load).
+    push_distance_mm: float = Field(default=30.0, ge=_SHORTEST_PUSH_MM, le=50.0)
+
+    @model_validator(mode="after")
+    def _push_distance_within_the_ceiling(self) -> "GraspingRecoveryFixtureConfig":
+        if self.push_distance_mm > self.max_nudge_mm:
+            raise ValueError(
+                f"recovery.fixture.push_distance_mm ({self.push_distance_mm:g} mm) is longer than "
+                f"recovery.fixture.max_nudge_mm ({self.max_nudge_mm:g} mm), the longest push this cell allows: a "
+                "push is never longer than the ceiling. Lower push_distance_mm to at most max_nudge_mm, or raise "
+                "max_nudge_mm (50 mm at most)."
+            )
+        return self
 
 
 class UncertaintyChannelWeightsConfig(StrictModel):

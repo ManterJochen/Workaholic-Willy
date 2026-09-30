@@ -14,10 +14,13 @@ motion in flight: this process has no safe way to do that, and the thing that do
 on the wall.
 
 A run ends early where a campaign does (``PickRun``, ``src/robot/execution/pick_run.py``): on a fault
-of the cell, and on the two things a pick reports rather than raises, a controller that cannot move and
-a hand that needs a person. Each ends it FAILED with the reason in ``error``, because the next pick
-would meet the same stopped arm or the same hand. And each pick looks from where a campaign's does:
-from home on a wrist camera, from where the arm stands on a fixed one.
+of the cell, and on the three things a pick reports rather than raises, a controller that cannot move,
+a hand that needs a person, and a recovery that stopped where the arm stands (``needs_person``: a push of
+a failed part that stopped once something may have moved). Each ends it FAILED with the reason in
+``error``, because the next pick would meet the same stopped arm or the same hand, or drive the arm back
+to its look from where the push left it. And each pick looks from where a campaign's does: from home on
+a wrist camera, from where the arm stands on a fixed one. A run is a campaign, too: its picks share the
+push budgets and the parts ``next_target`` skips, and ``push_mm`` sets how far a push moves a part.
 
 Two stops a campaign does not need, because a campaign runs in a terminal and a run does not. A run
 never asks a person anything: on a hand that toggles with no sensor, a pick that starts on jaws the
@@ -125,7 +128,15 @@ def _sentence(event: "PickProgress") -> tuple[Severity, str]:
         # Appended rather than baked into the template: the route is present only on a routed cell, and
         # a template with a permanent "via ..." would read as a missing value everywhere else.
         sentence = f"{sentence} Grounded via the {event.route} route ({event.route_reason})."
-    if event.motion_message or event.motion_error:
+    push_reason = (event.extra or {}).get("push_reason")
+    if str(event.stage) == "attempt_finished" and event.action == "push" and isinstance(push_reason, str):
+        # A push of the failed part says what it did in its own words: pushed, and back at the look, or stopped where
+        # the arm stands, a person to decide. Its motion fields are those of a leg that ran after the arm left the
+        # look, so "Nothing moved" would be untrue of it.
+        sentence = f"{sentence} {push_reason}"
+        if event.outcome != "pushed":
+            severity = Severity.WARN
+    elif event.motion_message or event.motion_error:
         # A refused motion says why, in the guard's own words. Appended rather than templated,
         # because these fields are present only when something declined to move. Without them a
         # precise workspace refusal such as "pose 'approach_00' outside workspace box" reaches the
@@ -181,6 +192,9 @@ class Run:
     #: :meth:`to_dict`: it reaches the operator as :attr:`error` when the run ends, which is the one place a UI reads
     #: why a run stopped.
     abandoned: str = ""
+    #: How far a push of a failed part moves it, in mm, as the request asked (``None``: the cell's own distance). The run
+    #: starts its campaign with it (``service.start_campaign``). Not a field of :meth:`to_dict`.
+    push_mm: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -227,11 +241,12 @@ class RunRegistry:
 
     # --- driving ------------------------------------------------------------------------------------
 
-    def start(self, console: Any, *, prompt: str, picks: int) -> Run:
+    def start(self, console: Any, *, prompt: str, picks: int, push_mm: float | None = None) -> Run:
         """Begin a run on its own thread and return immediately.
 
         Refuses if one is already running: a second concurrent pick would drive the same arm from two
-        threads, which is not a queue but a collision.
+        threads, which is not a queue but a collision. ``push_mm`` is the run's push distance, which its
+        campaign starts with; the router refuses one the cell would refuse before calling this.
         """
         with self._lock:
             if (existing := self.active()) is not None:
@@ -240,7 +255,7 @@ class RunRegistry:
                     existing.id, existing.succeeded, existing.attempted,
                 )
                 raise RunConflict(existing)
-            run = Run(id=f"run-{uuid.uuid4().hex[:10]}", prompt=prompt, requested_picks=picks)
+            run = Run(id=f"run-{uuid.uuid4().hex[:10]}", prompt=prompt, requested_picks=picks, push_mm=push_mm)
             self._runs[run.id] = run
             self._order.append(run.id)
             console.active_run_id = run.id
@@ -343,13 +358,23 @@ class RunRegistry:
             )
 
         try:
+            started: dict[str, Any] = {"prompt": run.prompt, "requested_picks": run.requested_picks}
+            if run.push_mm is not None:
+                # The push distance the run asked for, where it asked for one: the one place its record keeps it.
+                started["push_mm"] = run.push_mm
             hub.publish(
                 run.id, "run_started", severity=Severity.INFO,
                 human=f"Run started: {run.requested_picks} pick(s), prompt {run.prompt!r}.",
-                prompt=run.prompt, requested_picks=run.requested_picks,
+                **started,
             )
             service.attach_progress_listener(_on_progress)
             service.set_cancel_check(lambda: run.stop_requested)
+            # A run is a campaign: fresh push budgets (1 per part, 2 per pick, 5 per run), no part skipped by
+            # next_target, and the run's push distance. A distance the cell refuses ends the run here, before any pick
+            # (the router refused it already; this says it again for a caller that did not go through the router).
+            start_campaign = getattr(service, "start_campaign", None)
+            if callable(start_campaign):
+                start_campaign(**({} if run.push_mm is None else {"push_mm": run.push_mm}))
             # The prompt reaches the detector, for this run only. A label filter alone is not enough:
             # every frame would still be grounded with the build phrase ("object"), and "the red
             # cube", typed or spoken, would filter on a label no phrase grounder returns. `set_prompt`
@@ -568,14 +593,20 @@ def _why_the_run_stops(report: Any) -> str:
 
     The rule ``PickRun`` keeps for a campaign (``src/robot/execution/pick_run.py``), in its words, so
     the console and a program stop on the same reports and say them alike. A fault of the cell is not
-    here: the run loop raises it. Two more things a pick reports rather than raises:
+    here: the run loop raises it. Three more things a pick reports rather than raises:
 
     * a controller that cannot move (``controller_stopped``): a protective or emergency stop, or a
       power-off. The pick ends CANCELLED with no fault, and the next pick would perceive, and on a
       toggle switch the jaws, for an arm a person has to walk up to;
     * a hand that needs a person (``gripper_fault``): a gripper that raised, whose jaws nobody can now
-      name, or a toggle that would not start a pick on jaws it believes closed with nobody at a
-      terminal. The pick ends EXECUTION_FAILED with no fault, and the next one meets the same hand.
+      name, a toggle that would not start a pick on jaws it believes closed with nobody at a
+      terminal, a hand a push found nobody can vouch for (a toggle's count, a gripper that measures
+      its width not connected or unreadable), or a toggle's count found so before ``next_target``
+      drove the looks again. The pick ends EXECUTION_FAILED with no fault, and the next one meets the
+      same hand;
+    * a recovery that stopped where the arm stands (``needs_person``): a push of a failed part that
+      stopped once something may have moved, or whose move back to the look failed. The next pick would
+      drive the arm back to its look from wherever the push left it, the escape the owner ruled out.
 
     ``is True`` and a non-empty string, as ``PickRun`` reads them, so a double that answers every
     attribute stops nothing.
@@ -589,6 +620,11 @@ def _why_the_run_stops(report: Any) -> str:
     hand = getattr(report, "gripper_fault", "")
     if isinstance(hand, str) and hand:
         return f"the gripper needs a person, so the run stops: {hand}"
+    if getattr(report, "needs_person", False) is True:
+        return (
+            "a recovery stopped where the arm stands, so the run stops; nothing more is commanded and a person "
+            "decides what happens next: " + str(report.failure_summary())
+        )
     return ""
 
 

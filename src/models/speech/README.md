@@ -47,6 +47,7 @@ utterance at the latest.
 | --- | --- | --- |
 | `SpeechStackUnavailable` | a package this host cannot import, a DLL Windows refused, or no PortAudio | install from `requirements.txt`; the console answers 501 naming the file |
 | `SpeechModelMissing` | the Whisper or Silero weights are not on this machine | `python scripts/model_weights/fetch.py whisper-turbo silero-vad` |
+| `SpeechModelIncomplete` | the Whisper directory is there without a file the engine loads, which the refusal names, or its tokenizer does not hold the decoder prompt | `python scripts/model_weights/fetch.py whisper-turbo` downloads what the directory lacks and keeps the rest |
 | `RecordingTooLong` | a recording past Whisper's 30 s window, before either model runs | send one command per recording |
 | `MicrophoneUnavailable` | no input device the stream can open | connect or select a microphone |
 | an empty `Proposal` | Silero heard no utterance close, so Whisper is never asked | speak, or check the microphone level |

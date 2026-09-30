@@ -88,6 +88,7 @@ has one validation error to catch.
 | `normals.py` | `NormalEstimationConfig`, `SurfaceNormals`, `estimate_surface_normals` |
 | `transforms.py` | `validate_transform` |
 | `grasp_frame.py` | `pose_from_grasp_axes`, which every candidate's `pose()` calls |
+| `closing_axis.py` | which way a grasp closes about base Z: `closing_along`, `grasps_closing_along` and `result_closing_along` keep the grasps heading within `CLOSING_AXIS_TOLERANCE_DEG` (30, inclusive) of a named axis, each turned the named way round, and `closing_axis_said`, `closing_axis_refusal` and `same_closing_axis` say it; `turned_nearer`, `grasps_closing_toward` and `result_closing_toward` turn every grasp the way round nearer a natural direction, dropping none; `CANDIDATES_THE_AXIS_CHOOSES_AMONG` (36). The reader (`ClosingAxis`, `closing_axis_of`, `natural_closing_axis_of`, `NO_HEADING_WITHIN_DEG_OF_VERTICAL`, 10) lives in [`src/geometry/closing_axis.py`](../../../geometry/closing_axis.py) and is handed on here |
 | `_spatial.py` | `RadiusIndex`, the shared neighbour index |
 | `_validation.py` | `as_points_nx3`, `as_vec3`, `as_mask_and_depth`, the shared input checks |
 
@@ -98,4 +99,5 @@ has one validation error to catch.
 - [`src.geometry`](../../../geometry/README.md) for the frame-safe algebra this package does not repeat.
 - [The grasping maths](../../../../docs/grasping-math.md) for back-projection and normals.
 - Tests: `tests/test_geometry_hardening.py`, `tests/test_surface_normals.py`, `tests/test_radius_index.py`,
-  `tests/test_h1_2_cloud_outlier_filter.py`.
+  `tests/test_h1_2_cloud_outlier_filter.py`, `tests/test_a_pick_closes_along_the_axis_its_program_names.py`,
+  `tests/test_every_grasp_closes_the_way_round_the_hand_naturally_stands.py`.

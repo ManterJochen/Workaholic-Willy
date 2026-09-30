@@ -34,8 +34,9 @@ The findings of the first review are pinned here too:
   or seen only from above, is not pushed. The 15 mm rule applies to the part's own height.
 * A part that reaches the palm's underside is not pushed: only the finger may touch it. The Hand-E housing is
   75 mm along the closing axis, wider than the open fingers, and the planner keeps it clear of tall neighbours.
-* The push distance is resolved against the config's ``max_nudge_mm``: 30 mm when nobody asks, never more than
-  the config allows or than 50 mm, and never less than the 10 mm a push must open.
+* The push distance is resolved against the config: ``push_distance_mm`` (30 mm) when nobody asks, a request up to
+  ``max_nudge_mm`` (50 mm) as asked, above it or above 50 mm refused, and never less than the 10 mm a push must
+  open.
 """
 
 from __future__ import annotations
@@ -709,48 +710,75 @@ class OnlyTheFingerTouchesThePart(unittest.TestCase):
 
 
 class ThePushDistanceIsResolvedAgainstTheConfig(unittest.TestCase):
-    """``recovery.fixture.max_nudge_mm`` is the longest push the cell allows; a push is 30 mm unless asked."""
+    """``recovery.fixture.push_distance_mm`` (30) is the push when nobody asks; ``max_nudge_mm`` (50) is the ceiling.
 
-    def test_nothing_asked_is_thirty_or_the_configs_limit_when_that_is_lower(self) -> None:
-        self.assertEqual(resolve_push_distance(None, 30.0), 30.0)
-        self.assertEqual(resolve_push_distance(None, 50.0), 30.0)
-        self.assertEqual(resolve_push_distance(None, 20.0), 20.0)
+    The owner (2026-09-29): 30 mm by default, adjustable through the API and a ``PickRun`` up to 50 mm, refused
+    above, never shortened; under 10 mm no push can open room for a finger.
+    """
 
-    def test_a_request_within_the_configs_limit_is_taken(self) -> None:
-        self.assertEqual(resolve_push_distance(40.0, 50.0), 40.0)
-        self.assertEqual(resolve_push_distance(15.0, 30.0), 15.0)
+    @staticmethod
+    def _resolve(requested: float | None, default: float = 30.0, ceiling: float = 50.0) -> float | PushRefusal:
+        return resolve_push_distance(requested, default_mm=default, ceiling_mm=ceiling)
 
-    def test_a_request_above_the_configs_limit_is_refused_never_shortened(self) -> None:
-        refusal = resolve_push_distance(40.0, 20.0)
+    def test_nothing_asked_is_the_configs_push_distance(self) -> None:
+        self.assertEqual(self._resolve(None), 30.0)
+        self.assertEqual(self._resolve(None, default=20.0), 20.0)
+        self.assertEqual(self._resolve(None, default=50.0, ceiling=50.0), 50.0)
+
+    def test_a_request_up_to_the_ceiling_is_taken_as_asked(self) -> None:
+        for requested in (10.0, 15.0, 30.0, 40.0, 50.0):
+            with self.subTest(requested=requested):
+                self.assertEqual(self._resolve(requested), requested)
+        self.assertEqual(self._resolve(20.0, ceiling=20.0), 20.0)
+
+    def test_a_request_above_the_ceiling_is_refused_never_shortened(self) -> None:
+        refusal = self._resolve(40.0, default=20.0, ceiling=30.0)
         assert isinstance(refusal, PushRefusal)
         self.assertEqual(refusal.code, "push_distance_above_config")
         self.assertIn("max_nudge_mm", refusal.sentence)
-        self.assertIn("20 mm", refusal.sentence)
+        self.assertIn("30 mm", refusal.sentence)
+        self.assertTrue(refusal.sentence.endswith("."))
 
     def test_a_request_above_fifty_is_refused_whatever_the_config_says(self) -> None:
-        for config in (50.0, 80.0):
-            with self.subTest(config=config):
-                refusal = resolve_push_distance(55.0, config)
+        for ceiling in (50.0, 80.0):
+            with self.subTest(ceiling=ceiling):
+                refusal = self._resolve(50.5, ceiling=ceiling)
                 assert isinstance(refusal, PushRefusal)
                 self.assertEqual(refusal.code, "push_distance_above_cap")
-        self.assertEqual(resolve_push_distance(None, 80.0), 30.0)
+        self.assertEqual(self._resolve(None, ceiling=80.0), 30.0)
+
+    def test_a_config_push_above_fifty_is_refused_whatever_the_ceiling_says(self) -> None:
+        # The hard cap holds on the config's own push too, not only on a request: a ceiling written above 50 mm
+        # (the schema refuses one at load; a caller that did not load one) does not let a 60 mm default through.
+        refusal = self._resolve(None, default=60.0, ceiling=80.0)
+        assert isinstance(refusal, PushRefusal)
+        self.assertEqual(refusal.code, "push_distance_above_config")
+        self.assertIn("50 mm", refusal.sentence)
+
+    def test_a_config_whose_push_lies_above_its_own_ceiling_is_refused(self) -> None:
+        refusal = self._resolve(None, default=30.0, ceiling=20.0)
+        assert isinstance(refusal, PushRefusal)
+        self.assertEqual(refusal.code, "push_distance_above_config")
+        self.assertIn("push_distance_mm", refusal.sentence)
 
     def test_a_push_too_short_to_open_room_for_a_finger_is_refused(self) -> None:
-        # The old 5 mm default would never have pushed: a push can open at most its own length, and the
-        # planner asks for 10 mm. Now that is said, not silent.
-        for requested, config in ((None, 5.0), (8.0, 30.0), (None, 0.0)):
-            with self.subTest(requested=requested, config=config):
-                refusal = resolve_push_distance(requested, config)
+        # A push can open at most its own length, and the planner asks for 10 mm. The old 5 mm default would
+        # never have pushed; now that is said, not silent.
+        for requested, default in ((8.0, 30.0), (9.99, 30.0), (None, 5.0)):
+            with self.subTest(requested=requested, default=default):
+                refusal = self._resolve(requested, default=default)
                 assert isinstance(refusal, PushRefusal)
                 self.assertEqual(refusal.code, "push_distance_too_short")
                 self.assertTrue(refusal.sentence.endswith("."))
         _refused(self, _plan(push_distance_mm=8.0), "push_distance_too_short")
 
     def test_what_is_not_a_positive_number_is_refused(self) -> None:
-        for requested, config in ((0.0, 30.0), (-5.0, 30.0), (math.nan, 30.0), (math.inf, 30.0), (None, math.nan),
-                                  (None, -1.0)):
-            with self.subTest(requested=requested, config=config):
-                refusal = resolve_push_distance(requested, config)
+        cases = ((0.0, 30.0, 50.0), (-5.0, 30.0, 50.0), (math.nan, 30.0, 50.0), (math.inf, 30.0, 50.0),
+                 (None, math.nan, 50.0), (None, -1.0, 50.0), (None, 30.0, math.nan), (None, 30.0, 0.0),
+                 (20.0, 30.0, -1.0))
+        for requested, default, ceiling in cases:
+            with self.subTest(requested=requested, default=default, ceiling=ceiling):
+                refusal = self._resolve(requested, default=default, ceiling=ceiling)
                 assert isinstance(refusal, PushRefusal)
                 self.assertEqual(refusal.code, "push_distance_invalid")
 

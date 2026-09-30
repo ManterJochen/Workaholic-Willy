@@ -6,9 +6,10 @@ loaded, and the action was then never planned, because no built-in profile lists
 with one sentence. A container counts as declared when ``support.container`` gives its interior box: both
 corners, each axis a real span. ``floor_height_mm`` alone raises the surface but gives no interior.
 
-The longest push the cell allows is ``recovery.fixture.max_nudge_mm``: 30 mm by default (it was 5 mm, less
-than the Hand-E finger's 10.8 mm thickness), at most 50 mm, refused above. A push is 30 mm unless asked for
-another distance, never more than this (``push_planner.resolve_push_distance`` settles a request).
+A push is ``recovery.fixture.push_distance_mm`` unless asked for another distance: 30 mm by default, at least
+10 mm. The longest push the cell allows is ``recovery.fixture.max_nudge_mm``: 50 mm by default and at most, refused
+above (it was 5 mm, less than the Hand-E finger's 10.8 mm thickness). A push distance above the ceiling is refused
+at load; ``push_planner.resolve_push_distance`` settles a request against both.
 """
 
 from __future__ import annotations
@@ -86,20 +87,40 @@ class ContainerAgitateNeedsADeclaredContainer(unittest.TestCase):
 
 
 class ThePushDistance(unittest.TestCase):
-    def test_thirty_millimetres_by_default(self) -> None:
-        cfg = _config({"enabled": True, "allowed_actions": ["nudge_target"], "fixture": dict(_FIXTURE)})
+    @staticmethod
+    def _fixture(**keys: float) -> Any:
+        cfg = _config({"enabled": True, "allowed_actions": ["nudge_target"], "fixture": {**_FIXTURE, **keys}})
         assert cfg.grasping.recovery.fixture is not None
-        self.assertEqual(cfg.grasping.recovery.fixture.max_nudge_mm, 30.0)
+        return cfg.grasping.recovery.fixture
+
+    def _refused(self, **keys: float) -> str:
+        with self.assertRaises(ValidationError) as caught:
+            self._fixture(**keys)
+        return str(caught.exception)
+
+    def test_thirty_millimetres_by_default_under_a_fifty_millimetre_ceiling(self) -> None:
+        fixture = self._fixture()
+        self.assertEqual((fixture.push_distance_mm, fixture.max_nudge_mm), (30.0, 50.0))
 
     def test_fifty_is_the_cap_and_more_is_refused(self) -> None:
-        at_cap = _config({"enabled": True, "allowed_actions": ["nudge_target"],
-                          "fixture": {**_FIXTURE, "max_nudge_mm": 50.0}})
-        assert at_cap.grasping.recovery.fixture is not None
-        self.assertEqual(at_cap.grasping.recovery.fixture.max_nudge_mm, 50.0)
-        with self.assertRaises(ValidationError) as caught:
-            _config({"enabled": True, "allowed_actions": ["nudge_target"],
-                     "fixture": {**_FIXTURE, "max_nudge_mm": 50.5}})
-        self.assertIn("max_nudge_mm", str(caught.exception))
+        at_cap = self._fixture(max_nudge_mm=50.0, push_distance_mm=50.0)
+        self.assertEqual((at_cap.push_distance_mm, at_cap.max_nudge_mm), (50.0, 50.0))
+        self.assertIn("max_nudge_mm", self._refused(max_nudge_mm=50.5))
+        self.assertIn("push_distance_mm", self._refused(push_distance_mm=50.5))
+
+    def test_a_push_distance_above_the_ceiling_is_refused_at_load(self) -> None:
+        text = self._refused(max_nudge_mm=20.0)
+        self.assertIn("push_distance_mm (30 mm) is longer than", text)
+        self.assertIn("max_nudge_mm (20 mm)", text)
+        lowered = self._fixture(max_nudge_mm=20.0, push_distance_mm=20.0)
+        self.assertEqual((lowered.push_distance_mm, lowered.max_nudge_mm), (20.0, 20.0))
+
+    def test_a_push_distance_or_a_ceiling_under_ten_millimetres_is_refused_at_load(self) -> None:
+        # Under 10 mm a push cannot open room for a finger: the old 5 mm default never pushed.
+        self.assertIn("push_distance_mm", self._refused(push_distance_mm=5.0))
+        self.assertIn("max_nudge_mm", self._refused(max_nudge_mm=5.0, push_distance_mm=10.0))
+        at_floor = self._fixture(max_nudge_mm=10.0, push_distance_mm=10.0)
+        self.assertEqual((at_floor.push_distance_mm, at_floor.max_nudge_mm), (10.0, 10.0))
 
 
 if __name__ == "__main__":

@@ -219,7 +219,16 @@ Each link mesh is pre-baked into its DH link frame once. At every evaluation onl
 object's transform is updated, to `R_base(psi) * T_dh[frame](q)`, with no BVH rebuild. Pair
 selection skips only links within one DH frame of each other, which are the adjacent links and the
 rigid wrist cluster that touch by construction; every farther pair is checked exactly, which covers
-the wrist pairs the capsule proxy has to skip. Each link is also checked against the fixtures.
+the wrist pairs the capsule proxy has to skip. Each link is also checked against the fixtures: a declared
+one as the axis-aligned box it is, at `min_distance_mm`, and a box a camera saw as the box the planner
+holds, turned about `+Z` by its yaw `phi`, placed by `Rz(phi)` about its centre, at
+`perceived_min_distance_mm`. A seen box is already the seen surface grown by the camera world's margin
+`m`, so the arm keeps `d_seen + m` from what the camera saw, and the load requires
+`d_seen + m >= min_distance_mm`, the path step: a surface that clears both samples of a step cannot be
+reached between them. That holds for the thinned cloud the boxes are fitted to, one point per 10 mm voxel;
+over 3,400 synthetic scenes the nearest raw pixel lay 4.1 mm inside its box, a measurement and not a bound.
+At a 20 mm voxel a measured pixel lay 5.6 mm outside every box, so while `d_seen < min_distance_mm` the load
+also refuses `perceived.voxel_size_mm` coarser than 10.
 
 **Broadphase cull.** For the continuous monitor a conservative bounding sphere, the mesh centroid
 plus its maximum vertex radius, precedes each exact query. A pair is skipped when
@@ -253,6 +262,12 @@ candidates the guards have already cleared, never override a rejection.
 
 The one place where a missing asset does not produce `UNAVAILABLE` is the exact-mesh backend of
 section 6, which falls back to a coarser but still conservative geometry and says so in the log.
+
+The one place where an exact verdict sets a refusal aside is the planner's padded spheres on the arm's own
+pairs (guide 04, section 6). There the spheres are a cushion around the meshes, not a second measurement,
+and a sample the planner refused on such a pair runs only where the exact guard, judging that very sample
+again, keeps its `min_distance_mm`; the padding lifted is never more than the margin. The planner's world,
+its joint bounds, the carried part and the robot's base stay its refusals.
 
 Code: [`preflight.py`](../src/robot/safety/preflight.py) and
 [`decision.py`](../src/robot/safety/decision.py)

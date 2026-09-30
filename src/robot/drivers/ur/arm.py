@@ -65,6 +65,15 @@ from src.robot.safety.planning import (
     StateRefusalKind,
     StateWhere,
 )
+from src.robot.safety.planning.band import (
+    BAND_LEG_MAX_DEG,
+    PoseScreen,
+    PoseVerdict,
+    admission_refusal,
+    band_neighbours,
+    band_sentence,
+    joints_between,
+)
 from src.robot.safety.planning.hand import planner_hand
 from src.robot.safety.workspace import WorkspaceGuard
 
@@ -78,7 +87,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from collections.abc import Callable, Sequence
     from typing import Any
 
-    from src.robot.safety.planning.curobo_client import SidecarIdentity
+    from src.robot.safety.planning.curobo_client import RefusedSample, SidecarIdentity
     from src.robot.safety.planning.live_world import (
         LivePlannerWorld,
         WorldRefresh,
@@ -179,6 +188,55 @@ class _Route:
     dense: int
     how: str
     planned: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _Standing:
+    """Why the planner's refusal of judged samples stands where the exact guard does not decide it (the owner's F1).
+
+    ``row`` is the refused sample it stands on, where the planner's report was read whole and a row of it is the
+    planner's alone (``band.admission_refusal``) or the exact guard refuses it; its ``index`` counts over the samples
+    judged. ``None`` where the refusal was never the guard's to decide, or no whole report came back: the refusal is then
+    said as the planner's verdict said it. ``status`` is the exact guard's own, where it refused the row.
+    """
+
+    reason: str
+    row: "RefusedSample | None" = None
+    status: "MotionStatus | None" = None
+
+    def said(self, sentence: str, verdict: object, count: int) -> "tuple[MotionStatus, str]":
+        """The status and the message of a refusal ``sentence`` opens, on ``count`` samples the ``verdict`` judged.
+
+        On a row: that sample, what the planner found there and why it stands, and a bound it stands on reads as a
+        bound, the exact guard's refusal as the guard's own status. Else the verdict's own words and status, as every
+        planner refusal read before the exact guard decided any of it (the guard's status where it refused).
+        """
+        refusal = getattr(verdict, "refusal", None)
+        row = self.row
+        if row is None:
+            return (self.status or _planner_refusal_status(refusal),
+                    _with_refusal(f"{sentence}: {getattr(verdict, 'reason', '')}", refusal))
+        status = self.status or (MotionStatus.JOINT_LIMIT_REJECTED if not row.bound_ok
+                                 else MotionStatus.SELF_COLLISION_REJECTED)
+        return status, f"{sentence} at sample {row.index} of {count}: {row.findings()}; it stands: {self.reason}"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _BandRoute:
+    """What a plan out of or into the planner's cushion band came to (:meth:`URRobotArm._band_route`).
+
+    ``route`` is ``[here, <cuRobo's plan>, goal]``, ``here`` and ``goal`` only where a straight band leg leaves or
+    reaches them, or ``None`` where no route is taken. ``note`` says what was found and done, or why no route is taken;
+    empty where the planner's refusal was not the band's to answer. ``stuck`` is true where it is the start that no plan
+    leaves (refused for more than the band, or no leg out of it), which no other goal plans from either; a failure after
+    the start was left belongs to this goal alone. ``legs`` counts the band legs at the head and at the tail of
+    ``route``, which the shortening keeps as they were judged.
+    """
+
+    route: "list[list[float]] | None" = None
+    note: str = ""
+    stuck: bool = True
+    legs: "tuple[int, int]" = (0, 0)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1416,8 +1474,15 @@ class URRobotArm(RobotArm):
             admissible: list[NearestGoal] = []
             for candidate in group:
                 verdict = planner.check_joint_path([list(candidate.joints)], refresh=False)
-                if not verdict.valid:
-                    tried.append(_with_refusal(f"{names[candidate]} refused by the planner",
+                # A goal only the planner's padded spheres refuse, on pairs the exact guard judges and accepts, is the
+                # exact guard's to decide (the owner, 2026-09-30); the endpoint gate below judges it again.
+                standing = (self._exact_guard_decides(planner, [list(candidate.joints)], verdict, clearance_mm=0.0,
+                                                      command=MotionCommand.MOVE_TO)
+                            if not verdict.valid else None)
+                if standing is not None:
+                    tried.append(standing.said(f"{names[candidate]} refused by the planner", verdict, 1)[1]
+                                 if standing.row is not None else
+                                 _with_refusal(f"{names[candidate]} refused by the planner",
                                                getattr(verdict, "refusal", None)))
                     continue
                 refused_end = self._gate_planned_config(pose, JointPositions(candidate.joints))
@@ -1442,7 +1507,9 @@ class URRobotArm(RobotArm):
                     break
                 planned += 1
                 try:
-                    trajectory, why, start = self._planned(planner, candidate.joints, name=names[candidate])
+                    trajectory, why, start, legs = self._planned(planner, candidate.joints, name=names[candidate],
+                                                                 here=here, command=MotionCommand.MOVE_TO,
+                                                                 target_pose=pose)
                 except CuroboUnavailableError:
                     raise  # a RuntimeError too, and the caller's to type as the planner lost
                 except (RobotConnectionError, RuntimeError, OSError) as exc:
@@ -1455,7 +1522,7 @@ class URRobotArm(RobotArm):
                         exception=exc,
                     )
                 if start is not None:
-                    return self._start_refusal(start, MotionCommand.MOVE_TO, target_pose=pose)
+                    return self._start_refusal(start, MotionCommand.MOVE_TO, target_pose=pose, note=why)
                 if trajectory is None:
                     tried.append(why)
                     continue
@@ -1479,13 +1546,13 @@ class URRobotArm(RobotArm):
                 if refused is not None:
                     return refused
                 waypoints, refused = self._judged_waypoints(
-                    planner, trajectory, command=MotionCommand.MOVE_TO, target_pose=pose,
+                    planner, trajectory, command=MotionCommand.MOVE_TO, target_pose=pose, legs=legs,
                 )
                 if refused is not None:
                     return refused
                 return self._route(waypoints, planned=True, dense=len(trajectory),
-                                   how=f"cuRobo plan to {names[candidate]}", tried=tried, held=held,
-                                   reached=branches[candidate])
+                                   how=f"cuRobo plan to {names[candidate]}" + (f", {why}" if why else ""),
+                                   tried=tried, held=held, reached=branches[candidate])
         self.logger.error("move to %s refused, nothing was sent: %s", pose.label or "<unlabeled>",
                           "; ".join(tried) or "no goal was admissible")
         if len(end_refusals) == len(goals):
@@ -1572,39 +1639,265 @@ class URRobotArm(RobotArm):
 
     def _planned(
         self, planner: CuroboUrPlanner, goal: "Sequence[float]", *, name: str,
-    ) -> "tuple[list[list[float]] | None, str, object | None]":
-        """cuRobo's plan to ``goal``, as ``(trajectory, "", None)``, or ``(None, why, None)`` where it is not taken.
+        here: "Sequence[float] | None" = None, command: MotionCommand = MotionCommand.MOVE_TO,
+        target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+    ) -> "tuple[list[list[float]] | None, str, object | None, tuple[int, int]]":
+        """cuRobo's plan to ``goal``, as ``(trajectory, how, None, legs)``, or ``(None, why, None, _)`` where it is not
+        taken.
 
-        ``(None, "", refusal)`` is a start the planner will not leave, which no other goal plans from either. A plan
-        is taken where it ends within ``_NEAREST_GOAL_END_TOL_RAD`` of ``goal``; how far it swings is the caller's to
-        read (:meth:`_detour`). Only the goal is ever chosen here; the trajectory is cuRobo's and is never altered.
-        Raises ``CuroboUnavailableError``.
+        ``(None, why, refusal, _)`` is a start the planner will not leave, which no other goal plans from either;
+        ``why`` says what the two authorities found there where it can. A plan is taken where it ends within
+        ``_NEAREST_GOAL_END_TOL_RAD`` of ``goal``; how far it swings is the caller's to read (:meth:`_detour`). Only the
+        goal is ever chosen here; cuRobo's trajectory is never altered.
+
+        ``here`` is where the arm stands. Given it, a start or goal the planner refuses only on self pairs the exact
+        guard judges and accepts, the planner's cushion band, is planned out of or into by a straight leg of at most
+        :data:`~src.robot.safety.planning.band.BAND_LEG_MAX_DEG` per joint (:meth:`_band_route`): the trajectory then
+        opens at ``here`` and ends at ``goal`` with those legs, ``how`` says so, ``legs`` counts them at its head and its
+        tail, for the caller to judge the trajectory whole as every plan and to keep them as they are when it shortens
+        it (:meth:`_judged_waypoints`). Once a leg left the start, a plan that still fails is this goal's failure, never
+        the start's. Raises ``CuroboUnavailableError``.
         """
         trajectory = planner.plan_joint(list(goal), refresh=False)
+        how, legs = "", (0, 0)
         if not trajectory:
             refusal = getattr(planner, "last_refusal", None)
-            if refusal is not None and getattr(refusal, "where", None) == StateWhere.START:
-                return None, "", refusal
-            return None, _with_refusal(f"{name} did not plan", refusal), None
+            banded = (self._band_route(planner, here, goal, refusal, command=command, target_pose=target_pose,
+                                       target_joints=target_joints)
+                      if here is not None else _BandRoute())
+            if banded.route is None:
+                if banded.stuck and refusal is not None and getattr(refusal, "where", None) == StateWhere.START:
+                    return None, banded.note, refusal, legs
+                if banded.note and not banded.stuck:
+                    return None, f"{name} did not plan: {banded.note}", None, legs
+                return (None, _with_refusal(f"{name} did not plan", refusal)
+                        + (f"; {banded.note}" if banded.note else ""), None, legs)
+            trajectory, how, legs = banded.route, banded.note, banded.legs
         off_rad = max(abs(float(a) - float(b)) for a, b in zip(trajectory[-1], goal))
         if off_rad > self._NEAREST_GOAL_END_TOL_RAD:
-            return None, f"{name} planned to a configuration {off_rad:.2g} rad from it, so the plan is not taken", None
-        return trajectory, "", None
+            return (None, f"{name} planned to a configuration {off_rad:.2g} rad from it, so the plan is not taken", None,
+                    (0, 0))
+        return trajectory, how, None, legs
+
+    def _exact_guard_decides(
+        self, planner: CuroboUrPlanner, configs: "Sequence[Sequence[float]]", verdict: object, *,
+        clearance_mm: float, command: MotionCommand,
+    ) -> "_Standing | None":
+        """``None`` where every configuration of ``configs`` the planner refused is the exact guard's to decide; else why
+        the planner's refusal stands, and on which sample where its report says (:class:`_Standing`).
+
+        The owner, 2026-09-30 (:mod:`src.robot.safety.planning.band`): for the self pairs the exact guard judges, that
+        guard decides. ``configs`` are the samples ``verdict`` judged, in UR order, at ``clearance_mm`` from the
+        planner's world. A refusal is left to the exact guard only where all of these hold, and anything unexpected
+        leaves it standing:
+
+        1. the planner's refusal is a self collision it typed; one of the world or the bounds is the planner's;
+        2. this cell's self-collision guard runs its exact mesh backend (``SafetyPreflight.exact_pairs``);
+        3. the planner reports every sample it refuses, with the three terms apart and every pair of links, and the
+           report opens on the sample the verdict named (``CuroboUrPlanner.judge_joint_path``);
+        4. every refused sample has the planner's bounds and world clear, no carried part among its pairs, and every
+           pair one the exact guard judges, padded by no more than ``planner_margin_mm`` (``band.admission_refusal``);
+        5. the exact guard accepts every refused sample, judged here at its own margin (``gate_joint_path``), whatever
+           the caller judged before.
+        """
+        refusal = getattr(verdict, "refusal", None)
+        if refusal is None or getattr(refusal, "kind", None) != StateRefusalKind.SELF_COLLISION:
+            return _Standing("the planner's refusal is not a self collision it named")
+        exact = self._preflight.exact_pairs(self) if self._preflight is not None else None
+        judge = getattr(planner, "judge_joint_path", None)
+        if exact is None or not callable(judge):
+            return _Standing("no exact mesh guard runs here, or the planner reports no refused samples")
+        try:
+            report = judge([list(c) for c in configs], clearance_mm=float(clearance_mm))
+        except CuroboUnavailableError as exc:
+            self.logger.warning("the planner's refusal stands: its report could not be read (%s)", exc)
+            return _Standing(f"the planner's report could not be read ({exc})")
+        refused = tuple(getattr(report, "refused", ()) or ())
+        opens = refused[0].index if refused else None
+        if (getattr(report, "checked", None) != len(configs) or opens != getattr(verdict, "first_invalid", None)
+                or any(not 0 <= row.index < len(configs) for row in refused)):
+            why = "the planner's report does not account for the samples its verdict judged"
+            self.logger.warning("the planner's refusal stands: %s", why)
+            return _Standing(why)
+        for row in refused:
+            stands = admission_refusal(row, exact, margin_mm=self._planner_margin_mm())
+            if stands is not None:
+                self.logger.info("the planner's refusal stands on sample %d of %d: %s", row.index, len(configs),
+                                 stands)
+                return _Standing(stands, row)
+        assert self._preflight is not None  # noqa: S101 (exact_pairs above came from it)
+        judged = PathSamples(configs=tuple(tuple(float(v) for v in configs[row.index]) for row in refused),
+                             step_bound_mm=float(self._preflight.path_step_mm or 0.0))
+        denied = self._preflight.gate_joint_path(judged, arm=self, command=command)
+        if denied is not None:
+            # Which sample: each judged alone by the same guards, in path order, the first refused, in its own words.
+            for row in refused:
+                alone = self._exact_guard_refusal(configs[row.index], command)
+                if alone is not None:
+                    return _Standing(f"the exact guard refuses it too: {alone.message}", row, alone.status)
+            return _Standing(f"the exact guard refuses a sample the planner refused: {denied.message}",
+                             status=denied.status)
+        deepest = max(refused, key=lambda row: max((pair.depth_mm for pair in row.pairs or ()), default=0.0))
+        self.logger.info(
+            "the planner's padded spheres refuse %d of %d sample(s) on pairs the exact guard judges, and the exact "
+            "guard accepts every one, so it decides them: the deepest, %s", len(refused), len(configs),
+            band_sentence(deepest, exact, configs[deepest.index]),
+        )
+        return None
+
+    def _exact_guard_accepts(self, config: "Sequence[float]", command: MotionCommand) -> bool:
+        """Whether the exact guard, with the joint-limit and payload guards, accepts one configuration: nothing moves."""
+        return self._preflight is not None and self._exact_guard_refusal(config, command) is None
+
+    def _exact_guard_refusal(self, config: "Sequence[float]", command: MotionCommand) -> "MotionResult | None":
+        """The exact guard's refusal of one configuration, with the joint-limit and payload guards, or ``None``."""
+        if self._preflight is None:
+            return MotionResult.failed(MotionStatus.UNSUPPORTED, command, message="no safety preflight is wired")
+        judged = PathSamples(configs=(tuple(float(v) for v in config),),
+                             step_bound_mm=float(self._preflight.path_step_mm or 0.0))
+        return self._preflight.gate_joint_path(judged, arm=self, command=command)
+
+    #: How many of the nearest clear configurations a band start or goal tries a straight leg to, before it says none
+    #: is reached.
+    _BAND_LEG_TRIES = 3
+
+    def _band_route(
+        self, planner: CuroboUrPlanner, here: "Sequence[float]", goal: "Sequence[float]", refusal: object, *,
+        command: MotionCommand, target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+    ) -> _BandRoute:
+        """A plan out of or into the planner's cushion band, or why none is taken (:class:`_BandRoute`).
+
+        Asked only where cuRobo refused the start or the goal of a joint plan as a self collision. cuRobo cannot plan
+        out of or into a configuration its padded spheres refuse, so where the exact guard decides that refusal
+        (:meth:`_exact_guard_decides`'s conditions, on that one configuration), the arm takes a straight leg of at most
+        :data:`~src.robot.safety.planning.band.BAND_LEG_MAX_DEG` per joint to the nearest configuration both authorities
+        clear (:meth:`_band_leg`), and cuRobo plans between clear configurations (``plan_joint`` with the escape as its
+        start). The route is ``[here, <cuRobo's plan>, goal]``, ``here`` and ``goal`` only where a leg leaves or reaches
+        them; every leg of it is judged again by the caller as every plan. An empty note where the planner's refusal was
+        not the band's to answer; else the note names the pair, the planner's depth and the distance the exact meshes
+        keep, and what came of it.
+
+        The start is judged first. It is ``stuck`` where the planner refuses it for more than the band or no leg leaves
+        it: no goal plans from there, and the caller says so as the start's refusal. Once a leg leaves it, or it was
+        clear, whatever fails after (the goal refused for more than the band, no leg into it, no plan between the clear
+        configurations) is this goal's alone, and the caller tries the next goal as after any goal that did not plan.
+        """
+        if (refusal is None or getattr(refusal, "kind", None) != StateRefusalKind.SELF_COLLISION
+                or getattr(refusal, "where", None) not in (StateWhere.START, StateWhere.GOAL)):
+            return _BandRoute()
+        exact = self._preflight.exact_pairs(self) if self._preflight is not None else None
+        judge = getattr(planner, "judge_joint_path", None)
+        if exact is None or not callable(judge):
+            return _BandRoute()
+        ends = [[float(v) for v in here], [float(v) for v in goal]]
+        try:
+            report = judge(ends, clearance_mm=0.0)
+        except CuroboUnavailableError as exc:
+            return _BandRoute(note=f"the planner's report on the start and the goal could not be read ({exc})")
+        rows = {row.index: row for row in getattr(report, "refused", ())}
+        if (0 if getattr(refusal, "where", None) == StateWhere.START else 1) not in rows:
+            # The report does not hold the end the planner refused: its typed refusal stands as it was typed.
+            return _BandRoute()
+        legs: dict[int, list[float]] = {}
+        said: list[str] = []
+
+        def failed(sentence: str, *, stuck: bool) -> _BandRoute:
+            return _BandRoute(note="; ".join([*said, sentence]), stuck=stuck)
+
+        for index, what in ((0, "start"), (1, "goal")):
+            row = rows.get(index)
+            if row is None:
+                continue
+            why = admission_refusal(row, exact, margin_mm=self._planner_margin_mm())
+            if why is None and not self._exact_guard_accepts(ends[index], command):
+                why = "the exact guard refuses it too"
+            if why is not None:
+                return failed(f"the planner refuses the {what}, and not only where the exact guard decides: {why}",
+                              stuck=index == 0)
+            found = band_sentence(row, exact, ends[index])
+            leg = self._band_leg(planner, exact, ends[index], row, escape=index == 0, command=command,
+                                 target_pose=target_pose, target_joints=target_joints)
+            if leg is None:
+                return failed(
+                    f"the {what} is in the planner's cushion band: {found}; no configuration within "
+                    f"{BAND_LEG_MAX_DEG:g} deg per joint of it is clear to both authorities with a straight leg "
+                    + ("to it both pass, so no plan leaves it; move the arm by hand, or teach the pose where both "
+                       "clear it" if index == 0 else
+                       "from it both pass, so no plan reaches it; reach it on a straight line, or teach it where both "
+                       "clear it"), stuck=index == 0)
+            legs[index] = leg
+            turn = max(abs(math.degrees(a - b)) for a, b in zip(leg, ends[index]))
+            said.append(f"{'out of' if index == 0 else 'into'} the planner's cushion band at the {what} by a straight "
+                        f"{turn:.1f} deg {'escape' if index == 0 else 'approach'} leg ({found})")
+        if not legs:
+            return _BandRoute()
+        start, end = legs.get(0, ends[0]), legs.get(1, ends[1])
+        plan = planner.plan_joint(end, start_ur=start, refresh=False)
+        if not plan:
+            return failed(_with_refusal("cuRobo found no plan between the clear configurations the band legs reach",
+                                        getattr(planner, "last_refusal", None)), stuck=False)
+        tol = self._NEAREST_GOAL_END_TOL_RAD
+        if (max(abs(float(a) - float(b)) for a, b in zip(plan[0], start)) > tol
+                or max(abs(float(a) - float(b)) for a, b in zip(plan[-1], end)) > tol):
+            return failed("cuRobo's plan does not open and end on the configurations the band legs reach", stuck=False)
+        route = ([ends[0]] if 0 in legs else []) + [[float(v) for v in w] for w in plan] + (
+            [ends[1]] if 1 in legs else [])
+        return _BandRoute(route=route, note="; ".join(said), stuck=False, legs=(int(0 in legs), int(1 in legs)))
+
+    def _band_leg(
+        self, planner: CuroboUrPlanner, exact: object, config: "Sequence[float]", row: object, *, escape: bool,
+        command: MotionCommand, target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+    ) -> "list[float] | None":
+        """The nearest configuration to a band ``config`` both authorities clear, whose straight leg both pass; or ``None``.
+
+        The candidates turn only the joints that move one link of the planner's pairs against the other, at most
+        :data:`~src.robot.safety.planning.band.BAND_LEG_MAX_DEG` each, nearest first by the path gate's measure
+        (``band.band_neighbours``). The planner clears them in one request at ``safety.planned_motion.line_clearance_mm``
+        from its world, with no pair left to anyone; the exact guard accepts the first of those; then the straight leg
+        between ``config`` and it, out of the band for an ``escape`` and into it otherwise, is judged by both authorities
+        as every straight line (:meth:`_judge_legs`). Up to :attr:`_BAND_LEG_TRIES` candidates are tried.
+        """
+        radii = self._preflight.joint_radii_mm(self) if self._preflight is not None else None
+        pairs = tuple(getattr(row, "pairs", ()) or ())
+        if radii is None or not pairs:
+            return None
+        candidates = band_neighbours(config, joints_between(pairs, exact), radii)  # type: ignore[arg-type]
+        if not candidates:
+            return None
+        clearance = self._line_clearance_mm()
+        report = planner.judge_joint_path([list(c) for c in candidates], clearance_mm=clearance,  # type: ignore[attr-defined]
+                                          name_pairs=False)
+        refused = {row.index for row in report.refused}
+        tries = 0
+        for index, candidate in enumerate(candidates):
+            if index in refused or not self._exact_guard_accepts(candidate, command):
+                continue
+            leg = [list(config), list(candidate)] if escape else [list(candidate), list(config)]
+            if self._judge_legs(planner, leg, command=command, target_pose=target_pose, target_joints=target_joints,
+                                clearance_mm=clearance) is None:
+                return [float(v) for v in candidate]
+            tries += 1
+            if tries >= self._BAND_LEG_TRIES:
+                break
+        return None
 
     def _start_refusal(
         self, refusal: object, command: MotionCommand, *,
-        target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+        target_pose: Pose | None = None, target_joints: JointPositions | None = None, note: str = "",
     ) -> MotionResult:
         """The typed refusal of a move the planner will not start: the status of what it found where the arm stands.
 
         A start the planner refuses is not a goal it could not reach, and TIMEOUT with the no-plan sentence would send
-        a recovery to look again at a scene that is not the problem.
+        a recovery to look again at a scene that is not the problem. ``note`` is what the two authorities found there
+        (:meth:`_band_route`): in the planner's cushion band, the pair, the planner's depth and the distance the exact
+        meshes keep, and why no escape leg was taken.
         """
         return MotionResult.failed(
             _planner_refusal_status(refusal), command, target_pose=target_pose, target_joints=target_joints,
             message=_with_refusal(
                 "the arm stands where the planner will not start from, so no plan exists from here and nothing was "
-                "sent; bring the arm out of this configuration before it plans again", refusal),
+                "sent; " + (f"{note}; " if note else "") + "bring the arm out of this configuration before it plans "
+                "again", refusal),
         )
 
     def _route(
@@ -1629,6 +1922,11 @@ class URRobotArm(RobotArm):
     def _line_clearance_mm(self) -> float:
         """How far a straight joint line has to stay from the planner's world: ``safety.planned_motion``."""
         return float(self.config.safety.planned_motion.line_clearance_mm)
+
+    def _planner_margin_mm(self) -> float:
+        """The padding the planner puts on a pair of the links it pads, ``planner_margin_mm``: the most of its padding
+        the exact guard may decide past (``band.admission_refusal``). Undeclared reads 0, and no planner starts then."""
+        return float(getattr(self.config.safety.self_collision, "planner_margin_mm", 0.0) or 0.0)
 
     def _detour(self, waypoints: "Sequence[Sequence[float]]") -> "tuple[float, str]":
         """How far a path swings its worst joint beyond the span between its start and its goal, where that is too far.
@@ -1684,6 +1982,7 @@ class URRobotArm(RobotArm):
     def _judged_waypoints(
         self, planner: CuroboUrPlanner, traj_ur: "list[list[float]]", *, command: MotionCommand,
         target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+        legs: "tuple[int, int]" = (0, 0),
     ) -> "tuple[Sequence[Sequence[float]], MotionResult | None]":
         """The waypoints to run, one ``moveJ`` each, with both authorities having judged their legs; or the refusal.
 
@@ -1703,6 +2002,12 @@ class URRobotArm(RobotArm):
         waypoints that keeps both ends cannot swing further than the plan did, so the bound is stated on the list
         that runs. A cell whose preflight samples no path cannot shorten one, and its plan meets
         ``gate_planned_path`` as it always did, which refuses it.
+
+        ``legs`` counts the straight band legs at the head and at the tail of ``traj_ur`` (:meth:`_band_route`): the
+        escape out of a pose the planner's padded spheres refuse and the approach into one. Only cuRobo's part between
+        them is shortened, so each runs as the one ``moveJ`` of at most
+        :data:`~src.robot.safety.planning.band.BAND_LEG_MAX_DEG` per joint it was chosen and judged as, and the route's
+        log line says the leg that runs.
         """
         from src.robot.safety.path_samples import simplify_joint_path
 
@@ -1712,8 +2017,11 @@ class URRobotArm(RobotArm):
         refused: "MotionResult | None" = None
         if step is not None and reach is not None:
             shortened: "tuple[tuple[float, ...], ...] | None"
+            head, tail = legs
             try:
-                shortened = simplify_joint_path(traj_ur, reach_mm=reach, tolerance_mm=step)
+                shortened = (tuple(tuple(float(v) for v in w) for w in traj_ur[:head])
+                             + simplify_joint_path(traj_ur[head:len(traj_ur) - tail], reach_mm=reach, tolerance_mm=step)
+                             + tuple(tuple(float(v) for v in w) for w in traj_ur[len(traj_ur) - tail:]))
             except ValueError:  # a waypoint that cannot be read: the path gate below refuses it and says why
                 shortened = None
             if shortened is not None and len(shortened) < len(traj_ur):
@@ -1773,12 +2081,16 @@ class URRobotArm(RobotArm):
             )
         if verdict.valid:
             return None
-        refusal = getattr(verdict, "refusal", None)
+        # The samples the exact gate just accepted: a self collision the planner's padded spheres alone find, on pairs
+        # the exact guard judges, is that guard's to decide (the owner, 2026-09-30).
+        standing = self._exact_guard_decides(planner, samples.configs, verdict, clearance_mm=clearance_mm,
+                                             command=command)
+        if standing is None:
+            return None
         what = "this straight joint line" if len(waypoints) == 2 else "the legs this path would run"
-        return MotionResult.failed(
-            _planner_refusal_status(refusal), command, target_pose=target_pose, target_joints=target_joints,
-            message=_with_refusal(f"the planner refused {what}: {verdict.reason}", refusal),
-        )
+        status, message = standing.said(f"the planner refused {what}", verdict, len(samples.configs))
+        return MotionResult.failed(status, command, target_pose=target_pose, target_joints=target_joints,
+                                   message=message)
 
     def _log_the_route(self, what: str, route: _Route) -> None:
         """One line per move: how its route was chosen, how many waypoints ran, and how far each joint turns on them.
@@ -2402,6 +2714,98 @@ class URRobotArm(RobotArm):
         self.logger.debug("no configuration for %s: refused by the endpoint gate: %s", label, why)
         raise RobotKinematicsError(f"{label}: refused by the endpoint gate: {why}")
 
+    def screen_configuration(self, joints: JointPositions, *, ask_planner: bool = True) -> PoseScreen:
+        """What the exact guard and the planner say about ``joints`` before any move goes there; nothing moves.
+
+        The owner, 2026-09-30: a pose is screened where it is taught, where a campaign starts and at the desk, so a pose
+        only the planner's padded spheres refuse is known before a pick meets it (:mod:`src.robot.safety.planning.band`).
+        The configuration is the one a joint move would take, on its turn inside the goal window. The verdict:
+
+        * ``GUARD_REFUSED``: the exact guard (with the joint-limit and payload guards) refuses it; no move goes there;
+        * ``CLEAR``: the planner clears it too;
+        * ``BAND``: the planner's padded spheres refuse it on pairs the exact guard judges and accepts; the arm goes there
+          and out of it on straight lines, and a planned move out of it or into it takes a short escape leg;
+        * ``PLANNER_REFUSED``: the planner refuses it for what only it judges (its world, its bounds, the carried part,
+          a pair the guard does not check);
+        * ``UNSCREENED``: the planner could not be asked, or ``ask_planner`` is false; the exact guard's verdict is said.
+
+        Where it is not clear, ``nearby`` is the nearest configuration within
+        :data:`~src.robot.safety.planning.band.BAND_LEG_MAX_DEG` per joint both clear: for a ``BAND`` pose the pose a
+        planned move's leg goes to on its own (nothing to re-teach), for an ERROR the pose to re-teach at. The planner is
+        started where it is not running (about a minute on a cell), and it holds the world it was last given.
+        """
+        if self._motion_planner != "curobo" or self._preflight is None:
+            return PoseScreen(PoseVerdict.UNSCREENED, (
+                f"robot.ur.motion_planner is {self._motion_planner!r}"
+                f"{' and no safety preflight is wired' if self._preflight is None else ''}, so no planner judges it."))
+        values = [float(v) for v in joints.tolist()]
+        target, _ = self._twin_near_the_arm(JointPositions(values), values)
+        config = [float(v) for v in target.tolist()]
+        exact = self._preflight.exact_pairs(self)
+        denied = self._preflight.gate_joint_target(JointPositions(config), arm=self)
+        if not ask_planner:
+            said = "the exact guard refuses it" if denied is not None else "the exact guard accepts it"
+            return PoseScreen(PoseVerdict.GUARD_REFUSED if denied is not None else PoseVerdict.UNSCREENED,
+                              f"{said}{': ' + str(denied.message) if denied is not None else ''}; the planner was "
+                              "not asked.")
+        try:
+            planner = self._curobo_ur_planner()
+            report = planner.judge_joint_path([config], clearance_mm=0.0)
+        except CuroboUnavailableError as exc:
+            said = (f"the exact guard refuses it: {denied.message}" if denied is not None
+                    else "the exact guard accepts it")
+            return PoseScreen(PoseVerdict.GUARD_REFUSED if denied is not None else PoseVerdict.UNSCREENED,
+                              f"{said}; the planner could not be asked: {exc}", planner_unavailable=True)
+        row = report.refused[0] if report.refused else None
+        nearby = (self._screened_nearby(planner, exact, config, row)
+                  if denied is not None or row is not None else None)
+        if denied is not None:
+            return PoseScreen(PoseVerdict.GUARD_REFUSED, f"{denied.message}. No move goes there.", nearby=nearby)
+        if row is None:
+            return PoseScreen(PoseVerdict.CLEAR, "the exact guard and the planner both clear it.")
+        why = (admission_refusal(row, exact, margin_mm=self._planner_margin_mm()) if exact is not None
+               else "no exact mesh guard runs here")
+        if why is None and exact is not None:
+            planned = (f"a planned move out of it or into it takes a straight leg of at most {BAND_LEG_MAX_DEG:g} deg "
+                       "per joint to the nearest pose both clear first" if nearby is not None else
+                       f"no pose within {BAND_LEG_MAX_DEG:g} deg per joint of it clears both, so a planned move out of "
+                       "it or into it is refused: teach it where both clear, or reach it and leave it on straight "
+                       "lines")
+            return PoseScreen(PoseVerdict.BAND, (
+                f"{band_sentence(row, exact, config)}. Straight lines run into it and out of it; {planned}."),
+                nearby=nearby)
+        return PoseScreen(PoseVerdict.PLANNER_REFUSED, f"{row.render()}: {why}. No move goes there while it does.",
+                          nearby=nearby)
+
+    def _screened_nearby(
+        self, planner: CuroboUrPlanner, exact: object, config: "Sequence[float]", row: object,
+    ) -> "tuple[float, ...] | None":
+        """The nearest configuration both authorities clear within the band leg's reach of ``config``, or ``None``.
+
+        The joints turned are those that move one link of the planner's pairs against the other where it named some,
+        every joint otherwise; the planner clears them at the line clearance, the exact guard accepts the first. It is
+        the screen's word only: for a band pose where a planned move's own leg would go (nothing to re-teach), for an
+        ERROR pose the pose to re-teach at. No leg to it is judged here: the screen drives nothing.
+        """
+        radii = self._preflight.joint_radii_mm(self) if self._preflight is not None else None
+        if radii is None:
+            return None
+        pairs = tuple(getattr(row, "pairs", ()) or ()) if row is not None else ()
+        turned = joints_between(pairs, exact) if pairs and exact is not None else tuple(range(len(config)))  # type: ignore[arg-type]
+        candidates = band_neighbours(config, turned, radii)
+        if not candidates:
+            return None
+        try:
+            report = planner.judge_joint_path([list(c) for c in candidates], clearance_mm=self._line_clearance_mm(),
+                                              name_pairs=False)
+        except CuroboUnavailableError:
+            return None
+        refused = {refusal.index for refusal in report.refused}
+        for index, candidate in enumerate(candidates):
+            if index not in refused and self._exact_guard_accepts(candidate, MotionCommand.MOVE_JOINTS):
+                return tuple(float(v) for v in candidate)
+        return None
+
     @property
     def capabilities(self) -> RobotCapabilities:
         """Static feature flags advertised by this driver."""
@@ -2649,9 +3053,10 @@ class URRobotArm(RobotArm):
         if refused.status is not MotionStatus.SELF_COLLISION_REJECTED:
             return target, None, refused
         try:
-            trajectory, why, start = self._planned(planner, target.tolist(), name="the target")
+            trajectory, why, start, legs = self._planned(planner, target.tolist(), name="the target", here=here,
+                                                         command=command, target_joints=target)
             if start is not None:
-                return target, None, self._start_refusal(start, command, target_joints=target)
+                return target, None, self._start_refusal(start, command, target_joints=target, note=why)
             if trajectory is None:
                 return target, None, dataclasses.replace(
                     refused, message=f"{refused.message}; and no plan goes around it: {why}")
@@ -2663,7 +3068,7 @@ class URRobotArm(RobotArm):
                              f"around it {detour}; nothing was sent"),
                 )
             waypoints, planned_refusal = self._judged_waypoints(
-                planner, trajectory, command=command, target_joints=target,
+                planner, trajectory, command=command, target_joints=target, legs=legs,
             )
         except CuroboUnavailableError as exc:
             return target, None, MotionResult.failed(
@@ -2682,6 +3087,8 @@ class URRobotArm(RobotArm):
         if planned_refusal is not None:
             return target, None, planned_refusal
         how = f"cuRobo plan around the straight line, which was refused ({refused.status.value}: {refused.message})"
+        if why:
+            how += f"; {why}"
         return target, self._route(waypoints, planned=True, dense=len(trajectory), how=how + turned), None
 
     #: A joint value past this is past a full turn either way, which no UR joint reaches in radians: a target written in
@@ -3080,11 +3487,13 @@ class URRobotArm(RobotArm):
             )
         if verdict.valid:
             return None
-        refusal = getattr(verdict, "refusal", None)
-        return MotionResult.failed(
-            _planner_refusal_status(refusal), command, target_pose=pose,
-            message=_with_refusal(f"the planner refused this line: {verdict.reason}", refusal),
-        )
+        # A line only: the exact guard decides the planner's self pairs it judges, never a planned way round.
+        standing = self._exact_guard_decides(self._curobo_ur_planner(), judged.configs, verdict, clearance_mm=0.0,
+                                             command=command)
+        if standing is None:
+            return None
+        status, message = standing.said("the planner refused this line", verdict, len(judged.configs))
+        return MotionResult.failed(status, command, target_pose=pose, message=message)
 
     def _drive_checked_line(
         self, pose: Pose, *, vel: float | None = None, acc: float | None = None

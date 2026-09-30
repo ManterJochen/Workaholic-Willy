@@ -48,11 +48,19 @@ Opt-in capabilities are Protocols a driver implements only where the hardware of
 caller checks with `isinstance` and falls back: `SupportsDigitalIO`, `SupportsForceTorque` (a
 `Wrench`), `SupportsRobotStatus` (a `RobotStatus`, and recovery from a protective stop), `KeepsLines`
 (what `move(pose, linear=True)` keeps of the line: `CHECKED`, `CONTROLLER_LINE`, `TELEPORT` or
-`NOT_KEPT`), `CarriesPayload` and `SupportsFreedrive` (a `FreedriveSession` a person moves the arm
-in, read as `FreedriveSample`, with every motion verb refused while it is open) on the arm;
+`NOT_KEPT`), `CarriesPayload`, `SupportsFreedrive` (a `FreedriveSession` a person moves the arm
+in, read as `FreedriveSample`, with every motion verb refused while it is open),
+`ChoosesConfigurations` (`nearest_configuration(pose)`: the joints a pose goes to as the arm's own gates
+judge it, nothing moved, `RobotKinematicsError` where none is admissible) and `DrivesJointLines`
+(`move_to_joints_on_the_line(joints)`: the straight joint line from where the arm stands, judged as
+`move_to_joints` judges a clear line, refused with nothing sent where it is not clear, never planned
+around) on the arm;
 `ObjectDetectingGripper`, `StoppableGripper`, `ReportsHoldEvidence` (`HELD`, `EMPTY` or `UNMEASURED`)
 and `MeasuresWidth` on the hand. A gate written against a capability no attached driver implements
-does nothing, by design.
+does nothing, by design. The one view a wrist pick generates is screened by `ChoosesConfigurations`
+and driven by `DrivesJointLines`, and its move back runs on `DrivesJointLines` alone. The UR driver
+implements both; an arm without them, the Isaac arm and the dummy among them, generates no view and
+approaches from where it stands.
 
 ## What a motion ends as
 
@@ -113,10 +121,10 @@ and `ik` take `Frame.BASE`) are stated here and enforced by each driver.
 | --- | --- |
 | `robot_arm.py` | `RobotArm` |
 | `gripper.py` | `Gripper`, its opt-in extensions, `HoldEvidence`, `hold_evidence_of`, `width_is_measured_of` |
-| `arm_capabilities.py` | the arm capability Protocols and their values: `Wrench`, `RobotStatus`, `LineReading`, `PayloadModel` |
+| `arm_capabilities.py` | the arm capability Protocols and their values: `Wrench`, `RobotStatus`, `LineReading`, `PayloadModel`; `ChoosesConfigurations`, `DrivesJointLines` |
 | `motion_result.py` | `MotionStatus`, `MotionCommand`, `MotionResult`, `NO_PLAN_FAIL_SAFE_MESSAGE` |
 | `camera_world.py` | the camera world stamp and decline, and how a driver declines, stamps and refuses |
-| `keep_out.py` | `KeepOutBox`, `SegmentationOffer`, `keeping_out(arm, offer)` |
+| `keep_out.py` | `KeepOutBox`, `SegmentationOffer`, `keeping_out(arm, offer)`, and `holding_views(arm)`, which keeps every frame of a wrist pick in the arm's live planner world until the block ends |
 | `shutter_motion.py` | `ShutterMotion` |
 | `joint_positions.py`, `capabilities.py` | `JointPositions`, `RobotCapabilities` |
 | `vendor.py`, `gripper_vendor.py` | `RobotVendor`, `GripperVendor` |

@@ -68,6 +68,10 @@ and `GraspPoint`, and nothing imports it back.
 - The overlay needs RGB. `GraspCalculator.compute()` renders the PNG only when it received an
   `rgb_image`, and the pick loop forwards the frame's RGB only while rendering is on. A ground-truth
   perception source whose camera returns no colour image gives `None`.
+- With a `closing_axis`, or the cell's `robot.natural_closing_axis`, `last_debug_image_png` shows the
+  grasps the pick chooses among, each the way round it closes, with `final` and `best_score` counted on
+  them: the pick loop draws it again (`GraspCalculator.redraw_debug_image`) wherever it changed a result,
+  and drops it where the calculator cannot redraw.
 - The 3D path has no caller in the pick path. `show_grasp_scene` blocks until the window closes, so
   it belongs in a notebook or an offline script, never in a request.
 - Everything is one frame at a time: no video, no temporal overlay, no browser output of its own.

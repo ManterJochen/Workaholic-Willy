@@ -63,12 +63,17 @@ The owner's rules of 2026-09-29, and where each one lives:
   It never picks another label.
 * **The dispatcher** offers the nudge (the push) only for
   ``ALL_COLLIDED``, and NEXT_TARGET after ``MOTION_PLAN_REFUSED``.
+* **The push runs inside the pick attempt**
+  (:func:`~src.robot.grasping.recovery.push_motion.execute_push`), where
+  the part, its neighbours and the keep-out are known. A nudge this loop
+  plans is refused before anything moves
+  (``refused_push_runs_in_the_pick``) and the loop falls through.
 
 When armed, the agitate motion drives bounded waypoints, each checked
 against the fixture envelope before the first moves, through the
-SafetyPreflight-gated arm.move surface, the same executor path as the
-nudge: a there-and-back oscillation by default, a contact redistribute
-when the fixture sets a non-zero agitate contact depth. The orchestrator
+SafetyPreflight-gated arm.move surface: a there-and-back oscillation by
+default, a contact redistribute when the fixture sets a non-zero agitate
+contact depth. The orchestrator
 never plans an action the policy or profile does not list; defaults are
 chosen so a recovery YAML produces a byte-identical snapshot until the
 operator opts in (CONTAINER_AGITATE stays gated behind a declared
@@ -96,6 +101,7 @@ from src.robot.grasping.constants import (
 from src.robot.grasping.types.feedback import GraspFailureReason
 from src.robot.grasping.recovery.policy import (
     _PHYSICAL_ACTIONS,
+    REFUSED_PUSH_RUNS_IN_THE_PICK,
     SceneRecoveryAction,
     SceneRecoveryContext,
     SceneRecoveryPlan,
@@ -948,18 +954,19 @@ def _execute_plan(
             return False, "refused_no_failed_part"
         frame_acquirer()
         return True, "completed"
-    if plan.action in (
-        SceneRecoveryAction.NUDGE_TARGET,
-        SceneRecoveryAction.CONTAINER_AGITATE,
-    ):
+    if plan.action is SceneRecoveryAction.NUDGE_TARGET:
+        # The push runs inside the pick attempt (push_motion.execute_push), never from this loop: here the part,
+        # its neighbours and the keep-out are gone. Refused before anything moves, so the loop falls through.
+        return False, REFUSED_PUSH_RUNS_IN_THE_PICK
+    if plan.action is SceneRecoveryAction.CONTAINER_AGITATE:
         if arm is None:
             logger.warning(
                 "Physical recovery %s requested without an arm - refused",
                 plan.action.value,
             )
             return False, "refused_no_arm"
-        # Both physical actions route through the SafetyPreflight-gated executor,
-        # which needs a start pose, so read the live TCP first.
+        # The agitate routes through the SafetyPreflight-gated executor, which needs a start pose, so read the
+        # live TCP first.
         get_tcp = getattr(arm, "get_tcp_pose", None)
         current_tcp = get_tcp() if callable(get_tcp) else None
         report = execute_recovery_motion(

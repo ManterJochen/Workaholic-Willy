@@ -62,7 +62,7 @@ and the loaders.
 | Capability | Evidence |
 | --- | --- |
 | The calculator these scores rank for, in the pick service | measured in simulation |
-| The same at a physical cell | never touched hardware |
+| The same at a physical cell | run on a physical cell: the camera picks of a UR10 (CB3) with a wrist D415; no score from them is kept here |
 
 These are heuristics, not ground truth. `reachability_score` is box and axis geometry rather than an IK
 query. `stability_score` is a heuristic; `force_closure.certify_contact_pair` proves force closure under

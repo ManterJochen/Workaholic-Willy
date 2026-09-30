@@ -78,7 +78,8 @@ typing-only annotation of `Extrinsics` in `adapters/matrix.py`.
 | File | Holds |
 | --- | --- |
 | [`frame.py`](frame.py) | `Frame`, the coordinate frames as a `StrEnum`; no raw-string frames in the public API |
-| [`pose.py`](pose.py) | `Pose`, an immutable frame-tagged pose with an optional label |
+| [`pose.py`](pose.py) | `Pose`, an immutable frame-tagged pose with an optional label; `closing_axis_heading_deg`, the one rule for the heading a `CLOSING_AXES` name points at, which `tool_down`, `aimed_at` and the grasp filter share |
+| [`closing_axis.py`](closing_axis.py) | the one reader of a closing axis: `ClosingAxis`, `closing_axis_of` (a name or an orientation), `natural_closing_axis_of` (a config's `robot.natural_closing_axis`), `NO_HEADING_WITHIN_DEG_OF_VERTICAL`. It imports NumPy and this package only, so reading a config loads no grasping package |
 | [`transform.py`](transform.py) | `Transform`, an immutable rigid transform between two frames |
 | [`quaternion.py`](quaternion.py) | XYZW algebra, and axis-angle, Euler, rotation vector and matrix conversions |
 | [`matrix.py`](matrix.py) | homogeneous 4x4 helpers for boundary code and inner loops; no frames |

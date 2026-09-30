@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import types
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -28,6 +29,27 @@ NO_TIMESTAMPS = 50363
 VOCABULARY = 51865
 
 SAMPLERATE = 16000
+
+
+#: The files openai/whisper-large-v3-turbo holds at its pinned commit, less README.md and .gitattributes.
+WHISPER_FILES: tuple[str, ...] = (
+    "added_tokens.json", "config.json", "generation_config.json", "merges.txt", "model.safetensors",
+    "normalizer.json", "preprocessor_config.json", "special_tokens_map.json", "tokenizer.json",
+    "tokenizer_config.json", "vocab.json",
+)
+
+
+def whisper_directory(path: Path, *, without: Iterable[str] = ()) -> Path:
+    """``path``, created, holding an empty stand-in for every file in `WHISPER_FILES` except ``without``.
+
+    Enough for the engine's check of a local directory; the loaders that would read the files are stand-ins.
+    """
+    left_out = set(without)
+    path.mkdir(parents=True, exist_ok=True)
+    for name in WHISPER_FILES:
+        if name not in left_out:
+            (path / name).write_bytes(b"")
+    return path
 
 
 def whisper_parts(
@@ -47,6 +69,10 @@ def whisper_parts(
     processor = MagicMock(name="WhisperProcessor")
     processor.return_value = SimpleNamespace(input_features=torch.zeros(1, 80, 3000))
     processor.batch_decode.return_value = [text]
+    # The tokenizer holds the decoder prompt as special tokens, at the ids the generation config below writes.
+    prompt = {"<|startoftranscript|>": START, "<|en|>": ENGLISH, "<|de|>": GERMAN}
+    processor.tokenizer.convert_tokens_to_ids.side_effect = lambda token: prompt.get(token, END)
+    processor.tokenizer.decode.return_value = ""
 
     model = MagicMock(name="WhisperForConditionalGeneration")
     model.to.return_value = model

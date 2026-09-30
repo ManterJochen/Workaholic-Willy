@@ -14,10 +14,14 @@ The owner's rules (2026-09-29), each one a named constant below:
   direction the caller offers (:data:`DEFAULT_PUSH_AXES_XY`, each axis both ways) must pass these tests, and the
   planner keeps the one that gains the most clearance:
 
-  1. The open hand, swept from where it comes down to where it stops, keeps
-     :data:`HAND_NEIGHBOUR_CLEARANCE_MM` from every neighbour point. The fingers are checked at every height,
-     the palm only above its own underside. Along the push the palm reaches the larger of the fingers' outer
-     faces and half the housing's thickness (``PushHand.palm_thickness_mm``, 75 mm on the Hand-E).
+  1. The open hand, swept from where it comes down to where it stops, keeps the caller's hand clearance
+     (``hand_clearance_mm``, never under :data:`HAND_NEIGHBOUR_CLEARANCE_MM`) from every neighbour point. The
+     pick passes the camera world's ``margin_mm`` plus the arm's ``line_clearance_mm`` (25 mm on the shipped
+     cell): the box the world grows around a neighbour, and the distance every judged line keeps from it, so
+     the planner does not plan a push the arm's line judge would predictably refuse. The fingers are checked
+     at every height, the palm only above its own underside. Along the push the palm reaches the larger of the
+     fingers' outer faces and half the housing's thickness (``PushHand.palm_thickness_mm``, 75 mm on the
+     Hand-E).
   2. The part's own path keeps :data:`PATH_NEIGHBOUR_CLEARANCE_MM` from every neighbour point that is not
      behind it.
   3. The part's minimum clearance to its neighbours grows by at least :data:`MIN_CLEARANCE_GAIN_MM`.
@@ -49,8 +53,9 @@ The owner's rules (2026-09-29), each one a named constant below:
   several views are what let a push through.
 * **The distance.** The default is :data:`DEFAULT_PUSH_DISTANCE_MM`. Above :data:`PUSH_DISTANCE_CAP_MM` the
   push is refused, never clamped, and so is a push shorter than :data:`MIN_CLEARANCE_GAIN_MM`, which could not
-  open that much room. :func:`resolve_push_distance` settles a request against the config's
-  ``recovery.fixture.max_nudge_mm``, the longest push the cell allows.
+  open that much room. :func:`resolve_push_distance` settles a request against the config:
+  ``recovery.fixture.push_distance_mm`` when nobody asks, and never more than ``recovery.fixture.max_nudge_mm``,
+  the longest push the cell allows.
 * **The legs.** :attr:`PushPlan.legs` carries each judged line's speed and acceleration in m/s and m/s^2, the
   units ``arm.move(linear=True, vel=..., acc=...)`` takes, and nothing in mm/s.
 
@@ -181,8 +186,10 @@ CONTACT_GAP_MM = 10.0
 #: P0, in the air above the contact start, and the lift point are this far above the contact height: the grasp
 #: standoff (``execution_policy``'s 80 mm).
 PUSH_APPROACH_RISE_MM = 80.0
-#: The open hand, swept along the push, keeps this far from every neighbour point: the planner's own line
-#: clearance (``robot.safety.planned_motion.line_clearance_mm``), so a plan here is not refused there for it.
+#: The open hand, swept along the push, keeps at least this far from every neighbour point: the arm's own line
+#: clearance (``robot.safety.planned_motion.line_clearance_mm``). It is the floor of ``plan_push``'s
+#: ``hand_clearance_mm``, which the pick raises to the camera world's ``margin_mm`` plus that line clearance, since
+#: the world grows every neighbour's box by the margin before the line judge keeps its clearance from it.
 HAND_NEIGHBOUR_CLEARANCE_MM = 10.0
 #: The pushed part's swept footprint keeps this far from every neighbour point not behind it.
 PATH_NEIGHBOUR_CLEARANCE_MM = 5.0
@@ -729,26 +736,44 @@ def _span(low: float, high: float, step: float) -> np.ndarray:
 # --- public helpers ------------------------------------------------------------------------------------------
 
 
-def resolve_push_distance(requested_mm: Optional[float], config_max_mm: float) -> Union[float, PushRefusal]:
+def resolve_push_distance(
+    requested_mm: Optional[float], *, default_mm: float, ceiling_mm: float,
+) -> Union[float, PushRefusal]:
     """The push distance for one push, or a refusal: a request (API or ``PickRun`` keyword) settled against the
-    config's ``recovery.fixture.max_nudge_mm``, the longest push the cell allows.
+    config (owner, 2026-09-29).
 
-    * Nothing requested: :data:`DEFAULT_PUSH_DISTANCE_MM`, or the config's limit when that is lower.
-    * A request above :data:`PUSH_DISTANCE_CAP_MM`, or above the config's limit, is refused, never shortened.
-      To allow longer pushes the operator raises ``max_nudge_mm`` (50 at most); the default stays 30.
+    ``default_mm`` is ``recovery.fixture.push_distance_mm`` (30 mm unless the cell says otherwise), the push a
+    pick makes when nobody asks for another. ``ceiling_mm`` is ``recovery.fixture.max_nudge_mm`` (50 mm unless
+    the cell says less), the longest push the cell allows; :data:`PUSH_DISTANCE_CAP_MM` caps it whatever it says.
+
+    * Nothing requested: the config's push distance.
+    * A request up to the ceiling is taken as asked. Above the ceiling, or above :data:`PUSH_DISTANCE_CAP_MM`,
+      it is refused with a sentence, never shortened.
     * A distance shorter than :data:`MIN_CLEARANCE_GAIN_MM` is refused: a push opens at most its own length,
-      so it could never open the room a finger needs. That is the old 5 mm default's case, now said aloud.
-    * What is not a positive number, in the request or the config, is refused.
+      so it could never open the room a finger needs.
+    * What is not a positive number, in the request or the config, is refused, and so is a config whose push
+      distance lies above its own ceiling (the schema refuses that at load; this says it again for a caller
+      that did not load one).
     """
 
-    limit = float(config_max_mm)
-    if not math.isfinite(limit) or limit < 0.0:
+    ceiling = float(ceiling_mm)
+    if not math.isfinite(ceiling) or ceiling <= 0.0:
         return _refuse(REFUSED_PUSH_DISTANCE_INVALID,
-                       f"The config's longest push (recovery.fixture.max_nudge_mm) of {config_max_mm!r} mm is not "
-                       "a number of mm, so no push is planned.")
-    limit = min(limit, PUSH_DISTANCE_CAP_MM)
+                       f"The config's longest push (recovery.fixture.max_nudge_mm) of {ceiling_mm!r} mm is not a "
+                       "positive number of mm, so no push is planned.")
+    ceiling = min(ceiling, PUSH_DISTANCE_CAP_MM)
     if requested_mm is None:
-        distance = min(DEFAULT_PUSH_DISTANCE_MM, limit)
+        distance = float(default_mm)
+        if not math.isfinite(distance) or distance <= 0.0:
+            return _refuse(REFUSED_PUSH_DISTANCE_INVALID,
+                           f"The config's push distance (recovery.fixture.push_distance_mm) of {default_mm!r} mm is "
+                           "not a positive number of mm, so no push is planned.")
+        if distance > ceiling + _EPS_MM:
+            return _refuse(REFUSED_PUSH_DISTANCE_ABOVE_CONFIG,
+                           f"The config's push distance of {distance:g} mm (recovery.fixture.push_distance_mm) is "
+                           f"longer than the {ceiling:g} mm the cell allows (recovery.fixture.max_nudge_mm), so no "
+                           "push is planned.")
+        said = f"the config's push distance of {distance:g} mm (recovery.fixture.push_distance_mm)"
     else:
         distance = float(requested_mm)
         if not math.isfinite(distance) or distance <= 0.0:
@@ -758,14 +783,15 @@ def resolve_push_distance(requested_mm: Optional[float], config_max_mm: float) -
             return _refuse(REFUSED_PUSH_DISTANCE_ABOVE_CAP,
                            f"A push of {distance:g} mm was asked for and the hard cap is "
                            f"{PUSH_DISTANCE_CAP_MM:g} mm, so no push is planned.")
-        if distance > limit + _EPS_MM:
+        if distance > ceiling + _EPS_MM:
             return _refuse(REFUSED_PUSH_DISTANCE_ABOVE_CONFIG,
-                           f"A push of {distance:g} mm was asked for and the cell allows {limit:g} mm "
+                           f"A push of {distance:g} mm was asked for and the cell allows {ceiling:g} mm "
                            "(recovery.fixture.max_nudge_mm), so no push is planned.")
+        said = f"a push of {distance:g} mm"
     if distance < MIN_CLEARANCE_GAIN_MM - _EPS_MM:
         return _refuse(REFUSED_PUSH_DISTANCE_TOO_SHORT,
-                       f"A push of {distance:g} mm cannot open the {MIN_CLEARANCE_GAIN_MM:g} mm a finger needs "
-                       f"(the cell allows {limit:g} mm, recovery.fixture.max_nudge_mm), so no push is planned.")
+                       f"{said[0].upper()}{said[1:]} cannot open the {MIN_CLEARANCE_GAIN_MM:g} mm a finger needs, "
+                       "so no push is planned.")
     return distance
 
 
@@ -850,6 +876,7 @@ class _Scene:
     seen: Optional[_SeenTable]    # None inside a declared container
     workspace: AxisBox
     hand: PushHand
+    hand_clearance: float         # the hand's clearance to every neighbour point, never under HAND_NEIGHBOUR_CLEARANCE_MM
 
 
 def _refuse(code: str, sentence: str, candidates: tuple[DirectionVerdict, ...] = ()) -> PushRefusal:
@@ -869,6 +896,7 @@ def plan_push(
     container_interior: Optional[AxisBox] = None,
     operator_box: Optional[AxisBox] = None,
     push_axes_xy: Sequence[Sequence[float]] = DEFAULT_PUSH_AXES_XY,
+    hand_clearance_mm: float = HAND_NEIGHBOUR_CLEARANCE_MM,
 ) -> Union[PushPlan, PushRefusal]:
     """Plan one push of the failed part, or refuse with a reason.
 
@@ -880,9 +908,15 @@ def plan_push(
     not needed when ``container_interior`` is given. ``operator_box``, when given, only narrows both the landing
     box and the region the hand may come down in. ``push_axes_xy`` are the closing-axis directions the wrist may
     take, in BASE XY; each is tried both ways. ``push_distance_mm`` is best settled first with
-    :func:`resolve_push_distance`.
+    :func:`resolve_push_distance`. ``hand_clearance_mm`` is how far the open hand keeps from every neighbour
+    point; a value under :data:`HAND_NEIGHBOUR_CLEARANCE_MM` is raised to it (a clearance only narrows), and one
+    that is not a finite number of mm raises ``ValueError``.
     """
 
+    clearance = float(hand_clearance_mm)
+    if not math.isfinite(clearance) or clearance < 0.0:
+        raise ValueError(f"hand_clearance_mm must be a non-negative number of mm, got {hand_clearance_mm!r}")
+    clearance = max(clearance, HAND_NEIGHBOUR_CLEARANCE_MM)
     distance = float(push_distance_mm)
     if not math.isfinite(distance) or distance <= 0.0:
         return _refuse(REFUSED_PUSH_DISTANCE_INVALID,
@@ -978,7 +1012,7 @@ def plan_push(
                    neighbour_cells=neighbour_cells, neighbour_tops=neighbour_tops, centre_ab=centre_ab,
                    part_height=part_height, part_base=part_base, finger_height=finger_height,
                    tcp_height=tcp_height, distance=distance, clearance_before=gap, landing_box=landing_box,
-                   hand_region=hand_region, seen=seen, workspace=workspace, hand=hand)
+                   hand_region=hand_region, seen=seen, workspace=workspace, hand=hand, hand_clearance=clearance)
     verdicts: list[DirectionVerdict] = []
     best: Optional[tuple[float, np.ndarray, float]] = None
     for direction_ab in directions:
@@ -1136,7 +1170,7 @@ def _judge(scene: _Scene, direction_ab: np.ndarray) -> tuple[DirectionVerdict, O
     label: Vec2 = (float(xy[0]), float(xy[1]))
     st = _stations(scene, direction_ab)
     hand = scene.hand
-    clear = HAND_NEIGHBOUR_CLEARANCE_MM
+    clear = scene.hand_clearance
 
     n_uv = _uv(scene.neighbour_cells, direction_ab)
     lateral = np.abs(n_uv[:, 1] - st.v_line)

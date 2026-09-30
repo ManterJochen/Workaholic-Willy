@@ -91,12 +91,12 @@ stored file is used only where a caller reads it.
 
 ## Status
 
-The legend is the root README's [Status and honest scope](../../../README.md#status-and-honest-scope).
+The legend is the guide's [evidence levels](../../../docs/guide/README.md#what-verified-means-on-these-pages).
 
 | Capability | Evidence |
 |---|---|
-| `RealSenseRGBDStreamer`, its logic | never touched hardware; runs against an injected fake SDK ([`test_realsense_streamer.py`](../../../tests/test_realsense_streamer.py)) |
-| `RealSenseRGBDStreamer`, its frame processing | never touched hardware; runs through the real librealsense, no camera attached ([`test_realsense_sdk_contract.py`](../../../tests/test_realsense_sdk_contract.py), [`test_a_moved_wrist_camera_forgets_the_last_pose.py`](../../../tests/test_a_moved_wrist_camera_forgets_the_last_pose.py)) |
+| `RealSenseRGBDStreamer`, its logic | run on a physical cell: a wrist D415 on a UR10 (CB3); in the suite it runs against an injected fake SDK ([`test_realsense_streamer.py`](../../../tests/test_realsense_streamer.py)) |
+| `RealSenseRGBDStreamer`, its frame processing | run on a physical cell: the same D415; in the suite it runs through the real librealsense, no camera attached ([`test_realsense_sdk_contract.py`](../../../tests/test_realsense_sdk_contract.py), [`test_a_moved_wrist_camera_forgets_the_last_pose.py`](../../../tests/test_a_moved_wrist_camera_forgets_the_last_pose.py)) |
 | `RealSenseRGBDStreamer`, what it says at open | never touched hardware; Min-Z is Intel's figure, and the messages run against a fake SDK ([`test_a_realsense_says_what_it_opened.py`](../../../tests/test_a_realsense_says_what_it_opened.py)) |
 
 ## Files

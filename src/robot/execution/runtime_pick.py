@@ -45,6 +45,7 @@ from src.robot.grasping.motion.execution_policy import (
     PolicyReport,
     weakest_camera_world,
 )
+from src.robot.grasping.geometry.closing_axis import natural_closing_axis_of
 from src.robot.grasping.types.feedback import GraspResult
 from src.robot.grasping.generation.calculator import GraspCalculator
 from src.robot.grasping.types.modes import GraspSamplingMode
@@ -151,9 +152,9 @@ class PickSessionReport:
         Full attempt history forwarded from the orchestrator, so
         debugging tools can see every rescan without re-running the
         loop. The loop never switches target on its own: a
-        ``next_target`` is a recovery action, which would live on the
-        service's recovery trail, and no built-in mode profile plans
-        one.
+        ``next_target`` is a recovery action, which lives on the
+        service's recovery trail where the mode's profile lists it
+        (``auto`` and ``dense_clutter`` do).
     executed_grasp
         The :class:`GraspResult` that was actually executed, or
         :data:`None` when execution did not happen.
@@ -378,7 +379,7 @@ class RuntimePickService:
         # substitute a gripper that closes on nothing and reports success.
         if gripper is None:
             gripper = build_gripper(robot_cfg, arm=arm)
-        return cls.from_components(
+        runtime = cls.from_components(
             arm=arm,
             calculator=calculator,
             perception=perception,
@@ -390,6 +391,10 @@ class RuntimePickService:
             retreat_mm=retreat_mm,
             policy=policy,
         )
+        # How the hand and camera naturally stand (robot.natural_closing_axis): every grasp the pick loop ranks is turned
+        # the way round nearer it. Unset turns none.
+        runtime.orchestrator.natural_closing_axis = natural_closing_axis_of(robot_cfg)
+        return runtime
 
     # ------------------------------------------------------------------
     # Execution

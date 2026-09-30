@@ -87,6 +87,9 @@ The other rows:
   nothing places, a calibration without its flange to TCP record or with a stale one, and a camera
   the registry does not hold.
 - `camera world` warns on the `ik` planner, where no planner reads a world.
+- `looks` appears only where `robot.look_joint_positions_deg` is set: `ok` with the count, visited in
+  order by every pick whose program names none, and `warn` for a look that reads as radians (every joint
+  within 6.3 of zero), since the key is in degrees and the loader cannot tell the two apart.
 - `self-collision`, `fixtures`, `planning world` and `record log` warn and never block.
 - `controller state` (bench): powered, brakes released, Remote Control, no pendant program. In local
   control the controller refuses the control script; in remote with a pendant program running, the
@@ -174,9 +177,9 @@ camera, and a second camera also needs its entry in `grasping.fusion.cameras` be
 | Capability | Evidence |
 | --- | --- |
 | Connect, telemetry and a refused motion, through the operator console | measured against real controller software |
-| The calibration routine and its solve | measured in simulation |
-| The ArUco marker source on a physical camera | never touched hardware |
-| Everything past the rehearsal on a physical controller | never touched hardware |
+| The calibration routine and its solve | measured in simulation; run on a physical cell through examples 09 and 10, a wrist D415 on a UR10 (CB3) |
+| The ArUco marker source on a physical camera | run on a physical cell: a wrist D415 on a UR10 (CB3) |
+| This command past the rehearsal on a physical controller | never touched hardware: that cell ran the examples (03, 09 and 10, 12, 13) |
 
 ## Files
 

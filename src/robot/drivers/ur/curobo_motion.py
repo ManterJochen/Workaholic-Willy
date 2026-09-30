@@ -51,7 +51,7 @@ from src.robot.safety.planning import (
     CuroboUnavailableError,
     JointCheckVerdict,
 )
-from src.robot.safety.planning.curobo_client import SidecarIdentity, StateRefusal
+from src.robot.safety.planning.curobo_client import PathJudgement, SidecarIdentity, StateRefusal, StateWhere
 from src.robot.safety.planning.live_world import WorldRefresh, refresh_planner_world
 from src.robot.safety.planning.world import merge_planner_worlds
 
@@ -461,6 +461,7 @@ class CuroboUrPlanner:
         self,
         goal_ur: "Sequence[float]",
         *,
+        start_ur: "Sequence[float] | None" = None,
         refresh: bool = True,
         near_point_mm: "Sequence[float] | None" = None,
         goal_keep_out: "Maybe[GoalKeepOut]" = UNSET,
@@ -471,6 +472,10 @@ class CuroboUrPlanner:
         are remapped into the planner's order and back. ``None`` where cuRobo found no plan, with the
         typed reason on :attr:`last_refusal`. Joints are the same numbers in the planner's base as in
         the controller's, so nothing is turned.
+
+        ``start_ur`` is a start other than where the arm stands, in UR order: the end of a straight escape leg the
+        arm judged out of a pose the planner's padded spheres refuse (``planning.band``), which cuRobo cannot plan
+        out of. The controller is then not read, and the leg to that start is the arm's to judge and run first.
 
         ``refresh=False`` skips the refresh, for a caller that refreshed the world itself before
         judging the goal against it; ``near_point_mm`` and ``goal_keep_out`` are what that refresh
@@ -484,7 +489,8 @@ class CuroboUrPlanner:
             closed.
         """
         goal = [float(v) for v in goal_ur]
-        current_ur = [float(v) for v in self._conn.get_joint_positions()]
+        current_ur = ([float(v) for v in self._conn.get_joint_positions()] if start_ur is None
+                      else [float(v) for v in start_ur])
         client = self._client_or_start()
         if refresh:
             self._refresh_world(
@@ -496,9 +502,37 @@ class CuroboUrPlanner:
         if not traj:
             refusal = self.last_refusal
             if refusal is not None:
-                self.logger.warning("cuRobo refused this joint goal. %s", refusal.render())
+                # Named by where it was: a refused start is not a goal the planner could not reach (research,
+                # 2026-09-30: the line read "this joint goal" for the start the arm stood in).
+                what = ("the start of this joint move" if getattr(refusal, "where", None) == StateWhere.START
+                        else "this joint goal")
+                self.logger.warning("cuRobo refused %s. %s", what, refusal.render())
             return None
         return [self._to_ur_order(list(wp), client.joint_names) for wp in traj]
+
+    def judge_joint_path(
+        self, samples_ur: "Sequence[Sequence[float]]", *, clearance_mm: float = 0.0, name_pairs: bool = True,
+    ) -> "PathJudgement":
+        """Every configuration of a joint path the planner refuses, with the three terms apart and every pair it found.
+
+        The report :meth:`check_joint_path`'s verdict rests on (``CuroboPlanClient.judge_joints``), in UR joint order,
+        against the world the planner holds: nothing is refreshed, because the arm asks this only right after it judged
+        the same samples against a refreshed world. It is what lets the arm leave the self pairs the exact guard judges
+        to that guard (``planning.band``).
+
+        Raises ``CuroboUnavailableError`` where the planner cannot be reached or its client reports no refused samples:
+        no report is ever made up, and the arm's refusal then stands.
+        """
+        configs = [[float(v) for v in sample] for sample in samples_ur]
+        client = self._client_or_start()
+        judge = getattr(client, "judge_joints", None)
+        if not callable(judge):
+            raise CuroboUnavailableError(
+                "this planner client reports no refused samples (it has no judge_joints), so no pair can be left to "
+                "the exact guard"
+            )
+        ordered = [self._to_client_order(list(c), client.joint_names) for c in configs]
+        return cast("PathJudgement", judge(ordered, clearance_mm=float(clearance_mm), name_pairs=bool(name_pairs)))
 
     @property
     def last_refusal(self) -> "StateRefusal | None":

@@ -36,11 +36,16 @@ from src.robot.constants import CUROBO_CLIENT_LOG_FILE, create_robot_logger
 from ._curobo_attach import ENV_ATTACH_SPHERES
 from ._curobo_body_links import ENV_BODY_LINKS, ENV_DEFAULT_Q, ENV_WRIST_BODY_LINKS
 from ._curobo_margin import ENV_SELF_COLLISION_MARGIN_MM
+from ._curobo_pairs import PairOverlap
 from ._curobo_plan_policy import CLEARANCE_KEY, MAX_CLEARANCE_M
 from ._curobo_protocol import (
     ENV_MEASURE_ONLY,
     KIND_SELF_COLLISION,
     KINDS,
+    NAME_PAIRS_KEY,
+    PAIRS_NAMED_KEY,
+    REFUSED_KEY,
+    REPORT_REFUSED_KEY,
     WHERE_DEFAULT_Q,
     WHERE_GOAL,
     WHERE_PATH,
@@ -69,6 +74,8 @@ __all__ = [
     "CuroboUnavailableError",
     "JointCheckVerdict",
     "MAX_CHECK_CONFIGURATIONS",
+    "PathJudgement",
+    "RefusedSample",
     "SceneRegistration",
     "SelfExplanation",
     "SidecarIdentity",
@@ -498,6 +505,141 @@ def _verdict_from_reply(msg: dict, *, sent: int, clearance_m: float = 0.0) -> Jo
         f"the cuRobo sidecar answered check_js on {sent} samples with a reply that is not a whole "
         f"verdict: {msg}"
     )
+
+
+@dataclass(frozen=True, slots=True)
+class RefusedSample:
+    """One configuration of a judged path the sidecar refused, with the three terms apart and every pair it found.
+
+    ``index`` counts from 0 over the whole path. ``bound_ok``, ``self_ok`` and ``world_ok`` are the joint bounds, the
+    robot itself and the planner's world (at the clearance the path was judged at); a refused sample has at least one of
+    them false. ``pairs`` is every pair of links whose spheres overlap there, deepest first, with the depth the planner
+    judged and the depth of the spheres alone (``_curobo_pairs.overlapping_pairs``); empty where the self term did not
+    refuse, and UNSET where no names were asked or the loaded descriptor carries no ownership.
+    """
+
+    index: int
+    bound_ok: bool
+    self_ok: bool
+    world_ok: bool
+    pairs: "Maybe[tuple[PairOverlap, ...]]" = UNSET
+
+    def render(self) -> str:
+        return f"sample {self.index}: {self.findings()}"
+
+    def findings(self) -> str:
+        """What the planner found there, the bounds, its world and every pair, without the sample's number."""
+        found: list[str] = []
+        if not self.bound_ok:
+            found.append("a joint outside the planner's bounds")
+        if not self.world_ok:
+            found.append("the planner's world")
+        if not self.self_ok:
+            if chosen(self.pairs) and self.pairs:
+                found.extend(pair.render() for pair in self.pairs)
+            elif chosen(self.pairs):
+                found.append("a self collision no pair of links was named for")
+            else:
+                found.append("a self collision whose pairs were not named")
+        return "; ".join(found)
+
+
+@dataclass(frozen=True, slots=True)
+class PathJudgement:
+    """Every configuration of a joint path the sidecar refused, as :meth:`CuroboPlanClient.judge_joints` asks for them.
+
+    ``checked`` is how many configurations were judged, always the number sent, and ``clearance_mm`` the world
+    clearance they were judged at. ``refused`` lists every refused one in path order; none means every one passed.
+    ``pairs_named`` says whether the rows carry the pairs of links.
+    """
+
+    checked: int
+    clearance_mm: float
+    refused: tuple[RefusedSample, ...]
+    pairs_named: bool
+
+    @property
+    def valid(self) -> bool:
+        return not self.refused
+
+    def render(self) -> str:
+        if not self.refused:
+            return f"all {self.checked} configuration(s) pass the cuRobo check"
+        return (f"the cuRobo check refuses {len(self.refused)} of {self.checked} configuration(s): "
+                + "; ".join(row.render() for row in self.refused))
+
+
+def _is_bool(value: object) -> bool:
+    return isinstance(value, bool)
+
+
+def _number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
+def _pair_rows(block: object) -> tuple[PairOverlap, ...]:
+    """The pair rows of one refused sample, or raise: a pair half read is a pair nobody judged."""
+    if not isinstance(block, list):
+        raise CuroboUnavailableError(f"the cuRobo sidecar reported pairs that are not a list: {block!r}")
+    pairs: list[PairOverlap] = []
+    for row in block:
+        if not (isinstance(row, (list, tuple)) and len(row) == 4 and isinstance(row[0], str) and isinstance(row[1], str)
+                and row[0] and row[1] and _number(row[2]) and _number(row[3])):
+            raise CuroboUnavailableError(
+                f"the cuRobo sidecar reported a pair that is not [link, link, depth_mm, unpadded_depth_mm]: {row!r}")
+        pairs.append(PairOverlap(link_a=str(row[0]), link_b=str(row[1]), depth_mm=float(row[2]),
+                                 unpadded_depth_mm=float(row[3])))
+    return tuple(pairs)
+
+
+def _judgement_from_reply(msg: dict, *, sent: int, clearance_m: float, named: bool) -> PathJudgement:
+    """Read a check_js reply that was asked to report every refused sample, or raise: only a whole report passes.
+
+    Everything :func:`_verdict_from_reply` refuses is refused first. Then a reply without the report is a sidecar older
+    than it, and a row that is not a refused sample of this path, a row out of order or twice, a verdict that does not
+    open with the first row, or names where none were asked (or none where they were) is not a report. Every refusal
+    here is ``CuroboUnavailableError``: the driver then leaves the planner's refusal standing.
+    """
+    verdict = _verdict_from_reply(msg, sent=sent, clearance_m=clearance_m)
+    rows, pairs_named = msg.get(REFUSED_KEY), msg.get(PAIRS_NAMED_KEY)
+    if not isinstance(rows, list) or not _is_bool(pairs_named):
+        raise CuroboUnavailableError(
+            "the cuRobo sidecar did not report its refused samples (no refused rows or no pairs_named): it is older "
+            "than this client; restart it from this tree")
+    if pairs_named and not named:
+        raise CuroboUnavailableError("the cuRobo sidecar named pairs this client did not ask it to name")
+    refused: list[RefusedSample] = []
+    last = -1
+    for row in rows:
+        if not isinstance(row, dict):
+            raise CuroboUnavailableError(f"the cuRobo sidecar reported a refused sample that is not a block: {row!r}")
+        index = row.get("index")
+        terms = (row.get("bound_ok"), row.get("self_ok"), row.get("world_ok"))
+        if type(index) is not int or not last < index < sent:
+            raise CuroboUnavailableError(
+                f"the cuRobo sidecar reported refused sample {index!r} of a path of {sent}, after {last}: every row "
+                "is a sample of this path, once, in order")
+        if not all(_is_bool(term) for term in terms) or all(terms):
+            raise CuroboUnavailableError(
+                f"the cuRobo sidecar reported sample {index} with the terms {terms}: a refused sample has three bools "
+                "and at least one of them false")
+        block = row.get("pairs")
+        if pairs_named:
+            pairs: Maybe[tuple[PairOverlap, ...]] = _pair_rows(block)
+        elif block is not None:
+            raise CuroboUnavailableError(f"the cuRobo sidecar named pairs for sample {index} and said it named none")
+        else:
+            pairs = UNSET
+        refused.append(RefusedSample(index=index, bound_ok=bool(terms[0]), self_ok=bool(terms[1]),
+                                     world_ok=bool(terms[2]), pairs=pairs))
+        last = index
+    opens = refused[0].index if refused else None
+    if verdict.valid != (not refused) or verdict.first_invalid != opens:
+        raise CuroboUnavailableError(
+            f"the cuRobo sidecar's verdict (first refused sample {verdict.first_invalid}) and its report (first "
+            f"refused row {opens}) disagree, so neither is read")
+    return PathJudgement(checked=sent, clearance_mm=clearance_m * 1000.0, refused=tuple(refused),
+                         pairs_named=bool(pairs_named))
 
 
 def _log_at_exit(emit: "Callable[..., None]", message: str, *args: object) -> None:
@@ -1131,6 +1273,64 @@ class CuroboPlanClient:
             valid=True, first_invalid=None, checked=checked,
             reason=f"all {checked} samples pass the cuRobo check",
         )
+
+    def judge_joints(
+        self, configs: "Sequence[Sequence[float]]", *, clearance_mm: float = 0.0, name_pairs: bool = True,
+    ) -> PathJudgement:
+        """The same judgement as :meth:`check_joints`, answered with EVERY configuration the sidecar refuses.
+
+        Each refused configuration comes back with the joint bounds, the robot itself and the planner's world apart,
+        and, with ``name_pairs``, every pair of links whose spheres overlap there, with the depth the planner judged
+        and the depth of the spheres alone. It is what a driver needs to leave the pairs the exact guard judges to
+        that guard (the owner, 2026-09-30): one pair or one sample it did not see is one nobody judged. A path longer
+        than :data:`MAX_CHECK_CONFIGURATIONS` is sent in batches, every batch is judged, and every index counts over the
+        whole path.
+
+        ``ValueError`` before anything is sent, as :meth:`check_joints` refuses. ``CuroboUnavailableError`` whenever
+        no whole report came back: a sidecar older than the report, a failed call, a reply that does not account for
+        every sample, or one this client cannot read whole (:func:`_judgement_from_reply`).
+        """
+        rows = [[float(v) for v in config] for config in configs]
+        if not rows:
+            raise ValueError("judge_joints was given no configuration, and an empty path is not a judged path")
+        clearance_m = float(clearance_mm) / 1000.0
+        if not math.isfinite(clearance_m) or not 0.0 <= clearance_m <= MAX_CLEARANCE_M:
+            raise ValueError(
+                f"clearance_mm has to lie from 0 to {MAX_CLEARANCE_M * 1000.0:g} mm, got {clearance_mm!r}"
+            )
+        for index, row in enumerate(rows):
+            if not all(math.isfinite(v) for v in row):
+                raise ValueError(f"sample {index} of the joint path holds a value that is not a finite number: {row}")
+        if self._proc is None:
+            self.start()
+        for index, row in enumerate(rows):
+            if len(row) != len(self.joint_names):
+                raise ValueError(
+                    f"sample {index} of the joint path has {len(row)} joints and the sidecar plans "
+                    f"{len(self.joint_names)}"
+                )
+        asked: dict[str, Any] = {REPORT_REFUSED_KEY: True, NAME_PAIRS_KEY: bool(name_pairs)}
+        if clearance_m > 0.0:
+            asked[CLEARANCE_KEY] = clearance_m
+        refused: list[RefusedSample] = []
+        named: "bool | None" = None
+        for offset in range(0, len(rows), MAX_CHECK_CONFIGURATIONS):
+            batch = rows[offset : offset + MAX_CHECK_CONFIGURATIONS]
+            want = self._send({"cmd": "check_js", "joints": batch, **asked})
+            msg = self._recv(_PLAN_TIMEOUT_S, want=want)
+            if msg is None:
+                raise CuroboUnavailableError(
+                    "the cuRobo sidecar gave no report on the joint path: it did not answer in time or it exited"
+                )
+            part = _judgement_from_reply(msg, sent=len(batch), clearance_m=clearance_m, named=bool(name_pairs))
+            if named is not None and named != part.pairs_named:
+                raise CuroboUnavailableError("the cuRobo sidecar named pairs in one batch of this path and not another")
+            named = part.pairs_named
+            refused.extend(replace(row, index=row.index + offset) for row in part.refused)
+        judged = PathJudgement(checked=len(rows), clearance_mm=clearance_m * 1000.0, refused=tuple(refused),
+                               pairs_named=bool(named))
+        logger.debug("judged %d joint configuration(s): %d refused", len(rows), len(refused))
+        return judged
 
     def explain_joints(
         self, configs: "Sequence[Sequence[float]]", *, name_pairs: bool = True,

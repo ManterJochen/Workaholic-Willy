@@ -16,13 +16,16 @@
  *
  *   ok      the cell did what was asked.
  *   block   the cell REFUSED — safety, a missing frame, a decision gate. Nothing went wrong; a rule
- *           fired. An operator's next move is to change a setting, not to inspect a robot.
+ *           fired. An operator's next move is to change a setting, not to inspect a robot. The one
+ *           exception is `unsafe_recovery_refused`: a recovery (a push) stopped where the arm stands,
+ *           or the service refused a pick after one, and a person goes to the arm and clears the cell.
  *   warn    the cell tried and did not manage it. That one is about the scene or the grasp.
  */
 
 /** Outcomes where the stack declined to act rather than failing to. `pill` renders these red. */
 const REFUSALS = new Set([
   'missing_camera_frame',
+  // Red as well, but a person goes to the arm: a recovery stopped where it stands (needs_person).
   'unsafe_recovery_refused',
   'decision_fail_closed',
   'decision_recover_pending',

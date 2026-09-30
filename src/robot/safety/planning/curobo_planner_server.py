@@ -30,13 +30,15 @@ and ``composed_sha256`` is taken over the config without it, the one the combina
 evidence names.
   request <- {"start_joints":[6 rad],"goal_pos_m":[x,y,z],"goal_quat_wxyz":[w,x,y,z]}
              {"cmd":"fk","joints":[6 rad]}   |   {"cmd":"shutdown"}
-             {"cmd":"check_js","joints":[[6 rad],...],"clearance_m":float?}   |   {"cmd":"explain_js","joints":[[6 rad],...]}
+             {"cmd":"check_js","joints":[[6 rad],...],"clearance_m":float?,"report_refused":bool?,"name_pairs":bool?}
+             {"cmd":"explain_js","joints":[[6 rad],...]}
              {"cmd":"set_world","cuboids":[...],"meshes":[...],"voxels":{"path","dims_m","voxel_size_m","pose"}|null}
              {"cmd":"set_voxels","path":str|null,"dims_m":[...],"voxel_size_m":float,"pose":[...]}
   reply   -> {"success":bool,"trajectory":[[6 rad]...],"dt":float}  |  {"success":false,"reason":str}
              {"fk_pos_m":[...],"fk_quat_wxyz":[...]}
              check_js: {"success":true,"valid":bool,"first_invalid":int|null,"checked":int,"clearance_m":float,
-                        "refusal":{...}?}
+                        "refusal":{...}?, "refused":[{"index","bound_ok","self_ok","world_ok","pairs"}]?,
+                        "pairs_named":bool?}   (the last two only where report_refused asked, _curobo_protocol)
                        |  {"success":false,"planner_error":true,"reason":str}
              explain_js: {"success":true,"self_collides":[bool],"bound_ok":[bool],"pairs":[[a,b]|null],
                           "depths_mm":[float|null]}  |  {"success":false,"planner_error":true,"reason":str}
@@ -238,7 +240,7 @@ try:
         compose_for_cell,
     )
     from _curobo_margin import ENV_SELF_COLLISION_MARGIN_MM  # type: ignore[import-not-found]
-    from _curobo_pairs import SphereLayout, deepest_pairs  # type: ignore[import-not-found]
+    from _curobo_pairs import SphereLayout, deepest_pairs, refused_rows  # type: ignore[import-not-found]
     from _curobo_plan_policy import (  # type: ignore[import-not-found]
         CLEARANCE_KEY,
         GRAPH_PLANNER_CONFIG,
@@ -250,6 +252,10 @@ try:
         KIND_JOINT_LIMIT,
         KIND_SELF_COLLISION,
         KIND_WORLD,
+        NAME_PAIRS_KEY,
+        PAIRS_NAMED_KEY,
+        REFUSED_KEY,
+        REPORT_REFUSED_KEY,
         WHERE_DEFAULT_Q,
         WHERE_GOAL,
         WHERE_PATH,
@@ -662,6 +668,23 @@ for _line in sys.stdin:
                     # A configuration of the path handed in: a start, a goal screened alone or a sample between, which
                     # the sidecar cannot tell apart, so it does not say "start" (found porting to dev, 2026-09-25).
                     _reply["refusal"] = dict(_named, where=WHERE_PATH)
+            if req.get(REPORT_REFUSED_KEY):
+                # Every refused configuration, not only the first, with its three terms and every pair of links its
+                # spheres overlap in there. The UR driver leaves a pair the exact guard judges to that guard where the
+                # guard accepted the configuration, which it can only do knowing every pair (the owner, 2026-09-30).
+                # Asked for, so a request without the key is answered as it always was. Names only where the self
+                # term refused: a row refused by the bounds or the world alone has no self pair to name. The rows are
+                # built by refused_rows, plain arithmetic the CPU suite runs; this reads the tensors into it.
+                _rows, _pairs_named = refused_rows(
+                    _passes, _bound, _self_hit, _world_hit,
+                    lambda _hits: _spheres[_hits].detach().cpu().numpy().astype("float64"), _LAYOUT,
+                    name_pairs=bool(req.get(NAME_PAIRS_KEY, True)),
+                )
+                _reply[REFUSED_KEY] = _rows
+                _reply[PAIRS_NAMED_KEY] = _pairs_named
+                _said = (f"[check_js] reported {len(_rows)} refused sample(s), "
+                         f"{sum(1 for _row in _rows if not _row['self_ok'])} by the self term")
+                print(_said, file=sys.stderr, flush=True)
             _emit(_reply)
         except Exception as exc:  # noqa: BLE001
             # The call failed and nothing was judged: labelled planner_error so the client
@@ -750,8 +773,7 @@ for _line in sys.stdin:
         continue
     if cmd == "set_voxels":
         # Register the live scene as a distance field over a grid, which is the channel
-        # that carries a whole cell rather than the eight boxes a slot budget leaves room
-        # for.
+        # that carries a whole cell rather than the boxes a slot budget leaves room for.
         #
         # The sign and the unit decide everything. The field is a signed distance in
         # metres, negative inside an obstacle. Measured with probe_live_world: a uniform

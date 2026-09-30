@@ -14,6 +14,10 @@ __all__ = [
     "KIND_JOINT_LIMIT",
     "KIND_SELF_COLLISION",
     "KIND_WORLD",
+    "NAME_PAIRS_KEY",
+    "PAIRS_NAMED_KEY",
+    "REFUSED_KEY",
+    "REPORT_REFUSED_KEY",
     "WHERES",
     "WHERE_DEFAULT_Q",
     "WHERE_GOAL",
@@ -40,3 +44,15 @@ KIND_SELF_COLLISION = "self_collision"
 KIND_JOINT_LIMIT = "joint_limit"
 KIND_WORLD = "world"
 KINDS = (KIND_SELF_COLLISION, KIND_JOINT_LIMIT, KIND_WORLD)
+
+#: A check_js request key: true asks for every configuration the sidecar refuses, not only the first, each as a row
+#: under ``REFUSED_KEY``: ``{"index", "bound_ok", "self_ok", "world_ok", "pairs"}``, where ``pairs`` lists every pair
+#: of links whose spheres overlap there, ``[link_a, link_b, depth_mm, unpadded_depth_mm]`` deepest first
+#: (``_curobo_pairs.overlapping_pairs``), or is null where no names were asked (``NAME_PAIRS_KEY`` false) or the loaded
+#: descriptor carries no ownership; ``PAIRS_NAMED_KEY`` says which. A request without it, and its reply, are the ones
+#: check_js always had. The UR driver asks it where the exact guard decides the planner's self pairs (the owner,
+#: 2026-09-30).
+REPORT_REFUSED_KEY = "report_refused"
+REFUSED_KEY = "refused"
+NAME_PAIRS_KEY = "name_pairs"
+PAIRS_NAMED_KEY = "pairs_named"

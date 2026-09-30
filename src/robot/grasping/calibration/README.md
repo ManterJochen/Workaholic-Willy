@@ -101,7 +101,7 @@ stays `"none"` and the verdict never depends on it.
 
 ## Status
 
-The legend is the root README's [Status and honest scope](../../../../README.md#status-and-honest-scope).
+The legend is the guide's [evidence levels](../../../../docs/guide/README.md#what-verified-means-on-these-pages).
 
 | Capability | Evidence |
 |---|---|

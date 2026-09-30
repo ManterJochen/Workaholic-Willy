@@ -278,13 +278,35 @@ class AutonomousGraspReport:
         return str(self.telemetry.get("low_level_outcome", "")) in (str(stopped), stopped.value)
 
     @property
+    def needs_person(self) -> bool:
+        """Whether this pick ended on a recovery that stopped where the arm stands: a person decides what happens next.
+
+        A push of the failed part (``nudge_target``, run inside the pick attempt) that stopped once something may have
+        moved, or whose move back to the look did not run, reports ``telemetry['push_stopped']`` (on a fault's report
+        too, where a camera world that could not vouch stopped it); a recovery motion of the service's loop that started
+        and failed ends ``UNSAFE_RECOVERY_REFUSED``. Either way the arm stays where it stopped, nothing more was
+        commanded and there was no planned escape, so the recovery loop ends on it, and a campaign stops on it in the
+        pattern of :attr:`controller_stopped`: the next pick would drive the arm back to its look, the escape the owner
+        ruled out (2026-09-29). The service itself starts no further pick until a person decides, and reports each
+        one it refuses ``UNSAFE_RECOVERY_REFUSED`` with ``telemetry['stopped_where_the_arm_stands']``.
+        """
+        if self.outcome is AutonomousGraspOutcome.UNSAFE_RECOVERY_REFUSED:
+            return True
+        stopped = self.telemetry.get("push_stopped")
+        return isinstance(stopped, str) and bool(stopped)
+
+    @property
     def gripper_fault(self) -> str:
         """Why this pick ended on a hand that needs a person, or ``""``.
 
         The pick loop names it ``GRIPPER_FAULT`` (``PolicyOutcome.GRIPPER_FAULT``): the gripper raised while it was
         commanded, or a hand that toggles with no sensor would not start the pick, because it believed its jaws closed
-        and nobody at a terminal said otherwise. Read from ``pick_report``, whose last attempt carries the policy's
-        sentence, and for a hand that would not start the pick, which leaves no pick report, from
+        and nobody at a terminal said otherwise, or a push found nobody can vouch for the hand (where that hand's jaws
+        stand, or a gripper that measures its width not connected or unreadable), or the service found that hand's
+        count so before ``next_target`` or a rescan drove the looks again (``telemetry['stage']``
+        ``before_the_re_pick``). Read from
+        ``pick_report``, whose last attempt carries the policy's or the push's sentence, and for a hand that would not
+        start the pick or its re-pick, which leaves no pick report, from
         ``telemetry['low_level_outcome']`` and ``telemetry['gripper_fault']``. Like
         :attr:`controller_stopped` it is not a :attr:`fault`, and a campaign stops on it all the same: the next pick
         would perceive again for a hand that still cannot start (owner's decision, 2026-09-24).
@@ -382,7 +404,9 @@ class AutonomousGraspReport:
 
         A pick handed looks adds the look it did not reach, the looks it perceived from and the looks it skipped; one
         that asked for both jaw contact faces (:attr:`both_faces`) and ended ``NO_VALID_GRASP`` adds the face not seen
-        (on a fixed camera, which judges no looks, in the pick loop's own words, ``PickAttempt.withheld``).
+        (on a fixed camera, which judges no looks, in the pick loop's own words, ``PickAttempt.withheld``), and one none
+        of whose grasps closes along the closing axis its program named (``closing_axis``) adds which axis and how far,
+        in the same words.
         """
         if self.succeeded:
             return ""
@@ -397,6 +421,18 @@ class AutonomousGraspReport:
         attempts = getattr(self.pick_report, "attempts", ()) or ()
         if attempts and (reasons := getattr(attempts[-1], "reasons", ())):
             parts.append("reasons=" + ",".join(str(r) for r in reasons))
+        # A push that stopped where the arm stands, in its own words; a pick refused because an earlier pick's recovery
+        # stopped where the arm stands, in that pick's words; a pick that saw only parts next_target skips.
+        stopped_push = self.telemetry.get("push_stopped")
+        if isinstance(stopped_push, str) and stopped_push:
+            parts.append(_ascii(f"push stopped: {stopped_push}"))
+        waiting = self.telemetry.get("stopped_where_the_arm_stands")
+        if isinstance(waiting, str) and waiting:
+            parts.append(_ascii(f"not started: a recovery stopped where the arm stands, and a person decides first: "
+                                f"{waiting}"))
+        excluded = getattr(attempts[-1], "excluded", None) if attempts else None
+        if isinstance(excluded, str) and excluded:
+            parts.append(_ascii(excluded))
         # A wrist pick names the look it did not reach apart from the looks it perceived from; a fixed camera's
         # service loop names the looks it moved to, the one not reached last.
         refused = self.telemetry.get("look_refused")
@@ -409,19 +445,41 @@ class AutonomousGraspReport:
         parts.extend(_ascii(f"skipped look {skipped}") for skipped in self._looks_skipped())
         # The cause only where the pick asked for both faces and ended for want of them: off the switch a face not
         # seen ends no pick, and a 45-degree wrist look nearly always misses one (the faces line of `render` says it).
+        unseen: tuple[int, ...] = ()
         if self.both_faces and self.outcome is AutonomousGraspOutcome.NO_VALID_GRASP:
             unseen = self._faces_not_seen()
             parts.extend(f"the contact face at jaw {jaw} of the chosen grasp was not seen" for jaw in unseen)
-            # A fixed camera judges no looks, so its report carries no faces: the pick loop's own sentence says it.
-            withheld = getattr(attempts[-1], "withheld", "") if attempts else ""
-            if not unseen and isinstance(withheld, str) and withheld:
-                parts.append(_ascii(withheld))
+        # Otherwise the pick loop's own sentence says it: a fixed camera judges no looks, so its report carries no faces,
+        # and a pick none of whose grasps closes along the closing axis its program named says which axis and how far.
+        withheld = getattr(attempts[-1], "withheld", "") if attempts else ""
+        if self.outcome is AutonomousGraspOutcome.NO_VALID_GRASP and not unseen and isinstance(withheld, str) and withheld:
+            parts.append(_ascii(withheld))
         return "  ".join(parts)
 
     def _faces_not_seen(self) -> tuple[int, ...]:
         """The jaws (1, 2) whose contact face of the chosen grasp no look saw; empty where both were or none was judged."""
         faces = self.jaw_faces_seen
         return tuple(jaw for jaw, seen in zip((1, 2), faces) if not seen) if faces is not None else ()
+
+    def _pushes_said(self) -> tuple[str, ...]:
+        """One line per push this pick considered (``telemetry['pushes']``): a push that stopped where the arm stands,
+        with what it came to; a push that moved the part, with its distance; one that touched nothing, with its code."""
+        said: list[str] = []
+        for push in self.telemetry.get("pushes") or ():
+            if not isinstance(push, Mapping):
+                continue
+            code = str(push.get("code", ""))
+            if push.get("stopped"):
+                said.append(f"stopped where the arm stands ({push.get('trigger', '')}): {code}")
+            elif push.get("motion_started"):
+                distance = push.get("distance_mm")
+                how_far = f" {float(distance):.0f} mm" if isinstance(distance, (int, float)) else ""
+                again = push.get("looked_again")
+                said.append(f"pushed the part{how_far} ({push.get('trigger', '')}): {code}"
+                            + (f"; looked again from {again}" if again else ""))
+            else:
+                said.append(f"not pushed ({push.get('trigger', '')}): {code}")
+        return tuple(said)
 
     def _looks_skipped(self) -> tuple[str, ...]:
         """The looks of a wrist pick the planner refused before anything was sent, skipped as the pick went on, each
@@ -504,6 +562,9 @@ class AutonomousGraspReport:
             lines.append(f"             {self.failure_summary()}")
         if self.controller_stopped:
             lines.append("  controller cannot move: a person clears the stop where the arm is visible, then runs again")
+        if self.needs_person:
+            lines.append("  recovery   stopped where the arm stands: nothing more was commanded, a person decides next")
+        lines.extend(_ascii(f"  push       {said}") for said in self._pushes_said())
         if self.gripper_fault:
             lines.append(_ascii(f"  gripper    needs a person: {self.gripper_fault}"))
         if self.hold_measured is False:
@@ -586,6 +647,7 @@ class AutonomousGraspReport:
             "hold_measured": self.hold_measured,
             "controller_stopped": self.controller_stopped,
             "gripper_fault": self.gripper_fault,
+            "needs_person": self.needs_person,
             "failure_summary": self.failure_summary(),
             "layers_that_ran": list(self.layers_that_ran()),
             "robot_vendor": getattr(pick, "robot_vendor", None),

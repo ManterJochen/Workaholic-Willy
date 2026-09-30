@@ -28,6 +28,7 @@ import numpy as np
 __all__ = [
     "AxisAlignedBox",
     "Capsule",
+    "TurnedBox",
     "capsule_capsule_distance_mm",
     "capsule_box_distance_mm",
     "segment_segment_distance_mm",
@@ -49,6 +50,17 @@ class Capsule:
 
 
 @dataclass(frozen=True, slots=True)
+class TurnedBox:
+    """An upright box as it stands turned about base Z: its half extents along its own axes and its turn, radians.
+
+    Its centre is the centre of the :class:`AxisAlignedBox` that carries it.
+    """
+
+    half_extents_mm: np.ndarray
+    yaw_rad: float
+
+
+@dataclass(frozen=True, slots=True)
 class AxisAlignedBox:
     """An axis-aligned box in the robot base frame, as ``center_mm`` and per-axis
     ``half_extents_mm``.
@@ -57,11 +69,22 @@ class AxisAlignedBox:
     caller relies on, and the guards fall back to a positional name when it is. A cell with three
     declared fixtures and a refusal that says only "fixture" tells an operator to go and look at all
     three.
+
+    ``turned`` is the box itself where it stands turned, a box the cameras saw: ``center_mm`` and
+    ``half_extents_mm`` are then the axis-aligned box that encloses it, which is never smaller. A
+    guard that can turn a box, the exact mesh guard, judges ``turned``, the box the planner holds; one
+    that cannot, the capsule proxy, judges the enclosure, the safe side. ``None`` for a box square
+    with the base, every declared fixture among them.
+
+    ``note`` is what a refusal naming the box adds, where the box's builder knows more than its
+    geometry: that the robot hid part of it from the cameras, or that it may be the robot itself.
     """
 
     center_mm: np.ndarray
     half_extents_mm: np.ndarray
     name: str = ""
+    turned: TurnedBox | None = None
+    note: str = ""
 
 
 def segment_point_distance_mm(p0: np.ndarray, p1: np.ndarray, q: np.ndarray) -> float:

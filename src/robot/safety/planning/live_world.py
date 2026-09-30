@@ -62,7 +62,7 @@ from src.contracts import UNSET, Maybe, chosen
 from src.robot.core.camera_world import CameraWorldStamp, UnseenSpace
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.keep_out import GoalKeepOut, KeepOutBox, KeepOutSummary
-from src.robot.safety._capsule import AxisAlignedBox
+from src.robot.safety._capsule import AxisAlignedBox, TurnedBox
 from src.robot.safety.planning.perceived import (
     DeclaredBody,
     DepthView,
@@ -539,8 +539,10 @@ class LivePlannerWorld:
         could be built. A frame taken where an earlier one was, the body within a millimetre at every
         capsule end, replaces it, so the pick keeps one frame per pose it stood at: the looks, the
         view it generates, the standoff, the grasp and the retreat, because every motion asks the
-        world before it leaves a pose. A fixed camera never moves and holds nothing: its newest frame
-        supersedes the one before. A pick holds :data:`_MAX_HELD_FRAMES` at most, and says so past
+        world before it leaves a pose. A pick calls this once the arm stands at its first look, so
+        the frame of the pose it started from (home, a retreat, the last place), grabbed for the
+        motion to that look, is not among them. A fixed camera never moves and holds nothing: its
+        newest frame supersedes the one before. A pick holds :data:`_MAX_HELD_FRAMES` at most, and says so past
         that (:meth:`_hold`).
 
         Each held frame goes into every world built until the pick ends, placed by the tool pose it
@@ -567,6 +569,15 @@ class LivePlannerWorld:
     def held_view_count(self) -> int:
         """How many frames the pick in progress holds, one per pose a world was built at; 0 while none holds."""
         return 0 if self._pick_frames is None else len(self._pick_frames)
+
+    @property
+    def holds_pick_views(self) -> bool:
+        """Whether a pick holds its frames now, none taken yet included: every world built from here on keeps its own.
+
+        A look around that starts lets go of an earlier one's hold before it moves, so the frame of the pose it starts
+        from is not kept, and starts its own once the arm stands at its first look.
+        """
+        return self._pick_frames is not None
 
     # -----------------------------------------------------------------------------------------
     # The one question
@@ -1313,7 +1324,8 @@ class WorldRefresh:
     dropped_obstacles: int
     #: Empty while the world is usable.
     reason: str = ""
-    #: The perceived obstacles, axis-aligned, for the guards. Empty when the world was not usable,
+    #: The perceived obstacles for the guards, each the turned box the planner got inside the box
+    #: that encloses it (``_guard_boxes``). Empty when the world was not usable,
     #: which is the state a guard has to be put back into rather than left holding stale boxes.
     guard_boxes: tuple["AxisAlignedBox", ...] = ()
     #: Values in the distance field the planner accepted, or `None` when no field was sent. The
@@ -1343,6 +1355,9 @@ class WorldRefresh:
     #: How many frames of new poses the pick did not hold because it held as many as a pick may
     #: (``PlannerWorldSnapshot.held_not_kept``); 0 while no pick holds any.
     held_not_kept: int = 0
+    #: How many boxes the slot budget merged into the boxes holding them (``PerceivedWorld.merged_to_fit``):
+    #: the world the planner and the guard hold is that much coarser than the cameras saw.
+    merged_to_fit: int = 0
 
     @property
     def ok(self) -> bool:
@@ -1394,6 +1409,8 @@ class WorldRefresh:
             line += (
                 f"; {self.dropped_obstacles} obstacle(s) had no slot and are NOT in the world"
             )
+        if self.merged_to_fit:
+            line += f"; {self.merged_to_fit} box(es) merged into the boxes holding them to fit the slots"
         if self.keep_out is not None:
             line += f"; kept out: {self.keep_out.render()}"
         unseen = self.unseen()
@@ -1423,6 +1440,7 @@ class WorldRefresh:
             "held_frames": int(self.held_frames),
             "held_oldest_age_ms": self.held_oldest_age_ms,
             "held_not_kept": int(self.held_not_kept),
+            "merged_to_fit": int(self.merged_to_fit),
         }
 
 
@@ -1524,15 +1542,18 @@ def refresh_planner_world(
         )
     if dropped:
         # An obstacle the cameras saw and the planner has no slot for is one it will route through,
-        # so it refuses the motion rather than standing as a footnote in the render.
+        # so it refuses the motion rather than standing as a footnote in the render. The boxes were
+        # merged as far as one box per object before anything was left out (``height_map.coarsen``).
         reasons.append(
             f"{dropped} perceived obstacle(s) did not fit the {source.tuning.max_boxes} slot(s) this "
-            "cell allows, so the planner would route through them"
+            "cell allows even merged down to one box per object, so the planner would route through them"
             # A pick's held frames see more of the cell than the frame taken now, and so more to fit.
             + (
                 f", counting what {snapshot.held} frame(s) of earlier poses of this pick saw"
                 if snapshot.held else ""
             )
+            + ". Raise safety.planning_world.perceived.max_boxes, which the planner reserves when it starts, or clear "
+            "the cell of what it does not need"
         )
     reason = "; and ".join(reasons)
     return WorldRefresh(
@@ -1554,15 +1575,19 @@ def refresh_planner_world(
         held_frames=snapshot.held,
         held_oldest_age_ms=snapshot.held_oldest_age_ms,
         held_not_kept=snapshot.held_not_kept,
+        merged_to_fit=0 if snapshot.perceived is None else int(snapshot.perceived.merged_to_fit),
     )
 
 
 def _guard_boxes(perceived: PerceivedWorld | None) -> tuple[AxisAlignedBox, ...]:
-    """The perceived obstacles in the shape the capsule guards hold, which has no rotation.
+    """The perceived obstacles for the guards: each the turned box the planner got, inside the box that encloses it.
 
-    Each box is the axis-aligned one that encloses the turned box the planner got, so the guard is
-    never more permissive than the planner and can be stricter. Being stricter is a refusal an
-    operator can see and argue with; being more permissive is a collision nobody predicted.
+    The exact mesh guard judges the turned box (``AxisAlignedBox.turned``), the very box the planner
+    holds: its centre, its sizes and its turn are the numbers the planner's box is written from, so
+    the two authorities judge one world. A guard that cannot turn a box, the capsule proxy, judges the
+    axis-aligned box around it, which is never smaller: stricter than the planner, never more
+    permissive. Being stricter is a refusal an operator can see and argue with; being more permissive
+    is a collision nobody predicted.
     """
     if perceived is None:
         return ()
@@ -1571,6 +1596,10 @@ def _guard_boxes(perceived: PerceivedWorld | None) -> tuple[AxisAlignedBox, ...]
             center_mm=np.asarray(box.center_mm, dtype=np.float64),
             half_extents_mm=np.asarray(box.enclosing_half_extents_mm, dtype=np.float64),
             name=box.name,
+            turned=TurnedBox(half_extents_mm=np.asarray(box.dims_mm, dtype=np.float64) / 2.0,
+                             yaw_rad=float(box.yaw_rad)),
+            # What a refusal naming it adds: the robot hid part of it, or it may be the robot itself.
+            note=box.note(),
         )
         for box in perceived.boxes
     )

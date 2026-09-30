@@ -30,7 +30,7 @@
     {
       "id": "real_cell_first_pick",
       "path": "docs/runbooks/real_cell_first_pick.md",
-      "summary": "The ordered bring-up from a validated config to a first verified pick on a physical cell.",
+      "summary": "The ordered bring-up from a validated config to a first verified pick on a physical cell, with a wrist camera's looks and the first supervised push.",
       "owner_role": "commissioning"
     },
     {

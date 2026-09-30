@@ -6,19 +6,24 @@ Coverage layers:
 * :class:`SceneRecoveryPolicy` validation (allow-list, fixture
   requirement for physical actions, NONE rejected from allow-list).
 * The shared strategy gate (disabled policy, EASY profile, budget).
-* :class:`SmallNudgeStrategy` clamping + envelope refusal.
 * :class:`ContainerAgitateStrategy` scaffolding + executor refusal.
-* :func:`execute_recovery_motion`: completes non-motion plans, drives
-  bounded nudges, aborts on non-EXECUTED motion status, refuses
-  agitate motion.
+* :func:`execute_recovery_motion`: completes non-motion plans, refuses
+  every nudge before anything moves, drives bounded agitate waypoints and
+  aborts on non-EXECUTED motion status.
 
 ``NoRecoveryStrategy``, ``ActivePerceptionRecoveryStrategy`` (``RESCAN`` then
 ``NEXT_VIEWPOINT``), ``NextTargetRecoveryStrategy`` and the service's
 ``recovery_policy`` / ``recovery_strategy`` slots left on 2026-09-29 with the
 ``dense_recovery`` block that built them, and ``NEXT_VIEWPOINT`` with them,
 merged into ``RESCAN``; their cases left this file. The gate cases the
-active-perception strategy carried are pinned on the nudge strategy, which
+active-perception strategy carried are pinned on the agitate strategy, which
 goes through the same gate.
+
+``SmallNudgeStrategy`` and the executor's nudge left the same day: a TCP offset
+from wherever the arm stood, +X by default, blind to the scene, which the owner
+ruled out on the real cell. The push that ``NUDGE_TARGET`` stands for runs
+inside the pick attempt (``push_motion.execute_push``), so the executor refuses
+a nudge before anything moves and the loop falls through.
 """
 
 from __future__ import annotations
@@ -47,9 +52,9 @@ from src.robot.grasping import (
     SceneRecoveryContext,
     SceneRecoveryPlan,
     SceneRecoveryPolicy,
-    SmallNudgeStrategy,
     execute_recovery_motion,
 )
+from src.robot.grasping.recovery.policy import REFUSED_PUSH_RUNS_IN_THE_PICK, refused_before_motion
 from src.robot.grasping.types.grasp_point import GraspPoint
 from src.robot.grasping.types.modes import GraspSamplingMode
 from src.robot.grasping.types.perception import PerceptionFrame
@@ -113,6 +118,12 @@ _CENTERED_FIXTURE = FixtureEnvelope(
     center_mm=(0.0, 0.0, 200.0),
     half_extents_mm=(100.0, 100.0, 100.0),
     max_nudge_mm=10.0,
+)
+#: The same box, with an agitate amplitude, so the agitate strategy plans.
+_ARMED_FIXTURE = FixtureEnvelope(
+    center_mm=(0.0, 0.0, 200.0),
+    half_extents_mm=(100.0, 100.0, 100.0),
+    max_agitate_amplitude_mm=5.0,
 )
 
 
@@ -213,7 +224,7 @@ class SceneRecoveryPolicyTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# The shared gate, through the nudge strategy
+# The shared gate, through the agitate strategy
 # ---------------------------------------------------------------------------
 
 
@@ -221,18 +232,18 @@ class TheSharedGateTests(unittest.TestCase):
     """What every strategy asks before it plans: policy on, profile and policy allow it, budget left."""
 
     def _policy(self, **overrides: object) -> SceneRecoveryPolicy:
-        kwargs: dict = {"enabled": True, "allowed_actions": (SceneRecoveryAction.NUDGE_TARGET,),
-                        "fixture": _CENTERED_FIXTURE}
+        kwargs: dict = {"enabled": True, "allowed_actions": (SceneRecoveryAction.CONTAINER_AGITATE,),
+                        "fixture": _ARMED_FIXTURE}
         kwargs.update(overrides)
         return SceneRecoveryPolicy(**kwargs)
 
     def _plan(self, **ctx: object) -> SceneRecoveryPlan:
-        ctx.setdefault("profile", _profile(actions=("nudge_target",)))
+        ctx.setdefault("profile", _profile(actions=("container_agitate",)))
         ctx.setdefault("current_tcp", _tcp_at())
-        return SmallNudgeStrategy().plan(_ctx(**ctx))  # type: ignore[arg-type]
+        return ContainerAgitateStrategy().plan(_ctx(**ctx))  # type: ignore[arg-type]
 
     def test_the_gate_lets_a_permitted_action_through(self) -> None:
-        self.assertIs(self._plan(policy=self._policy()).action, SceneRecoveryAction.NUDGE_TARGET)
+        self.assertIs(self._plan(policy=self._policy()).action, SceneRecoveryAction.CONTAINER_AGITATE)
 
     def test_easy_profile_blocks_recovery(self) -> None:
         plan = self._plan(profile=_easy_profile(), policy=self._policy())
@@ -251,82 +262,23 @@ class TheSharedGateTests(unittest.TestCase):
 
     def test_budget_exhausted_blocks_recovery(self) -> None:
         plan = self._plan(policy=self._policy(max_recovery_actions=1),
-                          history=(SceneRecoveryAction.NUDGE_TARGET,))
+                          history=(SceneRecoveryAction.CONTAINER_AGITATE,))
         self.assertIs(plan.action, SceneRecoveryAction.NONE)
         self.assertEqual(plan.reason, "recovery_budget_exhausted")
 
 
 # ---------------------------------------------------------------------------
-# SmallNudgeStrategy
+# The scene-blind nudge is gone
 # ---------------------------------------------------------------------------
 
 
-class SmallNudgeStrategyTests(unittest.TestCase):
-    def _nudge_policy(
-        self, *, fixture: Optional[FixtureEnvelope] = None
-    ) -> SceneRecoveryPolicy:
-        return SceneRecoveryPolicy(
-            enabled=True,
-            allowed_actions=(SceneRecoveryAction.NUDGE_TARGET,),
-            fixture=fixture or _CENTERED_FIXTURE,
-        )
+class TheSceneBlindNudgeIsGoneTests(unittest.TestCase):
+    def test_nothing_offers_the_blind_nudge_strategy_any_more(self) -> None:
+        import importlib
 
-    def _nudge_profile(self) -> GraspBehaviorProfile:
-        return _profile(actions=("nudge_target",))
-
-    def test_plans_bounded_nudge_along_axis(self) -> None:
-        strategy = SmallNudgeStrategy(offset_axis=(1.0, 0.0, 0.0))
-        plan = strategy.plan(
-            _ctx(
-                profile=self._nudge_profile(),
-                policy=self._nudge_policy(),
-                current_tcp=_tcp_at((0.0, 0.0, 200.0)),
-            )
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NUDGE_TARGET)
-        self.assertIsNotNone(plan.nudge_offset_mm)
-        assert plan.nudge_offset_mm is not None
-        dx, dy, dz = plan.nudge_offset_mm
-        # Axis was +x, magnitude clamped to fixture.max_nudge_mm (10).
-        self.assertAlmostEqual(dx, 10.0)
-        self.assertAlmostEqual(dy, 0.0)
-        self.assertAlmostEqual(dz, 0.0)
-
-    def test_refuses_outside_envelope(self) -> None:
-        # TCP at the +x boundary; nudge would push past it.
-        strategy = SmallNudgeStrategy(offset_axis=(1.0, 0.0, 0.0))
-        plan = strategy.plan(
-            _ctx(
-                profile=self._nudge_profile(),
-                policy=self._nudge_policy(),
-                current_tcp=_tcp_at((95.0, 0.0, 200.0)),
-            )
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NONE)
-        self.assertEqual(plan.reason, "nudge_would_leave_envelope")
-
-    def test_refuses_zero_axis(self) -> None:
-        strategy = SmallNudgeStrategy(offset_axis=(0.0, 0.0, 0.0))
-        plan = strategy.plan(
-            _ctx(
-                profile=self._nudge_profile(),
-                policy=self._nudge_policy(),
-                current_tcp=_tcp_at(),
-            )
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NONE)
-        self.assertEqual(plan.reason, "zero_offset_axis")
-
-    def test_refuses_without_anchor(self) -> None:
-        strategy = SmallNudgeStrategy()
-        plan = strategy.plan(
-            _ctx(
-                profile=self._nudge_profile(),
-                policy=self._nudge_policy(),
-            )
-        )
-        self.assertIs(plan.action, SceneRecoveryAction.NONE)
-        self.assertEqual(plan.reason, "no_anchor_pose")
+        for name in ("src.robot.grasping", "src.robot.grasping.recovery.policy"):
+            with self.subTest(module=name):
+                self.assertFalse(hasattr(importlib.import_module(name), "SmallNudgeStrategy"))
 
 
 # ---------------------------------------------------------------------------
@@ -448,75 +400,32 @@ class ExecuteRecoveryMotionTests(unittest.TestCase):
         self.assertEqual(report.outcome, "completed")
         self.assertEqual(arm.move_calls, [])
 
-    def test_nudge_drives_arm_to_destination(self) -> None:
-        arm = _TypedFakeArm()
+    def test_a_nudge_is_refused_before_anything_moves(self) -> None:
+        # Whatever the plan carries and whatever the arm reports, a nudge is not driven here: the push runs inside
+        # the pick attempt. The refusal is one the loop falls through on.
         policy = SceneRecoveryPolicy(
             enabled=True,
             allowed_actions=(SceneRecoveryAction.NUDGE_TARGET,),
             fixture=_CENTERED_FIXTURE,
         )
-        report = execute_recovery_motion(
-            arm=arm,  # type: ignore[arg-type]
-            plan=self._nudge_plan(),
-            policy=policy,
-            current_tcp=_tcp_at((0.0, 0.0, 200.0)),
-        )
-        self.assertTrue(report.executed)
-        self.assertEqual(report.outcome, "completed")
-        self.assertEqual(len(arm.move_calls), 1)
-        dest = arm.move_calls[0].position_mm
-        self.assertTrue(np.allclose(dest, np.array([10.0, 0.0, 200.0])))
-
-    def test_nudge_refuses_outside_envelope(self) -> None:
-        arm = _TypedFakeArm()
-        policy = SceneRecoveryPolicy(
-            enabled=True,
-            allowed_actions=(SceneRecoveryAction.NUDGE_TARGET,),
-            fixture=FixtureEnvelope(
-                center_mm=(0.0, 0.0, 200.0),
-                half_extents_mm=(5.0, 5.0, 5.0),
-                max_nudge_mm=10.0,
-            ),
-        )
-        report = execute_recovery_motion(
-            arm=arm,  # type: ignore[arg-type]
-            plan=self._nudge_plan(),
-            policy=policy,
-            current_tcp=_tcp_at((0.0, 0.0, 200.0)),
-        )
-        self.assertFalse(report.executed)
-        self.assertEqual(report.outcome, "refused_envelope_violation")
-        self.assertEqual(arm.move_calls, [])
-
-    def test_nudge_aborts_on_non_executed_status(self) -> None:
-        arm = _TypedFakeArm(motion_status=MotionStatus.WORKSPACE_REJECTED)
-        policy = SceneRecoveryPolicy(
-            enabled=True,
-            allowed_actions=(SceneRecoveryAction.NUDGE_TARGET,),
-            fixture=_CENTERED_FIXTURE,
-        )
-        report = execute_recovery_motion(
-            arm=arm,  # type: ignore[arg-type]
-            plan=self._nudge_plan(),
-            policy=policy,
-            current_tcp=_tcp_at(),
-        )
-        self.assertFalse(report.executed)
-        self.assertEqual(report.outcome, "aborted_motion_failed")
-
-    def test_nudge_refuses_without_tcp(self) -> None:
-        report = execute_recovery_motion(
-            arm=_TypedFakeArm(),  # type: ignore[arg-type]
-            plan=self._nudge_plan(),
-            policy=SceneRecoveryPolicy(
-                enabled=True,
-                allowed_actions=(SceneRecoveryAction.NUDGE_TARGET,),
-                fixture=_CENTERED_FIXTURE,
-            ),
-            current_tcp=None,
-        )
-        self.assertFalse(report.executed)
-        self.assertEqual(report.outcome, "refused_no_tcp")
+        cases = {
+            "offset and tcp": (self._nudge_plan(), _tcp_at((0.0, 0.0, 200.0))),
+            "no tcp": (self._nudge_plan(), None),
+            "no offset": (SceneRecoveryPlan(action=SceneRecoveryAction.NUDGE_TARGET), _tcp_at()),
+        }
+        for name, (plan, tcp) in cases.items():
+            with self.subTest(case=name):
+                arm = _TypedFakeArm()
+                report = execute_recovery_motion(
+                    arm=arm,  # type: ignore[arg-type]
+                    plan=plan,
+                    policy=policy,
+                    current_tcp=tcp,
+                )
+                self.assertFalse(report.executed)
+                self.assertEqual(report.outcome, REFUSED_PUSH_RUNS_IN_THE_PICK)
+                self.assertTrue(refused_before_motion(report.outcome))
+                self.assertEqual(arm.move_calls, [])
 
     # --- G6: ContainerAgitateStrategy now executes an envelope-clamped, safety-gated oscillation ---
     def _agitate_plan(self, amplitude: float = 5.0) -> SceneRecoveryPlan:
