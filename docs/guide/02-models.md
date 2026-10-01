@@ -454,12 +454,28 @@ path, multi-camera fusion, the rerank stage, the learned success model and the
 reinforcement-learning layer are all built and default to `enabled: false`, and the
 simulator runners turn them on per flag in runner code.
 
-**Training your own closed-set detector.**
-[`src/models/detection/closed_set/train.py`](../../src/models/detection/closed_set/train.py) fine-tunes
-RT-DETR from COCO annotations and writes a provenance manifest beside the checkpoint. Its
-classification head is built from the dataset's categories, not COCO's, so any classes work. The
-checkpoint drops into the inference path through `models.detector: "rtdetr"` and a
-`models.rtdetr.model_path`. No dataset ships here, and no model has been trained in this repository.
+**Training your own closed-set detector.** `DetectorTraining` trains RT-DETR on **your own fixed classes** from a
+COCO or YOLO folder, as CVAT, Label Studio or Roboflow export it, and keeps the **best epoch** by validation mAP.
+It reads like `GeneratorTraining`:
+
+```python
+from willy import DetectorTraining
+
+run = DetectorTraining.from_dataset(dataset="D:/data/my_parts", out_dir="assets/models/rtdetr/my_parts")
+print(run.probe())        # boxes per class and split, and every box or image left out
+report = run.train()      # the best epoch in out_dir, the last in out_dir/last
+print(report)
+run.write_report(report)  # report.json beside the model
+```
+
+The run is RT-DETR's own recipe: the backbone at a tenth of the learning rate, mixed precision, gradients clipped at
+0.1, an average of the weights, the strong augmentations and multi-scale batches until the last tenth of the epochs,
+COCO mAP@0.5:0.95 after every epoch and a stop after 15 epochs without a better one. A dataset without a validation
+split gives 15 % of its images to one. The model in `out_dir` drops into the inference path through
+`models.detector: "rtdetr"` and `models.rtdetr.model_path`. Measured on the development RTX 5080: about **16 training
+images per second** at 640 px. `tier="smoke"` proves the chain in a minute,
+[`examples/offline/training/06_train_a_detector_on_your_images.py`](../../examples/offline/training/06_train_a_detector_on_your_images.py)
+shows the whole run, and [`src/models/README.md`](../../src/models/README.md) has the command line.
 
 ---
 

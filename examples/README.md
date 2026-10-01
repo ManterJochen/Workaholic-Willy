@@ -100,6 +100,7 @@ network, an optional engine) checks for it, names what is missing in one sentenc
 | [`training/03_prove_it_never_saw_the_test_parts.py`](offline/training/03_prove_it_never_saw_the_test_parts.py) | which placeable assets a corpus never trained on, the denominator a held-out claim needs |
 | [`training/04_train_on_a_public_corpus.py`](offline/training/04_train_on_a_public_corpus.py) | train on a published grasp corpus, for a user with no simulator and no cell |
 | [`training/05_floor_and_ceiling_before_you_train.py`](offline/training/05_floor_and_ceiling_before_you_train.py) | what a number on your corpus could possibly mean, measured with no weights at all |
+| [`training/06_train_a_detector_on_your_images.py`](offline/training/06_train_a_detector_on_your_images.py) | train the closed-set RT-DETR detector on a COCO or YOLO dataset of your own, and read what the run kept |
 
 ## How they are kept working
 

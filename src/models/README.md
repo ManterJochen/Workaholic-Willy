@@ -92,22 +92,37 @@ everything runs slowly. MediaPipe runs on the CPU in any case.
 | GroundingDINO and SAM2 on a prompted pick | measured in simulation (Isaac, real-vision picks) |
 | The VLM route | measured in simulation ([`vlm/`](vlm/README.md) has the numbers) |
 | RT-DETR and OneFormer in a pick | never touched hardware |
+| RT-DETR training on your own classes | run on the development RTX 5080: the shapes dataset reaches mAP 1.0 in 3 epochs, the smoke tier runs in the suite; never on a dataset of real parts |
 | Perception on a real camera frame | run on a physical cell: GroundingDINO, SAM2 and the VLM route on a wrist D415; no measurement is kept here |
 
-## Fine-tuning RT-DETR on your own classes
+## Training RT-DETR on your own classes
+
+`DetectorTraining` (from `willy`) trains the closed-set detector on **your own fixed classes** from a COCO or
+YOLO folder and keeps the **best epoch** by validation mAP. [`detection/closed_set/training/`](detection/closed_set/training/)
+holds it; the command line is its shell face:
 
 ```bash
-python -m src.models.detection.closed_set.train inspect --data-dir data/detect/v1 --split train
-python -m src.models.detection.closed_set.train train --data-dir data/detect/v1 --output-dir assets/models/rtdetr/v1 --epochs 20
+python -m src.models.detection.closed_set.train inspect --data-dir data/detect/v1
+python -m src.models.detection.closed_set.train train --data-dir data/detect/v1 --output-dir assets/models/rtdetr/v1
+python -m src.models.detection.closed_set.train eval --model-dir assets/models/rtdetr/v1 --data-dir data/detect/v1
 ```
 
-A dataset is `<data-dir>/{train,val}/`, each with `images/` and a COCO `annotations.json`; `val` is
-optional. The head is re-initialised from the dataset's `categories`, and the export is a
-`save_pretrained` checkpoint plus `manifest.json`. Wire it in with `models.detector: "rtdetr"`,
-`models.rtdetr.model_path: "${WILLY_PROJECT_ROOT}/assets/models/rtdetr/v1"` (the repository, where the
-command above wrote it when run from the repository root; a relative path in the tree is read against
-the config folder, [`src/config/paths.py`](../config/paths.py)) and `models.rtdetr.local: true`. Exit codes: `0`
-ok, `2` bad arguments or missing data, `3` training failed. `inspect` runs without the training stack.
+- **Datasets:** COCO as CVAT, Label Studio and Roboflow export it, or YOLO (`data.yaml`, or `classes.txt` with
+  `labels/`). Without its own validation split a dataset gives **15 %** of its images to one, chosen by a hash of
+  each path, so the same images stay in validation. `inspect` names every box and image it left out, and why.
+- **The run** is RT-DETR's own recipe: AdamW with the backbone at a tenth, warm-up then cosine, bf16 or fp16,
+  gradients clipped at 0.1, an average of the weights (EMA), colour, zoom-out, IoU-crop, flip and multi-scale
+  until the last tenth of the epochs, COCO mAP@0.5:0.95 after every epoch, and a stop after 15 epochs without a
+  better one. `--tier smoke` proves the chain in a minute; `--tier full` (50 epochs at most) is the model to deploy.
+- **What `--output-dir` holds:** the best epoch (wire it in with `models.detector: "rtdetr"`,
+  `models.rtdetr.model_path: "${WILLY_PROJECT_ROOT}/assets/models/rtdetr/v1"` and `models.rtdetr.local: true`; a
+  relative path in the tree is read against the config folder, [`src/config/paths.py`](../config/paths.py)),
+  `last/`, `checkpoint_last.pt` for `--resume`, `results.csv`, `manifest.json` and `report.json`.
+- **Speed, measured** on the development RTX 5080 with every augmentation on: about **16 training images per
+  second** at 640 px and 4.2 GB.
+- Exit codes: `0` ok, `2` bad arguments or no dataset, `3` training failed. `inspect` runs without the training
+  stack. On Windows the command line starts loader workers itself; a script of your own that wants them passes
+  `workers=` and guards its training with `if __name__ == "__main__":`.
 
 ## Files
 
@@ -117,7 +132,7 @@ ok, `2` bad arguments or missing data, `3` training failed. `inspect` runs witho
 | [`factory.py`](factory.py) | `build_perception`, `build_object_detector`, `build_segmenter`, the refusal sentences |
 | [`perception_backend.py`](perception_backend.py) | the `PerceptionBackend` seam and `TwoStageBackend`, detector then segmenter |
 | [`routed_backend.py`](routed_backend.py) | `RoutedPerceptionBackend`: two backends chosen per prompt, one shared segmenter |
-| [`detection/`](detection/) | `Detection`, the GroundingDINO and RT-DETR wrappers, the RT-DETR training command |
+| [`detection/`](detection/) | `Detection`, the GroundingDINO and RT-DETR wrappers, RT-DETR training on your own classes (`DetectorTraining`) and its command |
 | [`segmentation/`](segmentation/) | `SegmentationResult` (a `uint8` mask of 0 and 1), the SAM2 and OneFormer wrappers |
 | [`routing/`](routing/README.md), [`vlm/`](vlm/README.md) | which route a prompt takes, and the VLM that answers the hard ones |
 | [`speech/`](speech/README.md) | speech to a prompt: Whisper, Silero, push to talk, a person's confirmation |

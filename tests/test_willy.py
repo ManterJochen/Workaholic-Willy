@@ -81,6 +81,8 @@ _RENDERED = {
     "src.robot.grasping.deep.foreign.service": ["ImportReport"],
     "src.robot.grasping.deep.train.api": ["CorpusProbe"],
     "src.robot.grasping.deep.train.report": ["TrainingRunReport"],
+    "src.models.detection.closed_set.training.api": ["DatasetProbe"],
+    "src.models.detection.closed_set.training.report": ["DetectorTrainingReport"],
     "src.robot.safety.planning.stack": ["MotionStackReport"],
     "datagen.api": ["DatasetReport"],
     "datagen.cost": ["Estimate"],

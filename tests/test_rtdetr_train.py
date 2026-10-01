@@ -1,7 +1,7 @@
-"""RT-DETR training-scaffolding tests: COCO parsing, class-map remap, manifest, CLI.
+"""The RT-DETR command line and the small COCO reader it keeps for older callers.
 
-Covers the parts that import WITHOUT the training stack (torch / transformers / accelerate) --
-the actual fine-tune loop needs those + labelled data (later). No heavy deps are imported here.
+Covers what runs WITHOUT the training stack (torch / transformers): COCO parsing, the class-map remap, ``inspect`` and
+the exit codes. The training run itself is ``tests/test_detector_training_run.py``.
 """
 
 from __future__ import annotations
@@ -12,13 +12,10 @@ import unittest
 from pathlib import Path
 
 from src.models.detection.closed_set.train import (
-    TrainConfig,
     _category_remap,
     build_id2label,
-    build_manifest,
     load_coco_index,
     main,
-    write_manifest,
 )
 
 
@@ -86,25 +83,6 @@ class CocoParsingTests(unittest.TestCase):
                 load_coco_index(bad)
 
 
-class ManifestTests(unittest.TestCase):
-    def test_manifest_fields_and_sha(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            idx = load_coco_index(_write_split(Path(d), _coco_doc()))
-            man = build_manifest(config=TrainConfig(epochs=3), index=idx, output_dir="out/dir",
-                                 metrics={"final_train_loss": 1.5}, trained_at="2026-07-16T00:00:00+00:00")
-            self.assertEqual(man["schema"], "willy.rtdetr.train_manifest/1")
-            self.assertEqual(man["dataset"]["num_images"], 2)
-            self.assertEqual(man["dataset"]["id2label"], {"0": "box", "1": "rhino"})
-            self.assertEqual(len(man["dataset"]["annotations_sha256"]), 64)
-            self.assertEqual(man["train_config"]["epochs"], 3)
-            self.assertIn("python", man["env"])
-            # canonical write is sorted-key + trailing newline
-            path = write_manifest(man, Path(d) / "out")
-            raw = path.read_bytes()
-            self.assertTrue(raw.endswith(b"\n"))
-            self.assertEqual(json.loads(raw)["schema"], "willy.rtdetr.train_manifest/1")
-
-
 class CliTests(unittest.TestCase):
     def test_inspect_prints_class_map(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -123,6 +101,29 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             rc = main(["train", "--data-dir", d, "--output-dir", str(Path(d) / "out")])
         self.assertEqual(rc, 2)
+
+    def test_inspect_prints_json_on_request(self) -> None:
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as d:
+            _write_split(Path(d) / "train", _coco_doc())
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = main(["inspect", "--data-dir", d, "--json"])
+        self.assertEqual(0, rc)
+        self.assertEqual(["box", "rhino"], json.loads(out.getvalue())["classes"])
+
+    def test_eval_without_a_model_folder_exit_2(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            _write_split(Path(d), _coco_doc())
+            rc = main(["eval", "--data-dir", d, "--model-dir", str(Path(d) / "no_model")])
+        self.assertEqual(2, rc)
+
+    def test_a_setting_no_run_can_use_is_exit_2(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            rc = main(["train", "--data-dir", d, "--epochs", "0"])
+        self.assertEqual(2, rc)
 
 
 if __name__ == "__main__":

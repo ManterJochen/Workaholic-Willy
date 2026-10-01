@@ -103,8 +103,11 @@ _HOME: dict[str, str] = {
     # Isaac Sim, under Isaac's own interpreter: a known-pose pick rate, and one wrist-camera pick filmed.
     "record_demo": "src.willy_sim.run_eih_demo",
     "run_gate": "src.willy_sim.run_m1_pick",
-    # Offline: scenes, a dataset from simulation, parts of your own, and a generator trained on them.
+    # Offline: scenes, a dataset from simulation, parts of your own, a generator trained on them, and a detector
+    # trained on your labelled images.
     "DatasetBuild": "datagen.api",
+    "DetectorPlanOverrides": "src.models.detection.closed_set.training.plan",
+    "DetectorTraining": "src.models.detection.closed_set.training.api",
     "GeneratorTraining": "src.robot.grasping.deep.train.api",
     "MeshPreparation": "datagen.assets.service",
     "PhysicsSampling": "datagen.grasps.service",
@@ -144,6 +147,8 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.camera import Camera, CameraRefused, RGBDFrame, RigCalibrationError, RigNotCalibrated
     from src.camera.live_view import LiveView
     from src.geometry import Frame, Pose
+    from src.models.detection.closed_set.training.api import DetectorTraining
+    from src.models.detection.closed_set.training.plan import DetectorPlanOverrides
     from src.models.handdetection import (
         HandGesture, build_gesture_recognizer, build_hand_finder_on_camera, build_palm_detector)
     from src.models.perception_spec import PerceptionSpec

@@ -160,7 +160,7 @@ is refused without them, and looks with the arm held still.
 | `run_gate` | Known-pose picks, each scored against the scene's ground truth, and the gate verdict | `simulation/03_isaac_pick_rate.py` |
 | `record_demo` | One wrist-camera pick, filmed as an MP4 | `simulation/04_isaac_record_a_pick.py` |
 
-### Offline: scenes, a dataset, your own parts and a trained generator
+### Offline: scenes, a dataset, your own parts, a trained generator and a trained detector
 
 | Name | What it is | Shown in |
 |---|---|---|
@@ -176,3 +176,5 @@ is refused without them, and looks with the arm held still.
 | `GeneratorTraining` | Fits a grasp generator from a recipe or a plan; `probe()`, `train()`, then `write_report()` | `offline/training/02_train_on_your_own_meshes.py` |
 | `PlanOverrides` | The training settings you choose explicitly; they outrank the recipe and the tier | `offline/training/01_recipe_and_tier.py` |
 | `PublicCorpus` | A published grasp corpus, read into the scene files this training loop already eats | `offline/training/04_train_on_a_public_corpus.py` |
+| `DetectorTraining` | Trains the closed-set RT-DETR detector on your COCO or YOLO dataset; `probe()`, `train()`, then `write_report()` | `offline/training/06_train_a_detector_on_your_images.py` |
+| `DetectorPlanOverrides` | The detector training settings you choose explicitly; they outrank the recipe and the tier | `offline/training/06_train_a_detector_on_your_images.py` |
