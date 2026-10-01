@@ -30,7 +30,8 @@ and ``composed_sha256`` is taken over the config without it, the one the combina
 evidence names.
   request <- {"start_joints":[6 rad],"goal_pos_m":[x,y,z],"goal_quat_wxyz":[w,x,y,z]}
              {"cmd":"fk","joints":[6 rad]}   |   {"cmd":"shutdown"}
-             {"cmd":"check_js","joints":[[6 rad],...],"clearance_m":float?,"report_refused":bool?,"name_pairs":bool?}
+             {"cmd":"check_js","joints":[[6 rad],...],"clearance_m":float?,"report_refused":bool?,"name_pairs":bool?,
+              "ignore_perceived":[name,...]?}
              {"cmd":"explain_js","joints":[[6 rad],...]}
              {"cmd":"set_world","cuboids":[...],"meshes":[...],"voxels":{"path","dims_m","voxel_size_m","pose"}|null}
              {"cmd":"set_voxels","path":str|null,"dims_m":[...],"voxel_size_m":float,"pose":[...]}
@@ -38,7 +39,8 @@ evidence names.
              {"fk_pos_m":[...],"fk_quat_wxyz":[...]}
              check_js: {"success":true,"valid":bool,"first_invalid":int|null,"checked":int,"clearance_m":float,
                         "refusal":{...}?, "refused":[{"index","bound_ok","self_ok","world_ok","pairs"}]?,
-                        "pairs_named":bool?}   (the last two only where report_refused asked, _curobo_protocol)
+                        "pairs_named":bool?,   (those two only where report_refused asked, _curobo_protocol)
+                        "perceived_ignored":[name,...]?}   (only where ignore_perceived asked)
                        |  {"success":false,"planner_error":true,"reason":str}
              explain_js: {"success":true,"self_collides":[bool],"bound_ok":[bool],"pairs":[[a,b]|null],
                           "depths_mm":[float|null]}  |  {"success":false,"planner_error":true,"reason":str}
@@ -67,6 +69,14 @@ penetration, so a sample closer to the world than that is refused (``_curobo_pla
 the reply says the clearance it judged at. A sidecar older than check_js has no such branch:
 the request falls into the plan branch, fails on the missing start_joints and answers
 planner_error, which the client reports as a sidecar to restart.
+
+A request with ignore_perceived judges with the named boxes the camera saw set aside: every
+cuboid whose name carries the camera world's prefix, by cuRobo's own enable flag, and put back
+exactly as each flag was before the reply goes out (``_curobo_perceived.SetAside``). The reply
+names them under perceived_ignored. It is refused as a failed call where the names are not every
+camera box this sidecar holds, or while it may hold a carried part, which only it models; a box
+it cannot put back is a world it cannot vouch for, and the sidecar exits. The bench, the declared
+fixtures and meshes and a distance field are never set aside.
 
 Every plan starts from the same seed, and the graph planner seeds its roadmap from the start
 and the goal alone, never through the retract (``_curobo_plan_policy``): the same request in
@@ -137,6 +147,12 @@ _REQUEST_ID: object = None
 _LAST_CUBOIDS: dict = {}
 _LAST_MESHES: dict = {}
 
+#: Whether this sidecar may hold a carried part. Set as an attach is handed to cuRobo, whatever it
+#: answers, and cleared only by a detach cuRobo confirmed. While it is set nothing of the world is
+#: ever set aside: the carried part is modelled by this planner alone, and with the camera's boxes
+#: set aside nobody would judge the part against them.
+_CARRYING = False
+
 #: The checker behind every judgement, built once at start, as _terms uses it, and kept for
 #: the session. It stays None only while the sidecar is still loading: a build that fails is
 #: a sidecar that never becomes ready, because the ready gate cannot judge the retract
@@ -205,6 +221,31 @@ def _field_block(voxels: dict) -> "tuple[dict[str, Any], int]":
     return block, int(values.shape[0])
 
 
+class _PlannerCuboids:
+    """The planner's own box storage, as ``_curobo_perceived.SetAside`` reads and switches it.
+
+    The names and the flags are cuRobo's cuboid storage, which every judgement of this sidecar reads
+    (``_CHECKER`` shares the planner's scene), and the switch is cuRobo's own ``enable_obstacle``.
+    Only cuboids: a mesh or a distance field is never set aside.
+    """
+
+    def __init__(self, scene: Any) -> None:
+        boxes = getattr(getattr(scene, "data", None), "cuboids", None)
+        if boxes is None:
+            raise RuntimeError("this planner holds no box storage, so no box the camera saw can be set aside")
+        self._scene = scene
+        self._boxes: Any = boxes
+
+    def names(self) -> list:
+        return [str(name) for name in self._boxes.get_names(0)]
+
+    def enabled(self, name: str) -> bool:
+        return int(self._boxes.enable[0, self._boxes.get_idx(name, 0)].item()) == 1
+
+    def set_enabled(self, name: str, enabled: bool) -> None:
+        self._scene.enable_obstacle(name, enable=bool(enabled), env_idx=0)
+
+
 try:
     import torch  # type: ignore[import-not-found]
     from curobo._src.geom.types import SceneCfg  # type: ignore[import-not-found]
@@ -241,6 +282,11 @@ try:
     )
     from _curobo_margin import ENV_SELF_COLLISION_MARGIN_MM  # type: ignore[import-not-found]
     from _curobo_pairs import SphereLayout, deepest_pairs, refused_rows  # type: ignore[import-not-found]
+    from _curobo_perceived import (  # type: ignore[import-not-found]
+        WorldRestoreError,
+        judged_world,
+        requested_aside,
+    )
     from _curobo_plan_policy import (  # type: ignore[import-not-found]
         CLEARANCE_KEY,
         GRAPH_PLANNER_CONFIG,
@@ -249,11 +295,14 @@ try:
     )
     from _curobo_protocol import (  # type: ignore[import-not-found]
         ENV_MEASURE_ONLY,
+        IGNORE_PERCEIVED_KEY,
         KIND_JOINT_LIMIT,
         KIND_SELF_COLLISION,
         KIND_WORLD,
         NAME_PAIRS_KEY,
         PAIRS_NAMED_KEY,
+        PERCEIVED_IGNORED_KEY,
+        PERCEIVED_PREFIX,
         REFUSED_KEY,
         REPORT_REFUSED_KEY,
         WHERE_DEFAULT_Q,
@@ -649,43 +698,70 @@ for _line in sys.stdin:
         # collision padding and an activation distance of 0.0, so a pass means cuRobo's
         # spheres do not penetrate, not that they keep any clearance. A request that names a
         # clearance asks the world term for it, and the reply says which it was judged at.
+        #
+        # A request that names the camera's boxes (ignore_perceived) is judged with them set aside:
+        # the UR driver asks it where only those boxes may refuse its world, so the exact guard,
+        # which holds the same boxes, decides them (the owner's Option 1). Every one of them this
+        # sidecar holds, by cuRobo's own enable flag, and every flag put back before the reply. The
+        # bench, the declared fixtures and meshes and a distance field stay in. Never while a part
+        # may be carried: only this planner models it.
         try:
             _clearance = requested_clearance_m(req)
-            _bound, _self_hit, _world_hit, _spheres = _terms(req["joints"], _clearance)
-            _passes = ((_bound + _self_hit + _world_hit) == 0.0).reshape(-1).cpu().tolist()
-            _first = next((i for i, ok in enumerate(_passes) if not ok), None)
-            _word = "valid" if _first is None else f"invalid from sample {_first}"
-            _said = f"[check_js] {len(_passes)} sample(s) at {_clearance * 1000.0:g} mm clearance: {_word}"
-            print(_said, file=sys.stderr, flush=True)
-            _reply: dict = {"success": True, "valid": _first is None,
-                            "first_invalid": _first, "checked": len(_passes), CLEARANCE_KEY: _clearance}
-            if _first is not None:
-                # The same judgement again, for the one sample the verdict names: the client
-                # reports the pair beside the index, and an index alone points at a
-                # configuration nobody can picture.
-                _named = _judge_states([req["joints"][_first]], world=True, clearance_m=_clearance)[0]
-                if _named is not None:
-                    # A configuration of the path handed in: a start, a goal screened alone or a sample between, which
-                    # the sidecar cannot tell apart, so it does not say "start" (found porting to dev, 2026-09-25).
-                    _reply["refusal"] = dict(_named, where=WHERE_PATH)
-            if req.get(REPORT_REFUSED_KEY):
-                # Every refused configuration, not only the first, with its three terms and every pair of links its
-                # spheres overlap in there. The UR driver leaves a pair the exact guard judges to that guard where the
-                # guard accepted the configuration, which it can only do knowing every pair (the owner, 2026-09-30).
-                # Asked for, so a request without the key is answered as it always was. Names only where the self
-                # term refused: a row refused by the bounds or the world alone has no self pair to name. The rows are
-                # built by refused_rows, plain arithmetic the CPU suite runs; this reads the tensors into it.
-                _rows, _pairs_named = refused_rows(
-                    _passes, _bound, _self_hit, _world_hit,
-                    lambda _hits: _spheres[_hits].detach().cpu().numpy().astype("float64"), _LAYOUT,
-                    name_pairs=bool(req.get(NAME_PAIRS_KEY, True)),
-                )
-                _reply[REFUSED_KEY] = _rows
-                _reply[PAIRS_NAMED_KEY] = _pairs_named
-                _said = (f"[check_js] reported {len(_rows)} refused sample(s), "
-                         f"{sum(1 for _row in _rows if not _row['self_ok'])} by the self term")
+            # Decided by _curobo_perceived alone, which the CPU suite runs: None for a plain check, which is judged in
+            # the whole world with no storage touched; refused while this sidecar may hold a carried part.
+            _aside = requested_aside(req, key=IGNORE_PERCEIVED_KEY, prefix=PERCEIVED_PREFIX, carrying=_CARRYING)
+            with judged_world(_aside, lambda: _PlannerCuboids(_planner.scene_collision_checker),
+                              prefix=PERCEIVED_PREFIX):
+                _bound, _self_hit, _world_hit, _spheres = _terms(req["joints"], _clearance)
+                _passes = ((_bound + _self_hit + _world_hit) == 0.0).reshape(-1).cpu().tolist()
+                _first = next((i for i, ok in enumerate(_passes) if not ok), None)
+                _word = "valid" if _first is None else f"invalid from sample {_first}"
+                _said = f"[check_js] {len(_passes)} sample(s) at {_clearance * 1000.0:g} mm clearance: {_word}"
+                print(_said, file=sys.stderr, flush=True)
+                _reply: dict = {"success": True, "valid": _first is None,
+                                "first_invalid": _first, "checked": len(_passes), CLEARANCE_KEY: _clearance}
+                if _first is not None:
+                    # The same judgement again, for the one sample the verdict names: the client
+                    # reports the pair beside the index, and an index alone points at a
+                    # configuration nobody can picture.
+                    _named = _judge_states([req["joints"][_first]], world=True, clearance_m=_clearance)[0]
+                    if _named is not None:
+                        # A configuration of the path handed in: a start, a goal screened alone or a sample between,
+                        # which the sidecar cannot tell apart, so it does not say "start" (found porting to dev,
+                        # 2026-09-25).
+                        _reply["refusal"] = dict(_named, where=WHERE_PATH)
+                if req.get(REPORT_REFUSED_KEY):
+                    # Every refused configuration, not only the first, with its three terms and every pair of links
+                    # its spheres overlap in there. The UR driver leaves a pair the exact guard judges to that guard
+                    # where the guard accepted the configuration, which it can only do knowing every pair (the owner,
+                    # 2026-09-30). Asked for, so a request without the key is answered as it always was. Names only
+                    # where the self term refused: a row refused by the bounds or the world alone has no self pair to
+                    # name. The rows are built by refused_rows, plain arithmetic the CPU suite runs; this reads the
+                    # tensors into it.
+                    _rows, _pairs_named = refused_rows(
+                        _passes, _bound, _self_hit, _world_hit,
+                        lambda _hits: _spheres[_hits].detach().cpu().numpy().astype("float64"), _LAYOUT,
+                        name_pairs=bool(req.get(NAME_PAIRS_KEY, True)),
+                    )
+                    _reply[REFUSED_KEY] = _rows
+                    _reply[PAIRS_NAMED_KEY] = _pairs_named
+                    _said = (f"[check_js] reported {len(_rows)} refused sample(s), "
+                             f"{sum(1 for _row in _rows if not _row['self_ok'])} by the self term")
+                    print(_said, file=sys.stderr, flush=True)
+            if _aside is not None:
+                # Said only where asked, so the client knows this world was judged without exactly those boxes; they
+                # are back in the planner's world by now.
+                _reply[PERCEIVED_IGNORED_KEY] = list(_aside)
+                _said = f"[check_js] judged with the camera's {len(_aside)} box(es) set aside, and put back"
                 print(_said, file=sys.stderr, flush=True)
             _emit(_reply)
+        except WorldRestoreError as exc:
+            # A box the camera saw did not come back into the world as it was. Every later plan and check would
+            # judge a world nobody can vouch for, so this sidecar answers the call as failed and exits: the client
+            # reads a sidecar that is gone, and every motion fails closed until it is restarted.
+            print(f"[check_js] WORLD NOT PUT BACK, exiting: {exc}", file=sys.stderr, flush=True)
+            _emit({"success": False, "planner_error": True, "reason": f"{type(exc).__name__}: {exc}"})
+            sys.exit(3)
         except Exception as exc:  # noqa: BLE001
             # The call failed and nothing was judged: labelled planner_error so the client
             # can never read it as a verdict about the path.
@@ -754,6 +830,10 @@ for _line in sys.stdin:
             # automatic fit picks a count from the geometry, measured at 13 for an
             # 80x80x120 mm box, and raises rather than degrading where the link has
             # fewer, so the budget is not left to chance.
+            #
+            # Marked before it is handed over, whatever cuRobo answers: an attach that raised
+            # half way may hold a part, and only a confirmed detach clears the mark.
+            _CARRYING = True
             _planner.attachment_manager.attach(
                 state, [box], link_name=ATTACHED_LINK_NAME, num_spheres=_attach_spheres,
             )
@@ -766,6 +846,7 @@ for _line in sys.stdin:
     if cmd == "detach":
         try:
             _planner.attachment_manager.detach(link_name=ATTACHED_LINK_NAME)
+            _CARRYING = False
             _emit({"detached": True})
         except Exception as exc:  # noqa: BLE001
             print(f"[detach] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)

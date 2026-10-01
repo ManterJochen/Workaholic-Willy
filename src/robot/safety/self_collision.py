@@ -187,6 +187,15 @@ class SelfCollisionGuard:
         """
         self._perceived_fixtures = tuple(boxes)
 
+    @property
+    def perceived_fixtures(self) -> "tuple[AxisAlignedBox, ...]":
+        """The boxes a camera saw that this guard holds now, as :meth:`set_perceived_fixtures` last handed them.
+
+        The planner's band admission sets exactly these aside in the planner's world, by name, where only they refuse
+        it, and has this guard judge the refused samples with them (``planning.band``, the owner's Option 1).
+        """
+        return self._perceived_fixtures
+
     # ------------------------------------------------------------------
     # Capsule construction
     # ------------------------------------------------------------------

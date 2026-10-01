@@ -29,11 +29,15 @@ before the arm moves, and the pick is refused where the hand believes them close
 otherwise. Then the motions: a planned move to
 the standoff, a line down to the pose, the hand verb, which asks the controller again at the part, and a line back up to
 the standoff, each move carrying the caller's decline, each preceded by the arm's own steady gate where its tree asks for
-one (``safety.dwell``). A refused motion ends the verb with nothing commanded after it, and so does a camera that could
-not vouch for the cell, as its own outcome rather than a raise. A pick holds its keep-out offer in the arm's live world
-from before the detach to after its last motion, and forgets it on any exit. A place holds its own, what the part is set
-down on, from before its first motion to after its last, the release between them, and forgets it on any exit: the part
-comes down to within the line clearance of what a camera located under it (owner's example 13, 2026-09-24).
+one (``safety.dwell``). Before the hand verb of a pick, an arm that judges a line as if its jaws held a part
+(``JudgesCarriedLines``, the UR driver) is asked about the line back up with the part in them, the caller's decline with
+it: where it would refuse it, the jaws stay open, the arm goes back up the line it came down, and the pick ends
+``CARRIED_RETREAT_REFUSED`` (the owner, 2026-10-01). A refused motion ends the verb with nothing commanded after it, and
+so does a camera that could not vouch for the cell, as its own outcome rather than a raise. A pick holds its keep-out
+offer in the arm's live world from before the detach to after its last motion, and forgets it on any exit. A place holds
+its own, what the part is set down on, from before its first motion to after its last, the release between them, and
+forgets it on any exit: the part comes down to within the line clearance of what a camera located under it (owner's
+example 13, 2026-09-24).
 
 The module imports nothing above ``robot.core`` but its sibling :mod:`~src.robot.execution.motion`, which imports
 nothing above it either, and connects nothing: the verbs run inside ``Robot.connected()``.
@@ -42,7 +46,7 @@ nothing above it either, and connects nothing: the verbs run inside ``Robot.conn
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -52,7 +56,7 @@ from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
 from src.robot.core import MotionResult, MotionStatus, StoppableGripper, SupportsRobotStatus, TwoStateGripper
 from src.robot.core.gripper import OpensAndCloses
-from src.robot.core.arm_capabilities import CarriesPayload, LineMotion, LineReading, PayloadModel
+from src.robot.core.arm_capabilities import CarriesPayload, JudgesCarriedLines, LineMotion, LineReading, PayloadModel
 from src.robot.core.camera_world import (
     CameraWorldDecline,
     CameraWorldStamp,
@@ -416,6 +420,9 @@ class HandlingOutcome(StrEnum):
     #: A camera could not vouch for the cell through its fresh-frame attempts; nothing was commanded after it, and a
     #: caller stops rather than trying again. The verb reports it rather than raising it.
     CAMERA_WORLD_UNAVAILABLE = "camera_world_unavailable"
+    #: At the part, before the jaws closed, the arm judged the line out as if they held the part and would refuse it,
+    #: or could not judge it: the jaws stayed open, and the arm went back up the line it came down, to the standoff.
+    CARRIED_RETREAT_REFUSED = "carried_retreat_refused"
     #: Nothing was commanded.
     REFUSED = "refused"
 
@@ -629,6 +636,17 @@ class _Handling:
         standoff = self._standoff()
         self._move(standoff, linear=False)
         self._move(self.pose, linear=True)
+        why = self._line_out_refusal(standoff, self._line_out_width(close_to, width_mm))
+        if why:
+            # The jaws stay open, and the arm goes back up the line it came down (the owner, 2026-10-01).
+            said = f"{why.rstrip('.')}. The jaws stayed open"
+            try:
+                self._move(standoff, linear=True)
+            except _Refused as backing:
+                raise _Refused(replace(backing.report, message=(
+                    f"{said}; the line back up to the standoff failed too: {backing.report.message}"))) from None
+            return self._report(HandlingOutcome.CARRIED_RETREAT_REFUSED, message=(
+                f"{said}, and the arm went back up the line it came down, to the standoff, empty-handed"))
         hand = grasp(self.robot, close_to)
         if hand.outcome is HandOutcome.GRIPPER_FAULT:
             return self._report(HandlingOutcome.GRIPPER_FAULT, hand=hand, message=hand.error)
@@ -712,6 +730,34 @@ class _Handling:
             self.stamps.append(result.camera_world)
             if not result.ok:
                 raise _Refused(self._report(HandlingOutcome.MOTION_REFUSED, message=result.message or ""))
+
+    def _line_out_width(self, close_to: float, width_mm: float) -> float:
+        """The width the line out is judged carrying: what the attach after the close carries, where that is known
+        ahead. A hand that does not measure its width is attached at the width it is told (:func:`grasp`), so it is
+        judged at exactly that, the box the attach hands the planner; a hand that measures is attached at what it
+        measures, and the part's own width stands in for it, never narrower than the jaws are told."""
+        return max(close_to, float(width_mm)) if width_is_measured_of(self.gripper) else close_to
+
+    def _line_out_refusal(self, standoff: Pose, width_mm: float) -> str:
+        """Why the line back up to ``standoff``, judged at the part as if the jaws held a part ``width_mm`` across, would
+        be refused, or could not be judged; ``""`` where it would run, and on an arm that does not judge it
+        (``JudgesCarriedLines``). Nothing moves. It carries the verb's decline, as every motion of it does, and a camera
+        that cannot vouch for the cell ends the verb as its own outcome, as on every motion of it."""
+        if not isinstance(self.arm, JudgesCarriedLines):
+            return ""
+        keywords: dict[str, Any] = {"grip_width_mm": width_mm}
+        if chosen(self.camera_world):
+            keywords["camera_world"] = self.camera_world
+        try:
+            refused = self.arm.carried_line_refusal(standoff, **keywords)
+        except CameraWorldUnavailable as exc:
+            raise _Refused(self._report(HandlingOutcome.CAMERA_WORLD_UNAVAILABLE, message=str(exc))) from None
+        except Exception as exc:  # noqa: BLE001 (a line out nobody could judge is no line the jaws close for)
+            return f"the line out could not be judged as if the jaws held the part ({type(exc).__name__}: {exc})"
+        if not isinstance(refused, MotionResult) or refused.ok:
+            return ""
+        return (f"the line out, judged at the part as if the jaws held the part {width_mm:g} mm across, would be "
+                f"refused: {refused.message}")
 
     def _command_gripper(self, width_mm: float, *, close: bool) -> None:
         try:

@@ -41,7 +41,7 @@ standard machine sets no environment variable ([ext_deps/README.md](../../../../
 | `PlannerHand` | `planner_hand(robot, data_dir=...)` | read | the hand the planner and the guard model |
 | `ExactPairs` | the exact guard, `SelfCollisionGuard.exact_pairs(arm)` | `decides(link_a, link_b)`, `distance_mm(joints, link_a, link_b)` | the guard's pair rule and distances in the planner's link names |
 | `PathJudgement` | `CuroboPlanClient.judge_joints(configs, clearance_mm=, name_pairs=)` | read `refused` | one `RefusedSample` per refused configuration: its three terms apart and every pair of links it found |
-| `PoseScreen` | `URRobotArm.screen_configuration(joints)` | `line(label)` | `clear`, `band`, `guard_refused`, `planner_refused` or `unscreened`, with a pose nearby both clear where one exists |
+| `PoseScreen` | `URRobotArm.screen_configuration(joints)` | `line(label)` | `clear`, `band`, `seen_boxes`, `guard_refused`, `planner_refused` or `unscreened`, with a pose nearby both clear where one exists |
 
 
 ## What it refuses
@@ -59,6 +59,7 @@ standard machine sets no environment variable ([ext_deps/README.md](../../../../
 | a planner that does not start, `..._a16.json` | a declared carried part (`planning_world.payload.length_mm`) reserves 16 attach slots, and nobody measured the combination with them | the refusal's `matrix_gate.py ... --attach 16` command, about a minute on the cell's GPU; the UR10 files are committed |
 | a move refused naming `safety.planning_world.perceived.max_boxes` | the camera world still does not fit its slots once every object is one box | give the planner more slots (`max_boxes`, then restart it), or clear the cell |
 | `CuroboUnavailableError` from `judge_joints` | a sidecar older than the report, rows out of order, a verdict and a report that disagree, or pair names nobody asked for | restart the sidecar from this tree; the refusal the report was asked about stands |
+| `CuroboUnavailableError` from `judge_joints(..., ignore_perceived=)` | a reply that does not say it set aside exactly the camera boxes named (an older sidecar), or a sidecar that refused: a name it does not hold, a camera box not named, a part it may carry | the refusal the second judgement was asked about stands; restart an older sidecar from this tree |
 
 
 ## What the planner is told about the cell
@@ -237,6 +238,27 @@ further, so a tilted look can be a pose the padded spheres refuse while the mesh
   nearest first by the path gate's measure: 0.5 degrees a step on one joint, 1.33 on two, 5 on three, 10 on
   four, 20 on five or six. A planned move out of a band pose or into one takes a straight leg to the nearest
   pose both clear, judged by both; `PoseScreen` says the verdict of a pose before anything goes there.
+- **The camera's boxes** (the owner's Option 1). The same spheres reach 25 to 29 mm past the UR10's shoulder
+  housing into the world. `check_js` takes `ignore_perceived`, the names of every box the camera saw that the
+  sidecar holds (`PERCEIVED_PREFIX`, `seen_`): it judges with exactly those set aside by cuRobo's own
+  `enable_obstacle`, puts every flag back before it replies, reads every flag back, and says so under
+  `perceived_ignored` ([`_curobo_perceived.py`](_curobo_perceived.py)). The branch decides nothing of its own:
+  `requested_aside` reads the request, `None` for a plain check, and `judged_world` opens the world it judges
+  in, the whole world with no storage touched for a plain check, `SetAside` otherwise; the CPU suite runs both.
+  It refuses, as a failed call, names that are not every camera box it holds, and anything while it may hold
+  a carried part; a flag that does not come back ends the sidecar. Without the key the request and the reply
+  are byte for byte what they were. The UR driver asks it where its world refused samples, and admits them
+  only where the second judgement clears the world and the bounds and finds the robot itself alike
+  (`band.world_admission_refusal`), no part is carried (any attach since the last detach, modelled or not), the
+  hand reads empty and open (a toggle's count open, a gripper measured fully open: the owner, 2026-10-01), the
+  glue's last confirmed refresh handed the planner exactly the boxes the exact guard holds
+  (`CuroboUrPlanner.perceived_in_world`), and the exact guard accepts every refused sample with them. The
+  bench, the declared fixtures and meshes and a distance field are never set aside, and cuRobo still plans in
+  its whole world: a planned move into or out of such a pose is refused, and so is any move while the hand
+  carries a part or cannot say it stands open. A grasp there judges its lift as if the jaws held the part
+  before they close, and backs out with them open where that lift would be refused
+  (`URRobotArm.carried_line_refusal`). `PoseScreen` asks what a move asks, for a hand known empty and open, and
+  says `seen_boxes` for such a pose.
 
 The composed robot, its `composed_sha256` and every evidence file are unchanged.
 
@@ -244,7 +266,7 @@ The composed robot, its `composed_sha256` and every evidence file are unchanged.
 
 ```bash
 python scripts/curobo/probe_band_admission.py                  # the exact guard decides the arm's own pairs
-python scripts/curobo/probe_turned_boxes.py                    # 65 box slots, turned boxes, a plan in a full world
+python scripts/curobo/probe_turned_boxes.py                    # turned boxes, bins beside the base, a plan
 python scripts/curobo/probe_turned_boxes.py --cpu-replica ext_deps/curobo/curobo/content   # where the kernels cannot load
 ```
 
@@ -257,9 +279,15 @@ cell, LOOK[1]'s exactly at the 20-degree cap (wrist_1 +20.0, its nearest clear p
 wrist, a box through the forearm, a joint at 354.6 degrees and the Hand-E at the robot's base refused, plus
 the kernel's self term against the pair naming over a 5-degree wrist_1 x wrist_2 torus.
 `probe_turned_boxes.py` fills 65 slots from a synthetic camera, compares turned boxes with their
-enclosures, records where the planner and the guard clear a bin beside the shoulder housing, and plans out
-of the cushion band in that world. `--cpu-replica` judges with a CPU replica of the sidecar (cuRobo's
-spheres by forward kinematics, the kernel's rules, the sidecar's own row builder). Every line it prints
+enclosures, holds a bin **30, 40 and 47.7 mm** beside the shoulder housing admitted with the camera's boxes
+set aside, at no clearance and at a line's, in the cushion band and with the wrist out of it, where the
+planner refuses on its world alone; holds every camera box put back (one configuration inside each, its
+verdict and depth the same before and after); runs straight joint lines beside the 30 mm bin, holds the line
+out while the hand's count says closed and runs it once open, refuses the grasp's lift judged as if the jaws
+held a part while the same lift runs empty-handed; records where the planner clears a declared bin
+(about 25 mm at no clearance, 40 at the line clearance); and plans out of the cushion band in that world.
+`--cpu-replica` judges with a CPU replica of the sidecar
+(cuRobo's spheres by forward kinematics, the kernel's rules, the sidecar's own row builder). Every line it prints
 starts with `[replica]` and every log record it makes carries the same tag; its `planner under test` line
 says CPU REPLICA, and its JSON names the replica. It plans nothing, so `probe_turned_boxes.py` skips its plan
 and says so. It proves the driver's decisions on the real geometry, and only the GPU run holds the kernel.
@@ -302,6 +330,7 @@ variables, and the client warns when one disagrees with it.
 | Exact mesh collision through Coal or python-fcl | measured against a UR10 |
 | A planned move on a physical arm | measured against a UR10 |
 | The band admission, the escape legs, 65 slots of turned camera boxes and a plan in them | measured on a GPU with the two probes (2026-09-30, the development box), not yet on the cell PC |
+| The camera's boxes set aside and every one put back, a bin 30, 40 and 47.7 mm beside the housing admitted in the band and out of it, the line out held while the hand's count says closed, a grasp's lift judged carrying, with the part in the sidecar on a cell that models it, a declared bin's room | measured on a GPU with `probe_turned_boxes.py` (2026-10-01, the development box), not yet on the cell PC |
 
 `--check` reports that the sidecar's interpreter exists; it does not report that the descriptor beside
 it was built, because that lives in an environment this process does not spawn. `--doctor` closes that
@@ -325,7 +354,7 @@ gap. Planner collision awareness is not a certified functional-safety stop.
 | [`self_envelope.py`](self_envelope.py) | the robot's own body, filtered out of the camera view |
 | [`evidence.py`](evidence.py), [`bundle_index.py`](bundle_index.py) | the measured combination files, and the index of committed bundles |
 | `_declared_body.py` | a declared box as bundle arrays, and the proof that a sphere fill covers it |
-| `_curobo_*.py` | the sidecar's descriptor, attachment, margin, pair and protocol helpers; `_curobo_pairs.py` names the overlapping pairs and builds the refused rows |
+| `_curobo_*.py` | the sidecar's descriptor, attachment, margin, pair and protocol helpers; `_curobo_pairs.py` names the overlapping pairs and builds the refused rows; `_curobo_perceived.py` sets the camera's boxes aside for one judgement and puts them back |
 | [`robot/`](robot/PROVENANCE.md) | sphere maps per arm and hand, the retract table, the hand writers, the evidence |
 
 ## Details
@@ -342,4 +371,8 @@ gap. Planner collision awareness is not a certified functional-safety stop.
   `tests/test_the_camera_world_is_a_height_map_of_what_it_saw.py`,
   `tests/test_the_guard_holds_the_boxes_the_planner_holds.py`,
   `tests/test_what_the_robot_hides_from_a_camera_is_not_free.py`,
-  `tests/test_the_band_admission_judges_with_the_boxes_the_camera_saw.py`
+  `tests/test_the_band_admission_judges_with_the_boxes_the_camera_saw.py`,
+  `tests/test_the_planner_judges_again_without_the_boxes_the_camera_saw.py`,
+  `tests/test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards.py`,
+  `tests/test_the_cameras_boxes_are_set_aside_only_for_a_hand_known_open.py`,
+  `tests/test_a_grasp_judges_its_lift_carrying_before_it_closes.py`

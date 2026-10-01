@@ -22,6 +22,8 @@
   ``unsafe_recovery_refused``.
 * **Profiles.** ``next_target`` is in ``auto`` and ``dense_clutter``. ``nudge_target`` is in ``dense_clutter``
   only.
+* **The fixture.** ``container_agitate`` needs one; the push does not (owner, 2026-10-01): the automatic push box
+  bounds where it lands, and a declared fixture only narrows that.
 """
 
 from __future__ import annotations
@@ -243,6 +245,26 @@ class PerActionStrategyMode(unittest.TestCase):
         assert plan is not None
         self.assertEqual((plan.action, plan.nudge_offset_mm), (A.NUDGE_TARGET, None))
 
+    def test_without_a_fixture_the_nudge_still_reaches_its_strategy(self) -> None:
+        # The push needs no fixture (owner, 2026-10-01). A nudge the loop plans is still refused before anything moves.
+        orchestrator = RecoveryOrchestrator(dispatcher=RecoveryDispatcher(),
+                                            strategies={A.NUDGE_TARGET: _NudgeStrategy()})
+        plan = orchestrator.next_step(
+            _ctx(_profile("rescan", "nudge_target"), _policy(A.NUDGE_TARGET, A.RESCAN, fixture=None), R.ALL_COLLIDED))
+        assert plan is not None
+        self.assertEqual((plan.action, plan.reason), (A.NUDGE_TARGET, "test_nudge"))
+
+    def test_an_agitation_without_a_fixture_is_skipped_even_where_a_policy_slipped_past_its_own_check(self) -> None:
+        # SceneRecoveryPolicy refuses container_agitate without a fixture when it is built; the orchestrator checks
+        # again and goes on to the next action in the row.
+        policy = _policy(A.CONTAINER_AGITATE, A.RESCAN)
+        object.__setattr__(policy, "fixture", None)
+        orchestrator = RecoveryOrchestrator(dispatcher=RecoveryDispatcher(),
+                                            strategies={A.CONTAINER_AGITATE: _AgitateStrategy()})
+        plan = orchestrator.next_step(_ctx(_profile("rescan", "container_agitate"), policy, R.ALL_COLLIDED))
+        assert plan is not None
+        self.assertIs(plan.action, A.RESCAN)
+
 
 class ARefusalBeforeMotionFallsThrough(unittest.TestCase):
     def test_a_refused_nudge_falls_through_to_the_rescan_and_spends_no_budget(self) -> None:
@@ -262,6 +284,21 @@ class ARefusalBeforeMotionFallsThrough(unittest.TestCase):
         self.assertEqual(trail.terminal_reason, "recovered_success")
         self.assertEqual(len(calls), 2)  # the refusal did not re-run the pick
         self.assertEqual(arm.moves, [])
+
+    def test_without_a_fixture_the_loop_s_nudge_is_still_refused_before_anything_moves(self) -> None:
+        pick, calls = _script(_failed(R.ALL_COLLIDED))
+        arm = _Arm()
+        final, trail = run_recovery_loop(
+            pick=pick, profile=_profile("rescan", "nudge_target"),
+            policy=_policy(A.NUDGE_TARGET, A.RESCAN, max_actions=1, fixture=None),
+            orchestrator=RecoveryOrchestrator(dispatcher=RecoveryDispatcher(), bypass_strategies=True),
+            frame_acquirer=lambda: None, arm=arm)
+        self.assertIs(final.outcome, AutonomousGraspOutcome.SUCCEEDED)
+        self.assertEqual([(e.plan_action, e.outcome, e.executed) for e in trail.entries],
+                         [(A.NUDGE_TARGET, REFUSED_PUSH_RUNS_IN_THE_PICK, False),
+                          (A.RESCAN, "completed", True)])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([], arm.moves)
 
     def test_a_planned_nudge_is_refused_with_or_without_an_arm_and_falls_through(self) -> None:
         # Even a strategy that plans an offset gets no motion from the loop: the push runs inside the pick attempt.
@@ -561,11 +598,21 @@ class WhereAPushMayRun(unittest.TestCase):
             with self.subTest(case=name):
                 self.assertFalse(push_permitted(profile, policy))
 
-    def test_no_fixture_closes_it_even_where_a_policy_slipped_past_its_own_check(self) -> None:
-        # SceneRecoveryPolicy refuses a nudge without a fixture when it is built; the gate checks again.
-        policy = _policy(A.NUDGE_TARGET, A.RESCAN)
-        object.__setattr__(policy, "fixture", None)
-        self.assertFalse(push_permitted(_profile_for(GraspMode.DENSE_CLUTTER), policy))
+    def test_no_fixture_leaves_it_open_and_every_other_gate_still_closes_it(self) -> None:
+        # The push needs no fixture (owner, 2026-10-01): the automatic push box bounds where it lands, and a declared
+        # box only narrows it.
+        dense = _profile_for(GraspMode.DENSE_CLUTTER)
+        self.assertTrue(push_permitted(dense, _policy(A.NUDGE_TARGET, A.RESCAN, fixture=None)))
+        closed = {
+            "auto": (_profile_for(GraspMode.AUTO), _policy(A.NUDGE_TARGET, A.RESCAN, fixture=None)),
+            "not allowed": (dense, _policy(A.RESCAN, fixture=None)),
+            "mode not applied": (dense, _policy(A.NUDGE_TARGET, apply_modes=("auto",), fixture=None)),
+            "budget zero": (dense, _policy(A.NUDGE_TARGET, per_action_budget={A.NUDGE_TARGET: 0}, fixture=None)),
+            "max actions zero": (dense, _policy(A.NUDGE_TARGET, max_actions=0, fixture=None)),
+        }
+        for name, (profile, policy) in closed.items():
+            with self.subTest(case=name):
+                self.assertFalse(push_permitted(profile, policy))
 
 
 class TheProfiles(unittest.TestCase):

@@ -144,7 +144,7 @@ calls. `service.enable_record_logging(path)` appends one `GraspAttemptRecord` pe
 | `EXECUTION_FAILED` with `fault` | a `RobotError`, `RuntimeError` or `OSError` during the pick | `PickRun` and the console stop the campaign on it |
 | `MISSING_CAMERA_FRAME` outcome | a grasp won and no frame resolver maps it to BASE | declare the camera's calibration on its rig |
 | `ValueError` | no `mode` and no `robot.grasping` block declared | declare the block, or pass `mode=` |
-| `ValueError` | a real vendor with no CAMERA to BASE, or a physical recovery action with no envelope (a tree is refused at load without `recovery.fixture`; a hand-built `SceneRecoveryPolicy` raises) | as the message says |
+| `ValueError` | a real vendor with no CAMERA to BASE, or `container_agitate` with no envelope (a tree is refused at load without `recovery.fixture`; a hand-built `SceneRecoveryPolicy` raises); the push needs none | as the message says |
 | `ValueError`, `TypeError` | a `policy=` on another arm or hand; both `motion=` and `policy=` | pass `motion=GraspMotion(...)` alone |
 | `ValueError`, `TypeError`, before anything moves | a look list that names nothing, or an entry that is not a look; `both_faces=True` with `GraspMotion(align_closing_to_base_x=True)` | write looks as `JointPositions.deg(...)` or `"home"`; ask for one switch or the other; to close along one axis with `both_faces`, name it with `closing_axis` |
 | `NO_VALID_GRASP`, the axis named | `GraspMotion(closing_axis=...)` and no grasp of the part closes within 30 degrees of it | name an axis the part's grasps close along, or none |

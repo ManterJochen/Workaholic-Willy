@@ -469,8 +469,11 @@ class LinesTheArmCannotKeepTests(unittest.TestCase):
 
         assert report.line is not None
         self.assertIs(LineMotion.CHECKED, report.line.motion, report.line.reason)
+        self.assertIs(_handling().HandlingOutcome.EXECUTED, report.outcome, report.render())
         approach.assert_called_once()
-        self.assertEqual(2, len(checks), report.render())
+        # The line in, the line out judged as if the jaws held the part before they close, under the same decline
+        # (the owner, 2026-10-01; verifier W), and the line out: each checked sample by sample.
+        self.assertEqual(3, len(checks), report.render())
 
     def test_a_sim_on_ik_refuses_before_moving(self) -> None:
         from src.robot.drivers.sim.arm import IsaacRobotArm

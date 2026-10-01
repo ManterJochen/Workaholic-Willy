@@ -106,11 +106,11 @@ with that mode and with `dense_autonomous`: a tree, a preset or a call that stil
 with the mode to name instead (`auto` for `closed_loop`, `dense_clutter` for `dense_autonomous`).
 The built-in profiles set what recovery may ever do: `auto` allows `rescan` and `next_target`, and
 `dense_clutter` adds `nudge_target`, the one push a built-in profile allows. The push needs
-`recovery.allowed_actions` to name it and a declared fixture, which the shipped preset does not; it then
-runs inside a wrist camera's pick attempt, planned from what the looks saw, with the jaws open and nobody
-asked ([recovery/](recovery/README.md)). A fixed-camera cell never pushes. `next_viewpoint`, which
-`dense_clutter` allowed until then, was merged into `rescan` the same day, and a preset or a tree that
-still names it is refused with `removed on purpose: use rescan`.
+`recovery.allowed_actions` to name it, which the shipped preset does not, and **no fixture**: a declared
+one only narrows where it lands. It then runs inside a wrist camera's pick attempt, planned from what the
+looks saw, with the jaws open and nobody asked ([recovery/](recovery/README.md)). A fixed-camera cell
+never pushes. `next_viewpoint`, which `dense_clutter` allowed until then, was merged into `rescan` the
+same day, and a preset or a tree that still names it is refused with `removed on purpose: use rescan`.
 
 The gate for `easy` is the strictest: `dead_loop_rate` at 0.0 and `false_positive_grasp_rate` at most
 0.005. One trap: `recovery.apply_modes` ships as `auto` and `dense_clutter`, and that list is what keeps

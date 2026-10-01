@@ -100,6 +100,7 @@ from src.robot.grasping.constants import (
 )
 from src.robot.grasping.types.feedback import GraspFailureReason
 from src.robot.grasping.recovery.policy import (
+    _NEEDS_A_FIXTURE,
     _PHYSICAL_ACTIONS,
     REFUSED_PUSH_RUNS_IN_THE_PICK,
     SceneRecoveryAction,
@@ -550,8 +551,8 @@ class RecoveryOrchestrator:
                 budget = self._per_action_budget(policy, action)
                 if budget is not None and action_counts.get(action, 0) >= budget:
                     continue
-                # For physical actions, require a fixture.
-                if action in _PHYSICAL_ACTIONS and policy.fixture is None:
+                # An agitation moves only inside a declared fixture; the push needs none (2026-10-01).
+                if action in _NEEDS_A_FIXTURE and policy.fixture is None:
                     continue
                 plan = self._materialise_plan(action, context)
                 if plan.action is SceneRecoveryAction.NONE:

@@ -54,6 +54,7 @@ import numpy as np
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
 from src.robot.core.keep_out import SegmentationOffer
+from src.robot.core.shutter_motion import camera_to_base_at_shutter
 from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
 from src.robot.grasping.geometry.closing_axis import (
     CLOSING_AXIS_TOLERANCE_DEG,
@@ -961,10 +962,10 @@ class Locator:
             if frame.tool_pose is None:
                 raise LocatorRefused(f"camera {rig_id!r} is on the wrist and its frame carries no tool pose")
             tool_to_base = np.asarray(frame.tool_pose.to_matrix(), dtype=np.float64)
-            camera_to_base = tool_to_base @ np.asarray(self._calibration.camera_to_tool().to_matrix(), dtype=np.float64)
         else:
             tool_to_base = None
-            camera_to_base = np.asarray(self._calibration.camera_to_base().to_matrix(), dtype=np.float64)
+        # The composition the hand finder over a wrist camera shares, so the two place one frame alike.
+        camera_to_base = camera_to_base_at_shutter(self._calibration, frame.tool_pose if wrist else None)
         depth = frame.surface_depth_map if frame.surface_depth_map is not None else frame.depth_map
         objects: list[LocatedObject] = []
         surfaces: list[np.ndarray] = []

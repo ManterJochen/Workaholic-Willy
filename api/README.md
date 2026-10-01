@@ -160,7 +160,8 @@ reachability check in `GET /v1/diagnostics` covers that.
   `both_faces` stays off here: the console runs the fast rule, and the switch belongs to a program
   (`PickRun`, `service.pick`).
 - `push_mm` sets how far a `dense_clutter` push of a wrist camera's pick moves the part in this run:
-  taken as asked up to the cell's `recovery.fixture.max_nudge_mm`, refused above it or under 10 mm
+  taken as asked up to the cell's `recovery.fixture.max_nudge_mm` (50 mm on a cell that declares no
+  fixture, which the push does not need), refused above it or under 10 mm
   (`422 push_distance_refused`, no run started), never shortened. Without it a push is the cell's
   `push_distance_mm`, 30 mm unless the cell says otherwise. A run is one campaign: its push budgets and
   the parts `next_target` skips are its own, and `run_started` carries `push_mm` where the run asked for

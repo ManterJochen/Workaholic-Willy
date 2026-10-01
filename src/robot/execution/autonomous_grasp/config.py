@@ -148,8 +148,8 @@ _PROFILES: Mapping[GraspMode, GraspBehaviorProfile] = {
     ),
     # ``nudge_target`` moved here from ``dense_autonomous`` when that mode left on 2026-09-29 (owner's
     # decision), so the one physical recovery a built-in profile allowed stays reachable. The profile
-    # is only the outer gate: the action still needs ``recovery.allowed_actions`` to name it and a
-    # declared fixture envelope, and ``SceneRecoveryPolicy`` refuses to build without one.
+    # is only the outer gate: the action still needs ``recovery.allowed_actions`` to name it. It needs
+    # no fixture envelope since 2026-10-01 (owner): a declared one only narrows the push box.
     GraspMode.DENSE_CLUTTER: GraspBehaviorProfile(
         mode=GraspMode.DENSE_CLUTTER,
         sampling_mode=GraspSamplingMode.DENSE_CLUTTER,
@@ -248,11 +248,12 @@ class EffectiveRecoveryOrchestratorConfig:
     per_action_budget: tuple[tuple[str, int], ...] = ()
     #: The operator-declared BASE-frame box a physical recovery action may act inside, as
     #: ``(centre_xyz_mm, half_extents_xyz_mm, max_nudge_mm)``. ``None`` when the config declares no
-    #: fixture, which the schema only permits when no physical action is allowed.
+    #: fixture, which the schema permits unless ``container_agitate`` is allowed.
     #:
-    #: Required, not optional, whenever `allowed_actions` names ``nudge_target`` or
-    #: ``container_agitate``: `SceneRecoveryPolicy` refuses to construct without an envelope for
-    #: those, because a push with no declared bound is a robot shoving an unbounded workspace.
+    #: Required whenever `allowed_actions` names ``container_agitate``: `SceneRecoveryPolicy` refuses
+    #: to construct without an envelope for it, because an agitation with no declared bound is a robot
+    #: shaking an unbounded workspace. Optional for ``nudge_target`` (owner, 2026-10-01): the push
+    #: lands inside the automatic push box, and a declared box only narrows it.
     #:
     #: Deliberately not in :meth:`EffectiveGraspingConfig.to_dict`: that is a frozen flat 77-key
     #: telemetry contract whose exact keys and order are pinned, the first 74 positions held fixed
@@ -262,7 +263,8 @@ class EffectiveRecoveryOrchestratorConfig:
     #: How far a push of the failed part moves it when nobody asks for another distance, in mm:
     #: ``recovery.fixture.push_distance_mm`` (30 by default, never above the fixture's
     #: ``max_nudge_mm``, the third number above, which is the ceiling a request is held to). 30 without a
-    #: fixture, which pushes nothing. Not in :meth:`EffectiveGraspingConfig.to_dict`, like the fixture.
+    #: fixture, whose ceiling is then the hard cap of 50 mm. Not in :meth:`EffectiveGraspingConfig.to_dict`,
+    #: like the fixture.
     push_distance_mm: float = 30.0
 
 

@@ -178,8 +178,10 @@ class CpuReplicaClient:
     the descriptor names (the research's replica, 2026-09-30, which reproduces LOOK[0]'s 1.21 mm), and applies the
     kernel's rules: the self term sphere pair by sphere pair (:meth:`_kernel_self_hit`, apart from the pair naming), the
     bounds as the planner's window, and the world as sphere against box at the clearance asked. Its report rows are
-    built by the sidecar's own ``refused_rows`` and read by the client's own reader. It says who it is as the sidecar
-    does, so the driver's own descriptor and evidence checks judge it. It plans nothing.
+    built by the sidecar's own ``refused_rows`` and read by the client's own reader, and it sets the camera's boxes
+    aside (``ignore_perceived``) with the sidecar's own ``_curobo_perceived.requested_aside`` and ``judged_world``, one
+    flag per box it holds. It says who it is as the sidecar does, so the driver's own descriptor and evidence checks
+    judge it. It plans nothing.
     """
 
     def __init__(self, arm: Any, content_root: Path) -> None:
@@ -190,6 +192,8 @@ class CpuReplicaClient:
         self.identity: Any = None
         self.last_refusal: Any = None
         self._boxes: list[dict] = []
+        #: One flag per box it holds, by name: the storage ``SetAside`` switches, as the sidecar's cuRobo's.
+        self._on: dict[str, bool] = {}
         self._joints: dict[str, dict] = {}
 
     # the client's lifecycle, as the planner glue drives it
@@ -263,7 +267,18 @@ class CpuReplicaClient:
 
     def set_world(self, cuboids: Any, *args: Any, **kwargs: Any) -> int:
         self._boxes = [dict(box) for box in cuboids]
+        self._on = {str(box["name"]): True for box in self._boxes}
         return len(self._boxes)
+
+    # the box storage the sidecar's SetAside switches, here a flag per box it holds
+    def names(self) -> "list[str]":
+        return [str(box["name"]) for box in self._boxes]
+
+    def enabled(self, name: str) -> bool:
+        return self._on[name]
+
+    def set_enabled(self, name: str, enabled: bool) -> None:
+        self._on[name] = bool(enabled)
 
     def plan_joint(self, start: Any, goal: Any) -> None:
         self.last_refusal = None
@@ -330,6 +345,8 @@ class CpuReplicaClient:
         self_ok = not self._kernel_self_hit(spheres)
         world_ok = True
         for box in self._boxes:
+            if not self._on.get(str(box["name"]), True):
+                continue  # set aside for this judgement (SetAside)
             x, y, z, qw, qx, qy, qz = (float(v) for v in box["pose"])
             rotation = _quat_wxyz([qw, qx, qy, qz])
             local = (spheres[0, :, :3] - np.asarray([x, y, z])) @ rotation
@@ -366,18 +383,34 @@ class CpuReplicaClient:
             return StateRefusal(where=StateWhere.PATH, kind=StateRefusalKind.JOINT_LIMIT, joints=joints)
         return StateRefusal(where=StateWhere.PATH, kind=StateRefusalKind.WORLD, joints=joints)
 
-    def judge_joints(self, configs: Any, *, clearance_mm: float = 0.0, name_pairs: bool = True) -> Any:
+    def judge_joints(self, configs: Any, *, clearance_mm: float = 0.0, name_pairs: bool = True,
+                     ignore_perceived: Any = None) -> Any:
         """The sidecar's check_js with ``report_refused``: its rows by the sidecar's ``refused_rows``, read back by the
-        client's ``_judgement_from_reply``, which refuses anything but a whole report as it does for the GPU."""
+        client's ``_judgement_from_reply``, which refuses anything but a whole report as it does for the GPU. With
+        ``ignore_perceived`` the camera's boxes are set aside by the sidecar's own ``requested_aside`` and
+        ``judged_world``, and a request either refuses is a failed call, as the sidecar answers it. The replica is handed
+        no carried part."""
         import numpy as np
 
         from src.robot.safety.planning._curobo_pairs import refused_rows
+        from src.robot.safety.planning._curobo_perceived import PerceivedAsideError, judged_world, requested_aside
         from src.robot.safety.planning._curobo_plan_policy import CLEARANCE_KEY
-        from src.robot.safety.planning.curobo_client import _judgement_from_reply
+        from src.robot.safety.planning._curobo_protocol import (
+            IGNORE_PERCEIVED_KEY,
+            PERCEIVED_IGNORED_KEY,
+            PERCEIVED_PREFIX,
+        )
+        from src.robot.safety.planning.curobo_client import CuroboUnavailableError, _judgement_from_reply
 
         rows = [[float(v) for v in config] for config in configs]
         clearance_m = float(clearance_mm) / 1000.0
-        terms = [self._terms(row, clearance_m)[:3] for row in rows]
+        request: dict[str, Any] = {} if ignore_perceived is None else {IGNORE_PERCEIVED_KEY: list(ignore_perceived)}
+        try:
+            aside = requested_aside(request, key=IGNORE_PERCEIVED_KEY, prefix=PERCEIVED_PREFIX, carrying=False)
+            with judged_world(aside, lambda: self, prefix=PERCEIVED_PREFIX):
+                terms = [self._terms(row, clearance_m)[:3] for row in rows]
+        except PerceivedAsideError as exc:
+            raise CuroboUnavailableError(f"the cuRobo planning CALL failed (not a planning verdict): {exc}") from exc
         bound = [0.0 if ok else 1.0 for ok, _, _ in terms]
         self_hit = [0.0 if ok else 1.0 for _, ok, _ in terms]
         world_hit = [0.0 if ok else 1.0 for _, _, ok in terms]
@@ -387,9 +420,12 @@ class CpuReplicaClient:
             lambda hits: np.concatenate([self._spheres(rows[index]) for index in hits], axis=0), self._layout,
             name_pairs=name_pairs)
         first = next((index for index, ok in enumerate(passes) if not ok), None)
-        reply = {"success": True, "valid": first is None, "first_invalid": first, "checked": len(rows),
-                 CLEARANCE_KEY: clearance_m, "refused": report, "pairs_named": named}
-        return _judgement_from_reply(reply, sent=len(rows), clearance_m=clearance_m, named=bool(name_pairs))
+        reply: dict[str, Any] = {"success": True, "valid": first is None, "first_invalid": first, "checked": len(rows),
+                                 CLEARANCE_KEY: clearance_m, "refused": report, "pairs_named": named}
+        if aside is not None:
+            reply[PERCEIVED_IGNORED_KEY] = list(aside)
+        return _judgement_from_reply(reply, sent=len(rows), clearance_m=clearance_m, named=bool(name_pairs),
+                                     ignored=aside)
 
 
 def _rpy(r: float, p: float, y: float) -> Any:

@@ -2,7 +2,7 @@
 
 A pick is not one behaviour. `easy` is the plain open-loop attempt on one object; `auto` decides per scene
 whether to sample densely; `dense_clutter` samples a bin rather than one object, and is the one mode whose
-profile lists a push (`nudge_target`, and only inside a declared fixture). The push runs inside the pick
+profile lists a push (`nudge_target`; a declared fixture only narrows where it lands). The push runs inside the pick
 attempt of a wrist camera, never from the recovery loop: a part every grasp of which collided, with a
 neighbour seen within 25 mm, is pushed with the open jaws and picked from the look taken again.
 

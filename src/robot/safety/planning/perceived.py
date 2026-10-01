@@ -78,6 +78,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from src.robot.core.keep_out import KeepOutBox
+from src.robot.safety.planning._curobo_protocol import PERCEIVED_PREFIX
 from src.robot.safety.planning.height_map import Column, bridge_columns, coarsen, height_map_columns, turn_of
 
 __all__ = [
@@ -267,8 +268,9 @@ class WorldBuildTuning:
     #: out, the nearest surviving, and the rest are reported, never dropped in silence.
     max_boxes: int = 64
     #: Prefix every emitted name carries, so a perceived box can never collide with a declared
-    #: fixture and silently replace it during the merge.
-    name_prefix: str = "seen_"
+    #: fixture and silently replace it during the merge. The planner's sidecar tells the camera's
+    #: boxes from the rest of its world by it (``_curobo_protocol.PERCEIVED_PREFIX``).
+    name_prefix: str = PERCEIVED_PREFIX
     #: Edge length of a voxel in the distance field, millimetres. Zero builds no field at all,
     #: which is the byte-identical path and the one a cell without the planner storage takes.
     voxel_field_mm: float = 0.0

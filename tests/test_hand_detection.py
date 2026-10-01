@@ -335,6 +335,57 @@ class TheStereoPathUsesTheStereoEngineTests(unittest.TestCase):
         self.assertIn("StereoCam3D", str(caught.exception))
 
 
+class ARigPlacedFrameByFrameTests(unittest.TestCase):
+    """A camera on the wrist has no CAMERA->BASE of its own: each frame is placed by its own, or by none."""
+
+    _K = np.array([[600.0, 0.0, 100.0], [0.0, 600.0, 100.0], [0.0, 0.0, 1.0]])
+
+    def _finder(self, frame_transforms: Any, **kwargs: Any) -> HandFinder:
+        return HandFinder(
+            observer=object(),  # type: ignore[arg-type]
+            provider=_FakeProvider({"wrist": "rgbd"}),
+            transforms=kwargs.pop("transforms", {}),
+            frame_transforms=frame_transforms,
+            camera_matrices={"wrist": self._K},
+            min_depth_samples=1,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _shifted(x: float, y: float, z: float) -> np.ndarray:
+        matrix = np.eye(4)
+        matrix[:3, 3] = [x, y, z]
+        return matrix
+
+    def test_each_frame_is_placed_by_its_own_transform(self) -> None:
+        first, second = _rgbd_frame(500), _rgbd_frame(500)
+        placed = {id(first): self._shifted(1000.0, 0.0, 0.0), id(second): self._shifted(0.0, 2000.0, 0.0)}
+        finder = self._finder({"wrist": lambda frame: placed.get(id(frame))})
+
+        at_first = finder.locate(_observation((100.0, 100.0)), first, "wrist")
+        at_second = finder.locate(_observation((100.0, 100.0)), second, "wrist")
+
+        assert at_first is not None and at_second is not None
+        np.testing.assert_allclose(at_first.position_base, [1000.0, 0.0, 500.0])
+        np.testing.assert_allclose(at_second.position_base, [0.0, 2000.0, 500.0])
+
+    def test_a_frame_nobody_vouches_for_gives_no_position(self) -> None:
+        finder = self._finder({"wrist": lambda frame: None})
+        self.assertIsNone(finder.locate(_observation((100.0, 100.0)), _rgbd_frame(500), "wrist"))
+
+    def test_a_rig_with_a_fixed_and_a_per_frame_transform_is_refused(self) -> None:
+        """Two sources for one rig's placement is one too many: which of them placed the palm?"""
+        with self.assertRaises(ValueError) as caught:
+            self._finder({"wrist": lambda frame: np.eye(4)}, transforms={"wrist": np.eye(4)})
+        self.assertIn("wrist", str(caught.exception))
+
+    def test_a_per_frame_transform_that_is_no_rigid_4x4_is_refused(self) -> None:
+        for label, answer in (("3x3", np.eye(3)), ("not finite", np.full((4, 4), np.nan))):
+            with self.subTest(label), self.assertRaises(ValueError):
+                self._finder({"wrist": lambda frame, answer=answer: answer}).locate(
+                    _observation((100.0, 100.0)), _rgbd_frame(500), "wrist")
+
+
 # ── Model files ─────────────────────────────────────────────────────────────────────────────────
 
 

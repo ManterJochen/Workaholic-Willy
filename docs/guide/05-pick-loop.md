@@ -382,6 +382,10 @@ where a campaign starts, one line each. What to do, line by line:
 - `in the planner's cushion band` naming no nearby pose: **straight lines only**. If planned moves have to
   reach it or leave it, re-teach it by hand where both clear it and screen it again; the screen names no pose
   to copy.
+- `beside the boxes the camera saw`: **straight lines and moveL with a hand known empty and open**; only the
+  camera's boxes refuse it on the planner's world, and the exact guard decides them. Nothing to do for a look.
+  A planned move into it or out of it is refused, and so is any move while the hand carries a part or cannot
+  say it stands open ([04](04-robot-and-safety.md), section 6).
 - `ERROR`: **nothing drives there**. Re-teach it at the nearby pose where the line names one, otherwise by
   hand elsewhere, and screen it again.
 
@@ -518,9 +522,14 @@ turn, every cell keeping its highest seen point, cells of like height merged int
 - a **turned object** is a turned box, and needs no squaring to base X/Y.
 
 cuRobo and the exact guard hold the same boxes; the guard keeps 5 mm from them where the arm and a declared
-fixture keep 10 ([04](04-robot-and-safety.md), 5.5). Where the robot's own body hides part of an object
-beside what the cameras saw, the hidden stretch stands as high as what was seen beside it; what no camera saw
-at all stays free.
+fixture keep 10 ([04](04-robot-and-safety.md), 5.5). **Where only these boxes refuse the planner's world,
+the exact guard decides them**, so a bin the camera saw stands about 30 mm from the shoulder housing (the
+guard decides from about 26) where the planner's own spheres alone wanted 50 to 60
+([04](04-robot-and-safety.md), section 6). That holds with a hand known empty and open: while the hand
+carries a part or cannot say it stands open, and for a planned move into or out of a pose beside the bin, the
+planner keeps its 50 to 60, and a grasp there judges its lift carrying before it closes. Where the robot's own
+body hides part of an object beside what the cameras saw, the hidden stretch stands as high as what was seen
+beside it; what no camera saw at all stays free.
 
 **64 boxes, merged to fit.** `safety.planning_world.perceived.max_boxes` defaults to **64**, and the planner
 reserves **1 + declared + 64** box slots when it starts: **restart the planner after changing it**, and after
@@ -558,8 +567,8 @@ The table is an **outer gate**: an action runs only where the mode lists it **an
 `recovery.allowed_actions` names it, and `allowed_actions` cannot widen the mode. `next_target`, a rescan
 that skips the part that failed, joined `auto` and `dense_clutter` the same day; it moves nothing itself.
 `nudge_target`, **the push**, moved from `dense_autonomous` to `dense_clutter` and stays there alone, so
-`auto` recovery never touches a part; it also needs a declared `recovery.fixture`, and it runs only on a
-wrist camera's pick. `container_agitate` is in no mode, and a config that names it without a declared
+`auto` recovery never touches a part; it runs only on a wrist camera's pick, and its fixture box is
+**optional**. `container_agitate` is in no mode, and a config that names it without a declared
 container is refused at load. `next_viewpoint` left both profiles the same day, merged into `rescan`,
 which is what it did once nothing moved the camera for it; a `recovery.allowed_actions` that still names
 it is refused, `removed on purpose: use rescan`. What each action does is 6.4.
@@ -651,8 +660,8 @@ at hand. **A fixed-camera cell never pushes.**
   program's `closing_axis` refused carries `no_valid_grasp` alone, so it is never pushed, while a
   boxed-in neighbour of it still is.
 - **Only where allowed.** `recovery.enabled`, the mode in `apply_modes`, `nudge_target` in
-  `allowed_actions`, a declared `recovery.fixture`, which can only narrow the push box, a budget left, and
-  an attempt left to pick the part from afterwards (`max_attempts: 1` never pushes).
+  `allowed_actions`, a budget left, and an attempt left to pick the part from afterwards (`max_attempts: 1`
+  never pushes). **No fixture needed**: a declared `recovery.fixture` only narrows the push box.
 - **What pushes.** The outer face of the leading finger, **jaws open**, along the closing axis. The jaws
   never change: the push reads the hand and never writes it, and nobody is asked. A toggle's count that
   says closed, or a measuring hand more than 2 mm short of fully open, means no push. A toggle's count
@@ -875,9 +884,21 @@ quiet; and on a cell that runs `ik`, blind IK proposes self-colliding branches t
 which looks exactly like bad grasping. Run the motion-stack probe before you blame the grasps. A refusal on a
 box the cameras saw names it, its corners, turn and size, and the joints the arm stood at; `it may be the
 robot itself` there means the calibration puts the arm off its model: recalibrate
-([04](04-robot-and-safety.md), 5.5). A pose the guard accepts beside the base and the planner refuses for its
-world is the planner's sphere cover, which reaches 25 to 29 mm past the shoulder housing: give the bin more
-room ([real_cell_first_pick.md](../runbooks/real_cell_first_pick.md), Diagnose 10).
+([04](04-robot-and-safety.md), 5.5). A pose beside the base that the planner refuses for its world runs where
+only the camera's boxes refuse it and the exact guard accepts them. It stays refused where the bench or a
+declared bin refuses it, while the hand carries a part or cannot say it stands open (`the hand is not known
+to be empty and open (...)`: a count that says closed or that nobody can vouch for, a width short of open, no
+hand handed to the arm), and for a planned move into it or out of it: the refusal names the planner's world
+and why it stands. Give the bin room, about 30 mm from the shoulder housing, more while carrying
+([real_cell_first_pick.md](../runbooks/real_cell_first_pick.md), Diagnose 10). **A grasp that backed out**
+reads `execution_failed` with `the retreat, judged at the part as if the jaws held the part ... would be
+refused: ...` (the policy's own outcome is `carried_retreat_refused`): at the part, with the jaws still open,
+its lift carrying would be refused, so they stayed open and the arm went back up the line it came down; the
+pick goes on to its next part. Give the bin the 50 mm a carried part needs, or declare it. **An arm held after a
+close** (a plain close, or a grasp whose lift, judged again as it starts, refused what the check before the close
+let through: a new camera frame, a part measured wider, a lift in steps) reads `... at sample 0 of ...: the
+planner's world; it stands: a part is carried` or `... the hand is not known to be empty and open (...)`:
+nothing moves; release the part (`Robot.release`), and the arm leaves empty-handed.
 
 **A push stopped.** `unsafe_recovery_refused` after a push means the arm stopped where the push left it,
 often beside the part at table height, and nothing else moved; `Nobody can say where the jaws stand` in

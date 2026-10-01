@@ -440,7 +440,9 @@ the cell's `robot.natural_closing_axis`, along base x where it names none; `yaw_
 direction, so on a cell that names `"-y"`, `yaw_deg=90.0` closes along base x. `pick` opens the jaws to the
 hand's width, makes a planned move to a standoff `standoff_mm` (80) back along the approach, drives a
 straight line to the pose, closes to `width_mm` less `squeeze_mm` (1), and drives the line back out.
-`place` does the same with a release.
+`place` does the same with a release. On a cuRobo UR the line back out is judged before the close, as if the
+jaws held the part, under the same `decline`; where it would be refused, the jaws stay open, the arm goes
+back up the line, and the outcome is `CARRIED_RETREAT_REFUSED` ([04](04-robot-and-safety.md), section 6).
 
 Before any command both verbs refuse a robot with no usable gripper, a closed link, a pose not in BASE, a
 camera world the arm would refuse the motion for, and an arm whose motions do not go through cuRobo and the

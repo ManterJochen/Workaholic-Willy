@@ -72,6 +72,8 @@ check needs the dashboard: a dashboard that does not answer is logged, not refus
 | `SELF_COLLISION_REJECTED` or `JOINT_LIMIT_REJECTED`, the start | the planner will not start from where the arm stands, for more than its cushion band or with no escape leg out of it | Jog the arm out of that configuration; the message names the pair, the planner's depth, the distance the exact meshes keep and why no leg was taken |
 | `SELF_COLLISION_REJECTED`, the band's goal | a goal in the planner's cushion band that no approach leg of at most 20 degrees per joint reaches: `no plan reaches it` | Reach it on a straight line, or re-teach it by hand where both authorities clear it and screen it again |
 | `SELF_COLLISION_REJECTED` or `JOINT_LIMIT_REJECTED`, a leg | the path gate or the planner refuses a leg of the plan that would run | Read the message; nothing has moved |
+| `SELF_COLLISION_REJECTED`, `it stands: a part is carried` | on `curobo`, only the camera's boxes refuse the planner's world while a part is carried: any attach since the last detach, modelled or not | Open the jaws on it (`Robot.release`, which forgets the part); the arm leaves empty-handed |
+| `SELF_COLLISION_REJECTED`, `the hand is not known to be empty and open` | on `curobo`, only the camera's boxes refuse the planner's world, and the hand reads closed, unvouched or short of open, or none was handed over (`set_hand`) | Open the hand, or answer where the toggle's jaws stand; the sentence says what it read |
 | `INVALID_TARGET`, a waypoint | `ur_rtde` refused a speed or acceleration before sending that waypoint's `moveJ` | The message says which waypoint and what ran before it |
 | `UNSUPPORTED`, camera world MISSING | on `curobo`, a motion with neither a live camera world nor a stated decline | Hand the robot its cameras, or `without_camera_world(reason)` |
 | `CONTROLLER_REJECTED`, hand-guided | any motion verb while a `freedrive()` session is open, free or held | Leave the session; its end holds the arm and gives motion back |
@@ -111,10 +113,36 @@ On the arm's own pairs the exact guard decides (the owner, 2026-09-30,
 [`planning/band.py`](../../safety/planning/band.py)): where the planner refuses a sample of a line, a leg or
 a moveL as a self collision, the arm asks it for every refused sample (`judge_joint_path`, which refreshes
 nothing), leaves to the exact guard only the pairs that guard judges, padded by no more than
-`planner_margin_mm`, and has the exact guard judge each of those samples again. The world, the bounds, the
-carried part and the `shoulder_link` stay the planner's, and a report it cannot read whole leaves the
-refusal standing. Such a refusal names the sample and the term it stands on; a bound reads
-`JOINT_LIMIT_REJECTED`.
+`planner_margin_mm`, and has the exact guard judge each of those samples again. The bounds, the carried
+part and the `shoulder_link` stay the planner's, and a report it cannot read whole leaves the refusal
+standing. Such a refusal names the sample and the term it stands on; a bound reads `JOINT_LIMIT_REJECTED`.
+
+**The camera's boxes** (the owner's Option 1). The same spheres reach 25 to 29 mm past the shoulder housing
+into the world. Where the planner refuses samples on its world, the arm asks it again about exactly those
+samples with every box the camera saw set aside (`judge_joint_path(..., ignore_perceived=)`), and admits them
+only where its world and bounds then clear and the robot itself reads as before, no part is carried (any
+`attach_payload` on the arm since the last `detach_payload`, modelled or not, and
+`CuroboUrPlanner.carries_part`), the hand it carries reads empty and open (`set_hand`, which `connect_cell`
+calls once both are up: a toggle's count open, a gripper measured fully open; no hand, or any other, keeps
+the boxes in), the glue's last confirmed refresh handed the planner exactly the boxes the exact guard holds
+(`perceived_in_world`), and the exact guard accepts every refused sample with them at
+`perceived_min_distance_mm`. The bench and the declared fixtures and meshes stay the planner's, and so does
+cuRobo's own plan, which routes around the camera's boxes: a planned move into or out of a pose its spheres
+meet them in is refused, and straight lines and moveL run there with a hand known empty and open.
+
+**A grasp judges its lift before it closes** (the owner, 2026-10-01). `carried_line_refusal(pose,
+grip_width_mm=, camera_world=)` answers what `move(pose, linear=True, camera_world=)` would answer with a part
+in the jaws: the part handed to the planner for the judgement and taken back after, nothing of the camera's
+world set aside, nothing sent; on `ik`, the end's gate, screened, so nothing is remembered.
+`GraspExecutionPolicy` and `Robot.pick` ask it at the part with the jaws still open, at the width the attach
+after the close carries (a hand that does not measure: the width it is told); where the lift would be
+refused, the jaws stay open, the arm goes back up the line it came down, and the grasp ends
+`carried_retreat_refused` (`PolicyOutcome`, `HandlingOutcome`; a pick loop attempt reads `execution_failed`).
+Where it would run, the controller is asked last, and the jaws close. The lift is judged again as it starts,
+so a new camera frame, the part's spheres fitted anew by the attach, a part measured wider or a lift in steps
+can still refuse it. An arm that holds a part
+beside the camera's boxes, after that or after a plain close, is held there: every way out starts at that
+pose, and the refusal names the way out, a person releasing the part (`Robot.release`).
 
 A **planned** move out of a band pose, or into one, takes a straight **escape** or **approach** leg of at
 most 20 degrees per joint, only the joints between the colliding links, to the nearest configuration both
@@ -127,9 +155,10 @@ start's. The generated view and its move back never take a leg. The glue logs a 
 refused the start of this joint move`, a refused goal as `this joint goal`.
 
 `screen_configuration(joints)` asks both authorities about a pose and moves nothing: `clear`, `band`,
-`guard_refused`, `planner_refused` or `unscreened`, with the nearest pose within 20 degrees per joint
-both clear where one exists (`planning.band.PoseScreen`). Teaching, the desk start and every campaign's
-start ask it.
+`seen_boxes`, `guard_refused`, `planner_refused` or `unscreened`, with the nearest pose within 20 degrees
+per joint both clear where one exists (`planning.band.PoseScreen`). It asks what a move asks, the camera's
+boxes set aside included, for a hand known empty and open (it reads no hand), so `seen_boxes` is a pose a line
+and moveL reach with such a hand, and only the two refusals read `ERROR`. Teaching, the desk start and every campaign's start ask it.
 
 A joint target (`move_to_joints`, `move_home`, a joint station) goes the same way: a joint outside the
 window runs as its full turn inside it, the same pose, and the log says so; a joint inside is left as

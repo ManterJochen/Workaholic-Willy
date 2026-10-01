@@ -4,7 +4,8 @@
 with a contract-locked member set. The extras a controller can offer (digital and
 analog I/O, live force and torque, live robot and safety status, what a straight line
 keeps, a model of the carried part, a move home that says why it was refused, the
-configuration a pose goes to, a joint move on its straight joint line and nothing else) are declared here as
+configuration a pose goes to, a joint move on its straight joint line and nothing else, a line judged as if the
+jaws held a part) are declared here as
 separate ``runtime_checkable`` Protocols,
 mirroring :class:`~src.robot.core.gripper.ObjectDetectingGripper`. Hand guiding follows the same
 pattern from its own module, :mod:`~src.robot.core.freedrive`: an arm a person may move by
@@ -29,11 +30,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from src.contracts import UNSET
 from src.geometry import Frame
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.contracts import Maybe
     from src.geometry import Pose
 
+    from .camera_world import CameraWorldDecline
     from .joint_positions import JointPositions
     from .motion_result import MotionResult
 
@@ -43,6 +47,7 @@ __all__ = [
     "DigitalIOPort",
     "DrivesJointLines",
     "HomesTyped",
+    "JudgesCarriedLines",
     "KeepsLines",
     "LineMotion",
     "LineReading",
@@ -379,6 +384,30 @@ class DrivesJointLines(Protocol):
 
     def move_to_joints_on_the_line(self, joints: "JointPositions") -> "MotionResult":
         """Move to ``joints`` on the straight joint line from where the arm stands; refused, nothing sent, if not clear."""
+        ...
+
+
+@runtime_checkable
+class JudgesCarriedLines(Protocol):
+    """Capability extension: the arm judges a straight line as if its jaws held a part, before they close on one.
+
+    A grasp closes at the part, then lifts it on a straight line, and the lift is judged once the jaws hold the part. A
+    part changes what an arm allows: on the UR driver the carried part is the planner's alone, and nothing of the
+    camera's world is set aside while the hand holds one (Option 1). An empty hand admitted beside a bin the camera saw
+    that closed there would hold the arm there, the part in its jaws, every way out refused at its first sample. So a
+    grasp asks first, at the part with its jaws still open, whether the lift would run with the part in them, and
+    closes only where it would; where not, it backs out empty-handed on the line it came in on (the owner, 2026-10-01).
+    Asking moves nothing and commands nothing. It carries the decline the lift would carry (``camera_world``), as every
+    motion of the grasp does.
+
+    It is not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives. A grasp on an arm
+    that does not implement it (the dummy, the sim) closes and lifts as before.
+    """
+
+    def carried_line_refusal(self, pose: "Pose", *, grip_width_mm: float,
+                             camera_world: "Maybe[CameraWorldDecline]" = UNSET) -> "MotionResult | None":
+        """The refusal ``move(pose, linear=True, camera_world=camera_world)`` would meet from where the arm stands with a
+        part about ``grip_width_mm`` across in its jaws, judged now; ``None`` where that line would run. Nothing moves."""
         ...
 
 

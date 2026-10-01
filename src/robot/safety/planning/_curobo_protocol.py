@@ -10,12 +10,15 @@ from __future__ import annotations
 
 __all__ = [
     "ENV_MEASURE_ONLY",
+    "IGNORE_PERCEIVED_KEY",
     "KINDS",
     "KIND_JOINT_LIMIT",
     "KIND_SELF_COLLISION",
     "KIND_WORLD",
     "NAME_PAIRS_KEY",
     "PAIRS_NAMED_KEY",
+    "PERCEIVED_IGNORED_KEY",
+    "PERCEIVED_PREFIX",
     "REFUSED_KEY",
     "REPORT_REFUSED_KEY",
     "WHERES",
@@ -56,3 +59,16 @@ REPORT_REFUSED_KEY = "report_refused"
 REFUSED_KEY = "refused"
 NAME_PAIRS_KEY = "name_pairs"
 PAIRS_NAMED_KEY = "pairs_named"
+
+#: What every box the camera world registers is named with (``perceived.WorldBuildTuning.name_prefix``), and so how the
+#: sidecar tells the camera's boxes from the bench and the declared fixtures in the world it holds.
+PERCEIVED_PREFIX = "seen_"
+
+#: A check_js request key: the names of the boxes the camera saw, every one the sidecar holds, to set aside for this one
+#: judgement and put back exactly before the reply (``_curobo_perceived.SetAside``). The reply then says which under
+#: ``PERCEIVED_IGNORED_KEY``. Refused, as a failed call, wherever the sidecar holds other camera boxes than those named, a
+#: name is no box it holds, or it may hold a carried part. A request without it, and its reply, are the ones check_js
+#: always had. The UR driver asks it where only the camera's boxes refuse the planner's world and the exact guard
+#: judges them (the owner's Option 1, after the guard fixes of 2026-09-30).
+IGNORE_PERCEIVED_KEY = "ignore_perceived"
+PERCEIVED_IGNORED_KEY = "perceived_ignored"

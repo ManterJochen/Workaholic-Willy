@@ -771,7 +771,8 @@ robot:
       # at least 9 mm from a sample the guard passes; a measurement, not a bound. The arm against itself and
       # every declared fixture keep `min_distance_mm`. This plus the margin must reach `min_distance_mm`, the
       # step every path is sampled at, and while it is below `min_distance_mm` the voxel may be no coarser
-      # than the 10 mm it was measured at, or the config is refused at load.
+      # than the 10 mm it was measured at, or the config is refused at load. At least 5, refused below at load:
+      # where only these boxes refuse the planner's world, this guard alone decides them.
       # [default: 5.0]
       perceived_min_distance_mm: 5.0
 
@@ -885,10 +886,12 @@ robot:
 
       # How far, in mm, every configuration of a straight joint line has to stay from the planner's world (the
       # declared cell and the camera's) before the line runs instead of a plan. A line that comes closer is
-      # planned around. 10 mm is the distance cuRobo's optimiser keeps its own plans from an obstacle, and the
-      # local guard's shipped self_collision.min_distance_mm, which it keeps from the arm and a declared fixture;
-      # from a box the camera saw (already grown by perceived.margin_mm) it keeps perceived_min_distance_mm,
-      # 5 mm. 0 judges a line at no penetration, as a plan is.
+      # planned around, except where only the boxes a camera saw come closer: the planner is then asked again
+      # with them set aside, and with a hand known empty and open the exact guard decides them at
+      # perceived_min_distance_mm. 10 mm is the distance cuRobo's optimiser keeps its own plans from an
+      # obstacle, and the local guard's shipped self_collision.min_distance_mm, which it keeps from the arm and
+      # a declared fixture; from a box the camera saw (already grown by perceived.margin_mm) it keeps
+      # perceived_min_distance_mm, 5 mm. 0 judges a line at no penetration, as a plan is.
       # [default: 10.0]
       line_clearance_mm: 10.0
 
@@ -1301,11 +1304,13 @@ robot:
       # that sees only skipped parts stops with a sentence. nudge_target pushes the part with the open
       # jaws inside the pick attempt, on a wrist camera, dense_clutter only: offered for all_collided (at
       # least one grasp collided), and for a blocked approach where approach validation runs, with a
-      # neighbour seen within 25 mm of the part; it needs a fixture, and pushes at most 1 per part, 2 per
+      # neighbour seen within 25 mm of the part; it needs no fixture (the automatic push box bounds where
+      # the part lands, and a declared fixture only narrows it), and pushes at most 1 per part, 2 per
       # pick and 5 per campaign. A push that stops once something may have moved leaves the arm where it
       # is and ends the campaign: a person decides. The loop itself never plans a nudge. container_agitate
-      # is refused at load unless grasping.support.container declares its interior box. An action refused
-      # before anything moved falls through to the next one; a motion that failed ends the loop.
+      # is refused at load unless a fixture is declared and grasping.support.container declares its
+      # interior box. An action refused before anything moved falls through to the next one; a motion
+      # that failed ends the loop.
       # [default: []]
       # [Options: rescan, next_target, nudge_target, container_agitate]
       allowed_actions: []
@@ -1331,7 +1336,8 @@ robot:
       # push_distance_mm: how far a nudge_target push moves the part when nobody asks for another
       #   distance; at least 10 (a shorter push cannot open room for a finger) and never more than
       #   max_nudge_mm (refused at load) [default: 30.0].
-      # Required for physical recovery actions (nudge_target/container_agitate).
+      # Required for container_agitate. Optional for nudge_target: without it the push lands inside the
+      # automatic push box alone, 30 mm and at most 50 mm; a declared box only narrows where it lands.
       # Only active when robot.grasping.recovery.enabled is true.
 
 

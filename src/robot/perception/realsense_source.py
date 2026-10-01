@@ -20,7 +20,6 @@ proven answer.
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -28,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from src.robot.core.errors import PerceptionFrameMoved
-from src.robot.core.shutter_motion import ShutterMotion
+from src.robot.core.shutter_motion import PICK_FRAME_WARMUP_GRABS, ShutterStamp
 from src.robot.grasping.types.perception import PerceptionFrame
 from src.robot.perception.mask_completion import (
     DEFAULT_MASK_COMPLETION,
@@ -93,7 +92,7 @@ class RealSenseVisionPerceptionSource:
         prompt: str,
         object_labels: tuple[str, ...] = (),
         intrinsics: np.ndarray | None = None,
-        warmup_grabs: int = 5,
+        warmup_grabs: int = PICK_FRAME_WARMUP_GRABS,
         mask_completion: MaskCompletion = DEFAULT_MASK_COMPLETION,
     ) -> None:
         # Either a ready-made perception backend, or the detector plus segmenter pair, which is
@@ -119,14 +118,11 @@ class RealSenseVisionPerceptionSource:
         self._mask_completion = MaskCompletion(mask_completion)
         #: "override" if a calibrated K was supplied, else "factory". D1 provenance.
         self.intrinsics_source = "override" if intrinsics is not None else "factory"
-        #: The arm's TCP reader for a camera on the wrist, `None` for a fixed camera. Bound late,
-        #: through `stamp_tool_pose_with`, because the arm does not exist yet when this source is
-        #: built.
-        self._tool_pose_reader: Callable[[], Pose] | None = None
-        #: The rig's shutter tolerance, and how many more grabs a frame taken while the tool moved
-        #: gets. Both are bound with the reader.
-        self._motion_tolerance: tuple[float, float] = (0.0, 0.0)
-        self._frame_attempts = 0
+        #: The stamp of a camera on the wrist (the arm's TCP reader, the rig's shutter tolerance, and
+        #: how many more grabs a frame taken while the tool moved gets), `None` for a fixed camera.
+        #: Bound late, through `stamp_tool_pose_with`, because the arm does not exist yet when this
+        #: source is built.
+        self._stamp: ShutterStamp | None = None
 
     # ------------------------------------------------------------------ the prompt
     @property
@@ -254,18 +250,10 @@ class RealSenseVisionPerceptionSource:
         shutter_motion_tolerance_deg)``, judged by the rule the live world judges it by
         (``ShutterMotion``). A frame taken while the tool moved beyond it is grabbed again, without
         the warm-ups, up to ``attempts`` more times, and then the acquire raises
-        ``PerceptionFrameMoved``.
+        ``PerceptionFrameMoved``. The stamp is :class:`~src.robot.core.shutter_motion.ShutterStamp`,
+        the one a hand finder over a wrist camera takes its frames through too.
         """
-        if not callable(reader):
-            raise TypeError(f"stamp_tool_pose_with takes the arm's TCP reader, not {type(reader).__name__}")
-        max_mm, max_deg = (float(v) for v in motion_tolerance)
-        if not (math.isfinite(max_mm) and math.isfinite(max_deg)) or max_mm < 0.0 or max_deg < 0.0:
-            raise ValueError(f"a shutter motion tolerance is two finite non-negative numbers, not {motion_tolerance!r}")
-        if int(attempts) < 0:
-            raise ValueError(f"attempts counts the grabs after the first and cannot be negative, not {attempts!r}")
-        self._tool_pose_reader = reader
-        self._motion_tolerance = (max_mm, max_deg)
-        self._frame_attempts = int(attempts)
+        self._stamp = ShutterStamp.of(reader, motion_tolerance=motion_tolerance, attempts=attempts)
 
     def _grab(self) -> "tuple[Any, Pose | None, float]":
         """The real grab: the frame, the tool pose at its shutter, and its capture time.
@@ -274,26 +262,19 @@ class RealSenseVisionPerceptionSource:
         it, else a clock read here just before the grab, never after: age decides whether a frame
         may still be planned against.
         """
-        reader = self._tool_pose_reader
-        if reader is None:
+        stamp = self._stamp
+        if stamp is None:
             before_grab = time.time()
             rgbd = self._streamer.grab()
             return rgbd, None, _captured_at(rgbd, before_grab)
-        max_mm, max_deg = self._motion_tolerance
-        motion = None
-        for _ in range(1 + self._frame_attempts):
-            before = reader()
-            before_grab = time.time()
-            rgbd = self._streamer.grab()
-            after = reader()
-            motion = ShutterMotion.between(before, after, tolerance_mm=max_mm, tolerance_deg=max_deg)
-            if motion.within:
-                return rgbd, before, _captured_at(rgbd, before_grab)
-        assert motion is not None
-        raise PerceptionFrameMoved(
-            camera=str(getattr(self._streamer, "rig_id", "") or "camera"), attempts=1 + self._frame_attempts,
-            moved_mm=motion.moved_mm, turned_deg=motion.turned_deg, tolerance_mm=max_mm, tolerance_deg=max_deg,
-        )
+        grabbed = stamp.grab(self._streamer.grab)
+        if grabbed.tool_pose is None:
+            raise PerceptionFrameMoved(
+                camera=str(getattr(self._streamer, "rig_id", "") or "camera"), attempts=grabbed.grabs,
+                moved_mm=grabbed.motion.moved_mm, turned_deg=grabbed.motion.turned_deg,
+                tolerance_mm=stamp.tolerance_mm, tolerance_deg=stamp.tolerance_deg,
+            )
+        return grabbed.frame, grabbed.tool_pose, _captured_at(grabbed.frame, grabbed.before_grab_s)
 
     def acquire(self) -> PerceptionFrame:
         for _ in range(self._warmup_grabs):

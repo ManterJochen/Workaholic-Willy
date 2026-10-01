@@ -263,11 +263,17 @@ candidates the guards have already cleared, never override a rejection.
 The one place where a missing asset does not produce `UNAVAILABLE` is the exact-mesh backend of
 section 6, which falls back to a coarser but still conservative geometry and says so in the log.
 
-The one place where an exact verdict sets a refusal aside is the planner's padded spheres on the arm's own
-pairs (guide 04, section 6). There the spheres are a cushion around the meshes, not a second measurement,
-and a sample the planner refused on such a pair runs only where the exact guard, judging that very sample
-again, keeps its `min_distance_mm`; the padding lifted is never more than the margin. The planner's world,
-its joint bounds, the carried part and the robot's base stay its refusals.
+Two places let an exact verdict set a refusal aside, both the planner's padded spheres (guide 04, section
+6). On the arm's own pairs the spheres are a cushion around the meshes, not a second measurement, and a
+sample the planner refused on such a pair runs only where the exact guard, judging that very sample again,
+keeps its `min_distance_mm`; the padding lifted is never more than the margin. Against the boxes a camera
+saw, the same cushion reaches 25 to 29 mm past the shoulder housing: a sample the planner's world refused
+runs only where the planner, judging it again with exactly those boxes set aside, clears its world, no part
+is carried, modelled or not, the hand reads empty and open, and the exact guard, judging it again with the
+same boxes, keeps `perceived_min_distance_mm`, which a load refuses below 5 mm. The planner's joint bounds,
+the carried part, the robot's base, the bench and every declared fixture stay its refusals, and so do the
+camera's boxes while the hand is not known empty and open; a grasp judges its lift with them in before the
+jaws close.
 
 Code: [`preflight.py`](../src/robot/safety/preflight.py) and
 [`decision.py`](../src/robot/safety/decision.py)

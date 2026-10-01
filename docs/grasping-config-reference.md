@@ -58,7 +58,7 @@ gone nothing moved the camera for it, so it re-perceived exactly as `rescan` doe
 never ran on a physical arm. A tree, a preset or a call that still names one is refused with the mode
 to name instead: `auto` for `closed_loop`, `dense_clutter` for `dense_autonomous`. `nudge_target`, which
 only `dense_autonomous` allowed, moved to `dense_clutter`; it still needs `recovery.allowed_actions` to
-name it and a declared `recovery.fixture`.
+name it. A `recovery.fixture` is **optional** since 2026-10-01: it only narrows where a push lands.
 
 **The mode's profile is an outer gate** that `recovery.allowed_actions` cannot widen: `auto` allows
 `rescan` and `next_target`, `dense_clutter` adds `nudge_target`, and no profile allows
@@ -205,9 +205,9 @@ only the actions both the mode's profile (section 2) and `allowed_actions` name.
 | `allowed_actions` | `()` | the actions it may plan, inside the profile: `rescan`, `next_target`, `nudge_target`, `container_agitate` |
 | `max_recovery_actions` | `2` | how many actions one pick may run |
 | `per_action_budget` | `()` | `(action, count)` caps; a count of `0` switches that action off |
-| `fixture` | unset | the operator's box (`center_mm`, `half_extents_mm`), required for a physical action |
-| `fixture.push_distance_mm` | `30` | how far a push moves the part when nobody asks |
-| `fixture.max_nudge_mm` | `50` | the longest push the cell allows |
+| `fixture` | unset | the operator's box (`center_mm`, `half_extents_mm`): required for `container_agitate`, **optional** for the push, whose push box it only narrows |
+| `fixture.push_distance_mm` | `30` | how far a push moves the part when nobody asks; `30` without a fixture. Changing it or `max_nudge_mm` means declaring the box too, which then also narrows the push box |
+| `fixture.max_nudge_mm` | `50` | the longest push the cell allows; `50` without a fixture |
 
 **A refusal before anything moved falls through** to the next action for the same failure: it stays in
 the trail, spends no budget and never re-runs the pick. A motion that failed once the arm moved ends the
@@ -236,9 +236,10 @@ every one of these, none of which asks a person:
 - the attempt failed `all_collided`, or its approach was blocked where `approach_validation` is on, and a
   neighbour stands within 25 mm of the part in the fused clouds of the looks; never on `no_valid_grasp` or
   `no_candidates_generated`;
-- `nudge_target` in `allowed_actions`, a declared `fixture`, and a budget left: one push per part, two per
-  pick, five per campaign; a spent budget means no more pushes, never a stop; and an attempt left to pick
-  the part from afterwards, so `max_attempts: 1` never pushes;
+- `nudge_target` in `allowed_actions` and a budget left: one push per part, two per pick, five per
+  campaign; a spent budget means no more pushes, never a stop; and an attempt left to pick the part from
+  afterwards, so `max_attempts: 1` never pushes. **No `fixture` needed**: a declared one only narrows the
+  push box;
 - jaws that read open: a toggle's count says open and knows it, a hand that measures its width stands
   within 2 mm of fully open; the push reads the hand and never writes it. A count that says closed is no
   push; a toggle's count **nobody can vouch for** when the push reads it, once its plan and budgets
@@ -341,7 +342,7 @@ this block needs all three of section 2 and section 3.1 satisfied at once.
 
 Each of these is refused at load, so a cell never boots believing it can recover in a way it cannot:
 
-- a physical action (`nudge_target`, `container_agitate`) in `allowed_actions` without a `fixture`;
+- `container_agitate` in `allowed_actions` without a `fixture` (the push needs none);
 - `container_agitate`, in `allowed_actions` or in `per_action_budget`, unless `support.container`
   declares `interior_min_mm` and `interior_max_mm`; a `floor_height_mm` alone does not count. A config
   with neither a fixture nor a declared container is told both in its first refusal;

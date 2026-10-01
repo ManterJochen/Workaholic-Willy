@@ -101,8 +101,9 @@ def _refuse_unroutable_prompt(cell: Console, prompt: str) -> None:
 
 def _refuse_unfit_push(cell: Console, push_mm: float | None) -> None:
     """Refuse a push distance the cell would refuse, before the run starts: above the cell's ceiling
-    (``recovery.fixture.max_nudge_mm``), above the hard cap of 50 mm, or under 10 mm, which cannot open room for a
-    finger. Never shortened: the operator's number is taken as asked or refused with the sentence that says why."""
+    (``recovery.fixture.max_nudge_mm``, the hard cap itself where no fixture is declared), above the hard cap of
+    50 mm, or under 10 mm, which cannot open room for a finger. Never shortened: the operator's number is taken as
+    asked or refused with the sentence that says why."""
     if push_mm is None:
         return
     service = cell.session.service

@@ -13,7 +13,8 @@ Layout
 `palm_detector`  MediaPipe hand landmarker -> palm centres, in pixels.
 `gestures`       MediaPipe canned classifier -> thumbs-up / thumbs-down, with the palm centre.
 `hand_finder`    pixels + depth + calibration -> millimetres in the robot base frame,
-                 over a rig catalogue or over one camera a caller already holds open.
+                 over a rig catalogue or over one camera a caller already holds open,
+                 fixed or on the wrist.
 `factory`        the config readers: `models.handdetect` / `models.gesturedetect`.
 """
 
@@ -32,6 +33,7 @@ from src.models.handdetection.hand_finder import (
     HandFinder,
     HandObserver,
     OneCamera,
+    OneWristCamera,
     RigFrames,
 )
 from src.models.handdetection.landmarks import (
@@ -69,6 +71,7 @@ __all__ = [
     "Handedness",
     "LocatedHand",
     "OneCamera",
+    "OneWristCamera",
     "PalmDetection",
     "PalmDetector",
     "RigFrames",

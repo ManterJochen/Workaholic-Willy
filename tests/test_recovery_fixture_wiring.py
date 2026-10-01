@@ -16,6 +16,10 @@ would have been obvious, but on the hot path, for a cell that had been running f
 enabled recovery.
 
 The envelope is now carried YAML -> `EffectiveRecoveryOrchestratorConfig.fixture` -> `FixtureEnvelope`.
+
+Since 2026-10-01 (the owner) only `container_agitate` demands the envelope. The push (`nudge_target`) needs none:
+the automatic push box bounds where it lands, and a declared envelope still reaches the policy, where it narrows
+that box.
 """
 
 from __future__ import annotations
@@ -36,16 +40,28 @@ _HALF = (150.0, 100.0, 40.0)
 
 
 class TheEnvelopeReachesThePolicyTests(unittest.TestCase):
-    def test_a_physical_action_without_an_envelope_still_refuses(self) -> None:
-        """The guard that was firing. It is correct and stays — the wiring was what was missing."""
+    def test_an_agitation_without_an_envelope_still_refuses(self) -> None:
+        """The guard that was firing. It is correct and stays for `container_agitate`, whose waypoints must stay
+        inside the box — the wiring was what was missing."""
         with self.assertRaises(ValueError) as caught:
             SceneRecoveryPolicy(
                 enabled=True,
-                allowed_actions=(SceneRecoveryAction.NUDGE_TARGET,),
+                allowed_actions=(SceneRecoveryAction.CONTAINER_AGITATE,),
                 max_recovery_actions=2,
                 fixture=None,
             )
         self.assertIn("FixtureEnvelope", str(caught.exception))
+
+    def test_the_push_constructs_without_an_envelope(self) -> None:
+        """The push lands inside the automatic push box; a declared envelope only narrows it (owner, 2026-10-01)."""
+        policy = SceneRecoveryPolicy(
+            enabled=True,
+            allowed_actions=(SceneRecoveryAction.NUDGE_TARGET,),
+            max_recovery_actions=2,
+            fixture=None,
+        )
+        self.assertIsNone(policy.fixture)
+        self.assertTrue(policy.permits(SceneRecoveryAction.NUDGE_TARGET))
 
     def test_the_same_policy_constructs_once_the_envelope_is_supplied(self) -> None:
         policy = SceneRecoveryPolicy(

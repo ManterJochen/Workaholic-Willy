@@ -650,10 +650,11 @@ class AutonomousGraspService:
           ``robot_cfg.grasping.max_attempts``. Explicit kwargs always
           win.
         * Recovery. ``robot_cfg.grasping.recovery`` reaches the pick through
-          the effective-config snapshot, and a physical action it allows
-          (``nudge_target`` / ``container_agitate``) needs the fixture
-          envelope declared beside it, ``recovery.fixture``, which the
-          schema refuses to go without. Where ``nudge_target`` is allowed,
+          the effective-config snapshot. ``container_agitate`` needs the
+          fixture envelope declared beside it, ``recovery.fixture``, which
+          the schema refuses to go without; the push (``nudge_target``)
+          needs none, and a declared one only narrows where it may land
+          (owner, 2026-10-01). Where ``nudge_target`` is allowed,
           the cell's push inputs are read here too (:attr:`push_cell`: the
           hand from the gripper registry, the workspace, the clearance the
           arm's line judge keeps, a declared container). The
@@ -1573,7 +1574,7 @@ class AutonomousGraspService:
         taken as asked up to the cell's ceiling, ``recovery.fixture.max_nudge_mm`` (50 mm unless the cell says less),
         and refused above it or above the owner's hard cap of 50 mm, never shortened; one under 10 mm is refused too,
         since it cannot open room for a finger (``push_planner.resolve_push_distance``). A cell that declares no fixture
-        is held to the hard cap alone: it pushes nothing, whatever it is asked.
+        takes the defaults: 30 mm unset, and the hard cap of 50 mm as its ceiling.
         """
         from src.robot.grasping.recovery.push_planner import (  # noqa: PLC0415
             DEFAULT_PUSH_DISTANCE_MM,
@@ -1833,8 +1834,8 @@ class AutonomousGraspService:
             for name, count in cfg.recovery_orchestrator.per_action_budget
         }
         # The envelope, rebuilt from what the operator declared. `SceneRecoveryPolicy` refuses to
-        # construct a physical action without one, so a config that declares a physical action and
-        # a call site that passes no envelope raise on every pick().
+        # construct `container_agitate` without one, so a config that declares it and a call site that
+        # passes no envelope raise on every pick(). The push needs none; a declared one narrows its box.
         envelope = None
         declared = cfg.recovery_orchestrator.fixture
         if declared is not None:
@@ -1991,9 +1992,10 @@ class AutonomousGraspService:
     ) -> "PushGate | None":
         """What lets this pick push its failed part, or ``None``: the policy must permit it
         (:func:`~src.robot.grasping.recovery.policy.push_permitted`: enabled, the mode's profile lists ``nudge_target``,
-        which only dense_clutter's does, ``recovery.allowed_actions`` lists it with a fixture declared, a budget above
-        zero), the cell's push inputs must be known (:attr:`push_cell`), the campaign must have a push distance, and
-        the fixture box must leave room. Why a pick that is permitted cannot push is said once, as a WARNING."""
+        which only dense_clutter's does, ``recovery.allowed_actions`` lists it, a budget above zero), the cell's push
+        inputs must be known (:attr:`push_cell`), the campaign must have a push distance, and a declared fixture box
+        must leave room. No fixture is needed: without one the automatic push box alone bounds the push. Why a pick
+        that is permitted cannot push is said once, as a WARNING."""
         from src.robot.grasping.recovery.policy import push_permitted  # noqa: PLC0415
         from src.robot.grasping.recovery.push_gate import PushCell, PushGate  # noqa: PLC0415
 

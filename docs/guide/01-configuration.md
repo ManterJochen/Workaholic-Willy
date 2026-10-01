@@ -546,18 +546,23 @@ refused at load with the sentence that says what to do instead. And
 `interior_max_mm` is refused at load, rather than running a cell that believes a bin protects it when
 it cannot locate the walls.
 
-**Recovery refuses what it cannot keep.** A physical action (`nudge_target`, `container_agitate`) in
-`recovery.allowed_actions` needs a `recovery.fixture`, or the load refuses it. `container_agitate`,
+**Recovery refuses what it cannot keep.** `container_agitate` in `recovery.allowed_actions` needs a
+`recovery.fixture`, or the load refuses it. **The push (`nudge_target`) needs none** since 2026-10-01: it
+lands inside the automatic push box, and a declared fixture only narrows that box. `container_agitate`,
 named in `allowed_actions` or `per_action_budget`, is refused at load unless `support.container`
 declares its interior box (`interior_min_mm` and `interior_max_mm`; a floor height alone does not
 count): a container is agitated only where one is declared. **The push distance** is two keys:
 `recovery.fixture.push_distance_mm`, how far a push moves the part when nobody asks (30 mm), and
-`recovery.fixture.max_nudge_mm`, the longest push the cell allows (50 mm). Each lies between 10 and 50
-mm, and a `push_distance_mm` longer than `max_nudge_mm` is refused with the sentence that says which to
-change. A local tree that still writes the old `max_nudge_mm: 5`, or a `max_nudge_mm` under 30 with no
-`push_distance_mm`, no longer loads, on purpose: 5 mm allowed no push a finger fits, and a ceiling under
-30 mm now sits below the 30 mm default `push_distance_mm`. Delete the line to take 50 mm, or write 10 to
-50 mm with a `push_distance_mm` no longer than it.
+`recovery.fixture.max_nudge_mm`, the longest push the cell allows (50 mm); a cell with no fixture takes
+both defaults. **Both keys live in the fixture block**: to change either, declare its box too
+(`center_mm`, `half_extents_mm`), and that box then also narrows where a push lands (one around the
+whole workspace narrows nothing). Without a fixture, `push_mm` on a `PickRun` or a console run still
+asks for 10 to 50 mm. Each key lies between 10 and 50 mm, and a `push_distance_mm` longer than
+`max_nudge_mm` is refused with the sentence that says which to change. A local tree that still writes
+the old `max_nudge_mm: 5`, or a `max_nudge_mm` under 30 with no `push_distance_mm`, no longer loads, on
+purpose: 5 mm allowed no push a finger fits, and a ceiling under 30 mm now sits below the 30 mm default
+`push_distance_mm`. Delete the line to take 50 mm, or write 10 to 50 mm with a `push_distance_mm` no
+longer than it.
 
 Several blocks can fire only in some grasp modes, and several ship their operative weight at `0.0`,
 so `enabled: true` alone does nothing. Read

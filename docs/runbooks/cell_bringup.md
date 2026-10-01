@@ -113,14 +113,17 @@ then screen it again ([04](../guide/04-robot-and-safety.md), section 6).
 
 **7. A bin beside the base refused, while a ruler says it is clear?**
 
-The exact guard keeps a seen bin 20 mm off a face and about 26 mm across a rim edge, and cuRobo's sphere
-cover reaches 25 to 29 mm past the shoulder housing, so the planner wants about 50 mm and a straight line
-about 60. Turned bins need no squaring. Keep about 60 mm between a bin and the housing's ring, or **declare
-the bin**: its walls as fixtures (`safety.self_collision.fixtures`, boxes square to base X/Y) at their
-measured place, which the exact guard keeps 10 mm from. The planner and the guard then hold the real walls
-instead of the camera's boxes grown by 15 mm, while the planner's spheres still reach past the housing; its
-clearance to a declared bin was not measured. [real_cell_first_pick.md](real_cell_first_pick.md),
-Diagnose 10, has the numbers and the refusal lines.
+The exact guard keeps a seen bin 20 mm off a face and about 26 mm across a rim edge. cuRobo's sphere cover
+reaches 25 to 29 mm past the shoulder housing, so where only the camera's boxes refuse the planner's world,
+the driver asks it again with them set aside and the exact guard decides. Turned bins need no squaring.
+**Keep about 30 mm between a seen bin and the housing's ring** where the arm passes it with an empty hand.
+While the hand carries a part or cannot say it stands open, and for a planned move into or out of a pose
+beside the bin, the camera's boxes stay in: a seen bin then needs about 50 mm, 60 for a straight line. A grasp
+nearer judges its lift carrying first and backs out with the jaws open (`carried_retreat_refused`), and the
+lift is judged again once the jaws closed, so give the bin 50 mm where the hand closes beside it. A declared
+bin is never set aside and needs about 25 mm, 40 for a straight line, carrying or not, so **pick from a bin
+beside the base declared, or give a seen one 50 mm**. [real_cell_first_pick.md](real_cell_first_pick.md), Diagnose 10, has the
+numbers and the refusal lines.
 
 ---
 

@@ -83,17 +83,33 @@ class RecoverySchemaValidationTests(unittest.TestCase):
                 }
             )
 
-    def test_physical_action_without_fixture_rejected(self) -> None:
-        """If allowed_actions contains a physical action, fixture must be set."""
+    def test_container_agitate_without_fixture_rejected(self) -> None:
+        """``container_agitate`` needs the fixture box its waypoints stay inside, a declared container or not."""
 
-        with self.assertRaises(ValidationError):
+        with self.assertRaises(ValidationError) as caught:
             _instantiate(
                 recovery={
                     "enabled": True,
-                    "allowed_actions": ["nudge_target"],
+                    "allowed_actions": ["container_agitate"],
                     "fixture": None,
-                }
+                },
+                support={"container": {"interior_min_mm": [-200.0, -900.0, 20.0],
+                                       "interior_max_mm": [200.0, -500.0, 180.0]}},
             )
+        self.assertIn("recovery.fixture", str(caught.exception))
+
+    def test_nudge_target_without_fixture_accepted(self) -> None:
+        """The push needs no fixture (owner, 2026-10-01): the automatic push box bounds where it lands."""
+
+        cfg = _instantiate(
+            recovery={
+                "enabled": True,
+                "allowed_actions": ["nudge_target"],
+                "fixture": None,
+            }
+        )
+        self.assertIsNone(cfg.recovery.fixture)
+        self.assertEqual(cfg.recovery.allowed_actions, ("nudge_target",))
 
     def test_physical_action_with_fixture_accepted(self) -> None:
         cfg = _instantiate(

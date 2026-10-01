@@ -43,6 +43,8 @@ from `geometry`, and has no config and no command line.
 | `CameraWorldStamp`, `CameraWorldDecline` | whether a world built from a current camera image stood behind a motion |
 | `KeepOutBox`, `SegmentationOffer` | a box in BASE that is no obstacle for one motion, and what a perception frame hands the planner |
 | `ShutterMotion` | how far the tool moved while a wrist camera's shutter was open |
+| `ShutterStamp`, `StampedGrab` | the pick frame's stamp: the tool pose read before and after a grab, the grab taken again while the tool moved; a hand finder over a wrist camera takes its frames through it too |
+| `camera_to_base_at_shutter` | where a camera stood when a frame's shutter opened, in BASE: the one composition the `Locator` and the hand finder place every frame by |
 
 Opt-in capabilities are Protocols a driver implements only where the hardware offers them, and a
 caller checks with `isinstance` and falls back: `SupportsDigitalIO`, `SupportsForceTorque` (a
@@ -54,9 +56,11 @@ in, read as `FreedriveSample`, with every motion verb refused while it is open),
 judge it, nothing moved, `RobotKinematicsError` where none is admissible) and `DrivesJointLines`
 (`move_to_joints_on_the_line(joints)`: the straight joint line from where the arm stands, judged as
 `move_to_joints` judges a clear line, refused with nothing sent where it is not clear, never planned
-around) on the arm;
+around) and `JudgesCarriedLines` (`carried_line_refusal(pose, grip_width_mm=)`: the line `move(pose,
+linear=True)` would run, judged as if the jaws held a part, before they close on one, nothing moved) on the arm;
 `ObjectDetectingGripper`, `StoppableGripper`, `ReportsHoldEvidence` (`HELD`, `EMPTY` or `UNMEASURED`)
-and `MeasuresWidth` on the hand. A gate written against a capability no attached driver implements
+and `MeasuresWidth` on the hand; `why_not_known_open(gripper)` says why nobody can vouch that a hand stands
+empty and open, read off it with nothing sent. A gate written against a capability no attached driver implements
 does nothing, by design. The one view a wrist pick generates is screened by `ChoosesConfigurations`
 and driven by `DrivesJointLines`, and its move back runs on `DrivesJointLines` alone. The UR driver
 implements both; an arm without them, the Isaac arm and the dummy among them, generates no view and
@@ -120,12 +124,12 @@ and `ik` take `Frame.BASE`) are stated here and enforced by each driver.
 | File | Holds |
 | --- | --- |
 | `robot_arm.py` | `RobotArm` |
-| `gripper.py` | `Gripper`, its opt-in extensions, `HoldEvidence`, `hold_evidence_of`, `width_is_measured_of` |
-| `arm_capabilities.py` | the arm capability Protocols and their values: `Wrench`, `RobotStatus`, `LineReading`, `PayloadModel`; `ChoosesConfigurations`, `DrivesJointLines` |
+| `gripper.py` | `Gripper`, its opt-in extensions, `HoldEvidence`, `hold_evidence_of`, `width_is_measured_of`, `why_not_known_open` |
+| `arm_capabilities.py` | the arm capability Protocols and their values: `Wrench`, `RobotStatus`, `LineReading`, `PayloadModel`; `ChoosesConfigurations`, `DrivesJointLines`, `JudgesCarriedLines` |
 | `motion_result.py` | `MotionStatus`, `MotionCommand`, `MotionResult`, `NO_PLAN_FAIL_SAFE_MESSAGE` |
 | `camera_world.py` | the camera world stamp and decline, and how a driver declines, stamps and refuses |
 | `keep_out.py` | `KeepOutBox`, `SegmentationOffer`, `keeping_out(arm, offer)`, and `holding_views(arm)`, which keeps every frame of a wrist pick in the arm's live planner world until the block ends |
-| `shutter_motion.py` | `ShutterMotion` |
+| `shutter_motion.py` | `ShutterMotion`, `ShutterStamp`, `StampedGrab`, `camera_to_base_at_shutter`, `PICK_FRAME_WARMUP_GRABS` |
 | `joint_positions.py`, `capabilities.py` | `JointPositions`, `RobotCapabilities` |
 | `vendor.py`, `gripper_vendor.py` | `RobotVendor`, `GripperVendor` |
 | `errors.py` | the `RobotError` hierarchy |

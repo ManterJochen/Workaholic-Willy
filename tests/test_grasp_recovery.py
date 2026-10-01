@@ -3,8 +3,9 @@
 Coverage layers:
 
 * :class:`FixtureEnvelope` validation + ``contains``.
-* :class:`SceneRecoveryPolicy` validation (allow-list, fixture
-  requirement for physical actions, NONE rejected from allow-list).
+* :class:`SceneRecoveryPolicy` validation (allow-list, the fixture
+  ``CONTAINER_AGITATE`` needs and the push does not, NONE rejected from
+  allow-list).
 * The shared strategy gate (disabled policy, EASY profile, budget).
 * :class:`ContainerAgitateStrategy` scaffolding + executor refusal.
 * :func:`execute_recovery_motion`: completes non-motion plans, refuses
@@ -182,12 +183,22 @@ class SceneRecoveryPolicyTests(unittest.TestCase):
         # RESCAN alone since NEXT_VIEWPOINT was merged into it (2026-09-29).
         self.assertEqual(policy.allowed_actions, (SceneRecoveryAction.RESCAN,))
 
-    def test_physical_action_without_fixture_is_rejected(self) -> None:
-        with self.assertRaises(ValueError):
+    def test_container_agitate_without_fixture_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as caught:
             SceneRecoveryPolicy(
                 enabled=True,
-                allowed_actions=(SceneRecoveryAction.NUDGE_TARGET,),
+                allowed_actions=(SceneRecoveryAction.CONTAINER_AGITATE,),
             )
+        self.assertIn("FixtureEnvelope", str(caught.exception))
+
+    def test_the_push_constructs_without_fixture(self) -> None:
+        # The push lands inside the automatic push box; a fixture only narrows it (owner, 2026-10-01).
+        policy = SceneRecoveryPolicy(
+            enabled=True,
+            allowed_actions=(SceneRecoveryAction.NUDGE_TARGET,),
+        )
+        self.assertIsNone(policy.fixture)
+        self.assertTrue(policy.permits(SceneRecoveryAction.NUDGE_TARGET))
 
     def test_physical_action_with_fixture_constructs(self) -> None:
         policy = SceneRecoveryPolicy(

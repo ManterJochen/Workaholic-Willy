@@ -31,11 +31,15 @@ Scope and non-goals
   makes ``EASY`` provably free of recovery motion: an easy profile
   has an empty tuple, so every strategy in this module short-circuits
   to :attr:`SceneRecoveryAction.NONE` regardless of the policy.
-* Physical recovery actions (:attr:`SceneRecoveryAction.NUDGE_TARGET`,
-  :attr:`SceneRecoveryAction.CONTAINER_AGITATE`) require an explicit
-  :class:`FixtureEnvelope`. Without one the policy refuses to be
-  constructed; this prevents a future config drift from quietly
-  enabling shake/push motion outside a known-safe workspace.
+* :attr:`SceneRecoveryAction.CONTAINER_AGITATE` requires an explicit
+  :class:`FixtureEnvelope`, the box every waypoint of the agitation stays
+  inside. Without one the policy refuses to be constructed; this prevents
+  a future config drift from quietly enabling shake motion outside a
+  known-safe workspace. The push (:attr:`SceneRecoveryAction.NUDGE_TARGET`)
+  needs none since 2026-10-01 (the owner): it lands inside the automatic
+  push box, the workspace box intersected with the table the camera saw
+  or a declared container's interior, and a declared envelope only narrows
+  that box (:mod:`~src.robot.grasping.recovery.push_planner`).
 * :class:`ContainerAgitateStrategy` is disabled by default: it
   returns :attr:`SceneRecoveryAction.NONE` until the operator explicitly
   opts in via a non-zero :attr:`FixtureEnvelope.max_agitate_amplitude_mm`.
@@ -161,15 +165,20 @@ class SceneRecoveryAction(StrEnum):
     ABORT = "abort"
 
 
-# Actions that command physical motion of the robot. These must never
-# be planned without an explicit :class:`FixtureEnvelope`; the policy
-# enforces this at construction time.
+# Actions that command physical motion of the robot. None of them is ever
+# planned directly: its plan must say where to move, and only a strategy can.
 _PHYSICAL_ACTIONS: frozenset[SceneRecoveryAction] = frozenset(
     {
         SceneRecoveryAction.NUDGE_TARGET,
         SceneRecoveryAction.CONTAINER_AGITATE,
     }
 )
+
+#: The physical actions that may not be allowed without an explicit :class:`FixtureEnvelope`; the policy enforces
+#: this at construction time. The agitation alone: its waypoints are checked against the box. The push
+#: (``NUDGE_TARGET``) needs none since 2026-10-01 (the owner): the automatic push box bounds where it lands, and a
+#: declared envelope only narrows that box.
+_NEEDS_A_FIXTURE: frozenset[SceneRecoveryAction] = frozenset({SceneRecoveryAction.CONTAINER_AGITATE})
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,7 +190,9 @@ class FixtureEnvelope:
     waypoint the executor commands as part of a recovery plan must lie
     inside this box. A plan with one outside is refused before anything
     moves, with :class:`SceneRecoveryReport.outcome` set to
-    ``"refused_envelope_violation"``.
+    ``"refused_envelope_violation"``. ``CONTAINER_AGITATE`` needs one. The
+    push does not: where one is declared, its XY only narrows the push box
+    the push planner lands a part in.
 
     Attributes
     ----------
@@ -285,9 +296,10 @@ class SceneRecoveryPolicy:
         :attr:`SceneRecoveryContext.history`: when the history is
         already at the bound, every strategy returns ``NONE``.
     fixture
-        Required for any physical action (``NUDGE_TARGET`` /
-        ``CONTAINER_AGITATE``). Construction fails when a physical
-        action sits in :attr:`allowed_actions` without a fixture.
+        Required for ``CONTAINER_AGITATE``: construction fails when it
+        sits in :attr:`allowed_actions` without a fixture. Optional for
+        the push (``NUDGE_TARGET``): without one the push lands inside the
+        automatic push box alone, and a declared one only narrows it.
     """
 
     enabled: bool = False
@@ -327,12 +339,12 @@ class SceneRecoveryPolicy:
                     f"allowed_actions contains duplicate entry {action}"
                 )
             seen.add(action)
-        physical_in_use = seen & _PHYSICAL_ACTIONS
-        if physical_in_use and self.fixture is None:
+        needs_fixture = seen & _NEEDS_A_FIXTURE
+        if needs_fixture and self.fixture is None:
             raise ValueError(
-                "physical recovery actions require a FixtureEnvelope; "
-                f"got {sorted(a.value for a in physical_in_use)} without "
-                "fixture"
+                f"{', '.join(sorted(a.value for a in needs_fixture))} requires a FixtureEnvelope, the box "
+                "every waypoint of the agitation stays inside; got allowed_actions "
+                f"{sorted(a.value for a in seen)} without fixture (the push, nudge_target, needs none)"
             )
         if SceneRecoveryAction.NONE in seen:
             raise ValueError(
@@ -539,14 +551,16 @@ def push_permitted(profile: "GraspBehaviorProfile", policy: SceneRecoveryPolicy)
 
     * the policy is enabled and the mode is in its ``apply_modes``;
     * the mode's built-in profile lists ``nudge_target`` (dense_clutter only);
-    * ``recovery.allowed_actions`` lists it, with a fixture declared;
+    * ``recovery.allowed_actions`` lists it;
     * neither ``max_recovery_actions`` nor its ``per_action_budget`` is zero.
 
-    The push budgets (1 per part, 2 per pick, 5 per campaign) and the push's own preconditions come on top.
+    A fixture is not one of them (the owner, 2026-10-01): the automatic push box bounds where the part lands, and a
+    declared fixture only narrows it. The push budgets (1 per part, 2 per pick, 5 per campaign) and the push's own
+    preconditions come on top.
     """
 
     action = SceneRecoveryAction.NUDGE_TARGET
-    if not policy.permits(action) or policy.fixture is None:
+    if not policy.permits(action):
         return False
     if profile.mode.value not in policy.apply_modes or not _profile_permits(profile, action):
         return False

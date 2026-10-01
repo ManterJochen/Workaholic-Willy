@@ -220,8 +220,8 @@ nothing is refused at all unless `decision.enabled` is true.
 The `dense_clutter` mode also allows `next_target`, a rescan that skips the part that failed, and the
 **push** (`nudge_target`), which slides a boxed-in part aside with the open jaws on a wrist camera's
 pick; a fixed-camera cell never pushes. The preset names `rescan` alone: name the others in
-`recovery.allowed_actions` yourself, the push with a `recovery.fixture`
-([guide 05](guide/05-pick-loop.md), section 6.4).
+`recovery.allowed_actions` yourself. The push needs **no** `recovery.fixture`; a declared one only
+narrows where it lands ([guide 05](guide/05-pick-loop.md), section 6.4).
 
 ## The soak gate
 

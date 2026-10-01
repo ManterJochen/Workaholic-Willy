@@ -533,6 +533,12 @@ class SafetyPreflight:
                 told += 1
         return told
 
+    def perceived_obstacles(self, arm: "RobotArm | None" = None) -> "tuple[AxisAlignedBox, ...]":
+        """The obstacles a camera saw that the self-collision guard holds now, empty where none is wired or none was
+        handed in: the very boxes the path gates judge at ``perceived_min_distance_mm``."""
+        guard = self._path_authority(arm)
+        return guard.perceived_fixtures if guard is not None else ()
+
     def set_wrist_bodies(self, bodies: "Sequence[object]") -> int:
         """Hand a wrist camera's bodies to every guard that holds them. Returns how many were told.
 

@@ -21,7 +21,8 @@ with Camera.from_tree(tree) as camera:                   # the cell's primary ca
 ```
 
 A fixed camera ignores `tool_pose`; a wrist camera needs it, because its frame is placed by where the
-tool stood at the shutter. The same program at a cell is
+tool stood at the shutter (`robot.core.shutter_motion.camera_to_base_at_shutter`, the composition the
+Locator shares with the hand finder over a wrist camera). The same program at a cell is
 [`examples/real_robot/15_speak_pick_and_hand_handover.py`](../../../examples/real_robot/15_speak_pick_and_hand_handover.py), with a spoken prompt. Prove
 the camera and the models at a desk before a robot is involved:
 
@@ -143,13 +144,13 @@ What `acquire()` does with a frame:
 
 | Step | Behaviour |
 |---|---|
-| Warm-up | discards `warmup_grabs` frames, 5 by default, so auto exposure settles |
+| Warm-up | discards `warmup_grabs` frames, 5 by default (`PICK_FRAME_WARMUP_GRABS`), so auto exposure settles |
 | Lens | the device's own matrix; `intrinsics=` overrides it, and `source.intrinsics_source` says `factory` or `override` |
 | Depth | published as the sensor measured it, holes (0) included; where a grasp is anchored is set by `robot.grasping.geometry` |
 | Masks | used exactly as segmented; `mask_completion=` can fill them to a box (see below) |
 | Labels | `object_labels=` maps the detector's free phrases onto your object names, so `label == target` works |
 | Shutter time | `timestamp` is the camera owner's `captured_at_s`, else a clock read just before the grab |
-| Wrist camera | the TCP is read before and after the grab; a frame taken while the tool moved is taken again |
+| Wrist camera | the TCP is read before and after the grab; a frame taken while the tool moved is taken again (`ShutterStamp`, the stamp a hand finder over a wrist camera takes too) |
 
 `set_prompt(prompt, object_labels=...)` changes what the source looks for from the next frame on, with
 no reopen and no model reload. `stamp_tool_pose_with(reader, motion_tolerance=, attempts=)` binds a wrist

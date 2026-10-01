@@ -344,8 +344,9 @@ class FromRobotConfigFailClosedTests(unittest.TestCase):
 
 # `FromRobotConfigSubPolicyAutoBuildTests` left on 2026-09-29 with what it pinned: the `verification`
 # and `dense_recovery` blocks built into policies on the service. The recovery a pick runs is
-# `robot.grasping.recovery`, whose refusals (an unknown action, a push without a fixture) are the
-# schema's (`tests/test_t5_recovery_schema.py`, `tests/test_recovery_fixture_wiring.py`).
+# `robot.grasping.recovery`, whose refusals (an unknown action, an agitation without a fixture; the
+# push needs none since 2026-10-01) are the schema's (`tests/test_t5_recovery_schema.py`,
+# `tests/test_recovery_fixture_wiring.py`).
 
 
 # ---------------------------------------------------------------------------

@@ -40,10 +40,13 @@ from ._curobo_pairs import PairOverlap
 from ._curobo_plan_policy import CLEARANCE_KEY, MAX_CLEARANCE_M
 from ._curobo_protocol import (
     ENV_MEASURE_ONLY,
+    IGNORE_PERCEIVED_KEY,
     KIND_SELF_COLLISION,
     KINDS,
     NAME_PAIRS_KEY,
     PAIRS_NAMED_KEY,
+    PERCEIVED_IGNORED_KEY,
+    PERCEIVED_PREFIX,
     REFUSED_KEY,
     REPORT_REFUSED_KEY,
     WHERE_DEFAULT_Q,
@@ -550,13 +553,16 @@ class PathJudgement:
 
     ``checked`` is how many configurations were judged, always the number sent, and ``clearance_mm`` the world
     clearance they were judged at. ``refused`` lists every refused one in path order; none means every one passed.
-    ``pairs_named`` says whether the rows carry the pairs of links.
+    ``pairs_named`` says whether the rows carry the pairs of links. ``perceived_ignored`` names the boxes the camera saw
+    that the planner set aside for this judgement, sorted, as its reply said it did (``ignore_perceived``); empty where
+    it judged its whole world.
     """
 
     checked: int
     clearance_mm: float
     refused: tuple[RefusedSample, ...]
     pairs_named: bool
+    perceived_ignored: tuple[str, ...] = ()
 
     @property
     def valid(self) -> bool:
@@ -592,15 +598,28 @@ def _pair_rows(block: object) -> tuple[PairOverlap, ...]:
     return tuple(pairs)
 
 
-def _judgement_from_reply(msg: dict, *, sent: int, clearance_m: float, named: bool) -> PathJudgement:
+def _judgement_from_reply(msg: dict, *, sent: int, clearance_m: float, named: bool,
+                          ignored: "tuple[str, ...] | None" = None) -> PathJudgement:
     """Read a check_js reply that was asked to report every refused sample, or raise: only a whole report passes.
 
     Everything :func:`_verdict_from_reply` refuses is refused first. Then a reply without the report is a sidecar older
     than it, and a row that is not a refused sample of this path, a row out of order or twice, a verdict that does not
-    open with the first row, or names where none were asked (or none where they were) is not a report. Every refusal
-    here is ``CuroboUnavailableError``: the driver then leaves the planner's refusal standing.
+    open with the first row, or names where none were asked (or none where they were) is not a report. ``ignored`` is the
+    camera boxes the request asked to set aside, sorted, or ``None`` where it asked none: a reply that does not say it
+    set aside exactly those (a sidecar older than the key judges its whole world and says nothing), or says it set
+    aside boxes nobody asked it to, answered another question. Every refusal here is ``CuroboUnavailableError``: the
+    driver then leaves the planner's refusal standing.
     """
     verdict = _verdict_from_reply(msg, sent=sent, clearance_m=clearance_m)
+    echoed = msg.get(PERCEIVED_IGNORED_KEY)
+    if ignored is None and echoed is not None:
+        raise CuroboUnavailableError(
+            f"the cuRobo sidecar says it set aside the camera's boxes {echoed!r}, and nobody asked it to")
+    if ignored is not None and not (isinstance(echoed, list) and all(isinstance(name, str) for name in echoed)
+                                    and sorted(echoed) == list(ignored)):
+        raise CuroboUnavailableError(
+            f"the cuRobo sidecar was asked to judge with the camera's boxes {list(ignored)} set aside and says it set "
+            f"aside {echoed!r}: it is older than this client or it judged another world; restart it from this tree")
     rows, pairs_named = msg.get(REFUSED_KEY), msg.get(PAIRS_NAMED_KEY)
     if not isinstance(rows, list) or not _is_bool(pairs_named):
         raise CuroboUnavailableError(
@@ -639,7 +658,22 @@ def _judgement_from_reply(msg: dict, *, sent: int, clearance_m: float, named: bo
             f"the cuRobo sidecar's verdict (first refused sample {verdict.first_invalid}) and its report (first "
             f"refused row {opens}) disagree, so neither is read")
     return PathJudgement(checked=sent, clearance_mm=clearance_m * 1000.0, refused=tuple(refused),
-                         pairs_named=bool(pairs_named))
+                         pairs_named=bool(pairs_named), perceived_ignored=tuple(ignored or ()))
+
+
+def _camera_box_names(names: "Sequence[str]") -> "tuple[str, ...]":
+    """The camera's boxes a report is asked to set aside, sorted; ``ValueError`` for anything that is not some of them.
+
+    A non-empty set of distinct names, each the camera world's ``PERCEIVED_PREFIX`` and more, as the sidecar refuses
+    anything else (``_curobo_perceived.requested_names``): refused here before anything is sent.
+    """
+    listed = [name for name in names]
+    if not listed or not all(isinstance(name, str) and name.startswith(PERCEIVED_PREFIX)
+                             and len(name) > len(PERCEIVED_PREFIX) for name in listed):
+        raise ValueError(f"only boxes the camera world named ({PERCEIVED_PREFIX!r}...) are ever set aside, got {listed!r}")
+    if len(set(listed)) != len(listed):
+        raise ValueError(f"the boxes to set aside name one twice: {listed!r}")
+    return tuple(sorted(listed))
 
 
 def _log_at_exit(emit: "Callable[..., None]", message: str, *args: object) -> None:
@@ -1276,6 +1310,7 @@ class CuroboPlanClient:
 
     def judge_joints(
         self, configs: "Sequence[Sequence[float]]", *, clearance_mm: float = 0.0, name_pairs: bool = True,
+        ignore_perceived: "Sequence[str] | None" = None,
     ) -> PathJudgement:
         """The same judgement as :meth:`check_joints`, answered with EVERY configuration the sidecar refuses.
 
@@ -1286,13 +1321,21 @@ class CuroboPlanClient:
         than :data:`MAX_CHECK_CONFIGURATIONS` is sent in batches, every batch is judged, and every index counts over the
         whole path.
 
-        ``ValueError`` before anything is sent, as :meth:`check_joints` refuses. ``CuroboUnavailableError`` whenever
-        no whole report came back: a sidecar older than the report, a failed call, a reply that does not account for
-        every sample, or one this client cannot read whole (:func:`_judgement_from_reply`).
+        ``ignore_perceived`` names the boxes the camera saw, every one the planner holds, to set aside for this
+        judgement: the sidecar judges without them and puts them back before it replies (``_curobo_perceived``). The UR
+        driver asks it where only those boxes may refuse the planner's world (the owner's Option 1). ``None``, the
+        default, sends a request without the key, the one this method always sent.
+
+        ``ValueError`` before anything is sent, as :meth:`check_joints` refuses, and for names that are not some of the
+        camera's boxes. ``CuroboUnavailableError`` whenever no whole report came back: a sidecar older than the report
+        or than the key, a failed call (the sidecar refuses to set aside what it does not hold, or anything while it
+        may hold a carried part), a reply that does not account for every sample or does not say it set aside exactly
+        those boxes, or one this client cannot read whole (:func:`_judgement_from_reply`).
         """
         rows = [[float(v) for v in config] for config in configs]
         if not rows:
             raise ValueError("judge_joints was given no configuration, and an empty path is not a judged path")
+        aside = None if ignore_perceived is None else _camera_box_names(ignore_perceived)
         clearance_m = float(clearance_mm) / 1000.0
         if not math.isfinite(clearance_m) or not 0.0 <= clearance_m <= MAX_CLEARANCE_M:
             raise ValueError(
@@ -1312,6 +1355,8 @@ class CuroboPlanClient:
         asked: dict[str, Any] = {REPORT_REFUSED_KEY: True, NAME_PAIRS_KEY: bool(name_pairs)}
         if clearance_m > 0.0:
             asked[CLEARANCE_KEY] = clearance_m
+        if aside is not None:
+            asked[IGNORE_PERCEIVED_KEY] = list(aside)
         refused: list[RefusedSample] = []
         named: "bool | None" = None
         for offset in range(0, len(rows), MAX_CHECK_CONFIGURATIONS):
@@ -1322,14 +1367,16 @@ class CuroboPlanClient:
                 raise CuroboUnavailableError(
                     "the cuRobo sidecar gave no report on the joint path: it did not answer in time or it exited"
                 )
-            part = _judgement_from_reply(msg, sent=len(batch), clearance_m=clearance_m, named=bool(name_pairs))
+            part = _judgement_from_reply(msg, sent=len(batch), clearance_m=clearance_m, named=bool(name_pairs),
+                                         ignored=aside)
             if named is not None and named != part.pairs_named:
                 raise CuroboUnavailableError("the cuRobo sidecar named pairs in one batch of this path and not another")
             named = part.pairs_named
             refused.extend(replace(row, index=row.index + offset) for row in part.refused)
         judged = PathJudgement(checked=len(rows), clearance_mm=clearance_m * 1000.0, refused=tuple(refused),
-                               pairs_named=bool(named))
-        logger.debug("judged %d joint configuration(s): %d refused", len(rows), len(refused))
+                               pairs_named=bool(named), perceived_ignored=aside or ())
+        logger.debug("judged %d joint configuration(s): %d refused%s", len(rows), len(refused),
+                     f", with the camera's boxes {list(aside)} set aside" if aside else "")
         return judged
 
     def explain_joints(

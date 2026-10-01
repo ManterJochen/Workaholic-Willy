@@ -243,7 +243,7 @@ held:
 
 ```bash
 python scripts/curobo/probe_band_admission.py   # the exact guard decides the arm's own pairs; the band's legs
-python scripts/curobo/probe_turned_boxes.py     # 65 box slots, the turned camera boxes, a plan in a full world
+python scripts/curobo/probe_turned_boxes.py     # the turned camera boxes, bins beside the base, a plan
 ```
 
 **The probes run a fixed owner-like cell**, built in code: a UR10 with a Hand-E on a 20 mm plate, the
@@ -259,11 +259,20 @@ folded wrist, a box through the forearm, a joint past the planner's bounds, the 
 base), the kernel's self term against the pair naming over a wrist_1 x wrist_2 torus, and the escape legs,
 each at most 20 degrees per joint. `probe_turned_boxes.py` fills the 65 slots from a synthetic camera over a
 turned bin and 48 parts, checks that the planner registers every box, that it holds the turn (the enclosures
-meet its spheres where the turned walls clear them), where it clears the bin beside the shoulder housing
-(recorded lines), and a plan out of the cushion band in that world. Where an application-control policy
-refuses cuRobo's kernels, `--cpu-replica ext_deps/curobo/curobo/content` runs them on a CPU replica of the
-sidecar instead. Every line it prints starts with `[replica]` and every log record it makes carries the same
-tag; its `planner under test` line says CPU REPLICA, and its JSON names the replica. It plans nothing, so
+meet its spheres where the turned walls clear them), that the bin **30, 40 and 47.7 mm** from the arm is
+admitted with the camera's boxes set aside, at no clearance and at a line's, both in the cushion band and
+with the wrist out of it, where the planner refuses on its world alone, that **every camera box comes back**
+(one configuration inside each, its verdict and depth the same before and after), that straight joint lines
+beside the 30 mm bin run, that the line out is held while the hand's count says closed and runs once it
+reads open, that a grasp's lift judged as if the jaws held a part is refused while the same lift runs
+empty-handed, and, on a cell that models the part, that the sidecar takes the part for that judgement and
+gives it back, the whole grasp backs out there with its jaws open and closes once away from the bin,
+that the screen calls that pose `beside the boxes the camera saw`, where the planner clears a **declared**
+bin, and a plan out of the cushion band in that world. Where an
+application-control policy refuses cuRobo's kernels, `--cpu-replica ext_deps/curobo/curobo/content` runs
+them on a CPU replica of the sidecar instead. Every line it prints starts with `[replica]` and every log
+record it makes carries the same tag; its `planner under test` line says CPU REPLICA, and its JSON names
+the replica. It plans nothing, so
 `probe_turned_boxes.py` skips its plan in the full world and says so. The replica proves the driver's
 decisions on the real geometry; only the GPU run shows the kernel itself.
 
@@ -377,6 +386,7 @@ flowchart LR
   | `LOOK_1: clear: ...` | both clear it | nothing |
   | `LOOK_1: in the planner's cushion band: ... Nearby, both clear: (...) deg.` | only the planner's padded spheres refuse it, and the exact meshes keep at least 10 mm: it runs, straight lines run into it and out of it, and a planned move takes a straight leg of at most 20 degrees per joint to the nearest pose both clear, by itself | nothing while the line names that pose; it is there if you would rather teach it |
   | `LOOK_1: in the planner's cushion band: ...; no pose within 20 deg per joint of it clears both ...` | it runs on straight lines only; a planned move out of it or into it is refused | only where a planned move has to reach it or leave it: re-teach it by hand where both clear, and screen it again; the line names no pose to copy |
+  | `LOOK_1: beside the boxes the camera saw: ...` | only the camera's boxes refuse it on the planner's world, and the exact guard decides them: straight lines and moveL run into it and out of it with a hand known empty and open; a planned move into it or out of it is refused, and so is any move while the hand carries a part or cannot say it stands open | nothing for a look; a place pose, or one planned moves have to reach, is re-taught at the `Nearby, both clear` pose or by hand where both clear (Diagnose 10) |
   | `ERROR LOOK_1: refused by the exact guard: ...` or `refused by the planner: ...` | no move goes there | re-teach it: at the `Nearby, both clear` pose where the line names one, else by hand where both clear; then screen it again |
 
   Teaching screens only on an arm that carries every wrist camera housing the tree declares, the arm
@@ -574,7 +584,7 @@ are not in that model, so watch them on the first trials.
        recovery:
          enabled: true
          allowed_actions: [rescan, next_target, nudge_target]
-         fixture:                              # BASE mm, yours: it only narrows the push box
+         fixture:                              # optional, BASE mm, yours: it only narrows the push box
            center_mm: [400.0, 0.0, 60.0]
            half_extents_mm: [150.0, 150.0, 60.0]
            push_distance_mm: 30.0              # the push nobody asks otherwise
@@ -606,17 +616,50 @@ and the exact guard hold the same turned boxes.
 
 | Who judges | Keeps a seen bin | Where it shows |
 |---|---|---|
-| the exact guard | **20 mm off a face**, about **26 mm across a rim edge** (a square bin 25.0 mm away is refused, 26.3 passes); a declared bin 10 mm from its measured geometry | a `[safety:self_collision/...]` refusal naming the box |
-| the planner, cuRobo | its sphere cover reaches **25 to 29 mm past the shoulder housing**: at (0, -60, 80, -110, -90, 0) deg a bin with a 40 mm rim clears it from about **46 mm** (square) to **50 mm** (turned 30 degrees), a straight line, held 10 mm off, from about **55 to 60 mm** | the move is planned around, or refused naming the planner's world |
+| the exact guard | **20 mm off a face**, about **26 mm across a rim edge** (a bin turned 30 degrees 25 mm away is refused, 26 passes); a declared bin 10 mm from its measured geometry | a `[safety:self_collision/...]` refusal naming the box |
+| the planner, cuRobo | its sphere cover reaches **25 to 29 mm past the shoulder housing**, so it meets a seen bin 30, 40 and 47.7 mm away; asked again with **the camera's boxes set aside**, it clears them, and with a hand known empty and open the exact guard decides | the move runs; a refusal that stands names the planner's world and why |
 
-So **keep about 60 mm between a bin and the housing's ring** wherever the arm works with the housing beside
-it; the guard alone would take about 26 across a rim edge. Or **declare the bin**: its walls as fixtures
-(`safety.self_collision.fixtures`) at their measured place, boxes square to base X/Y, so a turned wall is
-declared as the box that holds it. The exact guard keeps 10 mm to them, the planner holds them too, and
-the cameras' points on them are taken as those fixtures, so both hold the real walls instead of boxes
-grown by 15 mm. The planner's sphere cover still reaches 25 to 29 mm past the housing, and its clearance to
-a declared bin was not measured. The world stays the planner's (the owner, 2026-09-30), and
-`probe_turned_boxes.py` records the planner's side for its own synthetic bin (Diagnose 6).
+So **keep about 30 mm between a seen bin and the housing's ring** where the arm passes it with an empty
+hand: the exact guard decides from about 26, and the GPU probe admits a bin turned 30 degrees at **30, 40
+and 47.7 mm** of real clearance, at no clearance and at the line clearance, at (0, -60, 80, -110, -90, 0) deg
+and with the wrist out of the cushion band at (0, -60, 80, -95, -90, 0) deg, and runs straight joint lines
+beside the 30 mm bin as one `moveJ` each (`probe_turned_boxes.py`, 2026-10-01, Diagnose 6). Where the planner
+keeps its own room, a seen bin and a declared one differ. Measured on the GPU at the same joints, as the real
+clearance between the arm's meshes and the bin:
+
+| What runs beside the bin | A seen bin | A declared bin |
+|---|---|---|
+| a straight joint line, empty hand | about **30 mm**: the exact guard decides | about **40 mm**: the planner's line clearance meets it at 35, clears it at 40 |
+| moveL, empty hand | about **30 mm** | about **25 mm**: the planner meets it at 20, clears it at 25 |
+| a planned move into or out of a pose beside it | about **50 mm**: cuRobo meets the camera's boxes at 47.7, clears them at 54.3 | about **25 mm** |
+| any move while the hand carries a part | about **50 mm**, **60** for a straight joint line, which clears them at 60.8 | about **25 mm**, **40** for a straight joint line |
+
+- **A carried part, or a hand not known open.** The camera's boxes are set aside only while the hand is
+  known empty and open: a toggle's count stands and says open, a gripper measures itself fully open (the
+  owner, 2026-10-01). Every attach also says the jaws closed on a part, modelled or not, until a release
+  forgets it: the carried part is the planner's alone. So **a grasp judges its lift before it closes**: at
+  the part, the jaws still open, the lift is judged as if they held the part, and where it would be refused
+  the jaws stay open, the arm goes back up the line it came down, and the grasp ends
+  `carried_retreat_refused` (the attempt reads `execution_failed`, the reason beside it); the pick goes on to
+  its next part. The check and the lift are two judgements: the lift is judged again once the jaws closed,
+  and a new camera frame, a part a measuring hand reads wider, or a lift in steps can still refuse it. That
+  arm, and one that closed its jaws there all the same, reads `... at sample 0 of ...: the planner's world;
+  it stands: a part is carried` or `... the hand is not known to be empty and open (...)`, and nothing moves
+  until a person releases the part (`Robot.release` opens the jaws and forgets it), after which it leaves
+  empty-handed. A place pose there is refused while carrying. Keep the room in the table
+  where the hand closes on a part beside the base, where a lifted part passes it, and at a place pose.
+- **A declared bin.** A declared fixture is never set aside, so its walls keep the planner's own reach,
+  about 25 mm at no clearance and 40 at the line clearance, carrying or not. Declare it at its measured
+  place: its walls and floor as fixtures (`safety.self_collision.fixtures`), boxes square to base X/Y, so a
+  turned wall is declared as the box that holds it and stands out further; the exact guard keeps 10 mm to
+  them, and the cameras' points on them are taken as those fixtures. **Pick from a bin beside the base
+  declared, or give a seen one 50 mm**; a bin the arm only passes with an empty hand stays with the cameras
+  at 30.
+- **A planned move into a pose beside the bin, or out of one.** cuRobo plans in its own world, the camera's
+  boxes included, and refuses a start or a goal its spheres meet them in. Straight lines and moveL run there
+  with a hand known empty and open; the probe records the plan out of its check joints refused at its start.
+
+And beside the base, whatever the clearance:
 
 - **Keep the ring under the housing clear of anything tall.** What the housing hides of a bin from the
   cameras stands as high as the bin's walls beside it, so a bin reaching under the housing is refused; a
@@ -633,7 +676,13 @@ A refusal on a seen box names it: `box_centre_mm`, `box_size_mm`, `box_yaw_deg`,
 joints in degrees on the `rejected a PLANNED PATH` or `rejected joint move` line. `(N of its cells the
 robot's own body hid from the cameras ...)` is the housing's shadow filled; `(all N of its points lie within
 M mm of the robot's own links: it may be the robot itself ...)` is the arm seen off its model: check the
-hand-eye calibration and the DH table ([04](../guide/04-robot-and-safety.md), 5.5).
+hand-eye calibration and the DH table ([04](../guide/04-robot-and-safety.md), 5.5). A refusal that stands on
+the planner's world says why: `... set aside too: the bench, a declared fixture or mesh, ...` is what stays the
+planner's; `a part is carried, ...` keeps the camera's boxes in while the hand carries one, and names the
+release that lets the arm out; `the hand is not known to be empty and open (...)` keeps them in for a hand
+that cannot say it stands open, and names what it read; `the exact guard refuses it too: ...` names the box
+the guard keeps 5 mm from
+([04](../guide/04-robot-and-safety.md), section 6).
 
 ---
 

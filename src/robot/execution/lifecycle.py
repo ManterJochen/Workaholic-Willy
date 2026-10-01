@@ -259,6 +259,10 @@ def connect_cell(
     vacuum cup's connect asserts the ejector pin immediately and drops whatever it is holding. This
     function does not ask whether that is allowed. Its callers do: the console with an
     acknowledgement token, the CLI with a printed banner.
+
+    Once both are up, an arm that reads the hand it carries (``set_hand``, the UR driver) is handed it, ``None`` for an
+    arm alone: the UR driver sets the camera's boxes aside in its planner's world only while that hand reads empty and
+    open (the owner, 2026-10-01).
     """
     # No success logging here, on purpose: both callers already narrate a successful connect, so a
     # third line from this module would appear in the console's log twice. Failures are logged here,
@@ -277,12 +281,17 @@ def connect_cell(
         raise NoRealGripper(no_real_gripper_reason(substitution))
     arm.connect()
     say(ConnectStage.ARM_CONNECTED)
+    hand_to = getattr(arm, "set_hand", None)
     if gripper is None:
+        if callable(hand_to):
+            hand_to(None)
         return
     try:
         say(ConnectStage.GRIPPER_MOVING)
         gripper.connect()
         say(ConnectStage.GRIPPER_CONNECTED)
+        if callable(hand_to):
+            hand_to(gripper)
     except BaseException:
         logger.error("Gripper connect failed; rolling the arm back to disconnected.")
         try:

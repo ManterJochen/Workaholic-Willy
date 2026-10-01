@@ -14,11 +14,16 @@ with a warning: one rig's `T_cam_to_base` applied to another rig's detection yie
 wrong base coordinates. An RGB-D rig without intrinsics refuses rather than substituting
 `fx = fy = width / 2`, which completes the arithmetic and returns a position no measurement
 supports.
+
+A camera on the wrist has no `T_cam_to_base` of its own: it stood where the tool stood when each
+shutter opened. Such a rig is placed frame by frame instead (`frame_transforms`), each frame by the
+transform of its own shutter, and a frame nobody can vouch for is placed by none. `OneWristCamera`
+serves that over one open wrist camera.
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional, Protocol, Sequence
+from typing import Any, Callable, Mapping, Optional, Protocol, Sequence
 
 import numpy as np
 
@@ -36,7 +41,11 @@ from src.models.handdetection.types import (
 )
 from src.utility.log_cfg import create_logger
 
-__all__ = ["HandFinder", "HandObserver", "OneCamera", "RigFrames"]
+__all__ = ["FrameTransform", "HandFinder", "HandObserver", "OneCamera", "OneWristCamera", "RigFrames"]
+
+#: Where a rig stood for one frame it handed out: that frame's 4x4 CAMERA->BASE, or `None` where nobody
+#: can vouch for where the camera stood when its shutter opened.
+FrameTransform = Callable[[AnyFrame], Optional[np.ndarray]]
 
 
 class HandObserver(Protocol):
@@ -120,6 +129,68 @@ class OneCamera:
         return f"OneCamera({self.camera.rig_id!r})"
 
 
+class OneWristCamera(OneCamera):
+    """One already-open camera the arm carries: each frame stamped at its shutter, and placed by it.
+
+    A wrist camera's calibration is CAMERA to TOOL, so where it stood is where the tool stood when
+    the shutter opened. A grab here is taken as the pick frame takes it: `warmups` frames thrown
+    away first, so a frame the device queued while the arm was still moving is not the one kept,
+    then `stamp` (a `ShutterStamp`: the tool pose read before and after the grab, the grab taken
+    again while the tool moved beyond the rig's shutter tolerance). `place` turns the pose read
+    before the kept grab into that frame's CAMERA->BASE (`camera_to_base_at_shutter`, the
+    composition the `Locator` places its frames by), and `camera_to_base_of` answers it for that
+    frame and for no other. A frame the tool moved across on every attempt is handed out with no
+    placement, so no hand is placed from it. The frame and its placement are kept as one pair,
+    written in one assignment and read once, so a caller on another thread never sees one grab's
+    frame beside another grab's placement.
+
+    `build_hand_finder_on_camera` builds it, after the refusals a wrist rig is held to.
+    """
+
+    __slots__ = ("_last", "_logger", "_place", "_stamp", "_warmups")
+
+    def __init__(self, camera: Any, *, stamp: Any, place: Callable[[Any], np.ndarray], warmups: int) -> None:
+        super().__init__(camera)
+        self._stamp = stamp
+        self._place = place
+        self._warmups = int(warmups)
+        #: The frame handed out last and its CAMERA->BASE, or `None` beside it where nobody can vouch.
+        self._last: Optional[tuple[AnyFrame, Optional[np.ndarray]]] = None
+        self._logger = create_logger("HandFinder", HAND_FINDER_LOG_FILE, log_dir=MODELS_LOG_DIR)
+
+    def grab(self, rig_id: str) -> AnyFrame:
+        """The pick frame's warm-ups and stamp, then the frame, its placement kept beside it."""
+        self._require(rig_id)
+        # Until this grab's own stamp is in, no frame has a placement: a raise below leaves none behind.
+        self._last = None
+        for _ in range(self._warmups):
+            self.camera.grab()  # thrown away: auto-exposure, and a frame queued before the pose read
+        grabbed = self._stamp.grab(self.camera.grab)
+        frame: AnyFrame = grabbed.frame
+        placement: Optional[np.ndarray] = None
+        if grabbed.tool_pose is None:
+            self._logger.warning(
+                "rig %s: %s after %d grab(s), beyond the rig's shutter tolerance, so no pose places "
+                "this frame and no hand is placed from it; the arm has to hold still while it looks",
+                rig_id, grabbed.motion.render(), grabbed.grabs,
+            )
+        else:
+            placement = np.asarray(self._place(grabbed.tool_pose), dtype=np.float64)
+        self._last = (frame, placement)
+        return frame
+
+    def camera_to_base_of(self, frame: AnyFrame) -> Optional[np.ndarray]:
+        """`frame`'s CAMERA->BASE at its shutter, or `None`: a frame this camera did not hand out last,
+        or one nobody can vouch for. An earlier frame never takes a later frame's placement."""
+        last = self._last  # read once: the frame and the placement beside it come from one grab
+        if last is None or frame is not last[0] or last[1] is None:
+            return None
+        return last[1].copy()
+
+    def __repr__(self) -> str:  # pragma: no cover (debugging aid)
+        return f"OneWristCamera({self.camera.rig_id!r})"
+
+
 class HandFinder:
     """Search one or more camera rigs for exactly one hand and locate it in the base frame.
 
@@ -133,6 +204,11 @@ class HandFinder:
     transforms:
         `{rig_id: 4x4 CAMERA->BASE}`. A rig missing from this map cannot be expressed in base
         coordinates and is skipped.
+    frame_transforms:
+        `{rig_id: frame -> 4x4 CAMERA->BASE of that frame, or None}`, for a rig that has no fixed
+        transform because it moves: a camera on the wrist (`OneWristCamera.camera_to_base_of`).
+        Each frame is placed by its own, and a frame it answers `None` for gives no hand. A rig
+        may be in this map or in `transforms`, never in both.
     stereo:
         The stereo engine, or `None` on an all-RGB-D cell.
     camera_matrices:
@@ -152,6 +228,7 @@ class HandFinder:
         *,
         provider: RigFrames,
         transforms: Mapping[str, np.ndarray],
+        frame_transforms: Optional[Mapping[str, FrameTransform]] = None,
         stereo: Optional[StereoCam3D] = None,
         camera_matrices: Optional[Mapping[str, np.ndarray]] = None,
         rig_ids: Optional[Sequence[str]] = None,
@@ -174,6 +251,13 @@ class HandFinder:
                 raise ValueError(
                     f"transforms[{rig!r}] must be a 4x4 CAMERA->BASE matrix, got {matrix.shape}"
                 )
+        self.frame_transforms: dict[str, FrameTransform] = dict(frame_transforms or {})
+        both = sorted(set(self.transforms) & set(self.frame_transforms))
+        if both:
+            raise ValueError(
+                f"rig(s) {both} were given a fixed CAMERA->BASE and a per-frame one; a rig is placed "
+                f"by one of them, or nobody can say which placed the palm"
+            )
         self.camera_matrices = {
             rig: np.asarray(matrix, dtype=np.float64)
             for rig, matrix in (camera_matrices or {}).items()
@@ -233,9 +317,15 @@ class HandFinder:
     ) -> Optional[HandPosition3D]:
         """Base-frame position for one observed hand.
 
-        `None` when the rig has no CAMERA->BASE transform or its depth at the palm is unusable.
+        `None` when the rig has no CAMERA->BASE transform, when nobody can vouch for where a rig
+        placed frame by frame stood at this frame's shutter, or when its depth at the palm is
+        unusable.
         """
         transform = self.transforms.get(rig_id)
+        if transform is None and rig_id in self.frame_transforms:
+            transform = self._frame_transform(frame, rig_id)
+            if transform is None:
+                return None
         if transform is None:
             self.logger.warning(
                 "rig %s has no CAMERA->BASE transform, so its detections cannot be expressed in "
@@ -369,6 +459,24 @@ class HandFinder:
         return self._to_base(position_cam, centre, depth_mm, rig_id, transform, observation)
 
     # --- Shared ----------------------------------------------------------------------------------
+
+    def _frame_transform(self, frame: AnyFrame, rig_id: str) -> Optional[np.ndarray]:
+        """This frame's own CAMERA->BASE, from a rig placed frame by frame, or `None` where nobody
+        can vouch for where the camera stood when its shutter opened."""
+        answered = self.frame_transforms[rig_id](frame)
+        if answered is None:
+            self.logger.warning(
+                "rig %s: nobody can vouch for where the camera stood when this frame's shutter "
+                "opened, so no hand is placed from it", rig_id,
+            )
+            return None
+        matrix = np.asarray(answered, dtype=np.float64)
+        if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
+            raise ValueError(
+                f"frame_transforms[{rig_id!r}] must answer a finite 4x4 CAMERA->BASE matrix or None, "
+                f"got shape {matrix.shape}"
+            )
+        return matrix
 
     def _to_base(
         self,

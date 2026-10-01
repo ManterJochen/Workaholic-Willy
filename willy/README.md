@@ -118,12 +118,14 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 
 MediaPipe, optional and standalone: nothing in the grasp pipeline imports it, and each builder needs
 its own `.task` file, named by `models.handdetect.model_path` and fetched separately. The finder
-answers in the robot's base frame, so a pose built from it is a pose the arm's guards can check;
-it needs a FIXED camera, and refuses a wrist rig rather than composing a transform of its own.
+answers in the robot's base frame, so a pose built from it is a pose the arm's guards can check.
+A fixed camera places the hand by its own calibration. A camera on the wrist places each frame by
+the tool pose read at its shutter, as the `Locator` does, so it takes `tool_pose=` and `tool_frame=`,
+is refused without them, and looks with the arm held still.
 
 | Name | What it is | Shown in |
 |---|---|---|
-| `build_hand_finder_on_camera` | Where a hand is in MILLIMETRES in the base frame, over a camera you already hold open; `find_hand()` | `real_robot/15_speak_pick_and_hand_handover.py` |
+| `build_hand_finder_on_camera` | Where a hand is in MILLIMETRES in the base frame, over a camera you already hold open, fixed or on the wrist (`tool_pose=robot.arm.get_tcp_pose, tool_frame=tree.robot.gripper.tool_frame`); `find_hand()` | `real_robot/15_speak_pick_and_hand_handover.py` |
 | `build_gesture_recognizer` | Thumbs up or down, with the palm centre from the same pass; `observe(frame_bgr)` | [`src/models/handdetection/`](../src/models/handdetection/README.md) |
 | `HandGesture` | What a reading may be: `THUMB_UP`, `THUMB_DOWN`, `OTHER`, `NONE`; the last two are not the same | `build_gesture_recognizer(...).observe(frame)` |
 | `build_palm_detector` | Where hands are in a colour frame, in pixels, with no gesture; `observe(frame_bgr)` | [`src/models/handdetection/`](../src/models/handdetection/README.md) |

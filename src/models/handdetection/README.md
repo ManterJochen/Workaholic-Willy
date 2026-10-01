@@ -42,7 +42,7 @@ change.
 | `ThumbGestureRecognizer` | `build_gesture_recognizer(models.gesturedetect)` | `observe(frame_bgr)` | a `HandObservation` per hand: palm and gesture |
 | `PalmDetector` | `build_palm_detector(models.handdetect)` | `observe(frame_bgr)` | a `HandObservation` per hand, landmarks only |
 | `HandFinder` | `build_hand_finder(models.handdetect, provider=..., transforms=...)` | `find_hand()` | a `LocatedHand` in the base frame and an annotated image |
-| the same, over one open camera | `build_hand_finder_on_camera(models.handdetect, camera)` | `find_hand()` | the same, reading that camera's own calibration and lens |
+| the same, over one open camera | `build_hand_finder_on_camera(models.handdetect, camera)`; on the wrist also `tool_pose=` and `tool_frame=` | `find_hand()` | the same, reading that camera's own calibration and lens |
 
 `build_hand_finder` takes the open frame provider, a 4x4 CAMERA to BASE matrix per rig, a 3x3 camera
 matrix per RGB-D rig, a `StereoCam3D` for stereo rigs, and optionally the recognizer as `observer=` so
@@ -54,12 +54,24 @@ number here.
 `build_hand_finder_on_camera` is the same search over one `Camera` a program already holds open, and
 it is what a pick loop uses: `FrameProvider.open()` claims every configured streamer, so asking where
 a hand is through a second catalogue takes the cell's other cameras away from it, and one device
-opened twice is what the camera owner exists to prevent. It composes no transform either. A fixed
-rig's CAMERA to BASE is `RigCalibration.camera_to_base()`, one method with one answer; a WRIST rig is
-refused by name, because turning its CAMERA to TOOL into a base position needs the pose the arm stood
-at when the shutter opened, and that composition belongs to `Locator`.
+opened twice is what the camera owner exists to prevent. It writes no transform of its own either. A
+fixed rig's CAMERA to BASE is `RigCalibration.camera_to_base()`, one method with one answer.
+
+A WRIST rig has none: its CAMERA to TOOL is placed by the pose the tool stood at when each shutter
+opened. So the builder takes what `Locator.from_parts` takes for one, `tool_pose=robot.arm.get_tcp_pose`
+and `tool_frame=tree.robot.gripper.tool_frame`, and refuses the rig by name without either, or when
+its calibration was solved against another flange to TCP. Each frame is then taken as the pick frame
+is (`OneWristCamera`: five warm-up frames, then the tool pose read before and after the grab, the grab
+taken again while the tool moved beyond the rig's `shutter_motion_tolerance_*`) and placed by the
+composition the `Locator` places its frames by, `robot.core.shutter_motion.camera_to_base_at_shutter`,
+called and never written again. How many times a grab is taken again is `attempts=`; pass the
+profile's `robot.safety.planning_world.perceived.fresh_frame_attempts`, which `Locator.from_tree`
+reads, or the schema's default is taken. A frame the tool moved across on every attempt gives no
+hand. So the arm holds still while it looks, and the open hand has to be in the wrist camera's view
+and past its Min-Z, which the driver logs when the camera opens: a D415 measures no depth nearer than
+about 310 mm at 848x480, so 0.35 m or more, and about 450 mm at 1280x720, so 0.5 m or more.
 [`examples/real_robot/15`](../../../examples/real_robot/15_speak_pick_and_hand_handover.py) brings a
-picked part to the hand it finds.
+picked part to the hand it finds, from a fixed camera or from one on the wrist.
 
 ## What it refuses
 
@@ -69,7 +81,8 @@ picked part to the hand it finds.
 | `FileNotFoundError` when a detector is built | a `.task` bundle is missing; it names the key, the absolute path and the download | `python scripts/model_weights/fetch.py --mediapipe` |
 | `ValueError` from `find_hand` | an RGB-D rig with no camera matrix, or a stereo rig with no `StereoCam3D` | supply the rig's intrinsics; nothing is invented |
 | a skipped rig | a rig with no transform, or more than one hand in view | calibrate the rig; one hand at a time |
-| `RigCalibrationError` from `build_hand_finder_on_camera` | the camera is a wrist rig, so it has no fixed CAMERA to BASE | search from a fixed camera, or compose the transform yourself and use `build_hand_finder` |
+| no hand from a frame | a wrist camera's frame the tool moved across on every attempt, so no pose places it; logged | hold the arm still while the camera looks |
+| `RigCalibrationError` from `build_hand_finder_on_camera` | a wrist rig without `tool_pose` or `tool_frame`, or one calibrated against another flange to TCP; refused before anything is grabbed | pass `tool_pose=robot.arm.get_tcp_pose, tool_frame=tree.robot.gripper.tool_frame`; calibrate the rig again with the command the message names |
 | `ValueError` from `build_hand_finder_on_camera` | an RGB-D camera whose device reports no intrinsics | give the rig a camera matrix; nothing is invented |
 | exit `2` from `--rig` | an id not in `camera.cameras.rigs`, or a disabled rig; it lists the rigs there are | name a configured, enabled rig |
 
@@ -116,11 +129,12 @@ bundles are absent.
 | [`types.py`](types.py) | `PalmDetection`, `GestureReading`, `HandObservation`, `HandPosition3D`, `LocatedHand`; frozen |
 | [`model_files.py`](model_files.py) | the `mediapipe` guard and the fail-closed `.task` resolver |
 | [`palm_detector.py`](palm_detector.py), [`gestures.py`](gestures.py) | the landmark detector, and the gesture classifier with its palm centre |
-| [`hand_finder.py`](hand_finder.py) | pixels plus depth plus calibration to millimetres in the base frame; `RigFrames` and `OneCamera`, where the frames come from |
+| [`hand_finder.py`](hand_finder.py) | pixels plus depth plus calibration to millimetres in the base frame; `RigFrames`, `OneCamera` and `OneWristCamera`, where the frames come from |
 | [`factory.py`](factory.py), [`constants.py`](constants.py) | the config readers, and the download URLs quoted in errors |
 | [`__main__.py`](__main__.py) | the `--check`, `--frame` and `--rig` command |
 
 ## Details
 
 - [`../README.md`](../README.md), the model layer; [`../../camera/`](../../camera/README.md), the frame provider
-- Tests: `tests/test_hand_detection.py`, `tests/test_hand_detection_wiring.py`, `tests/test_hand_detection_cli.py`
+- Tests: `tests/test_hand_detection.py`, `tests/test_hand_detection_wiring.py`, `tests/test_hand_detection_cli.py`,
+  `tests/test_hand_detection_on_one_camera.py`

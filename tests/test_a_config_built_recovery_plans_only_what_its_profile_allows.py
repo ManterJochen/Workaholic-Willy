@@ -19,9 +19,9 @@ exclusion zones. A scripted pick names no part. So:
 * `next_target` alone is planned and refused, and the failed pick is final.
 * `container_agitate` without a declared container is refused at load. With one declared it loads and is
   never planned, because no built-in profile lists it, and the arm never moves.
-* `nudge_target` with a fixture is never planned by this loop: no strategy plans it, since the push runs inside
-  the pick attempt (the pick loop's push gate), so for `ALL_COLLIDED` the loop goes on to the rescan and the arm
-  never moves from here. For `NO_VALID_GRASP` it is not offered at all.
+* `nudge_target`, with a fixture or, since 2026-10-01, without one, is never planned by this loop: no strategy
+  plans it, since the push runs inside the pick attempt (the pick loop's push gate), so for `ALL_COLLIDED` the loop
+  goes on to the rescan and the arm never moves from here. For `NO_VALID_GRASP` it is not offered at all.
 
 The pick itself is scripted (`_pick_inner` replaced on the instance) because what is pinned here is
 the loop around it, not perception or motion; the loop, the orchestrator, the dispatcher, the
@@ -201,6 +201,18 @@ class AConfigBuiltRecoveryPlansOnlyWhatItsProfileAllows(unittest.TestCase):
             [(step["action"], step["step_result"]) for step in report.recovery_actions],
             [("rescan", "completed")],
         )
+        self.assertEqual(arm.moves, [])
+
+    def test_without_a_fixture_it_loads_and_the_loop_still_never_plans_a_nudge(self) -> None:
+        # The push needs no fixture since 2026-10-01 (owner); the loop around the pick still never plans one.
+        arm = _CountingArm()
+        service = _service("dense_clutter", ["nudge_target", "rescan"])
+        report, picks = _run(
+            service, [_failed(GraspFailureReason.ALL_COLLIDED), _succeeded()], arm
+        )
+        self.assertIs(report.outcome, AutonomousGraspOutcome.SUCCEEDED)
+        self.assertEqual(picks, 2)
+        self.assertEqual(report.telemetry["recovery_trail_actions"], ["rescan"])
         self.assertEqual(arm.moves, [])
 
     def test_no_nudge_is_offered_without_a_collision(self) -> None:

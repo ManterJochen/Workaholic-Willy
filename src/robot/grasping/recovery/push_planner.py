@@ -55,7 +55,7 @@ The owner's rules (2026-09-29), each one a named constant below:
   push is refused, never clamped, and so is a push shorter than :data:`MIN_CLEARANCE_GAIN_MM`, which could not
   open that much room. :func:`resolve_push_distance` settles a request against the config:
   ``recovery.fixture.push_distance_mm`` when nobody asks, and never more than ``recovery.fixture.max_nudge_mm``,
-  the longest push the cell allows.
+  the longest push the cell allows. A cell that declares no fixture takes the defaults, 30 and 50 mm.
 * **The legs.** :attr:`PushPlan.legs` carries each judged line's speed and acceleration in m/s and m/s^2, the
   units ``arm.move(linear=True, vel=..., acc=...)`` takes, and nothing in mm/s.
 
@@ -745,6 +745,7 @@ def resolve_push_distance(
     ``default_mm`` is ``recovery.fixture.push_distance_mm`` (30 mm unless the cell says otherwise), the push a
     pick makes when nobody asks for another. ``ceiling_mm`` is ``recovery.fixture.max_nudge_mm`` (50 mm unless
     the cell says less), the longest push the cell allows; :data:`PUSH_DISTANCE_CAP_MM` caps it whatever it says.
+    A cell that declares no fixture passes the defaults, :data:`DEFAULT_PUSH_DISTANCE_MM` and the cap.
 
     * Nothing requested: the config's push distance.
     * A request up to the ceiling is taken as asked. Above the ceiling, or above :data:`PUSH_DISTANCE_CAP_MM`,

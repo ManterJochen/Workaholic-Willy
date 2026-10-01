@@ -30,14 +30,22 @@ A hand that toggles
   jaws, with no sensor to say where they stand. A pick asks it before the arm moves instead of commanding an open
   (:func:`toggle_without_sensor_of`), so the pick code needs no driver import. Mid-pick, where nobody may be asked,
   :func:`why_toggle_count_unknown` reads whether anybody can still vouch for its count.
+
+Whether a hand is known empty and open
+--------------------------------------
+* :func:`why_not_known_open` reads it off the hand, sending nothing and asking nobody: a toggle whose count stands and
+  says open, or a gripper that measures its width fully open. The arm sets the camera's boxes aside in the planner's
+  world for nothing else (the owner, 2026-10-01).
 """
 
 from __future__ import annotations
 
+import math
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 __all__ = [
+    "OPEN_WITHIN_MM",
     "Gripper",
     "HoldEvidence",
     "MeasuresWidth",
@@ -49,6 +57,7 @@ __all__ = [
     "TwoStateGripper",
     "hold_evidence_of",
     "toggle_without_sensor_of",
+    "why_not_known_open",
     "why_toggle_count_unknown",
     "width_is_measured_of",
 ]
@@ -300,6 +309,48 @@ def why_toggle_count_unknown(gripper: object) -> str:
         return str(why_unknown() or "")
     except Exception as exc:  # noqa: BLE001 (a read that fails vouches for nothing: said, never raised)
         return f"the jaws could not be read ({type(exc).__name__}: {exc})"
+
+
+#: How near its widest a gripper that measures its width has to read to count as open, millimetres: the 2 mm the push
+#: reads its jaws open by (``grasping.recovery.push_motion.JAWS_OPEN_TOLERANCE_MM``).
+OPEN_WITHIN_MM = 2.0
+
+
+def why_not_known_open(gripper: object) -> str:
+    """Why nobody can say ``gripper`` stands empty and open now, read off the hand without sending anything or asking a
+    person; ``""`` where it does.
+
+    Two hands can say so (the owner, 2026-10-01). A hand that toggles with no sensor (:class:`TogglesWithoutSensor`, the
+    owner's Hand-E on tool DO0) where its count stands (:func:`why_toggle_count_unknown` answers ``""``: connected, no
+    failed change, its output where the program left it) and says open. A gripper that measures its width
+    (:class:`MeasuresWidth`) where it is connected, reads within :data:`OPEN_WITHIN_MM` of its widest, and measures no
+    part held (:class:`ReportsHoldEvidence`): a part as wide as the jaws open is the one width alone would miss. No
+    hand, any other hand, a count that says closed or that nobody can vouch for, a width short of open and a read that
+    fails each say why. The arm sets the camera's boxes aside in the planner's world only where this answers ``""``.
+    """
+    if gripper is None:
+        return "no hand is known to this arm"
+    try:
+        if toggle_without_sensor_of(gripper) is not None:
+            unknown = why_toggle_count_unknown(gripper)
+            if unknown:
+                return f"nobody can say where its jaws stand: {unknown}"
+            if bool(getattr(gripper, "jaws_closed", True)):
+                return "its count says the jaws stand closed"
+            return ""
+        if width_is_measured_of(gripper):
+            if getattr(gripper, "is_connected", False) is not True:
+                return "the gripper is not connected, so no width it reports says where its jaws stand"
+            width = float(gripper.get_width_mm())  # type: ignore[attr-defined]
+            widest = float(gripper.max_width_mm)  # type: ignore[attr-defined]
+            if not (math.isfinite(width) and math.isfinite(widest)) or width < widest - OPEN_WITHIN_MM:
+                return f"its jaws read {width:g} mm, not open ({widest:g} mm, within {OPEN_WITHIN_MM:g} mm)"
+            if hold_evidence_of(gripper) is HoldEvidence.HELD:
+                return "it measures a part held between its open jaws"
+            return ""
+    except Exception as exc:  # noqa: BLE001 (a read that fails vouches for nothing: said, never raised)
+        return f"the hand could not be read ({type(exc).__name__}: {exc})"
+    return f"{type(gripper).__name__} neither counts its changes nor measures its width"
 
 
 def hold_evidence_of(gripper: object) -> HoldEvidence:

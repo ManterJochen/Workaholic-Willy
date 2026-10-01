@@ -66,7 +66,13 @@ refused before the jaws open. An arm that does not say drives the interpolated w
 `PolicyReport.line_motion` carries the reading. The jaws open before the approach, close at the grasp,
 and the close is verified before the lift. A hand that toggles with no sensor (`core.gripper.TogglesWithoutSensor`)
 is never switched before the approach: it is asked whether its jaws stand open, and asks a person where it
-believes them closed; at the grasp it gets one close, and nothing verifies it.
+believes them closed; at the grasp it gets one close, and nothing verifies it. On an arm that judges a line
+as if its jaws held a part (`JudgesCarriedLines`, the UR driver), the lift is judged that way at the part
+before the jaws close, at the width the attach after the close carries, and the jaws close only where it would
+run, the controller asked last (the owner, 2026-10-01). The lift is judged again as it starts, so a new camera
+frame, the part's spheres fitted anew by the attach, a part a measuring hand reads wider, or a lift in steps can
+still refuse it after the close, and the arm then holds the part where it stands until a person opens the jaws
+(`Robot.release`).
 
 | `PolicyOutcome` | Means | Moved |
 | --- | --- | --- |
@@ -76,6 +82,7 @@ believes them closed; at the grasp it gets one close, and nothing verifies it.
 | `CAMERA_FRAME_REJECTED` | a camera-frame grasp reached a policy that requires BASE | no |
 | `APPROACH_PATH_BLOCKED` | every ranked candidate's approach or lift sweep hit the scene cloud | no |
 | `GRIPPER_FAULT` | the gripper raised (the report carries it, never a raise out of `execute`), or a toggle hand would not start | no, or up to the close |
+| `CARRIED_RETREAT_REFUSED` | at the part, the lift judged as if the jaws held the part would be refused, or could not be judged: the jaws stayed open and the arm went back up the line to the standoff; the pick loop reads it as a failed execution | down and back up, empty-handed |
 
 ## Did the hand really hold it
 

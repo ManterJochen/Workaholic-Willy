@@ -388,7 +388,8 @@ def build_effective_config(
             ),
             # Emitted unconditionally, even when the mode gate above zeroes the actions: it is the
             # operator's declared bound, and a bound is not dropped because a gate is closed. The
-            # consumer builds an envelope only when it has physical actions.
+            # consumer builds an envelope from it whenever recovery is on: container_agitate needs
+            # one, and for the push it only narrows the push box.
             fixture=(
                 (
                     # Unpacked rather than comprehended: the schema pins both as 3-tuples, and a
@@ -410,7 +411,8 @@ def build_effective_config(
                 else None
             ),
             # The push a campaign makes when nobody asks for another distance; the fixture's max_nudge_mm above is
-            # the ceiling a request is held to (push_planner.resolve_push_distance).
+            # the ceiling a request is held to (push_planner.resolve_push_distance). Without a fixture: 30 mm, under
+            # the hard cap of 50 mm.
             push_distance_mm=(
                 float(grasping_cfg.recovery.fixture.push_distance_mm)
                 if grasping_cfg.recovery.fixture is not None

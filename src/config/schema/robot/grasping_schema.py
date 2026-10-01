@@ -272,12 +272,14 @@ class GraspingRecoveryConfig(StrictModel):
     :class:`src.robot.grasping.recovery.SceneRecoveryPolicy` but holds
     string action names, so the config layer imports no runtime enum. Every flag
     defaults off (byte-identical); ``easy`` is excluded from the default apply
-    modes. When :attr:`allowed_actions` contains a physical action
-    (``nudge_target`` or ``container_agitate``), :attr:`fixture` must be set: the
-    cross-field check refuses to arm a physical recovery without an envelope.
-    ``container_agitate`` is refused as well unless ``support.container`` declares
-    its interior box. That check sits on :class:`RobotGraspingConfig`
-    (``_container_agitate_needs_a_container``) because it needs both blocks.
+    modes. When :attr:`allowed_actions` contains ``container_agitate``,
+    :attr:`fixture` must be set: the cross-field check refuses to arm an
+    agitation without an envelope. ``container_agitate`` is refused as well
+    unless ``support.container`` declares its interior box. That check sits on
+    :class:`RobotGraspingConfig` (``_container_agitate_needs_a_container``)
+    because it needs both blocks. ``nudge_target``, the push, needs neither
+    (owner, 2026-10-01): it lands inside the automatic push box, and a declared
+    fixture only narrows that box.
     """
 
     enabled: bool = Field(default=False)
@@ -299,7 +301,6 @@ class GraspingRecoveryConfig(StrictModel):
                 "container_agitate",
             }
         )
-        physical = frozenset({"nudge_target", "container_agitate"})
         _refuse_removed_actions("recovery.allowed_actions", self.allowed_actions)
         _refuse_removed_actions(
             "recovery.per_action_budget",
@@ -339,19 +340,16 @@ class GraspingRecoveryConfig(StrictModel):
                 "recovery.apply_modes contains unknown grasp mode(s): "
                 f"{unknown!r}; valid: {sorted(_KNOWN_GRASP_MODES)!r}"
             )
-        physical_in_use = [a for a in self.allowed_actions if a in physical]
-        if physical_in_use and self.fixture is None:
-            # This check runs before the container one on RobotGraspingConfig, so for container_agitate it
-            # says both, and the operator does not add a fixture only to be refused again.
-            container = (
-                "; container_agitate also needs robot.grasping.support.container to declare its interior box "
-                "(interior_min_mm and interior_max_mm)"
-                if "container_agitate" in physical_in_use
-                else ""
-            )
+        # The push needs no fixture (owner, 2026-10-01): the automatic push box bounds where it lands, and a declared
+        # fixture only narrows it. The agitation still moves only inside a declared one. This check runs before the
+        # container one on RobotGraspingConfig, so it says both, and the operator does not add a fixture only to be
+        # refused again.
+        if "container_agitate" in self.allowed_actions and self.fixture is None:
             raise ValueError(
-                "recovery physical actions require a fixture envelope; "
-                f"got {physical_in_use!r} without fixture{container}"
+                "recovery.allowed_actions names container_agitate and no fixture is declared: container_agitate "
+                "needs a fixture envelope (robot.grasping.recovery.fixture), the box every waypoint of the "
+                "agitation stays inside, and robot.grasping.support.container to declare its interior box "
+                "(interior_min_mm and interior_max_mm). nudge_target, the push, needs neither."
             )
         return self
 
@@ -366,18 +364,20 @@ class GraspingRecoveryFixtureConfig(StrictModel):
     """Operator-bounded envelope for physical recovery actions.
 
     A recovery action is the robot deliberately pushing something: nudging a part that will not
-    separate, agitating a container. That is motion aimed at the scene rather than at a grasp, so
-    its reach is declared by the operator rather than inferred, and the recovery planner may not
-    exceed these numbers.
+    separate, agitating a container. That is motion aimed at the scene rather than at a grasp.
+    ``container_agitate`` needs this box: every waypoint of the agitation stays inside it, and the
+    recovery planner may not exceed these numbers. ``nudge_target`` does not (owner, 2026-10-01): the
+    push's landing is bounded by what the camera saw (the workspace box intersected with the seen
+    table, shrunk by the push plus 30 mm, or a declared container's interior), and this box can only
+    narrow it.
 
     ``push_distance_mm`` is how far a ``nudge_target`` push moves the part when nobody asks for
     another distance, 30 mm by default. ``max_nudge_mm`` is the longest push the cell allows, 50 mm by
     default and at most, and above that the config is refused (owner, 2026-09-29). A request (the API,
     a ``PickRun``) up to ``max_nudge_mm`` is taken as asked, and one above it is refused, never
     shortened. ``push_distance_mm`` longer than ``max_nudge_mm`` is refused at load. Below 10 mm no
-    push can open room for a finger, so both are at least 10 and a shorter request is refused. The
-    push's landing is bounded by what the camera saw (the workspace box intersected with the seen
-    table, shrunk by the push plus 30 mm), and this box can only narrow it.
+    push can open room for a finger, so both are at least 10 and a shorter request is refused. A cell
+    that declares no fixture pushes these defaults: 30 mm, and 50 mm at most.
     """
 
     #: Centre in robot BASE frame (mm) of the axis-aligned box a physical recovery action may act

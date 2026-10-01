@@ -16,8 +16,10 @@ off and changes nothing else.
 A straight line is judged with room to spare. ``check_js`` passes a configuration whose spheres do not penetrate the
 world, which is right for a path cuRobo planned, because cuRobo shaped it to keep clear. A straight joint line nobody
 shaped is judged at a clearance instead (:data:`CLEARANCE_KEY`), so a line that grazes an obstacle only the camera saw is
-planned around rather than driven along. :func:`requested_clearance_m` reads it off a request, and the reply says the
-clearance it judged at, so a client can refuse a sidecar that judged at none.
+planned around rather than driven along, unless only the camera's boxes refuse it with a hand known empty and open: the
+UR driver then asks again with them set aside, and the exact guard's ``perceived_min_distance_mm`` decides (guide 04,
+section 6). :func:`requested_clearance_m` reads it off a request, and the reply says the clearance it judged at, so a
+client can refuse a sidecar that judged at none.
 """
 
 from __future__ import annotations

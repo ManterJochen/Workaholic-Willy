@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .._base import ConfigPath, StrictModel
 
@@ -13,6 +13,11 @@ from .._base import ConfigPath, StrictModel
 #: inside its box over 3,400 noise-free synthetic scenes, and at 20 one lay 5.6 mm outside every box (review of
 #: 2026-09-30). A measurement, not a bound.
 _SEEN_BOX_VOXEL_MM = 10.0
+
+#: The least distance the exact guard keeps from a box a camera saw, millimetres (the owner, 2026-10-01). Wherever only
+#: those boxes refuse the planner's world, the planner is asked again with them set aside and the exact guard alone
+#: decides them, so a config asking less is refused at load (``SelfCollisionSafetyConfig.perceived_min_distance_mm``).
+_SEEN_BOX_LEAST_MM = 5.0
 
 
 class LimitsSafetyConfig(StrictModel):
@@ -187,7 +192,10 @@ class SelfCollisionSafetyConfig(StrictModel):
     #: diagonal, 17.3 mm, is longer than the margin. At a 20 mm voxel a measured pixel lay 5.6 mm
     #: outside every box, so while this is below ``min_distance_mm`` a load also refuses a
     #: ``planning_world.perceived.voxel_size_mm`` coarser than 10.
-    perceived_min_distance_mm: float = Field(default=5.0, ge=0.0, le=500.0)
+    #:
+    #: At least 5, refused below at load (the owner, 2026-10-01): wherever only these boxes refuse the
+    #: planner's world, the planner is asked again with them set aside, and this guard alone decides them.
+    perceived_min_distance_mm: float = Field(default=5.0, ge=_SEEN_BOX_LEAST_MM, le=500.0)
     mesh_dir: ConfigPath | None = Field(default=None)
 
     # Which bundled arm kinematics (DH) table supplies the per-link arm-vs-arm capsules. Under the
@@ -237,6 +245,25 @@ class SelfCollisionSafetyConfig(StrictModel):
     tool_model: Literal["capsule", "finger"] = Field(default="capsule")
     tool_finger_radius_mm: float = Field(default=16.0, gt=0.0, le=200.0)
     tool_finger_span_mm: float = Field(default=150.0, gt=0.0, le=500.0)
+
+    @field_validator("perceived_min_distance_mm", mode="before")
+    @classmethod
+    def _keep_at_least_5_mm_from_what_a_camera_saw(cls, value: Any) -> Any:
+        """Refuse a number below 5 mm with a sentence naming the key; anything else goes on to the field's own checks."""
+        if isinstance(value, bool):
+            return value
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return value
+        if number < _SEEN_BOX_LEAST_MM:
+            raise ValueError(
+                f"robot.safety.self_collision.perceived_min_distance_mm ({number:g}) is below {_SEEN_BOX_LEAST_MM:g} mm. "
+                "Wherever only the boxes a camera saw refuse the planner's world, the planner is asked again with them "
+                "set aside, and the exact guard alone decides them at this distance, so it keeps at least "
+                f"{_SEEN_BOX_LEAST_MM:g} mm from them (the owner, 2026-10-01). Set it to {_SEEN_BOX_LEAST_MM:g} or more."
+            )
+        return value
 
 
 class PayloadSafetyConfig(StrictModel):
@@ -300,14 +327,15 @@ class PlannedMotionSafetyConfig(StrictModel):
     ``line_clearance_mm`` is how far every configuration of a straight joint line has to stay from the planner's
     world, the declared cell and the camera's, before the line runs instead of a plan. A line that comes closer is
     planned around rather than driven along: the camera sees obstacles that only the planner holds, and a line that
-    grazes one by a millimetre passes a check that asks only for no penetration. The default is 10 mm, the distance at
+    grazes one by a millimetre passes a check that asks only for no penetration. Where only the boxes a camera saw come
+    closer, the planner is asked again with them set aside, and with a hand known empty and open the exact guard decides
+    them at ``self_collision.perceived_min_distance_mm`` (Option 1). The default is 10 mm, the distance at
     which cuRobo's own optimiser starts pushing its plans away from an obstacle (``optimizer_collision_activation_
     distance`` at its default of 0.01 m, which the sidecar does not change), so a line is held to the clearance a plan
     is shaped to keep; it is also the local guard's shipped ``self_collision.min_distance_mm``, which the guard keeps
     from the arm itself and from a declared fixture. From a box a camera saw, already its surface grown by
-    ``planning_world.perceived.margin_mm``, the guard keeps ``self_collision.perceived_min_distance_mm`` (5 mm) and a
-    line is held the full 10 mm. It is not a certified distance, and 0 judges a line at no penetration, which is how a
-    planned path is judged.
+    ``planning_world.perceived.margin_mm``, the guard keeps ``self_collision.perceived_min_distance_mm`` (5 mm). It is
+    not a certified distance, and 0 judges a line at no penetration, which is how a planned path is judged.
 
     ``max_detour_deg`` is how far any joint of a cuRobo path may swing beyond the span between where it starts and
     where it ends. A plan past it is not run: the next nearest configuration is planned to instead, and where none

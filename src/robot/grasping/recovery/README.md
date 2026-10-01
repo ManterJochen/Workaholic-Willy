@@ -1,9 +1,9 @@
 # Recovery (`src.robot.grasping.recovery`)
 
 What to do after a pick failed: **look again**, **skip the part** for another of the same label, or, on
-a wrist camera's pick in `dense_clutter` inside a declared envelope, **push the part aside** and look
-again. It plans; every motion it asks for still goes through the same `RobotArm.move` and safety
-preflight as everything else, and nothing here asks a person anything.
+a wrist camera's pick in `dense_clutter`, **push the part aside** and look again. It plans; every motion
+it asks for still goes through the same `RobotArm.move` and safety preflight as everything else, and
+nothing here asks a person anything.
 
 It ships off. You reach it through your cell's config, and the pick service wraps each attempt in the
 recovery loop when it is on:
@@ -51,12 +51,14 @@ The four the dispatcher can plan, in rising order of how much they touch the wor
 | --- | --- | --- |
 | `RESCAN` | perceive again, moving nothing | nothing |
 | `NEXT_TARGET` | rescan, skipping the part that failed: another part of the same label, never another object | the service's memory of failed parts |
-| `NUDGE_TARGET` | the push: the open jaws move the part aside, inside a wrist camera's pick attempt | `dense_clutter`, a wrist camera and a `FixtureEnvelope` |
+| `NUDGE_TARGET` | the push: the open jaws move the part aside, inside a wrist camera's pick attempt | `dense_clutter` and a wrist camera; **no fixture** |
 | `CONTAINER_AGITATE` | a bounded motion that redistributes a declared container's contents | a declared container, a `FixtureEnvelope` and a non-zero amplitude |
 
-The first two change only what the cell knows; the last two change where things are, which is why they
-need an envelope. `ContainerAgitateStrategy` is the one physical strategy. The push needs none: it runs
-inside the pick attempt, where the part, its neighbours, the keep-out and every look are known.
+The first two change only what the cell knows; the last two change where things are. The agitation moves
+only inside its `FixtureEnvelope`. **The push needs no envelope** (the owner, 2026-10-01): the automatic
+push box bounds where the part lands, and a declared envelope only narrows it (*The plan*, below).
+`ContainerAgitateStrategy` is the one physical strategy. The push needs no strategy either: it runs inside
+the pick attempt, where the part, its neighbours, the keep-out and every look are known.
 
 ### What the service's loop does
 
@@ -145,8 +147,9 @@ within 25 mm of the part (`neighbour_evidence`, on the neighbour clouds of every
 geometric and the deep calculator both trigger it.
 
 **Allowed.** `push_permitted(profile, policy)`: recovery on and the mode in `apply_modes`; `dense_clutter`,
-the one profile that lists `nudge_target`; `recovery.allowed_actions` names it with a fixture declared;
-neither `max_recovery_actions` nor its `per_action_budget` is zero. The service then hands the pick a
+the one profile that lists `nudge_target`; `recovery.allowed_actions` names it; neither
+`max_recovery_actions` nor its `per_action_budget` is zero. **No fixture needed**: without one the push
+runs 30 mm, at most 50, and the automatic push box alone bounds it. The service then hands the pick a
 **`PushGate`** where it could read the cell's push inputs (`PushCell`: the registry hand, the workspace, the
 hand's clearance, a declared container) and the campaign has a distance; a WARNING says once why a
 permitted cell cannot push. The **budgets** come on top: 1 push per part, 2 per pick, 5 per campaign (`PushBudgets`).
@@ -161,10 +164,10 @@ budgets (`part_already_pushed`, `pick_budget_spent`, `campaign_budget_spent`) an
 
 **How far.** `recovery.fixture.push_distance_mm`, 30 mm unless asked otherwise (`push_mm` on `PickRun`
 and on the console's pick request). `recovery.fixture.max_nudge_mm` is the longest push the cell allows,
-50 mm by default and at most. A request up to that ceiling is taken as asked; above it, or under 10 mm,
-it is refused with a sentence, never shortened (`resolve_push_distance`): `PickRun` refuses above 50 or
-under 10 mm as it is built and the cell's ceiling as its campaign starts, before any pick; the console
-answers `422 push_distance_refused` and starts no run.
+50 mm by default and at most; a cell with no fixture takes both defaults. A request up to that ceiling is
+taken as asked; above it, or under 10 mm, it is refused with a sentence, never shortened
+(`resolve_push_distance`): `PickRun` refuses above 50 or under 10 mm as it is built and the cell's ceiling
+as its campaign starts, before any pick; the console answers `422 push_distance_refused` and starts no run.
 
 **The plan** (`plan_push`, pure numpy in BASE millimetres):
 
@@ -187,13 +190,14 @@ answers `422 push_distance_refused` and starts no run.
   above the table refuses every push: the base tree's 100 mm does, for a table at base Z 0. Check it on
   the cell.
 - **The push box.** With no container, the workspace box intersected with the table the camera saw,
-  shrunk by the push plus 30 mm; with a declared container, its interior. The fixture box only narrows
-  it. The predicted landing plus 15 mm stays inside. The seen table is kept as 5 mm cells in BASE XY:
-  every cell within the push plus 45 mm of each landing point, and every cell under the hand's swept
-  footprint, must be seen (a table point in it, or the part or a segmented neighbour standing on it). A
-  shadow, a hole, a gap or a diagonal table edge refuses that direction, and fewer than 100 seen cells
-  near the part refuses the push (`no_table_seen`). From one 45 deg wrist view the shadow behind a part
-  usually falls in that window: the table points fused over every look are what let a push through.
+  shrunk by the push plus 30 mm; with a declared container, its interior. A declared fixture box only
+  narrows it; without one, this box alone bounds the push. The predicted landing plus 15 mm stays inside.
+  The seen table is kept as 5 mm cells in BASE XY: every cell within the push plus 45 mm of each landing
+  point, and every cell under the hand's swept footprint, must be seen (a table point in it, or the part
+  or a segmented neighbour standing on it). A shadow, a hole, a gap or a diagonal table edge refuses that
+  direction, and fewer than 100 seen cells near the part refuses the push (`no_table_seen`). From one
+  45 deg wrist view the shadow behind a part usually falls in that window: the table points fused over
+  every look are what let a push through.
 
 **Before anything moves** (`execute_push`), each of these is read, and none asks anybody. The first that
 fails is a `refused_*` outcome with zero motion, and the pick falls through: the recovery loop takes its
@@ -273,7 +277,8 @@ An action is planned only when all of these hold; otherwise nothing moves.
 - It has not already been tried for the same failure class (`RecoveryHistoryEntry` records the pairs); a
   refusal before motion blocks it for the rest of that failure.
 - The orchestrator can plan it: directly, or through a strategy.
-- A physical action has a `FixtureEnvelope`, and the policy refuses to be built without one.
+- `CONTAINER_AGITATE` has a `FixtureEnvelope`, and the policy refuses to be built without one. The push
+  needs none: a declared envelope only narrows its push box.
 
 `easy` never recovers, twice over: its profile allows no action, and it is absent from the default
 `apply_modes` (`auto`, `dense_clutter`). `ContainerAgitateStrategy` adds its own gate: it plans nothing
@@ -302,7 +307,7 @@ class you list. Three entries are rules rather than tuning:
 
 | Refusal | When | What to do |
 | --- | --- | --- |
-| refused at load, and `ValueError` from `SceneRecoveryPolicy` | `nudge_target` or `container_agitate` allowed with no fixture | declare `recovery.fixture` |
+| refused at load, and `ValueError` from `SceneRecoveryPolicy` | `container_agitate` allowed with no fixture (the push needs none) | declare `recovery.fixture` |
 | refused at load | `container_agitate` in `allowed_actions` or `per_action_budget` while `support.container` declares no interior box (`floor_height_mm` alone does not count) | declare `interior_min_mm` and `interior_max_mm`, or drop the action |
 | refused at load | `recovery.fixture.max_nudge_mm` or `push_distance_mm` under 10 or over 50 mm, or the distance above the ceiling | a push of 10 to 50 mm, within `max_nudge_mm` |
 | refused at load | an unknown action or mode name | use the names in the tables above |
@@ -326,7 +331,7 @@ class you list. Three entries are rules rather than tuning:
 - A mode outside `apply_modes` keeps recovery inert whatever `recovery.enabled` says, and a list that
   still names `closed_loop` or `dense_autonomous` (removed 2026-09-29) is refused at load.
 - The shipped `dense_clutter` preset allows `rescan` alone: a push needs `nudge_target` in
-  `allowed_actions` and a `recovery.fixture`.
+  `allowed_actions`. A `recovery.fixture` is optional and only narrows where the part may land.
 - A push needs the table seen around the part. From one 45 deg wrist view the shadow behind the part
   usually refuses it (`landing_over_unseen_table`): give the pick looks, or declare a container. A part
   whose lower side is hidden fails closed (`part_not_on_support`).
@@ -382,6 +387,7 @@ class you list. Three entries are rules rather than tuning:
   `tests/test_container_agitate_needs_a_declared_container.py`, `tests/test_a_rescan_is_the_only_second_look.py`,
   and end to end on the owner's cell in miniature: `tests/test_a_boxed_in_part_is_pushed_inside_the_pick.py`,
   `tests/test_a_push_and_its_re_pick_leave_the_toggle_alone.py`, `tests/test_api_pick_push_distance.py`,
+  `tests/test_a_push_needs_no_fixture.py` (the automatic push box alone, and a declared fixture narrowing it),
   `tests/test_a_jaw_count_nobody_vouches_for_moves_nothing_more.py` (the re-pick, the contact legs and the
   lift point, a width gripper not connected or unreadable) and
   `tests/test_a_part_the_axis_refused_is_never_pushed.py` (the closing axis and the natural orientation

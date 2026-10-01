@@ -172,6 +172,11 @@ class CuroboUrPlanner:
         #: Whether this sidecar may hold a carried part: set as an attach is handed to it, whatever it answers,
         #: and cleared by a detach it confirmed or by closing it. `detach_payload` asks nothing while it is clear.
         self._payload_handed = False
+        #: The names of the boxes the camera saw that the planner holds now, as the last refresh it confirmed
+        #: handed them over and the guard was handed them too; `()` while it holds none, and `None` where
+        #: nobody can say: a refused refresh, a world set by hand, a restarted sidecar. Only these are ever
+        #: asked to be set aside (:meth:`judge_joint_path`).
+        self._seen_held: "tuple[str, ...] | None" = ()
         #: What the sidecar allocates when it starts, told to the client before `start`. None leaves
         #: the client as its factory built it.
         self._reservation = reservation
@@ -265,6 +270,8 @@ class CuroboUrPlanner:
         )
         if count == expected:
             self._world_registered = True
+            # The declared world alone: whatever the camera saw before is gone from the planner.
+            self._seen_held = ()
             self.logger.info("registered %d cell obstacle(s) with the planner", count)
             return
         message = (
@@ -311,10 +318,13 @@ class CuroboUrPlanner:
         if self._live_world is None:
             return
         envelope = self._self_envelope() if self._self_envelope is not None else None
+        client = self._client_or_start()
+        # Until this refresh says what the planner holds, nobody can say which of the camera's boxes it does.
+        self._seen_held = None
         try:
             refresh = refresh_planner_world(
                 source=self._live_world,
-                client=self._client_or_start(),
+                client=client,
                 self_envelope=envelope,
                 near_point_mm=near_point_mm,
                 require_registration=self._require_registration,
@@ -329,6 +339,9 @@ class CuroboUrPlanner:
             self.logger.error("%s", exc)
             raise
         self._last_refresh = refresh
+        # The camera's boxes the planner and the guard now both hold, where the planner confirmed the world;
+        # after a refused refresh nobody can say what the planner holds of them.
+        self._seen_held = tuple(str(box.name) for box in refresh.guard_boxes) if refresh.ok else None
         # Including the empty list on a refusal: a guard left holding boxes from a refused
         # refresh is checking a cell that no longer exists.
         if self._on_perceived_obstacles is not None:
@@ -423,6 +436,8 @@ class CuroboUrPlanner:
         this is the side whose arm can hurt someone.
         """
         merged = merge_planner_worlds(self._world_cuboids, cuboids)
+        # A world set by hand is no refresh's: whatever of it the camera saw, the guard was not handed it.
+        self._seen_held = None
         try:
             count = self._client_or_start().set_world(merged)
             if count == len(merged):
@@ -452,6 +467,7 @@ class CuroboUrPlanner:
             self._client.close()
             self._client = None
         self._payload_handed = False
+        self._seen_held = None
 
     # ------------------------------------------------------------------
     # Planning + execution
@@ -512,6 +528,7 @@ class CuroboUrPlanner:
 
     def judge_joint_path(
         self, samples_ur: "Sequence[Sequence[float]]", *, clearance_mm: float = 0.0, name_pairs: bool = True,
+        ignore_perceived: "Sequence[str] | None" = None,
     ) -> "PathJudgement":
         """Every configuration of a joint path the planner refuses, with the three terms apart and every pair it found.
 
@@ -520,8 +537,16 @@ class CuroboUrPlanner:
         the same samples against a refreshed world. It is what lets the arm leave the self pairs the exact guard judges
         to that guard (``planning.band``).
 
-        Raises ``CuroboUnavailableError`` where the planner cannot be reached or its client reports no refused samples:
-        no report is ever made up, and the arm's refusal then stands.
+        ``ignore_perceived`` asks the same with the boxes the camera saw set aside, by name: the arm asks it where only
+        those boxes may refuse the planner's world, and the exact guard, which holds the same boxes, decides them (the
+        owner's Option 1). The names have to be exactly the camera boxes the last refresh this glue confirmed handed the
+        planner (:meth:`perceived_in_world`), none of them a declared fixture's, and no part may be carried
+        (:attr:`carries_part`); anything else raises before the sidecar is asked. ``None``, the default, asks as this
+        method always did.
+
+        Raises ``CuroboUnavailableError`` where the planner cannot be reached or its client reports no refused samples,
+        and where the camera's boxes cannot be set aside as above: no report is ever made up, and the arm's refusal then
+        stands.
         """
         configs = [[float(v) for v in sample] for sample in samples_ur]
         client = self._client_or_start()
@@ -532,7 +557,44 @@ class CuroboUrPlanner:
                 "the exact guard"
             )
         ordered = [self._to_client_order(list(c), client.joint_names) for c in configs]
-        return cast("PathJudgement", judge(ordered, clearance_mm=float(clearance_mm), name_pairs=bool(name_pairs)))
+        if ignore_perceived is None:
+            return cast("PathJudgement", judge(ordered, clearance_mm=float(clearance_mm), name_pairs=bool(name_pairs)))
+        names = tuple(sorted(str(name) for name in ignore_perceived))
+        refused = self._set_aside_refusal(names)
+        if refused is not None:
+            self.logger.warning("no box the camera saw is set aside: %s", refused)
+            raise CuroboUnavailableError(refused)
+        return cast("PathJudgement", judge(ordered, clearance_mm=float(clearance_mm), name_pairs=bool(name_pairs),
+                                           ignore_perceived=names))
+
+    def perceived_in_world(self) -> "tuple[str, ...] | None":
+        """The names of the boxes the camera saw that the planner holds now, as the last refresh it confirmed handed them
+        over and the guard was handed them too; ``()`` where it holds none, ``None`` where nobody can say (a refused
+        refresh, a world set by hand, a sidecar closed since)."""
+        return self._seen_held
+
+    @property
+    def carries_part(self) -> bool:
+        """Whether this planner may hold a carried part: an attach was handed to it and no detach it confirmed since."""
+        return self._payload_handed
+
+    def _set_aside_refusal(self, names: "tuple[str, ...]") -> "str | None":
+        """Why the camera boxes ``names`` cannot be set aside in the planner's world, or ``None`` where they can."""
+        declared = sorted({str(box.get("name")) for box in self._world_cuboids} & set(names))
+        if declared:
+            return (f"the declared fixtures {declared} carry the names of boxes the camera saw, and a declared fixture is "
+                    "never set aside: give them names of their own")
+        if self._payload_handed:
+            return ("a part may be carried, which only the planner models, so no box the camera saw is set aside while "
+                    "it may be")
+        held = self._seen_held
+        if held is None:
+            return ("nobody can say which boxes the camera saw the planner holds now: its world is no refresh it "
+                    "confirmed (a refused refresh, a world set by hand, or a sidecar started since)")
+        if sorted(held) != list(names):
+            return (f"the planner was handed the boxes the camera saw {sorted(held)} by its last refresh, and was asked "
+                    f"to set aside {list(names)}: the guard and the planner do not hold the same boxes")
+        return None
 
     @property
     def last_refusal(self) -> "StateRefusal | None":

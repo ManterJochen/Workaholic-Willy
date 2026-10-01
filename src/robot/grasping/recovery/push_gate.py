@@ -4,7 +4,7 @@ The push (``nudge_target``) runs inside the pick attempt, where the part, its ne
 the part's keep-out are known (owner, 2026-09-29). The pick loop never decides on its own that it may push. The
 service hands it a :class:`PushGate` for one pick, built from the recovery policy
 (:func:`~src.robot.grasping.recovery.policy.push_permitted`: dense_clutter's profile, ``recovery.allowed_actions``,
-a declared fixture, a budget that is not zero), from the cell (:class:`PushCell`: the open hand from the gripper
+a budget that is not zero; no fixture is needed), from the cell (:class:`PushCell`: the open hand from the gripper
 registry, the workspace, the clearance the arm's line judge keeps, a declared container) and from the campaign
 (:class:`PushCampaign`: the push budgets and the distance its pushes run). Without a gate nothing pushes.
 
@@ -161,7 +161,8 @@ class PushGate:
     """What lets one pick push: built by the service from the policy for that pick, and nothing pushes without it.
 
     ``budgets`` and ``distance_mm`` are the campaign's. ``cell`` is the cell's push inputs. ``operator_box`` is the
-    declared fixture box (``recovery.fixture``), which only narrows the push box. ``on_approach_blocked`` is whether a
+    declared fixture box (``recovery.fixture``), which only narrows the push box; ``None`` where no fixture is
+    declared, and the automatic push box alone bounds the push. ``on_approach_blocked`` is whether a
     pick whose every approach sweep was blocked is a trigger too, which it is where approach validation runs.
     """
 

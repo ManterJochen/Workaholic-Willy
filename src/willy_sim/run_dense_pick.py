@@ -1184,9 +1184,10 @@ def _wire_collection_carriers(service, cfg, grasp_mode, *, collect: bool, recove
             if eff is not None:
                 # Enable the service recovery loop for dense_clutter without applying the orchestrator
                 # overlays: when this was written, the fusion overlay's BASE-frame voxel grid (removed
-                # on 2026-09-28) accumulated across reset-picks and starved candidates. Fixture-free
-                # recovery actions only, because NUDGE_TARGET and CONTAINER_AGITATE are physical and
-                # need a FixtureEnvelope the service-config recovery path does not supply. next_target
+                # on 2026-09-28) accumulated across reset-picks and starved candidates. Motion-free
+                # recovery actions only: CONTAINER_AGITATE needs a FixtureEnvelope the service-config
+                # recovery path does not supply, and this collection does not arm the push
+                # (NUDGE_TARGET), which needs none since 2026-10-01. next_target
                 # is planned first: a rescan that skips the part that failed (the service hands the loop
                 # the campaign's exclusion zones), same label only, then rescan.
                 ro = _dc_replace(

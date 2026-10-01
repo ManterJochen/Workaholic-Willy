@@ -218,7 +218,9 @@ robot:
     # world, the declared cell and the camera's, before it runs instead of a plan: 10 mm is the distance
     # cuRobo's own optimiser keeps its plans from an obstacle, and the self_collision.min_distance_mm the
     # local guard holds from the arm itself and a declared fixture (from a box the camera saw, already grown
-    # by perceived.margin_mm, it holds self_collision.perceived_min_distance_mm, 5 mm). max_detour_deg is
+    # by perceived.margin_mm, it holds self_collision.perceived_min_distance_mm, 5 mm). Where only the
+    # camera's boxes come closer, the planner is asked again with them set aside, and with a hand known
+    # empty and open that guard decides them at its 5 mm. max_detour_deg is
     # how far any joint of a cuRobo plan may swing beyond the span between where it starts and where it
     # ends; a plan past it is not run, the next configuration is planned to instead, and with none left
     # the move is refused naming the joint.
@@ -282,7 +284,8 @@ robot:
       # its box, at least 9 mm from a sample the guard passes (docs/guide/04-robot-and-safety.md, section
       # 5.5). `min_distance_mm` stays for the arm against itself and for every declared fixture. This, plus
       # the margin, has to reach `min_distance_mm`, the step every path is sampled at, and the voxel may be
-      # no coarser than the 10 mm this was measured at, or the load refuses.
+      # no coarser than the 10 mm this was measured at, or the load refuses. Below 5 the load refuses too:
+      # where only the camera's boxes refuse the planner's world, the exact guard alone decides them.
       perceived_min_distance_mm: 5.0
 
     # Steady-state gating, consumed by the grasp execution policy rather than by the per-move

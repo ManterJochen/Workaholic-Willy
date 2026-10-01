@@ -43,6 +43,24 @@ A driver that raises while the jaws are commanded, a :class:`RobotError`
 above all, ends the pick as :attr:`PolicyOutcome.GRIPPER_FAULT` with the
 exception on the report, never as an exception out of :meth:`execute`.
 
+The retreat is judged before the jaws close
+-------------------------------------------
+On an arm that judges a line as if its jaws held a part
+(:class:`JudgesCarriedLines`, the UR driver), the policy asks it at the
+part, with the jaws still open, whether the retreat would run carrying the
+part. A part can refuse a retreat its empty hand would run, and the arm
+would then stand at the part with the part in its jaws. Where the arm would
+refuse it, the jaws are not closed: the arm goes back up the line it came
+down, to the standoff, and the pick ends as
+:attr:`PolicyOutcome.CARRIED_RETREAT_REFUSED` (the owner, 2026-10-01). An
+arm that cannot judge it closes and retreats as before. Where it would run,
+the controller is asked once more, last before the jaws, and they close. The
+retreat is then judged again as it starts, as every motion is: a new camera
+frame, the part's spheres fitted anew by the attach, a part a measuring hand
+reads wider than the grasp said, or a retreat in steps can still refuse it,
+and the arm then holds the part where it stands until a person opens the jaws
+(``Robot.release``).
+
 Numerics
 --------
 * TCP positions are :class:`Pose`: millimetres, an XYZW quaternion and a :class:`Frame`.
@@ -55,6 +73,7 @@ This module imports no vendor driver. It talks only to the
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import cast
@@ -74,7 +93,7 @@ from src.robot.core import (
     RobotArm,
     SupportsRobotStatus,
 )
-from src.robot.core.arm_capabilities import LineMotion, line_motion_of
+from src.robot.core.arm_capabilities import JudgesCarriedLines, LineMotion, line_motion_of
 from src.robot.core.camera_world import weakest_camera_world
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.gripper import (
@@ -128,6 +147,15 @@ class PolicyOutcome(str, Enum):
     with no sensor would not start the pick: it believed its jaws closed and nobody at a terminal
     said otherwise, or a person aborted. ``motion_message`` says which. Nothing was commanded
     after it.
+    """
+
+    CARRIED_RETREAT_REFUSED = "carried_retreat_refused"
+    """At the part, before the jaws closed, the arm judged the retreat as if they held the part
+    (:class:`~src.robot.core.arm_capabilities.JudgesCarriedLines`) and would refuse it, or could
+    not judge it (``error``). The jaws stayed open, nothing was attached, and the arm went back up
+    the line it came down, to the standoff, empty-handed. ``motion_status`` and ``motion_message``
+    say why the retreat would be refused. The pick loop reads it as a failed execution and goes on
+    to its next part or reports (the owner, 2026-10-01).
     """
 
 
@@ -421,8 +449,13 @@ class GraspExecutionPolicy:
         # Close the gripper at the grasp point.
         object_detected: bool | None = None
         if self.gripper is not None:
-            # Asked again at the part: a stop that fell between the line's end and the close leaves an arm that
-            # cannot lift what the jaws would take.
+            # The retreat as if the jaws held the part, asked before they close (the owner, 2026-10-01): a part can
+            # refuse a retreat the empty hand would run, and the arm would stand here with the part in its jaws.
+            held = self._carried_retreat_refusal(grasp, waypoints[-1], reading)
+            if held is not None:
+                return self._back_out(held, approach[0], commanded, stamps, line_motion)
+            # Asked again at the part, and last before the jaws: a stop that fell between the line's end and the close,
+            # the judgement above included, leaves an arm that cannot lift what the jaws would take.
             refused = _controller_refusal(self.arm)
             if refused:
                 return PolicyReport(
@@ -561,6 +594,100 @@ class GraspExecutionPolicy:
             return typed_move(pose, linear=True) if linear else typed_move(pose)
         self.arm.move_to(pose)
         return None
+
+    # ------------------------------------------------------------------
+    # The retreat judged before the jaws close
+    # ------------------------------------------------------------------
+
+    def _carried_retreat_refusal(
+        self, grasp: GraspPoint, top: Pose, reading: object
+    ) -> tuple[MotionStatus | None, str, Exception | None] | None:
+        """Why the retreat, judged at the part as if the jaws held it, would be refused: its status, the sentence and
+        the error where the judgement raised; ``None`` where it would run, and on an arm that does not judge it.
+
+        Asked only of an arm that keeps its lines and judges one carrying (:class:`JudgesCarriedLines`), of the line from
+        the part to ``top``, the retreat's last waypoint, which covers every retreat step, at the width
+        :meth:`_judged_width` gives. An answer that is no :class:`MotionResult` refusal is no judgement, as on an arm
+        without the verb. A camera that cannot vouch for the cell leaves the pick, as on every motion of it.
+        """
+        if reading is None or not isinstance(self.arm, JudgesCarriedLines):
+            return None
+        width = self._judged_width(grasp)
+        try:
+            refused = self.arm.carried_line_refusal(top, grip_width_mm=width)
+        except CameraWorldUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 (a retreat nobody could judge is no retreat the jaws close for)
+            return None, (f"the retreat could not be judged as if the jaws held the part ({type(exc).__name__}: "
+                          f"{exc})"), exc
+        if not isinstance(refused, MotionResult) or refused.ok:
+            return None
+        return refused.status, (f"the retreat, judged at the part as if the jaws held the part {width:g} mm across, "
+                                f"would be refused: {refused.message}"), None
+
+    def _judged_width(self, grasp: GraspPoint) -> float:
+        """The width a retreat is judged carrying before the jaws close: what the attach after the close carries, where
+        that is known ahead. A hand that does not measure its width is attached at the width it is told
+        (:meth:`_measured_or_commanded_width`), so it is judged at exactly that: the box the attach hands the planner
+        (verifier W, 2026-10-01). A hand that measures is attached at what it measures, which nobody knows before the
+        close; the part's own width stands in for it there, never a narrower one than the jaws are told."""
+        told = self._resolve_close_width(grasp)
+        if not (callable(getattr(self.gripper, "get_width_mm", None)) and width_is_measured_of(self.gripper)):
+            return told
+        part = float(grasp.grip_width_mm)
+        return max(told, part) if math.isfinite(part) and part > 0.0 else told
+
+    def _back_out(
+        self,
+        held: tuple[MotionStatus | None, str, Exception | None],
+        standoff: Pose,
+        commanded: list[Pose],
+        stamps: list[CameraWorldStamp],
+        line_motion: LineMotion | None,
+    ) -> PolicyReport:
+        """The jaws stay open: the arm goes back up the line it came down, to ``standoff``, and the pick ends there.
+
+        :attr:`PolicyOutcome.CARRIED_RETREAT_REFUSED` with the judgement's status and sentence where the line back runs;
+        :attr:`PolicyOutcome.MOTION_FAILED` saying both where it does not, the arm then standing at the part, empty-handed.
+        """
+        status, sentence, error = held
+        said = f"{sentence.rstrip('.')}. The jaws stayed open and nothing was attached"
+        try:
+            result = self._drive_to(standoff, linear=True)
+        except CameraWorldUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 (propagate via report)
+            return PolicyReport(
+                outcome=PolicyOutcome.MOTION_FAILED,
+                waypoints=tuple(commanded),
+                error=exc,
+                motion_status=status,
+                motion_message=f"{said}; the line back up to the standoff raised: {type(exc).__name__}: {exc}",
+                camera_worlds=tuple(stamps),
+                line_motion=line_motion,
+            )
+        if result is not None:
+            stamps.append(result.camera_world)
+            if not result.ok:
+                return PolicyReport(
+                    outcome=PolicyOutcome.MOTION_FAILED,
+                    waypoints=tuple(commanded),
+                    error=cast("Exception | None", result.exception),
+                    motion_status=result.status,
+                    motion_message=f"{said}; the line back up to the standoff was refused too: {result.message}",
+                    camera_worlds=tuple(stamps),
+                    line_motion=line_motion,
+                )
+        commanded.append(standoff)
+        return PolicyReport(
+            outcome=PolicyOutcome.CARRIED_RETREAT_REFUSED,
+            waypoints=tuple(commanded),
+            error=error,
+            motion_status=status,
+            motion_message=f"{said}, and the arm went back up the line it came down, to the standoff, empty-handed",
+            camera_worlds=tuple(stamps),
+            line_motion=line_motion,
+        )
 
     # ------------------------------------------------------------------
     # Helpers

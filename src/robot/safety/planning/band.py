@@ -32,6 +32,20 @@ the nearest configuration both authorities clear (:func:`band_neighbours`), and 
 only ever a straight line (the generated view, its move back) never does. Before anything is sent, both authorities
 judge the whole route, as every route. Where no such configuration lies within the cap, straight lines still run into
 the pose and out of it, and a planned move out of it or into it is refused, saying so.
+
+The same cushion lies between the planner's spheres and its world. Beside the UR10's shoulder housing they reach 25 to
+29 mm past the meshes, so a bin the camera saw needed about 50 mm of real clearance for a plan and 60 for a straight
+line, where the exact guard alone takes about 26 (guard fixes, 2026-09-30). The owner's Option 1, its own commit: where
+the planner's world refuses a sample, the driver asks it once more with every box the camera saw set aside
+(``check_js`` with ``ignore_perceived``), and where only those boxes refused it the exact guard decides them, as it holds
+the very same boxes, turned, at ``perceived_min_distance_mm`` (:func:`world_admission_refusal`). Never while a part is
+carried, never unless the hand reads empty and open (a toggle's count open, a width measured fully open; the owner,
+2026-10-01), and never the bench, a declared fixture or mesh, or the camera's distance field: those stay the planner's.
+cuRobo still plans in its whole world, so a planned move into or out of such a pose is refused, and so is any move while
+the hand carries a part or cannot say it stands open. A grasp there judges its lift as if the jaws held the part before
+they close, and backs out where that lift would be refused (the owner, 2026-10-01), so it does not close there; an arm
+that holds a part there all the same is held until a person releases it. The screen asks what a move asks, for a hand
+known empty and open, and says such a pose is beside the boxes the camera saw (:attr:`PoseVerdict.SEEN_BOXES`), no ERROR.
 """
 
 from __future__ import annotations
@@ -64,6 +78,7 @@ __all__ = [
     "degrees_line",
     "guard_parts",
     "joints_between",
+    "world_admission_refusal",
 ]
 
 #: How far one escape or approach leg may turn any joint, in degrees (the owner, 2026-09-30). LOOK[0]'s nearest pose
@@ -150,22 +165,27 @@ class ExactPairs:
         return min(known) if known and len(known) == len(found) else None
 
 
-def admission_refusal(sample: "RefusedSample", exact: ExactPairs, *, margin_mm: float) -> "str | None":
+def admission_refusal(
+    sample: "RefusedSample", exact: ExactPairs, *, margin_mm: float, world_set_aside: bool = False,
+) -> "str | None":
     """Why the planner's refusal of a configuration stands, or ``None`` where the exact guard decides every pair of it.
 
-    Only the self term is ever left to the exact guard, and only where every pair of links the planner found there is a
-    pair the guard judges and carries no padding beyond ``margin_mm``, the cell's ``planner_margin_mm``: the joint
-    bounds, the world and the carried part are the planner's alone and refuse as they always did, and so does a self
-    collision the planner could not name, and a pair padded for something else. The padding of a pair is read off the
-    report: its depth with the padding less its depth without. The caller has to have had the exact guard accept this
-    very configuration; this reads the planner's report and nothing else.
+    The self term is left to the exact guard only where every pair of links the planner found there is a pair the guard
+    judges and carries no padding beyond ``margin_mm``, the cell's ``planner_margin_mm``: the joint bounds and the
+    carried part are the planner's alone and refuse as they always did, and so does a self collision the planner could
+    not name, and a pair padded for something else. The padding of a pair is read off the report: its depth with the
+    padding less its depth without. The world refuses here as well, unless ``world_set_aside``: the caller then decides
+    the world term itself, by the planner's second judgement with the camera's boxes set aside
+    (:func:`world_admission_refusal`), and ``None`` says only that the bounds and the robot itself are the guard's to
+    decide. The caller has to have had the exact guard accept this very configuration; this reads the planner's report
+    and nothing else.
     """
     if not sample.bound_ok:
         return "a joint is outside the planner's bounds, which the planner alone judges"
-    if not sample.world_ok:
+    if not sample.world_ok and not world_set_aside:
         return "it reaches into the planner's world, or nearer it than the clearance asked, which the planner judges"
     if sample.self_ok:
-        return "the planner refused it with no self collision"
+        return None if not sample.world_ok else "the planner refused it with no self collision"
     if not chosen(sample.pairs):
         return "the planner did not name the pairs of links it found, so none can be left to the exact guard"
     if not sample.pairs:
@@ -179,6 +199,30 @@ def admission_refusal(sample: "RefusedSample", exact: ExactPairs, *, margin_mm: 
         if not padding <= float(margin_mm) + _PADDING_TOLERANCE_MM:
             return (f"{pair.link_a} and {pair.link_b} overlap with {padding:g} mm of the planner's padding, more than "
                     f"the {float(margin_mm):g} mm margin, which only the planner judges")
+    return None
+
+
+def world_admission_refusal(first: "RefusedSample", second: "RefusedSample | None") -> "str | None":
+    """Why the planner's world refusal of one configuration stands once it judged it again with every box the camera saw
+    set aside, or ``None`` where those boxes alone refused it (the owner's Option 1).
+
+    ``first`` is the configuration's row in the planner's report, refused on its world; ``second`` its row in the report
+    asked of the same configuration with the camera's boxes set aside, or ``None`` where that report passes it on every
+    term. The joint bounds and the robot itself do not depend on the world, so the two reports have to find them alike:
+    two that do not are no report on this configuration. What still refuses with the camera's boxes set aside is the
+    bench, a declared fixture or mesh, or the camera's distance field, and those stay the planner's. ``None`` says only
+    that the camera's boxes were all the planner's world found here: the caller has to have had the exact guard judge
+    this very configuration with those boxes, at ``perceived_min_distance_mm``, and no part carried.
+    """
+    if first.world_ok:
+        return "the planner did not refuse it on its world, so there is nothing of its world to set aside"
+    bound_ok, self_ok = (True, True) if second is None else (second.bound_ok, second.self_ok)
+    if bound_ok != first.bound_ok or self_ok != first.self_ok:
+        return ("the planner's two judgements of it, with the boxes the camera saw and without them, disagree on its "
+                "joint bounds or on the robot itself, so neither is read and the planner's world stands")
+    if second is not None and not second.world_ok:
+        return ("the planner's world refuses it with the boxes the camera saw set aside too: the bench, a declared "
+                "fixture or mesh, or the camera's distance field, which stay the planner's")
     return None
 
 
@@ -260,10 +304,16 @@ class PoseVerdict(StrEnum):
     #: run into it and out of it, and a planned move out of it or into it takes a straight leg of at most
     #: :data:`BAND_LEG_MAX_DEG` per joint to the nearest pose both clear where there is one, and is refused where not.
     BAND = "band"
+    #: The planner's world refuses it on the boxes the camera saw alone, asked again with them set aside, and the exact
+    #: guard accepts it with them at ``perceived_min_distance_mm`` (the owner's Option 1); the robot itself, where the
+    #: planner refuses it too, only on pairs the guard decides. Straight lines and moveL run into it and out of it with a
+    #: hand known empty and open; a planned move into it or out of it is refused, and so is any move while the hand
+    #: carries a part or cannot say it stands open.
+    SEEN_BOXES = "seen_boxes"
     #: The exact guard refuses it: nothing is ever sent there.
     GUARD_REFUSED = "guard_refused"
-    #: The planner refuses it for something only the planner judges (its world, its bounds, the carried part, a pair
-    #: the guard does not check): nothing is sent there while it does.
+    #: The planner refuses it for something only the planner judges (its world beyond the camera's boxes, its bounds,
+    #: the carried part, a pair the guard does not check): nothing is sent there while it does.
     PLANNER_REFUSED = "planner_refused"
     #: It could not be asked, and the reason says why.
     UNSCREENED = "unscreened"
@@ -272,6 +322,7 @@ class PoseVerdict(StrEnum):
 _HEADS: Mapping[PoseVerdict, str] = {
     PoseVerdict.CLEAR: "clear",
     PoseVerdict.BAND: "in the planner's cushion band",
+    PoseVerdict.SEEN_BOXES: "beside the boxes the camera saw",
     PoseVerdict.GUARD_REFUSED: "refused by the exact guard",
     PoseVerdict.PLANNER_REFUSED: "refused by the planner",
     PoseVerdict.UNSCREENED: "not screened",
@@ -285,7 +336,8 @@ class PoseScreen:
     ``nearby`` is the nearest configuration both clear with every joint at most :data:`BAND_LEG_MAX_DEG` from it,
     radians, where one was looked for and found. For a band pose it is where a planned move's leg goes on its own, so
     nothing is re-taught; with none, only straight lines run there, and a pose planned moves have to reach or leave is
-    re-taught by hand where both clear it. For a refused pose, an ``ERROR`` line, it is where to re-teach it; with none,
+    re-taught by hand where both clear it. For a pose beside the boxes the camera saw it is a pose planned moves and a
+    carried part reach, where one has to. For a refused pose, an ``ERROR`` line, it is where to re-teach it; with none,
     it is re-taught by hand elsewhere. A re-taught pose is screened again.
     """
 
@@ -298,7 +350,8 @@ class PoseScreen:
 
     @property
     def is_error(self) -> bool:
-        """Whether no move will go there: the exact guard refuses it, or the planner does for what only it judges."""
+        """Whether no move will go there: the exact guard refuses it, or the planner does for what only it judges. A pose
+        in the band or beside the boxes the camera saw is none: a move goes there, as its line says."""
         return self.verdict in (PoseVerdict.GUARD_REFUSED, PoseVerdict.PLANNER_REFUSED)
 
     def render(self) -> str:
@@ -309,7 +362,8 @@ class PoseScreen:
         return text
 
     def line(self, label: str) -> str:
-        """One line for the pose called ``label``: ``ERROR`` first where no move goes there, then :meth:`render`."""
+        """One line for the pose called ``label``: ``ERROR`` first where no move goes there (:attr:`is_error`), then
+        :meth:`render`."""
         return f"{'ERROR ' if self.is_error else ''}{label}: {self.render()}"
 
 

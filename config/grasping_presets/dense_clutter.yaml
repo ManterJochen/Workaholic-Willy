@@ -13,10 +13,11 @@ grasping:
     # `rescan` perceives again and moves nothing; a wrist pick handed looks gets none, since its looks
     # were its rescans. `next_viewpoint`, which this preset allowed until 2026-09-29, was merged into it
     # then and is refused at load. `next_target` (not armed here) is a rescan that skips the part that
-    # failed, same label only. `nudge_target` (not armed here) needs `recovery.fixture` declared: the push
-    # then runs inside a wrist pick's attempt, never from the recovery loop, and a push that stops after
-    # contact ends the campaign. `container_agitate` is refused at load unless `support.container`
-    # declares its interior box, and no built-in mode profile allows it.
+    # failed, same label only. `nudge_target` (not armed here) needs no `recovery.fixture`, which only
+    # narrows where a push lands: the push runs inside a wrist pick's attempt, never from the recovery
+    # loop, and a push that stops after contact ends the campaign. `container_agitate` is refused at load
+    # unless a fixture is declared and `support.container` declares its interior box, and no built-in
+    # mode profile allows it.
     allowed_actions:
       - rescan
   uncertainty:

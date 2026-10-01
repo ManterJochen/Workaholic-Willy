@@ -61,7 +61,9 @@ second lock.
 
 `move`, `move_joints` and `home` end as `EXECUTED`, `MOTION_REFUSED`, `CAMERA_WORLD_UNAVAILABLE` or
 `REFUSED`. `pick` and `place` add `NOTHING_HELD` (the close measured nothing, the hand opened and
-backed out), `RELEASE_NOT_CONFIRMED` and `GRIPPER_FAULT`. A desk arm runs its motions and its report
+backed out), `RELEASE_NOT_CONFIRMED` and `GRIPPER_FAULT`, and `pick` adds `CARRIED_RETREAT_REFUSED`
+(its line out, judged at the part as if the jaws held the part, would be refused: the jaws stayed open
+and the arm went back up the line it came down). A desk arm runs its motions and its report
 says `UNPLANNED`.
 
 `PassRule` defaults to unanimity. Without `confirm=`, the service's own word is the evidence of a
@@ -88,10 +90,11 @@ default.
 Each `PickRun` is **one campaign** of the service (`start_campaign`): fresh push budgets, no part skipped,
 and a person's go-ahead after a push that stopped. `push_mm=` is how far a `dense_clutter` push moves a part
 ([grasping/recovery](../grasping/recovery/README.md)): unset, the cell's
-`recovery.fixture.push_distance_mm`; above 50 or under 10 mm it is refused as the run is built, and above
-the cell's `max_nudge_mm` as its campaign starts, before any pick (`PickRunReport.error`). A campaign
-stops on a fault of the cell, a controller that cannot move, a hand that needs a person (`gripper_fault`)
-and a recovery that stopped where the arm stands (`needs_person`).
+`recovery.fixture.push_distance_mm`, 30 mm where no fixture is declared; above 50 or under 10 mm it is
+refused as the run is built, and above the cell's `max_nudge_mm` (50 mm without a fixture) as its campaign
+starts, before any pick (`PickRunReport.error`). A campaign stops on a fault of the cell, a controller that
+cannot move, a hand that needs a person (`gripper_fault`) and a recovery that stopped where the arm stands
+(`needs_person`).
 
 `Robot.pick` lets go of the frames a wrist camera's `Locator.look_around` held in the planner world when
 it ends, however it ends, a pick refused before any command included; so does the exit of
@@ -101,7 +104,9 @@ hold their frames from the first look the arm stands at, never from the pose the
 
 **Every pose a pick meets is screened before it goes there**, by the exact mesh guard and the planner,
 with nothing moved (`URRobotArm.screen_configuration`): `clear`, `in the planner's cushion band` (it runs,
-and a planned move out of it or into it takes a straight leg of at most 20 degrees per joint), or an `ERROR`
+and a planned move out of it or into it takes a straight leg of at most 20 degrees per joint), `beside the
+boxes the camera saw` (straight lines and moveL run there with a hand known empty and open, and a planned
+move into it or out of it is refused), or an `ERROR`
 line, with the nearest pose within 20 degrees per joint both clear where one exists:
 
 - **Teaching** (`teach_poses`, example 11) says one line per pose once it is held. The planner starts with

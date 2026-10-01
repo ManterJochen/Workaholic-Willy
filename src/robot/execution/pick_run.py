@@ -517,10 +517,11 @@ class PickRun:
     #: to keep; a file that cannot be written is said and the campaign goes on.
     record_views: bool = False
     #: How far a push of a failed part moves it, in mm, on a cell whose recovery pushes (`nudge_target`, dense_clutter):
-    #: unset, the config's `recovery.fixture.push_distance_mm` (30 mm). A request up to the cell's
-    #: `recovery.fixture.max_nudge_mm` is taken as asked; above it, above the hard cap of 50 mm, or under 10 mm it is
-    #: refused with a sentence, never shortened: the last two at the factory, the cell's ceiling as the campaign starts,
-    #: before anything moves. The campaign's push budgets (1 per part, 2 per pick, 5 per campaign) start with it.
+    #: unset, the config's `recovery.fixture.push_distance_mm` (30 mm, also where no fixture is declared). A request up
+    #: to the cell's `recovery.fixture.max_nudge_mm` (the hard cap without a fixture) is taken as asked; above it,
+    #: above the hard cap of 50 mm, or under 10 mm it is refused with a sentence, never shortened: the last two at the
+    #: factory, the cell's ceiling as the campaign starts, before anything moves. The campaign's push budgets (1 per
+    #: part, 2 per pick, 5 per campaign) start with it.
     push_mm: "Maybe[float]" = UNSET
 
     # --- two doors -----------------------------------------------------------------------------
